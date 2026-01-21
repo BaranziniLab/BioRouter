@@ -365,7 +365,7 @@ export type GetToolsQuery = {
 };
 
 /**
- * A BioRouter App combining MCP resource data with BioRouter-specific metadata
+ * A Goose App combining MCP resource data with Goose-specific metadata
  */
 export type GooseApp = McpAppResource & (WindowProps | null) & {
     mcpServer?: string | null;

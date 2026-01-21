@@ -19,17 +19,17 @@
   --color-block-teal: #13bbaf;
   --color-block-orange: #ff4f00;
 
-  --color-neutral-50: #f4f6f7;
-  --color-neutral-100: #e3e6ea;
-  --color-neutral-200: #cbd1d6;
-  --color-neutral-300: #a7b0b9;
-  --color-neutral-400: #878787;
-  --color-neutral-500: #606c7a;
-  --color-neutral-600: #525b68;
-  --color-neutral-700: #474e57;
-  --color-neutral-800: #3f434b;
-  --color-neutral-900: #32353b;
-  --color-neutral-950: #22252a;
+  --color-neutral-50: #fefbf7;
+  --color-neutral-100: #f9f7ed;
+  --color-neutral-200: #f5ede5;
+  --color-neutral-300: #e8ddd0;
+  --color-neutral-400: #d4c4b0;
+  --color-neutral-500: #c4a68c;
+  --color-neutral-600: #a68970;
+  --color-neutral-700: #8a6f4e;
+  --color-neutral-800: #6b5845;
+  --color-neutral-900: #4d3d2f;
+  --color-neutral-950: #3a2f24;
 
   --color-red-100: #ff6b6b;
   --color-red-200: #f94b4b;
@@ -78,8 +78,8 @@
   --border-warning: var(--color-yellow-200);
   --border-info: var(--color-blue-200);
 
-  --text-default: var(--color-neutral-800);
-  --text-muted: var(--color-neutral-400);
+  --text-default: #3f434b;
+  --text-muted: #878787;
   --text-inverse: var(--color-white);
   --text-danger: var(--color-red-200);
   --text-success: var(--color-green-200);

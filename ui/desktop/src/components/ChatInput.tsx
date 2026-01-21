@@ -1371,10 +1371,10 @@ export default function ChatInput({
                   <Button
                     type="submit"
                     size="sm"
-                    shape="round"
+                    shape="pill"
                     variant="outline"
                     disabled={isSubmitButtonDisabled}
-                    className={`rounded-full px-10 py-2 flex items-center gap-2 ${
+                    className={`px-10 py-2 flex items-center gap-2 ${
                       isSubmitButtonDisabled
                         ? 'bg-slate-600 text-white cursor-not-allowed opacity-50 border-slate-600'
                         : 'bg-slate-600 text-white hover:bg-slate-700 border-slate-600 hover:cursor-pointer'

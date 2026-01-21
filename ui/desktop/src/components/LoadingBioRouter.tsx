@@ -1,6 +1,5 @@
 import BioRouterLogo from './BioRouterLogo';
 import AnimatedIcons from './AnimatedIcons';
-import FlyingBird from './FlyingBird';
 import { ChatState } from '../types/chatState';
 
 interface LoadingBioRouterProps {
@@ -21,7 +20,7 @@ const STATE_MESSAGES: Record<ChatState, string> = {
 const STATE_ICONS: Record<ChatState, React.ReactNode> = {
   [ChatState.LoadingConversation]: <AnimatedIcons className="flex-shrink-0" cycleInterval={600} />,
   [ChatState.Thinking]: <AnimatedIcons className="flex-shrink-0" cycleInterval={600} />,
-  [ChatState.Streaming]: <FlyingBird className="flex-shrink-0" cycleInterval={150} />,
+  [ChatState.Streaming]: <AnimatedIcons className="flex-shrink-0" cycleInterval={600} />,
   [ChatState.WaitingForUserInput]: (
     <AnimatedIcons className="flex-shrink-0" cycleInterval={600} variant="waiting" />
   ),
