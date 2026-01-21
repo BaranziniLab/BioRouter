@@ -8,9 +8,6 @@ _An extensible, open-source AI agent for automating biomedical and engineering t
   <a href="https://opensource.org/licenses/Apache-2.0">
     <img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="Apache 2.0 License">
   </a>
-  <a href="https://github.com/BaranziniLab/BioRouter">
-    <img src="https://img.shields.io/github/stars/BaranziniLab/BioRouter?style=social" alt="GitHub Stars">
-  </a>
 </p>
 
 </div>
@@ -351,11 +348,5 @@ For questions, issues, or collaboration inquiries:
 - **Email**: wanjun.gu@ucsf.edu
 - **GitHub Issues**: [BaranziniLab/BioRouter/issues](https://github.com/BaranziniLab/BioRouter/issues)
 - **Lab Website**: [baranzinilab.ucsf.edu](https://baranzinilab.ucsf.edu/)
-
----
-
-<div align="center">
-
-**Built with ❤️ at UCSF Department of Neurology**
 
 </div>
