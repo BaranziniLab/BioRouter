@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: BioRouter Discord discussion
+    url: https://discord.gg/biorouter-oss
+    about: Please ask and answer questions here.
+  - name: Report a security vulnerability
+    url: https://github.com/BaranziniLab/BioRouter/security/policy
+    about: Please report security vulnerabilities here.

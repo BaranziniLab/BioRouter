@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=BioRouter
+Exec=/usr/lib/biorouter/BioRouter %U
+Icon=/usr/share/pixmaps/biorouter.png
+Terminal=false
+Type=Application
+Categories=Development;
+MimeType=x-scheme-handler/biorouter;

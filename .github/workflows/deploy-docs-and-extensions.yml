@@ -1,0 +1,77 @@
+name: Deploy Documentation
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'documentation/**'
+
+# Use same concurrency group as PR preview workflow to prevent race conditions
+# when both workflows try to modify gh-pages branch simultaneously.
+# cancel-in-progress: false ensures production deploys queue and wait rather than
+# being cancelled by PR preview workflows.
+concurrency:
+  group: pr-preview
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout the branch
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # pin@v3
+
+      - name: Setup Node.js
+        uses: actions/setup-node@1a4442cacd436585916779262731d5b162bc6ec7 # pin@v3
+        with:
+          node-version: 20 
+
+      - name: Cache Node.js modules (documentation)
+        uses: actions/cache@2f8e54208210a422b2efd51efaa6bd6d7ca8920f # pin@v3
+        with:
+          path: ./documentation/node_modules
+          key: ${{ runner.os }}-documentation-${{ hashFiles('./documentation/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-documentation-
+
+      - name: Install dependencies and build docs
+        working-directory: ./documentation
+        env:
+          INKEEP_API_KEY: ${{ secrets.INKEEP_API_KEY }}
+          INKEEP_INTEGRATION_ID: ${{ secrets.INKEEP_INTEGRATION_ID }}
+          INKEEP_ORG_ID: ${{ secrets.INKEEP_ORG_ID }}
+        run: |
+          npm install
+          npm run build
+
+      - name: Checkout gh-pages branch
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        continue-on-error: true      # Branch may not exist on first deploy or in forks
+        uses: actions/checkout@f43a0e5ff2bd294095638e18286ca9a3d1956744 # pin@v3
+        with:
+          ref: gh-pages
+          path: gh-pages-current
+
+      - name: Preserve pr-preview directory
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          # Copy pr-preview from current gh-pages to the new build (if it exists)
+          if [ -d "gh-pages-current/pr-preview" ]; then
+            cp -r gh-pages-current/pr-preview documentation/build/pr-preview
+            echo "Preserved pr-preview directory with $(ls gh-pages-current/pr-preview | wc -l) PR previews"
+          else
+            echo "No pr-preview directory to preserve"
+          fi
+
+      - name: Deploy to /gh-pages
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: peaceiris/actions-gh-pages@373f7f263a76c20808c831209c920827a82a2847 # pin@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: documentation/build
+          keep_files: false          # Clean deploy - only keep what's in the build + pr-preview
+          force_orphan: true         # Create a fresh commit without history to prevent bloat

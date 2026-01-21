@@ -1,0 +1,258 @@
+# This is a **reuseable** workflow that builds the CLI for multiple platforms.
+# It doesn't get triggered on its own. It gets used in multiple workflows:
+#  - release.yml
+#  - canary.yml
+#
+# Platform Build Strategy:
+#  - Linux: Uses Ubuntu runner with cross-compilation
+#  - macOS: Uses macOS runner with cross-compilation
+#  - Windows: Uses Ubuntu runner with Docker cross-compilation (same as desktop build)
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: false
+        default: ""
+        type: string
+      ref:
+        type: string
+        required: false
+        default: ""
+
+name: "Reusable workflow to build CLI"
+
+jobs:
+  build-cli:
+    name: Build CLI
+    runs-on: ${{ matrix.build-on }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds
+          - os: ubuntu-latest
+            architecture: x86_64
+            target-suffix: unknown-linux-gnu
+            build-on: ubuntu-latest
+            use-cross: true
+            cc: gcc-10
+          - os: ubuntu-latest
+            architecture: aarch64
+            target-suffix: unknown-linux-gnu
+            build-on: ubuntu-latest
+            use-cross: true
+            cc: gcc-10
+          # macOS builds
+          - os: macos-latest
+            architecture: x86_64
+            target-suffix: apple-darwin
+            build-on: macos-latest
+            use-cross: true
+          - os: macos-latest
+            architecture: aarch64
+            target-suffix: apple-darwin
+            build-on: macos-latest
+            use-cross: true
+          # Windows builds (only x86_64 supported)
+          - os: windows
+            architecture: x86_64
+            target-suffix: pc-windows-gnu
+            build-on: ubuntu-latest
+            use-cross: false
+            use-docker: true
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pin@v4
+        with:
+          ref: ${{ inputs.ref }}
+          fetch-depth: 0
+
+      - name: Update version in Cargo.toml
+        if: ${{ inputs.version != '' }}
+        run: |
+          sed -i.bak 's/^version = ".*"/version = "'${{ inputs.version }}'"/' Cargo.toml
+          rm -f Cargo.toml.bak
+
+      - name: Install cross
+        if: matrix.use-cross
+        run: source ./bin/activate-hermit && cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Cache Cargo artifacts (Linux/macOS)
+        if: matrix.use-cross
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+        with:
+          key: ${{ matrix.architecture }}-${{ matrix.target-suffix }}
+
+      - name: Cache Cargo artifacts (Windows)
+        if: matrix.use-docker
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+        with:
+          key: ${{ matrix.architecture }}-${{ matrix.target-suffix }}
+
+      - name: Build CLI (Linux/macOS)
+        if: matrix.use-cross
+        env:
+          CROSS_NO_WARNINGS: 0
+          RUST_LOG: debug
+          RUST_BACKTRACE: 1
+          CROSS_VERBOSE: 1
+        run: |
+          source ./bin/activate-hermit
+          export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
+          rustup target add "${TARGET}"
+          echo "Building for target: ${TARGET}"
+          echo "Rust toolchain info:"
+          rustup show
+          echo "Cross version:"
+          cross --version
+
+          export CC="${{ matrix.cc || ''}}"
+          cross build --release --target ${TARGET} -p biorouter-cli
+
+      - name: Build CLI (Windows)
+        if: matrix.use-docker
+        run: |
+          echo "🚀 Building Windows CLI executable with enhanced GitHub Actions caching..."
+
+          # Create cache directories
+          mkdir -p ~/.cargo/registry ~/.cargo/git
+
+          # Use enhanced caching with GitHub Actions cache mounts
+          docker run --rm \
+            -v "$(pwd)":/usr/src/myapp \
+            -v "$HOME/.cargo/registry":/usr/local/cargo/registry \
+            -v "$HOME/.cargo/git":/usr/local/cargo/git \
+            -w /usr/src/myapp \
+            rust:latest \
+            bash -c "
+              set -e
+              echo '=== Setting up Rust environment with caching ==='
+              export CARGO_HOME=/usr/local/cargo
+              export PATH=/usr/local/cargo/bin:\$PATH
+
+              # Check if Windows target is already installed in cache
+              if rustup target list --installed | grep -q x86_64-pc-windows-gnu; then
+                echo '✅ Windows cross-compilation target already installed'
+              else
+                echo '📦 Installing Windows cross-compilation target...'
+                rustup target add x86_64-pc-windows-gnu
+              fi
+
+              echo '=== Setting up build dependencies ==='
+              apt-get update
+              apt-get install -y mingw-w64 protobuf-compiler cmake time
+
+              echo '=== Setting up cross-compilation environment ==='
+              export CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc
+              export CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++
+              export AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar
+              export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
+              export PKG_CONFIG_ALLOW_CROSS=1
+              export PROTOC=/usr/bin/protoc
+
+              echo '=== Optimized Cargo configuration ==='
+              mkdir -p .cargo
+              echo '[build]' > .cargo/config.toml
+              echo 'jobs = 4' >> .cargo/config.toml
+              echo '' >> .cargo/config.toml
+              echo '[target.x86_64-pc-windows-gnu]' >> .cargo/config.toml
+              echo 'linker = \"x86_64-w64-mingw32-gcc\"' >> .cargo/config.toml
+              echo '' >> .cargo/config.toml
+              echo '[net]' >> .cargo/config.toml
+              echo 'git-fetch-with-cli = true' >> .cargo/config.toml
+              echo 'retry = 3' >> .cargo/config.toml
+              echo '' >> .cargo/config.toml
+              echo '[profile.release]' >> .cargo/config.toml
+              echo 'codegen-units = 1' >> .cargo/config.toml
+              echo 'lto = false' >> .cargo/config.toml
+              echo 'panic = \"abort\"' >> .cargo/config.toml
+              echo 'debug = false' >> .cargo/config.toml
+              echo 'opt-level = 2' >> .cargo/config.toml
+              echo '' >> .cargo/config.toml
+              echo '[registries.crates-io]' >> .cargo/config.toml
+              echo 'protocol = \"sparse\"' >> .cargo/config.toml
+
+              echo '=== Building with cached dependencies ==='
+              # Check if we have cached build artifacts
+              if [ -d target/x86_64-pc-windows-gnu/release/deps ] && [ \"\$(ls -A target/x86_64-pc-windows-gnu/release/deps)\" ]; then
+                echo '✅ Found cached build artifacts, performing incremental build...'
+                CARGO_INCREMENTAL=1
+              else
+                echo '🔨 No cached artifacts found, performing full build...'
+                CARGO_INCREMENTAL=0
+              fi
+
+              echo '🔨 Building Windows CLI executable...'
+              CARGO_INCREMENTAL=\$CARGO_INCREMENTAL \
+              CARGO_NET_RETRY=3 \
+              CARGO_HTTP_TIMEOUT=60 \
+              RUST_BACKTRACE=1 \
+              cargo build --release --target x86_64-pc-windows-gnu -p biorouter-cli --jobs 4
+
+              echo '=== Copying Windows runtime DLLs ==='
+              GCC_DIR=\$(ls -d /usr/lib/gcc/x86_64-w64-mingw32/*/ | head -n 1)
+              cp \"\$GCC_DIR/libstdc++-6.dll\" target/x86_64-pc-windows-gnu/release/
+              cp \"\$GCC_DIR/libgcc_s_seh-1.dll\" target/x86_64-pc-windows-gnu/release/
+              cp /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll target/x86_64-pc-windows-gnu/release/
+
+              echo '✅ Build completed successfully!'
+              ls -la target/x86_64-pc-windows-gnu/release/
+            "
+
+          sudo chown -R $USER:$USER target/
+
+          # Verify build succeeded
+          if [ ! -f "./target/x86_64-pc-windows-gnu/release/biorouter.exe" ]; then
+            echo "❌ Windows CLI binary not found."
+            ls -la ./target/x86_64-pc-windows-gnu/release/ || echo "Release directory doesn't exist"
+            exit 1
+          fi
+
+          echo "✅ Windows CLI binary found!"
+          ls -la ./target/x86_64-pc-windows-gnu/release/biorouter.exe
+
+          echo "✅ Windows runtime DLLs:"
+          ls -la ./target/x86_64-pc-windows-gnu/release/*.dll
+
+      - name: Package CLI (Linux/macOS)
+        if: matrix.use-cross
+        run: |
+          source ./bin/activate-hermit
+          export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
+
+          # Create a directory for the package contents
+          mkdir -p "target/${TARGET}/release/biorouter-package"
+
+          # Copy the biorouter binary
+          cp "target/${TARGET}/release/biorouter" "target/${TARGET}/release/biorouter-package/"
+
+          # Create the tar archive
+          cd "target/${TARGET}/release"
+          tar -cjf "biorouter-${TARGET}.tar.bz2" -C biorouter-package .
+          echo "ARTIFACT=target/${TARGET}/release/biorouter-${TARGET}.tar.bz2" >> $GITHUB_ENV
+
+      - name: Package CLI (Windows)
+        if: matrix.use-docker
+        run: |
+          export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
+
+          # Create a directory for the package contents
+          mkdir -p "target/${TARGET}/release/biorouter-package"
+
+          # Copy the biorouter binary
+          cp "target/${TARGET}/release/biorouter.exe" "target/${TARGET}/release/biorouter-package/"
+
+          # Copy Windows runtime DLLs
+          cp "target/${TARGET}/release/"*.dll "target/${TARGET}/release/biorouter-package/"
+
+          # Create the zip archive with binary and DLLs
+          cd "target/${TARGET}/release"
+          zip -r "biorouter-${TARGET}.zip" biorouter-package/
+          echo "ARTIFACT=target/${TARGET}/release/biorouter-${TARGET}.zip" >> $GITHUB_ENV
+
+      - name: Upload CLI artifact
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # pin@v4
+        with:
+          name: biorouter-${{ matrix.architecture }}-${{ matrix.target-suffix }}
+          path: ${{ env.ARTIFACT }}

@@ -1,0 +1,247 @@
+# This is a **reuseable** workflow that bundles the Desktop App for Intel macOS.
+# It doesn't get triggered on its own. It gets used in multiple workflows:
+#  - release.yml
+#  - canary.yml
+#  - pr-comment-bundle-desktop.yml
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version to set for the build'
+        required: false
+        default: ""
+        type: string
+      signing:
+        description: 'Whether to perform signing and notarization'
+        required: false
+        default: false
+        type: boolean
+      quick_test:
+        description: 'Whether to perform the quick launch test'
+        required: false
+        default: true
+        type: boolean
+      ref:
+        type: string
+        required: false
+        default: ''
+    secrets:
+      OSX_CODESIGN_ROLE:
+        required: false
+
+name: Reusable workflow to bundle desktop app for Intel Mac
+
+jobs:
+  bundle-desktop-intel:
+    runs-on: macos-latest
+    name: Bundle Desktop App on Intel macOS
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      # Check initial disk space
+      - name: Check initial disk space
+        run: df -h
+
+      - name: Checkout code
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          # Only pass ref if it's explicitly set, otherwise let checkout action use its default behavior
+          ref: ${{ inputs.ref != '' && inputs.ref || '' }}
+          fetch-depth: 0
+
+      # Update versions before build
+      - name: Update versions
+        if: ${{ inputs.version != '' }}
+        run: |
+          # Update version in Cargo.toml
+          sed -i.bak 's/^version = ".*"/version = "'${{ inputs.version }}'"/' Cargo.toml
+          rm -f Cargo.toml.bak
+
+          # Update version in package.json
+          source ./bin/activate-hermit
+          cd ui/desktop
+          npm version ${{ inputs.version }} --no-git-tag-version --allow-same-version
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
+        with:
+          key: intel
+
+
+      - name: Build biorouter-server for Intel macOS (x86_64)
+        run: |
+          source ./bin/activate-hermit
+          rustup target add x86_64-apple-darwin
+          cargo build --release -p biorouter-server --target x86_64-apple-darwin
+
+
+
+      # Post-build cleanup to free space
+      - name: Post-build cleanup
+        run: |
+          echo "Performing post-build cleanup..."
+          # Remove debug artifacts
+          rm -rf target/debug || true
+          rm -rf target/x86_64-apple-darwin/debug || true
+          # Keep only what's needed for the next steps
+          rm -rf target/x86_64-apple-darwin/release/deps || true
+          rm -rf target/x86_64-apple-darwin/release/build || true
+          rm -rf target/x86_64-apple-darwin/release/incremental || true
+          # Check disk space after cleanup
+          df -h
+
+      - name: Copy binaries into Electron folder
+        run: |
+          cp target/x86_64-apple-darwin/release/biorouterd ui/desktop/src/bin/biorouterd
+
+      - name: Cache npm dependencies
+        uses: actions/cache@2f8e54208210a422b2efd51efaa6bd6d7ca8920f # pin@v3
+        with:
+          path: |
+            ui/desktop/node_modules
+            .hermit/node/cache
+          key: intel-npm-cache-v1-${{ runner.os }}-${{ hashFiles('ui/desktop/package-lock.json') }}
+          restore-keys: |
+            intel-npm-cache-v1-${{ runner.os }}-
+            
+      - name: Install dependencies
+        run: source ../../bin/activate-hermit && npm ci
+        working-directory: ui/desktop
+
+      # Configure Electron builder for Intel architecture
+      - name: Configure for Intel build
+        run: |
+          # Set the architecture to x64 for Intel Mac build
+          jq '.build.mac.target[0].arch = "x64"' package.json > package.json.tmp && mv package.json.tmp package.json
+        working-directory: ui/desktop
+
+      # Check disk space before bundling
+      - name: Check disk space before bundling
+        run: df -h
+
+      - name: Build App
+        run: |
+          source ../../bin/activate-hermit
+          attempt=0
+          max_attempts=2
+          until [ $attempt -ge $max_attempts ]; do
+            npm run bundle:intel && break
+            attempt=$((attempt + 1))
+            echo "Attempt $attempt failed. Retrying..."
+            sleep 5
+          done
+          if [ $attempt -ge $max_attempts ]; then
+            echo "Action failed after $max_attempts attempts."
+            exit 1
+          fi
+        working-directory: ui/desktop
+
+      - name: Configure AWS credentials
+        if: ${{ inputs.signing }}
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4
+        with:
+          role-to-assume: "${{ secrets.OSX_CODESIGN_ROLE }}"
+          aws-region: us-west-2
+
+      - name: Codesigning and Notarization
+        if: ${{ inputs.signing }}
+        run: |
+          set -e
+
+          echo "⬆️ uploading unsigned app"
+          source_job_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          unsigned_url="s3://block-biorouter-artifacts-bucket-production/unsigned/biorouter-${GITHUB_SHA}-${{ github.run_id }}-intel.zip"
+
+          zip -q -u -r out/BioRouter-darwin-x64/BioRouter_intel_mac.zip entitlements.plist
+
+          # upload unsigned biorouter to transfer bucket so it can be passed to lambda
+          aws s3 cp --quiet out/BioRouter-darwin-x64/BioRouter_intel_mac.zip "${unsigned_url}"
+
+          # begin signing
+          echo "🚀 launching signing process"
+          aws lambda invoke \
+            --function-name codesign_helper \
+            --cli-binary-format raw-in-base64-out \
+            --payload "{\"source_s3_url\": \"${unsigned_url}\", \"source_job_url\": \"${source_job_url}\"}" \
+            response.json > /dev/null
+
+          if [ "$(jq -r .statusCode response.json)" != "200" ]; then
+            echo "⚠️ lambda function did not return expected status code"
+            exit 1
+          fi
+
+          build_number="$(jq -r .body.build_number response.json)"
+
+          start_time=$(date +%s)
+
+          while sleep 30; do
+            aws lambda invoke \
+              --function-name codesign_helper \
+              --cli-binary-format raw-in-base64-out \
+              --payload "{\"source_s3_url\": \"${unsigned_url}\", \"build_number\": \"${build_number}\"}" \
+              response.json > /dev/null
+
+            if [ "$(jq -r .statusCode response.json)" != "200" ]; then
+              echo "⚠️ signing request returned unexpected response code $(jq -r .statusCode response.json):"
+              jq . response.json
+              exit 1
+            fi
+
+            state="$(jq -r .body.state response.json)"
+
+            if [ "${state}" == "completed" ]; then
+              echo "✅ signing complete ($(($(date +%s) - start_time))s)"
+              break
+            fi
+
+            if [ $(($(date +%s) - start_time)) -ge 3600 ]; then
+              echo "⚠️ timed out ($(($(date +%s) - start_time))s)"
+              exit 1
+            fi
+
+            echo "⏲️ waiting for signing to complete (${state}: $(($(date +%s) - start_time))s)"
+          done
+
+          # parse lambda response
+          signed_url=$(jq -r .body.destination_url response.json)
+
+          # download the signed app from S3
+          echo "⬇️ downloading signed app"
+          aws s3 cp --quiet "${signed_url}" out/BioRouter-darwin-x64/BioRouter_intel_mac.zip
+        working-directory: ui/desktop
+
+      - name: Final cleanup before artifact upload
+        run: |
+          echo "Performing final cleanup..."
+          # Remove build artifacts that are no longer needed
+          rm -rf target || true
+          # Check disk space after cleanup
+          df -h
+
+      - name: Upload Desktop artifact
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # pin@v4
+        with:
+          name: BioRouter-darwin-x64
+          path: ui/desktop/out/BioRouter-darwin-x64/BioRouter_intel_mac.zip
+
+      - name: Quick launch test (macOS)
+        if: ${{ inputs.quick_test }}
+        run: |
+          # Ensure no quarantine attributes (if needed)
+          xattr -cr "ui/desktop/out/BioRouter-darwin-x64/BioRouter.app"
+          echo "Opening BioRouter.app..."
+          open -g "ui/desktop/out/BioRouter-darwin-x64/BioRouter.app"
+
+          # Give the app a few seconds to start and write logs
+          sleep 5
+
+          # Check if it's running
+          if pgrep -f "BioRouter.app/Contents/MacOS/BioRouter" > /dev/null; then
+            echo "App appears to be running."
+          else
+            echo "App did not stay open. Possible crash or startup error."
+            exit 1
+          fi
+          # Kill the app to clean up
+          pkill -f "BioRouter.app/Contents/MacOS/BioRouter"
