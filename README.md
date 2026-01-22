@@ -163,10 +163,30 @@ BioRouter/
 │   ├── biorouter-bench/     # Benchmarking tools
 │   └── biorouter-test/      # Integration tests
 ├── ui/desktop/              # Electron desktop application
+│   └── src/images/          # App icons and assets
+│       ├── icon.svg         # Main app icon (source)
+│       ├── glyph.svg        # Icon glyph variant
+│       └── prepare.sh       # Icon generation script
 ├── documentation/           # Documentation website
 ├── examples/                # Example recipes and configurations
 ├── scripts/                 # Build and utility scripts
 └── recipe-scanner/          # Recipe security scanner
+```
+
+### App Icon
+
+The BioRouter desktop app uses a router-inspired icon design located in [ui/desktop/src/images/](ui/desktop/src/images/):
+
+- [icon.svg](ui/desktop/src/images/icon.svg) - Main application icon source file
+- [glyph.svg](ui/desktop/src/images/glyph.svg) - Glyph variant of the icon
+
+The icon features a network router design with interconnected circles and nodes in dark gray (#36393d) on a transparent background, representing BioRouter's role in routing requests between AI models and MCP servers.
+
+To regenerate platform-specific icon formats (PNG, ICNS) after modifying the SVG:
+
+```bash
+cd ui/desktop/src/images
+bash prepare.sh
 ```
 
 ## Configuration Files
