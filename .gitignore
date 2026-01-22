@@ -1,8 +1,6 @@
 __pycache__
 *.pyc
 *.jar
-run_cli.sh
-tokenizer_files/
 .DS_Store
 .idea
 *.log
@@ -25,50 +23,13 @@ target/
 ui/desktop/node_modules/
 ui/desktop/out/
 
-# Generated BioRouter DLLs (built at build time, not checked in)
-ui/desktop/src/bin/biorouter_ffi.dll
-ui/desktop/src/bin/biorouter_llm.dll
-
-# Hermit
-.hermit/
-
 # Claude
 .claude
 
 debug_*.txt
 
-# Docs
-# Dependencies
-/node_modules
-
-# Production
-/build
-
-# Generated files
-.docusaurus
-.cache-loader
-
-# Benchmark paths
-benchmark-*
-benchconf.json
-scripts/fake.sh
-do_not_version/
-/ui/desktop/src/bin/temporal
-/temporal-service/temporal.db
-/ui/desktop/src/bin/temporal.db
-/temporal.db
-/ui/desktop/src/bin/biorouter-scheduler-executor
-/ui/desktop/src/bin/biorouter
-/.env
-
-/working_dir
-
 # Error log artifacts from mcp replay tests
 crates/biorouter/tests/mcp_replays/*errors.txt
 
-.gromastate
 # Nix build output
 result
-
-# BioRouter self-test artifacts
-biorouterselftest/
