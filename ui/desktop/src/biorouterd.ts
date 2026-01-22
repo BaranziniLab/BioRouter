@@ -222,7 +222,7 @@ export const startBiorouterd = async (options: StartBiorouterdOptions): Promise<
 };
 
 const getBiorouterdBinaryPath = (app: Electron.App): string => {
-  let executableName = process.platform === 'win32' ? 'biorouterd.exe' : 'biorouterd';
+  let executableName = process.platform === 'win32' ? 'biorouter.exe' : 'biorouter';
 
   let possiblePaths: string[];
   if (!app.isPackaged) {
