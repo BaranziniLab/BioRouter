@@ -62,19 +62,4 @@ The mobile app gives you full access to biorouter:
 
 ## Additional Resources
 
-import ContentCardCarousel from '@site/src/components/ContentCardCarousel';
-import mobileShots from '@site/blog/2025-12-19-biorouter-mobile-terminal/mobile_shots.png';
-
-<ContentCardCarousel
-  items={[
-    {
-      type: 'blog',
-      title: 'biorouter Mobile Access and Native Terminal Support',
-      description: 'Learn about two new ways to use biorouter: iOS app for mobile access and native terminal support with seamless session continuity.',
-      thumbnailUrl: mobileShots,
-      linkUrl: '/BioRouter/blog/2025/12/19/biorouter-mobile-terminal',
-      date: '2025-12-19',
-      duration: '4 min read'
-    }
-  ]}
-/>
+For more information about mobile access features, check the [BioRouter GitHub repository](https://github.com/BaranziniLab/BioRouter) for updates and announcements.

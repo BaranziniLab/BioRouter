@@ -1,0 +1,1 @@
+"use strict";(globalThis.webpackChunkbiorouter=globalThis.webpackChunkbiorouter||[]).push([[9917],{37934:o=>{o.exports=JSON.parse('{"metadata":{"permalink":"/BioRouter/blog/page/2","page":2,"postsPerPage":10,"totalPages":9,"totalCount":83,"previousPage":"/BioRouter/blog","nextPage":"/BioRouter/blog/page/3","blogDescription":"Blog","blogTitle":"Blog"}}')}}]);

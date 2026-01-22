@@ -52,59 +52,19 @@ Let's begin 🚀
   </TabItem>
 
   <TabItem value="linux" label="Linux">
-    Choose to install the Desktop and/or CLI version of biorouter:
+    :::caution Coming Soon
+    Linux installation for BioRouter is not yet available. We're working on bringing BioRouter to Linux and will release builds soon.
 
-    <Tabs groupId="interface">
-      <TabItem value="ui" label="biorouter Desktop" default>
-        <LinuxDesktopInstallButtons/>
-        <div style={{ marginTop: '1rem' }}>
-          **For Debian/Ubuntu-based distributions:**
-          1. Download the DEB file
-          2. Navigate to the directory where it is saved in a terminal
-          3. Run `sudo dpkg -i (filename).deb`
-          4. Launch biorouter from the app menu
-
-        </div>
-      </TabItem>
-      <TabItem value="cli" label="biorouter CLI">
-        Run the following command to install the biorouter CLI on Linux:
-
-        ```sh
-        curl -fsSL https://github.com/BaranziniLab/BioRouter/releases/download/stable/download_cli.sh | bash
-        ```   
-      </TabItem>
-    </Tabs>
+    Please check back later or [watch our GitHub repository](https://github.com/BaranziniLab/BioRouter) for updates.
+    :::
   </TabItem>
 
   <TabItem value="windows" label="Windows">
-    Choose to install the Desktop and/or CLI version of biorouter:
+    :::caution Coming Soon
+    Windows installation for BioRouter is not yet available. We're working on bringing BioRouter to Windows and will release builds soon.
 
-    <Tabs groupId="interface">
-      <TabItem value="ui" label="biorouter Desktop" default>
-        <WindowsDesktopInstallButtons/>
-        <div style={{ marginTop: '1rem' }}>
-          1. Unzip the downloaded zip file.
-          2. Run the executable file to launch the biorouter Desktop application.
-        </div>
-      </TabItem>
-      <TabItem value="cli" label="biorouter CLI">
-        
-        Run the following command in **Git Bash**, **MSYS2**, or **PowerShell** to install the biorouter CLI natively on Windows:
-
-        ```bash
-        curl -fsSL https://github.com/BaranziniLab/BioRouter/releases/download/stable/download_cli.sh | bash
-        ```
-        
-        Learn about prerequisites in the [installation guide](/docs/getting-started/installation).
-
-        :::info PATH Warning And Keyring
-        If you see a PATH warning after installation, you'll need to add biorouter to your PATH before running `biorouter configure`. See the [Windows CLI installation instructions](/docs/getting-started/installation) for detailed steps.
-
-        If prompted during configuration, choose to not store to keyring. If you encounter keyring errors, see the [Windows setup instructions](/docs/getting-started/installation#set-llm-provider) for more information.
-        :::
-
-      </TabItem>
-    </Tabs>
+    Please check back later or [watch our GitHub repository](https://github.com/BaranziniLab/BioRouter) for updates.
+    :::
   </TabItem>
 </Tabs>
 

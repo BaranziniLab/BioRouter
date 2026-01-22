@@ -18,7 +18,7 @@ biorouter's capabilities are extensible. As an [MCP](https://modelcontextprotoco
 You can customize how much [supervision](/docs/guides/biorouter-permissions) biorouter needs. Choose between full autonomy, requiring approval before actions, or simply chatting without any actions.
 
 ### Choose the right LLM
-Your experience with biorouter is shaped by your [choice of LLM](/blog/2025/03/31/biorouter-benchmark), as it handles all the planning while biorouter manages the execution. When choosing an LLM, consider its tool support, specific capabilities, and associated costs.
+Your experience with biorouter is shaped by your choice of LLM, as it handles all the planning while biorouter manages the execution. When choosing an LLM, consider its tool support, specific capabilities, and associated costs.
 
 ### Keep sessions short
 LLMs have context windows, which are limits on how much conversation history they can retain. Once exceeded, they may forget earlier parts of the conversation. Monitor your token usage and [start new sessions](/docs/guides/sessions/session-management) as needed.

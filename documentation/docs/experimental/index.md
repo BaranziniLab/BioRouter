@@ -45,20 +45,10 @@ The list of experimental features may change as biorouter development progresses
 <div className={styles.categorySection}>
   <h2 className={styles.categoryTitle}>📝 Featured Blog Posts</h2>
   <div className={styles.cardGrid}>
-    <Card 
+    <Card
       title="Finetuning Toolshim Models for Tool Calling"
       description="Addressing performance limitations in models without native tool calling support through dedicated toolshim model development."
       link="/blog/2025/04/11/finetuning-toolshim"
-    />
-    <Card 
-      title="AI, But Make It Local With biorouter and Ollama"
-      description="Learn how to integrate biorouter with Ollama for a fully local AI experience, including structured outputs and tool calling capabilities."
-      link="/blog/2025/03/14/biorouter-ollama"
-    />
-    <Card 
-      title="Community-Inspired Benchmarking: The biorouter Vibe Check"
-      description="See how open source AI models measure up in our first biorouter agent benchmark tests, including toolshim performance analysis."
-      link="/blog/2025/03/31/biorouter-benchmark"
     />
   </div>
 </div>

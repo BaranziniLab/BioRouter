@@ -82,171 +82,19 @@ import { PanelLeft } from 'lucide-react';
   </TabItem>
 
   <TabItem value="linux" label="Linux">
-    Choose to install the Desktop and/or CLI version of biorouter:
+    :::caution Coming Soon
+    Linux installation for BioRouter is not yet available. We're working on bringing BioRouter to Linux and will release builds soon.
 
-    <Tabs groupId="interface">
-      <TabItem value="ui" label="biorouter Desktop" default>
-        Install biorouter Desktop directly from the browser.
-
-        <h3 style={{ marginTop: '1rem' }}>Install via Download</h3>
-        <LinuxDesktopInstallButtons/>
-
-        <div style={{ marginTop: '1rem' }}>
-          **For Debian/Ubuntu-based distributions:**
-          1. Download the DEB file
-          2. Navigate to the directory where it is saved in a terminal
-          3. Run `sudo dpkg -i (filename).deb`
-          4. Launch biorouter from the app menu
-
-          :::tip Updating biorouter
-          It's best to periodically [update biorouter](/docs/guides/updating-biorouter).
-          :::
-        </div>
-      </TabItem>
-      <TabItem value="cli" label="biorouter CLI">
-        Run the following command to install the biorouter CLI on Linux:
-
-        ```sh
-        curl -fsSL https://github.com/BaranziniLab/BioRouter/releases/download/stable/download_cli.sh | bash
-        ```
-        This script will fetch the latest version of biorouter and set it up on your system.
-
-        If you'd like to install without interactive configuration, disable `CONFIGURE`:
-
-        ```sh
-        curl -fsSL https://github.com/BaranziniLab/BioRouter/releases/download/stable/download_cli.sh | CONFIGURE=false bash
-        ```
-
-        :::tip Updating biorouter
-        It's best to keep biorouter updated. To update biorouter, run:
-        ```sh
-        biorouter update
-        ```
-        :::
-      </TabItem>
-    </Tabs>
+    Please check back later or [watch our GitHub repository](https://github.com/BaranziniLab/BioRouter) for updates.
+    :::
   </TabItem>
 
   <TabItem value="windows" label="Windows">
-    Choose to install the Desktop and/or CLI version of biorouter:
+    :::caution Coming Soon
+    Windows installation for BioRouter is not yet available. We're working on bringing BioRouter to Windows and will release builds soon.
 
-    <Tabs groupId="interface">
-      <TabItem value="ui" label="biorouter Desktop" default>
-        Install biorouter Desktop directly from the browser.
-
-        <h3 style={{ marginTop: '1rem' }}>Install via Download</h3>
-        <WindowsDesktopInstallButtons/>
-
-        <div style={{ marginTop: '1rem' }}>
-          1. Unzip the downloaded zip file.
-          2. Run the executable file to launch the biorouter Desktop application.
-
-          :::tip Updating biorouter
-          It's best to periodically [update biorouter](/docs/guides/updating-biorouter).
-          :::
-        </div>
-      </TabItem>
-      <TabItem value="cli" label="biorouter CLI">
-        To install biorouter natively on Windows, you need one of the following environments:
-        - **Git Bash** (recommended): Comes with [Git for Windows](https://git-scm.com/download/win)
-        - **MSYS2**: Available from [msys2.org](https://www.msys2.org/)
-        - **PowerShell**: Available on Windows 10/11 by default
-
-        Run the installation command in your chosen environment:
-
-        ```bash
-        curl -fsSL https://github.com/BaranziniLab/BioRouter/releases/download/stable/download_cli.sh | bash
-        ```
-
-        To install without interactive configuration, disable `CONFIGURE`:
-
-        ```bash
-        curl -fsSL https://github.com/BaranziniLab/BioRouter/releases/download/stable/download_cli.sh | CONFIGURE=false bash
-        ```
-
-        **PowerShell Installation:**
-        Download the PowerShell installation script to your current directory.
-
-        ```powershell
-        Invoke-WebRequest -Uri "https://raw.githubusercontent.com/block/BioRouter/main/download_cli.ps1" -OutFile "download_cli.ps1";
-        ```
-        Then run the script to install biorouter:
-        ```powershell
-        .\download_cli.ps1
-        ```
-
-        :::info Windows PATH Setup
-        If you see a warning that biorouter is not in your PATH, you need to add biorouter to your PATH:
-
-        <details>
-          <summary>For Git Bash/MSYS2</summary>
-          ```bash
-          echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-          source ~/.bashrc
-          ```
-        </details>
-
-        <details>
-          <summary>For PowerShell</summary>
-          ```powershell
-          # Add to your PowerShell profile
-          $profilePath = $PROFILE
-          if (!(Test-Path $profilePath)) { New-Item -Path $profilePath -ItemType File -Force }
-          Add-Content -Path $profilePath -Value '$env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"'
-          # Reload profile or restart PowerShell
-          . $PROFILE
-          ```
-        </details>
-
-        After updating your PATH, you can run `biorouter` commands from any directory.
-        :::
-
-        <details>
-        <summary>Install via Windows Subsystem for Linux (WSL)</summary>
-
-          We recommend running the biorouter CLI natively on Windows, but you can use WSL if you prefer a Linux-like environment.
-
-          1. Open [PowerShell](https://learn.microsoft.com/en-us/powershell/scripting/install/installing-powershell-on-windows) as Administrator and install WSL and the default Ubuntu distribution:
-
-          ```bash
-          wsl --install
-          ```
-
-          2. If prompted, restart your computer to complete the WSL installation. Once restarted, or if WSL is already installed, launch your Ubuntu shell by running:
-
-          ```bash
-          wsl -d Ubuntu
-          ```
-
-          3. Run the biorouter installation script:
-          ```bash
-          curl -fsSL https://github.com/BaranziniLab/BioRouter/releases/download/stable/download_cli.sh | bash
-          ```
-          :::tip
-            If you encounter any issues on download, you might need to install `bzip2` to extract the downloaded file:
-
-            ```bash
-            sudo apt update && sudo apt install bzip2 -y
-            ```
-          :::
-
-          If you'd like to install without interactive configuration, disable `CONFIGURE`:
-
-          ```sh
-          curl -fsSL https://github.com/BaranziniLab/BioRouter/releases/download/stable/download_cli.sh | CONFIGURE=false bash
-          ```
-
-          If needed, add biorouter to your path:
-
-          ```
-          echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
-          echo 'export OPENAI_API_KEY=your_api_key' >> ~/.bashrc
-          source ~/.bashrc
-          ```
-
-        </details>
-      </TabItem>
-    </Tabs>
+    Please check back later or [watch our GitHub repository](https://github.com/BaranziniLab/BioRouter) for updates.
+    :::
   </TabItem>
 </Tabs>
 

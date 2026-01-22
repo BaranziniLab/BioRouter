@@ -1,0 +1,1 @@
+"use strict";(globalThis.webpackChunkbiorouter=globalThis.webpackChunkbiorouter||[]).push([[5742],{27093:u=>{u.exports=JSON.parse('{"name":"docusaurus-plugin-content-docs","id":"default"}')}}]);

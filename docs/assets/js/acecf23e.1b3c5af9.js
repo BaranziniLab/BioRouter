@@ -1,0 +1,1 @@
+"use strict";(globalThis.webpackChunkbiorouter=globalThis.webpackChunkbiorouter||[]).push([[1903],{1912:o=>{o.exports=JSON.parse('{"blogBasePath":"/BioRouter/blog","blogTitle":"Blog","authorsListPath":"/BioRouter/blog/authors"}')}}]);
