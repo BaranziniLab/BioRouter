@@ -1,5 +1,5 @@
 import React from 'react';
-import { FolderTree, MessageSquare, Code } from 'lucide-react';
+import { Activity, Users, Pill, HeartPulse } from 'lucide-react';
 
 interface PopularChatTopicsProps {
   append: (text: string) => void;
@@ -14,25 +14,28 @@ interface ChatTopic {
 
 const POPULAR_TOPICS: ChatTopic[] = [
   {
-    id: 'organize-photos',
-    icon: <FolderTree className="w-5 h-5" />,
-    description: 'Organize the photos on my desktop into neat little folders by subject matter',
-    prompt: 'Organize the photos on my desktop into neat little folders by subject matter',
+    id: 'diabetes-statin-therapy',
+    icon: <Activity className="w-5 h-5" />,
+    description: 'How many patients with type 2 diabetes are currently receiving statin therapy',
+    prompt: 'How many patients with type 2 diabetes are currently receiving statin therapy',
   },
   {
-    id: 'government-forms',
-    icon: <MessageSquare className="w-5 h-5" />,
-    description:
-      'Describe in detail how various forms of government works and rank each by units of geese',
-    prompt:
-      'Describe in detail how various forms of government works and rank each by units of geese',
+    id: 'ms-prevalence',
+    icon: <Users className="w-5 h-5" />,
+    description: 'What is the prevalence of multiple sclerosis across different age groups in our EHR data',
+    prompt: 'What is the prevalence of multiple sclerosis across different age groups in our EHR data',
   },
   {
-    id: 'tamagotchi-game',
-    icon: <Code className="w-5 h-5" />,
-    description:
-      'Develop a tamagotchi game that lives on my computer and follows a pixelated styling',
-    prompt: 'Develop a tamagotchi game that lives on my computer and follows a pixelated styling',
+    id: 'breast-cancer-treatment',
+    icon: <Pill className="w-5 h-5" />,
+    description: 'How many active breast cancer patients are receiving systemic treatment today',
+    prompt: 'How many active breast cancer patients are receiving systemic treatment today',
+  },
+  {
+    id: 'rheumatoid-biologics',
+    icon: <HeartPulse className="w-5 h-5" />,
+    description: 'Which patients with rheumatoid arthritis are being treated with biologic medications',
+    prompt: 'Which patients with rheumatoid arthritis are being treated with biologic medications',
   },
 ];
 
