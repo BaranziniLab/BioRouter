@@ -45,7 +45,7 @@ env:
    GH_TOKEN: ${{ github.token }}
 
 jobs:
-   goose-comment:
+   biorouter-comment:
       name: biorouter Comment
       runs-on: ubuntu-latest
       steps:

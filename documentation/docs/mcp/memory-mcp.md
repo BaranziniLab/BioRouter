@@ -6,7 +6,7 @@ description: Use Memory MCP Server as a biorouter Extension
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import YouTubeShortEmbed from '@site/src/components/YouTubeShortEmbed';
-import GooseBuiltinInstaller from '@site/src/components/GooseBuiltinInstaller';
+import GooseBuiltinInstaller from '@site/src/components/BioRouterBuiltinInstaller';
 
 <YouTubeShortEmbed videoUrl="https://youtube.com/embed/BZ0yrSLXQwk" />
 

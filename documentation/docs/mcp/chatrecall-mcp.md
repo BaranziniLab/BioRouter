@@ -6,7 +6,7 @@ description: Search conversation history and load session summaries across all y
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { PlatformExtensionNote } from '@site/src/components/PlatformExtensionNote';
-import GooseBuiltinInstaller from '@site/src/components/GooseBuiltinInstaller';
+import GooseBuiltinInstaller from '@site/src/components/BioRouterBuiltinInstaller';
 
 The Chat Recall extension helps biorouter remember past conversations by searching across your session history. When you need context from previous work, biorouter can search for relevant conversations or load summaries of specific sessions.
 

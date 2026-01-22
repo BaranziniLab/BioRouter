@@ -6,7 +6,7 @@ description: Breaks complex work into trackable steps to help biorouter stay org
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { PlatformExtensionNote } from '@site/src/components/PlatformExtensionNote';
-import GooseBuiltinInstaller from '@site/src/components/GooseBuiltinInstaller';
+import GooseBuiltinInstaller from '@site/src/components/BioRouterBuiltinInstaller';
 
 The Todo extension helps biorouter stay organized by breaking complex work into a series of steps and keeping you updated as it completes each step.
 

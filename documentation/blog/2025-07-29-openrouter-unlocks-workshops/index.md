@@ -61,7 +61,7 @@ curl -X POST https://openrouter.ai/api/v1/keys \
 
 And it worked. People *actually* used BioRouter and loved the entire experience, from the meetup to the talks to BioRouter itself.
 
-We've now hosted meetups in Sydney, Berlin, Boston, Atlanta, San Francisco, Texas, and New York. You can read about our past experiences in our [Boston](/blog/2025-03-21-goose-boston-meetup/index.mdx) and [New York](/blog/2025-04-17-goose-goes-to-NY/index.mdx) blog posts.
+We've now hosted meetups in Sydney, Berlin, Boston, Atlanta, San Francisco, Texas, and New York. You can read about our past experiences in our [Boston](/blog/2025-03-21-biorouter-boston-meetup/index.mdx) and [New York](/blog/2025-04-17-biorouter-goes-to-NY/index.mdx) blog posts.
 
 ## Upcoming Denver Workshop
 

@@ -6,7 +6,7 @@ description: Add Neon MCP Server as a biorouter Extension
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import CLIExtensionInstructions from '@site/src/components/CLIExtensionInstructions';
-import GooseDesktopInstaller from '@site/src/components/GooseDesktopInstaller';
+import GooseDesktopInstaller from '@site/src/components/BioRouterDesktopInstaller';
 import { PanelLeft } from 'lucide-react';
 
 This tutorial covers how to add the [Neon MCP Server](https://github.com/neondatabase/mcp-server-neon) as a biorouter extension to interact with your Neon Postgres databases and manage your projects, branches, and more.

@@ -6,7 +6,7 @@ description: Execute JavaScript code to interact with multiple MCP tools
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { PlatformExtensionNote } from '@site/src/components/PlatformExtensionNote';
-import GooseBuiltinInstaller from '@site/src/components/GooseBuiltinInstaller';
+import GooseBuiltinInstaller from '@site/src/components/BioRouterBuiltinInstaller';
 
 The Code Execution extension enables [Code Mode](/docs/guides/managing-tools/code-mode), a programmatic approach for interacting with MCP tools.
 

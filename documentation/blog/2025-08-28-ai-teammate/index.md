@@ -5,7 +5,7 @@ authors:
     - angie
 ---
 
-![blog banner](goose-janitor.png)
+![blog banner](biorouter-janitor.png)
 
 Over the years, Block's iOS engineers have felt the pain of technical debt accumulating. Feature flags are a specific example of this. Even when successfully rolled out, they tend to linger in the codebase, each one a small weight slowing down development.
 
@@ -44,7 +44,7 @@ BioRouter Janitor acts as new AI team member whose responsibility is to tidy up 
 
 ```bash
 biorouter run \
---recipe .goose/recipes/goose-janitor-flag-removal.yaml \
+--recipe .goose/recipes/biorouter-janitor-flag-removal.yaml \
 --params feature_flag_key=log-observer-is-enabled \
 --params variant_to_remain=true \
 --params create_pr=false
@@ -98,10 +98,10 @@ Want the tweak the base recipe for your own needs? Check out [Clean up feature f
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://baranzinilab.github.io/BioRouter/blog/2025/08/28/ai-teammate" />
   <meta property="og:description" content="How an engineering team is trialling autonomous AI-powered technical debt cleanup" />
-  <meta property="og:image" content="https://baranzinilab.github.io/BioRouter/assets/images/goose-janitor-129889884d9265d001fe12cbfde03d57.png" />
+  <meta property="og:image" content="https://baranzinilab.github.io/BioRouter/assets/images/biorouter-janitor-129889884d9265d001fe12cbfde03d57.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta property="twitter:domain" content="baranzinilab.github.io/BioRouter" />
   <meta name="twitter:title" content="When AI Becomes Your New Team Member: The Story of BioRouter Janitor" />
   <meta name="twitter:description" content="How an engineering team is trialling autonomous AI-powered technical debt cleanup" />
-  <meta name="twitter:image" content="https://baranzinilab.github.io/BioRouter/assets/images/goose-janitor-129889884d9265d001fe12cbfde03d57.png" />
+  <meta name="twitter:image" content="https://baranzinilab.github.io/BioRouter/assets/images/biorouter-janitor-129889884d9265d001fe12cbfde03d57.png" />
 </head>

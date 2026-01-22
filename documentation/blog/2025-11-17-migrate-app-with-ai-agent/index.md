@@ -41,9 +41,9 @@ biorouter employed the [analyze tool](/docs/mcp/developer-mcp#developer-extensio
 ```
 User Browser
     ↓
-[goose-access-gateway] (React SPA)
+[biorouter-access-gateway] (React SPA)
     ↓ (HTTPS REST API)
-[goose-hacknight-backend] (Express API)
+[biorouter-hacknight-backend] (Express API)
     ↓ (HTTPS REST API)
 [OpenRouter API] (Third-party service)
 ```
@@ -115,7 +115,7 @@ I gave biorouter the following prompt:
 
 Once it analyzed that code, I gave the final instruction:
 
-> Use what you learned from the recipe project logic to make this happen in goose-credits... send the API key to their email using the SendGrid API.
+> Use what you learned from the recipe project logic to make this happen in biorouter-credits... send the API key to their email using the SendGrid API.
 
 This "copy-and-adapt" strategy was incredibly effective. biorouter successfully implemented the necessary API routes and clearly identified the environment variables I needed to supply. I manually added those variables. I didn't give them to biorouter for security purposes.
 

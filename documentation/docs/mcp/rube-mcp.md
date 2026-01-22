@@ -6,7 +6,7 @@ description: Add Rube as a biorouter Extension to connect with 500+ apps
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import CLIExtensionInstructions from '@site/src/components/CLIExtensionInstructions';
-import GooseDesktopInstaller from '@site/src/components/GooseDesktopInstaller';
+import GooseDesktopInstaller from '@site/src/components/BioRouterDesktopInstaller';
 import { PanelLeft } from 'lucide-react';
 
 This tutorial covers how to add [Rube](https://rube.app) as a biorouter extension to enable seamless integration with 500+ apps including Slack, Gmail, Notion, Google Workspace, Microsoft Office, GitHub, and many more.

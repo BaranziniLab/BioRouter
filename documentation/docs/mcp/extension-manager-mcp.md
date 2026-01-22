@@ -6,7 +6,7 @@ description: Dynamically discover, enable, and disable extensions during biorout
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { PlatformExtensionNote } from '@site/src/components/PlatformExtensionNote';
-import GooseBuiltinInstaller from '@site/src/components/GooseBuiltinInstaller';
+import GooseBuiltinInstaller from '@site/src/components/BioRouterBuiltinInstaller';
 
 You don't always need to manually manage extensions. The Extension Manager extension enables biorouter to dynamically discover, enable, and disable extensions during active sessions. Based on the task you give it, biorouter recognizes when it needs a specific extension, enables it when required, and suggests disabling unused extensions if the bloat is eating up your context window.
 

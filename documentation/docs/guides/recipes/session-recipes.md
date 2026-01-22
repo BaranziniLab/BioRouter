@@ -312,7 +312,7 @@ You can turn your current biorouter session into a reusable recipe that includes
        │
        ◆  Enter your biorouter recipe GitHub repo (owner/repo): eg: my_org/biorouter-recipes
        // highlight-start
-       │  squareup/goose-recipes (default)
+       │  squareup/biorouter-recipes (default)
        // highlight-end
        └  
        ```

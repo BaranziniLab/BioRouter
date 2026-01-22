@@ -60,7 +60,7 @@ BioRouter automatically spawns three independent AI instances, and each works on
 
 Subrecipes solve the reusability problem. While main "parent" recipes can be in YAML or JSON, subrecipes can only be written in YAML format. These files define structured workflows with parameters, validation, extensions to use, and even allow you to pick a different provider/model to use for the work.
 
-For detailed subrecipe examples and implementation guides, check out our [subrecipes blog post](/blog/2025/09/15/subrecipes-in-goose) and [advanced recipe tips](https://www.youtube.com/watch?v=1szmJSKInnU) video on YouTube.
+For detailed subrecipe examples and implementation guides, check out our [subrecipes blog post](/blog/2025/09/15/subrecipes-in-biorouter) and [advanced recipe tips](https://www.youtube.com/watch?v=1szmJSKInnU) video on YouTube.
 
 ### What Makes Subrecipes Powerful
 

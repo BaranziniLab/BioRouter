@@ -39,7 +39,7 @@ This dual integration of AI agents and MCP can have a significant positive impac
 
 * **Developer Productivity:** By automating many integration tasks and reducing the need for extensive manual coding, AI agents free up our time to focus on core application logic and innovation. (And testing. And security. And documentation. And...)
 * **Customer Satisfaction:** Intelligent integrations can lead to more personalized and responsive user experiences. Agents can facilitate real-time data analysis and context-aware interactions, making our applications smarter and more user-friendly.
-* **Scalability:** As your application grows, the complexity of managing multiple APIs can become overwhelming. [Using multiple AI agents](/blog/2025/02/21/gooseteam-mcp/) can help manage this complexity by dynamically adapting to changes in the underlying services and workflows.
+* **Scalability:** As your application grows, the complexity of managing multiple APIs can become overwhelming. [Using multiple AI agents](/blog/2025/02/21/biorouterteam-mcp/) can help manage this complexity by dynamically adapting to changes in the underlying services and workflows.
 
 ### Business Impact: Driving Efficiency and Cost Savings
 

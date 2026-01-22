@@ -6,7 +6,7 @@ description: Add prompts.chat MCP Server as a biorouter Extension
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import CLIExtensionInstructions from '@site/src/components/CLIExtensionInstructions';
-import GooseDesktopInstaller from '@site/src/components/GooseDesktopInstaller';
+import GooseDesktopInstaller from '@site/src/components/BioRouterDesktopInstaller';
 
 This tutorial covers how to add the [prompts.chat MCP Server](https://prompts.chat) as a biorouter extension to enable access to thousands of AI prompts directly in your AI assistant.
 

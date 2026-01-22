@@ -30,7 +30,7 @@
     <Card
       title="Treating LLMs Like Tools in a Toolbox: A Multi-Model Approach to Smarter AI Agents"
       description="LLMs are specialized tools, and multi-model approaches create smarter, more efficient AI agents."
-      link="/blog/2025/06/16/multi-model-in-goose"
+      link="/blog/2025/06/16/multi-model-in-biorouter"
     />
     <Card
       title="LLM Tag Team: Who Plans, Who Executes?"

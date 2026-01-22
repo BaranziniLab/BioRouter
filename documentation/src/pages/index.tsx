@@ -5,7 +5,7 @@ import Layout from "@theme/Layout";
 import HomepageFeatures from "@site/src/components/HomepageFeatures";
 
 import styles from "./index.module.css";
-import { GooseLogo } from "../components/GooseLogo";
+import { BioRouterLogo } from "../components/BioRouterLogo";
 
 function HomepageHeader() {
   const { siteConfig } = useDocusaurusContext();
@@ -14,7 +14,7 @@ function HomepageHeader() {
       <div className={styles.wrapper}>
         <div className={styles.textColumn}>
           <div className="hero--logo">
-            <GooseLogo />
+            <BioRouterLogo />
           </div>
           <p className={styles.subtitle}>{siteConfig.tagline}</p>
           <Link className="button button--primary button--lg" to="docs/getting-started/installation">

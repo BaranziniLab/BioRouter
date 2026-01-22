@@ -6,7 +6,7 @@ description: Add YouTube Transcript MCP Server as a biorouter Extension for acce
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import YouTubeShortEmbed from '@site/src/components/YouTubeShortEmbed';
-import GooseDesktopInstaller from '@site/src/components/GooseDesktopInstaller';
+import GooseDesktopInstaller from '@site/src/components/BioRouterDesktopInstaller';
 import CLIExtensionInstructions from '@site/src/components/CLIExtensionInstructions';
 
 <YouTubeShortEmbed videoUrl="https://www.youtube.com/embed/N38u7hZqZJg" />

@@ -7,7 +7,7 @@ description: Add biorouter Docs MCP Server as a biorouter Extension
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import CLIExtensionInstructions from '@site/src/components/CLIExtensionInstructions';
-import GooseDesktopInstaller from '@site/src/components/GooseDesktopInstaller';
+import GooseDesktopInstaller from '@site/src/components/BioRouterDesktopInstaller';
 
 
 This tutorial covers how to add the [BioRouter Docs MCP Server](https://github.com/idosal/git-mcp) as a biorouter extension to enable biorouter to answer questions about itself.

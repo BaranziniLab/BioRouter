@@ -6,7 +6,7 @@ description: $100K grants for open source devs building the future of agentic AI
 import Link from "@docusaurus/Link";
 import { Button } from "@site/src/components/ui/button";
 
-![](/img/goose-grant-program.png)
+![](/img/biorouter-grant-program.png)
 
 # biorouter grant program
 

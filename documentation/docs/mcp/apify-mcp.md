@@ -6,7 +6,7 @@ description: Add Apify MCP server as a biorouter Extension
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import CLIExtensionInstructions from '@site/src/components/CLIExtensionInstructions';
-import GooseDesktopInstaller from '@site/src/components/GooseDesktopInstaller';
+import GooseDesktopInstaller from '@site/src/components/BioRouterDesktopInstaller';
 
 This tutorial covers how to add the [Apify MCP server](https://mcp.apify.com) as a biorouter extension, enabling biorouter to call thousands of tools from [Apify Store](https://apify.com/store) to extract data from social media, e-commerce sites, search engines, online maps, or any other website.
 

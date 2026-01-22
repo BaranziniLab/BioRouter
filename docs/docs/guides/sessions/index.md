@@ -29,7 +29,7 @@
     <Card
       title="6 Essential Tips for Working with biorouter"
       description="Learn how focused sessions, step-by-step guidance, and refining your prompts can lead to more productive sessions."
-      link="/blog/2025/03/06/goose-tips"
+      link="/blog/2025/03/06/biorouter-tips"
     />
     <Card
       title="AI Prompting 101: How to Get the Best Responses from Your AI Agent"

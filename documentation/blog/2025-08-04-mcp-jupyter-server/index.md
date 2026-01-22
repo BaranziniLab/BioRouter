@@ -8,7 +8,7 @@ authors:
   - harrison
 ---
 
-![MCP Jupyter Server](data-goose.png)
+![MCP Jupyter Server](data-biorouter.png)
 
 Machine learning and data science workflows are inherently iterative. You load data, explore patterns, build models, and refine your approach based on results. But traditional AI assistants lose context between interactions, forcing you to reload data and re-establish context repeatedly—making data-heavy development slow and expensive.
 
@@ -151,10 +151,10 @@ For detailed setup and configuration, check out the [complete documentation](htt
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://baranzinilab.github.io/BioRouter/blog/2025/06/24/mcp-jupyter-server" />
   <meta property="og:description" content="A powerful MCP server that enables AI agents to interact with Jupyter notebooks while preserving kernel state and variable context" />
-  <meta property="og:image" content="https://baranzinilab.github.io/BioRouter/assets/images/data-goose-7fc60ab0a13a9e9b6c22172d6ac166ab.png" />
+  <meta property="og:image" content="https://baranzinilab.github.io/BioRouter/assets/images/data-biorouter-7fc60ab0a13a9e9b6c22172d6ac166ab.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta property="twitter:domain" content="baranzinilab.github.io/BioRouter" />
   <meta name="twitter:title" content="MCP Jupyter Server: Bringing Notebook Intelligence to AI Agents" />
   <meta name="twitter:description" content="A powerful MCP server that enables AI agents to interact with Jupyter notebooks while preserving kernel state and variable context" />
-  <meta name="twitter:image" content="https://baranzinilab.github.io/BioRouter/assets/images/data-goose-7fc60ab0a13a9e9b6c22172d6ac166ab.png" />
+  <meta name="twitter:image" content="https://baranzinilab.github.io/BioRouter/assets/images/data-biorouter-7fc60ab0a13a9e9b6c22172d6ac166ab.png" />
 </head>

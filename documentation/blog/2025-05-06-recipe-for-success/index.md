@@ -4,7 +4,7 @@ description: A fresh look at AI agents, orchestration, and repeatability told th
 authors: 
     - rizel
 ---
-![blog cover](cookingwithgoose.png)
+![blog cover](cookingwithbiorouter.png)
 
 # A Recipe for Success: Cooking Up Repeatable Agentic Workflows
 
@@ -197,10 +197,10 @@ Your team is full of problem solvers. One teammate built a slick internal dashbo
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://baranzinilab.github.io/BioRouter/blog/2025/05/06/recipe-for-success" />
   <meta property="og:description" content="A fresh look at AI agents, orchestration, and repeatability told through the metaphor of a rat who can cook." />
-  <meta property="og:image" content="https://baranzinilab.github.io/BioRouter/assets/images/cookingwithgoose-9114cf03cec76df4792fc58361ebe20b.png" />
+  <meta property="og:image" content="https://baranzinilab.github.io/BioRouter/assets/images/cookingwithbiorouter-9114cf03cec76df4792fc58361ebe20b.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta property="twitter:domain" content="baranzinilab.github.io/BioRouter" />
   <meta name="twitter:title" content="A Recipe for Success: Cooking Up Repeatable Agentic Workflows" />
   <meta name="twitter:description" content="A fresh look at AI agents, orchestration, and repeatability told through the metaphor of a rat who can cook." />
-  <meta name="twitter:image" content="https://baranzinilab.github.io/BioRouter/assets/images/cookingwithgoose-9114cf03cec76df4792fc58361ebe20b.png" />
+  <meta name="twitter:image" content="https://baranzinilab.github.io/BioRouter/assets/images/cookingwithbiorouter-9114cf03cec76df4792fc58361ebe20b.png" />
 </head>

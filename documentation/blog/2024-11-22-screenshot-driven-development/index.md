@@ -23,7 +23,7 @@ This post was written about a beta version of biorouter and the commands and flo
 ![calendar](screenshot-calendar-og.png)
 
 ### biorouter prototyped the designs below: 
-![goose prototypes](goose-prototypes-calendar.png)
+![goose prototypes](biorouter-prototypes-calendar.png)
 
 In this blog post, I'll show you how to quickly prototype design styles by letting biorouter handle the CSS for you.
 >💡 Note: Your results might look different from my examples - that's part of the fun of generative AI! Each run can produce unique variations of these design trends.

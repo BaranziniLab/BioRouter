@@ -6,7 +6,7 @@ description: Add Supabase MCP Server as a biorouter Extension
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import CLIExtensionInstructions from '@site/src/components/CLIExtensionInstructions';
-import GooseDesktopInstaller from '@site/src/components/GooseDesktopInstaller';
+import GooseDesktopInstaller from '@site/src/components/BioRouterDesktopInstaller';
 
 This tutorial covers how to add the [Supabase MCP Server](https://github.com/supabase-community/supabase-mcp) as a biorouter extension to interact with your Supabase projects, manage tables, query data, deploy Edge Functions, and interact with your Supabase backend directly.
 

@@ -5,7 +5,7 @@ authors:
     - tania
 ---
 
-![blog cover](goose4win.png)
+![blog cover](biorouter4win.png)
 
 As the biorouter team continues to work on new features over 800 community members voted to express their need for BioRouter on Windows. Today's top contributor stepped in to aid this ongoing effort.
 

@@ -6,7 +6,7 @@ description: Load reusable instruction sets that teach biorouter specific workfl
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import { PlatformExtensionNote } from '@site/src/components/PlatformExtensionNote';
-import GooseBuiltinInstaller from '@site/src/components/GooseBuiltinInstaller';
+import GooseBuiltinInstaller from '@site/src/components/BioRouterBuiltinInstaller';
 
 The Skills extension loads *skills* &mdash; reusable sets of instructions that teach biorouter how to perform specific tasks or follow particular workflows.
 

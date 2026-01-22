@@ -155,7 +155,7 @@ activities:
 - Extract PR-linked changes only
 - Categorize commits by conventional commit types
 author:
-  contact: goose-community
+  contact: biorouter-community
 ```
 
 </details>
@@ -180,7 +180,7 @@ Using this play helps create consistent and informative PRs. This makes the code
 version: 1.0.0
 title: PR Generator
 author:
-  contact: goose-community
+  contact: biorouter-community
 description: Automatically generate pull request descriptions based on changes in a local git repo
 instructions: Your job is to generate descriptive and helpful pull request descriptions without asking for additional information. Generate commit messages and branch names based on the actual code changes.
 parameters:

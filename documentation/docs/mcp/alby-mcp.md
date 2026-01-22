@@ -7,7 +7,7 @@ description: Connect biorouter to your Bitcoin Lightning Wallet
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import CLIExtensionInstructions from '@site/src/components/CLIExtensionInstructions';
-import GooseDesktopInstaller from '@site/src/components/GooseDesktopInstaller';
+import GooseDesktopInstaller from '@site/src/components/BioRouterDesktopInstaller';
 import { PanelLeft } from 'lucide-react';
 
 

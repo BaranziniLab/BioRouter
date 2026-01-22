@@ -134,7 +134,7 @@ extensions:
   bundled: true
 settings:
   biorouter_provider: databricks
-  biorouter_model: goose-claude-4-sonnet
+  biorouter_model: biorouter-claude-4-sonnet
   temperature: 0.0
 parameters:
 - key: server_input
@@ -287,7 +287,7 @@ extensions:
   bundled: true
 settings:
   biorouter_provider: databricks
-  biorouter_model: goose-claude-4-sonnet
+  biorouter_model: biorouter-claude-4-sonnet
   temperature: 0.0
 parameters:
 - key: output_file
@@ -443,7 +443,7 @@ extensions:
   bundled: true
 settings:
   biorouter_provider: databricks
-  biorouter_model: goose-claude-4-sonnet
+  biorouter_model: biorouter-claude-4-sonnet
   temperature: 0.0
 parameters:
 - key: server_input

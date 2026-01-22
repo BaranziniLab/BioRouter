@@ -7,7 +7,7 @@ authors:
 
 ![blog banner](agent-coordination.png)
 
-I taught a [vibe coding workshop at UC Berkeley](/blog/2025/08/10/vibe-coding-with-goose-building-apps-with-ai-agents) and informed the students that we'd be spinning up 7 subagents. Someone quickly raised their hand and asked "what is a subagent?". At that moment, I realized we're just throwing out terms like **agent**, **multi agent**, and **subagent**, and not really taking the time to explain what these are. So, here goes... a 101 breaking down these various coordination patterns and when to use them.
+I taught a [vibe coding workshop at UC Berkeley](/blog/2025/08/10/vibe-coding-with-biorouter-building-apps-with-ai-agents) and informed the students that we'd be spinning up 7 subagents. Someone quickly raised their hand and asked "what is a subagent?". At that moment, I realized we're just throwing out terms like **agent**, **multi agent**, and **subagent**, and not really taking the time to explain what these are. So, here goes... a 101 breaking down these various coordination patterns and when to use them.
 
 <!-- truncate -->
 

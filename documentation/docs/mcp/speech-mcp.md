@@ -9,7 +9,7 @@ Unlist per https://github.com/BaranziniLab/BioRouter/issues/5431
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import YouTubeShortEmbed from '@site/src/components/YouTubeShortEmbed';
-import GooseDesktopInstaller from '@site/src/components/GooseDesktopInstaller';
+import GooseDesktopInstaller from '@site/src/components/BioRouterDesktopInstaller';
 
 <YouTubeShortEmbed videoUrl="https://youtube.com/embed/rurAp_WzOiY" />
 

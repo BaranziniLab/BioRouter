@@ -5,7 +5,7 @@ authors:
   - aharvard
 ---
 
-![Retro 1980s hardware lab with three CRT monitors displaying "biorouter Lands MCP Apps" in glowing green text, with a small biorouter figurine on the desk](goose-lands-mcp-apps-header-image.png)
+![Retro 1980s hardware lab with three CRT monitors displaying "biorouter Lands MCP Apps" in glowing green text, with a small biorouter figurine on the desk](biorouter-lands-mcp-apps-header-image.png)
 
 The MCP ecosystem is standardizing how servers deliver interactive UIs to hosts, and biorouter is an early adopter. Today we're shipping support for the draft MCP Apps specification ([SEP-1865](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/draft/apps.mdx)), bringing biorouter in line with the emerging standard, as other hosts like Claude and ChatGPT move toward adoption.
 
@@ -55,10 +55,10 @@ If you build or port an app, we want to hear from you. File issues, share demos,
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://baranzinilab.github.io/BioRouter/blog/2026/01/06/mcp-apps" />
   <meta property="og:description" content="biorouter ships early support for the draft MCP Apps specification, aligning with the emerging standard for interactive UIs in MCP." />
-<meta property="og:image" content="http://baranzinilab.github.io/BioRouter/assets/images/goose-lands-mcp-apps-header-image-eb1f899d6de24f21cc2c45e46727f11d.png" />
+<meta property="og:image" content="http://baranzinilab.github.io/BioRouter/assets/images/biorouter-lands-mcp-apps-header-image-eb1f899d6de24f21cc2c45e46727f11d.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta property="twitter:domain" content="baranzinilab.github.io/BioRouter" />
   <meta name="twitter:title" content="biorouter Lands MCP Apps" />
   <meta name="twitter:description" content="biorouter ships early support for the draft MCP Apps specification, aligning with the emerging standard for interactive UIs in MCP." />
-  <meta name="twitter:image" content="http://baranzinilab.github.io/BioRouter/assets/images/goose-lands-mcp-apps-header-image-eb1f899d6de24f21cc2c45e46727f11d.png" />
+  <meta name="twitter:image" content="http://baranzinilab.github.io/BioRouter/assets/images/biorouter-lands-mcp-apps-header-image-eb1f899d6de24f21cc2c45e46727f11d.png" />
 </head>

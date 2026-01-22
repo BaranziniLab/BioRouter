@@ -5,7 +5,7 @@ description: Add Browserbase MCP Server as a biorouter Extension for Web Automat
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
-import GooseDesktopInstaller from '@site/src/components/GooseDesktopInstaller';
+import GooseDesktopInstaller from '@site/src/components/BioRouterDesktopInstaller';
 import CLIExtensionInstructions from '@site/src/components/CLIExtensionInstructions';
 
 This tutorial covers how to add the Browserbase MCP Server as a biorouter extension for browser automation, enabling programmatic control over navigation, page interactions, and content capture.

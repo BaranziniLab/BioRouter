@@ -6,7 +6,7 @@ description: Add automatic data visualization to biorouter
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
 import YouTubeShortEmbed from '@site/src/components/YouTubeShortEmbed';
-import GooseBuiltinInstaller from '@site/src/components/GooseBuiltinInstaller';
+import GooseBuiltinInstaller from '@site/src/components/BioRouterBuiltinInstaller';
 import ImageCarousel from '@site/src/components/ImageCarousel';
 
 <YouTubeShortEmbed videoUrl="https://www.youtube.com/embed/txh6DlzPwNo" />

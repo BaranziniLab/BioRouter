@@ -76,7 +76,7 @@ This last one was really important for me. I ask biorouter all the time to help 
 
 Not every session should become a recipe. The generator should skip sessions that seem incomplete or abandoned, or compared with other sessions to determine if this was a one-off task. Still, what might appear to be a one-off task might actually be the start of something I want to repeat.
 
-Having biorouter prompt me for whether I know ahead of time if there are any sessions I want to exclude was helpful -- I have several REALLY large, long sessions about the [community cookbook security scanner](/blog/2025/08/25/goose-became-its-own-watchdog/) I built, but I didn't want to build a recipe out of all of that.
+Having biorouter prompt me for whether I know ahead of time if there are any sessions I want to exclude was helpful -- I have several REALLY large, long sessions about the [community cookbook security scanner](/blog/2025/08/25/biorouter-became-its-own-watchdog/) I built, but I didn't want to build a recipe out of all of that.
 
 Instead, I wanted biorouter to focus on workflows that appear multiple times, and ask me to confirm any cases that it was unsure about.
 
@@ -133,7 +133,7 @@ So, yeah. They work!
 This approach represents a new level of AI-assisted productivity. Instead of manually identifying automation opportunities, the AI identifies them for you. It's like having a productivity consultant that never sleeps, that can analyze your work patterns on demand, and suggest ways of automating things.
 
 :::info
-If you want to try some hands-free automation, check out the experimental [Perception](https://github.com/michaelneale/goose-perception) project from one of our teammates!
+If you want to try some hands-free automation, check out the experimental [Perception](https://github.com/michaelneale/biorouter-perception) project from one of our teammates!
 :::
 
 The cookbook generator also handles the tedious parts of recipe creation:

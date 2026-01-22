@@ -5,7 +5,7 @@ description: Learn how to use biorouter's built-in Tutorial extension for guided
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
-import GooseBuiltinInstaller from '@site/src/components/GooseBuiltinInstaller';
+import GooseBuiltinInstaller from '@site/src/components/BioRouterBuiltinInstaller';
 
 The Tutorial extension is a built-in feature of biorouter that provides interactive, step-by-step guidance for learning various aspects of biorouter and its capabilities. It's designed to help users get comfortable with biorouter's features through hands-on practice.
 

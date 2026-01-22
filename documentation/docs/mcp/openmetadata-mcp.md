@@ -5,7 +5,7 @@ description: Add OpenMetadata MCP Server as a biorouter Extension
 
 import Tabs from '@theme/Tabs';
 import TabItem from '@theme/TabItem';
-import GooseDesktopInstaller from '@site/src/components/GooseDesktopInstaller';
+import GooseDesktopInstaller from '@site/src/components/BioRouterDesktopInstaller';
 import CLIExtensionInstructions from '@site/src/components/CLIExtensionInstructions';
 
 The [OpenMetadata MCP Server](https://open-metadata.org/mcp) extension allows biorouter to interact directly with your OpenMetadata, enabling operations for OpenMetadata assets, glossaries, and lineage. This makes it easy to work with your metadata stored in OpenMetadata through natural language interactions.

@@ -60,7 +60,7 @@ Every hacktoberfest PR and contribution will earn you points on our leaderboard.
 
 As a special thank you, the team is offering exclusive gift cards for the fresh new biorouter swag shop along with free LLM credits for our Top 20 contributors:
 
-![goose swag shop](gooseswag.png)
+![goose swag shop](biorouterswag.png)
 
 | Place | Prize |
 | -------- | -------- |
