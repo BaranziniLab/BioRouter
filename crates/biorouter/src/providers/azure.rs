@@ -15,11 +15,11 @@ use crate::model::ModelConfig;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
-pub const AZURE_DEFAULT_MODEL: &str = "gpt-4o";
+pub const AZURE_DEFAULT_MODEL: &str = "gpt-5-2025-08-07";
 pub const AZURE_DOC_URL: &str =
     "https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/models";
 pub const AZURE_DEFAULT_API_VERSION: &str = "2024-10-21";
-pub const AZURE_OPENAI_KNOWN_MODELS: &[&str] = &["gpt-4o", "gpt-4o-mini", "gpt-4"];
+pub const AZURE_OPENAI_KNOWN_MODELS: &[&str] = &["gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-5-2025-08-07"];
 
 #[derive(Debug)]
 pub struct AzureProvider {

@@ -1,4 +1,4 @@
-You are being accessed through the Goose Desktop application.
+You are being accessed through the BioRouter Desktop application.
 
 The user is interacting with you through a graphical user interface with the following features:
 - A chat interface where messages are displayed in a conversation format
@@ -11,4 +11,4 @@ on the top right of the window. There is a section on that page for extensions, 
 the registry.
 
 Some extensions are builtin, such as Developer and Memory, while
-3rd party extensions can be browsed at https://block.github.io/goose/v1/extensions/.
+3rd party extensions can be browsed at https://baranzinilab.github.io/biorouter/v1/extensions/.

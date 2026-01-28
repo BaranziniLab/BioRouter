@@ -15,8 +15,8 @@ let isProcessing = false;
 // Get session ID - either from URL parameter, injected session name, or generate new one
 function getSessionId() {
     // Check if session name was injected by server (for /session/:name routes)
-    if (window.GOOSE_SESSION_NAME) {
-        return window.GOOSE_SESSION_NAME;
+    if (window.BIOROUTER_SESSION_NAME) {
+        return window.BIOROUTER_SESSION_NAME;
     }
     
     // Check URL parameters
@@ -121,7 +121,7 @@ function addThinkingIndicator() {
             <span></span>
             <span></span>
         </div>
-        <span class="thinking-text">goose is thinking...</span>
+        <span class="thinking-text">biorouter is thinking...</span>
     `;
     messagesContainer.appendChild(thinkingDiv);
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -138,7 +138,7 @@ function removeThinkingIndicator() {
 // Connect to WebSocket
 function connectWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const token = window.GOOSE_WS_TOKEN || '';
+    const token = window.BIOROUTER_WS_TOKEN || '';
     const wsUrl = `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`;
     
     socket = new WebSocket(wsUrl);
@@ -477,7 +477,7 @@ async function loadSessionIfExists() {
                                 
                 // Update page title with session description if available
                 if (sessionData.metadata && sessionData.metadata.description) {
-                    document.title = `goose chat - ${sessionData.metadata.description}`;
+                    document.title = `biorouter chat - ${sessionData.metadata.description}`;
                 }
                 
                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
@@ -533,8 +533,8 @@ messageInput.focus();
 // Update session title
 function updateSessionTitle() {
     const titleElement = document.getElementById('session-title');
-    // Just show "goose chat" - no need to show session ID
-    titleElement.textContent = 'goose chat';
+    // Just show "biorouter chat" - no need to show session ID
+    titleElement.textContent = 'biorouter chat';
 }
 
 // Update title on load
