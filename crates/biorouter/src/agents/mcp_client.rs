@@ -2,20 +2,20 @@ use crate::action_required_manager::ActionRequiredManager;
 use crate::agents::types::SharedProvider;
 use crate::session_context::SESSION_ID_HEADER;
 use rmcp::model::{
-    Content, CreateElicitationRequestParam, CreateElicitationResult, ElicitationAction, ErrorCode,
+    Content, CreateElicitationRequestParams, CreateElicitationResult, ElicitationAction, ErrorCode,
     Extensions, JsonObject, Meta,
 };
 /// MCP client implementation for BioRouter
 use rmcp::{
     model::{
-        CallToolRequest, CallToolRequestParam, CallToolResult, CancelledNotification,
+        CallToolRequest, CallToolRequestParams, CallToolResult, CancelledNotification,
         CancelledNotificationMethod, CancelledNotificationParam, ClientCapabilities, ClientInfo,
-        ClientRequest, CreateMessageRequestParam, CreateMessageResult, GetPromptRequest,
-        GetPromptRequestParam, GetPromptResult, Implementation, InitializeResult,
+        ClientRequest, CreateMessageRequestParams, CreateMessageResult, GetPromptRequest,
+        GetPromptRequestParams, GetPromptResult, Implementation, InitializeResult,
         ListPromptsRequest, ListPromptsResult, ListResourcesRequest, ListResourcesResult,
         ListToolsRequest, ListToolsResult, LoggingMessageNotification,
-        LoggingMessageNotificationMethod, PaginatedRequestParam, ProgressNotification,
-        ProgressNotificationMethod, ProtocolVersion, ReadResourceRequest, ReadResourceRequestParam,
+        LoggingMessageNotificationMethod, PaginatedRequestParams, ProgressNotification,
+        ProgressNotificationMethod, ProtocolVersion, ReadResourceRequest, ReadResourceRequestParams,
         ReadResourceResult, RequestId, Role, SamplingMessage, ServerNotification, ServerResult,
     },
     service::{
@@ -174,7 +174,7 @@ impl ClientHandler for GooseClient {
 
     async fn create_message(
         &self,
-        params: CreateMessageRequestParam,
+        params: CreateMessageRequestParams,
         _context: RequestContext<RoleClient>,
     ) -> Result<CreateMessageResult, ErrorData> {
         let provider = self
@@ -252,7 +252,7 @@ impl ClientHandler for GooseClient {
 
     async fn create_elicitation(
         &self,
-        request: CreateElicitationRequestParam,
+        request: CreateElicitationRequestParams,
         _context: RequestContext<RoleClient>,
     ) -> Result<CreateElicitationResult, ErrorData> {
         let schema_value = serde_json::to_value(&request.requested_schema).map_err(|e| {
@@ -298,6 +298,7 @@ impl ClientHandler for GooseClient {
                 title: None,
                 website_url: None,
             },
+            meta: None,
         }
     }
 }
@@ -405,7 +406,7 @@ impl McpClientTrait for McpClient {
         let res = self
             .send_request(
                 ClientRequest::ListResourcesRequest(ListResourcesRequest {
-                    params: Some(PaginatedRequestParam { cursor }),
+                    params: Some(PaginatedRequestParams { cursor , meta: None}),
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),
@@ -427,9 +428,9 @@ impl McpClientTrait for McpClient {
         let res = self
             .send_request(
                 ClientRequest::ReadResourceRequest(ReadResourceRequest {
-                    params: ReadResourceRequestParam {
+                    params: ReadResourceRequestParams {
                         uri: uri.to_string(),
-                    },
+                        meta: None},
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),
@@ -451,7 +452,7 @@ impl McpClientTrait for McpClient {
         let res = self
             .send_request(
                 ClientRequest::ListToolsRequest(ListToolsRequest {
-                    params: Some(PaginatedRequestParam { cursor }),
+                    params: Some(PaginatedRequestParams { cursor , meta: None}),
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),
@@ -475,11 +476,11 @@ impl McpClientTrait for McpClient {
         let res = self
             .send_request(
                 ClientRequest::CallToolRequest(CallToolRequest {
-                    params: CallToolRequestParam {
+                    params: CallToolRequestParams {
                         task: None,
                         name: name.to_string().into(),
                         arguments,
-                    },
+                        meta: None},
                     method: Default::default(),
                     extensions: meta.inject_into_extensions(Default::default()),
                 }),
@@ -501,7 +502,7 @@ impl McpClientTrait for McpClient {
         let res = self
             .send_request(
                 ClientRequest::ListPromptsRequest(ListPromptsRequest {
-                    params: Some(PaginatedRequestParam { cursor }),
+                    params: Some(PaginatedRequestParams { cursor , meta: None}),
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),
@@ -528,10 +529,10 @@ impl McpClientTrait for McpClient {
         let res = self
             .send_request(
                 ClientRequest::GetPromptRequest(GetPromptRequest {
-                    params: GetPromptRequestParam {
+                    params: GetPromptRequestParams {
                         name: name.to_string(),
                         arguments,
-                    },
+                        meta: None},
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),

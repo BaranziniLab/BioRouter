@@ -13,7 +13,7 @@ use crate::conversation::message::{Message, MessageContent};
 
 use crate::mcp_utils::ToolResult;
 use crate::model::ModelConfig;
-use rmcp::model::{object, CallToolRequestParam, Role, Tool};
+use rmcp::model::{object, CallToolRequestParams, Role, Tool};
 
 // ---------- Capability Flags ----------
 #[derive(Debug)]
@@ -460,11 +460,11 @@ impl Provider for VeniceProvider {
                         function["arguments"].clone()
                     };
 
-                    let tool_call = CallToolRequestParam {
+                    let tool_call = CallToolRequestParams {
                         task: None,
                         name: name.into(),
                         arguments: Some(object(arguments)),
-                    };
+                        meta: None};
 
                     // Create a ToolRequest MessageContent
                     let tool_request = MessageContent::tool_request(id, ToolResult::Ok(tool_call));

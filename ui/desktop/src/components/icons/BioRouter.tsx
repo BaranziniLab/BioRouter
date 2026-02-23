@@ -3,58 +3,58 @@ export function BioRouter({ className = '' }) {
     <svg
       width="24"
       height="24"
-      viewBox="0 0 231 226"
+      viewBox="0 0 243 233"
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
     >
       <rect
-        x="195.25"
-        y="108.25"
+        x="205.25"
+        y="110.25"
         width="20"
         height="45.5"
         rx="10"
         ry="10"
         fill="#36393d"
-        transform="rotate(90,205.25,131)"
+        transform="rotate(90,215.25,133)"
       />
-      <ellipse cx="100" cy="125" rx="95" ry="95" fill="none" stroke="#36393d" strokeWidth="10" />
-      <rect x="215" y="0" width="10" height="140" rx="5" ry="5" fill="#36393d" />
-      <rect x="210" y="100" width="20" height="40" rx="10" ry="10" fill="#36393d" />
-      <ellipse cx="80" cy="140" rx="45" ry="45" fill="none" stroke="#36393d" strokeWidth="10" />
+      <ellipse cx="105" cy="127" rx="95" ry="95" fill="none" stroke="#36393d" strokeWidth="20" />
+      <rect x="225" y="2" width="10" height="140" rx="5" ry="5" fill="#36393d" />
+      <rect x="220" y="102" width="20" height="40" rx="10" ry="10" fill="#36393d" />
+      <ellipse cx="85" cy="142" rx="45" ry="45" fill="none" stroke="#36393d" strokeWidth="20" />
       <rect
-        x="128.89"
-        y="53.39"
-        width="20"
-        height="51"
-        rx="10"
-        ry="10"
+        x="133.82"
+        y="55.42"
+        width="24.3"
+        height="61.17"
+        rx="12.15"
+        ry="12.15"
         fill="none"
         stroke="#36393d"
-        strokeWidth="7"
-        transform="rotate(-45,138.89,78.89)"
+        strokeWidth="12"
+        transform="rotate(-45,145.97,86)"
       />
       <rect
-        x="132.37"
-        y="62.41"
+        x="137.37"
+        y="64.41"
         width="11.11"
         height="14.2"
         rx="5.55"
         ry="5.55"
         fill="#36393d"
-        transform="rotate(45,137.92,69.51)"
+        transform="rotate(45,142.92,71.51)"
       />
       <rect
-        x="135.78"
-        y="79.8"
+        x="142.41"
+        y="91.05"
         width="11.11"
         height="14.2"
         rx="5.55"
         ry="5.55"
         fill="#36393d"
-        transform="rotate(45,141.34,86.9)"
+        transform="rotate(45,147.97,98.15)"
       />
-      <ellipse cx="79.65" cy="69.9" rx="6" ry="6" fill="#36393d" />
+      <ellipse cx="85" cy="65.51" rx="11.1" ry="11.1" fill="#36393d" />
     </svg>
   );
 }

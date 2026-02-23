@@ -10,7 +10,7 @@ use async_stream::try_stream;
 use chrono;
 use futures::Stream;
 use rmcp::model::{
-    object, AnnotateAble, CallToolRequestParam, Content, ErrorCode, ErrorData, RawContent,
+    object, AnnotateAble, CallToolRequestParams, Content, ErrorCode, ErrorData, RawContent,
     ResourceContents, Role, Tool,
 };
 use serde::{Deserialize, Serialize};
@@ -339,11 +339,11 @@ pub fn response_to_message(response: &Value) -> anyhow::Result<Message> {
                         Ok(params) => {
                             content.push(MessageContent::tool_request(
                                 id,
-                                Ok(CallToolRequestParam {
+                                Ok(CallToolRequestParams {
                                     task: None,
                                     name: function_name.into(),
                                     arguments: Some(object(params)),
-                                }),
+                                    meta: None}),
                             ));
                         }
                         Err(e) => {
@@ -563,10 +563,11 @@ where
                             Ok(params) => {
                                 MessageContent::tool_request_with_metadata(
                                     id.clone(),
-                                    Ok(CallToolRequestParam {
+                                    Ok(CallToolRequestParams {
                                         task: None,
                                         name: function_name.clone().into(),
-                                        arguments: Some(object(params))
+                                        arguments: Some(object(params)),
+                                        meta: None,
                                     }),
                                     metadata.as_ref(),
                                 )
@@ -869,11 +870,11 @@ mod tests {
             Message::user().with_text("How are you?"),
             Message::assistant().with_tool_request(
                 "tool1",
-                Ok(CallToolRequestParam {
+                Ok(CallToolRequestParams {
                     task: None,
                     name: "example".into(),
                     arguments: Some(object!({"param1": "value1"})),
-                }),
+                    meta: None}),
             ),
         ];
 
@@ -914,11 +915,11 @@ mod tests {
     fn test_format_messages_multiple_content() -> anyhow::Result<()> {
         let mut messages = vec![Message::assistant().with_tool_request(
             "tool1",
-            Ok(CallToolRequestParam {
+            Ok(CallToolRequestParams {
                 task: None,
                 name: "example".into(),
                 arguments: Some(object!({"param1": "value1"})),
-            }),
+                meta: None}),
         )];
 
         // Get the ID from the tool request to use in the response
@@ -1154,11 +1155,11 @@ mod tests {
         // Test that tool calls with None arguments are formatted as "{}" string
         let message = Message::assistant().with_tool_request(
             "tool1",
-            Ok(CallToolRequestParam {
+            Ok(CallToolRequestParams {
                 task: None,
                 name: "test_tool".into(),
                 arguments: None, // This is the key case the fix addresses
-            }),
+                meta: None}),
         );
 
         let spec = format_messages(&[message], &ImageFormat::OpenAi);
@@ -1182,11 +1183,11 @@ mod tests {
         // Test that tool calls with Some arguments are properly JSON-serialized
         let message = Message::assistant().with_tool_request(
             "tool1",
-            Ok(CallToolRequestParam {
+            Ok(CallToolRequestParams {
                 task: None,
                 name: "test_tool".into(),
                 arguments: Some(object!({"param": "value", "number": 42})),
-            }),
+                meta: None}),
         );
 
         let spec = format_messages(&[message], &ImageFormat::OpenAi);
@@ -1213,11 +1214,11 @@ mod tests {
         // Test that FrontendToolRequest with None arguments are formatted as "{}" string
         let message = Message::assistant().with_frontend_tool_request(
             "frontend_tool1",
-            Ok(CallToolRequestParam {
+            Ok(CallToolRequestParams {
                 task: None,
                 name: "frontend_test_tool".into(),
                 arguments: None, // This is the key case the fix addresses
-            }),
+                meta: None}),
         );
 
         let spec = format_messages(&[message], &ImageFormat::OpenAi);
@@ -1241,11 +1242,11 @@ mod tests {
         // Test that FrontendToolRequest with Some arguments are properly JSON-serialized
         let message = Message::assistant().with_frontend_tool_request(
             "frontend_tool1",
-            Ok(CallToolRequestParam {
+            Ok(CallToolRequestParams {
                 task: None,
                 name: "frontend_test_tool".into(),
                 arguments: Some(object!({"action": "click", "element": "button"})),
-            }),
+                meta: None}),
         );
 
         let spec = format_messages(&[message], &ImageFormat::OpenAi);

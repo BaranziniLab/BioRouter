@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::{env, fs};
 
-use rmcp::model::{CallToolRequestParam, CallToolResult, Tool};
+use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 use rmcp::object;
 use tokio_util::sync::CancellationToken;
 
@@ -121,18 +121,18 @@ enum TestMode {
 #[test_case(
     vec!["npx", "-y", "@modelcontextprotocol/server-everything"],
     vec![
-        CallToolRequestParam { task: None, name: "echo".into(), arguments: Some(object!({"message": "Hello, world!" })) },
-        CallToolRequestParam { task: None, name: "add".into(), arguments: Some(object!({"a": 1, "b": 2 })) },
-        CallToolRequestParam { task: None, name: "longRunningOperation".into(), arguments: Some(object!({"duration": 1, "steps": 5 })) },
-        CallToolRequestParam { task: None, name: "structuredContent".into(), arguments: Some(object!({"location": "11238"})) },
-        CallToolRequestParam { task: None, name: "sampleLLM".into(), arguments: Some(object!({"prompt": "Please provide a quote from The Great Gatsby", "maxTokens": 100 })) }
+        CallToolRequestParams { task: None, name: "echo".into(), arguments: Some(object!({"message": "Hello, world!" })) },
+        CallToolRequestParams { task: None, name: "add".into(), arguments: Some(object!({"a": 1, "b": 2 })) },
+        CallToolRequestParams { task: None, name: "longRunningOperation".into(), arguments: Some(object!({"duration": 1, "steps": 5 })) },
+        CallToolRequestParams { task: None, name: "structuredContent".into(), arguments: Some(object!({"location": "11238"})) },
+        CallToolRequestParams { task: None, name: "sampleLLM".into(), arguments: Some(object!({"prompt": "Please provide a quote from The Great Gatsby", "maxTokens": 100 })) }
     ],
     vec![]
 )]
 #[test_case(
     vec!["github-mcp-server", "stdio"],
     vec![
-        CallToolRequestParam { task: None, name: "get_file_contents".into(), arguments: Some(object!({
+        CallToolRequestParams { task: None, name: "get_file_contents".into(), arguments: Some(object!({
             "owner": "block",
             "repo": "biorouter",
             "path": "README.md",
@@ -144,7 +144,7 @@ enum TestMode {
 #[test_case(
     vec!["uvx", "mcp-server-fetch"],
     vec![
-        CallToolRequestParam { task: None, name: "fetch".into(), arguments: Some(object!({
+        CallToolRequestParams { task: None, name: "fetch".into(), arguments: Some(object!({
             "url": "https://example.com",
         })) }
     ],
@@ -153,35 +153,35 @@ enum TestMode {
 #[test_case(
     vec!["cargo", "run", "--quiet", "-p", "biorouter-server", "--bin", "biorouterd", "--", "mcp", "developer"],
     vec![
-        CallToolRequestParam { task: None, name: "text_editor".into(), arguments: Some(object!({
+        CallToolRequestParams { task: None, name: "text_editor".into(), arguments: Some(object!({
             "command": "view",
             "path": "/tmp/biorouter_test/biorouter.txt"
         }))},
-        CallToolRequestParam { task: None, name: "text_editor".into(), arguments: Some(object!({
+        CallToolRequestParams { task: None, name: "text_editor".into(), arguments: Some(object!({
             "command": "str_replace",
             "path": "/tmp/biorouter_test/biorouter.txt",
             "old_str": "# biorouter",
             "new_str": "# biorouter (modified by test)"
         }))},
         // Test shell command to verify file was modified
-        CallToolRequestParam { task: None, name: "shell".into(), arguments: Some(object!({
+        CallToolRequestParams { task: None, name: "shell".into(), arguments: Some(object!({
             "command": "cat /tmp/biorouter_test/biorouter.txt"
         })) },
         // Test text_editor tool to restore original content
-        CallToolRequestParam { task: None, name: "text_editor".into(), arguments: Some(object!({
+        CallToolRequestParams { task: None, name: "text_editor".into(), arguments: Some(object!({
             "command": "str_replace",
             "path": "/tmp/biorouter_test/biorouter.txt",
             "old_str": "# biorouter (modified by test)",
             "new_str": "# biorouter"
         }))},
-        CallToolRequestParam { task: None, name: "list_windows".into(), arguments: Some(object!({})) },
+        CallToolRequestParams { task: None, name: "list_windows".into(), arguments: Some(object!({})) },
     ],
     vec![]
 )]
 #[tokio::test]
 async fn test_replayed_session(
     command: Vec<&str>,
-    tool_calls: Vec<CallToolRequestParam>,
+    tool_calls: Vec<CallToolRequestParams>,
     required_envs: Vec<&str>,
 ) {
     std::env::set_var("BIOROUTER_MCP_CLIENT_VERSION", "0.0.0");
@@ -267,7 +267,7 @@ async fn test_replayed_session(
         extension_manager.add_extension(extension_config).await?;
         let mut results = Vec::new();
         for tool_call in tool_calls {
-            let tool_call = CallToolRequestParam {
+            let tool_call = CallToolRequestParams {
                 task: None,
                 name: format!("test__{}", tool_call.name).into(),
                 arguments: tool_call.arguments,

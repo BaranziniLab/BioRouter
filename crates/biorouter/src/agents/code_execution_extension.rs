@@ -9,7 +9,7 @@ use boa_engine::{js_string, Context, JsNativeError, JsString, JsValue, NativeFun
 use indoc::indoc;
 use regex::Regex;
 use rmcp::model::{
-    CallToolRequestParam, CallToolResult, Content, Implementation, InitializeResult, JsonObject,
+    CallToolRequestParams, CallToolResult, Content, Implementation, InitializeResult, JsonObject,
     ListToolsResult, ProtocolVersion, RawContent, ServerCapabilities, Tool as McpTool,
     ToolAnnotations, ToolsCapability,
 };
@@ -667,11 +667,11 @@ impl CodeExecutionClient {
         while let Some((tool_name, arguments, response_tx)) = call_rx.recv().await {
             let result = match extension_manager.as_ref().and_then(|w| w.upgrade()) {
                 Some(manager) => {
-                    let tool_call = CallToolRequestParam {
+                    let tool_call = CallToolRequestParams {
                         task: None,
                         name: tool_name.into(),
                         arguments: serde_json::from_str(&arguments).ok(),
-                    };
+                        meta: None};
                     match manager
                         .dispatch_tool_call(&session_id, tool_call, CancellationToken::new())
                         .await

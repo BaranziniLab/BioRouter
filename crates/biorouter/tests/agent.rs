@@ -339,7 +339,7 @@ mod tests {
         use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
         use biorouter::providers::errors::ProviderError;
         use biorouter::session::session_manager::SessionType;
-        use rmcp::model::{CallToolRequestParam, Tool};
+        use rmcp::model::{CallToolRequestParams, Tool};
         use rmcp::object;
         use std::path::PathBuf;
 
@@ -359,7 +359,7 @@ mod tests {
                 _messages: &[Message],
                 _tools: &[Tool],
             ) -> Result<(Message, ProviderUsage), ProviderError> {
-                let tool_call = CallToolRequestParam {
+                let tool_call = CallToolRequestParams {
                     task: None,
                     name: "test_tool".into(),
                     arguments: Some(object!({"param": "value"})),

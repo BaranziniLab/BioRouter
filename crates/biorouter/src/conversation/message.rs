@@ -1,7 +1,7 @@
 use crate::mcp_utils::ToolResult;
 use chrono::Utc;
 use rmcp::model::{
-    AnnotateAble, CallToolRequestParam, CallToolResult, Content, ImageContent, JsonObject,
+    AnnotateAble, CallToolRequestParams, CallToolResult, Content, ImageContent, JsonObject,
     PromptMessage, PromptMessageContent, PromptMessageRole, RawContent, RawImageContent,
     RawTextContent, ResourceContents, Role, TextContent,
 };
@@ -64,7 +64,7 @@ pub struct ToolRequest {
     pub id: String,
     #[serde(with = "tool_result_serde")]
     #[schema(value_type = Object)]
-    pub tool_call: ToolResult<CallToolRequestParam>,
+    pub tool_call: ToolResult<CallToolRequestParams>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Object)]
     pub metadata: Option<ProviderMetadata>,
@@ -156,7 +156,7 @@ pub struct FrontendToolRequest {
     pub id: String,
     #[serde(with = "tool_result_serde")]
     #[schema(value_type = Object)]
-    pub tool_call: ToolResult<CallToolRequestParam>,
+    pub tool_call: ToolResult<CallToolRequestParams>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -256,7 +256,7 @@ impl MessageContent {
 
     pub fn tool_request<S: Into<String>>(
         id: S,
-        tool_call: ToolResult<CallToolRequestParam>,
+        tool_call: ToolResult<CallToolRequestParams>,
     ) -> Self {
         MessageContent::ToolRequest(ToolRequest {
             id: id.into(),
@@ -268,7 +268,7 @@ impl MessageContent {
 
     pub fn tool_request_with_metadata<S: Into<String>>(
         id: S,
-        tool_call: ToolResult<CallToolRequestParam>,
+        tool_call: ToolResult<CallToolRequestParams>,
         metadata: Option<&ProviderMetadata>,
     ) -> Self {
         MessageContent::ToolRequest(ToolRequest {
@@ -354,7 +354,7 @@ impl MessageContent {
 
     pub fn frontend_tool_request<S: Into<String>>(
         id: S,
-        tool_call: ToolResult<CallToolRequestParam>,
+        tool_call: ToolResult<CallToolRequestParams>,
     ) -> Self {
         MessageContent::FrontendToolRequest(FrontendToolRequest {
             id: id.into(),
@@ -662,7 +662,7 @@ impl Message {
     pub fn with_tool_request<S: Into<String>>(
         self,
         id: S,
-        tool_call: ToolResult<CallToolRequestParam>,
+        tool_call: ToolResult<CallToolRequestParams>,
     ) -> Self {
         self.with_content(MessageContent::tool_request(id, tool_call))
     }
@@ -670,7 +670,7 @@ impl Message {
     pub fn with_tool_request_with_metadata<S: Into<String>>(
         self,
         id: S,
-        tool_call: ToolResult<CallToolRequestParam>,
+        tool_call: ToolResult<CallToolRequestParams>,
         metadata: Option<&ProviderMetadata>,
         tool_meta: Option<serde_json::Value>,
     ) -> Self {
@@ -718,7 +718,7 @@ impl Message {
     pub fn with_frontend_tool_request<S: Into<String>>(
         self,
         id: S,
-        tool_call: ToolResult<CallToolRequestParam>,
+        tool_call: ToolResult<CallToolRequestParams>,
     ) -> Self {
         self.with_content(MessageContent::frontend_tool_request(id, tool_call))
     }
@@ -870,7 +870,7 @@ mod tests {
     use crate::conversation::message::{Message, MessageContent, MessageMetadata};
     use crate::conversation::*;
     use rmcp::model::{
-        AnnotateAble, CallToolRequestParam, PromptMessage, PromptMessageContent, PromptMessageRole,
+        AnnotateAble, CallToolRequestParams, PromptMessage, PromptMessageContent, PromptMessageRole,
         RawEmbeddedResource, RawImageContent, ResourceContents,
     };
     use rmcp::model::{ErrorCode, ErrorData};
@@ -897,7 +897,7 @@ mod tests {
             .with_text("Hello, I'll help you with that.")
             .with_tool_request(
                 "tool123",
-                Ok(CallToolRequestParam {
+                Ok(CallToolRequestParams {
                     task: None,
                     name: "test_tool".into(),
                     arguments: Some(object!({"param": "value"})),
@@ -1156,7 +1156,7 @@ mod tests {
 
     #[test]
     fn test_message_with_tool_request() {
-        let tool_call = Ok(CallToolRequestParam {
+        let tool_call = Ok(CallToolRequestParams {
             task: None,
             name: "test_tool".into(),
             arguments: Some(object!({})),

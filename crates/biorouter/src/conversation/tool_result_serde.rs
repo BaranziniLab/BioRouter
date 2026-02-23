@@ -1,5 +1,5 @@
 use crate::mcp_utils::ToolResult;
-use rmcp::model::{CallToolRequestParam, ErrorCode, ErrorData, JsonObject};
+use rmcp::model::{CallToolRequestParams, ErrorCode, ErrorData, JsonObject};
 use serde::ser::SerializeStruct;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::borrow::Cow;
@@ -32,7 +32,7 @@ struct ToolCallWithValueArguments {
 }
 
 impl ToolCallWithValueArguments {
-    fn into_call_tool_request_param(self) -> CallToolRequestParam {
+    fn into_call_tool_request_param(self) -> CallToolRequestParams {
         let arguments = match self.arguments {
             serde_json::Value::Object(map) => Some(map),
             serde_json::Value::Null => None,
@@ -42,15 +42,16 @@ impl ToolCallWithValueArguments {
                 Some(map)
             }
         };
-        CallToolRequestParam {
+        CallToolRequestParams {
             task: None,
             name: Cow::Owned(self.name),
             arguments,
+            meta: None,
         }
     }
 }
 
-pub fn deserialize<'de, D>(deserializer: D) -> Result<ToolResult<CallToolRequestParam>, D::Error>
+pub fn deserialize<'de, D>(deserializer: D) -> Result<ToolResult<CallToolRequestParams>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -59,7 +60,7 @@ where
     enum ResultFormat {
         SuccessWithCallToolRequestParam {
             status: String,
-            value: CallToolRequestParam,
+            value: CallToolRequestParams,
         },
         SuccessWithToolCallValueArguments {
             status: String,

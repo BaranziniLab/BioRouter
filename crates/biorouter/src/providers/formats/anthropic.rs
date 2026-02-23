@@ -4,7 +4,7 @@ use crate::providers::base::Usage;
 use crate::providers::errors::ProviderError;
 use crate::providers::utils::{convert_image, ImageFormat};
 use anyhow::{anyhow, Result};
-use rmcp::model::{object, CallToolRequestParam, ErrorCode, ErrorData, JsonObject, Role, Tool};
+use rmcp::model::{object, CallToolRequestParams, ErrorCode, ErrorData, JsonObject, Role, Tool};
 use rmcp::object as json_object;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -249,11 +249,11 @@ pub fn response_to_message(response: &Value) -> Result<Message> {
                     .get(INPUT_FIELD)
                     .ok_or_else(|| anyhow!("Missing tool_use input"))?;
 
-                let tool_call = CallToolRequestParam {
+                let tool_call = CallToolRequestParams {
                     task: None,
                     name: name.into(),
                     arguments: Some(object(input.clone())),
-                };
+                    meta: None};
                 message = message.with_tool_request(id, Ok(tool_call));
             }
             Some(THINKING_TYPE) => {
@@ -613,10 +613,11 @@ where
                                 }
                             };
 
-                            let tool_call = CallToolRequestParam{
+                            let tool_call = CallToolRequestParams{
                                 task: None,
                                 name: name.into(),
-                                arguments: Some(object(parsed_args))
+                                arguments: Some(object(parsed_args)),
+                                meta: None,
                             };
 
                             let mut message = Message::new(
@@ -982,11 +983,11 @@ mod tests {
         let messages = vec![
             Message::assistant().with_tool_request(
                 "tool_1",
-                Ok(CallToolRequestParam {
+                Ok(CallToolRequestParams {
                     task: None,
                     name: "calculator".into(),
                     arguments: Some(object!({"expression": "2 + 2"})),
-                }),
+                    meta: None}),
             ),
             Message::user().with_tool_response(
                 "tool_1",

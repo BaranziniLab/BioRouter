@@ -22,6 +22,8 @@ target/
 # UI
 ui/desktop/node_modules/
 ui/desktop/out/
+# Compiled binary (>100MB, exceeds GitHub limit)
+ui/desktop/src/bin/biorouter
 
 # Claude
 .claude
