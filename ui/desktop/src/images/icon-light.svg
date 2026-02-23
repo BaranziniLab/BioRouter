@@ -1,16 +1,28 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <!-- Sidebar background color -->
+  <!-- Background: sidebar color #fefbf7 -->
   <rect width="512" height="512" rx="115" ry="115" fill="#fefbf7"/>
-  <!-- Icon shapes from new icon.svg: original 243x233, scaled 1.778x, centered (translate 40,49) -->
-  <g transform="translate(40, 49) scale(1.778)">
-    <rect x="205.25" y="110.25" width="20" height="45.5" rx="10" ry="10" fill="#36393d" transform="rotate(90,215.25,133)"/>
-    <ellipse cx="105" cy="127" rx="95" ry="95" fill="none" stroke="#36393d" stroke-width="20"/>
-    <rect x="225" y="2" width="10" height="140" rx="5" ry="5" fill="#36393d"/>
-    <rect x="220" y="102" width="20" height="40" rx="10" ry="10" fill="#36393d"/>
-    <ellipse cx="85" cy="142" rx="45" ry="45" fill="none" stroke="#36393d" stroke-width="20"/>
-    <rect x="133.82" y="55.42" width="24.3" height="61.17" rx="12.15" ry="12.15" fill="none" stroke="#36393d" stroke-width="12" transform="rotate(-45,145.97,86)"/>
-    <rect x="137.37" y="64.41" width="11.11" height="14.2" rx="5.55" ry="5.55" fill="#36393d" transform="rotate(45,142.92,71.51)"/>
-    <rect x="142.41" y="91.05" width="11.11" height="14.2" rx="5.55" ry="5.55" fill="#36393d" transform="rotate(45,147.97,98.15)"/>
-    <ellipse cx="85" cy="65.51" rx="11.1" ry="11.1" fill="#36393d"/>
-  </g>
+
+  <!-- Large outer circle: filled disc then background-colored cutout = crisp ring, no stroke -->
+  <ellipse cx="226.69" cy="274.81" rx="186.69" ry="186.69" fill="#36393d"/>
+  <ellipse cx="226.69" cy="274.81" rx="151.13" ry="151.13" fill="#fefbf7"/>
+
+  <!-- Vertical stem (right of large circle) -->
+  <rect x="440.05" y="52.56" width="17.78" height="248.92" rx="8.89" ry="8.89" fill="#36393d"/>
+  <!-- Stem base -->
+  <rect x="431.16" y="230.36" width="35.56" height="71.12" rx="17.78" ry="17.78" fill="#36393d"/>
+  <!-- Horizontal cross-bar -->
+  <rect x="404.93" y="245.03" width="35.56" height="80.89" rx="17.78" ry="17.78" fill="#36393d" transform="rotate(90,422.71,285.47)"/>
+
+  <!-- Small inner circle: filled disc then background-colored cutout = crisp ring, no stroke -->
+  <ellipse cx="191.13" cy="301.48" rx="97.79" ry="97.79" fill="#36393d"/>
+  <ellipse cx="191.13" cy="301.48" rx="62.23" ry="62.23" fill="#fefbf7"/>
+
+  <!-- Syringe body outline -->
+  <rect x="277.93" y="147.54" width="43.21" height="108.76" rx="21.60" ry="21.60" fill="none" stroke="#36393d" stroke-width="21.34" transform="rotate(-45,299.61,201.91)"/>
+  <!-- Syringe marker 1 -->
+  <rect x="284.24" y="163.52" width="19.75" height="25.25" rx="9.87" ry="9.87" fill="#36393d" transform="rotate(45,294.11,176.13)"/>
+  <!-- Syringe marker 2 -->
+  <rect x="293.21" y="210.89" width="19.75" height="25.25" rx="9.87" ry="9.87" fill="#36393d" transform="rotate(45,303.10,223.51)"/>
+  <!-- Dot -->
+  <ellipse cx="191.13" cy="165.48" rx="19.74" ry="19.74" fill="#36393d"/>
 </svg>
