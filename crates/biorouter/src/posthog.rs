@@ -38,16 +38,9 @@ pub fn get_telemetry_choice() -> Option<bool> {
     config.get_param::<bool>(TELEMETRY_ENABLED_KEY).ok()
 }
 
-/// Check if telemetry is enabled.
-///
-/// Returns false if:
-/// - BIOROUTER_TELEMETRY_OFF environment variable is set to "1" or "true"
-/// - BIOROUTER_TELEMETRY_ENABLED config value is set to false
-/// - User has not made a telemetry choice yet (opt-in required)
-///
-/// Returns true only if the user has explicitly opted in.
+/// Telemetry is permanently disabled for BioRouter.
 pub fn is_telemetry_enabled() -> bool {
-    get_telemetry_choice().unwrap_or(false)
+    false
 }
 
 // ============================================================================

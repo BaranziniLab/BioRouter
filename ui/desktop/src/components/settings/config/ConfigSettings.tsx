@@ -117,8 +117,15 @@ export default function ConfigSettings() {
 
     return originalKeyOrder
       .filter((key) => {
-        // skip secrets
-        if (key === 'extensions' || key.includes('_KEY') || key.includes('_TOKEN')) {
+        // skip secrets and internal/hidden keys
+        if (
+          key === 'extensions' ||
+          key === 'BIOROUTER_TELEMETRY_ENABLED' ||
+          key === 'tunnel_auto_start' ||
+          key.startsWith('SECURITY_PROMPT') ||
+          key.includes('_KEY') ||
+          key.includes('_TOKEN')
+        ) {
           return false;
         }
 

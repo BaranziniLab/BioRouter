@@ -356,8 +356,8 @@ export function setupAutoUpdater(tray?: Tray) {
   // Set the feed URL for GitHub releases
   const feedConfig = {
     provider: 'github' as const,
-    owner: 'block',
-    repo: 'biorouter',
+    owner: 'BaranziniLab',
+    repo: 'BioRouter',
     releaseType: 'release' as const,
   };
 

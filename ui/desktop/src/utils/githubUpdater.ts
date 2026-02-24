@@ -27,8 +27,8 @@ interface UpdateCheckResult {
 }
 
 export class GitHubUpdater {
-  private readonly owner = 'block';
-  private readonly repo = 'biorouter';
+  private readonly owner = 'BaranziniLab';
+  private readonly repo = 'BioRouter';
   private readonly apiUrl = `https://api.github.com/repos/${this.owner}/${this.repo}/releases/latest`;
 
   async checkForUpdates(): Promise<UpdateCheckResult> {
