@@ -4,7 +4,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Button } from './ui/button';
 import type { View } from '../utils/navigationUtils';
 import Stop from './ui/Stop';
-import { Attach, Send, Close, Microphone } from './icons';
+import { Attach, Send, Close } from './icons';
 import { ChatState } from '../types/chatState';
 import debounce from 'lodash/debounce';
 import { LocalMessageStorage } from '../utils/localMessageStorage';
@@ -15,12 +15,9 @@ import { BottomMenuExtensionSelection } from './bottom_menu/BottomMenuExtensionS
 import { AlertType, useAlerts } from './alerts';
 import { useConfig } from './ConfigContext';
 import { useModelAndProvider } from './ModelAndProviderContext';
-import { useWhisper } from '../hooks/useWhisper';
-import { WaveformVisualizer } from './WaveformVisualizer';
 import { toastError } from '../toasts';
 import MentionPopover, { DisplayItemWithMatch } from './MentionPopover';
-import { useDictationSettings } from '../hooks/useDictationSettings';
-import { COST_TRACKING_ENABLED, VOICE_DICTATION_ELEVENLABS_ENABLED } from '../updates';
+import { COST_TRACKING_ENABLED } from '../updates';
 import { CostTracker } from './bottom_menu/CostTracker';
 import { DroppedFile, useFileDrop } from '../hooks/useFileDrop';
 import { Recipe } from '../recipe';
@@ -34,7 +31,6 @@ import { getInitialWorkingDir } from '../utils/workingDir';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
 import {
   trackFileAttached,
-  trackVoiceDictation,
   trackDiagnosticsOpened,
   trackCreateRecipeOpened,
   trackEditRecipeOpened,
@@ -261,45 +257,6 @@ export default function ChatInput({
     getDisplayFiles: () => DisplayItemWithMatch[];
     selectFile: (index: number) => void;
   }>(null);
-
-  // Whisper hook for voice dictation
-  const {
-    isRecording,
-    isTranscribing,
-    canUseDictation,
-    audioContext,
-    analyser,
-    startRecording,
-    stopRecording,
-    recordingDuration,
-    estimatedSize,
-  } = useWhisper({
-    onTranscription: (text) => {
-      trackVoiceDictation('transcribed');
-      // Append transcribed text to the current input
-      const newValue = displayValue.trim() ? `${displayValue.trim()} ${text}` : text;
-      setDisplayValue(newValue);
-      setValue(newValue);
-      textAreaRef.current?.focus();
-    },
-    onError: (error) => {
-      const errorType = error.name || 'DictationError';
-      trackVoiceDictation('error', undefined, errorType);
-      toastError({
-        title: 'Dictation Error',
-        msg: error.message,
-      });
-    },
-    onSizeWarning: (sizeMB) => {
-      toastError({
-        title: 'Recording Size Warning',
-        msg: `Recording is ${sizeMB.toFixed(1)}MB. Maximum size is 25MB.`,
-      });
-    },
-  });
-
-  // Get dictation settings to check configuration status
-  const { settings: dictationSettings } = useDictationSettings();
 
   // Update internal value when initialValue changes
   useEffect(() => {
@@ -1142,8 +1099,6 @@ export default function ChatInput({
     !hasSubmittableContent ||
     isAnyImageLoading ||
     isAnyDroppedFileLoading ||
-    isRecording ||
-    isTranscribing ||
     chatState === ChatState.RestartingAgent;
 
   // Queue management functions - no storage persistence, only in-memory
@@ -1249,7 +1204,7 @@ export default function ChatInput({
             data-testid="chat-input"
             autoFocus
             id="dynamic-textarea"
-            placeholder={isRecording ? '' : getNavigationShortcutText()}
+            placeholder={getNavigationShortcutText()}
             value={displayValue}
             onChange={handleChange}
             onCompositionStart={handleCompositionStart}
@@ -1263,95 +1218,13 @@ export default function ChatInput({
             style={{
               maxHeight: `${maxHeight}px`,
               overflowY: 'auto',
-              opacity: isRecording ? 0 : 1,
             }}
             className="w-full outline-none border-none focus:ring-0 bg-transparent px-3 pt-3 pb-1.5 pr-20 text-sm resize-none text-textStandard placeholder:text-textPlaceholder"
           />
-          {isRecording && (
-            <div className="absolute inset-0 flex items-center pl-4 pr-20 pt-3 pb-1.5">
-              <WaveformVisualizer
-                audioContext={audioContext}
-                analyser={analyser}
-                isRecording={isRecording}
-              />
-            </div>
-          )}
         </div>
 
         {/* Inline action buttons on the right */}
         <div className="flex items-center gap-1 px-2 relative self-center">
-          {/* Microphone button - show only if dictation is enabled */}
-          {dictationSettings?.enabled && (
-            <>
-              {!canUseDictation ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <span className="inline-flex">
-                      <Button
-                        type="button"
-                        size="sm"
-                        shape="round"
-                        variant="outline"
-                        onClick={() => {}}
-                        disabled={true}
-                        className="bg-slate-600 text-white cursor-not-allowed opacity-50 border-slate-600 rounded-full px-6 py-2"
-                      >
-                        <Microphone />
-                      </Button>
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {dictationSettings.provider === 'openai' ? (
-                      <p>
-                        OpenAI API key is not configured. Set it up in <b>Settings</b> {'>'}{' '}
-                        <b>Models.</b>
-                      </p>
-                    ) : VOICE_DICTATION_ELEVENLABS_ENABLED &&
-                      dictationSettings.provider === 'elevenlabs' ? (
-                      <p>
-                        ElevenLabs API key is not configured. Set it up in <b>Settings</b> {'>'}{' '}
-                        <b>Chat</b> {'>'} <b>Voice Dictation.</b>
-                      </p>
-                    ) : dictationSettings.provider === null ? (
-                      <p>
-                        Dictation is not configured. Configure it in <b>Settings</b> {'>'}{' '}
-                        <b>Chat</b> {'>'} <b>Voice Dictation.</b>
-                      </p>
-                    ) : (
-                      <p>Dictation provider is not properly configured.</p>
-                    )}
-                  </TooltipContent>
-                </Tooltip>
-              ) : (
-                <Button
-                  type="button"
-                  size="sm"
-                  shape="round"
-                  variant="outline"
-                  onClick={() => {
-                    if (isRecording) {
-                      trackVoiceDictation('stop', Math.floor(recordingDuration));
-                      stopRecording();
-                    } else {
-                      trackVoiceDictation('start');
-                      startRecording();
-                    }
-                  }}
-                  disabled={isTranscribing}
-                  className={`rounded-full px-6 py-2 ${
-                    isRecording
-                      ? 'bg-red-500 text-white hover:bg-red-600 border-red-500'
-                      : isTranscribing
-                        ? 'bg-slate-600 text-white cursor-not-allowed animate-pulse border-slate-600'
-                        : 'bg-slate-600 text-white hover:bg-slate-700 border-slate-600'
-                  }`}
-                >
-                  <Microphone />
-                </Button>
-              )}
-            </>
-          )}
-
           {/* Send/Stop button */}
           {isLoading && !hasSubmittableContent ? (
             <Button
@@ -1391,37 +1264,14 @@ export default function ChatInput({
                     ? 'Waiting for images to save...'
                     : isAnyDroppedFileLoading
                       ? 'Processing dropped files...'
-                      : isRecording
-                        ? 'Recording...'
-                        : isTranscribing
-                          ? 'Transcribing...'
-                          : chatState === ChatState.RestartingAgent
-                            ? 'Restarting session...'
-                            : 'Send'}
+                      : chatState === ChatState.RestartingAgent
+                        ? 'Restarting session...'
+                        : 'Send'}
                 </p>
               </TooltipContent>
             </Tooltip>
           )}
 
-          {/* Recording/transcribing status indicator - positioned above the button row */}
-          {(isRecording || isTranscribing) && (
-            <div className="absolute right-0 -top-8 bg-background-default px-2 py-1 rounded text-xs whitespace-nowrap shadow-md border border-borderSubtle">
-              {isTranscribing ? (
-                <span className="text-blue-500 flex items-center gap-1">
-                  <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-                  Transcribing...
-                </span>
-              ) : (
-                <span
-                  className={`flex items-center gap-2 ${estimatedSize > 20 ? 'text-orange-500' : 'text-textSubtle'}`}
-                >
-                  <span className="inline-block w-2 h-2 bg-red-500 rounded-full animate-pulse" />
-                  {Math.floor(recordingDuration)}s • ~{estimatedSize.toFixed(1)}MB
-                  {estimatedSize > 20 && <span className="text-xs">(near 25MB limit)</span>}
-                </span>
-              )}
-            </div>
-          )}
         </div>
       </form>
 
