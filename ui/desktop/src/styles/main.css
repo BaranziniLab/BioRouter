@@ -20,18 +20,18 @@
   --color-block-teal: #cf6d47;
   --color-block-orange: #b85a32;
 
-  /* Clean warm-neutral palette — subtle ivory tint */
-  --color-neutral-50: #fafaf4;
-  --color-neutral-100: #f3f1e7;
-  --color-neutral-200: #e7e3d5;
-  --color-neutral-300: #cec8b8;
-  --color-neutral-400: #a8a092;
-  --color-neutral-500: #807869;
-  --color-neutral-600: #5e574d;
-  --color-neutral-700: #403a33;
-  --color-neutral-800: #2a251e;
-  --color-neutral-900: #1a1610;
-  --color-neutral-950: #110e0a;
+  /* Warm yellow-cream neutral palette — anchored on rgb(248,242,223) */
+  --color-neutral-50: #fcf8ed;
+  --color-neutral-100: #f8f2df;
+  --color-neutral-200: #ece5cf;
+  --color-neutral-300: #d7cfb6;
+  --color-neutral-400: #b6ae93;
+  --color-neutral-500: #8e856b;
+  --color-neutral-600: #665d46;
+  --color-neutral-700: #443c2a;
+  --color-neutral-800: #2a2416;
+  --color-neutral-900: #18140a;
+  --color-neutral-950: #0e0b05;
 
   --color-red-100: #f07575;
   --color-red-200: #e85252;
