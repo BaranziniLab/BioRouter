@@ -6,6 +6,26 @@ let cfg = {
   asar: true,
   extraResource: ['src/bin', 'src/images'],
   icon: 'src/images/icon',
+  // macOS code signing and notarization
+  // Activate by setting APPLE_ID and APPLE_APP_SPECIFIC_PASSWORD in the build environment.
+  // Generate an app-specific password at https://appleid.apple.com/account/manage
+  ...(process.env.APPLE_ID
+    ? {
+        osxSign: {
+          identity: 'Developer ID Application: University of California at San Francisco (F3YYBXAFJ8)',
+          hardenedRuntime: true,
+          entitlements: 'entitlements.plist',
+          'entitlements-inherit': 'entitlements.plist',
+          'signature-flags': 'library',
+        },
+        osxNotarize: {
+          tool: 'notarytool',
+          appleId: process.env.APPLE_ID,
+          appleIdPassword: process.env.APPLE_APP_SPECIFIC_PASSWORD,
+          teamId: 'F3YYBXAFJ8',
+        },
+      }
+    : {}),
   // Windows specific configuration
   win32: {
     icon: 'src/images/icon.ico',

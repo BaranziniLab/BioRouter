@@ -69,6 +69,48 @@ release-windows:
     fi
     echo "Windows executable and required DLLs created at ./target/x86_64-pc-windows-gnu/release/"
 
+# Linux x64 cross-compilation command (runs inside rust:latest Docker container)
+linux_docker_build_sh := '''rustup target add x86_64-unknown-linux-gnu && \
+	dpkg --add-architecture amd64 && \
+	apt-get update -q && \
+	apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu g++-x86-64-linux-gnu protobuf-compiler cmake libxcb1-dev:amd64 libbz2-dev:amd64 && \
+	export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc && \
+	export CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++ && \
+	export AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar && \
+	export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc && \
+	export PKG_CONFIG_ALLOW_CROSS=1 && \
+	export PKG_CONFIG_PATH_x86_64_unknown_linux_gnu=/usr/lib/x86_64-linux-gnu/pkgconfig && \
+	export PROTOC=/usr/bin/protoc && \
+	cargo build --release --target x86_64-unknown-linux-gnu
+'''
+
+# Build Linux x64 .deb package for Ubuntu / Pop!_OS — requires Docker Desktop
+# Output: ui/desktop/out/make/deb/x64/BioRouter_<version>_amd64.deb
+# Note: src/bin/ will contain Linux x64 binaries after this build.
+# Run 'just copy-binary' afterward to restore macOS ARM binaries.
+make-ui-linux:
+    #!/usr/bin/env sh
+    set -e
+    echo "Step 1/2: Cross-compiling Rust binaries for Linux x64 via Docker..."
+    docker volume create biorouter-linux-cache || true
+    docker run --rm \
+        -v "$(pwd)":/usr/src/myapp \
+        -v biorouter-linux-cache:/usr/local/cargo/registry \
+        -w /usr/src/myapp \
+        rust:latest \
+        sh -c "{{linux_docker_build_sh}}"
+    echo "Step 2/2: Packaging .deb via Docker (linux/amd64)..."
+    docker volume create biorouter-linux-npm-cache || true
+    docker run --rm \
+        --platform linux/amd64 \
+        -v "$(pwd)":/ws \
+        -v biorouter-linux-npm-cache:/root/.npm \
+        node:20-bookworm \
+        bash /ws/ui/desktop/scripts/build-linux-deb.sh
+    echo ""
+    echo "✓ .deb package: ui/desktop/out/make/deb/x64/"
+    echo "  Run 'just copy-binary' to restore macOS ARM binaries in src/bin/."
+
 # Build for Intel Mac
 release-intel:
     @echo "Building release version for Intel Mac..."

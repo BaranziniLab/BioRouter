@@ -20,6 +20,7 @@
     "bundle:alpha": "ALPHA=true node scripts/prepare-platform-binaries.js && ALPHA=true npm run make && (cd out/BioRouter-darwin-arm64 && ditto -c -k --sequesterRsrc --keepParent BioRouter.app BioRouter_alpha.zip) || echo 'out/BioRouter-darwin-arm64 not found; either the binary is not built or you are not on macOS'",
     "bundle:windows": "node scripts/build-main.js && ELECTRON_PLATFORM=win32 node scripts/prepare-platform-binaries.js && npm run make -- --platform=win32 --arch=x64",
     "bundle:intel": "node scripts/prepare-platform-binaries.js && npm run make -- --arch=x64 && cd out/BioRouter-darwin-x64 && ditto -c -k --sequesterRsrc --keepParent BioRouter.app BioRouter_intel_mac.zip",
+    "bundle:linux": "ELECTRON_PLATFORM=linux npm run make -- --platform=linux --arch=x64",
     "debug": "echo 'run --remote-debugging-port=8315' && lldb out/BioRouter-darwin-arm64/BioRouter.app",
     "test-e2e": "npm run generate-api && playwright test",
     "test-e2e:dev": "npm run generate-api && playwright test --reporter=list --retries=0 --max-failures=1",
