@@ -1,9 +1,6 @@
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useConfig } from './ConfigContext';
-import { SetupModal } from './SetupModal';
-import { startOpenRouterSetup } from '../utils/openRouterSetup';
-import { startTetrateSetup } from '../utils/tetrateSetup';
 import WelcomeBioRouterLogo from './WelcomeBioRouterLogo';
 import { toastService } from '../toasts';
 import { OllamaSetup } from './OllamaSetup';
@@ -16,10 +13,9 @@ import {
   trackOnboardingProviderSelected,
   trackOnboardingCompleted,
   trackOnboardingAbandoned,
-  trackOnboardingSetupFailed,
 } from '../utils/analytics';
 
-import { BioRouter, OpenRouter, Tetrate } from './icons';
+import { BioRouter } from './icons';
 
 interface ProviderGuardProps {
   didSelectProvider: boolean;
@@ -53,50 +49,6 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   const setView = useMemo(() => createNavigationHandler(navigate), [navigate]);
 
-  const [openRouterSetupState, setOpenRouterSetupState] = useState<{
-    show: boolean;
-    title: string;
-    message: string;
-    showRetry: boolean;
-    autoClose?: number;
-  } | null>(null);
-
-  const [tetrateSetupState, setTetrateSetupState] = useState<{
-    show: boolean;
-    title: string;
-    message: string;
-    showRetry: boolean;
-    autoClose?: number;
-  } | null>(null);
-
-  const handleTetrateSetup = async () => {
-    trackOnboardingProviderSelected('tetrate');
-    try {
-      const result = await startTetrateSetup();
-      if (result.success) {
-        setSwitchModelProvider('tetrate');
-        setShowSwitchModelModal(true);
-      } else {
-        trackOnboardingSetupFailed('tetrate', result.message);
-        setTetrateSetupState({
-          show: true,
-          title: 'Setup Failed',
-          message: result.message,
-          showRetry: true,
-        });
-      }
-    } catch (error) {
-      console.error('Tetrate setup error:', error);
-      trackOnboardingSetupFailed('tetrate', 'unexpected_error');
-      setTetrateSetupState({
-        show: true,
-        title: 'Setup Error',
-        message: 'An unexpected error occurred during setup.',
-        showRetry: true,
-      });
-    }
-  };
-
   const handleApiKeySuccess = async (provider: string, _model: string, apiKey: string) => {
     trackOnboardingProviderSelected('api_key');
     const keyName = `${provider.toUpperCase()}_API_KEY`;
@@ -122,34 +74,6 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
     setShowSwitchModelModal(false);
   };
 
-  const handleOpenRouterSetup = async () => {
-    trackOnboardingProviderSelected('openrouter');
-    try {
-      const result = await startOpenRouterSetup();
-      if (result.success) {
-        setSwitchModelProvider('openrouter');
-        setShowSwitchModelModal(true);
-      } else {
-        trackOnboardingSetupFailed('openrouter', result.message);
-        setOpenRouterSetupState({
-          show: true,
-          title: 'Setup Failed',
-          message: result.message,
-          showRetry: true,
-        });
-      }
-    } catch (error) {
-      console.error('OpenRouter setup error:', error);
-      trackOnboardingSetupFailed('openrouter', 'unexpected_error');
-      setOpenRouterSetupState({
-        show: true,
-        title: 'Setup Error',
-        message: 'An unexpected error occurred during setup.',
-        showRetry: true,
-      });
-    }
-  };
-
   const handleOllamaComplete = () => {
     trackOnboardingCompleted('ollama');
     setShowOllamaSetup(false);
@@ -161,24 +85,6 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   const handleOllamaCancel = () => {
     trackOnboardingAbandoned('ollama_setup');
     setShowOllamaSetup(false);
-  };
-
-  const handleRetrySetup = (setupType: 'openrouter' | 'tetrate') => {
-    if (setupType === 'openrouter') {
-      setOpenRouterSetupState(null);
-      handleOpenRouterSetup();
-    } else {
-      setTetrateSetupState(null);
-      handleTetrateSetup();
-    }
-  };
-
-  const closeSetupModal = (setupType: 'openrouter' | 'tetrate') => {
-    if (setupType === 'openrouter') {
-      setOpenRouterSetupState(null);
-    } else {
-      setTetrateSetupState(null);
-    }
   };
 
   useEffect(() => {
@@ -262,8 +168,12 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
                   <h1 className="text-2xl sm:text-4xl font-light text-left">Welcome to BioRouter</h1>
                 </div>
                 <p className="text-text-muted text-base sm:text-lg mt-4 sm:mt-6">
-                  Since it's your first time here, let's get you set up with an AI provider so BioRouter
-                  can work its magic.
+                  UCSF BioRouter is an AI-powered integrated research environment that unifies
+                  commercial, institution-hosted, and local LLMs, AI agents, Information Commons
+                  databases, and customizable workflows into one extensible tool for explorative
+                  analysis, prototyping, automation, and federated cross-institution collaboration.
+                  Since it's your first time here, let's get you set up with an AI provider so
+                  BioRouter can work its magic.
                 </p>
               </div>
 
@@ -274,92 +184,14 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
                 }}
               />
 
-              {/* Tetrate Card - Full Width */}
-              <div className="relative w-full mb-4">
-                {/* Recommended pill */}
-                <div className="absolute -top-2 -right-2 sm:-top-3 sm:-right-3 z-20">
-                  <span className="inline-block px-2 py-1 text-xs font-medium bg-blue-600 text-white rounded-full">
-                    Recommended for new users
-                  </span>
-                </div>
-
-                <div
-                  onClick={handleTetrateSetup}
-                  className="w-full p-4 sm:p-6 bg-transparent border border-background-hover rounded-xl hover:border-text-muted transition-all duration-200 cursor-pointer group"
-                >
-                  <div className="flex items-start justify-between mb-3">
-                    <div className="flex items-center gap-2">
-                      <Tetrate className="w-5 h-5 text-text-standard" />
-                      <span className="text-sm sm:text-base">
-                        <span className="font-medium text-text-standard">Agent Router</span>
-                        <span className="text-text-muted text-xs"> by Tetrate</span>
-                      </span>
-                    </div>
-                    <div className="text-text-muted group-hover:text-text-standard transition-colors">
-                      <svg
-                        className="w-4 h-4 sm:w-5 sm:h-5"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={2}
-                          d="M9 5l7 7-7 7"
-                        />
-                      </svg>
-                    </div>
-                  </div>
-                  <p className="text-text-muted text-sm sm:text-base">
-                    Access multiple AI models with automatic setup. Sign up to receive $10 credit.
-                  </p>
-                </div>
-              </div>
-
-              {/* OpenRouter Card - Full Width */}
-              <div
-                onClick={handleOpenRouterSetup}
-                className="relative w-full p-4 sm:p-6 bg-transparent border border-background-hover rounded-xl hover:border-text-muted transition-all duration-200 cursor-pointer group overflow-hidden mb-6"
-              >
-                {/* Subtle shimmer effect */}
-                <div className="absolute inset-0 -translate-x-full animate-shimmer bg-gradient-to-r from-transparent via-white/8 to-transparent"></div>
-
-                <div className="relative flex items-start justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <OpenRouter className="w-5 h-5 text-text-standard" />
-                    <span className="font-medium text-text-standard text-sm sm:text-base">
-                      OpenRouter
-                    </span>
-                  </div>
-                  <div className="text-text-muted group-hover:text-text-standard transition-colors">
-                    <svg
-                      className="w-4 h-4 sm:w-5 sm:h-5"
-                      fill="none"
-                      stroke="currentColor"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth={2}
-                        d="M9 5l7 7-7 7"
-                      />
-                    </svg>
-                  </div>
-                </div>
-                <p className="text-text-muted text-sm sm:text-base">
-                  Access 200+ models with one API. Pay-per-use pricing.
-                </p>
-              </div>
-
               {/* Other providers section */}
               <div className="w-full p-4 sm:p-6 bg-transparent border border-background-hover rounded-xl">
                 <h3 className="font-medium text-text-standard text-sm sm:text-base mb-3">
                   Other Providers
                 </h3>
                 <p className="text-text-muted text-sm sm:text-base mb-4">
-                  Set up additional providers manually through settings.
+                  Set up additional providers manually through settings. Users accessing
+                  local or institution-hosted models should set up through here.
                 </p>
                 <button
                   onClick={() => navigate('/welcome', { replace: true })}
@@ -390,29 +222,6 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
               </svg>
             </div>
           </div>
-        )}
-
-        {/* Setup Modals */}
-        {openRouterSetupState?.show && (
-          <SetupModal
-            title={openRouterSetupState.title}
-            message={openRouterSetupState.message}
-            showRetry={openRouterSetupState.showRetry}
-            onRetry={() => handleRetrySetup('openrouter')}
-            onClose={() => closeSetupModal('openrouter')}
-            autoClose={openRouterSetupState.autoClose}
-          />
-        )}
-
-        {tetrateSetupState?.show && (
-          <SetupModal
-            title={tetrateSetupState.title}
-            message={tetrateSetupState.message}
-            showRetry={tetrateSetupState.showRetry}
-            onRetry={() => handleRetrySetup('tetrate')}
-            onClose={() => closeSetupModal('tetrate')}
-            autoClose={tetrateSetupState.autoClose}
-          />
         )}
 
         {showSwitchModelModal && (
