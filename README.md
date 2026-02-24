@@ -37,13 +37,18 @@ Think of BioRouter as your intelligent research co-pilot — one that can read p
 
 ## Download
 
-Get the latest release for macOS:
+Native installers for all major platforms are available in every release:
+
+| Platform | Package |
+|----------|---------|
+| **macOS** (Apple Silicon) | `.zip` — unzip and drag to `/Applications` |
+| **Windows** (x64) | `.zip` — unzip and run `BioRouter.exe` |
+| **Linux** Ubuntu / Pop!_OS (x64) | `.deb` — `sudo dpkg -i biorouter_*.deb` |
+| **Linux** Fedora / RHEL (x64) | `.rpm` — `sudo rpm -i BioRouter-*.rpm` |
 
 **[Download BioRouter →](https://github.com/BaranziniLab/BioRouter/releases)**
 
 Always install the newest version for the latest features and fixes.
-
-> Linux and Windows builds are coming soon. Watch the GitHub repository for updates.
 
 <br>
 
