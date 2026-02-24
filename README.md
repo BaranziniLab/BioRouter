@@ -105,7 +105,7 @@ BioRouter's agentic coding environment was developed with reference to the follo
 - **[Aider](https://aider.chat/)** — Open-source, Git-native CLI AI coding agent
 - **[Cline](https://github.com/cline/cline)** — Open-source interactive CLI coding agent
 - **[OpenCode](https://opencode.ai/)** — Open-source coding agent with multi-session and multi-provider support
-- **ForgeCode** — Terminal AI coding assistant for task planning and code generation
+- **[ForgeCode](https://forgecode.dev/)** — Terminal AI coding assistant for task planning and code generation
 
 <br>
 
