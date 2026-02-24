@@ -178,8 +178,20 @@ function ProviderCards({
   const providerCards = useMemo(() => {
     // providers needs to be an array
     const providersArray = Array.isArray(providers) ? providers : [];
-    // Sort providers alphabetically by name
-    const sortedProviders = [...providersArray].sort((a, b) => a.name.localeCompare(b.name));
+    // Sort providers by priority order, then alphabetically
+    const priorityOrder: Record<string, number> = {
+      azure_openai: 0,
+      aws_bedrock: 1,
+      anthropic: 2,
+      openai: 3,
+      google: 4,
+    };
+    const sortedProviders = [...providersArray].sort((a, b) => {
+      const pa = priorityOrder[a.name] ?? 999;
+      const pb = priorityOrder[b.name] ?? 999;
+      if (pa !== pb) return pa - pb;
+      return a.name.localeCompare(b.name);
+    });
     const cards = sortedProviders.map((provider) => (
       <ProviderCard
         key={provider.name}

@@ -5,12 +5,8 @@ use super::{
     azure::AzureProvider,
     base::{Provider, ProviderMetadata},
     bedrock::BedrockProvider,
-    claude_code::ClaudeCodeProvider,
-    codex::CodexProvider,
-    cursor_agent::CursorAgentProvider,
     databricks::DatabricksProvider,
     gcpvertexai::GcpVertexAIProvider,
-    gemini_cli::GeminiCliProvider,
     githubcopilot::GithubCopilotProvider,
     google::GoogleProvider,
     lead_worker::LeadWorkerProvider,
@@ -47,20 +43,11 @@ async fn init_registry() -> RwLock<ProviderRegistry> {
         registry.register::<AzureProvider, _>(|m| Box::pin(AzureProvider::from_env(m)), false);
         registry.register::<BedrockProvider, _>(|m| Box::pin(BedrockProvider::from_env(m)), false);
         registry
-            .register::<ClaudeCodeProvider, _>(|m| Box::pin(ClaudeCodeProvider::from_env(m)), true);
-        registry.register::<CodexProvider, _>(|m| Box::pin(CodexProvider::from_env(m)), true);
-        registry.register::<CursorAgentProvider, _>(
-            |m| Box::pin(CursorAgentProvider::from_env(m)),
-            false,
-        );
-        registry
             .register::<DatabricksProvider, _>(|m| Box::pin(DatabricksProvider::from_env(m)), true);
         registry.register::<GcpVertexAIProvider, _>(
             |m| Box::pin(GcpVertexAIProvider::from_env(m)),
             false,
         );
-        registry
-            .register::<GeminiCliProvider, _>(|m| Box::pin(GeminiCliProvider::from_env(m)), false);
         registry.register::<GithubCopilotProvider, _>(
             |m| Box::pin(GithubCopilotProvider::from_env(m)),
             false,
