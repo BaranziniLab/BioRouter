@@ -1,6 +1,4 @@
 import { ModeSection } from '../mode/ModeSection';
-import DictationSection from '../dictation/DictationSection';
-import { SecurityToggle } from '../security/SecurityToggle';
 import { ResponseStylesSection } from '../response_styles/ResponseStylesSection';
 import { BioRouterHintsSection } from './BioRouterHintsSection';
 import { SpellcheckToggle } from './SpellcheckToggle';
@@ -20,12 +18,6 @@ export default function ChatSettingsSection() {
       </Card>
 
       <Card className="pb-2 rounded-lg">
-        <CardContent className="px-2">
-          <SecurityToggle />
-        </CardContent>
-      </Card>
-
-      <Card className="pb-2 rounded-lg">
         <CardHeader className="pb-0">
           <CardTitle className="">Response Styles</CardTitle>
           <CardDescription>Choose how BioRouter should format and style its responses</CardDescription>
@@ -37,7 +29,6 @@ export default function ChatSettingsSection() {
 
       <Card className="pb-2 rounded-lg">
         <CardContent className="px-2">
-          <DictationSection />
           <SpellcheckToggle />
         </CardContent>
       </Card>

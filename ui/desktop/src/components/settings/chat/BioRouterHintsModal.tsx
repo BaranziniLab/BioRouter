@@ -21,19 +21,6 @@ const HelpText = () => (
       extensions page. This extension is required to use .biorouterhints. You'll need to restart your
       session for .biorouterhints updates to take effect.
     </p>
-    <p>
-      See{' '}
-      <Button
-        variant="link"
-        className="text-blue-500 hover:text-blue-600 p-0 h-auto"
-        onClick={() =>
-          window.open('https://github.com/BaranziniLab/BioRouter/docs/guides/using-biorouterhints/', '_blank')
-        }
-      >
-        using .biorouterhints
-      </Button>{' '}
-      for more information.
-    </p>
   </div>
 );
 
