@@ -28,6 +28,10 @@ ui/desktop/src/bin/biorouter
 # Claude
 .claude
 
+# Sensitive credentials — never commit
+APPLE_DEVELOPER_NOTES.md
+UCSF-AppleDeveloper-Main_Application.p12
+
 debug_*.txt
 
 # Error log artifacts from mcp replay tests
