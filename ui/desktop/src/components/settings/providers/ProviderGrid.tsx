@@ -178,6 +178,9 @@ function ProviderCards({
   const providerCards = useMemo(() => {
     // providers needs to be an array
     const providersArray = Array.isArray(providers) ? providers : [];
+    // Remove CLI-wrapper providers from the UI
+    const HIDDEN_PROVIDERS = new Set(['claude-code', 'codex', 'cursor-agent']);
+    const visibleProviders = providersArray.filter((p) => !HIDDEN_PROVIDERS.has(p.name));
     // Sort providers by priority order, then alphabetically
     const priorityOrder: Record<string, number> = {
       azure_openai: 0,
@@ -185,8 +188,9 @@ function ProviderCards({
       anthropic: 2,
       openai: 3,
       google: 4,
+      ollama: 5,
     };
-    const sortedProviders = [...providersArray].sort((a, b) => {
+    const sortedProviders = [...visibleProviders].sort((a, b) => {
       const pa = priorityOrder[a.name] ?? 999;
       const pb = priorityOrder[b.name] ?? 999;
       if (pa !== pb) return pa - pb;
