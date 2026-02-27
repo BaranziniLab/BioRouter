@@ -83,6 +83,15 @@ module.exports = {
       },
     },
     {
+      name: '@electron-forge/maker-dmg',
+      platforms: ['darwin'],
+      config: {
+        icon: './src/images/icon.icns',
+        format: 'ULFO',
+        overwrite: true,
+      },
+    },
+    {
       name: '@electron-forge/maker-deb',
       config: {
         name: 'BioRouter',

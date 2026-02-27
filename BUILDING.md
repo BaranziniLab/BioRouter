@@ -13,9 +13,10 @@ This guide covers how to build BioRouter for all supported platforms from a macO
 5. [Step 4 — Build Linux App via Docker (.deb + .rpm)](#step-4--build-linux-app-via-docker-deb--rpm)
 6. [Step 5 — Restore macOS ARM Binary After Linux Build](#step-5--restore-macos-arm-binary-after-linux-build)
 7. [Step 6 — Build Windows App](#step-6--build-windows-app)
-8. [Output Artifacts](#output-artifacts)
-9. [One-Time Setup](#one-time-setup)
-10. [Troubleshooting](#troubleshooting)
+8. [Step 7 — Build macOS DMG Installers](#step-7--build-macos-dmg-installers)
+9. [Output Artifacts](#output-artifacts)
+10. [One-Time Setup](#one-time-setup)
+11. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -259,14 +260,65 @@ cp target/release/biorouter ui/desktop/src/bin/biorouter
 
 ---
 
+## Step 7 — Build macOS DMG Installers
+
+DMG files provide a standard macOS drag-to-install experience (open DMG → drag app to Applications). Both builds are signed and notarized.
+
+### Apple Silicon DMG
+
+Ensure the ARM64 binary is in `src/bin/` (it should be after Step 5/6):
+
+```bash
+file ui/desktop/src/bin/biorouter
+# Must show: Mach-O 64-bit executable arm64
+```
+
+```bash
+cd ui/desktop
+
+APPLE_ID=wanjungu001@gmail.com \
+APPLE_APP_SPECIFIC_PASSWORD=rznx-yhkv-ukxx-ycug \
+npm run bundle:dmg
+```
+
+Output: `out/make/BioRouter-1.20.0-arm64.dmg`
+
+### Intel DMG
+
+Swap in the Intel binary first:
+
+```bash
+cp target/x86_64-apple-darwin/release/biorouter ui/desktop/src/bin/biorouter
+```
+
+```bash
+cd ui/desktop
+
+APPLE_ID=wanjungu001@gmail.com \
+APPLE_APP_SPECIFIC_PASSWORD=rznx-yhkv-ukxx-ycug \
+npm run bundle:intel-dmg
+```
+
+Output: `out/make/BioRouter-1.20.0-x64.dmg`
+
+Restore the ARM binary after:
+
+```bash
+cp target/release/biorouter ui/desktop/src/bin/biorouter
+```
+
+---
+
 ## Output Artifacts
 
 After completing all steps, your distributable files are:
 
 | Platform | File | Location |
 |----------|------|----------|
-| macOS Apple Silicon | `BioRouter.zip` | `ui/desktop/out/BioRouter-darwin-arm64/` |
-| macOS Intel | `BioRouter_intel_mac.zip` | `ui/desktop/out/BioRouter-darwin-x64/` |
+| macOS Apple Silicon (DMG) | `BioRouter-1.20.0-arm64.dmg` | `ui/desktop/out/make/` |
+| macOS Intel (DMG) | `BioRouter-1.20.0-x64.dmg` | `ui/desktop/out/make/` |
+| macOS Apple Silicon (zip) | `BioRouter.zip` | `ui/desktop/out/BioRouter-darwin-arm64/` |
+| macOS Intel (zip) | `BioRouter_intel_mac.zip` | `ui/desktop/out/BioRouter-darwin-x64/` |
 | Linux Ubuntu / Pop!_OS | `biorouter_1.20.0_amd64.deb` | `ui/desktop/out/make/deb/x64/` |
 | Linux Fedora / RHEL | `BioRouter-1.20.0-1.x86_64.rpm` | `ui/desktop/out/make/rpm/x64/` |
 | Windows x64 | `BioRouter-win32-x64-1.20.0.zip` | `ui/desktop/out/make/zip/win32/x64/` |
