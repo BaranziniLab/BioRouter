@@ -17,7 +17,7 @@
 
 ## What is BioRouter?
 
-UCSF BioRouter is an AI-powered integrated research environment that unifies commercial, institution-hosted, and local LLMs, AI agents, Information Commons databases, and customizable workflows into one extensible tool for explorative analysis, prototyping, automation, and federated cross-institution collaboration.
+[UCSF BioRouter](https://baranzinilab.github.io/biorouter-landing/intro.html) is an AI-powered integrated research environment that unifies commercial, institution-hosted, and local LLMs, AI agents, Information Commons databases, and customizable workflows into one extensible tool for explorative analysis, prototyping, automation, and federated cross-institution collaboration.
 
 Think of BioRouter as your intelligent research co-pilot — one that can read papers, query databases, run code, manage files, and carry out complex multi-step research tasks, all from a single unified interface.
 
@@ -46,7 +46,7 @@ Native installers for all major platforms are available in every release:
 | **Linux** Ubuntu / Pop!_OS (x64) | `.deb` — `sudo dpkg -i biorouter_*.deb` |
 | **Linux** Fedora / RHEL (x64) | `.rpm` — `sudo rpm -i BioRouter-*.rpm` |
 
-**[Download BioRouter →](https://github.com/BaranziniLab/BioRouter/releases)**
+**[Download BioRouter →](https://baranzinilab.github.io/biorouter-landing/download.html)**
 
 Always install the newest version for the latest features and fixes.
 
@@ -121,7 +121,7 @@ If you use BioRouter in your research, please cite:
 ```bibtex
 @software{biorouter2025,
   title  = {UCSF BioRouter: An AI-Powered Integrated Research Environment},
-  author = {Gu, Wanjun and Baranzini, Sergio E.},
+  author = {Gu, Wanjun, Bellucci, Gianmarco and Baranzini, Sergio E.},
   year   = {2025},
   url    = {https://github.com/BaranziniLab/BioRouter}
 }
