@@ -123,7 +123,7 @@ pub enum ConfigValueResponse {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub enum CommandType {
     Builtin,
-    Recipe,
+    Workflow,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -444,8 +444,8 @@ pub async fn get_slash_commands() -> Result<Json<SlashCommandsResponse>, StatusC
         .iter()
         .map(|command| SlashCommand {
             command: command.command.clone(),
-            help: command.recipe_path.clone(),
-            command_type: CommandType::Recipe,
+            help: command.workflow_path.clone(),
+            command_type: CommandType::Workflow,
         })
         .collect();
 

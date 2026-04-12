@@ -31,7 +31,7 @@ export const getItemIcon = (item: DisplayItem): IconInfo => {
   switch (item.itemType) {
     case 'Builtin':
       return { Icon: Zap, color: '#3b82f6' }; // Blue
-    case 'Recipe':
+    case 'Workflow':
       return { Icon: BookOpen, color: '#10b981' }; // Green
     case 'Directory':
       return { Icon: Folder, color: '#f59e0b' }; // Amber

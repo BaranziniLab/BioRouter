@@ -1,5 +1,5 @@
 import { NavigateFunction } from 'react-router-dom';
-import { Recipe } from '../api/types.gen';
+import { Workflow } from '../api/types.gen';
 
 export type View =
   | 'welcome'
@@ -16,7 +16,7 @@ export type View =
   | 'schedules'
   | 'sharedSession'
   | 'loading'
-  | 'recipes'
+  | 'workflows'
   | 'permission';
 
 export type ViewOptions = {
@@ -25,7 +25,7 @@ export type ViewOptions = {
   sessionDetails?: unknown;
   error?: string;
   baseUrl?: string;
-  recipe?: Recipe;
+  workflow?: Workflow;
   parentView?: View;
   parentViewOptions?: ViewOptions;
   disableAnimation?: boolean;
@@ -53,8 +53,8 @@ export const createNavigationHandler = (navigate: NavigateFunction) => {
       case 'schedules':
         navigate('/schedules', { state: options });
         break;
-      case 'recipes':
-        navigate('/recipes', { state: options });
+      case 'workflows':
+        navigate('/workflows', { state: options });
         break;
       case 'permission':
         navigate('/permission', { state: options });

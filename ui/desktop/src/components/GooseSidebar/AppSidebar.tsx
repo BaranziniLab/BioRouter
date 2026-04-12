@@ -67,10 +67,10 @@ const menuItems: NavigationEntry[] = [
   { type: 'separator' },
   {
     type: 'item',
-    path: '/recipes',
-    label: 'Recipes',
+    path: '/workflows',
+    label: 'Workflows',
     icon: FileText,
-    tooltip: 'Browse your saved recipes',
+    tooltip: 'Browse your saved workflows',
   },
   {
     type: 'item',

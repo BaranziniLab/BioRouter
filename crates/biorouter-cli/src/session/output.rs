@@ -518,8 +518,8 @@ fn render_subagent_request(call: &CallToolRequestParams, debug: bool) {
     print_tool_header(call);
 
     if let Some(args) = &call.arguments {
-        if let Some(Value::String(subrecipe)) = args.get("subrecipe") {
-            println!("{}: {}", style("subrecipe").dim(), style(subrecipe).cyan());
+        if let Some(Value::String(subworkflow)) = args.get("subworkflow") {
+            println!("{}: {}", style("subworkflow").dim(), style(subworkflow).cyan());
         }
 
         if let Some(Value::String(instructions)) = args.get("instructions") {
@@ -540,7 +540,7 @@ fn render_subagent_request(call: &CallToolRequestParams, debug: bool) {
             print_params(&Some(params.clone()), 1, debug);
         }
 
-        let skip_keys = ["subrecipe", "instructions", "parameters"];
+        let skip_keys = ["subworkflow", "instructions", "parameters"];
         let mut other_args = serde_json::Map::new();
         for (k, v) in args {
             if !skip_keys.contains(&k.as_str()) {

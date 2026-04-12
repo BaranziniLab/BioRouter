@@ -122,14 +122,14 @@ vi.mock('./contexts/ChatContext', () => ({
       id: 'test-id',
       name: 'Test Chat',
       messages: [],
-      recipe: null,
+      workflow: null,
     },
     setChat: vi.fn(),
     setPairChat: vi.fn(), // Keep this from HEAD
     resetChat: vi.fn(),
     hasActiveSession: false,
-    setRecipe: vi.fn(),
-    clearRecipe: vi.fn(),
+    setWorkflow: vi.fn(),
+    clearWorkflow: vi.fn(),
     contextKey: 'hub',
   }),
   DEFAULT_CHAT_TITLE: 'New Chat', // Keep this from HEAD

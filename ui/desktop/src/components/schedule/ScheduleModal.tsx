@@ -4,14 +4,14 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { ScheduledJob } from '../../schedule';
 import { CronPicker } from './CronPicker';
-import { Recipe, decodeRecipe } from '../../recipe';
-import { getStorageDirectory } from '../../recipe/recipe_management';
+import { Workflow, decodeWorkflow } from '../../workflow';
+import { getStorageDirectory } from '../../workflow/workflow_management';
 import ClockIcon from '../../assets/clock-icon.svg';
 import * as yaml from 'yaml';
 
 export interface NewSchedulePayload {
   id: string;
-  recipe_source: string;
+  workflow_source: string;
   cron: string;
   execution_mode?: string;
 }
@@ -43,7 +43,7 @@ interface CleanExtension {
   bundled?: boolean;
 }
 
-interface CleanRecipe {
+interface CleanWorkflow {
   title: string;
   description: string;
   instructions?: string;
@@ -60,45 +60,45 @@ interface CleanRecipe {
   };
 }
 
-async function parseDeepLink(deepLink: string): Promise<Recipe | null> {
+async function parseDeepLink(deepLink: string): Promise<Workflow | null> {
   try {
     const url = new URL(deepLink);
-    if (url.protocol !== 'biorouter:' || (url.hostname !== 'bot' && url.hostname !== 'recipe')) {
+    if (url.protocol !== 'biorouter:' || (url.hostname !== 'bot' && url.hostname !== 'workflow')) {
       return null;
     }
 
-    const recipeParam = url.searchParams.get('config');
-    if (!recipeParam) {
+    const workflowParam = url.searchParams.get('config');
+    if (!workflowParam) {
       return null;
     }
 
-    return await decodeRecipe(recipeParam);
+    return await decodeWorkflow(workflowParam);
   } catch (error) {
     console.error('Failed to parse deep link:', error);
     return null;
   }
 }
 
-function recipeToYaml(recipe: Recipe): string {
-  const cleanRecipe: CleanRecipe = {
-    title: recipe.title,
-    description: recipe.description,
+function workflowToYaml(workflow: Workflow): string {
+  const cleanWorkflow: CleanWorkflow = {
+    title: workflow.title,
+    description: workflow.description,
   };
 
-  if (recipe.instructions) {
-    cleanRecipe.instructions = recipe.instructions;
+  if (workflow.instructions) {
+    cleanWorkflow.instructions = workflow.instructions;
   }
 
-  if (recipe.prompt) {
-    cleanRecipe.prompt = recipe.prompt;
+  if (workflow.prompt) {
+    cleanWorkflow.prompt = workflow.prompt;
   }
 
-  if (recipe.activities && recipe.activities.length > 0) {
-    cleanRecipe.activities = recipe.activities;
+  if (workflow.activities && workflow.activities.length > 0) {
+    cleanWorkflow.activities = workflow.activities;
   }
 
-  if (recipe.extensions && recipe.extensions.length > 0) {
-    cleanRecipe.extensions = recipe.extensions.map((ext) => {
+  if (workflow.extensions && workflow.extensions.length > 0) {
+    cleanWorkflow.extensions = workflow.extensions.map((ext) => {
       const cleanExt: CleanExtension = {
         name: ext.name,
         type: 'builtin',
@@ -178,18 +178,18 @@ function recipeToYaml(recipe: Recipe): string {
     });
   }
 
-  if (recipe.author) {
-    cleanRecipe.author = {
-      contact: recipe.author.contact || undefined,
-      metadata: recipe.author.metadata || undefined,
+  if (workflow.author) {
+    cleanWorkflow.author = {
+      contact: workflow.author.contact || undefined,
+      metadata: workflow.author.metadata || undefined,
     };
   }
 
-  cleanRecipe.schedule = {
-    window_title: `${recipe.title} - Scheduled`,
+  cleanWorkflow.schedule = {
+    window_title: `${workflow.title} - Scheduled`,
   };
 
-  return yaml.stringify(cleanRecipe);
+  return yaml.stringify(cleanWorkflow);
 }
 
 const modalLabelClassName = 'block text-sm font-medium text-text-prominent mb-1';
@@ -207,9 +207,9 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
 
   const [scheduleId, setScheduleId] = useState<string>('');
   const [sourceType, setSourceType] = useState<SourceType>('file');
-  const [recipeSourcePath, setRecipeSourcePath] = useState<string>('');
+  const [workflowSourcePath, setWorkflowSourcePath] = useState<string>('');
   const [deepLinkInput, setDeepLinkInput] = useState<string>('');
-  const [parsedRecipe, setParsedRecipe] = useState<Recipe | null>(null);
+  const [parsedWorkflow, setParsedWorkflow] = useState<Workflow | null>(null);
   const [cronExpression, setCronExpression] = useState<string>('0 0 14 * * *');
   const [internalValidationError, setInternalValidationError] = useState<string | null>(null);
   const [isValid, setIsValid] = useState(true);
@@ -220,30 +220,30 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
 
     if (value.trim()) {
       try {
-        const recipe = await parseDeepLink(value.trim());
-        if (recipe) {
-          setParsedRecipe(recipe);
-          if (recipe.title) {
-            const cleanId = recipe.title
+        const workflow = await parseDeepLink(value.trim());
+        if (workflow) {
+          setParsedWorkflow(workflow);
+          if (workflow.title) {
+            const cleanId = workflow.title
               .toLowerCase()
               .replace(/[^a-z0-9-]/g, '-')
               .replace(/-+/g, '-');
             setScheduleId(cleanId);
           }
         } else {
-          setParsedRecipe(null);
+          setParsedWorkflow(null);
           setInternalValidationError(
-            'Invalid deep link format. Please use a biorouter://bot or biorouter://recipe link.'
+            'Invalid deep link format. Please use a biorouter://bot or biorouter://workflow link.'
           );
         }
       } catch {
-        setParsedRecipe(null);
+        setParsedWorkflow(null);
         setInternalValidationError(
-          'Failed to parse deep link. Please ensure using a biorouter://bot or biorouter://recipe link and try again.'
+          'Failed to parse deep link. Please ensure using a biorouter://bot or biorouter://workflow link and try again.'
         );
       }
     } else {
-      setParsedRecipe(null);
+      setParsedWorkflow(null);
     }
   }, []);
 
@@ -255,9 +255,9 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
       } else {
         setScheduleId('');
         setSourceType('file');
-        setRecipeSourcePath('');
+        setWorkflowSourcePath('');
         setDeepLinkInput('');
-        setParsedRecipe(null);
+        setParsedWorkflow(null);
         setCronExpression('0 0 14 * * *');
         setInternalValidationError(null);
         if (initialDeepLink) {
@@ -273,7 +273,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
     const filePath = await window.electron.selectFileOrDirectory(defaultPath);
     if (filePath) {
       if (filePath.endsWith('.yaml') || filePath.endsWith('.yml')) {
-        setRecipeSourcePath(filePath);
+        setWorkflowSourcePath(filePath);
         setInternalValidationError(null);
       } else {
         setInternalValidationError('Invalid file type: Please select a YAML file (.yaml or .yml)');
@@ -295,47 +295,47 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
       return;
     }
 
-    let finalRecipeSource = '';
+    let finalWorkflowSource = '';
 
     if (sourceType === 'file') {
-      if (!recipeSourcePath) {
-        setInternalValidationError('Recipe source file is required.');
+      if (!workflowSourcePath) {
+        setInternalValidationError('Workflow source file is required.');
         return;
       }
-      finalRecipeSource = recipeSourcePath;
+      finalWorkflowSource = workflowSourcePath;
     } else if (sourceType === 'deeplink') {
       if (!deepLinkInput.trim()) {
         setInternalValidationError('Deep link is required.');
         return;
       }
-      if (!parsedRecipe) {
+      if (!parsedWorkflow) {
         setInternalValidationError('Invalid deep link. Please check the format.');
         return;
       }
 
       try {
-        const yamlContent = recipeToYaml(parsedRecipe);
+        const yamlContent = workflowToYaml(parsedWorkflow);
         const tempFileName = `schedule-${scheduleId}-${Date.now()}.yaml`;
         const tempDir = window.electron.getConfig().BIOROUTER_WORKING_DIR || '.';
         const tempFilePath = `${tempDir}/${tempFileName}`;
 
         const writeSuccess = await window.electron.writeFile(tempFilePath, yamlContent);
         if (!writeSuccess) {
-          setInternalValidationError('Failed to create temporary recipe file.');
+          setInternalValidationError('Failed to create temporary workflow file.');
           return;
         }
 
-        finalRecipeSource = tempFilePath;
+        finalWorkflowSource = tempFilePath;
       } catch (error) {
-        console.error('Failed to convert recipe to YAML:', error);
-        setInternalValidationError('Failed to process the recipe from deep link.');
+        console.error('Failed to convert workflow to YAML:', error);
+        setInternalValidationError('Failed to process the workflow from deep link.');
         return;
       }
     }
 
     const newSchedulePayload: NewSchedulePayload = {
       id: scheduleId.trim(),
-      recipe_source: finalRecipeSource,
+      workflow_source: finalWorkflowSource,
       cron: cronExpression,
     };
 
@@ -429,9 +429,9 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                       >
                         Browse for YAML file...
                       </Button>
-                      {recipeSourcePath && (
+                      {workflowSourcePath && (
                         <p className="mt-2 text-xs text-gray-500 dark:text-gray-400 italic">
-                          Selected: {recipeSourcePath}
+                          Selected: {workflowSourcePath}
                         </p>
                       )}
                     </div>
@@ -443,19 +443,19 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                         type="text"
                         value={deepLinkInput}
                         onChange={(e) => handleDeepLinkChange(e.target.value)}
-                        placeholder="Paste biorouter://bot or biorouter://recipe link here..."
+                        placeholder="Paste biorouter://bot or biorouter://workflow link here..."
                         className="rounded-full"
                       />
-                      {parsedRecipe && (
+                      {parsedWorkflow && (
                         <div className="mt-2 p-2 bg-green-100 dark:bg-green-900/30 rounded-md border border-green-500/50">
                           <p className="text-xs text-green-700 dark:text-green-300 font-medium">
-                            ✓ Recipe parsed successfully
+                            ✓ Workflow parsed successfully
                           </p>
                           <p className="text-xs text-green-600 dark:text-green-400">
-                            Title: {parsedRecipe.title}
+                            Title: {parsedWorkflow.title}
                           </p>
                           <p className="text-xs text-green-600 dark:text-green-400">
-                            Description: {parsedRecipe.description}
+                            Description: {parsedWorkflow.description}
                           </p>
                         </div>
                       )}

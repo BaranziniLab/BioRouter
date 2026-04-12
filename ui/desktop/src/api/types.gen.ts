@@ -46,6 +46,13 @@ export type AuthorRequest = {
     metadata?: string | null;
 };
 
+/**
+ * A BioRouter App combining MCP resource data with BioRouter-specific metadata
+ */
+export type BioRouterApp = McpAppResource & (WindowProps | null) & {
+    mcpServer?: string | null;
+};
+
 export type CallToolRequest = {
     arguments: unknown;
     name: string;
@@ -61,8 +68,8 @@ export type CallToolResponse = {
 
 export type ChatRequest = {
     conversation_so_far?: Array<Message> | null;
-    recipe_name?: string | null;
-    recipe_version?: string | null;
+    workflow_name?: string | null;
+    workflow_version?: string | null;
     session_id: string;
     user_message: Message;
 };
@@ -71,7 +78,7 @@ export type CheckProviderRequest = {
     provider: string;
 };
 
-export type CommandType = 'Builtin' | 'Recipe';
+export type CommandType = 'Builtin' | 'Workflow';
 
 /**
  * Configuration key metadata for provider setup
@@ -122,20 +129,20 @@ export type Content = RawTextContent | RawImageContent | RawEmbeddedResource | R
 
 export type Conversation = Array<Message>;
 
-export type CreateRecipeRequest = {
+export type CreateWorkflowRequest = {
     author?: AuthorRequest | null;
     session_id: string;
 };
 
-export type CreateRecipeResponse = {
+export type CreateWorkflowResponse = {
     error?: string | null;
-    recipe?: Recipe | null;
+    workflow?: Workflow | null;
 };
 
 export type CreateScheduleRequest = {
     cron: string;
     id: string;
-    recipe_source: string;
+    workflow_source: string;
 };
 
 /**
@@ -168,15 +175,15 @@ export type DeclarativeProviderConfig = {
     timeout_seconds?: number | null;
 };
 
-export type DecodeRecipeRequest = {
+export type DecodeWorkflowRequest = {
     deeplink: string;
 };
 
-export type DecodeRecipeResponse = {
-    recipe: Recipe;
+export type DecodeWorkflowResponse = {
+    workflow: Workflow;
 };
 
-export type DeleteRecipeRequest = {
+export type DeleteWorkflowRequest = {
     id: string;
 };
 
@@ -210,11 +217,11 @@ export type EmbeddedResource = {
     resource: ResourceContents;
 };
 
-export type EncodeRecipeRequest = {
-    recipe: Recipe;
+export type EncodeWorkflowRequest = {
+    workflow: Workflow;
 };
 
-export type EncodeRecipeResponse = {
+export type EncodeWorkflowResponse = {
     deeplink: string;
 };
 
@@ -364,13 +371,6 @@ export type GetToolsQuery = {
     session_id: string;
 };
 
-/**
- * A Goose App combining MCP resource data with Goose-specific metadata
- */
-export type GooseApp = McpAppResource & (WindowProps | null) & {
-    mcpServer?: string | null;
-};
-
 export type Icon = {
     mimeType?: string;
     sizes?: Array<string>;
@@ -411,11 +411,11 @@ export type ListAppsRequest = {
 };
 
 export type ListAppsResponse = {
-    apps: Array<GooseApp>;
+    apps: Array<BioRouterApp>;
 };
 
-export type ListRecipeResponse = {
-    manifests: Array<RecipeManifest>;
+export type ListWorkflowResponse = {
+    manifests: Array<WorkflowManifest>;
 };
 
 export type ListSchedulesResponse = {
@@ -583,12 +583,12 @@ export type ModelInfo = {
     supports_cache_control?: boolean | null;
 };
 
-export type ParseRecipeRequest = {
+export type ParseWorkflowRequest = {
     content: string;
 };
 
-export type ParseRecipeResponse = {
-    recipe: Recipe;
+export type ParseWorkflowResponse = {
+    workflow: Workflow;
 };
 
 /**
@@ -725,49 +725,49 @@ export type ReadResourceResponse = {
     uri: string;
 };
 
-export type Recipe = {
+export type Workflow = {
     activities?: Array<string> | null;
     author?: Author | null;
     description: string;
     extensions?: Array<ExtensionConfig> | null;
     instructions?: string | null;
-    parameters?: Array<RecipeParameter> | null;
+    parameters?: Array<WorkflowParameter> | null;
     prompt?: string | null;
     response?: Response | null;
     retry?: RetryConfig | null;
     settings?: Settings | null;
-    sub_recipes?: Array<SubRecipe> | null;
+    sub_workflows?: Array<SubWorkflow> | null;
     title: string;
     version?: string;
 };
 
-export type RecipeManifest = {
+export type WorkflowManifest = {
     file_path: string;
     id: string;
     last_modified: string;
-    recipe: Recipe;
+    workflow: Workflow;
     schedule_cron?: string | null;
     slash_command?: string | null;
 };
 
-export type RecipeParameter = {
+export type WorkflowParameter = {
     default?: string | null;
     description: string;
-    input_type: RecipeParameterInputType;
+    input_type: WorkflowParameterInputType;
     key: string;
     options?: Array<string> | null;
-    requirement: RecipeParameterRequirement;
+    requirement: WorkflowParameterRequirement;
 };
 
-export type RecipeParameterInputType = 'string' | 'number' | 'boolean' | 'date' | 'file' | 'select';
+export type WorkflowParameterInputType = 'string' | 'number' | 'boolean' | 'date' | 'file' | 'select';
 
-export type RecipeParameterRequirement = 'required' | 'optional' | 'user_prompt';
+export type WorkflowParameterRequirement = 'required' | 'optional' | 'user_prompt';
 
-export type RecipeToYamlRequest = {
-    recipe: Recipe;
+export type WorkflowToYamlRequest = {
+    workflow: Workflow;
 };
 
-export type RecipeToYamlResponse = {
+export type WorkflowToYamlResponse = {
     yaml: string;
 };
 
@@ -826,11 +826,11 @@ export type ResumeAgentResponse = {
 };
 
 /**
- * Configuration for retry logic in recipe execution
+ * Configuration for retry logic in workflow execution
  */
 export type RetryConfig = {
     /**
-     * List of success checks to validate recipe completion
+     * List of success checks to validate workflow completion
      */
     checks: Array<SuccessCheck>;
     /**
@@ -857,24 +857,24 @@ export type RunNowResponse = {
     session_id: string;
 };
 
-export type SaveRecipeRequest = {
+export type SaveWorkflowRequest = {
     id?: string | null;
-    recipe: Recipe;
+    workflow: Workflow;
 };
 
-export type SaveRecipeResponse = {
+export type SaveWorkflowResponse = {
     id: string;
 };
 
-export type ScanRecipeRequest = {
-    recipe: Recipe;
+export type ScanWorkflowRequest = {
+    workflow: Workflow;
 };
 
-export type ScanRecipeResponse = {
+export type ScanWorkflowResponse = {
     has_security_warnings: boolean;
 };
 
-export type ScheduleRecipeRequest = {
+export type ScheduleWorkflowRequest = {
     cron_schedule?: string | null;
     id: string;
 };
@@ -904,12 +904,12 @@ export type Session = {
     name: string;
     output_tokens?: number | null;
     provider_name?: string | null;
-    recipe?: Recipe | null;
+    workflow?: Workflow | null;
     schedule_id?: string | null;
     session_type?: SessionType;
     total_tokens?: number | null;
     updated_at: string;
-    user_recipe_values?: {
+    user_workflow_values?: {
         [key: string]: string;
     } | null;
     user_set_name?: boolean;
@@ -964,8 +964,8 @@ export type SetSlashCommandRequest = {
 };
 
 export type Settings = {
-    goose_model?: string | null;
-    goose_provider?: string | null;
+    biorouter_model?: string | null;
+    biorouter_provider?: string | null;
     temperature?: number | null;
 };
 
@@ -986,9 +986,9 @@ export type SlashCommandsResponse = {
 
 export type StartAgentRequest = {
     extension_overrides?: Array<ExtensionConfig> | null;
-    recipe?: Recipe | null;
-    recipe_deeplink?: string | null;
-    recipe_id?: string | null;
+    workflow?: Workflow | null;
+    workflow_deeplink?: string | null;
+    workflow_id?: string | null;
     working_dir: string;
 };
 
@@ -996,7 +996,7 @@ export type StopAgentRequest = {
     session_id: string;
 };
 
-export type SubRecipe = {
+export type SubWorkflow = {
     description?: string | null;
     name: string;
     path: string;
@@ -1198,17 +1198,17 @@ export type UpdateSessionNameRequest = {
     name: string;
 };
 
-export type UpdateSessionUserRecipeValuesRequest = {
+export type UpdateSessionUserWorkflowValuesRequest = {
     /**
-     * Recipe parameter values entered by the user
+     * Workflow parameter values entered by the user
      */
-    userRecipeValues: {
+    userWorkflowValues: {
         [key: string]: string;
     };
 };
 
-export type UpdateSessionUserRecipeValuesResponse = {
-    recipe: Recipe;
+export type UpdateSessionUserWorkflowValuesResponse = {
+    workflow: Workflow;
 };
 
 export type UpdateWorkingDirRequest = {
@@ -2274,14 +2274,14 @@ export type McpUiProxyResponses = {
     200: unknown;
 };
 
-export type CreateRecipeData = {
-    body: CreateRecipeRequest;
+export type CreateWorkflowData = {
+    body: CreateWorkflowRequest;
     path?: never;
     query?: never;
-    url: '/recipes/create';
+    url: '/workflows/create';
 };
 
-export type CreateRecipeErrors = {
+export type CreateWorkflowErrors = {
     /**
      * Bad request
      */
@@ -2296,52 +2296,52 @@ export type CreateRecipeErrors = {
     500: unknown;
 };
 
-export type CreateRecipeResponses = {
+export type CreateWorkflowResponses = {
     /**
-     * Recipe created successfully
+     * Workflow created successfully
      */
-    200: CreateRecipeResponse;
+    200: CreateWorkflowResponse;
 };
 
-export type CreateRecipeResponse2 = CreateRecipeResponses[keyof CreateRecipeResponses];
+export type CreateWorkflowResponse2 = CreateWorkflowResponses[keyof CreateWorkflowResponses];
 
-export type DecodeRecipeData = {
-    body: DecodeRecipeRequest;
+export type DecodeWorkflowData = {
+    body: DecodeWorkflowRequest;
     path?: never;
     query?: never;
-    url: '/recipes/decode';
+    url: '/workflows/decode';
 };
 
-export type DecodeRecipeErrors = {
+export type DecodeWorkflowErrors = {
     /**
      * Bad request
      */
     400: unknown;
 };
 
-export type DecodeRecipeResponses = {
+export type DecodeWorkflowResponses = {
     /**
-     * Recipe decoded successfully
+     * Workflow decoded successfully
      */
-    200: DecodeRecipeResponse;
+    200: DecodeWorkflowResponse;
 };
 
-export type DecodeRecipeResponse2 = DecodeRecipeResponses[keyof DecodeRecipeResponses];
+export type DecodeWorkflowResponse2 = DecodeWorkflowResponses[keyof DecodeWorkflowResponses];
 
-export type DeleteRecipeData = {
-    body: DeleteRecipeRequest;
+export type DeleteWorkflowData = {
+    body: DeleteWorkflowRequest;
     path?: never;
     query?: never;
-    url: '/recipes/delete';
+    url: '/workflows/delete';
 };
 
-export type DeleteRecipeErrors = {
+export type DeleteWorkflowErrors = {
     /**
      * Unauthorized - Invalid or missing API key
      */
     401: unknown;
     /**
-     * Recipe not found
+     * Workflow not found
      */
     404: unknown;
     /**
@@ -2350,46 +2350,46 @@ export type DeleteRecipeErrors = {
     500: unknown;
 };
 
-export type DeleteRecipeResponses = {
+export type DeleteWorkflowResponses = {
     /**
-     * Recipe deleted successfully
+     * Workflow deleted successfully
      */
     204: void;
 };
 
-export type DeleteRecipeResponse = DeleteRecipeResponses[keyof DeleteRecipeResponses];
+export type DeleteWorkflowResponse = DeleteWorkflowResponses[keyof DeleteWorkflowResponses];
 
-export type EncodeRecipeData = {
-    body: EncodeRecipeRequest;
+export type EncodeWorkflowData = {
+    body: EncodeWorkflowRequest;
     path?: never;
     query?: never;
-    url: '/recipes/encode';
+    url: '/workflows/encode';
 };
 
-export type EncodeRecipeErrors = {
+export type EncodeWorkflowErrors = {
     /**
      * Bad request
      */
     400: unknown;
 };
 
-export type EncodeRecipeResponses = {
+export type EncodeWorkflowResponses = {
     /**
-     * Recipe encoded successfully
+     * Workflow encoded successfully
      */
-    200: EncodeRecipeResponse;
+    200: EncodeWorkflowResponse;
 };
 
-export type EncodeRecipeResponse2 = EncodeRecipeResponses[keyof EncodeRecipeResponses];
+export type EncodeWorkflowResponse2 = EncodeWorkflowResponses[keyof EncodeWorkflowResponses];
 
-export type ListRecipesData = {
+export type ListWorkflowsData = {
     body?: never;
     path?: never;
     query?: never;
-    url: '/recipes/list';
+    url: '/workflows/list';
 };
 
-export type ListRecipesErrors = {
+export type ListWorkflowsErrors = {
     /**
      * Unauthorized - Invalid or missing API key
      */
@@ -2400,25 +2400,25 @@ export type ListRecipesErrors = {
     500: unknown;
 };
 
-export type ListRecipesResponses = {
+export type ListWorkflowsResponses = {
     /**
-     * Get recipe list successfully
+     * Get workflow list successfully
      */
-    200: ListRecipeResponse;
+    200: ListWorkflowResponse;
 };
 
-export type ListRecipesResponse = ListRecipesResponses[keyof ListRecipesResponses];
+export type ListWorkflowsResponse = ListWorkflowsResponses[keyof ListWorkflowsResponses];
 
-export type ParseRecipeData = {
-    body: ParseRecipeRequest;
+export type ParseWorkflowData = {
+    body: ParseWorkflowRequest;
     path?: never;
     query?: never;
-    url: '/recipes/parse';
+    url: '/workflows/parse';
 };
 
-export type ParseRecipeErrors = {
+export type ParseWorkflowErrors = {
     /**
-     * Bad request - Invalid recipe format
+     * Bad request - Invalid workflow format
      */
     400: ErrorResponse;
     /**
@@ -2427,25 +2427,25 @@ export type ParseRecipeErrors = {
     500: ErrorResponse;
 };
 
-export type ParseRecipeError = ParseRecipeErrors[keyof ParseRecipeErrors];
+export type ParseWorkflowError = ParseWorkflowErrors[keyof ParseWorkflowErrors];
 
-export type ParseRecipeResponses = {
+export type ParseWorkflowResponses = {
     /**
-     * Recipe parsed successfully
+     * Workflow parsed successfully
      */
-    200: ParseRecipeResponse;
+    200: ParseWorkflowResponse;
 };
 
-export type ParseRecipeResponse2 = ParseRecipeResponses[keyof ParseRecipeResponses];
+export type ParseWorkflowResponse2 = ParseWorkflowResponses[keyof ParseWorkflowResponses];
 
-export type SaveRecipeData = {
-    body: SaveRecipeRequest;
+export type SaveWorkflowData = {
+    body: SaveWorkflowRequest;
     path?: never;
     query?: never;
-    url: '/recipes/save';
+    url: '/workflows/save';
 };
 
-export type SaveRecipeErrors = {
+export type SaveWorkflowErrors = {
     /**
      * Unauthorized
      */
@@ -2460,43 +2460,43 @@ export type SaveRecipeErrors = {
     500: ErrorResponse;
 };
 
-export type SaveRecipeError = SaveRecipeErrors[keyof SaveRecipeErrors];
+export type SaveWorkflowError = SaveWorkflowErrors[keyof SaveWorkflowErrors];
 
-export type SaveRecipeResponses = {
+export type SaveWorkflowResponses = {
     /**
-     * Recipe saved to file successfully
+     * Workflow saved to file successfully
      */
-    204: SaveRecipeResponse;
+    204: SaveWorkflowResponse;
 };
 
-export type SaveRecipeResponse2 = SaveRecipeResponses[keyof SaveRecipeResponses];
+export type SaveWorkflowResponse2 = SaveWorkflowResponses[keyof SaveWorkflowResponses];
 
-export type ScanRecipeData = {
-    body: ScanRecipeRequest;
+export type ScanWorkflowData = {
+    body: ScanWorkflowRequest;
     path?: never;
     query?: never;
-    url: '/recipes/scan';
+    url: '/workflows/scan';
 };
 
-export type ScanRecipeResponses = {
+export type ScanWorkflowResponses = {
     /**
-     * Recipe scanned successfully
+     * Workflow scanned successfully
      */
-    200: ScanRecipeResponse;
+    200: ScanWorkflowResponse;
 };
 
-export type ScanRecipeResponse2 = ScanRecipeResponses[keyof ScanRecipeResponses];
+export type ScanWorkflowResponse2 = ScanWorkflowResponses[keyof ScanWorkflowResponses];
 
-export type ScheduleRecipeData = {
-    body: ScheduleRecipeRequest;
+export type ScheduleWorkflowData = {
+    body: ScheduleWorkflowRequest;
     path?: never;
     query?: never;
-    url: '/recipes/schedule';
+    url: '/workflows/schedule';
 };
 
-export type ScheduleRecipeErrors = {
+export type ScheduleWorkflowErrors = {
     /**
-     * Recipe not found
+     * Workflow not found
      */
     404: unknown;
     /**
@@ -2505,23 +2505,23 @@ export type ScheduleRecipeErrors = {
     500: unknown;
 };
 
-export type ScheduleRecipeResponses = {
+export type ScheduleWorkflowResponses = {
     /**
-     * Recipe scheduled successfully
+     * Workflow scheduled successfully
      */
     200: unknown;
 };
 
-export type SetRecipeSlashCommandData = {
+export type SetWorkflowSlashCommandData = {
     body: SetSlashCommandRequest;
     path?: never;
     query?: never;
-    url: '/recipes/slash-command';
+    url: '/workflows/slash-command';
 };
 
-export type SetRecipeSlashCommandErrors = {
+export type SetWorkflowSlashCommandErrors = {
     /**
-     * Recipe not found
+     * Workflow not found
      */
     404: unknown;
     /**
@@ -2530,37 +2530,37 @@ export type SetRecipeSlashCommandErrors = {
     500: unknown;
 };
 
-export type SetRecipeSlashCommandResponses = {
+export type SetWorkflowSlashCommandResponses = {
     /**
      * Slash command set successfully
      */
     200: unknown;
 };
 
-export type RecipeToYamlData = {
-    body: RecipeToYamlRequest;
+export type WorkflowToYamlData = {
+    body: WorkflowToYamlRequest;
     path?: never;
     query?: never;
-    url: '/recipes/to-yaml';
+    url: '/workflows/to-yaml';
 };
 
-export type RecipeToYamlErrors = {
+export type WorkflowToYamlErrors = {
     /**
-     * Bad request - Failed to convert recipe to YAML
+     * Bad request - Failed to convert workflow to YAML
      */
     400: ErrorResponse;
 };
 
-export type RecipeToYamlError = RecipeToYamlErrors[keyof RecipeToYamlErrors];
+export type WorkflowToYamlError = WorkflowToYamlErrors[keyof WorkflowToYamlErrors];
 
-export type RecipeToYamlResponses = {
+export type WorkflowToYamlResponses = {
     /**
-     * Recipe converted to YAML successfully
+     * Workflow converted to YAML successfully
      */
-    200: RecipeToYamlResponse;
+    200: WorkflowToYamlResponse;
 };
 
-export type RecipeToYamlResponse2 = RecipeToYamlResponses[keyof RecipeToYamlResponses];
+export type WorkflowToYamlResponse2 = WorkflowToYamlResponses[keyof WorkflowToYamlResponses];
 
 export type ReplyData = {
     body: ChatRequest;
@@ -2598,7 +2598,7 @@ export type CreateScheduleData = {
 
 export type CreateScheduleErrors = {
     /**
-     * Invalid cron expression or recipe file
+     * Invalid cron expression or workflow file
      */
     400: unknown;
     /**
@@ -3194,8 +3194,8 @@ export type UpdateSessionNameResponses = {
     200: unknown;
 };
 
-export type UpdateSessionUserRecipeValuesData = {
-    body: UpdateSessionUserRecipeValuesRequest;
+export type UpdateSessionUserWorkflowValuesData = {
+    body: UpdateSessionUserWorkflowValuesRequest;
     path: {
         /**
          * Unique identifier for the session
@@ -3203,10 +3203,10 @@ export type UpdateSessionUserRecipeValuesData = {
         session_id: string;
     };
     query?: never;
-    url: '/sessions/{session_id}/user_recipe_values';
+    url: '/sessions/{session_id}/user_workflow_values';
 };
 
-export type UpdateSessionUserRecipeValuesErrors = {
+export type UpdateSessionUserWorkflowValuesErrors = {
     /**
      * Unauthorized - Invalid or missing API key
      */
@@ -3221,16 +3221,16 @@ export type UpdateSessionUserRecipeValuesErrors = {
     500: ErrorResponse;
 };
 
-export type UpdateSessionUserRecipeValuesError = UpdateSessionUserRecipeValuesErrors[keyof UpdateSessionUserRecipeValuesErrors];
+export type UpdateSessionUserWorkflowValuesError = UpdateSessionUserWorkflowValuesErrors[keyof UpdateSessionUserWorkflowValuesErrors];
 
-export type UpdateSessionUserRecipeValuesResponses = {
+export type UpdateSessionUserWorkflowValuesResponses = {
     /**
-     * Session user recipe values updated successfully
+     * Session user workflow values updated successfully
      */
-    200: UpdateSessionUserRecipeValuesResponse;
+    200: UpdateSessionUserWorkflowValuesResponse;
 };
 
-export type UpdateSessionUserRecipeValuesResponse2 = UpdateSessionUserRecipeValuesResponses[keyof UpdateSessionUserRecipeValuesResponses];
+export type UpdateSessionUserWorkflowValuesResponse2 = UpdateSessionUserWorkflowValuesResponses[keyof UpdateSessionUserWorkflowValuesResponses];
 
 export type StatusData = {
     body?: never;

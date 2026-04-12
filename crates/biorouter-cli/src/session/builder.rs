@@ -8,7 +8,7 @@ use biorouter::config::{
     extensions::get_extension_by_name, get_all_extensions, Config, ExtensionConfig,
 };
 use biorouter::providers::create;
-use biorouter::recipe::Recipe;
+use biorouter::workflow::Workflow;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, ExtensionState};
 use rustyline::EditMode;
@@ -90,8 +90,8 @@ pub struct SessionBuilderConfig {
     pub streamable_http_extensions: Vec<String>,
     /// List of builtin extension commands to add
     pub builtins: Vec<String>,
-    /// Recipe for the session
-    pub recipe: Option<Recipe>,
+    /// Workflow for the session
+    pub workflow: Option<Workflow>,
     /// Any additional system prompt to append to the default
     pub additional_system_prompt: Option<String>,
     /// Provider override from CLI arguments
@@ -125,7 +125,7 @@ impl Default for SessionBuilderConfig {
             extensions: Vec::new(),
             streamable_http_extensions: Vec::new(),
             builtins: Vec::new(),
-            recipe: None,
+            workflow: None,
             additional_system_prompt: None,
             provider: None,
             model: None,
@@ -383,20 +383,20 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         (None, None)
     };
 
-    let recipe = session_config.recipe.as_ref();
-    let recipe_settings = recipe.and_then(|r| r.settings.as_ref());
+    let workflow = session_config.workflow.as_ref();
+    let workflow_settings = workflow.and_then(|r| r.settings.as_ref());
 
     let provider_name = session_config
         .provider
         .or(saved_provider)
-        .or_else(|| recipe_settings.and_then(|s| s.biorouter_provider.clone()))
+        .or_else(|| workflow_settings.and_then(|s| s.biorouter_provider.clone()))
         .or_else(|| config.get_biorouter_provider().ok())
         .expect("No provider configured. Run 'biorouter configure' first");
 
     let model_name = session_config
         .model
         .or_else(|| saved_model_config.as_ref().map(|mc| mc.model_name.clone()))
-        .or_else(|| recipe_settings.and_then(|s| s.biorouter_model.clone()))
+        .or_else(|| workflow_settings.and_then(|s| s.biorouter_model.clone()))
         .or_else(|| config.get_biorouter_model().ok())
         .expect("No model configured. Run 'biorouter configure' first");
 
@@ -406,12 +406,12 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             .is_some_and(|mc| mc.model_name == model_name)
     {
         let mut config = saved_model_config.unwrap();
-        if let Some(temp) = recipe_settings.and_then(|s| s.temperature) {
+        if let Some(temp) = workflow_settings.and_then(|s| s.temperature) {
             config = config.with_temperature(Some(temp));
         }
         config
     } else {
-        let temperature = recipe_settings.and_then(|s| s.temperature);
+        let temperature = workflow_settings.and_then(|s| s.temperature);
         biorouter::model::ModelConfig::new(&model_name)
             .unwrap_or_else(|e| {
                 output::render_error(&format!("Failed to create model configuration: {}", e));
@@ -421,9 +421,9 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     };
 
     agent
-        .apply_recipe_components(
-            recipe.and_then(|r| r.sub_recipes.clone()),
-            recipe.and_then(|r| r.response.clone()),
+        .apply_workflow_components(
+            workflow.and_then(|r| r.sub_workflows.clone()),
+            workflow.and_then(|r| r.response.clone()),
             true,
         )
         .await;
@@ -561,7 +561,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             })
             .unwrap_or_else(get_enabled_extensions)
     } else {
-        resolve_extensions_for_new_session(recipe.and_then(|r| r.extensions.as_deref()), None)
+        resolve_extensions_for_new_session(workflow.and_then(|r| r.extensions.as_deref()), None)
     };
 
     let cli_flag_extensions_to_load = parse_cli_flag_extensions(
@@ -606,7 +606,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         session_config.scheduled_job_id.clone(),
         session_config.max_turns,
         edit_mode,
-        recipe.and_then(|r| r.retry.clone()),
+        workflow.and_then(|r| r.retry.clone()),
         session_config.output_format.clone(),
     )
     .await;
@@ -663,7 +663,7 @@ mod tests {
             extensions: vec!["echo test".to_string()],
             streamable_http_extensions: vec!["http://localhost:8080/mcp".to_string()],
             builtins: vec!["developer".to_string()],
-            recipe: None,
+            workflow: None,
             additional_system_prompt: Some("Test prompt".to_string()),
             provider: None,
             model: None,
@@ -697,7 +697,7 @@ mod tests {
         assert!(config.extensions.is_empty());
         assert!(config.streamable_http_extensions.is_empty());
         assert!(config.builtins.is_empty());
-        assert!(config.recipe.is_none());
+        assert!(config.workflow.is_none());
         assert!(config.additional_system_prompt.is_none());
         assert!(!config.debug);
         assert!(config.max_tool_repetitions.is_none());

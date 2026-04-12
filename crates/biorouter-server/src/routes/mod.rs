@@ -5,8 +5,8 @@ pub mod config_management;
 pub mod errors;
 pub mod mcp_app_proxy;
 pub mod mcp_ui_proxy;
-pub mod recipe;
-pub mod recipe_utils;
+pub mod workflow;
+pub mod workflow_utils;
 pub mod reply;
 pub mod schedule;
 pub mod session;
@@ -29,7 +29,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(agent::routes(state.clone()))
         .merge(audio::routes(state.clone()))
         .merge(config_management::routes(state.clone()))
-        .merge(recipe::routes(state.clone()))
+        .merge(workflow::routes(state.clone()))
         .merge(session::routes(state.clone()))
         .merge(schedule::routes(state.clone()))
         .merge(setup::routes(state.clone()))

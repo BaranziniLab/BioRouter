@@ -108,7 +108,7 @@ fn test_format_tasks_update_from_event() {
             status: TaskStatus::Running,
             duration_secs: Some(1.5),
             current_output: "Processing...".to_string(),
-            task_type: "sub_recipe".to_string(),
+            task_type: "sub_workflow".to_string(),
             task_name: "test-task".to_string(),
             task_metadata: "param=value".to_string(),
             error: None,
@@ -198,7 +198,7 @@ fn test_format_task_display_running() {
         status: TaskStatus::Running,
         duration_secs: Some(1.5),
         current_output: "Processing data...\nAlmost done...".to_string(),
-        task_type: "sub_recipe".to_string(),
+        task_type: "sub_workflow".to_string(),
         task_name: "data-processor".to_string(),
         task_metadata: "input=file.txt,output=result.json".to_string(),
         error: None,
@@ -207,7 +207,7 @@ fn test_format_task_display_running() {
 
     let result = format_task_display(&task);
 
-    assert!(result.contains("🏃 data-processor (sub_recipe)"));
+    assert!(result.contains("🏃 data-processor (sub_workflow)"));
     assert!(result.contains("📋 Parameters: input=file.txt,output=result.json"));
     assert!(result.contains("⏱️  1.5s"));
     assert!(result.contains("💬 Processing data... ... Almost done..."));
@@ -242,7 +242,7 @@ fn test_format_task_display_failed() {
         status: TaskStatus::Failed,
         duration_secs: None,
         current_output: "".to_string(),
-        task_type: "sub_recipe".to_string(),
+        task_type: "sub_workflow".to_string(),
         task_name: "failing-task".to_string(),
         task_metadata: "".to_string(),
         error: Some(
@@ -254,7 +254,7 @@ fn test_format_task_display_failed() {
 
     let result = format_task_display(&task);
 
-    assert!(result.contains("❌ failing-task (sub_recipe)"));
+    assert!(result.contains("❌ failing-task (sub_workflow)"));
     assert!(!result.contains("⏱️"));
     assert!(result.contains("⚠️"));
     assert!(result.contains("Network connection failed after multiple retries"));
@@ -267,7 +267,7 @@ fn test_format_task_display_pending() {
         status: TaskStatus::Pending,
         duration_secs: None,
         current_output: "".to_string(),
-        task_type: "sub_recipe".to_string(),
+        task_type: "sub_workflow".to_string(),
         task_name: "waiting-task".to_string(),
         task_metadata: "priority=high".to_string(),
         error: None,
@@ -276,7 +276,7 @@ fn test_format_task_display_pending() {
 
     let result = format_task_display(&task);
 
-    assert!(result.contains("⏳ waiting-task (sub_recipe)"));
+    assert!(result.contains("⏳ waiting-task (sub_workflow)"));
     assert!(result.contains("📋 Parameters: priority=high"));
     assert!(!result.contains("⏱️"));
     assert!(!result.contains("💬"));
@@ -291,7 +291,7 @@ fn test_format_task_display_empty_current_output() {
         status: TaskStatus::Running,
         duration_secs: Some(0.5),
         current_output: "   \n\t  \n   ".to_string(),
-        task_type: "sub_recipe".to_string(),
+        task_type: "sub_workflow".to_string(),
         task_name: "quiet-task".to_string(),
         task_metadata: "".to_string(),
         error: None,

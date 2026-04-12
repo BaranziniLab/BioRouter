@@ -20,7 +20,7 @@ use crate::conversation::message::Message;
 use crate::conversation::Conversation;
 use crate::posthog;
 use crate::providers::create;
-use crate::recipe::Recipe;
+use crate::workflow::Workflow;
 use crate::scheduler_trait::SchedulerTrait;
 use crate::session::session_manager::SessionType;
 use crate::session::{Session, SessionManager};
@@ -34,11 +34,11 @@ pub fn get_default_scheduler_storage_path() -> Result<PathBuf, io::Error> {
     Ok(data_dir.join("schedule.json"))
 }
 
-pub fn get_default_scheduled_recipes_dir() -> Result<PathBuf, SchedulerError> {
+pub fn get_default_scheduled_workflows_dir() -> Result<PathBuf, SchedulerError> {
     let data_dir = Paths::data_dir();
-    let recipes_dir = data_dir.join("scheduled_recipes");
-    fs::create_dir_all(&recipes_dir).map_err(SchedulerError::StorageError)?;
-    Ok(recipes_dir)
+    let workflows_dir = data_dir.join("scheduled_workflows");
+    fs::create_dir_all(&workflows_dir).map_err(SchedulerError::StorageError)?;
+    Ok(workflows_dir)
 }
 
 #[derive(Debug)]
@@ -46,7 +46,7 @@ pub enum SchedulerError {
     JobIdExists(String),
     JobNotFound(String),
     StorageError(io::Error),
-    RecipeLoadError(String),
+    WorkflowLoadError(String),
     AgentSetupError(String),
     PersistError(String),
     CronParseError(String),
@@ -60,7 +60,7 @@ impl std::fmt::Display for SchedulerError {
             SchedulerError::JobIdExists(id) => write!(f, "Job ID '{}' already exists.", id),
             SchedulerError::JobNotFound(id) => write!(f, "Job ID '{}' not found.", id),
             SchedulerError::StorageError(e) => write!(f, "Storage error: {}", e),
-            SchedulerError::RecipeLoadError(e) => write!(f, "Recipe load error: {}", e),
+            SchedulerError::WorkflowLoadError(e) => write!(f, "Workflow load error: {}", e),
             SchedulerError::AgentSetupError(e) => write!(f, "Agent setup error: {}", e),
             SchedulerError::PersistError(e) => write!(f, "Failed to persist schedules: {}", e),
             SchedulerError::CronParseError(e) => write!(f, "Invalid cron string: {}", e),
@@ -289,25 +289,25 @@ impl Scheduler {
 
         let mut stored_job = original_job_spec;
         if make_copy {
-            let original_recipe_path = Path::new(&stored_job.source);
-            if !original_recipe_path.is_file() {
-                return Err(SchedulerError::RecipeLoadError(format!(
-                    "Recipe file not found: {}",
+            let original_workflow_path = Path::new(&stored_job.source);
+            if !original_workflow_path.is_file() {
+                return Err(SchedulerError::WorkflowLoadError(format!(
+                    "Workflow file not found: {}",
                     stored_job.source
                 )));
             }
 
-            let scheduled_recipes_dir = get_default_scheduled_recipes_dir()?;
-            let original_extension = original_recipe_path
+            let scheduled_workflows_dir = get_default_scheduled_workflows_dir()?;
+            let original_extension = original_workflow_path
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .unwrap_or("yaml");
 
             let destination_filename = format!("{}.{}", stored_job.id, original_extension);
-            let destination_recipe_path = scheduled_recipes_dir.join(destination_filename);
+            let destination_workflow_path = scheduled_workflows_dir.join(destination_filename);
 
-            fs::copy(original_recipe_path, &destination_recipe_path)?;
-            stored_job.source = destination_recipe_path.to_string_lossy().into_owned();
+            fs::copy(original_workflow_path, &destination_workflow_path)?;
+            stored_job.source = destination_workflow_path.to_string_lossy().into_owned();
             stored_job.current_session_id = None;
             stored_job.process_start_time = None;
         }
@@ -329,18 +329,18 @@ impl Scheduler {
         Ok(())
     }
 
-    pub async fn schedule_recipe(
+    pub async fn schedule_workflow(
         &self,
-        recipe_path: PathBuf,
+        workflow_path: PathBuf,
         cron_schedule: Option<String>,
     ) -> Result<(), SchedulerError> {
-        let recipe_path_str = recipe_path.to_string_lossy().to_string();
+        let workflow_path_str = workflow_path.to_string_lossy().to_string();
 
         let existing_job_id = {
             let jobs_guard = self.jobs.lock().await;
             jobs_guard
                 .iter()
-                .find(|(_, (_, job))| job.source == recipe_path_str)
+                .find(|(_, (_, job))| job.source == workflow_path_str)
                 .map(|(id, _)| id.clone())
         };
 
@@ -349,10 +349,10 @@ impl Scheduler {
                 if let Some(job_id) = existing_job_id {
                     self.update_schedule(&job_id, cron).await
                 } else {
-                    let job_id = self.generate_unique_job_id(&recipe_path).await;
+                    let job_id = self.generate_unique_job_id(&workflow_path).await;
                     let job = ScheduledJob {
                         id: job_id,
-                        source: recipe_path_str,
+                        source: workflow_path_str,
                         cron,
                         last_run: None,
                         currently_running: false,
@@ -426,7 +426,7 @@ impl Scheduler {
         for job_to_load in list {
             if !Path::new(&job_to_load.source).exists() {
                 tracing::warn!(
-                    "Recipe file {} not found, skipping job '{}'",
+                    "Workflow file {} not found, skipping job '{}'",
                     job_to_load.source,
                     job_to_load.id
                 );
@@ -474,9 +474,9 @@ impl Scheduler {
     pub async fn remove_scheduled_job(
         &self,
         id: &str,
-        remove_recipe: bool,
+        remove_workflow: bool,
     ) -> Result<(), SchedulerError> {
-        let (job_uuid, recipe_path) = {
+        let (job_uuid, workflow_path) = {
             let mut jobs_guard = self.jobs.lock().await;
             match jobs_guard.remove(id) {
                 Some((uuid, job)) => (uuid, job.source.clone()),
@@ -489,8 +489,8 @@ impl Scheduler {
             .await
             .map_err(|e| SchedulerError::SchedulerInternalError(e.to_string()))?;
 
-        if remove_recipe {
-            let path = Path::new(&recipe_path);
+        if remove_workflow {
+            let path = Path::new(&workflow_path);
             if path.exists() {
                 fs::remove_file(path)?;
             }
@@ -718,19 +718,19 @@ async fn execute_job(
         return Ok(job.id.to_string());
     }
 
-    let recipe_path = Path::new(&job.source);
-    let recipe_content = fs::read_to_string(recipe_path)?;
+    let workflow_path = Path::new(&job.source);
+    let workflow_content = fs::read_to_string(workflow_path)?;
 
-    let recipe: Recipe = {
-        let extension = recipe_path
+    let workflow: Workflow = {
+        let extension = workflow_path
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("yaml")
             .to_lowercase();
 
         match extension.as_str() {
-            "json" | "jsonl" => serde_json::from_str(&recipe_content)?,
-            _ => serde_yaml::from_str(&recipe_content)?,
+            "json" | "jsonl" => serde_json::from_str(&workflow_content)?,
+            _ => serde_yaml::from_str(&workflow_content)?,
         }
     };
 
@@ -743,7 +743,7 @@ async fn execute_job(
 
     let agent_provider = create(&provider_name, model_config).await?;
 
-    let extensions = resolve_extensions_for_new_session(recipe.extensions.as_deref(), None);
+    let extensions = resolve_extensions_for_new_session(workflow.extensions.as_deref(), None);
     for ext in extensions {
         agent.add_extension(ext.clone()).await?;
     }
@@ -778,10 +778,10 @@ async fn execute_job(
         }
     });
 
-    let prompt_text = recipe
+    let prompt_text = workflow
         .prompt
         .as_ref()
-        .or(recipe.instructions.as_ref())
+        .or(workflow.instructions.as_ref())
         .unwrap();
 
     let user_message = Message::user().with_text(prompt_text);
@@ -828,7 +828,7 @@ async fn execute_job(
         .session_manager
         .update(&session.id)
         .schedule_id(Some(job.id.clone()))
-        .recipe(Some(recipe))
+        .workflow(Some(workflow))
         .apply()
         .await?;
 
@@ -865,12 +865,12 @@ impl SchedulerTrait for Scheduler {
         self.add_scheduled_job(job, make_copy).await
     }
 
-    async fn schedule_recipe(
+    async fn schedule_workflow(
         &self,
-        recipe_path: PathBuf,
+        workflow_path: PathBuf,
         cron_schedule: Option<String>,
     ) -> Result<(), SchedulerError> {
-        self.schedule_recipe(recipe_path, cron_schedule).await
+        self.schedule_workflow(workflow_path, cron_schedule).await
     }
 
     async fn list_scheduled_jobs(&self) -> Vec<ScheduledJob> {
@@ -880,9 +880,9 @@ impl SchedulerTrait for Scheduler {
     async fn remove_scheduled_job(
         &self,
         id: &str,
-        remove_recipe: bool,
+        remove_workflow: bool,
     ) -> Result<(), SchedulerError> {
-        self.remove_scheduled_job(id, remove_recipe).await
+        self.remove_scheduled_job(id, remove_workflow).await
     }
 
     async fn pause_schedule(&self, id: &str) -> Result<(), SchedulerError> {
@@ -931,23 +931,23 @@ mod tests {
     use tempfile::tempdir;
     use tokio::time::{sleep, Duration};
 
-    fn create_test_recipe(dir: &Path, name: &str) -> PathBuf {
-        let recipe_path = dir.join(format!("{}.yaml", name));
-        fs::write(&recipe_path, "prompt: test\n").unwrap();
-        recipe_path
+    fn create_test_workflow(dir: &Path, name: &str) -> PathBuf {
+        let workflow_path = dir.join(format!("{}.yaml", name));
+        fs::write(&workflow_path, "prompt: test\n").unwrap();
+        workflow_path
     }
 
     #[tokio::test]
     async fn test_job_runs_on_schedule() {
         let temp_dir = tempdir().unwrap();
         let storage_path = temp_dir.path().join("schedule.json");
-        let recipe_path = create_test_recipe(temp_dir.path(), "scheduled_job");
+        let workflow_path = create_test_workflow(temp_dir.path(), "scheduled_job");
         let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
         let scheduler = Scheduler::new(storage_path, session_manager).await.unwrap();
 
         let job = ScheduledJob {
             id: "scheduled_job".to_string(),
-            source: recipe_path.to_string_lossy().to_string(),
+            source: workflow_path.to_string_lossy().to_string(),
             cron: "* * * * * *".to_string(),
             last_run: None,
             currently_running: false,
@@ -967,13 +967,13 @@ mod tests {
     async fn test_paused_job_does_not_run() {
         let temp_dir = tempdir().unwrap();
         let storage_path = temp_dir.path().join("schedule.json");
-        let recipe_path = create_test_recipe(temp_dir.path(), "paused_job");
+        let workflow_path = create_test_workflow(temp_dir.path(), "paused_job");
         let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
         let scheduler = Scheduler::new(storage_path, session_manager).await.unwrap();
 
         let job = ScheduledJob {
             id: "paused_job".to_string(),
-            source: recipe_path.to_string_lossy().to_string(),
+            source: workflow_path.to_string_lossy().to_string(),
             cron: "* * * * * *".to_string(),
             last_run: None,
             currently_running: false,

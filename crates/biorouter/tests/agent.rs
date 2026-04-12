@@ -49,9 +49,9 @@ mod tests {
                 Ok(())
             }
 
-            async fn schedule_recipe(
+            async fn schedule_workflow(
                 &self,
-                _recipe_path: PathBuf,
+                _workflow_path: PathBuf,
                 _cron_schedule: Option<String>,
             ) -> Result<(), SchedulerError> {
                 Ok(())
@@ -142,7 +142,7 @@ mod tests {
                 .description
                 .clone()
                 .unwrap_or_default()
-                .contains("Manage biorouter's internal scheduled recipe execution"));
+                .contains("Manage biorouter's internal scheduled workflow execution"));
         }
 
         #[tokio::test]
@@ -186,7 +186,7 @@ mod tests {
                 .description
                 .clone()
                 .unwrap_or_default()
-                .contains("Manage biorouter's internal scheduled recipe execution"));
+                .contains("Manage biorouter's internal scheduled workflow execution"));
 
             // Verify the tool has the expected actions in its schema
             if let Some(properties) = tool.input_schema.get("properties") {

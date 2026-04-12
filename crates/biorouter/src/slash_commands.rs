@@ -5,14 +5,14 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::config::Config;
-use crate::recipe::Recipe;
+use crate::workflow::Workflow;
 
 const SLASH_COMMANDS_CONFIG_KEY: &str = "slash_commands";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlashCommandMapping {
     pub command: String,
-    pub recipe_path: String,
+    pub workflow_path: String,
 }
 
 pub fn list_commands() -> Vec<SlashCommandMapping> {
@@ -33,18 +33,18 @@ fn save_slash_commands(commands: Vec<SlashCommandMapping>) -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Failed to save slash commands: {}", e))
 }
 
-pub fn set_recipe_slash_command(recipe_path: PathBuf, command: Option<String>) -> Result<()> {
-    let recipe_path_str = recipe_path.to_string_lossy().to_string();
+pub fn set_workflow_slash_command(workflow_path: PathBuf, command: Option<String>) -> Result<()> {
+    let workflow_path_str = workflow_path.to_string_lossy().to_string();
 
     let mut commands = list_commands();
-    commands.retain(|mapping| mapping.recipe_path != recipe_path_str);
+    commands.retain(|mapping| mapping.workflow_path != workflow_path_str);
 
     if let Some(cmd) = command {
         let normalized_cmd = cmd.trim_start_matches('/').to_lowercase();
         if !normalized_cmd.is_empty() {
             commands.push(SlashCommandMapping {
                 command: normalized_cmd,
-                recipe_path: recipe_path_str,
+                workflow_path: workflow_path_str,
             });
         }
     }
@@ -52,23 +52,23 @@ pub fn set_recipe_slash_command(recipe_path: PathBuf, command: Option<String>) -
     save_slash_commands(commands)
 }
 
-pub fn get_recipe_for_command(command: &str) -> Option<PathBuf> {
+pub fn get_workflow_for_command(command: &str) -> Option<PathBuf> {
     let normalized = command.trim_start_matches('/').to_lowercase();
     let commands = list_commands();
     commands
         .into_iter()
         .find(|mapping| mapping.command == normalized)
-        .map(|mapping| PathBuf::from(mapping.recipe_path))
+        .map(|mapping| PathBuf::from(mapping.workflow_path))
 }
 
-pub fn resolve_slash_command(command: &str) -> Option<Recipe> {
-    let recipe_path = get_recipe_for_command(command)?;
+pub fn resolve_slash_command(command: &str) -> Option<Workflow> {
+    let workflow_path = get_workflow_for_command(command)?;
 
-    if !recipe_path.exists() {
+    if !workflow_path.exists() {
         return None;
     }
-    let recipe_content = std::fs::read_to_string(&recipe_path).ok()?;
-    let recipe = Recipe::from_content(&recipe_content).ok()?;
+    let workflow_content = std::fs::read_to_string(&workflow_path).ok()?;
+    let workflow = Workflow::from_content(&workflow_content).ok()?;
 
-    Some(recipe)
+    Some(workflow)
 }

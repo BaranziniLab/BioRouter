@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 
 use crate::context_mgmt::compact_messages;
 use crate::conversation::message::{Message, SystemNotificationType};
-use crate::recipe::build_recipe::build_recipe_from_template_with_positional_params;
+use crate::workflow::build_workflow::build_workflow_from_template_with_positional_params;
 
 use super::Agent;
 
@@ -73,7 +73,7 @@ impl Agent {
             "compact" => self.handle_compact_command(session_id).await,
             "clear" => self.handle_clear_command(session_id).await,
             _ => {
-                self.handle_recipe_command(command, params_str, session_id)
+                self.handle_workflow_command(command, params_str, session_id)
                     .await
             }
         }
@@ -271,36 +271,36 @@ impl Agent {
         }
     }
 
-    async fn handle_recipe_command(
+    async fn handle_workflow_command(
         &self,
         command: &str,
         params_str: &str,
         _session_id: &str,
     ) -> Result<Option<Message>> {
         let full_command = format!("/{}", command);
-        let recipe_path = match crate::slash_commands::get_recipe_for_command(&full_command) {
+        let workflow_path = match crate::slash_commands::get_workflow_for_command(&full_command) {
             Some(path) => path,
             None => return Ok(None),
         };
 
-        if !recipe_path.exists() {
+        if !workflow_path.exists() {
             return Ok(None);
         }
 
-        let recipe_content = std::fs::read_to_string(&recipe_path)
-            .map_err(|e| anyhow!("Failed to read recipe file: {}", e))?;
+        let workflow_content = std::fs::read_to_string(&workflow_path)
+            .map_err(|e| anyhow!("Failed to read workflow file: {}", e))?;
 
-        let recipe_dir = recipe_path
+        let workflow_dir = workflow_path
             .parent()
-            .ok_or_else(|| anyhow!("Recipe path has no parent directory"))?;
+            .ok_or_else(|| anyhow!("Workflow path has no parent directory"))?;
 
-        let recipe_dir_str = recipe_dir.display().to_string();
+        let workflow_dir_str = workflow_dir.display().to_string();
         let validation_result =
-            crate::recipe::validate_recipe::validate_recipe_template_from_content(
-                &recipe_content,
-                Some(recipe_dir_str),
+            crate::workflow::validate_workflow::validate_workflow_template_from_content(
+                &workflow_content,
+                Some(workflow_dir_str),
             )
-            .map_err(|e| anyhow!("Failed to parse recipe: {}", e))?;
+            .map_err(|e| anyhow!("Failed to parse workflow: {}", e))?;
 
         let param_values: Vec<String> = if params_str.is_empty() {
             vec![]
@@ -327,11 +327,11 @@ impl Agent {
                     .unwrap_or_default();
 
                 let error_message = format!(
-                    "The /{} recipe requires {} parameters: {}.\n\n\
-                    Slash command recipes only support 1 parameter.\n\n\
-                    **To use this recipe:**\n\
-                    • **CLI:** `biorouter run --recipe {} {}`\n\
-                    • **Desktop:** Launch from the recipes sidebar to fill in parameters",
+                    "The /{} workflow requires {} parameters: {}.\n\n\
+                    Slash command workflows only support 1 parameter.\n\n\
+                    **To use this workflow:**\n\
+                    • **CLI:** `biorouter run --workflow {} {}`\n\
+                    • **Desktop:** Launch from the workflows sidebar to fill in parameters",
                     command,
                     params_without_default,
                     param_names
@@ -353,28 +353,28 @@ impl Agent {
 
         let param_values_len = param_values.len();
 
-        let recipe = match build_recipe_from_template_with_positional_params(
-            recipe_content,
-            recipe_dir,
+        let workflow = match build_workflow_from_template_with_positional_params(
+            workflow_content,
+            workflow_dir,
             param_values,
             None::<fn(&str, &str) -> Result<String>>,
         ) {
-            Ok(recipe) => recipe,
-            Err(crate::recipe::build_recipe::RecipeError::MissingParams { parameters }) => {
+            Ok(workflow) => workflow,
+            Err(crate::workflow::build_workflow::WorkflowError::MissingParams { parameters }) => {
                 return Ok(Some(Message::assistant().with_text(format!(
-                    "Recipe requires {} parameter(s): {}. Provided: {}",
+                    "Workflow requires {} parameter(s): {}. Provided: {}",
                     parameters.len(),
                     parameters.join(", "),
                     param_values_len
                 ))));
             }
-            Err(e) => return Err(anyhow!("Failed to build recipe: {}", e)),
+            Err(e) => return Err(anyhow!("Failed to build workflow: {}", e)),
         };
 
-        self.apply_recipe_components(recipe.sub_recipes.clone(), recipe.response.clone(), true)
+        self.apply_workflow_components(workflow.sub_workflows.clone(), workflow.response.clone(), true)
             .await;
 
-        let prompt = [recipe.instructions.as_deref(), recipe.prompt.as_deref()]
+        let prompt = [workflow.instructions.as_deref(), workflow.prompt.as_deref()]
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()

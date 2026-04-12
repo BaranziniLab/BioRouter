@@ -47,7 +47,7 @@ import {
   updateTrayMenu,
 } from './utils/autoUpdater';
 import { UPDATES_ENABLED } from './updates';
-import './utils/recipeHash';
+import './utils/workflowHash';
 import { Client, createClient, createConfig } from './api/client';
 import { GooseApp } from './api';
 import installExtension, { REACT_DEVELOPER_TOOLS } from 'electron-devtools-installer';
@@ -193,13 +193,13 @@ if (process.platform !== 'darwin') {
       const protocolUrl = commandLine.find((arg) => arg.startsWith('biorouter://'));
       if (protocolUrl) {
         const parsedUrl = new URL(protocolUrl);
-        // If it's a bot/recipe URL, handle it directly by creating a new window
-        if (parsedUrl.hostname === 'bot' || parsedUrl.hostname === 'recipe') {
+        // If it's a bot/workflow URL, handle it directly by creating a new window
+        if (parsedUrl.hostname === 'bot' || parsedUrl.hostname === 'workflow') {
           app.whenReady().then(async () => {
             const recentDirs = loadRecentDirs();
             const openDir = recentDirs.length > 0 ? recentDirs[0] : null;
 
-            const deeplinkData = parseRecipeDeeplink(protocolUrl);
+            const deeplinkData = parseWorkflowDeeplink(protocolUrl);
             const scheduledJobId = parsedUrl.searchParams.get('scheduledJob');
 
             createChat(
@@ -222,7 +222,7 @@ if (process.platform !== 'darwin') {
         handleProtocolUrl(protocolUrl);
       }
 
-      // Only focus existing windows for non-bot/recipe URLs
+      // Only focus existing windows for non-bot/workflow URLs
       const existingWindows = BrowserWindow.getAllWindows();
       if (existingWindows.length > 0) {
         const mainWindow = existingWindows[0];
@@ -256,8 +256,8 @@ async function handleProtocolUrl(url: string) {
   const recentDirs = loadRecentDirs();
   const openDir = recentDirs.length > 0 ? recentDirs[0] : null;
 
-  if (parsedUrl.hostname === 'bot' || parsedUrl.hostname === 'recipe') {
-    // For bot/recipe URLs, get existing window or create new one
+  if (parsedUrl.hostname === 'bot' || parsedUrl.hostname === 'workflow') {
+    // For bot/workflow URLs, get existing window or create new one
     const existingWindows = BrowserWindow.getAllWindows();
     const targetWindow =
       existingWindows.length > 0
@@ -298,8 +298,8 @@ async function processProtocolUrl(parsedUrl: URL, window: BrowserWindow) {
     window.webContents.send('add-extension', pendingDeepLink);
   } else if (parsedUrl.hostname === 'sessions') {
     window.webContents.send('open-shared-session', pendingDeepLink);
-  } else if (parsedUrl.hostname === 'bot' || parsedUrl.hostname === 'recipe') {
-    const deeplinkData = parseRecipeDeeplink(pendingDeepLink ?? parsedUrl.toString());
+  } else if (parsedUrl.hostname === 'bot' || parsedUrl.hostname === 'workflow') {
+    const deeplinkData = parseWorkflowDeeplink(pendingDeepLink ?? parsedUrl.toString());
     const scheduledJobId = parsedUrl.searchParams.get('scheduledJob');
 
     // Create a new window and ignore the passed-in window
@@ -332,11 +332,11 @@ app.on('open-url', async (_event, url) => {
     const recentDirs = loadRecentDirs();
     const openDir = recentDirs.length > 0 ? recentDirs[0] : null;
 
-    // Handle bot/recipe URLs by directly creating a new window
-    if (parsedUrl.hostname === 'bot' || parsedUrl.hostname === 'recipe') {
-      log.info('[Main] Detected bot/recipe URL, creating new chat window');
+    // Handle bot/workflow URLs by directly creating a new window
+    if (parsedUrl.hostname === 'bot' || parsedUrl.hostname === 'workflow') {
+      log.info('[Main] Detected bot/workflow URL, creating new chat window');
       openUrlHandledLaunch = true;
-      const deeplinkData = parseRecipeDeeplink(url);
+      const deeplinkData = parseWorkflowDeeplink(url);
       if (deeplinkData) {
         windowDeeplinkURL = url;
       }
@@ -529,10 +529,10 @@ const createChat = async (
   _version?: string,
   resumeSessionId?: string,
   viewType?: string,
-  recipeDeeplink?: string, // Raw deeplink decoded on server
+  workflowDeeplink?: string, // Raw deeplink decoded on server
   scheduledJobId?: string, // Scheduled job ID if applicable
-  recipeId?: string,
-  recipeParameters?: Record<string, string> // Recipe parameter values from deeplink URL
+  workflowId?: string,
+  workflowParameters?: Record<string, string> // Workflow parameter values from deeplink URL
 ) => {
   updateEnvironmentVariables(envToggles);
 
@@ -581,9 +581,9 @@ const createChat = async (
           REQUEST_DIR: dir,
           BIOROUTER_BASE_URL_SHARE: baseUrlShare,
           BIOROUTER_VERSION: version,
-          recipeId: recipeId,
-          recipeDeeplink: recipeDeeplink,
-          recipeParameters: recipeParameters,
+          workflowId: workflowId,
+          workflowDeeplink: workflowDeeplink,
+          workflowParameters: workflowParameters,
           scheduledJobId: scheduledJobId,
           SECURITY_ML_MODEL_MAPPING: process.env.SECURITY_ML_MODEL_MAPPING,
         }),
@@ -747,7 +747,7 @@ const createChat = async (
     settings: '/settings',
     sessions: '/sessions',
     schedules: '/schedules',
-    recipes: '/recipes',
+    workflows: '/workflows',
     permission: '/permission',
     ConfigureProviders: '/configure-providers',
     sharedSession: '/shared-session',
@@ -759,7 +759,7 @@ const createChat = async (
   }
   if (
     appPath === '/' &&
-    (recipeDeeplink !== undefined || recipeId !== undefined || initialMessage)
+    (workflowDeeplink !== undefined || workflowId !== undefined || initialMessage)
   ) {
     appPath = '/pair';
   }
@@ -771,10 +771,10 @@ const createChat = async (
       appPath = '/pair';
     }
   }
-  // Only add recipeId to URL for the non-deeplink case (saved recipes launched from UI)
-  // For deeplinks, the recipe object is passed via appConfig, not URL params
-  if (recipeId) {
-    searchParams.set('recipeId', recipeId);
+  // Only add workflowId to URL for the non-deeplink case (saved workflows launched from UI)
+  // For deeplinks, the workflow object is passed via appConfig, not URL params
+  if (workflowId) {
+    searchParams.set('workflowId', workflowId);
     if (appPath === '/') {
       appPath = '/pair';
     }
@@ -1086,9 +1086,9 @@ const openDirectoryDialog = async (): Promise<OpenDialogReturnValue> => {
 
     addRecentDir(dirToAdd);
 
-    let deeplinkData: RecipeDeeplinkData | undefined = undefined;
+    let deeplinkData: WorkflowDeeplinkData | undefined = undefined;
     if (windowDeeplinkURL) {
-      deeplinkData = parseRecipeDeeplink(windowDeeplinkURL);
+      deeplinkData = parseWorkflowDeeplink(windowDeeplinkURL);
     }
     // Create a new window with the selected directory
     await createChat(
@@ -1107,35 +1107,35 @@ const openDirectoryDialog = async (): Promise<OpenDialogReturnValue> => {
   return result;
 };
 
-interface RecipeDeeplinkData {
+interface WorkflowDeeplinkData {
   config: string;
   parameters?: Record<string, string>;
 }
 
-function parseRecipeDeeplink(url: string): RecipeDeeplinkData | undefined {
+function parseWorkflowDeeplink(url: string): WorkflowDeeplinkData | undefined {
   const parsedUrl = new URL(url);
-  let recipeDeeplink = parsedUrl.searchParams.get('config');
-  if (recipeDeeplink && !url.includes(recipeDeeplink)) {
+  let workflowDeeplink = parsedUrl.searchParams.get('config');
+  if (workflowDeeplink && !url.includes(workflowDeeplink)) {
     // URLSearchParams decodes + as space, which can break encoded configs
     // Parse raw query to preserve "+" characters in values like config
     const search = parsedUrl.search || '';
     const configMatch = search.match(/(?:[?&])config=([^&]*)/);
-    let recipeDeeplinkTmp = configMatch ? configMatch[1] : null;
-    if (recipeDeeplinkTmp) {
+    let workflowDeeplinkTmp = configMatch ? configMatch[1] : null;
+    if (workflowDeeplinkTmp) {
       try {
-        recipeDeeplink = decodeURIComponent(recipeDeeplinkTmp);
+        workflowDeeplink = decodeURIComponent(workflowDeeplinkTmp);
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error('[Main] parseRecipeDeeplink - Failed to decode:', errorMessage);
+        console.error('[Main] parseWorkflowDeeplink - Failed to decode:', errorMessage);
         return undefined;
       }
     }
   }
-  if (!recipeDeeplink) {
+  if (!workflowDeeplink) {
     return undefined;
   }
 
-  // Extract all query parameters except 'config' and 'scheduledJob' as recipe parameters
+  // Extract all query parameters except 'config' and 'scheduledJob' as workflow parameters
   // Use raw query string parsing to preserve '+' characters (consistent with config handling)
   const parameters: Record<string, string> = {};
   const search = parsedUrl.search || '';
@@ -1156,7 +1156,7 @@ function parseRecipeDeeplink(url: string): RecipeDeeplinkData | undefined {
   }
 
   return {
-    config: recipeDeeplink,
+    config: workflowDeeplink,
     parameters: Object.keys(parameters).length > 0 ? parameters : undefined,
   };
 }
@@ -2234,7 +2234,7 @@ async function appMain() {
 
   ipcMain.on(
     'create-chat-window',
-    (_, query, dir, version, resumeSessionId, viewType, recipeId) => {
+    (_, query, dir, version, resumeSessionId, viewType, workflowId) => {
       if (!dir?.trim()) {
         const recentDirs = loadRecentDirs();
         dir = recentDirs.length > 0 ? recentDirs[0] : undefined;
@@ -2249,7 +2249,7 @@ async function appMain() {
         viewType,
         undefined,
         undefined,
-        recipeId
+        workflowId
       );
     }
   );

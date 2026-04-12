@@ -10,7 +10,7 @@ use chrono::Utc;
 use rmcp::model::{Content, ErrorCode, ErrorData};
 
 use super::Agent;
-use crate::recipe::Recipe;
+use crate::workflow::Workflow;
 use crate::scheduler_trait::SchedulerTrait;
 
 impl Agent {
@@ -81,13 +81,13 @@ impl Agent {
         scheduler: Arc<dyn SchedulerTrait>,
         arguments: serde_json::Value,
     ) -> ToolResult<Vec<Content>> {
-        let recipe_path = arguments
-            .get("recipe_path")
+        let workflow_path = arguments
+            .get("workflow_path")
             .and_then(|v| v.as_str())
             .ok_or_else(|| {
                 ErrorData::new(
                     ErrorCode::INVALID_PARAMS,
-                    "Missing 'recipe_path' parameter".to_string(),
+                    "Missing 'workflow_path' parameter".to_string(),
                     None,
                 )
             })?;
@@ -109,30 +109,30 @@ impl Agent {
             .and_then(|v| v.as_str())
             .unwrap_or("background");
 
-        if !std::path::Path::new(recipe_path).exists() {
+        if !std::path::Path::new(workflow_path).exists() {
             return Err(ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
-                format!("Recipe file not found: {}", recipe_path),
+                format!("Workflow file not found: {}", workflow_path),
                 None,
             ));
         }
 
-        // Validate it's a valid recipe by trying to parse it
-        match std::fs::read_to_string(recipe_path) {
+        // Validate it's a valid workflow by trying to parse it
+        match std::fs::read_to_string(workflow_path) {
             Ok(content) => {
-                if recipe_path.ends_with(".json") {
-                    serde_json::from_str::<Recipe>(&content).map_err(|e| {
+                if workflow_path.ends_with(".json") {
+                    serde_json::from_str::<Workflow>(&content).map_err(|e| {
                         ErrorData::new(
                             ErrorCode::INTERNAL_ERROR,
-                            format!("Invalid JSON recipe: {}", e),
+                            format!("Invalid JSON workflow: {}", e),
                             None,
                         )
                     })?;
                 } else {
-                    serde_yaml::from_str::<Recipe>(&content).map_err(|e| {
+                    serde_yaml::from_str::<Workflow>(&content).map_err(|e| {
                         ErrorData::new(
                             ErrorCode::INTERNAL_ERROR,
-                            format!("Invalid YAML recipe: {}", e),
+                            format!("Invalid YAML workflow: {}", e),
                             None,
                         )
                     })?;
@@ -141,7 +141,7 @@ impl Agent {
             Err(e) => {
                 return Err(ErrorData::new(
                     ErrorCode::INTERNAL_ERROR,
-                    format!("Cannot read recipe file: {}", e),
+                    format!("Cannot read workflow file: {}", e),
                     None,
                 ))
             }
@@ -152,7 +152,7 @@ impl Agent {
 
         let job = crate::scheduler::ScheduledJob {
             id: job_id.clone(),
-            source: recipe_path.to_string(),
+            source: workflow_path.to_string(),
             cron: cron_expression.to_string(),
             last_run: None,
             currently_running: false,
@@ -163,8 +163,8 @@ impl Agent {
 
         match scheduler.add_scheduled_job(job, true).await {
             Ok(()) => Ok(vec![Content::text(format!(
-                "Successfully created scheduled job '{}' for recipe '{}' with cron expression '{}' in {} mode",
-                job_id, recipe_path, cron_expression, execution_mode
+                "Successfully created scheduled job '{}' for workflow '{}' with cron expression '{}' in {} mode",
+                job_id, workflow_path, cron_expression, execution_mode
             ))]),
             Err(e) => Err(ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,

@@ -1,6 +1,6 @@
 import React, { createContext, useContext, ReactNode } from 'react';
 import { ChatType } from '../types/chat';
-import { Recipe } from '../recipe';
+import { Workflow } from '../workflow';
 
 // TODO(Douwe): We should not need this anymore
 export const DEFAULT_CHAT_TITLE = 'New Chat';
@@ -10,8 +10,8 @@ interface ChatContextType {
   setChat: (chat: ChatType) => void;
   resetChat: () => void;
   hasActiveSession: boolean;
-  setRecipe: (recipe: Recipe | null) => void;
-  clearRecipe: () => void;
+  setWorkflow: (workflow: Workflow | null) => void;
+  clearWorkflow: () => void;
   // Context identification
   contextKey: string; // 'hub' or 'pair-{sessionId}'
 }
@@ -36,23 +36,23 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({
       sessionId: '',
       name: DEFAULT_CHAT_TITLE,
       messages: [],
-      recipe: null,
-      recipeParameterValues: null,
+      workflow: null,
+      workflowParameterValues: null,
     });
   };
 
-  const setRecipe = (recipe: Recipe | null) => {
+  const setWorkflow = (workflow: Workflow | null) => {
     setChat({
       ...chat,
-      recipe: recipe,
-      recipeParameterValues: null,
+      workflow: workflow,
+      workflowParameterValues: null,
     });
   };
 
-  const clearRecipe = () => {
+  const clearWorkflow = () => {
     setChat({
       ...chat,
-      recipe: null,
+      workflow: null,
     });
   };
 
@@ -63,8 +63,8 @@ export const ChatProvider: React.FC<ChatProviderProps> = ({
     setChat,
     resetChat,
     hasActiveSession,
-    setRecipe,
-    clearRecipe,
+    setWorkflow,
+    clearWorkflow,
     contextKey,
   };
 

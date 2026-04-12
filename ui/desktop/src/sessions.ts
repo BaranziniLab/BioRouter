@@ -17,25 +17,25 @@ export function resumeSession(session: Session, setView: setViewType) {
 export async function createSession(
   workingDir: string,
   options?: {
-    recipeId?: string;
-    recipeDeeplink?: string;
+    workflowId?: string;
+    workflowDeeplink?: string;
     extensionConfigs?: ExtensionConfig[];
     allExtensions?: FixedExtensionEntry[];
   }
 ): Promise<Session> {
   const body: {
     working_dir: string;
-    recipe_id?: string;
-    recipe_deeplink?: string;
+    workflow_id?: string;
+    workflow_deeplink?: string;
     extension_overrides?: ExtensionConfig[];
   } = {
     working_dir: workingDir,
   };
 
-  if (options?.recipeId) {
-    body.recipe_id = options.recipeId;
-  } else if (options?.recipeDeeplink) {
-    body.recipe_deeplink = options.recipeDeeplink;
+  if (options?.workflowId) {
+    body.workflow_id = options.workflowId;
+  } else if (options?.workflowDeeplink) {
+    body.workflow_deeplink = options.workflowDeeplink;
   }
 
   if (options?.extensionConfigs && options.extensionConfigs.length > 0) {
@@ -63,8 +63,8 @@ export async function startNewSession(
   initialText: string | undefined,
   setView: setViewType,
   options?: {
-    recipeId?: string;
-    recipeDeeplink?: string;
+    workflowId?: string;
+    workflowDeeplink?: string;
     allExtensions?: FixedExtensionEntry[];
   }
 ): Promise<Session> {

@@ -61,7 +61,8 @@ const ScheduleCard: React.FC<{
 
   return (
     <Card
-      className="py-2 px-4 mb-2 bg-background-default border-none hover:bg-background-muted cursor-pointer transition-all duration-150"
+      className="py-2 px-4 mb-2 bg-background-default border-none cursor-pointer transition-all duration-150 hover:-translate-y-0.5"
+      style={{ boxShadow: 'var(--shadow-default)' }}
       onClick={() => onNavigateToDetail(job.id)}
     >
       <div className="flex justify-between items-start gap-4">
@@ -447,41 +448,47 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
     <>
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
-          <div className="bg-background-default px-8 pb-8 pt-16">
-            <div className="flex flex-col page-transition">
-              <div className="flex justify-between items-center mb-1">
-                <h1 className="text-4xl font-light">Scheduler</h1>
-                <div className="flex gap-2">
-                  <Button
-                    onClick={handleRefresh}
-                    disabled={isRefreshing || isLoading}
-                    variant="outline"
-                    size="sm"
-                    className="flex items-center gap-2"
-                  >
-                    <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-                    {isRefreshing ? 'Refreshing...' : 'Refresh'}
-                  </Button>
-                  <Button
-                    onClick={() => {
-                      setSubmitApiError(null);
-                      setIsModalOpen(true);
-                    }}
-                    size="sm"
-                    className="flex items-center gap-2"
-                  >
-                    <Plus className="h-4 w-4" />
-                    Create Schedule
-                  </Button>
+          {/* Floating header card */}
+          <div
+            className="mx-4 mt-4 bg-background-default rounded-2xl mb-4 relative overflow-hidden flex-shrink-0"
+            style={{ boxShadow: 'var(--shadow-default)' }}
+          >
+            <div className="px-8 pb-6 pt-12">
+              <div className="flex flex-col page-transition">
+                <div className="flex justify-between items-center mb-1">
+                  <h1 className="text-4xl font-light">Scheduler</h1>
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={handleRefresh}
+                      disabled={isRefreshing || isLoading}
+                      variant="outline"
+                      size="sm"
+                      className="flex items-center gap-2"
+                    >
+                      <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                      {isRefreshing ? 'Refreshing...' : 'Refresh'}
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        setSubmitApiError(null);
+                        setIsModalOpen(true);
+                      }}
+                      size="sm"
+                      className="flex items-center gap-2"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Create Schedule
+                    </Button>
+                  </div>
                 </div>
+                <p className="text-sm text-text-muted">
+                  Create and manage scheduled tasks to run workflows automatically at specified times.
+                </p>
               </div>
-              <p className="text-sm text-text-muted mb-1">
-                Create and manage scheduled tasks to run recipes automatically at specified times.
-              </p>
             </div>
           </div>
 
-          <div className="flex-1 min-h-0 relative px-8">
+          <div className="flex-1 min-h-0 relative px-4">
             <ScrollArea className="h-full">
               <div className="h-full relative">
                 {apiError && (

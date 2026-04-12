@@ -1366,407 +1366,6 @@
         }
       }
     },
-    "/recipes/create": {
-      "post": {
-        "tags": [
-          "Recipe Management"
-        ],
-        "operationId": "create_recipe",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateRecipeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Recipe created successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreateRecipeResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request"
-          },
-          "412": {
-            "description": "Precondition failed - Agent not available"
-          },
-          "500": {
-            "description": "Internal server error"
-          }
-        }
-      }
-    },
-    "/recipes/decode": {
-      "post": {
-        "tags": [
-          "Recipe Management"
-        ],
-        "operationId": "decode_recipe",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DecodeRecipeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Recipe decoded successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DecodeRecipeResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request"
-          }
-        }
-      }
-    },
-    "/recipes/delete": {
-      "post": {
-        "tags": [
-          "Recipe Management"
-        ],
-        "operationId": "delete_recipe",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DeleteRecipeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "204": {
-            "description": "Recipe deleted successfully"
-          },
-          "401": {
-            "description": "Unauthorized - Invalid or missing API key"
-          },
-          "404": {
-            "description": "Recipe not found"
-          },
-          "500": {
-            "description": "Internal server error"
-          }
-        }
-      }
-    },
-    "/recipes/encode": {
-      "post": {
-        "tags": [
-          "Recipe Management"
-        ],
-        "operationId": "encode_recipe",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EncodeRecipeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Recipe encoded successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EncodeRecipeResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request"
-          }
-        }
-      }
-    },
-    "/recipes/list": {
-      "get": {
-        "tags": [
-          "Recipe Management"
-        ],
-        "operationId": "list_recipes",
-        "responses": {
-          "200": {
-            "description": "Get recipe list successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListRecipeResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized - Invalid or missing API key"
-          },
-          "500": {
-            "description": "Internal server error"
-          }
-        }
-      }
-    },
-    "/recipes/parse": {
-      "post": {
-        "tags": [
-          "Recipe Management"
-        ],
-        "operationId": "parse_recipe",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ParseRecipeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Recipe parsed successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ParseRecipeResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request - Invalid recipe format",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/recipes/save": {
-      "post": {
-        "tags": [
-          "Recipe Management"
-        ],
-        "operationId": "save_recipe",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SaveRecipeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "204": {
-            "description": "Recipe saved to file successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SaveRecipeResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Unauthorized",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/recipes/scan": {
-      "post": {
-        "tags": [
-          "Recipe Management"
-        ],
-        "operationId": "scan_recipe",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ScanRecipeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Recipe scanned successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ScanRecipeResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/recipes/schedule": {
-      "post": {
-        "tags": [
-          "Recipe Management"
-        ],
-        "operationId": "schedule_recipe",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ScheduleRecipeRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Recipe scheduled successfully"
-          },
-          "404": {
-            "description": "Recipe not found"
-          },
-          "500": {
-            "description": "Internal server error"
-          }
-        }
-      }
-    },
-    "/recipes/slash-command": {
-      "post": {
-        "tags": [
-          "Recipe Management"
-        ],
-        "operationId": "set_recipe_slash_command",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SetSlashCommandRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Slash command set successfully"
-          },
-          "404": {
-            "description": "Recipe not found"
-          },
-          "500": {
-            "description": "Internal server error"
-          }
-        }
-      }
-    },
-    "/recipes/to-yaml": {
-      "post": {
-        "tags": [
-          "Recipe Management"
-        ],
-        "operationId": "recipe_to_yaml",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RecipeToYamlRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Recipe converted to YAML successfully",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RecipeToYamlResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Bad request - Failed to convert recipe to YAML",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/reply": {
       "post": {
         "tags": [
@@ -1831,7 +1430,7 @@
             }
           },
           "400": {
-            "description": "Invalid cron expression or recipe file"
+            "description": "Invalid cron expression or workflow file"
           },
           "409": {
             "description": "Job ID already exists"
@@ -2537,12 +2136,12 @@
         ]
       }
     },
-    "/sessions/{session_id}/user_recipe_values": {
+    "/sessions/{session_id}/user_workflow_values": {
       "put": {
         "tags": [
           "Session Management"
         ],
-        "operationId": "update_session_user_recipe_values",
+        "operationId": "update_session_user_workflow_values",
         "parameters": [
           {
             "name": "session_id",
@@ -2558,7 +2157,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UpdateSessionUserRecipeValuesRequest"
+                "$ref": "#/components/schemas/UpdateSessionUserWorkflowValuesRequest"
               }
             }
           },
@@ -2566,11 +2165,11 @@
         },
         "responses": {
           "200": {
-            "description": "Session user recipe values updated successfully",
+            "description": "Session user workflow values updated successfully",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/UpdateSessionUserRecipeValuesResponse"
+                  "$ref": "#/components/schemas/UpdateSessionUserWorkflowValuesResponse"
                 }
               }
             }
@@ -2744,6 +2343,407 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workflows/create": {
+      "post": {
+        "tags": [
+          "Workflow Management"
+        ],
+        "operationId": "create_workflow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateWorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Workflow created successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateWorkflowResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          },
+          "412": {
+            "description": "Precondition failed - Agent not available"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/workflows/decode": {
+      "post": {
+        "tags": [
+          "Workflow Management"
+        ],
+        "operationId": "decode_workflow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DecodeWorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Workflow decoded successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DecodeWorkflowResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          }
+        }
+      }
+    },
+    "/workflows/delete": {
+      "post": {
+        "tags": [
+          "Workflow Management"
+        ],
+        "operationId": "delete_workflow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteWorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Workflow deleted successfully"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "404": {
+            "description": "Workflow not found"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/workflows/encode": {
+      "post": {
+        "tags": [
+          "Workflow Management"
+        ],
+        "operationId": "encode_workflow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EncodeWorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Workflow encoded successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EncodeWorkflowResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          }
+        }
+      }
+    },
+    "/workflows/list": {
+      "get": {
+        "tags": [
+          "Workflow Management"
+        ],
+        "operationId": "list_workflows",
+        "responses": {
+          "200": {
+            "description": "Get workflow list successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListWorkflowResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/workflows/parse": {
+      "post": {
+        "tags": [
+          "Workflow Management"
+        ],
+        "operationId": "parse_workflow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ParseWorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Workflow parsed successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ParseWorkflowResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request - Invalid workflow format",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workflows/save": {
+      "post": {
+        "tags": [
+          "Workflow Management"
+        ],
+        "operationId": "save_workflow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveWorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Workflow saved to file successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaveWorkflowResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workflows/scan": {
+      "post": {
+        "tags": [
+          "Workflow Management"
+        ],
+        "operationId": "scan_workflow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScanWorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Workflow scanned successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanWorkflowResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/workflows/schedule": {
+      "post": {
+        "tags": [
+          "Workflow Management"
+        ],
+        "operationId": "schedule_workflow",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ScheduleWorkflowRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Workflow scheduled successfully"
+          },
+          "404": {
+            "description": "Workflow not found"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/workflows/slash-command": {
+      "post": {
+        "tags": [
+          "Workflow Management"
+        ],
+        "operationId": "set_workflow_slash_command",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetSlashCommandRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Slash command set successfully"
+          },
+          "404": {
+            "description": "Workflow not found"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/workflows/to-yaml": {
+      "post": {
+        "tags": [
+          "Workflow Management"
+        ],
+        "operationId": "workflow_to_yaml",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WorkflowToYamlRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Workflow converted to YAML successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkflowToYamlResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request - Failed to convert workflow to YAML",
             "content": {
               "application/json": {
                 "schema": {
@@ -2989,19 +2989,19 @@
             },
             "nullable": true
           },
-          "recipe_name": {
-            "type": "string",
-            "nullable": true
-          },
-          "recipe_version": {
-            "type": "string",
-            "nullable": true
-          },
           "session_id": {
             "type": "string"
           },
           "user_message": {
             "$ref": "#/components/schemas/Message"
+          },
+          "workflow_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "workflow_version": {
+            "type": "string",
+            "nullable": true
           }
         }
       },
@@ -3020,7 +3020,7 @@
         "type": "string",
         "enum": [
           "Builtin",
-          "Recipe"
+          "Workflow"
         ]
       },
       "ConfigKey": {
@@ -3150,7 +3150,26 @@
           "$ref": "#/components/schemas/Message"
         }
       },
-      "CreateRecipeRequest": {
+      "CreateScheduleRequest": {
+        "type": "object",
+        "required": [
+          "id",
+          "workflow_source",
+          "cron"
+        ],
+        "properties": {
+          "cron": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "workflow_source": {
+            "type": "string"
+          }
+        }
+      },
+      "CreateWorkflowRequest": {
         "type": "object",
         "required": [
           "session_id"
@@ -3169,39 +3188,20 @@
           }
         }
       },
-      "CreateRecipeResponse": {
+      "CreateWorkflowResponse": {
         "type": "object",
         "properties": {
           "error": {
             "type": "string",
             "nullable": true
           },
-          "recipe": {
+          "workflow": {
             "allOf": [
               {
-                "$ref": "#/components/schemas/Recipe"
+                "$ref": "#/components/schemas/Workflow"
               }
             ],
             "nullable": true
-          }
-        }
-      },
-      "CreateScheduleRequest": {
-        "type": "object",
-        "required": [
-          "id",
-          "recipe_source",
-          "cron"
-        ],
-        "properties": {
-          "cron": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "recipe_source": {
-            "type": "string"
           }
         }
       },
@@ -3282,7 +3282,7 @@
           }
         }
       },
-      "DecodeRecipeRequest": {
+      "DecodeWorkflowRequest": {
         "type": "object",
         "required": [
           "deeplink"
@@ -3293,18 +3293,18 @@
           }
         }
       },
-      "DecodeRecipeResponse": {
+      "DecodeWorkflowResponse": {
         "type": "object",
         "required": [
-          "recipe"
+          "workflow"
         ],
         "properties": {
-          "recipe": {
-            "$ref": "#/components/schemas/Recipe"
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
           }
         }
       },
-      "DeleteRecipeRequest": {
+      "DeleteWorkflowRequest": {
         "type": "object",
         "required": [
           "id"
@@ -3402,18 +3402,18 @@
           }
         }
       },
-      "EncodeRecipeRequest": {
+      "EncodeWorkflowRequest": {
         "type": "object",
         "required": [
-          "recipe"
+          "workflow"
         ],
         "properties": {
-          "recipe": {
-            "$ref": "#/components/schemas/Recipe"
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
           }
         }
       },
-      "EncodeRecipeResponse": {
+      "EncodeWorkflowResponse": {
         "type": "object",
         "required": [
           "deeplink"
@@ -3998,20 +3998,6 @@
           }
         }
       },
-      "ListRecipeResponse": {
-        "type": "object",
-        "required": [
-          "manifests"
-        ],
-        "properties": {
-          "manifests": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/RecipeManifest"
-            }
-          }
-        }
-      },
       "ListSchedulesResponse": {
         "type": "object",
         "required": [
@@ -4022,6 +4008,20 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/ScheduledJob"
+            }
+          }
+        }
+      },
+      "ListWorkflowResponse": {
+        "type": "object",
+        "required": [
+          "manifests"
+        ],
+        "properties": {
+          "manifests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowManifest"
             }
           }
         }
@@ -4585,7 +4585,7 @@
           }
         }
       },
-      "ParseRecipeRequest": {
+      "ParseWorkflowRequest": {
         "type": "object",
         "required": [
           "content"
@@ -4596,14 +4596,14 @@
           }
         }
       },
-      "ParseRecipeResponse": {
+      "ParseWorkflowResponse": {
         "type": "object",
         "required": [
-          "recipe"
+          "workflow"
         ],
         "properties": {
-          "recipe": {
-            "$ref": "#/components/schemas/Recipe"
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
           }
         }
       },
@@ -4943,198 +4943,6 @@
           }
         }
       },
-      "Recipe": {
-        "type": "object",
-        "required": [
-          "title",
-          "description"
-        ],
-        "properties": {
-          "activities": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "nullable": true
-          },
-          "author": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Author"
-              }
-            ],
-            "nullable": true
-          },
-          "description": {
-            "type": "string"
-          },
-          "extensions": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ExtensionConfig"
-            },
-            "nullable": true
-          },
-          "instructions": {
-            "type": "string",
-            "nullable": true
-          },
-          "parameters": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/RecipeParameter"
-            },
-            "nullable": true
-          },
-          "prompt": {
-            "type": "string",
-            "nullable": true
-          },
-          "response": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Response"
-              }
-            ],
-            "nullable": true
-          },
-          "retry": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/RetryConfig"
-              }
-            ],
-            "nullable": true
-          },
-          "settings": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Settings"
-              }
-            ],
-            "nullable": true
-          },
-          "sub_recipes": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/SubRecipe"
-            },
-            "nullable": true
-          },
-          "title": {
-            "type": "string"
-          },
-          "version": {
-            "type": "string"
-          }
-        }
-      },
-      "RecipeManifest": {
-        "type": "object",
-        "required": [
-          "id",
-          "recipe",
-          "file_path",
-          "last_modified"
-        ],
-        "properties": {
-          "file_path": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "last_modified": {
-            "type": "string"
-          },
-          "recipe": {
-            "$ref": "#/components/schemas/Recipe"
-          },
-          "schedule_cron": {
-            "type": "string",
-            "nullable": true
-          },
-          "slash_command": {
-            "type": "string",
-            "nullable": true
-          }
-        }
-      },
-      "RecipeParameter": {
-        "type": "object",
-        "required": [
-          "key",
-          "input_type",
-          "requirement",
-          "description"
-        ],
-        "properties": {
-          "default": {
-            "type": "string",
-            "nullable": true
-          },
-          "description": {
-            "type": "string"
-          },
-          "input_type": {
-            "$ref": "#/components/schemas/RecipeParameterInputType"
-          },
-          "key": {
-            "type": "string"
-          },
-          "options": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "nullable": true
-          },
-          "requirement": {
-            "$ref": "#/components/schemas/RecipeParameterRequirement"
-          }
-        }
-      },
-      "RecipeParameterInputType": {
-        "type": "string",
-        "enum": [
-          "string",
-          "number",
-          "boolean",
-          "date",
-          "file",
-          "select"
-        ]
-      },
-      "RecipeParameterRequirement": {
-        "type": "string",
-        "enum": [
-          "required",
-          "optional",
-          "user_prompt"
-        ]
-      },
-      "RecipeToYamlRequest": {
-        "type": "object",
-        "required": [
-          "recipe"
-        ],
-        "properties": {
-          "recipe": {
-            "$ref": "#/components/schemas/Recipe"
-          }
-        }
-      },
-      "RecipeToYamlResponse": {
-        "type": "object",
-        "required": [
-          "yaml"
-        ],
-        "properties": {
-          "yaml": {
-            "type": "string"
-          }
-        }
-      },
       "RedactedThinkingContent": {
         "type": "object",
         "required": [
@@ -5291,7 +5099,7 @@
       },
       "RetryConfig": {
         "type": "object",
-        "description": "Configuration for retry logic in recipe execution",
+        "description": "Configuration for retry logic in workflow execution",
         "required": [
           "max_retries",
           "checks"
@@ -5302,7 +5110,7 @@
             "items": {
               "$ref": "#/components/schemas/SuccessCheck"
             },
-            "description": "List of success checks to validate recipe completion"
+            "description": "List of success checks to validate workflow completion"
           },
           "max_retries": {
             "type": "integer",
@@ -5352,22 +5160,22 @@
           }
         }
       },
-      "SaveRecipeRequest": {
+      "SaveWorkflowRequest": {
         "type": "object",
         "required": [
-          "recipe"
+          "workflow"
         ],
         "properties": {
           "id": {
             "type": "string",
             "nullable": true
           },
-          "recipe": {
-            "$ref": "#/components/schemas/Recipe"
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
           }
         }
       },
-      "SaveRecipeResponse": {
+      "SaveWorkflowResponse": {
         "type": "object",
         "required": [
           "id"
@@ -5378,18 +5186,18 @@
           }
         }
       },
-      "ScanRecipeRequest": {
+      "ScanWorkflowRequest": {
         "type": "object",
         "required": [
-          "recipe"
+          "workflow"
         ],
         "properties": {
-          "recipe": {
-            "$ref": "#/components/schemas/Recipe"
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
           }
         }
       },
-      "ScanRecipeResponse": {
+      "ScanWorkflowResponse": {
         "type": "object",
         "required": [
           "has_security_warnings"
@@ -5400,7 +5208,7 @@
           }
         }
       },
-      "ScheduleRecipeRequest": {
+      "ScheduleWorkflowRequest": {
         "type": "object",
         "required": [
           "id"
@@ -5528,14 +5336,6 @@
             "type": "string",
             "nullable": true
           },
-          "recipe": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Recipe"
-              }
-            ],
-            "nullable": true
-          },
           "schedule_id": {
             "type": "string",
             "nullable": true
@@ -5552,15 +5352,23 @@
             "type": "string",
             "format": "date-time"
           },
-          "user_recipe_values": {
+          "user_set_name": {
+            "type": "boolean"
+          },
+          "user_workflow_values": {
             "type": "object",
             "additionalProperties": {
               "type": "string"
             },
             "nullable": true
           },
-          "user_set_name": {
-            "type": "boolean"
+          "workflow": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Workflow"
+              }
+            ],
+            "nullable": true
           },
           "working_dir": {
             "type": "string"
@@ -5806,19 +5614,19 @@
             },
             "nullable": true
           },
-          "recipe": {
+          "workflow": {
             "allOf": [
               {
-                "$ref": "#/components/schemas/Recipe"
+                "$ref": "#/components/schemas/Workflow"
               }
             ],
             "nullable": true
           },
-          "recipe_deeplink": {
+          "workflow_deeplink": {
             "type": "string",
             "nullable": true
           },
-          "recipe_id": {
+          "workflow_id": {
             "type": "string",
             "nullable": true
           },
@@ -5838,7 +5646,7 @@
           }
         }
       },
-      "SubRecipe": {
+      "SubWorkflow": {
         "type": "object",
         "required": [
           "name",
@@ -5890,7 +5698,7 @@
             }
           }
         ],
-        "description": "A single success check to validate recipe completion",
+        "description": "A single success check to validate workflow completion",
         "discriminator": {
           "propertyName": "type"
         }
@@ -6382,29 +6190,29 @@
           }
         }
       },
-      "UpdateSessionUserRecipeValuesRequest": {
+      "UpdateSessionUserWorkflowValuesRequest": {
         "type": "object",
         "required": [
-          "userRecipeValues"
+          "userWorkflowValues"
         ],
         "properties": {
-          "userRecipeValues": {
+          "userWorkflowValues": {
             "type": "object",
-            "description": "Recipe parameter values entered by the user",
+            "description": "Workflow parameter values entered by the user",
             "additionalProperties": {
               "type": "string"
             }
           }
         }
       },
-      "UpdateSessionUserRecipeValuesResponse": {
+      "UpdateSessionUserWorkflowValuesResponse": {
         "type": "object",
         "required": [
-          "recipe"
+          "workflow"
         ],
         "properties": {
-          "recipe": {
-            "$ref": "#/components/schemas/Recipe"
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
           }
         }
       },
@@ -6474,6 +6282,198 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          }
+        }
+      },
+      "Workflow": {
+        "type": "object",
+        "required": [
+          "title",
+          "description"
+        ],
+        "properties": {
+          "activities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "author": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Author"
+              }
+            ],
+            "nullable": true
+          },
+          "description": {
+            "type": "string"
+          },
+          "extensions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ExtensionConfig"
+            },
+            "nullable": true
+          },
+          "instructions": {
+            "type": "string",
+            "nullable": true
+          },
+          "parameters": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WorkflowParameter"
+            },
+            "nullable": true
+          },
+          "prompt": {
+            "type": "string",
+            "nullable": true
+          },
+          "response": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Response"
+              }
+            ],
+            "nullable": true
+          },
+          "retry": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RetryConfig"
+              }
+            ],
+            "nullable": true
+          },
+          "settings": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Settings"
+              }
+            ],
+            "nullable": true
+          },
+          "sub_workflows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SubWorkflow"
+            },
+            "nullable": true
+          },
+          "title": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "WorkflowManifest": {
+        "type": "object",
+        "required": [
+          "id",
+          "workflow",
+          "file_path",
+          "last_modified"
+        ],
+        "properties": {
+          "file_path": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_modified": {
+            "type": "string"
+          },
+          "schedule_cron": {
+            "type": "string",
+            "nullable": true
+          },
+          "slash_command": {
+            "type": "string",
+            "nullable": true
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
+          }
+        }
+      },
+      "WorkflowParameter": {
+        "type": "object",
+        "required": [
+          "key",
+          "input_type",
+          "requirement",
+          "description"
+        ],
+        "properties": {
+          "default": {
+            "type": "string",
+            "nullable": true
+          },
+          "description": {
+            "type": "string"
+          },
+          "input_type": {
+            "$ref": "#/components/schemas/WorkflowParameterInputType"
+          },
+          "key": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
+          "requirement": {
+            "$ref": "#/components/schemas/WorkflowParameterRequirement"
+          }
+        }
+      },
+      "WorkflowParameterInputType": {
+        "type": "string",
+        "enum": [
+          "string",
+          "number",
+          "boolean",
+          "date",
+          "file",
+          "select"
+        ]
+      },
+      "WorkflowParameterRequirement": {
+        "type": "string",
+        "enum": [
+          "required",
+          "optional",
+          "user_prompt"
+        ]
+      },
+      "WorkflowToYamlRequest": {
+        "type": "object",
+        "required": [
+          "workflow"
+        ],
+        "properties": {
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
+          }
+        }
+      },
+      "WorkflowToYamlResponse": {
+        "type": "object",
+        "required": [
+          "yaml"
+        ],
+        "properties": {
+          "yaml": {
+            "type": "string"
           }
         }
       }

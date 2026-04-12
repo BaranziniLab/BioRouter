@@ -106,23 +106,23 @@ export type AnalyticsEvent =
     }
   | { name: 'schedule_deleted'; properties: { success: boolean; error_details?: string } }
   | { name: 'schedule_run_now'; properties: { success: boolean; error_details?: string } }
-  | { name: 'recipe_created'; properties: { success: boolean; error_details?: string } }
-  | { name: 'recipe_imported'; properties: { success: boolean; error_details?: string } }
-  | { name: 'recipe_edited'; properties: { success: boolean; error_details?: string } }
-  | { name: 'recipe_deleted'; properties: { success: boolean; error_details?: string } }
+  | { name: 'workflow_created'; properties: { success: boolean; error_details?: string } }
+  | { name: 'workflow_imported'; properties: { success: boolean; error_details?: string } }
+  | { name: 'workflow_edited'; properties: { success: boolean; error_details?: string } }
+  | { name: 'workflow_deleted'; properties: { success: boolean; error_details?: string } }
   | {
-      name: 'recipe_started';
+      name: 'workflow_started';
       properties: { success: boolean; error_details?: string; in_new_window?: boolean };
     }
-  | { name: 'recipe_deeplink_copied'; properties: { success: boolean; error_details?: string } }
-  | { name: 'recipe_yaml_copied'; properties: { success: boolean; error_details?: string } }
-  | { name: 'recipe_exported_to_file'; properties: { success: boolean; error_details?: string } }
+  | { name: 'workflow_deeplink_copied'; properties: { success: boolean; error_details?: string } }
+  | { name: 'workflow_yaml_copied'; properties: { success: boolean; error_details?: string } }
+  | { name: 'workflow_exported_to_file'; properties: { success: boolean; error_details?: string } }
   | {
-      name: 'recipe_scheduled';
+      name: 'workflow_scheduled';
       properties: { success: boolean; error_details?: string; action: 'add' | 'edit' | 'remove' };
     }
   | {
-      name: 'recipe_slash_command_set';
+      name: 'workflow_slash_command_set';
       properties: { success: boolean; error_details?: string; action: 'add' | 'edit' | 'remove' };
     }
   | {
@@ -173,8 +173,8 @@ export type AnalyticsEvent =
     }
   | { name: 'input_mode_changed'; properties: { from_mode: string; to_mode: string } }
   | { name: 'input_diagnostics_opened'; properties: Record<string, never> }
-  | { name: 'input_create_recipe_opened'; properties: Record<string, never> }
-  | { name: 'input_edit_recipe_opened'; properties: Record<string, never> }
+  | { name: 'input_create_workflow_opened'; properties: Record<string, never> }
+  | { name: 'input_edit_workflow_opened'; properties: Record<string, never> }
   // Auto-update tracking events
   | {
       name: 'update_check_started';
@@ -460,7 +460,7 @@ export function trackExtensionDeleted(
 }
 
 // ============================================================================
-// Schedule/Recipe Tracking
+// Schedule/Workflow Tracking
 // ============================================================================
 
 export function trackScheduleCreated(
@@ -489,95 +489,95 @@ export function trackScheduleRunNow(success: boolean, errorDetails?: string): vo
 }
 
 // ============================================================================
-// Recipe Tracking
+// Workflow Tracking
 // ============================================================================
 
-export function trackRecipeCreated(success: boolean, errorDetails?: string): void {
+export function trackWorkflowCreated(success: boolean, errorDetails?: string): void {
   trackEvent({
-    name: 'recipe_created',
+    name: 'workflow_created',
     properties: { success, error_details: errorDetails },
   });
 }
 
-export function trackRecipeImported(success: boolean, errorDetails?: string): void {
+export function trackWorkflowImported(success: boolean, errorDetails?: string): void {
   trackEvent({
-    name: 'recipe_imported',
+    name: 'workflow_imported',
     properties: { success, error_details: errorDetails },
   });
 }
 
-export function trackRecipeEdited(success: boolean, errorDetails?: string): void {
+export function trackWorkflowEdited(success: boolean, errorDetails?: string): void {
   trackEvent({
-    name: 'recipe_edited',
+    name: 'workflow_edited',
     properties: { success, error_details: errorDetails },
   });
 }
 
-export function trackRecipeDeleted(success: boolean, errorDetails?: string): void {
+export function trackWorkflowDeleted(success: boolean, errorDetails?: string): void {
   trackEvent({
-    name: 'recipe_deleted',
+    name: 'workflow_deleted',
     properties: { success, error_details: errorDetails },
   });
 }
 
-export function trackRecipeStarted(
+export function trackWorkflowStarted(
   success: boolean,
   errorDetails?: string,
   inNewWindow?: boolean
 ): void {
   trackEvent({
-    name: 'recipe_started',
+    name: 'workflow_started',
     properties: { success, error_details: errorDetails, in_new_window: inNewWindow },
   });
 }
 
-export function trackRecipeDeeplinkCopied(success: boolean, errorDetails?: string): void {
+export function trackWorkflowDeeplinkCopied(success: boolean, errorDetails?: string): void {
   trackEvent({
-    name: 'recipe_deeplink_copied',
+    name: 'workflow_deeplink_copied',
     properties: { success, error_details: errorDetails },
   });
 }
 
-export function trackRecipeYamlCopied(success: boolean, errorDetails?: string): void {
+export function trackWorkflowYamlCopied(success: boolean, errorDetails?: string): void {
   trackEvent({
-    name: 'recipe_yaml_copied',
+    name: 'workflow_yaml_copied',
     properties: { success, error_details: errorDetails },
   });
 }
 
-export function trackRecipeExportedToFile(success: boolean, errorDetails?: string): void {
+export function trackWorkflowExportedToFile(success: boolean, errorDetails?: string): void {
   trackEvent({
-    name: 'recipe_exported_to_file',
+    name: 'workflow_exported_to_file',
     properties: { success, error_details: errorDetails },
   });
 }
 
-export function trackRecipeScheduled(
+export function trackWorkflowScheduled(
   success: boolean,
   action: 'add' | 'edit' | 'remove',
   errorDetails?: string
 ): void {
   trackEvent({
-    name: 'recipe_scheduled',
+    name: 'workflow_scheduled',
     properties: { success, action, error_details: errorDetails },
   });
 }
 
-export function trackRecipeSlashCommandSet(
+export function trackWorkflowSlashCommandSet(
   success: boolean,
   action: 'add' | 'edit' | 'remove',
   errorDetails?: string
 ): void {
   trackEvent({
-    name: 'recipe_slash_command_set',
+    name: 'workflow_slash_command_set',
     properties: { success, action, error_details: errorDetails },
   });
 }
 
 // NOTE: slash_command_used is tracked by the backend (posthog.rs) with richer info:
-// - command_type: "builtin" | "recipe" | "unknown"
+// - command_type: "builtin" | "workflow" | "unknown"
 // - command_name: only for builtin commands (e.g., "compact", "summarize")
-// - success: true for builtin/recipe, false for unknown
+// - success: true for builtin/workflow, false for unknown
 
 // ============================================================================
 // Chat Input Bar Feature Tracking
@@ -615,16 +615,16 @@ export function trackDiagnosticsOpened(): void {
   });
 }
 
-export function trackCreateRecipeOpened(): void {
+export function trackCreateWorkflowOpened(): void {
   trackEvent({
-    name: 'input_create_recipe_opened',
+    name: 'input_create_workflow_opened',
     properties: {},
   });
 }
 
-export function trackEditRecipeOpened(): void {
+export function trackEditWorkflowOpened(): void {
   trackEvent({
-    name: 'input_edit_recipe_opened',
+    name: 'input_edit_workflow_opened',
     properties: {},
   });
 }

@@ -18,12 +18,12 @@ pub const DEFAULT_RETRY_TIMEOUT_SECONDS: u64 = 300;
 /// Default timeout for on_failure operations (10 minutes - longer for on_failure tasks)
 pub const DEFAULT_ON_FAILURE_TIMEOUT_SECONDS: u64 = 600;
 
-/// Configuration for retry logic in recipe execution
+/// Configuration for retry logic in workflow execution
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts before giving up
     pub max_retries: u32,
-    /// List of success checks to validate recipe completion
+    /// List of success checks to validate workflow completion
     pub checks: Vec<SuccessCheck>,
     /// Optional shell command to run on failure for cleanup
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -61,7 +61,7 @@ impl RetryConfig {
     }
 }
 
-/// A single success check to validate recipe completion
+/// A single success check to validate workflow completion
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "type")]
 pub enum SuccessCheck {

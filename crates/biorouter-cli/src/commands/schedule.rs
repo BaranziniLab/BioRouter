@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use biorouter::scheduler::{
-    get_default_scheduled_recipes_dir, get_default_scheduler_storage_path, ScheduledJob, Scheduler,
+    get_default_scheduled_workflows_dir, get_default_scheduler_storage_path, ScheduledJob, Scheduler,
     SchedulerError,
 };
 use biorouter::session::SessionManager;
@@ -68,20 +68,20 @@ fn validate_cron_expression(cron: &str) -> Result<()> {
 pub async fn handle_schedule_add(
     schedule_id: String,
     cron: String,
-    recipe_source_arg: String, // This is expected to be a file path by the Scheduler
+    workflow_source_arg: String, // This is expected to be a file path by the Scheduler
 ) -> Result<()> {
     println!(
-        "[CLI Debug] Scheduling job ID: {}, Cron: {}, Recipe Source Path: {}",
-        schedule_id, cron, recipe_source_arg
+        "[CLI Debug] Scheduling job ID: {}, Cron: {}, Workflow Source Path: {}",
+        schedule_id, cron, workflow_source_arg
     );
 
     validate_cron_expression(&cron)?;
 
-    // The Scheduler's add_scheduled_job will handle copying the recipe from recipe_source_arg
+    // The Scheduler's add_scheduled_job will handle copying the workflow from workflow_source_arg
     // to its internal storage and validating the path.
     let job = ScheduledJob {
         id: schedule_id.clone(),
-        source: recipe_source_arg.clone(), // Pass the original user-provided path
+        source: workflow_source_arg.clone(), // Pass the original user-provided path
         cron,
         last_run: None,
         currently_running: false,
@@ -99,20 +99,20 @@ pub async fn handle_schedule_add(
 
     match scheduler.add_scheduled_job(job, true).await {
         Ok(_) => {
-            // The scheduler has copied the recipe to its internal directory.
+            // The scheduler has copied the workflow to its internal directory.
             // We can reconstruct the likely path for display if needed, or adjust success message.
-            let scheduled_recipes_dir = get_default_scheduled_recipes_dir()
-                .unwrap_or_else(|_| Path::new("./.biorouter_scheduled_recipes").to_path_buf()); // Fallback for display
-            let extension = Path::new(&recipe_source_arg)
+            let scheduled_workflows_dir = get_default_scheduled_workflows_dir()
+                .unwrap_or_else(|_| Path::new("./.biorouter_scheduled_workflows").to_path_buf()); // Fallback for display
+            let extension = Path::new(&workflow_source_arg)
                 .extension()
                 .and_then(|ext| ext.to_str())
                 .unwrap_or("yaml");
-            let final_recipe_path =
-                scheduled_recipes_dir.join(format!("{}.{}", schedule_id, extension));
+            let final_workflow_path =
+                scheduled_workflows_dir.join(format!("{}.{}", schedule_id, extension));
 
             println!(
-                "Scheduled job '{}' added. Recipe expected at {:?}",
-                schedule_id, final_recipe_path
+                "Scheduled job '{}' added. Workflow expected at {:?}",
+                schedule_id, final_workflow_path
             );
             Ok(())
         }
@@ -122,11 +122,11 @@ pub async fn handle_schedule_add(
                 SchedulerError::JobIdExists(job_id) => {
                     bail!("Error: Job with ID '{}' already exists.", job_id);
                 }
-                SchedulerError::RecipeLoadError(msg) => {
+                SchedulerError::WorkflowLoadError(msg) => {
                     bail!(
-                        "Error with recipe source: {}. Path: {}",
+                        "Error with workflow source: {}. Path: {}",
                         msg,
-                        recipe_source_arg
+                        workflow_source_arg
                     );
                 }
                 _ => Err(anyhow::Error::new(e))
@@ -159,11 +159,11 @@ pub async fn handle_schedule_list() -> Result<()> {
             };
 
             println!(
-                "- ID: {}\n  Status: {}\n  Cron: {}\n  Recipe Source (in store): {}\n  Last Run: {}",
+                "- ID: {}\n  Status: {}\n  Cron: {}\n  Workflow Source (in store): {}\n  Last Run: {}",
                 job.id,
                 status,
                 job.cron,
-                job.source, // This source is now the path within scheduled_recipes_dir
+                job.source, // This source is now the path within scheduled_workflows_dir
                 job.last_run
                     .map_or_else(|| "Never".to_string(), |dt| dt.to_rfc3339())
             );
@@ -183,7 +183,7 @@ pub async fn handle_schedule_remove(schedule_id: String) -> Result<()> {
     match scheduler.remove_scheduled_job(&schedule_id, true).await {
         Ok(_) => {
             println!(
-                "Scheduled job '{}' and its associated recipe removed.",
+                "Scheduled job '{}' and its associated workflow removed.",
                 schedule_id
             );
             Ok(())
@@ -331,12 +331,12 @@ pub async fn handle_schedule_cron_help() -> Result<()> {
 
     println!("💡 EXAMPLES:");
     println!(
-        "  biorouter schedule add --schedule-id hourly-report --cron \"0 * * * *\" --recipe-source report.yaml"
+        "  biorouter schedule add --schedule-id hourly-report --cron \"0 * * * *\" --workflow-source report.yaml"
     );
     println!(
-        "  biorouter schedule add --schedule-id daily-backup --cron \"@daily\" --recipe-source backup.yaml"
+        "  biorouter schedule add --schedule-id daily-backup --cron \"@daily\" --workflow-source backup.yaml"
     );
-    println!("  biorouter schedule add --schedule-id weekly-summary --cron \"0 9 * * 1\" --recipe-source summary.yaml");
+    println!("  biorouter schedule add --schedule-id weekly-summary --cron \"0 9 * * 1\" --workflow-source summary.yaml");
 
     Ok(())
 }

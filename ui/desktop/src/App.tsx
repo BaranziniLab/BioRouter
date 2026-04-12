@@ -37,7 +37,7 @@ import { ThemeProvider } from './contexts/ThemeContext';
 import PermissionSettingsView from './components/settings/permission/PermissionSetting';
 
 import ExtensionsView, { ExtensionsViewOptions } from './components/extensions/ExtensionsView';
-import RecipesView from './components/recipes/RecipesView';
+import WorkflowsView from './components/workflows/WorkflowsView';
 import AppsView from './components/apps/AppsView';
 import StandaloneAppView from './components/apps/StandaloneAppView';
 import { View, ViewOptions } from './utils/navigationUtils';
@@ -79,8 +79,8 @@ const PairRouteWrapper = ({
   );
 
   const resumeSessionId = searchParams.get('resumeSessionId') ?? undefined;
-  const recipeId = searchParams.get('recipeId') ?? undefined;
-  const recipeDeeplinkFromConfig = window.appConfig?.get('recipeDeeplink') as string | undefined;
+  const workflowId = searchParams.get('workflowId') ?? undefined;
+  const workflowDeeplinkFromConfig = window.appConfig?.get('workflowDeeplink') as string | undefined;
 
   // Session ID and initialMessage come from route state (Hub, fork) or URL params (refresh, deeplink)
   const sessionIdFromState = routeState.resumeSessionId;
@@ -102,10 +102,10 @@ const PairRouteWrapper = ({
     }
   }, [routeState.initialMessage]);
 
-  // Create session if we have an initialMessage, recipeId, or recipeDeeplink but no sessionId
+  // Create session if we have an initialMessage, workflowId, or workflowDeeplink but no sessionId
   useEffect(() => {
     if (
-      (initialMessage || recipeId || recipeDeeplinkFromConfig) &&
+      (initialMessage || workflowId || workflowDeeplinkFromConfig) &&
       !sessionId &&
       !isCreatingSession
     ) {
@@ -114,8 +114,8 @@ const PairRouteWrapper = ({
       (async () => {
         try {
           const newSession = await createSession(getInitialWorkingDir(), {
-            recipeId,
-            recipeDeeplink: recipeDeeplinkFromConfig,
+            workflowId,
+            workflowDeeplink: workflowDeeplinkFromConfig,
             allExtensions: extensionsList,
           });
           navigate(`/pair?resumeSessionId=${newSession.id}`, {
@@ -136,8 +136,8 @@ const PairRouteWrapper = ({
     }
   }, [
     initialMessage,
-    recipeId,
-    recipeDeeplinkFromConfig,
+    workflowId,
+    workflowDeeplinkFromConfig,
     sessionId,
     isCreatingSession,
     extensionsList,
@@ -203,8 +203,8 @@ const SchedulesRoute = () => {
   return <SchedulesView onClose={() => navigate('/')} />;
 };
 
-const RecipesRoute = () => {
-  return <RecipesView />;
+const WorkflowsRoute = () => {
+  return <WorkflowsView />;
 };
 
 const PermissionRoute = () => {
@@ -233,8 +233,8 @@ const PermissionRoute = () => {
           case 'schedules':
             navigate('/schedules');
             break;
-          case 'recipes':
-            navigate('/recipes');
+          case 'workflows':
+            navigate('/workflows');
             break;
           default:
             navigate('/');
@@ -368,7 +368,7 @@ export function AppInner() {
     sessionId: '',
     name: 'Pair Chat',
     messages: [],
-    recipe: null,
+    workflow: null,
   });
 
   const { addExtension } = useConfig();
@@ -610,7 +610,7 @@ export function AppInner() {
             <Route path="apps" element={<AppsView />} />
             <Route path="sessions" element={<SessionsRoute />} />
             <Route path="schedules" element={<SchedulesRoute />} />
-            <Route path="recipes" element={<RecipesRoute />} />
+            <Route path="workflows" element={<WorkflowsRoute />} />
             <Route
               path="shared-session"
               element={

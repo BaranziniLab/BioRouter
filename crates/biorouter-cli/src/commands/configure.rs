@@ -1,4 +1,4 @@
-use crate::recipes::github_recipe::BIOROUTER_RECIPE_GITHUB_REPO_CONFIG_KEY;
+use crate::workflows::github_workflow::BIOROUTER_WORKFLOW_GITHUB_REPO_CONFIG_KEY;
 use cliclack::spinner;
 use console::style;
 use biorouter::agents::extension::ToolInfo;
@@ -303,7 +303,7 @@ async fn handle_existing_config() -> anyhow::Result<()> {
         .item(
             "settings",
             "biorouter settings",
-            "Set the biorouter mode, Tool Output, Tool Permissions, Experiment, biorouter recipe github repo and more",
+            "Set the biorouter mode, Tool Output, Tool Permissions, Experiment, biorouter workflow github repo and more",
         )
         .interact()?;
 
@@ -1160,9 +1160,9 @@ pub async fn configure_settings_dialog() -> anyhow::Result<()> {
             "Enable or disable an experiment feature",
         )
         .item(
-            "recipe",
-            "biorouter recipe github repo",
-            "biorouter will pull recipes from this repo if not found locally.",
+            "workflow",
+            "biorouter workflow github repo",
+            "biorouter will pull workflows from this repo if not found locally.",
         )
         .interact()?;
 
@@ -1192,8 +1192,8 @@ pub async fn configure_settings_dialog() -> anyhow::Result<()> {
         "experiment" => {
             toggle_experiments_dialog()?;
         }
-        "recipe" => {
-            configure_recipe_dialog()?;
+        "workflow" => {
+            configure_workflow_dialog()?;
         }
         _ => unreachable!(),
     };
@@ -1566,20 +1566,20 @@ pub async fn configure_tool_permissions_dialog() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn configure_recipe_dialog() -> anyhow::Result<()> {
-    let key_name = BIOROUTER_RECIPE_GITHUB_REPO_CONFIG_KEY;
+fn configure_workflow_dialog() -> anyhow::Result<()> {
+    let key_name = BIOROUTER_WORKFLOW_GITHUB_REPO_CONFIG_KEY;
     let config = Config::global();
-    let default_recipe_repo = std::env::var(key_name)
+    let default_workflow_repo = std::env::var(key_name)
         .ok()
         .or_else(|| config.get_param(key_name).unwrap_or(None));
-    let mut recipe_repo_input = cliclack::input(
-        "Enter your biorouter recipe Github repo (owner/repo): eg: my_org/biorouter-recipes",
+    let mut workflow_repo_input = cliclack::input(
+        "Enter your biorouter workflow Github repo (owner/repo): eg: my_org/biorouter-workflows",
     )
     .required(false);
-    if let Some(recipe_repo) = default_recipe_repo {
-        recipe_repo_input = recipe_repo_input.default_input(&recipe_repo);
+    if let Some(workflow_repo) = default_workflow_repo {
+        workflow_repo_input = workflow_repo_input.default_input(&workflow_repo);
     }
-    let input_value: String = recipe_repo_input.interact()?;
+    let input_value: String = workflow_repo_input.interact()?;
     if input_value.clone().trim().is_empty() {
         config.delete(key_name)?;
     } else {

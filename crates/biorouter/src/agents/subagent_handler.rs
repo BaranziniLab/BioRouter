@@ -2,7 +2,7 @@ use crate::{
     agents::{subagent_task_config::TaskConfig, Agent, AgentConfig, AgentEvent, SessionConfig},
     conversation::{message::Message, Conversation},
     prompt_template::render_global_file,
-    recipe::Recipe,
+    workflow::Workflow,
 };
 use anyhow::{anyhow, Result};
 use futures::StreamExt;
@@ -29,14 +29,14 @@ type AgentMessagesFuture =
 /// Standalone function to run a complete subagent task with output options
 pub async fn run_complete_subagent_task(
     config: AgentConfig,
-    recipe: Recipe,
+    workflow: Workflow,
     task_config: TaskConfig,
     return_last_only: bool,
     session_id: String,
     cancellation_token: Option<CancellationToken>,
 ) -> Result<String, anyhow::Error> {
     let (messages, final_output) =
-        get_agent_messages(config, recipe, task_config, session_id, cancellation_token)
+        get_agent_messages(config, workflow, task_config, session_id, cancellation_token)
             .await
             .map_err(|e| {
                 ErrorData::new(
@@ -113,14 +113,14 @@ pub async fn run_complete_subagent_task(
 
 fn get_agent_messages(
     config: AgentConfig,
-    recipe: Recipe,
+    workflow: Workflow,
     task_config: TaskConfig,
     session_id: String,
     cancellation_token: Option<CancellationToken>,
 ) -> AgentMessagesFuture {
     Box::pin(async move {
-        let system_instructions = recipe.instructions.clone().unwrap_or_default();
-        let user_task = recipe
+        let system_instructions = workflow.instructions.clone().unwrap_or_default();
+        let user_task = workflow
             .prompt
             .clone()
             .unwrap_or_else(|| "Begin.".to_string());
@@ -142,9 +142,9 @@ fn get_agent_messages(
             }
         }
 
-        let has_response_schema = recipe.response.is_some();
+        let has_response_schema = workflow.response.is_some();
         agent
-            .apply_recipe_components(recipe.sub_recipes.clone(), recipe.response.clone(), true)
+            .apply_workflow_components(workflow.sub_workflows.clone(), workflow.response.clone(), true)
             .await;
 
         let tools = agent.list_tools(&session_id, None).await;
@@ -170,16 +170,16 @@ fn get_agent_messages(
         let user_message = Message::user().with_text(user_task);
         let mut conversation = Conversation::new_unvalidated(vec![user_message.clone()]);
 
-        if let Some(activities) = recipe.activities {
+        if let Some(activities) = workflow.activities {
             for activity in activities {
-                info!("Recipe activity: {}", activity);
+                info!("Workflow activity: {}", activity);
             }
         }
         let session_config = SessionConfig {
             id: session_id.clone(),
             schedule_id: None,
             max_turns: task_config.max_turns.map(|v| v as u32),
-            retry_config: recipe.retry,
+            retry_config: workflow.retry,
         };
 
         let mut stream = crate::session_context::with_session_id(Some(session_id.clone()), async {

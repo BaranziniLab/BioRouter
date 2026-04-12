@@ -18,10 +18,10 @@ type ExtensionLoadingTasks =
 #[derive(Clone)]
 pub struct AppState {
     pub(crate) agent_manager: Arc<AgentManager>,
-    pub recipe_file_hash_map: Arc<Mutex<HashMap<String, PathBuf>>>,
+    pub workflow_file_hash_map: Arc<Mutex<HashMap<String, PathBuf>>>,
     pub session_counter: Arc<AtomicUsize>,
-    /// Tracks sessions that have already emitted recipe telemetry to prevent double counting.
-    recipe_session_tracker: Arc<Mutex<HashSet<String>>>,
+    /// Tracks sessions that have already emitted workflow telemetry to prevent double counting.
+    workflow_session_tracker: Arc<Mutex<HashSet<String>>>,
     pub tunnel_manager: Arc<TunnelManager>,
     pub extension_loading_tasks: ExtensionLoadingTasks,
 }
@@ -33,9 +33,9 @@ impl AppState {
 
         Ok(Arc::new(Self {
             agent_manager,
-            recipe_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
+            workflow_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
             session_counter: Arc::new(AtomicUsize::new(0)),
-            recipe_session_tracker: Arc::new(Mutex::new(HashSet::new())),
+            workflow_session_tracker: Arc::new(Mutex::new(HashSet::new())),
             tunnel_manager,
             extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
         }))
@@ -86,13 +86,13 @@ impl AppState {
         self.agent_manager.session_manager()
     }
 
-    pub async fn set_recipe_file_hash_map(&self, hash_map: HashMap<String, PathBuf>) {
-        let mut map = self.recipe_file_hash_map.lock().await;
+    pub async fn set_workflow_file_hash_map(&self, hash_map: HashMap<String, PathBuf>) {
+        let mut map = self.workflow_file_hash_map.lock().await;
         *map = hash_map;
     }
 
-    pub async fn mark_recipe_run_if_absent(&self, session_id: &str) -> bool {
-        let mut sessions = self.recipe_session_tracker.lock().await;
+    pub async fn mark_workflow_run_if_absent(&self, session_id: &str) -> bool {
+        let mut sessions = self.workflow_session_tracker.lock().await;
         if sessions.contains(session_id) {
             false
         } else {

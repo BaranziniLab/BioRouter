@@ -10,7 +10,7 @@ import {
   Session,
   TokenState,
   updateFromSession,
-  updateSessionUserRecipeValues,
+  updateSessionUserWorkflowValues,
   listApps,
 } from '../api';
 
@@ -42,7 +42,7 @@ interface UseChatStreamReturn {
     elicitationId: string,
     userData: Record<string, unknown>
   ) => Promise<void>;
-  setRecipeUserParams: (values: Record<string, string>) => Promise<void>;
+  setWorkflowUserParams: (values: Record<string, string>) => Promise<void>;
   stopStreaming: () => void;
   sessionLoadError?: string;
   tokenState: TokenState;
@@ -438,25 +438,25 @@ export function useChatStream({
     [sessionId, session, chatState, updateMessages, updateNotifications, onFinish]
   );
 
-  const setRecipeUserParams = useCallback(
-    async (user_recipe_values: Record<string, string>) => {
+  const setWorkflowUserParams = useCallback(
+    async (user_workflow_values: Record<string, string>) => {
       if (session) {
-        await updateSessionUserRecipeValues({
+        await updateSessionUserWorkflowValues({
           path: {
             session_id: sessionId,
           },
           body: {
-            userRecipeValues: user_recipe_values,
+            userWorkflowValues: user_workflow_values,
           },
           throwOnError: true,
         });
         // TODO(Douwe): get this from the server instead of emulating it here
         setSession({
           ...session,
-          user_recipe_values,
+          user_workflow_values,
         });
       } else {
-        setSessionLoadError("can't call setRecipeParams without a session");
+        setSessionLoadError("can't call setWorkflowParams without a session");
       }
     },
     [sessionId, session, setSessionLoadError]
@@ -567,7 +567,7 @@ export function useChatStream({
     handleSubmit,
     submitElicitationResponse,
     stopStreaming,
-    setRecipeUserParams,
+    setWorkflowUserParams,
     tokenState,
     notifications: notificationsMap,
     onMessageUpdate,

@@ -20,20 +20,20 @@ import MentionPopover, { DisplayItemWithMatch } from './MentionPopover';
 import { COST_TRACKING_ENABLED } from '../updates';
 import { CostTracker } from './bottom_menu/CostTracker';
 import { DroppedFile, useFileDrop } from '../hooks/useFileDrop';
-import { Recipe } from '../recipe';
+import { Workflow } from '../workflow';
 import MessageQueue from './MessageQueue';
 import { detectInterruption } from '../utils/interruptionDetector';
 import { DiagnosticsModal } from './ui/Diagnostics';
 import { getSession, Message } from '../api';
-import CreateRecipeFromSessionModal from './recipes/CreateRecipeFromSessionModal';
-import CreateEditRecipeModal from './recipes/CreateEditRecipeModal';
+import CreateWorkflowFromSessionModal from './workflows/CreateWorkflowFromSessionModal';
+import CreateEditWorkflowModal from './workflows/CreateEditWorkflowModal';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
 import {
   trackFileAttached,
   trackDiagnosticsOpened,
-  trackCreateRecipeOpened,
-  trackEditRecipeOpened,
+  trackCreateWorkflowOpened,
+  trackEditWorkflowOpened,
 } from '../utils/analytics';
 import { getNavigationShortcutText } from '../utils/keyboardShortcuts';
 
@@ -90,9 +90,9 @@ interface ChatInputProps {
     };
   };
   disableAnimation?: boolean;
-  recipe?: Recipe | null;
-  recipeId?: string | null;
-  recipeAccepted?: boolean;
+  workflow?: Workflow | null;
+  workflowId?: string | null;
+  workflowAccepted?: boolean;
   initialPrompt?: string;
   toolCount: number;
   append?: (message: Message) => void;
@@ -116,9 +116,9 @@ export default function ChatInput({
   messages = [],
   disableAnimation = false,
   sessionCosts,
-  recipe,
-  recipeId,
-  recipeAccepted,
+  workflow,
+  workflowId,
+  workflowAccepted,
   initialPrompt,
   toolCount,
   append: _append,
@@ -148,8 +148,8 @@ export default function ChatInput({
   const [tokenLimit, setTokenLimit] = useState<number>(TOKEN_LIMIT_DEFAULT);
   const [isTokenLimitLoaded, setIsTokenLimitLoaded] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
-  const [showCreateRecipeModal, setShowCreateRecipeModal] = useState(false);
-  const [showEditRecipeModal, setShowEditRecipeModal] = useState(false);
+  const [showCreateWorkflowModal, setShowCreateWorkflowModal] = useState(false);
+  const [showEditWorkflowModal, setShowEditWorkflowModal] = useState(false);
   const [isFilePickerOpen, setIsFilePickerOpen] = useState(false);
   const [sessionWorkingDir, setSessionWorkingDir] = useState<string | null>(null);
 
@@ -280,17 +280,17 @@ export default function ChatInput({
     setHasUserTyped(false);
   }, [initialValue]); // Keep only initialValue as a dependency
 
-  // Handle recipe prompt updates
+  // Handle workflow prompt updates
   useEffect(() => {
-    // If recipe is accepted and we have an initial prompt, and no messages yet, and we haven't set it before
-    if (recipeAccepted && initialPrompt && messages.length === 0) {
+    // If workflow is accepted and we have an initial prompt, and no messages yet, and we haven't set it before
+    if (workflowAccepted && initialPrompt && messages.length === 0) {
       setDisplayValue(initialPrompt);
       setValue(initialPrompt);
       setTimeout(() => {
         textAreaRef.current?.focus();
       }, 0);
     }
-  }, [recipeAccepted, initialPrompt, messages.length]);
+  }, [workflowAccepted, initialPrompt, messages.length]);
 
   // State to track if the IME is composing (i.e., in the middle of Japanese IME input)
   const [isComposing, setIsComposing] = useState(false);
@@ -1453,12 +1453,12 @@ export default function ChatInput({
                   <TooltipTrigger asChild>
                     <Button
                       onClick={() => {
-                        if (recipe) {
-                          trackEditRecipeOpened();
-                          setShowEditRecipeModal(true);
+                        if (workflow) {
+                          trackEditWorkflowOpened();
+                          setShowEditWorkflowModal(true);
                         } else {
-                          trackCreateRecipeOpened();
-                          setShowCreateRecipeModal(true);
+                          trackCreateWorkflowOpened();
+                          setShowCreateWorkflowModal(true);
                         }
                       }}
                       variant="ghost"
@@ -1469,7 +1469,7 @@ export default function ChatInput({
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
-                    {recipe ? 'View/Edit Recipe' : 'Create Recipe from Session'}
+                    {workflow ? 'View/Edit Workflow' : 'Create Workflow from Session'}
                   </TooltipContent>
                 </Tooltip>
               </div>
@@ -1517,20 +1517,20 @@ export default function ChatInput({
           workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
         />
 
-        {sessionId && showCreateRecipeModal && (
-          <CreateRecipeFromSessionModal
-            isOpen={showCreateRecipeModal}
-            onClose={() => setShowCreateRecipeModal(false)}
+        {sessionId && showCreateWorkflowModal && (
+          <CreateWorkflowFromSessionModal
+            isOpen={showCreateWorkflowModal}
+            onClose={() => setShowCreateWorkflowModal(false)}
             sessionId={sessionId}
           />
         )}
 
-        {recipe && showEditRecipeModal && (
-          <CreateEditRecipeModal
-            isOpen={showEditRecipeModal}
-            onClose={() => setShowEditRecipeModal(false)}
-            recipe={recipe}
-            recipeId={recipeId}
+        {workflow && showEditWorkflowModal && (
+          <CreateEditWorkflowModal
+            isOpen={showEditWorkflowModal}
+            onClose={() => setShowEditWorkflowModal(false)}
+            workflow={workflow}
+            workflowId={workflowId}
           />
         )}
       </div>

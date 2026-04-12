@@ -1,11 +1,11 @@
 use crate::agents::tool_execution::ToolCallResult;
-use crate::recipe::Response;
+use crate::workflow::Response;
 use indoc::formatdoc;
 use rmcp::model::{CallToolRequestParams, Content, ErrorCode, ErrorData, Tool, ToolAnnotations};
 use serde_json::Value;
 use std::borrow::Cow;
 
-pub const FINAL_OUTPUT_TOOL_NAME: &str = "recipe__final_output";
+pub const FINAL_OUTPUT_TOOL_NAME: &str = "workflow__final_output";
 pub const FINAL_OUTPUT_CONTINUATION_MESSAGE: &str =
     "You MUST call the `final_output` tool NOW with the final output for the user.";
 
@@ -156,7 +156,7 @@ impl FinalOutputTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recipe::Response;
+    use crate::workflow::Response;
     use rmcp::model::CallToolRequestParams;
     use rmcp::object;
     use serde_json::json;

@@ -2,7 +2,7 @@ pub mod bench;
 pub mod configure;
 pub mod info;
 pub mod project;
-pub mod recipe;
+pub mod workflow;
 pub mod schedule;
 pub mod session;
 pub mod term;

@@ -1,5 +1,5 @@
 use crate::routes::errors::ErrorResponse;
-use crate::routes::recipe_utils::{apply_recipe_to_agent, build_recipe_with_parameter_values};
+use crate::routes::workflow_utils::{apply_workflow_to_agent, build_workflow_with_parameter_values};
 use crate::state::AppState;
 use axum::extract::State;
 use axum::routing::post;
@@ -10,7 +10,7 @@ use axum::{
     Json, Router,
 };
 use biorouter::agents::ExtensionConfig;
-use biorouter::recipe::Recipe;
+use biorouter::workflow::Workflow;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::SessionInsights;
 use biorouter::session::{EnabledExtensionsState, Session};
@@ -35,14 +35,14 @@ pub struct UpdateSessionNameRequest {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct UpdateSessionUserRecipeValuesRequest {
-    /// Recipe parameter values entered by the user
-    user_recipe_values: HashMap<String, String>,
+pub struct UpdateSessionUserWorkflowValuesRequest {
+    /// Workflow parameter values entered by the user
+    user_workflow_values: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct UpdateSessionUserRecipeValuesResponse {
-    recipe: Recipe,
+pub struct UpdateSessionUserWorkflowValuesResponse {
+    workflow: Workflow,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -201,13 +201,13 @@ async fn update_session_name(
 
 #[utoipa::path(
     put,
-    path = "/sessions/{session_id}/user_recipe_values",
-    request_body = UpdateSessionUserRecipeValuesRequest,
+    path = "/sessions/{session_id}/user_workflow_values",
+    request_body = UpdateSessionUserWorkflowValuesRequest,
     params(
         ("session_id" = String, Path, description = "Unique identifier for the session")
     ),
     responses(
-        (status = 200, description = "Session user recipe values updated successfully", body = UpdateSessionUserRecipeValuesResponse),
+        (status = 200, description = "Session user workflow values updated successfully", body = UpdateSessionUserWorkflowValuesResponse),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
         (status = 404, description = "Session not found", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse)
@@ -217,16 +217,16 @@ async fn update_session_name(
     ),
     tag = "Session Management"
 )]
-// Update session user recipe parameter values
-async fn update_session_user_recipe_values(
+// Update session user workflow parameter values
+async fn update_session_user_workflow_values(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-    Json(request): Json<UpdateSessionUserRecipeValuesRequest>,
-) -> Result<Json<UpdateSessionUserRecipeValuesResponse>, ErrorResponse> {
+    Json(request): Json<UpdateSessionUserWorkflowValuesRequest>,
+) -> Result<Json<UpdateSessionUserWorkflowValuesResponse>, ErrorResponse> {
     state
         .session_manager()
         .update(&session_id)
-        .user_recipe_values(Some(request.user_recipe_values))
+        .user_workflow_values(Some(request.user_workflow_values))
         .apply()
         .await
         .map_err(|err| ErrorResponse {
@@ -242,14 +242,14 @@ async fn update_session_user_recipe_values(
             message: err.to_string(),
             status: StatusCode::INTERNAL_SERVER_ERROR,
         })?;
-    let recipe = session.recipe.ok_or_else(|| ErrorResponse {
-        message: "Recipe not found".to_string(),
+    let workflow = session.workflow.ok_or_else(|| ErrorResponse {
+        message: "Workflow not found".to_string(),
         status: StatusCode::NOT_FOUND,
     })?;
 
-    let user_recipe_values = session.user_recipe_values.unwrap_or_default();
-    match build_recipe_with_parameter_values(&recipe, user_recipe_values).await {
-        Ok(Some(recipe)) => {
+    let user_workflow_values = session.user_workflow_values.unwrap_or_default();
+    match build_workflow_with_parameter_values(&workflow, user_workflow_values).await {
+        Ok(Some(workflow)) => {
             let agent = state
                 .get_agent_for_route(session_id.clone())
                 .await
@@ -257,10 +257,10 @@ async fn update_session_user_recipe_values(
                     message: format!("Failed to get agent: {}", status),
                     status,
                 })?;
-            if let Some(prompt) = apply_recipe_to_agent(&agent, &recipe, false).await {
+            if let Some(prompt) = apply_workflow_to_agent(&agent, &workflow, false).await {
                 agent.extend_system_prompt(prompt).await;
             }
-            Ok(Json(UpdateSessionUserRecipeValuesResponse { recipe }))
+            Ok(Json(UpdateSessionUserWorkflowValuesResponse { workflow }))
         }
         Ok(None) => Err(ErrorResponse {
             message: "Missing required parameters".to_string(),
@@ -484,8 +484,8 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/sessions/insights", get(get_session_insights))
         .route("/sessions/{session_id}/name", put(update_session_name))
         .route(
-            "/sessions/{session_id}/user_recipe_values",
-            put(update_session_user_recipe_values),
+            "/sessions/{session_id}/user_workflow_values",
+            put(update_session_user_workflow_values),
         )
         .route("/sessions/{session_id}/edit_message", post(edit_message))
         .route(

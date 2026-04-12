@@ -20,7 +20,7 @@ pub enum InputResult {
     Plan(PlanCommandOptions),
     EndPlan,
     Clear,
-    Recipe(Option<String>),
+    Workflow(Option<String>),
     Compact,
     ToggleFullToolOutput,
 }
@@ -134,7 +134,7 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
     const CMD_PLAN: &str = "/plan";
     const CMD_ENDPLAN: &str = "/endplan";
     const CMD_CLEAR: &str = "/clear";
-    const CMD_RECIPE: &str = "/recipe";
+    const CMD_WORKFLOW: &str = "/workflow";
     const CMD_COMPACT: &str = "/compact";
     const CMD_SUMMARIZE_DEPRECATED: &str = "/summarize";
 
@@ -197,7 +197,7 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
         }
         s if s == CMD_ENDPLAN => Some(InputResult::EndPlan),
         s if s == CMD_CLEAR => Some(InputResult::Clear),
-        s if s.starts_with(CMD_RECIPE) => parse_recipe_command(s),
+        s if s.starts_with(CMD_WORKFLOW) => parse_workflow_command(s),
         s if s == CMD_COMPACT => Some(InputResult::Compact),
         s if s == CMD_SUMMARIZE_DEPRECATED => {
             println!("{}", console::style("⚠️  Note: /summarize has been renamed to /compact and will be removed in a future release.").yellow());
@@ -208,19 +208,19 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
     }
 }
 
-fn parse_recipe_command(s: &str) -> Option<InputResult> {
-    const CMD_RECIPE: &str = "/recipe";
+fn parse_workflow_command(s: &str) -> Option<InputResult> {
+    const CMD_WORKFLOW: &str = "/workflow";
 
-    if s == CMD_RECIPE {
+    if s == CMD_WORKFLOW {
         // No filepath provided, use default
-        return Some(InputResult::Recipe(None));
+        return Some(InputResult::Workflow(None));
     }
 
     // Extract the filepath from the command
-    let filepath = s.get(CMD_RECIPE.len()..).unwrap_or("").trim();
+    let filepath = s.get(CMD_WORKFLOW.len()..).unwrap_or("").trim();
 
     if filepath.is_empty() {
-        return Some(InputResult::Recipe(None));
+        return Some(InputResult::Workflow(None));
     }
 
     // Validate that the filepath ends with .yaml
@@ -230,7 +230,7 @@ fn parse_recipe_command(s: &str) -> Option<InputResult> {
     }
 
     // Return the filepath for validation in the handler
-    Some(InputResult::Recipe(Some(filepath.to_string())))
+    Some(InputResult::Workflow(Some(filepath.to_string())))
 }
 
 fn parse_prompts_command(args: &str) -> Option<InputResult> {
@@ -328,8 +328,8 @@ fn print_help() {
                         The model is used based on $BIOROUTER_PLANNER_PROVIDER and $BIOROUTER_PLANNER_MODEL environment variables.
                         If no model is set, the default model is used.
 /endplan - Exit plan mode and return to 'normal' biorouter mode.
-/recipe [filepath] - Generate a recipe from the current conversation and save it to the specified filepath (must end with .yaml).
-                       If no filepath is provided, it will be saved to ./recipe.yaml.
+/workflow [filepath] - Generate a workflow from the current conversation and save it to the specified filepath (must end with .yaml).
+                       If no filepath is provided, it will be saved to ./workflow.yaml.
 /compact - Compact the current conversation to reduce context length while preserving key information.
 /? or /help - Display this help message
 /clear - Clears the current chat history
@@ -550,25 +550,25 @@ mod tests {
     }
 
     #[test]
-    fn test_recipe_command() {
-        // Test recipe with no filepath
-        if let Some(InputResult::Recipe(filepath)) = handle_slash_command("/recipe") {
+    fn test_workflow_command() {
+        // Test workflow with no filepath
+        if let Some(InputResult::Workflow(filepath)) = handle_slash_command("/workflow") {
             assert!(filepath.is_none());
         } else {
-            panic!("Expected Recipe");
+            panic!("Expected Workflow");
         }
 
-        // Test recipe with filepath
-        if let Some(InputResult::Recipe(filepath)) =
-            handle_slash_command("/recipe /path/to/file.yaml")
+        // Test workflow with filepath
+        if let Some(InputResult::Workflow(filepath)) =
+            handle_slash_command("/workflow /path/to/file.yaml")
         {
             assert_eq!(filepath, Some("/path/to/file.yaml".to_string()));
         } else {
-            panic!("Expected recipe with filepath");
+            panic!("Expected workflow with filepath");
         }
 
-        // Test recipe with invalid extension
-        let result = handle_slash_command("/recipe /path/to/file.txt");
+        // Test workflow with invalid extension
+        let result = handle_slash_command("/workflow /path/to/file.txt");
         assert!(matches!(result, Some(InputResult::Retry)));
     }
 

@@ -79,8 +79,8 @@ pub struct ChatRequest {
     #[serde(default)]
     conversation_so_far: Option<Vec<Message>>,
     session_id: String,
-    recipe_name: Option<String>,
-    recipe_version: Option<String>,
+    workflow_name: Option<String>,
+    workflow_version: Option<String>,
 }
 
 pub struct SseResponse {
@@ -214,20 +214,20 @@ pub async fn reply(
 
     let session_id = request.session_id.clone();
 
-    if let Some(recipe_name) = request.recipe_name.clone() {
-        if state.mark_recipe_run_if_absent(&session_id).await {
-            let recipe_version = request
-                .recipe_version
+    if let Some(workflow_name) = request.workflow_name.clone() {
+        if state.mark_workflow_run_if_absent(&session_id).await {
+            let workflow_version = request
+                .workflow_version
                 .clone()
                 .unwrap_or_else(|| "unknown".to_string());
 
             tracing::info!(
-                counter.biorouter.recipe_runs = 1,
-                recipe_name = %recipe_name,
-                recipe_version = %recipe_version,
+                counter.biorouter.workflow_runs = 1,
+                workflow_name = %workflow_name,
+                workflow_version = %workflow_version,
                 session_type = "app",
                 interface = "ui",
-                "Recipe execution started"
+                "Workflow execution started"
             );
         }
     }
@@ -488,8 +488,8 @@ mod tests {
                         user_message: Message::user().with_text("test message"),
                         conversation_so_far: None,
                         session_id: "test-session".to_string(),
-                        recipe_name: None,
-                        recipe_version: None,
+                        workflow_name: None,
+                        workflow_version: None,
                     })
                     .unwrap(),
                 ))

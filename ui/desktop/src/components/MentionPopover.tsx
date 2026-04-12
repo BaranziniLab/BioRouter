@@ -17,7 +17,7 @@ const typeOrder: Record<DisplayItemType, number> = {
   Directory: 0,
   File: 1,
   Builtin: 2,
-  Recipe: 3,
+  Workflow: 3,
 };
 
 export interface DisplayItem {
@@ -511,7 +511,7 @@ const MentionPopover = forwardRef<
         onSelectedIndexChange(index);
         const displayItem = displayItems[index];
         onSelect(
-          ['Builtin', 'Recipe'].includes(displayItem.itemType)
+          ['Builtin', 'Workflow'].includes(displayItem.itemType)
             ? '/' + displayItem.name
             : displayItem.extra
         );

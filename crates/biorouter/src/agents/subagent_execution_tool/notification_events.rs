@@ -167,7 +167,7 @@ mod tests {
             status: TaskStatus::Running,
             duration_secs: Some(1.5),
             current_output: "Processing...".to_string(),
-            task_type: "sub_recipe".to_string(),
+            task_type: "sub_workflow".to_string(),
             task_name: "test-task".to_string(),
             task_metadata: "param=value".to_string(),
             error: None,

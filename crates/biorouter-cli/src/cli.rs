@@ -3,7 +3,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell as ClapShell};
 use biorouter::config::Config;
 use biorouter::posthog::get_telemetry_choice;
-use biorouter::recipe::Recipe;
+use biorouter::workflow::Workflow;
 use biorouter_mcp::mcp_server_runner::{serve, McpCommand};
 use biorouter_mcp::{
     AutoVisualiserRouter, ComputerControllerServer, DeveloperServer, MemoryServer, TutorialServer,
@@ -13,7 +13,7 @@ use crate::commands::bench::agent_generator;
 use crate::commands::configure::{configure_telemetry_consent_dialog, handle_configure};
 use crate::commands::info::handle_info;
 use crate::commands::project::{handle_project_default, handle_projects_interactive};
-use crate::commands::recipe::{handle_deeplink, handle_list, handle_open, handle_validate};
+use crate::commands::workflow::{handle_deeplink, handle_list, handle_open, handle_validate};
 use crate::commands::term::{
     handle_term_info, handle_term_init, handle_term_log, handle_term_run, Shell,
 };
@@ -24,8 +24,8 @@ use crate::commands::schedule::{
     handle_schedule_sessions,
 };
 use crate::commands::session::{handle_session_list, handle_session_remove};
-use crate::recipes::extract_from_cli::extract_recipe_info_from_cli;
-use crate::recipes::recipe::{explain_recipe, render_recipe_as_yaml};
+use crate::workflows::extract_from_cli::extract_workflow_info_from_cli;
+use crate::workflows::workflow::{explain_workflow, render_workflow_as_yaml};
 use crate::session::{build_session, SessionBuilderConfig};
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::SessionManager;
@@ -134,7 +134,7 @@ pub struct ExtensionOptions {
     pub builtins: Vec<String>,
 }
 
-/// Input source and recipe options for the run command
+/// Input source and workflow options for the run command
 #[derive(Args, Debug, Clone, Default)]
 pub struct InputOptions {
     /// Path to instruction file containing commands
@@ -144,7 +144,7 @@ pub struct InputOptions {
         value_name = "FILE",
         help = "Path to instruction file containing commands. Use - for stdin.",
         conflicts_with = "input_text",
-        conflicts_with = "recipe"
+        conflicts_with = "workflow"
     )]
     pub instructions: Option<String>,
 
@@ -156,21 +156,21 @@ pub struct InputOptions {
         help = "Input text to provide to biorouter directly",
         long_help = "Input text containing commands for biorouter. Use this in lieu of the instructions argument.",
         conflicts_with = "instructions",
-        conflicts_with = "recipe"
+        conflicts_with = "workflow"
     )]
     pub input_text: Option<String>,
 
-    /// Recipe name or full path to the recipe file
+    /// Workflow name or full path to the workflow file
     #[arg(
         short = None,
-        long = "recipe",
-        value_name = "RECIPE_NAME or FULL_PATH_TO_RECIPE_FILE",
-        help = "Recipe name to get recipe file or the full path of the recipe file (use --explain to see recipe details)",
-        long_help = "Recipe name to get recipe file or the full path of the recipe file that defines a custom agent configuration. Use --explain to see the recipe's title, description, and parameters.",
+        long = "workflow",
+        value_name = "WORKFLOW_NAME or FULL_PATH_TO_WORKFLOW_FILE",
+        help = "Workflow name to get workflow file or the full path of the workflow file (use --explain to see workflow details)",
+        long_help = "Workflow name to get workflow file or the full path of the workflow file that defines a custom agent configuration. Use --explain to see the workflow's title, description, and parameters.",
         conflicts_with = "instructions",
         conflicts_with = "input_text"
     )]
-    pub recipe: Option<String>,
+    pub workflow: Option<String>,
 
     /// Additional system prompt to customize agent behavior
     #[arg(
@@ -178,7 +178,7 @@ pub struct InputOptions {
         value_name = "TEXT",
         help = "Additional system prompt to customize agent behavior",
         long_help = "Provide additional system instructions to customize the agent's behavior",
-        conflicts_with = "recipe"
+        conflicts_with = "workflow"
     )]
     pub system: Option<String>,
 
@@ -186,35 +186,35 @@ pub struct InputOptions {
         long,
         value_name = "KEY=VALUE",
         help = "Dynamic parameters (e.g., --params username=alice --params channel_name=biorouter-channel)",
-        long_help = "Key-value parameters to pass to the recipe file. Can be specified multiple times.",
+        long_help = "Key-value parameters to pass to the workflow file. Can be specified multiple times.",
         action = clap::ArgAction::Append,
         value_parser = parse_key_val,
     )]
     pub params: Vec<(String, String)>,
 
-    /// Additional sub-recipe file paths
+    /// Additional sub-workflow file paths
     #[arg(
-        long = "sub-recipe",
-        value_name = "RECIPE",
-        help = "Sub-recipe name or file path (can be specified multiple times)",
-        long_help = "Specify sub-recipes to include alongside the main recipe. Can be:\n  - Recipe names from GitHub (if BIOROUTER_RECIPE_GITHUB_REPO is configured)\n  - Local file paths to YAML files\nCan be specified multiple times to include multiple sub-recipes.",
+        long = "sub-workflow",
+        value_name = "WORKFLOW",
+        help = "Sub-workflow name or file path (can be specified multiple times)",
+        long_help = "Specify sub-workflows to include alongside the main workflow. Can be:\n  - Workflow names from GitHub (if BIOROUTER_WORKFLOW_GITHUB_REPO is configured)\n  - Local file paths to YAML files\nCan be specified multiple times to include multiple sub-workflows.",
         action = clap::ArgAction::Append
     )]
-    pub additional_sub_recipes: Vec<String>,
+    pub additional_sub_workflows: Vec<String>,
 
-    /// Show the recipe title, description, and parameters
+    /// Show the workflow title, description, and parameters
     #[arg(
         long = "explain",
-        help = "Show the recipe title, description, and parameters"
+        help = "Show the workflow title, description, and parameters"
     )]
     pub explain: bool,
 
-    /// Print the rendered recipe instead of running it
+    /// Print the rendered workflow instead of running it
     #[arg(
-        long = "render-recipe",
-        help = "Print the rendered recipe instead of running it."
+        long = "render-workflow",
+        help = "Print the rendered workflow instead of running it."
     )]
-    pub render_recipe: bool,
+    pub render_workflow: bool,
 }
 
 /// Output configuration options for the run command
@@ -505,9 +505,9 @@ enum SchedulerCommand {
         cron: String,
         #[arg(
             long,
-            help = "Recipe source (path to file, or base64 encoded recipe string)"
+            help = "Workflow source (path to file, or base64 encoded workflow string)"
         )]
-        recipe_source: String,
+        workflow_source: String,
     },
     #[command(about = "List all scheduled jobs")]
     List {},
@@ -601,51 +601,51 @@ pub enum BenchCommand {
 }
 
 #[derive(Subcommand)]
-enum RecipeCommand {
-    /// Validate a recipe file
-    #[command(about = "Validate a recipe")]
+enum WorkflowCommand {
+    /// Validate a workflow file
+    #[command(about = "Validate a workflow")]
     Validate {
-        /// Recipe name to get recipe file to validate
-        #[arg(help = "recipe name to get recipe file or full path to the recipe file to validate")]
-        recipe_name: String,
+        /// Workflow name to get workflow file to validate
+        #[arg(help = "workflow name to get workflow file or full path to the workflow file to validate")]
+        workflow_name: String,
     },
 
-    /// Generate a deeplink for a recipe file
-    #[command(about = "Generate a deeplink for a recipe")]
+    /// Generate a deeplink for a workflow file
+    #[command(about = "Generate a deeplink for a workflow")]
     Deeplink {
-        /// Recipe name to get recipe file to generate deeplink
+        /// Workflow name to get workflow file to generate deeplink
         #[arg(
-            help = "recipe name to get recipe file or full path to the recipe file to generate deeplink"
+            help = "workflow name to get workflow file or full path to the workflow file to generate deeplink"
         )]
-        recipe_name: String,
-        /// Recipe parameters in key=value format (can be specified multiple times)
+        workflow_name: String,
+        /// Workflow parameters in key=value format (can be specified multiple times)
         #[arg(
             short = 'p',
             long = "param",
             value_name = "KEY=VALUE",
-            help = "Recipe parameter in key=value format (can be specified multiple times)"
+            help = "Workflow parameter in key=value format (can be specified multiple times)"
         )]
         params: Vec<String>,
     },
 
-    /// Open a recipe in BioRouter Desktop
-    #[command(about = "Open a recipe in BioRouter Desktop")]
+    /// Open a workflow in BioRouter Desktop
+    #[command(about = "Open a workflow in BioRouter Desktop")]
     Open {
-        /// Recipe name to get recipe file to open
-        #[arg(help = "recipe name or full path to the recipe file")]
-        recipe_name: String,
-        /// Recipe parameters in key=value format (can be specified multiple times)
+        /// Workflow name to get workflow file to open
+        #[arg(help = "workflow name or full path to the workflow file")]
+        workflow_name: String,
+        /// Workflow parameters in key=value format (can be specified multiple times)
         #[arg(
             short = 'p',
             long = "param",
             value_name = "KEY=VALUE",
-            help = "Recipe parameter in key=value format (can be specified multiple times)"
+            help = "Workflow parameter in key=value format (can be specified multiple times)"
         )]
         params: Vec<String>,
     },
 
-    /// List available recipes
-    #[command(about = "List available recipes")]
+    /// List available workflows
+    #[command(about = "List available workflows")]
     List {
         /// Output format (text, json)
         #[arg(
@@ -656,11 +656,11 @@ enum RecipeCommand {
         )]
         format: String,
 
-        /// Show verbose information including recipe descriptions
+        /// Show verbose information including workflow descriptions
         #[arg(
             short,
             long,
-            help = "Show verbose information including recipe descriptions"
+            help = "Show verbose information including workflow descriptions"
         )]
         verbose: bool,
     },
@@ -770,11 +770,11 @@ enum Command {
         model_opts: ModelOptions,
     },
 
-    /// Recipe utilities for validation and deeplinking
-    #[command(about = "Recipe utilities for validation and deeplinking")]
-    Recipe {
+    /// Workflow utilities for validation and deeplinking
+    #[command(about = "Workflow utilities for validation and deeplinking")]
+    Workflow {
         #[command(subcommand)]
-        command: RecipeCommand,
+        command: WorkflowCommand,
     },
 
     /// Manage scheduled jobs
@@ -958,7 +958,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Schedule { .. }) => "schedule",
         Some(Command::Update { .. }) => "update",
         Some(Command::Bench { .. }) => "bench",
-        Some(Command::Recipe { .. }) => "recipe",
+        Some(Command::Workflow { .. }) => "workflow",
         Some(Command::Web { .. }) => "web",
         Some(Command::Term { .. }) => "term",
         Some(Command::Completion { .. }) => "completion",
@@ -1085,7 +1085,7 @@ async fn handle_interactive_session(
         extensions: extension_opts.extensions,
         streamable_http_extensions: extension_opts.streamable_http_extensions,
         builtins: extension_opts.builtins,
-        recipe: None,
+        workflow: None,
         additional_system_prompt: None,
         provider: None,
         model: None,
@@ -1151,11 +1151,11 @@ async fn log_session_completion(
 fn parse_run_input(
     input_opts: &InputOptions,
     quiet: bool,
-) -> Result<Option<(InputConfig, Option<Recipe>)>> {
+) -> Result<Option<(InputConfig, Option<Workflow>)>> {
     match (
         &input_opts.instructions,
         &input_opts.input_text,
-        &input_opts.recipe,
+        &input_opts.workflow,
     ) {
         (Some(file), _, _) if file == "-" => {
             let mut contents = String::new();
@@ -1193,16 +1193,16 @@ fn parse_run_input(
             },
             None,
         ))),
-        (_, _, Some(recipe_name)) => {
-            let recipe_display_name = std::path::Path::new(recipe_name)
+        (_, _, Some(workflow_name)) => {
+            let workflow_display_name = std::path::Path::new(workflow_name)
                 .file_name()
                 .and_then(|name| name.to_str())
-                .unwrap_or(recipe_name);
+                .unwrap_or(workflow_name);
 
-            let recipe_version = crate::recipes::search_recipe::load_recipe_file(recipe_name)
+            let workflow_version = crate::workflows::search_workflow::load_workflow_file(workflow_name)
                 .ok()
                 .and_then(|rf| {
-                    biorouter::recipe::template_recipe::parse_recipe_content(
+                    biorouter::workflow::template_workflow::parse_workflow_content(
                         &rf.content,
                         Some(rf.parent_dir.display().to_string()),
                     )
@@ -1212,11 +1212,11 @@ fn parse_run_input(
                 .unwrap_or_else(|| "unknown".to_string());
 
             if input_opts.explain {
-                explain_recipe(recipe_name, input_opts.params.clone())?;
+                explain_workflow(workflow_name, input_opts.params.clone())?;
                 return Ok(None);
             }
-            if input_opts.render_recipe {
-                if let Err(err) = render_recipe_as_yaml(recipe_name, input_opts.params.clone()) {
+            if input_opts.render_workflow {
+                if let Err(err) = render_workflow_as_yaml(workflow_name, input_opts.params.clone()) {
                     eprintln!("{}: {}", console::style("Error").red().bold(), err);
                     std::process::exit(1);
                 }
@@ -1224,24 +1224,24 @@ fn parse_run_input(
             }
 
             tracing::info!(
-                counter.biorouter.recipe_runs = 1,
-                recipe_name = %recipe_display_name,
-                recipe_version = %recipe_version,
-                session_type = "recipe",
+                counter.biorouter.workflow_runs = 1,
+                workflow_name = %workflow_display_name,
+                workflow_version = %workflow_version,
+                session_type = "workflow",
                 interface = "cli",
-                "Recipe execution started"
+                "Workflow execution started"
             );
 
-            let (input_config, recipe) = extract_recipe_info_from_cli(
-                recipe_name.clone(),
+            let (input_config, workflow) = extract_workflow_info_from_cli(
+                workflow_name.clone(),
                 input_opts.params.clone(),
-                input_opts.additional_sub_recipes.clone(),
+                input_opts.additional_sub_workflows.clone(),
                 quiet,
             )?;
-            Ok(Some((input_config, Some(recipe))))
+            Ok(Some((input_config, Some(workflow))))
         }
         (None, None, None) => {
-            eprintln!("Error: Must provide either --instructions (-i), --text (-t), or --recipe. Use -i - for stdin.");
+            eprintln!("Error: Must provide either --instructions (-i), --text (-t), or --workflow. Use -i - for stdin.");
             std::process::exit(1);
         }
     }
@@ -1262,7 +1262,7 @@ async fn handle_run_command(
 
     let parsed = parse_run_input(&input_opts, output_opts.quiet)?;
 
-    let Some((input_config, recipe)) = parsed else {
+    let Some((input_config, workflow)) = parsed else {
         return Ok(());
     };
 
@@ -1287,7 +1287,7 @@ async fn handle_run_command(
         extensions: extension_opts.extensions,
         streamable_http_extensions: extension_opts.streamable_http_extensions,
         builtins: extension_opts.builtins,
-        recipe: recipe.clone(),
+        workflow: workflow.clone(),
         additional_system_prompt: input_config.additional_system_prompt,
         provider: model_opts.provider,
         model: model_opts.model,
@@ -1305,7 +1305,7 @@ async fn handle_run_command(
         session.interactive(input_config.contents).await
     } else if let Some(contents) = input_config.contents {
         let session_start = std::time::Instant::now();
-        let session_type = if recipe.is_some() { "recipe" } else { "run" };
+        let session_type = if workflow.is_some() { "workflow" } else { "run" };
 
         tracing::info!(
             counter.biorouter.session_starts = 1,
@@ -1329,8 +1329,8 @@ async fn handle_schedule_command(command: SchedulerCommand) -> Result<()> {
         SchedulerCommand::Add {
             schedule_id,
             cron,
-            recipe_source,
-        } => handle_schedule_add(schedule_id, cron, recipe_source).await,
+            workflow_source,
+        } => handle_schedule_add(schedule_id, cron, workflow_source).await,
         SchedulerCommand::List {} => handle_schedule_list().await,
         SchedulerCommand::Remove { schedule_id } => handle_schedule_remove(schedule_id).await,
         SchedulerCommand::Sessions { schedule_id, limit } => {
@@ -1362,21 +1362,21 @@ async fn handle_bench_command(cmd: BenchCommand) -> Result<()> {
     Ok(())
 }
 
-fn handle_recipe_subcommand(command: RecipeCommand) -> Result<()> {
+fn handle_workflow_subcommand(command: WorkflowCommand) -> Result<()> {
     match command {
-        RecipeCommand::Validate { recipe_name } => handle_validate(&recipe_name),
-        RecipeCommand::Deeplink {
-            recipe_name,
+        WorkflowCommand::Validate { workflow_name } => handle_validate(&workflow_name),
+        WorkflowCommand::Deeplink {
+            workflow_name,
             params,
         } => {
-            handle_deeplink(&recipe_name, &params)?;
+            handle_deeplink(&workflow_name, &params)?;
             Ok(())
         }
-        RecipeCommand::Open {
-            recipe_name,
+        WorkflowCommand::Open {
+            workflow_name,
             params,
-        } => handle_open(&recipe_name, &params),
-        RecipeCommand::List { format, verbose } => handle_list(&format, verbose),
+        } => handle_open(&workflow_name, &params),
+        WorkflowCommand::List { format, verbose } => handle_list(&format, verbose),
     }
 }
 
@@ -1411,7 +1411,7 @@ async fn handle_default_session() -> Result<()> {
         extensions: Vec::new(),
         streamable_http_extensions: Vec::new(),
         builtins: Vec::new(),
-        recipe: None,
+        workflow: None,
         additional_system_prompt: None,
         provider: None,
         model: None,
@@ -1502,7 +1502,7 @@ pub async fn cli() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Bench { cmd }) => handle_bench_command(cmd).await,
-        Some(Command::Recipe { command }) => handle_recipe_subcommand(command),
+        Some(Command::Workflow { command }) => handle_workflow_subcommand(command),
         Some(Command::Web {
             port,
             host,

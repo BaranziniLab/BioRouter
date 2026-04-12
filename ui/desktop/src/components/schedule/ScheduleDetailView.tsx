@@ -312,7 +312,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                     <span className="font-semibold">Cron Expression:</span> {scheduleDetails.cron}
                   </p>
                   <p className="text-sm text-text-default">
-                    <span className="font-semibold">Recipe Source:</span> {scheduleDetails.source}
+                    <span className="font-semibold">Workflow Source:</span> {scheduleDetails.source}
                   </p>
                   <p className="text-sm text-text-default">
                     <span className="font-semibold">Last Run:</span>{' '}

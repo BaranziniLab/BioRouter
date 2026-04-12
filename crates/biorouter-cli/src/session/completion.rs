@@ -133,7 +133,7 @@ impl BioRouterCompleter {
             "/prompts",
             "/prompt",
             "/mode",
-            "/recipe",
+            "/workflow",
         ];
 
         // Find commands that match the prefix

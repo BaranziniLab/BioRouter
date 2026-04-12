@@ -3,7 +3,7 @@ use crate::conversation::message::Message;
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
 use crate::providers::base::{Provider, MSG_COUNT_FOR_SESSION_NAME_GENERATION};
-use crate::recipe::Recipe;
+use crate::workflow::Workflow;
 use crate::session::extension_data::ExtensionData;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -84,8 +84,8 @@ pub struct Session {
     pub accumulated_input_tokens: Option<i32>,
     pub accumulated_output_tokens: Option<i32>,
     pub schedule_id: Option<String>,
-    pub recipe: Option<Recipe>,
-    pub user_recipe_values: Option<HashMap<String, String>>,
+    pub workflow: Option<Workflow>,
+    pub user_workflow_values: Option<HashMap<String, String>>,
     pub conversation: Option<Conversation>,
     pub message_count: usize,
     pub provider_name: Option<String>,
@@ -107,8 +107,8 @@ pub struct SessionUpdateBuilder<'a> {
     accumulated_input_tokens: Option<Option<i32>>,
     accumulated_output_tokens: Option<Option<i32>>,
     schedule_id: Option<Option<String>>,
-    recipe: Option<Option<Recipe>>,
-    user_recipe_values: Option<Option<HashMap<String, String>>>,
+    workflow: Option<Option<Workflow>>,
+    user_workflow_values: Option<Option<HashMap<String, String>>>,
     provider_name: Option<Option<String>>,
     model_config: Option<Option<ModelConfig>>,
 }
@@ -137,8 +137,8 @@ impl<'a> SessionUpdateBuilder<'a> {
             accumulated_input_tokens: None,
             accumulated_output_tokens: None,
             schedule_id: None,
-            recipe: None,
-            user_recipe_values: None,
+            workflow: None,
+            user_workflow_values: None,
             provider_name: None,
             model_config: None,
         }
@@ -216,16 +216,16 @@ impl<'a> SessionUpdateBuilder<'a> {
         self
     }
 
-    pub fn recipe(mut self, recipe: Option<Recipe>) -> Self {
-        self.recipe = Some(recipe);
+    pub fn workflow(mut self, workflow: Option<Workflow>) -> Self {
+        self.workflow = Some(workflow);
         self
     }
 
-    pub fn user_recipe_values(
+    pub fn user_workflow_values(
         mut self,
-        user_recipe_values: Option<HashMap<String, String>>,
+        user_workflow_values: Option<HashMap<String, String>>,
     ) -> Self {
-        self.user_recipe_values = Some(user_recipe_values);
+        self.user_workflow_values = Some(user_workflow_values);
         self
     }
 
@@ -396,8 +396,8 @@ impl Default for Session {
             accumulated_input_tokens: None,
             accumulated_output_tokens: None,
             schedule_id: None,
-            recipe: None,
-            user_recipe_values: None,
+            workflow: None,
+            user_workflow_values: None,
             conversation: None,
             message_count: 0,
             provider_name: None,
@@ -417,12 +417,12 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
     fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
         use sqlx::Row;
 
-        let recipe_json: Option<String> = row.try_get("recipe_json")?;
-        let recipe = recipe_json.and_then(|json| serde_json::from_str(&json).ok());
+        let workflow_json: Option<String> = row.try_get("workflow_json")?;
+        let workflow = workflow_json.and_then(|json| serde_json::from_str(&json).ok());
 
-        let user_recipe_values_json: Option<String> = row.try_get("user_recipe_values_json")?;
-        let user_recipe_values =
-            user_recipe_values_json.and_then(|json| serde_json::from_str(&json).ok());
+        let user_workflow_values_json: Option<String> = row.try_get("user_workflow_values_json")?;
+        let user_workflow_values =
+            user_workflow_values_json.and_then(|json| serde_json::from_str(&json).ok());
 
         let model_config_json: Option<String> = row.try_get("model_config_json").ok().flatten();
         let model_config = model_config_json.and_then(|json| serde_json::from_str(&json).ok());
@@ -460,8 +460,8 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
             accumulated_input_tokens: row.try_get("accumulated_input_tokens")?,
             accumulated_output_tokens: row.try_get("accumulated_output_tokens")?,
             schedule_id: row.try_get("schedule_id")?,
-            recipe,
-            user_recipe_values,
+            workflow,
+            user_workflow_values,
             conversation: None,
             message_count: row.try_get("message_count").unwrap_or(0) as usize,
             provider_name: row.try_get("provider_name").ok().flatten(),
@@ -561,8 +561,8 @@ impl SessionStorage {
                 accumulated_input_tokens INTEGER,
                 accumulated_output_tokens INTEGER,
                 schedule_id TEXT,
-                recipe_json TEXT,
-                user_recipe_values_json TEXT,
+                workflow_json TEXT,
+                user_workflow_values_json TEXT,
                 provider_name TEXT,
                 model_config_json TEXT
             )
@@ -651,13 +651,13 @@ impl SessionStorage {
     async fn import_legacy_session(pool: &Pool<Sqlite>, session: &Session) -> Result<()> {
         let mut tx = pool.begin().await?;
 
-        let recipe_json = match &session.recipe {
-            Some(recipe) => Some(serde_json::to_string(recipe)?),
+        let workflow_json = match &session.workflow {
+            Some(workflow) => Some(serde_json::to_string(workflow)?),
             None => None,
         };
 
-        let user_recipe_values_json = match &session.user_recipe_values {
-            Some(user_recipe_values) => Some(serde_json::to_string(user_recipe_values)?),
+        let user_workflow_values_json = match &session.user_workflow_values {
+            Some(user_workflow_values) => Some(serde_json::to_string(user_workflow_values)?),
             None => None,
         };
 
@@ -672,7 +672,7 @@ impl SessionStorage {
             id, name, user_set_name, session_type, working_dir, created_at, updated_at, extension_data,
             total_tokens, input_tokens, output_tokens,
             accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
-            schedule_id, recipe_json, user_recipe_values_json,
+            schedule_id, workflow_json, user_workflow_values_json,
             provider_name, model_config_json
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
@@ -692,8 +692,8 @@ impl SessionStorage {
         .bind(session.accumulated_input_tokens)
         .bind(session.accumulated_output_tokens)
         .bind(&session.schedule_id)
-        .bind(recipe_json)
-        .bind(user_recipe_values_json)
+        .bind(workflow_json)
+        .bind(user_workflow_values_json)
         .bind(&session.provider_name)
         .bind(model_config_json)
         .execute(&mut *tx)
@@ -777,7 +777,7 @@ impl SessionStorage {
             2 => {
                 sqlx::query(
                     r#"
-                    ALTER TABLE sessions ADD COLUMN user_recipe_values_json TEXT
+                    ALTER TABLE sessions ADD COLUMN user_workflow_values_json TEXT
                 "#,
                 )
                 .execute(pool)
@@ -895,7 +895,7 @@ impl SessionStorage {
         SELECT id, working_dir, name, description, user_set_name, session_type, created_at, updated_at, extension_data,
                total_tokens, input_tokens, output_tokens,
                accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
-               schedule_id, recipe_json, user_recipe_values_json,
+               schedule_id, workflow_json, user_workflow_values_json,
                provider_name, model_config_json
         FROM sessions
         WHERE id = ?
@@ -955,8 +955,8 @@ impl SessionStorage {
             "accumulated_output_tokens"
         );
         add_update!(builder.schedule_id, "schedule_id");
-        add_update!(builder.recipe, "recipe_json");
-        add_update!(builder.user_recipe_values, "user_recipe_values_json");
+        add_update!(builder.workflow, "workflow_json");
+        add_update!(builder.user_workflow_values, "user_workflow_values_json");
         add_update!(builder.provider_name, "provider_name");
         add_update!(builder.model_config, "model_config_json");
 
@@ -1005,15 +1005,15 @@ impl SessionStorage {
         if let Some(sid) = builder.schedule_id {
             q = q.bind(sid);
         }
-        if let Some(recipe) = builder.recipe {
-            let recipe_json = recipe.map(|r| serde_json::to_string(&r)).transpose()?;
-            q = q.bind(recipe_json);
+        if let Some(workflow) = builder.workflow {
+            let workflow_json = workflow.map(|r| serde_json::to_string(&r)).transpose()?;
+            q = q.bind(workflow_json);
         }
-        if let Some(user_recipe_values) = builder.user_recipe_values {
-            let user_recipe_values_json = user_recipe_values
+        if let Some(user_workflow_values) = builder.user_workflow_values {
+            let user_workflow_values_json = user_workflow_values
                 .map(|urv| serde_json::to_string(&urv))
                 .transpose()?;
-            q = q.bind(user_recipe_values_json);
+            q = q.bind(user_workflow_values_json);
         }
         if let Some(provider_name) = builder.provider_name {
             q = q.bind(provider_name);
@@ -1150,7 +1150,7 @@ impl SessionStorage {
             SELECT s.id, s.working_dir, s.name, s.description, s.user_set_name, s.session_type, s.created_at, s.updated_at, s.extension_data,
                    s.total_tokens, s.input_tokens, s.output_tokens,
                    s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
-                   s.schedule_id, s.recipe_json, s.user_recipe_values_json,
+                   s.schedule_id, s.workflow_json, s.user_workflow_values_json,
                    s.provider_name, s.model_config_json,
                    COUNT(m.id) as message_count
             FROM sessions s
@@ -1252,8 +1252,8 @@ impl SessionStorage {
             .accumulated_input_tokens(import.accumulated_input_tokens)
             .accumulated_output_tokens(import.accumulated_output_tokens)
             .schedule_id(import.schedule_id)
-            .recipe(import.recipe)
-            .user_recipe_values(import.user_recipe_values);
+            .workflow(import.workflow)
+            .user_workflow_values(import.user_workflow_values);
 
         if import.user_set_name {
             builder = builder.user_provided_name(import.name.clone());
@@ -1289,8 +1289,8 @@ impl SessionStorage {
             .update(&new_session.id)
             .extension_data(original_session.extension_data)
             .schedule_id(original_session.schedule_id)
-            .recipe(original_session.recipe)
-            .user_recipe_values(original_session.user_recipe_values)
+            .workflow(original_session.workflow)
+            .user_workflow_values(original_session.user_workflow_values)
             .apply()
             .await?;
 

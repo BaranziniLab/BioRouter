@@ -3,7 +3,7 @@ import {
   syncBundledExtensions,
 } from '../components/settings/extensions';
 import type { ExtensionConfig, FixedExtensionEntry } from '../components/ConfigContext';
-import { Recipe, updateAgentProvider, updateFromSession } from '../api';
+import { Workflow, updateAgentProvider, updateFromSession } from '../api';
 
 // Helper function to substitute parameters in text
 export const substituteParameters = (text: string, params: Record<string, string>): string => {
@@ -25,8 +25,8 @@ export const initializeSystem = async (
   options?: {
     getExtensions?: (b: boolean) => Promise<FixedExtensionEntry[]>;
     addExtension?: (name: string, config: ExtensionConfig, enabled: boolean) => Promise<void>;
-    recipeParameters?: Record<string, string> | null;
-    recipe?: Recipe;
+    workflowParameters?: Record<string, string> | null;
+    workflow?: Workflow;
   }
 ) => {
   try {

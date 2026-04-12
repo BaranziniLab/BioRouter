@@ -226,6 +226,11 @@ run-server:
     @echo "Running server..."
     cargo run -p biorouter-server --bin biorouterd agent
 
+# Run server with secret=test so it pairs with `just debug-ui` (which sends X-Secret-Key: test)
+debug-server:
+    @echo "Running server in debug mode (secret=test)..."
+    BIOROUTER_SERVER__SECRET_KEY=test cargo run -p biorouter-server --bin biorouterd agent
+
 # Check if OpenAPI schema is up-to-date
 check-openapi-schema: generate-openapi
     ./scripts/check-openapi-schema.sh

@@ -117,14 +117,14 @@ pub async fn generate_diagnostics(
             zip.write_all(&fs::read(&schedule_json)?)?;
         }
 
-        let scheduled_recipes_dir = data_dir.join("scheduled_recipes");
-        if scheduled_recipes_dir.exists() && scheduled_recipes_dir.is_dir() {
-            for entry in fs::read_dir(&scheduled_recipes_dir)? {
+        let scheduled_workflows_dir = data_dir.join("scheduled_workflows");
+        if scheduled_workflows_dir.exists() && scheduled_workflows_dir.is_dir() {
+            for entry in fs::read_dir(&scheduled_workflows_dir)? {
                 let entry = entry?;
                 let path = entry.path();
                 if path.is_file() {
                     let name = path.file_name().unwrap().to_str().unwrap();
-                    zip.start_file(format!("scheduled_recipes/{}", name), options)?;
+                    zip.start_file(format!("scheduled_workflows/{}", name), options)?;
                     zip.write_all(&fs::read(&path)?)?;
                 }
             }

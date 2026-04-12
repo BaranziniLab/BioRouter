@@ -14,9 +14,9 @@ use crate::agents::subagent_task_config::TaskConfig;
 use crate::agents::tool_execution::ToolCallResult;
 use crate::agents::AgentConfig;
 use crate::providers;
-use crate::recipe::build_recipe::build_recipe_from_template;
-use crate::recipe::local_recipes::load_local_recipe_file;
-use crate::recipe::{Recipe, SubRecipe};
+use crate::workflow::build_workflow::build_workflow_from_template;
+use crate::workflow::local_workflows::load_local_workflow_file;
+use crate::workflow::{Workflow, SubWorkflow};
 
 pub const SUBAGENT_TOOL_NAME: &str = "subagent";
 
@@ -34,7 +34,7 @@ Be concise but complete.
 #[derive(Debug, Deserialize)]
 pub struct SubagentParams {
     pub instructions: Option<String>,
-    pub subrecipe: Option<String>,
+    pub subworkflow: Option<String>,
     pub parameters: Option<HashMap<String, Value>>,
     pub extensions: Option<Vec<String>>,
     pub settings: Option<SubagentSettings>,
@@ -53,8 +53,8 @@ pub struct SubagentSettings {
     pub temperature: Option<f32>,
 }
 
-pub fn create_subagent_tool(sub_recipes: &[SubRecipe]) -> Tool {
-    let description = build_tool_description(sub_recipes);
+pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
+    let description = build_tool_description(sub_workflows);
 
     let schema = json!({
         "type": "object",
@@ -63,14 +63,14 @@ pub fn create_subagent_tool(sub_recipes: &[SubRecipe]) -> Tool {
                 "type": "string",
                 "description": "Instructions for the subagent. Required for ad-hoc tasks. For predefined tasks, adds additional context."
             },
-            "subrecipe": {
+            "subworkflow": {
                 "type": "string",
-                "description": "Name of a predefined subrecipe to run."
+                "description": "Name of a predefined subworkflow to run."
             },
             "parameters": {
                 "type": "object",
                 "additionalProperties": true,
-                "description": "Parameters for the subrecipe. Only valid when 'subrecipe' is specified."
+                "description": "Parameters for the subworkflow. Only valid when 'subworkflow' is specified."
             },
             "extensions": {
                 "type": "array",
@@ -101,22 +101,22 @@ pub fn create_subagent_tool(sub_recipes: &[SubRecipe]) -> Tool {
     )
 }
 
-fn build_tool_description(sub_recipes: &[SubRecipe]) -> String {
+fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
     let mut desc = String::from(
         "Delegate a task to a subagent that runs independently with its own context.\n\n\
          Modes:\n\
          1. Ad-hoc: Provide `instructions` for a custom task\n\
-         2. Predefined: Provide `subrecipe` name to run a predefined task\n\
-         3. Augmented: Provide both `subrecipe` and `instructions` to add context\n\n\
+         2. Predefined: Provide `subworkflow` name to run a predefined task\n\
+         3. Augmented: Provide both `subworkflow` and `instructions` to add context\n\n\
          The subagent has access to the same tools as you by default. \
          Use `extensions` to limit which extensions the subagent can use.\n\n\
          For parallel execution, make multiple `subagent` tool calls in the same message.",
     );
 
-    if !sub_recipes.is_empty() {
-        desc.push_str("\n\nAvailable subrecipes:");
-        for sr in sub_recipes {
-            let params_info = get_subrecipe_params_description(sr);
+    if !sub_workflows.is_empty() {
+        desc.push_str("\n\nAvailable subworkflows:");
+        for sr in sub_workflows {
+            let params_info = get_subworkflow_params_description(sr);
             let sequential_hint = if sr.sequential_when_repeated {
                 " [run sequentially, not in parallel]"
             } else {
@@ -139,15 +139,15 @@ fn build_tool_description(sub_recipes: &[SubRecipe]) -> String {
     desc
 }
 
-fn get_subrecipe_params_description(sub_recipe: &SubRecipe) -> String {
-    match load_local_recipe_file(&sub_recipe.path) {
-        Ok(recipe_file) => match Recipe::from_content(&recipe_file.content) {
-            Ok(recipe) => {
-                if let Some(params) = recipe.parameters {
+fn get_subworkflow_params_description(sub_workflow: &SubWorkflow) -> String {
+    match load_local_workflow_file(&sub_workflow.path) {
+        Ok(workflow_file) => match Workflow::from_content(&workflow_file.content) {
+            Ok(workflow) => {
+                if let Some(params) = workflow.parameters {
                     params
                         .iter()
                         .filter(|p| {
-                            sub_recipe
+                            sub_workflow
                                 .values
                                 .as_ref()
                                 .map(|v| !v.contains_key(&p.key))
@@ -155,7 +155,7 @@ fn get_subrecipe_params_description(sub_recipe: &SubRecipe) -> String {
                         })
                         .map(|p| {
                             let req = match p.requirement {
-                                crate::recipe::RecipeParameterRequirement::Required => "[required]",
+                                crate::workflow::WorkflowParameterRequirement::Required => "[required]",
                                 _ => "[optional]",
                             };
                             format!("{} {}", p.key, req)
@@ -172,14 +172,14 @@ fn get_subrecipe_params_description(sub_recipe: &SubRecipe) -> String {
     }
 }
 
-/// Note: SubRecipe.sequential_when_repeated is surfaced as a hint in the tool description
+/// Note: SubWorkflow.sequential_when_repeated is surfaced as a hint in the tool description
 /// (e.g., "[run sequentially, not in parallel]") but not enforced. The LLM controls
 /// sequencing by making sequential vs parallel tool calls.
 pub fn handle_subagent_tool(
     config: &AgentConfig,
     params: Value,
     task_config: TaskConfig,
-    sub_recipes: HashMap<String, SubRecipe>,
+    sub_workflows: HashMap<String, SubWorkflow>,
     working_dir: PathBuf,
     cancellation_token: Option<CancellationToken>,
 ) -> ToolCallResult {
@@ -194,23 +194,23 @@ pub fn handle_subagent_tool(
         }
     };
 
-    if parsed_params.instructions.is_none() && parsed_params.subrecipe.is_none() {
+    if parsed_params.instructions.is_none() && parsed_params.subworkflow.is_none() {
         return ToolCallResult::from(Err(ErrorData {
             code: ErrorCode::INVALID_PARAMS,
-            message: Cow::from("Must provide 'instructions' or 'subrecipe' (or both)"),
+            message: Cow::from("Must provide 'instructions' or 'subworkflow' (or both)"),
             data: None,
         }));
     }
 
-    if parsed_params.parameters.is_some() && parsed_params.subrecipe.is_none() {
+    if parsed_params.parameters.is_some() && parsed_params.subworkflow.is_none() {
         return ToolCallResult::from(Err(ErrorData {
             code: ErrorCode::INVALID_PARAMS,
-            message: Cow::from("'parameters' can only be used with 'subrecipe'"),
+            message: Cow::from("'parameters' can only be used with 'subworkflow'"),
             data: None,
         }));
     }
 
-    let recipe = match build_recipe(&parsed_params, &sub_recipes) {
+    let workflow = match build_workflow(&parsed_params, &sub_workflows) {
         Ok(r) => r,
         Err(e) => {
             return ToolCallResult::from(Err(ErrorData {
@@ -227,7 +227,7 @@ pub fn handle_subagent_tool(
         result: Box::new(
             execute_subagent(
                 config,
-                recipe,
+                workflow,
                 task_config,
                 parsed_params,
                 working_dir,
@@ -240,7 +240,7 @@ pub fn handle_subagent_tool(
 
 async fn execute_subagent(
     config: AgentConfig,
-    recipe: Recipe,
+    workflow: Workflow,
     task_config: TaskConfig,
     params: SubagentParams,
     working_dir: PathBuf,
@@ -270,7 +270,7 @@ async fn execute_subagent(
 
     let result = run_complete_subagent_task(
         config,
-        recipe,
+        workflow,
         task_config,
         params.summary,
         session.id,
@@ -293,44 +293,44 @@ async fn execute_subagent(
     }
 }
 
-fn build_recipe(
+fn build_workflow(
     params: &SubagentParams,
-    sub_recipes: &HashMap<String, SubRecipe>,
-) -> Result<Recipe> {
-    let mut recipe = if let Some(subrecipe_name) = &params.subrecipe {
-        build_subrecipe(subrecipe_name, params, sub_recipes)?
+    sub_workflows: &HashMap<String, SubWorkflow>,
+) -> Result<Workflow> {
+    let mut workflow = if let Some(subworkflow_name) = &params.subworkflow {
+        build_subworkflow(subworkflow_name, params, sub_workflows)?
     } else {
-        build_adhoc_recipe(params)?
+        build_adhoc_workflow(params)?
     };
 
     if params.summary {
-        let current = recipe.instructions.unwrap_or_default();
-        recipe.instructions = Some(format!("{}\n{}", current, SUMMARY_INSTRUCTIONS));
+        let current = workflow.instructions.unwrap_or_default();
+        workflow.instructions = Some(format!("{}\n{}", current, SUMMARY_INSTRUCTIONS));
     }
 
-    Ok(recipe)
+    Ok(workflow)
 }
 
-fn build_subrecipe(
-    subrecipe_name: &str,
+fn build_subworkflow(
+    subworkflow_name: &str,
     params: &SubagentParams,
-    sub_recipes: &HashMap<String, SubRecipe>,
-) -> Result<Recipe> {
-    let sub_recipe = sub_recipes.get(subrecipe_name).ok_or_else(|| {
-        let available: Vec<_> = sub_recipes.keys().cloned().collect();
+    sub_workflows: &HashMap<String, SubWorkflow>,
+) -> Result<Workflow> {
+    let sub_workflow = sub_workflows.get(subworkflow_name).ok_or_else(|| {
+        let available: Vec<_> = sub_workflows.keys().cloned().collect();
         anyhow!(
-            "Unknown subrecipe '{}'. Available: {}",
-            subrecipe_name,
+            "Unknown subworkflow '{}'. Available: {}",
+            subworkflow_name,
             available.join(", ")
         )
     })?;
 
-    let recipe_file = load_local_recipe_file(&sub_recipe.path)
-        .map_err(|e| anyhow!("Failed to load subrecipe '{}': {}", subrecipe_name, e))?;
+    let workflow_file = load_local_workflow_file(&sub_workflow.path)
+        .map_err(|e| anyhow!("Failed to load subworkflow '{}': {}", subworkflow_name, e))?;
 
     let mut param_values: Vec<(String, String)> = Vec::new();
 
-    if let Some(values) = &sub_recipe.values {
+    if let Some(values) = &sub_workflow.values {
         for (k, v) in values {
             param_values.push((k.clone(), v.clone()));
         }
@@ -346,45 +346,45 @@ fn build_subrecipe(
         }
     }
 
-    let mut recipe = build_recipe_from_template(
-        recipe_file.content,
-        &recipe_file.parent_dir,
+    let mut workflow = build_workflow_from_template(
+        workflow_file.content,
+        &workflow_file.parent_dir,
         param_values,
         None::<fn(&str, &str) -> Result<String, anyhow::Error>>,
     )
-    .map_err(|e| anyhow!("Failed to build subrecipe: {}", e))?;
+    .map_err(|e| anyhow!("Failed to build subworkflow: {}", e))?;
 
     if let Some(extra) = &params.instructions {
-        let mut current = recipe.instructions.take().unwrap_or_default();
+        let mut current = workflow.instructions.take().unwrap_or_default();
         if !current.is_empty() {
             current.push_str("\n\n");
         }
         current.push_str(extra);
-        recipe.instructions = Some(current);
+        workflow.instructions = Some(current);
     }
 
-    Ok(recipe)
+    Ok(workflow)
 }
 
-fn build_adhoc_recipe(params: &SubagentParams) -> Result<Recipe> {
+fn build_adhoc_workflow(params: &SubagentParams) -> Result<Workflow> {
     let instructions = params
         .instructions
         .as_ref()
         .ok_or_else(|| anyhow!("Instructions required for ad-hoc task"))?;
 
-    let recipe = Recipe::builder()
+    let workflow = Workflow::builder()
         .version("1.0.0")
         .title("Subagent Task")
         .description("Ad-hoc subagent task")
         .instructions(instructions)
         .build()
-        .map_err(|e| anyhow!("Failed to build recipe: {}", e))?;
+        .map_err(|e| anyhow!("Failed to build workflow: {}", e))?;
 
-    if recipe.check_for_security_warnings() {
-        return Err(anyhow!("Recipe contains potentially harmful content"));
+    if workflow.check_for_security_warnings() {
+        return Err(anyhow!("Workflow contains potentially harmful content"));
     }
 
-    Ok(recipe)
+    Ok(workflow)
 }
 
 async fn apply_settings_overrides(
@@ -438,7 +438,7 @@ mod tests {
     }
 
     #[test]
-    fn test_create_tool_without_subrecipes() {
+    fn test_create_tool_without_subworkflows() {
         let tool = create_subagent_tool(&[]);
         assert_eq!(tool.name, "subagent");
         assert!(tool.description.as_ref().unwrap().contains("Ad-hoc"));
@@ -446,39 +446,39 @@ mod tests {
             .description
             .as_ref()
             .unwrap()
-            .contains("Available subrecipes"));
+            .contains("Available subworkflows"));
     }
 
     #[test]
-    fn test_create_tool_with_subrecipes() {
-        let sub_recipes = vec![SubRecipe {
-            name: "test_recipe".to_string(),
+    fn test_create_tool_with_subworkflows() {
+        let sub_workflows = vec![SubWorkflow {
+            name: "test_workflow".to_string(),
             path: "test.yaml".to_string(),
             values: None,
             sequential_when_repeated: false,
-            description: Some("A test recipe".to_string()),
+            description: Some("A test workflow".to_string()),
         }];
 
-        let tool = create_subagent_tool(&sub_recipes);
+        let tool = create_subagent_tool(&sub_workflows);
         assert!(tool
             .description
             .as_ref()
             .unwrap()
-            .contains("Available subrecipes"));
-        assert!(tool.description.as_ref().unwrap().contains("test_recipe"));
+            .contains("Available subworkflows"));
+        assert!(tool.description.as_ref().unwrap().contains("test_workflow"));
     }
 
     #[test]
     fn test_sequential_hint_in_description() {
-        let sub_recipes = vec![
-            SubRecipe {
+        let sub_workflows = vec![
+            SubWorkflow {
                 name: "parallel_ok".to_string(),
                 path: "test.yaml".to_string(),
                 values: None,
                 sequential_when_repeated: false,
                 description: Some("Can run in parallel".to_string()),
             },
-            SubRecipe {
+            SubWorkflow {
                 name: "sequential_only".to_string(),
                 path: "test.yaml".to_string(),
                 values: None,
@@ -487,7 +487,7 @@ mod tests {
             },
         ];
 
-        let tool = create_subagent_tool(&sub_recipes);
+        let tool = create_subagent_tool(&sub_workflows);
         let desc = tool.description.as_ref().unwrap();
 
         assert!(desc.contains("parallel_ok"));
@@ -500,7 +500,7 @@ mod tests {
     fn test_params_deserialization_full() {
         let params: SubagentParams = serde_json::from_value(json!({
             "instructions": "Extra context",
-            "subrecipe": "my_recipe",
+            "subworkflow": "my_workflow",
             "parameters": {"key": "value"},
             "extensions": ["developer"],
             "settings": {"model": "gpt-4"},
@@ -509,7 +509,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(params.instructions, Some("Extra context".to_string()));
-        assert_eq!(params.subrecipe, Some("my_recipe".to_string()));
+        assert_eq!(params.subworkflow, Some("my_workflow".to_string()));
         assert!(params.parameters.is_some());
         assert_eq!(params.extensions, Some(vec!["developer".to_string()]));
         assert!(!params.summary);

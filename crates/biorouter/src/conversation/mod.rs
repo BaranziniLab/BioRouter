@@ -711,7 +711,7 @@ mod tests {
                 .with_tool_request("toolu_bdrk_018adWbP4X26CfoJU5hkhu3i", Ok(CallToolRequestParams { task: None, name: "developer__shell".into(), arguments: Some(object!({"command": "ls -la"})) })),
 
             Message::assistant()
-                .with_text("Now I'll identify the smallest file by size. Looking at the output, I can see that both `slack.yaml` and `subrecipes.yaml` have a size of 0 bytes, making them the smallest files. I'll run a word count on one of them:")
+                .with_text("Now I'll identify the smallest file by size. Looking at the output, I can see that both `slack.yaml` and `subworkflows.yaml` have a size of 0 bytes, making them the smallest files. I'll run a word count on one of them:")
                 .with_tool_request("toolu_bdrk_01KgDYHs4fAodi22NqxRzmwx", Ok(CallToolRequestParams { task: None, name: "developer__shell".into(), arguments: Some(object!({"command": "wc slack.yaml"})) })),
 
             Message::user()
@@ -723,7 +723,7 @@ mod tests {
                 })),
 
             Message::assistant()
-                .with_text("I ran `ls -la` in the current directory and found several files. Looking at the file sizes, I can see that both `slack.yaml` and `subrecipes.yaml` are 0 bytes (the smallest files). I ran a word count on `slack.yaml` which shows: **0 lines**, **0 words**, **0 characters**"),
+                .with_text("I ran `ls -la` in the current directory and found several files. Looking at the file sizes, I can see that both `slack.yaml` and `subworkflows.yaml` are 0 bytes (the smallest files). I ran a word count on `slack.yaml` which shows: **0 lines**, **0 words**, **0 characters**"),
             Message::user().with_text("thanks!"),
         ]);
 

@@ -572,7 +572,8 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       return (
         <Card
           onClick={handleCardClick}
-          className="session-item h-full py-3 px-4 hover:shadow-default cursor-pointer transition-all duration-150 flex flex-col justify-between relative group"
+          className="session-item h-full py-3 px-4 cursor-pointer transition-all duration-150 flex flex-col justify-between relative group border-none hover:-translate-y-0.5"
+          style={{ boxShadow: 'var(--shadow-default)' }}
           ref={(el) => setSessionRefs(session.id, el)}
         >
           <div className="flex items-start justify-between gap-2 mb-1">
@@ -735,7 +736,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         <div className="space-y-8">
           {visibleDateGroups.map((group) => (
             <div key={group.label} className="space-y-4">
-              <div className="sticky top-0 z-10 bg-background-default/95 backdrop-blur-sm">
+              <div className="sticky top-0 z-10 bg-background-muted/95 backdrop-blur-sm">
                 <h2 className="text-text-muted">{group.label}</h2>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
@@ -769,29 +770,35 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       <>
         <MainPanelLayout>
           <div className="flex-1 flex flex-col min-h-0">
-            <div className="bg-background-default px-8 pb-8 pt-16">
-              <div className="flex flex-col page-transition">
-                <div className="flex justify-between items-center mb-1">
-                  <h1 className="text-4xl font-light">Chat history</h1>
-                  <Button
-                    onClick={handleImportClick}
-                    variant="outline"
-                    size="sm"
-                    className="flex items-center gap-2"
-                  >
-                    <Upload className="w-4 h-4" />
-                    Import Session
-                  </Button>
+            {/* Floating header card */}
+            <div
+              className="mx-4 mt-4 bg-background-default rounded-2xl mb-4 relative overflow-hidden flex-shrink-0"
+              style={{ boxShadow: 'var(--shadow-default)' }}
+            >
+              <div className="px-8 pb-6 pt-12">
+                <div className="flex flex-col page-transition">
+                  <div className="flex justify-between items-center mb-1">
+                    <h1 className="text-4xl font-light">Chat history</h1>
+                    <Button
+                      onClick={handleImportClick}
+                      variant="outline"
+                      size="sm"
+                      className="flex items-center gap-2"
+                    >
+                      <Upload className="w-4 h-4" />
+                      Import Session
+                    </Button>
+                  </div>
+                  <p className="text-sm text-text-muted">
+                    View and search your past conversations with BioRouter. {getSearchShortcutText()} to
+                    search.
+                  </p>
                 </div>
-                <p className="text-sm text-text-muted mb-4">
-                  View and search your past conversations with BioRouter. {getSearchShortcutText()} to
-                  search.
-                </p>
               </div>
             </div>
 
-            <div className="flex-1 min-h-0 relative px-8">
-              <ScrollArea handleScroll={handleScroll} className="h-full" data-search-scroll-area>
+            <div className="flex-1 min-h-0 relative px-4 pb-4">
+              <ScrollArea handleScroll={handleScroll} className="h-full" paddingX={1} data-search-scroll-area>
                 <div ref={containerRef} className="h-full relative">
                   <SearchView
                     onSearch={handleSearch}

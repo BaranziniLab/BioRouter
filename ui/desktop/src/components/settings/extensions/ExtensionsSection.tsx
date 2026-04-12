@@ -72,7 +72,7 @@ export default function ExtensionsSection({
       })
       .map((ext) => ({
         ...ext,
-        // Use selectedExtensions to determine enabled state in recipe editor
+        // Use selectedExtensions to determine enabled state in workflow editor
         enabled: disableConfiguration ? selectedExtensions.includes(ext.name) : ext.enabled,
       }));
   }, [extensionsList, disableConfiguration, selectedExtensions]);
@@ -203,7 +203,7 @@ export default function ExtensionsSection({
             <Button
               className="flex items-center gap-2 justify-center"
               variant="secondary"
-              onClick={() => window.open('https://github.com/BaranziniLab/BioRouter/v1/extensions/', '_blank')}
+              onClick={() => window.open('https://baranzinilab.github.io/biorouter-landing/baam.html', '_blank')}
             >
               <GPSIcon size={12} />
               Browse extensions

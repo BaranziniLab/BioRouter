@@ -157,10 +157,10 @@ pub fn get_warnings() -> Vec<String> {
 }
 
 pub fn resolve_extensions_for_new_session(
-    recipe_extensions: Option<&[ExtensionConfig]>,
+    workflow_extensions: Option<&[ExtensionConfig]>,
     override_extensions: Option<Vec<ExtensionConfig>>,
 ) -> Vec<ExtensionConfig> {
-    if let Some(exts) = recipe_extensions {
+    if let Some(exts) = workflow_extensions {
         return exts.to_vec();
     }
 

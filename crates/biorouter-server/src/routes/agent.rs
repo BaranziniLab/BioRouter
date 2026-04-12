@@ -1,6 +1,6 @@
 use crate::routes::errors::ErrorResponse;
-use crate::routes::recipe_utils::{
-    apply_recipe_to_agent, build_recipe_with_parameter_values, load_recipe_by_id, validate_recipe,
+use crate::routes::workflow_utils::{
+    apply_workflow_to_agent, build_workflow_with_parameter_values, load_workflow_by_id, validate_workflow,
 };
 use crate::state::AppState;
 use axum::response::IntoResponse;
@@ -20,8 +20,8 @@ use biorouter::config::{Config, BioRouterMode};
 use biorouter::model::ModelConfig;
 use biorouter::prompt_template::render_global_file;
 use biorouter::providers::create;
-use biorouter::recipe::Recipe;
-use biorouter::recipe_deeplink;
+use biorouter::workflow::Workflow;
+use biorouter::workflow_deeplink;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, Session};
@@ -63,11 +63,11 @@ pub struct GetToolsQuery {
 pub struct StartAgentRequest {
     working_dir: String,
     #[serde(default)]
-    recipe: Option<Recipe>,
+    workflow: Option<Workflow>,
     #[serde(default)]
-    recipe_id: Option<String>,
+    workflow_id: Option<String>,
     #[serde(default)]
-    recipe_deeplink: Option<String>,
+    workflow_deeplink: Option<String>,
     #[serde(default)]
     extension_overrides: Option<Vec<ExtensionConfig>>,
 }
@@ -173,35 +173,35 @@ async fn start_agent(
 
     let StartAgentRequest {
         working_dir,
-        recipe,
-        recipe_id,
-        recipe_deeplink,
+        workflow,
+        workflow_id,
+        workflow_deeplink,
         extension_overrides,
     } = payload;
 
-    let original_recipe = if let Some(deeplink) = recipe_deeplink {
-        match recipe_deeplink::decode(&deeplink) {
-            Ok(recipe) => Some(recipe),
+    let original_workflow = if let Some(deeplink) = workflow_deeplink {
+        match workflow_deeplink::decode(&deeplink) {
+            Ok(workflow) => Some(workflow),
             Err(err) => {
-                error!("Failed to decode recipe deeplink: {}", err);
-                biorouter::posthog::emit_error("recipe_deeplink_decode_failed", &err.to_string());
+                error!("Failed to decode workflow deeplink: {}", err);
+                biorouter::posthog::emit_error("workflow_deeplink_decode_failed", &err.to_string());
                 return Err(ErrorResponse {
                     message: err.to_string(),
                     status: StatusCode::BAD_REQUEST,
                 });
             }
         }
-    } else if let Some(id) = recipe_id {
-        match load_recipe_by_id(state.as_ref(), &id).await {
-            Ok(recipe) => Some(recipe),
+    } else if let Some(id) = workflow_id {
+        match load_workflow_by_id(state.as_ref(), &id).await {
+            Ok(workflow) => Some(workflow),
             Err(err) => return Err(err),
         }
     } else {
-        recipe
+        workflow
     };
 
-    if let Some(ref recipe) = original_recipe {
-        if let Err(err) = validate_recipe(recipe) {
+    if let Some(ref workflow) = original_workflow {
+        if let Err(err) = validate_workflow(workflow) {
             return Err(ErrorResponse {
                 message: err.message,
                 status: err.status,
@@ -226,11 +226,11 @@ async fn start_agent(
             }
         })?;
 
-    let recipe_extensions = original_recipe
+    let workflow_extensions = original_workflow
         .as_ref()
         .and_then(|r| r.extensions.as_deref());
     let extensions_to_use =
-        resolve_extensions_for_new_session(recipe_extensions, extension_overrides);
+        resolve_extensions_for_new_session(workflow_extensions, extension_overrides);
     let mut extension_data = session.extension_data.clone();
     let extensions_state = EnabledExtensionsState::new(extensions_to_use);
     if let Err(e) = extensions_state.to_extension_data(&mut extension_data) {
@@ -250,16 +250,16 @@ async fn start_agent(
             })?;
     }
 
-    if let Some(recipe) = original_recipe {
+    if let Some(workflow) = original_workflow {
         manager
             .update(&session.id)
-            .recipe(Some(recipe))
+            .workflow(Some(workflow))
             .apply()
             .await
             .map_err(|err| {
-                error!("Failed to update session with recipe: {}", err);
+                error!("Failed to update session with workflow: {}", err);
                 ErrorResponse {
-                    message: format!("Failed to update session with recipe: {}", err),
+                    message: format!("Failed to update session with workflow: {}", err),
                     status: StatusCode::INTERNAL_SERVER_ERROR,
                 }
             })?;
@@ -420,20 +420,20 @@ async fn update_from_session(
     let desktop_prompt =
         render_global_file("desktop_prompt.md", &context).expect("Prompt should render");
     let mut update_prompt = desktop_prompt;
-    if let Some(recipe) = session.recipe {
-        match build_recipe_with_parameter_values(
-            &recipe,
-            session.user_recipe_values.unwrap_or_default(),
+    if let Some(workflow) = session.workflow {
+        match build_workflow_with_parameter_values(
+            &workflow,
+            session.user_workflow_values.unwrap_or_default(),
         )
         .await
         {
-            Ok(Some(recipe)) => {
-                if let Some(prompt) = apply_recipe_to_agent(&agent, &recipe, true).await {
+            Ok(Some(workflow)) => {
+                if let Some(prompt) = apply_workflow_to_agent(&agent, &workflow, true).await {
                     update_prompt = prompt;
                 }
             }
             Ok(None) => {
-                // Recipe has missing parameters - use default prompt
+                // Workflow has missing parameters - use default prompt
             }
             Err(e) => {
                 return Err(ErrorResponse {
@@ -694,20 +694,20 @@ async fn restart_agent_internal(
         render_global_file("desktop_prompt.md", &context).expect("Prompt should render");
     let mut update_prompt = desktop_prompt;
 
-    if let Some(ref recipe) = session.recipe {
-        match build_recipe_with_parameter_values(
-            recipe,
-            session.user_recipe_values.clone().unwrap_or_default(),
+    if let Some(ref workflow) = session.workflow {
+        match build_workflow_with_parameter_values(
+            workflow,
+            session.user_workflow_values.clone().unwrap_or_default(),
         )
         .await
         {
-            Ok(Some(recipe)) => {
-                if let Some(prompt) = apply_recipe_to_agent(&agent, &recipe, true).await {
+            Ok(Some(workflow)) => {
+                if let Some(prompt) = apply_workflow_to_agent(&agent, &workflow, true).await {
                     update_prompt = prompt;
                 }
             }
             Ok(None) => {
-                // Recipe has missing parameters - use default prompt
+                // Workflow has missing parameters - use default prompt
             }
             Err(e) => {
                 return Err(ErrorResponse {

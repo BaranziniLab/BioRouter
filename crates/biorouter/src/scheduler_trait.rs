@@ -10,18 +10,18 @@ pub trait SchedulerTrait: Send + Sync {
     async fn add_scheduled_job(
         &self,
         job: ScheduledJob,
-        copy_recipe: bool,
+        copy_workflow: bool,
     ) -> Result<(), SchedulerError>;
-    async fn schedule_recipe(
+    async fn schedule_workflow(
         &self,
-        recipe_path: PathBuf,
+        workflow_path: PathBuf,
         cron_schedule: Option<String>,
     ) -> anyhow::Result<(), SchedulerError>;
     async fn list_scheduled_jobs(&self) -> Vec<ScheduledJob>;
     async fn remove_scheduled_job(
         &self,
         id: &str,
-        remove_recipe: bool,
+        remove_workflow: bool,
     ) -> Result<(), SchedulerError>;
     async fn pause_schedule(&self, id: &str) -> Result<(), SchedulerError>;
     async fn unpause_schedule(&self, id: &str) -> Result<(), SchedulerError>;

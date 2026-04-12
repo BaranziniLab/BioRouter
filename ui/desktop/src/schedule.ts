@@ -54,7 +54,7 @@ export async function listSchedules(): Promise<ScheduledJob[]> {
 
 export async function createSchedule(request: {
   id: string;
-  recipe_source: string;
+  workflow_source: string;
   cron: string;
   execution_mode?: string;
 }): Promise<ScheduledJob> {

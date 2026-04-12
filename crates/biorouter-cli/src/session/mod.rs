@@ -538,9 +538,9 @@ impl CliSession {
                 history.save(editor);
                 self.handle_prompt_command(opts).await?;
             }
-            InputResult::Recipe(filepath_opt) => {
+            InputResult::Workflow(filepath_opt) => {
                 history.save(editor);
-                self.handle_recipe(filepath_opt).await;
+                self.handle_workflow(filepath_opt).await;
             }
             InputResult::Compact => {
                 history.save(editor);
@@ -724,20 +724,20 @@ impl CliSession {
         Ok(())
     }
 
-    async fn handle_recipe(&mut self, filepath_opt: Option<String>) {
-        println!("{}", console::style("Generating Recipe").green());
+    async fn handle_workflow(&mut self, filepath_opt: Option<String>) {
+        println!("{}", console::style("Generating Workflow").green());
 
         output::show_thinking();
-        let recipe = self.agent.create_recipe(self.messages.clone()).await;
+        let workflow = self.agent.create_workflow(self.messages.clone()).await;
         output::hide_thinking();
 
-        match recipe {
-            Ok(recipe) => {
-                let filepath_str = filepath_opt.as_deref().unwrap_or("recipe.yaml");
-                match self.save_recipe(&recipe, filepath_str) {
+        match workflow {
+            Ok(workflow) => {
+                let filepath_str = filepath_opt.as_deref().unwrap_or("workflow.yaml");
+                match self.save_workflow(&workflow, filepath_str) {
                     Ok(path) => println!(
                         "{}",
-                        console::style(format!("Saved recipe to {}", path.display())).green()
+                        console::style(format!("Saved workflow to {}", path.display())).green()
                     ),
                     Err(e) => println!("{}", console::style(e).red()),
                 }
@@ -745,7 +745,7 @@ impl CliSession {
             Err(e) => {
                 println!(
                     "{}: {:?}",
-                    console::style("Failed to generate recipe").red(),
+                    console::style("Failed to generate workflow").red(),
                     e
                 );
             }
@@ -1348,17 +1348,17 @@ impl CliSession {
         Ok(())
     }
 
-    /// Save a recipe to a file
+    /// Save a workflow to a file
     ///
     /// # Arguments
-    /// * `recipe` - The recipe to save
-    /// * `filepath_str` - The path to save the recipe to
+    /// * `workflow` - The workflow to save
+    /// * `filepath_str` - The path to save the workflow to
     ///
     /// # Returns
-    /// * `Result<PathBuf, String>` - The path the recipe was saved to or an error message
-    fn save_recipe(
+    /// * `Result<PathBuf, String>` - The path the workflow was saved to or an error message
+    fn save_workflow(
         &self,
-        recipe: &biorouter::recipe::Recipe,
+        workflow: &biorouter::workflow::Workflow,
         filepath_str: &str,
     ) -> anyhow::Result<PathBuf> {
         let path_buf = PathBuf::from(filepath_str);
@@ -1386,7 +1386,7 @@ impl CliSession {
             .context(format!("Failed to create file '{}'", path.display()))?;
 
         // Write YAML
-        serde_yaml::to_writer(file, recipe).context("Failed to save recipe")?;
+        serde_yaml::to_writer(file, workflow).context("Failed to save workflow")?;
 
         Ok(path)
     }

@@ -12,7 +12,7 @@ export const configLabels: Record<string, string> = {
   BIOROUTER_TOOLSHIM_OLLAMA_MODEL: 'Tool Shim Ollama Model',
   BIOROUTER_CLI_MIN_PRIORITY: 'CLI Min Priority',
   BIOROUTER_ALLOWLIST: 'Allow List',
-  BIOROUTER_RECIPE_GITHUB_REPO: 'Recipe GitHub Repo',
+  BIOROUTER_WORKFLOW_GITHUB_REPO: 'Workflow GitHub Repo',
 
   // security settings
   SECURITY_PROMPT_ENABLED: 'Prompt Injection Detection Enabled',

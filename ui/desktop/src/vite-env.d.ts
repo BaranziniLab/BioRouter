@@ -45,10 +45,10 @@ declare module '*.md?raw' {
   export default value;
 }
 
-// Extend Window interface to include global recipe creation flag
+// Extend Window interface to include global workflow creation flag
 declare global {
   interface Window {
-    isCreatingRecipe?: boolean;
+    isCreatingWorkflow?: boolean;
   }
 }
 

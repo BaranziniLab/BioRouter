@@ -1,0 +1,201 @@
+use crate::workflows::print_workflow::{
+    missing_parameters_command_line, print_workflow_explanation,
+    print_required_parameters_for_template,
+};
+use crate::workflows::search_workflow::load_workflow_file;
+use crate::workflows::secret_discovery::{discover_workflow_secrets, SecretRequirement};
+use anyhow::Result;
+use biorouter::config::Config;
+use biorouter::workflow::build_workflow::{
+    apply_values_to_parameters, build_workflow_from_template, WorkflowError,
+};
+use biorouter::workflow::validate_workflow::parse_and_validate_parameters;
+use biorouter::workflow::Workflow;
+
+fn create_user_prompt_callback() -> impl Fn(&str, &str) -> Result<String> {
+    |key: &str, description: &str| -> Result<String> {
+        let input_value =
+            cliclack::input(format!("Please enter {} ({})", key, description)).interact()?;
+        Ok(input_value)
+    }
+}
+
+pub fn load_workflow(workflow_name: &str, params: Vec<(String, String)>) -> Result<Workflow> {
+    let workflow_file = load_workflow_file(workflow_name)?;
+    let workflow_content = workflow_file.content;
+    let workflow_dir = workflow_file.parent_dir;
+    match build_workflow_from_template(
+        workflow_content,
+        &workflow_dir,
+        params,
+        Some(create_user_prompt_callback()),
+    ) {
+        Ok(workflow) => {
+            let secret_requirements = discover_workflow_secrets(&workflow);
+            if let Err(e) = collect_missing_secrets(&secret_requirements) {
+                eprintln!(
+                    "Warning: Failed to collect some secrets: {}. Workflow will continue to run.",
+                    e
+                );
+            }
+            Ok(workflow)
+        }
+        Err(WorkflowError::MissingParams { parameters }) => Err(anyhow::anyhow!(
+            "Please provide the following parameters in the command line: {}",
+            missing_parameters_command_line(parameters)
+        )),
+        Err(e) => Err(anyhow::anyhow!(e.to_string())),
+    }
+}
+
+/// Collects missing secrets from the user interactively
+///
+/// This function checks if each required secret exists in the keyring.
+/// For missing secrets, it prompts the user interactively and stores them
+/// using the scoped key to prevent collisions.
+///
+/// # Arguments
+/// * `requirements` - Vector of SecretRequirement objects to collect
+///
+/// # Returns
+/// Result indicating success or failure of the collection process
+pub fn collect_missing_secrets(requirements: &[SecretRequirement]) -> Result<()> {
+    if requirements.is_empty() {
+        return Ok(());
+    }
+
+    let config = Config::global();
+    let mut missing_secrets = Vec::new();
+
+    for req in requirements {
+        match config.get_secret::<String>(&req.key) {
+            Ok(_) => continue, // Secret exists
+            Err(_) => missing_secrets.push(req),
+        }
+    }
+
+    if missing_secrets.is_empty() {
+        return Ok(());
+    }
+
+    println!(
+        "🔐 This workflow uses {} secret(s) that are not yet configured (press ESC to skip any that are optional):",
+        missing_secrets.len()
+    );
+
+    for req in &missing_secrets {
+        println!("\n📋 Extension: {}", req.extension_name);
+        println!("🔑 Secret: {}", req.key);
+
+        let value = cliclack::password(format!(
+            "Enter {} ({}) - press ESC to skip",
+            req.key,
+            req.description()
+        ))
+        .mask('▪')
+        .interact()
+        .unwrap_or_else(|_| String::new());
+
+        if !value.trim().is_empty() {
+            if let Err(e) = config.set_secret(&req.key, &value) {
+                println!("⚠️  Failed to store secret in secure storage: {}. Secret available for this session only.", e);
+                println!(
+                    "   Consider setting {} as an environment variable for future use.",
+                    req.key
+                );
+            } else {
+                println!("✅ Secret stored securely for {}", req.extension_name);
+            }
+        } else {
+            println!("⏭️  Skipped {} for {}", req.key, req.extension_name);
+        }
+    }
+
+    if !missing_secrets.is_empty() {
+        println!("\n🎉 Secret collection complete! Workflow execution will now continue.");
+    }
+
+    Ok(())
+}
+
+pub fn render_workflow_as_yaml(workflow_name: &str, params: Vec<(String, String)>) -> Result<()> {
+    let workflow = load_workflow(workflow_name, params)?;
+    match serde_yaml::to_string(&workflow) {
+        Ok(yaml_content) => {
+            println!("{}", yaml_content);
+            Ok(())
+        }
+        Err(_) => {
+            eprintln!("Failed to serialize workflow to YAML");
+            std::process::exit(1);
+        }
+    }
+}
+
+pub fn explain_workflow(workflow_name: &str, params: Vec<(String, String)>) -> Result<()> {
+    let workflow_file = load_workflow_file(workflow_name)?;
+    let workflow_dir_str = workflow_file.parent_dir.display().to_string();
+    let workflow_file_content = &workflow_file.content;
+    let workflow_template =
+        parse_and_validate_parameters(workflow_file_content, Some(workflow_dir_str.clone()))?;
+    let workflow_parameters = workflow_template.parameters.clone();
+
+    let (params_for_template, missing_params) = apply_values_to_parameters(
+        &params,
+        workflow_parameters,
+        &workflow_dir_str,
+        None::<fn(&str, &str) -> Result<String>>,
+    )?;
+    print_workflow_explanation(&workflow_template);
+    print_required_parameters_for_template(params_for_template, missing_params);
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use biorouter::workflow::{WorkflowParameterInputType, WorkflowParameterRequirement};
+
+    use crate::workflows::workflow::load_workflow;
+
+    mod load_workflow {
+        use super::*;
+        #[test]
+        fn test_load_workflow_success() {
+            let workflow_content = r#"{
+                "version": "1.0.0",
+                "title": "Test Workflow",
+                "description": "A test workflow",
+                "instructions": "Test instructions with {{ my_name }}",
+                "parameters": [
+                    {
+                        "key": "my_name",
+                        "input_type": "string",
+                        "requirement": "required",
+                        "description": "A test parameter"
+                    }
+                ]
+            }"#;
+            let temp_dir = tempfile::tempdir().unwrap();
+            let workflow_path = temp_dir.path().join("test_workflow.json");
+            std::fs::write(&workflow_path, workflow_content).unwrap();
+
+            let params = vec![("my_name".to_string(), "value".to_string())];
+            let workflow = load_workflow(workflow_path.to_str().unwrap(), params).unwrap();
+
+            assert_eq!(workflow.title, "Test Workflow");
+            assert_eq!(workflow.description, "A test workflow");
+            assert_eq!(workflow.instructions.unwrap(), "Test instructions with value");
+            // Verify parameters match workflow definition
+            assert_eq!(workflow.parameters.as_ref().unwrap().len(), 1);
+            let param = &workflow.parameters.as_ref().unwrap()[0];
+            assert_eq!(param.key, "my_name");
+            assert!(matches!(param.input_type, WorkflowParameterInputType::String));
+            assert!(matches!(
+                param.requirement,
+                WorkflowParameterRequirement::Required
+            ));
+            assert_eq!(param.description, "A test parameter");
+        }
+    }
+}

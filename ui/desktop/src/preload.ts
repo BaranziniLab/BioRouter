@@ -1,5 +1,5 @@
 import Electron, { contextBridge, ipcRenderer, webUtils } from 'electron';
-import { Recipe } from './recipe';
+import { Workflow } from './workflow';
 import { GooseApp } from './api';
 
 interface NotificationData {
@@ -69,7 +69,7 @@ type ElectronAPI = {
     version?: string,
     resumeSessionId?: string,
     viewType?: string,
-    recipeId?: string
+    workflowId?: string
   ) => void;
   logInfo: (txt: string) => void;
   showNotification: (data: NotificationData) => void;
@@ -132,10 +132,10 @@ type ElectronAPI = {
   onUpdaterEvent: (callback: (event: UpdaterEvent) => void) => void;
   getUpdateState: () => Promise<{ updateAvailable: boolean; latestVersion?: string } | null>;
   isUsingGitHubFallback: () => Promise<boolean>;
-  // Recipe warning functions
+  // Workflow warning functions
   closeWindow: () => void;
-  hasAcceptedRecipeBefore: (recipe: Recipe) => Promise<boolean>;
-  recordRecipeHash: (recipe: Recipe) => Promise<boolean>;
+  hasAcceptedWorkflowBefore: (workflow: Workflow) => Promise<boolean>;
+  recordWorkflowHash: (workflow: Workflow) => Promise<boolean>;
   openDirectoryInExplorer: (directoryPath: string) => Promise<boolean>;
   launchApp: (app: GooseApp) => Promise<void>;
   addRecentDir: (dir: string) => Promise<boolean>;
@@ -165,7 +165,7 @@ const electronAPI: ElectronAPI = {
     version?: string,
     resumeSessionId?: string,
     viewType?: string,
-    recipeId?: string
+    workflowId?: string
   ) =>
     ipcRenderer.send(
       'create-chat-window',
@@ -174,7 +174,7 @@ const electronAPI: ElectronAPI = {
       version,
       resumeSessionId,
       viewType,
-      recipeId
+      workflowId
     ),
   logInfo: (txt: string) => ipcRenderer.send('logInfo', txt),
   showNotification: (data: NotificationData) => ipcRenderer.send('notify', data),
@@ -272,9 +272,9 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke('is-using-github-fallback');
   },
   closeWindow: () => ipcRenderer.send('close-window'),
-  hasAcceptedRecipeBefore: (recipe: Recipe) =>
-    ipcRenderer.invoke('has-accepted-recipe-before', recipe),
-  recordRecipeHash: (recipe: Recipe) => ipcRenderer.invoke('record-recipe-hash', recipe),
+  hasAcceptedWorkflowBefore: (workflow: Workflow) =>
+    ipcRenderer.invoke('has-accepted-workflow-before', workflow),
+  recordWorkflowHash: (workflow: Workflow) => ipcRenderer.invoke('record-workflow-hash', workflow),
   openDirectoryInExplorer: (directoryPath: string) =>
     ipcRenderer.invoke('open-directory-in-explorer', directoryPath),
   launchApp: (app: GooseApp) => ipcRenderer.invoke('launch-app', app),

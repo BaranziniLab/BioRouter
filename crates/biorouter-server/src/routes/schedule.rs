@@ -14,7 +14,7 @@ use biorouter::scheduler::ScheduledJob;
 #[derive(Deserialize, Serialize, utoipa::ToSchema)]
 pub struct CreateScheduleRequest {
     id: String,
-    recipe_source: String,
+    workflow_source: String,
     cron: String,
 }
 
@@ -77,7 +77,7 @@ pub struct SessionDisplayInfo {
     request_body = CreateScheduleRequest,
     responses(
         (status = 200, description = "Scheduled job created successfully", body = ScheduledJob),
-        (status = 400, description = "Invalid cron expression or recipe file"),
+        (status = 400, description = "Invalid cron expression or workflow file"),
         (status = 409, description = "Job ID already exists"),
         (status = 500, description = "Internal server error")
     ),
@@ -96,7 +96,7 @@ async fn create_schedule(
     );
     let job = ScheduledJob {
         id: req.id,
-        source: req.recipe_source,
+        source: req.workflow_source,
         cron: req.cron,
         last_run: None,
         currently_running: false,
@@ -112,7 +112,7 @@ async fn create_schedule(
             match e {
                 biorouter::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
                 biorouter::scheduler::SchedulerError::CronParseError(_) => StatusCode::BAD_REQUEST,
-                biorouter::scheduler::SchedulerError::RecipeLoadError(_) => StatusCode::BAD_REQUEST,
+                biorouter::scheduler::SchedulerError::WorkflowLoadError(_) => StatusCode::BAD_REQUEST,
                 biorouter::scheduler::SchedulerError::JobIdExists(_) => StatusCode::CONFLICT,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             }
@@ -192,24 +192,24 @@ async fn run_now_handler(
 ) -> Result<Json<RunNowResponse>, StatusCode> {
     let scheduler = state.scheduler();
 
-    let (recipe_display_name, recipe_version_opt) = if let Some(job) = scheduler
+    let (workflow_display_name, workflow_version_opt) = if let Some(job) = scheduler
         .list_scheduled_jobs()
         .await
         .into_iter()
         .find(|job| job.id == id)
     {
-        let recipe_display_name = std::path::Path::new(&job.source)
+        let workflow_display_name = std::path::Path::new(&job.source)
             .file_name()
             .and_then(|name| name.to_str())
             .map(|s| s.to_string())
             .unwrap_or_else(|| id.clone());
 
-        let recipe_version_opt =
+        let workflow_version_opt =
             tokio::fs::read_to_string(&job.source)
                 .await
                 .ok()
                 .and_then(|content: String| {
-                    biorouter::recipe::template_recipe::parse_recipe_content(
+                    biorouter::workflow::template_workflow::parse_workflow_content(
                         &content,
                         Some(
                             std::path::Path::new(&job.source)
@@ -223,19 +223,19 @@ async fn run_now_handler(
                     .map(|(r, _)| r.version)
                 });
 
-        (recipe_display_name, recipe_version_opt)
+        (workflow_display_name, workflow_version_opt)
     } else {
         (id.clone(), None)
     };
 
-    let recipe_version_tag = recipe_version_opt.as_deref().unwrap_or("");
+    let workflow_version_tag = workflow_version_opt.as_deref().unwrap_or("");
     tracing::info!(
-        counter.biorouter.recipe_runs = 1,
-        recipe_name = %recipe_display_name,
-        recipe_version = %recipe_version_tag,
+        counter.biorouter.workflow_runs = 1,
+        workflow_name = %workflow_display_name,
+        workflow_version = %workflow_version_tag,
         session_type = "schedule",
         interface = "server",
-        "Recipe execution started"
+        "Workflow execution started"
     );
 
     tracing::info!("Server: Calling scheduler.run_now() for job '{}'", id);

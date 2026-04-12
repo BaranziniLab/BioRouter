@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Parameter } from '../recipe';
+import { Parameter } from '../workflow';
 import { Button } from './ui/button';
 import { getInitialWorkingDir } from '../utils/workingDir';
 
@@ -20,7 +20,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
   const [showCancelOptions, setShowCancelOptions] = useState(false);
 
-  // Pre-fill the form with default values from the recipe and initialValues from deeplink
+  // Pre-fill the form with default values from the workflow and initialValues from deeplink
   useEffect(() => {
     const defaultValues: Record<string, string> = {};
     parameters.forEach((param) => {
@@ -61,7 +61,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
   };
 
   const handleCancel = (): void => {
-    // Always show cancel options if recipe has any parameters (required or optional)
+    // Always show cancel options if workflow has any parameters (required or optional)
     const hasAnyParams = parameters.length > 0;
 
     if (hasAnyParams) {
@@ -91,7 +91,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
       {showCancelOptions ? (
         // Cancel options modal
         <div className="bg-background-default border border-borderSubtle rounded-xl p-8 shadow-2xl w-full max-w-md">
-          <h2 className="text-xl font-bold text-textProminent mb-4">Cancel Recipe Setup</h2>
+          <h2 className="text-xl font-bold text-textProminent mb-4">Cancel Workflow Setup</h2>
           <p className="text-textStandard mb-6">What would you like to do?</p>
           <div className="flex flex-col gap-3">
             <Button
@@ -108,7 +108,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
               size="lg"
               className="w-full rounded-full"
             >
-              Start New Chat (No Recipe)
+              Start New Chat (No Workflow)
             </Button>
           </div>
         </div>
@@ -116,7 +116,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
         // Main parameter form
         <div className="bg-background-default border border-borderSubtle rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
           <div className="p-8 pb-4 flex-shrink-0">
-            <h2 className="text-xl font-bold text-textProminent mb-6">Recipe Parameters</h2>
+            <h2 className="text-xl font-bold text-textProminent mb-6">Workflow Parameters</h2>
           </div>
           <div className="flex-1 overflow-y-auto px-8">
             <form onSubmit={handleSubmit} className="space-y-4 mb-4">
@@ -200,7 +200,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
                 size="default"
                 className="rounded-full"
               >
-                Start Recipe
+                Start Workflow
               </Button>
             </div>
           </div>

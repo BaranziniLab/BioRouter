@@ -41,8 +41,8 @@ const AppLayoutContent: React.FC = () => {
       case 'schedules':
         navigate('/schedules');
         break;
-      case 'recipes':
-        navigate('/recipes');
+      case 'workflows':
+        navigate('/workflows');
         break;
       case 'permission':
         navigate('/permission', { state: viewOptions });

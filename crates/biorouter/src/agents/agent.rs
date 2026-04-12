@@ -42,7 +42,7 @@ use crate::permission::permission_judge::PermissionCheckResult;
 use crate::permission::PermissionConfirmation;
 use crate::providers::base::Provider;
 use crate::providers::errors::ProviderError;
-use crate::recipe::{Author, Recipe, Response, Settings, SubRecipe};
+use crate::workflow::{Author, Workflow, Response, Settings, SubWorkflow};
 use crate::scheduler_trait::SchedulerTrait;
 use crate::security::security_inspector::SecurityInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
@@ -117,7 +117,7 @@ pub struct Agent {
     pub config: AgentConfig,
 
     pub extension_manager: Arc<ExtensionManager>,
-    pub(super) sub_recipes: Mutex<HashMap<String, SubRecipe>>,
+    pub(super) sub_workflows: Mutex<HashMap<String, SubWorkflow>>,
     pub(super) final_output_tool: Arc<Mutex<Option<FinalOutputTool>>>,
     pub(super) frontend_tools: Mutex<HashMap<String, FrontendTool>>,
     pub(super) frontend_instructions: Mutex<Option<String>>,
@@ -202,7 +202,7 @@ impl Agent {
             provider: provider.clone(),
             config,
             extension_manager: Arc::new(ExtensionManager::new(provider.clone(), session_manager)),
-            sub_recipes: Mutex::new(HashMap::new()),
+            sub_workflows: Mutex::new(HashMap::new()),
             final_output_tool: Arc::new(Mutex::new(None)),
             frontend_tools: Mutex::new(HashMap::new()),
             frontend_instructions: Mutex::new(None),
@@ -428,21 +428,21 @@ impl Agent {
         self.extend_system_prompt(final_output_system_prompt).await;
     }
 
-    pub async fn add_sub_recipes(&self, sub_recipes_to_add: Vec<SubRecipe>) {
-        let mut sub_recipes = self.sub_recipes.lock().await;
-        for sr in sub_recipes_to_add {
-            sub_recipes.insert(sr.name.clone(), sr);
+    pub async fn add_sub_workflows(&self, sub_workflows_to_add: Vec<SubWorkflow>) {
+        let mut sub_workflows = self.sub_workflows.lock().await;
+        for sr in sub_workflows_to_add {
+            sub_workflows.insert(sr.name.clone(), sr);
         }
     }
 
-    pub async fn apply_recipe_components(
+    pub async fn apply_workflow_components(
         &self,
-        sub_recipes: Option<Vec<SubRecipe>>,
+        sub_workflows: Option<Vec<SubWorkflow>>,
         response: Option<Response>,
         include_final_output: bool,
     ) {
-        if let Some(sub_recipes) = sub_recipes {
-            self.add_sub_recipes(sub_recipes).await;
+        if let Some(sub_workflows) = sub_workflows {
+            self.add_sub_workflows(sub_workflows).await;
         }
 
         if include_final_output {
@@ -525,7 +525,7 @@ impl Agent {
             let extensions = self.get_extension_configs().await;
             let task_config =
                 TaskConfig::new(provider, &session.id, &session.working_dir, extensions);
-            let sub_recipes = self.sub_recipes.lock().await.clone();
+            let sub_workflows = self.sub_workflows.lock().await.clone();
 
             let arguments = tool_call
                 .arguments
@@ -537,7 +537,7 @@ impl Agent {
                 &self.config,
                 arguments,
                 task_config,
-                sub_recipes,
+                sub_workflows,
                 session.working_dir.clone(),
                 cancellation_token,
             )
@@ -786,9 +786,9 @@ impl Agent {
             }
 
             if subagents_enabled {
-                let sub_recipes = self.sub_recipes.lock().await;
-                let sub_recipes_vec: Vec<_> = sub_recipes.values().cloned().collect();
-                prefixed_tools.push(create_subagent_tool(&sub_recipes_vec));
+                let sub_workflows = self.sub_workflows.lock().await;
+                let sub_workflows_vec: Vec<_> = sub_workflows.values().cloned().collect();
+                prefixed_tools.push(create_subagent_tool(&sub_workflows_vec));
             }
         }
 
@@ -862,7 +862,7 @@ impl Agent {
         if message_text.trim().starts_with('/') {
             let command = message_text.split_whitespace().next();
             if let Some(cmd) = command {
-                if crate::slash_commands::get_recipe_for_command(cmd).is_some() {
+                if crate::slash_commands::get_workflow_for_command(cmd).is_some() {
                     crate::posthog::emit_custom_slash_command_used();
                 }
             }
@@ -1575,8 +1575,8 @@ impl Agent {
         }
     }
 
-    pub async fn create_recipe(&self, mut messages: Conversation) -> Result<Recipe> {
-        tracing::info!("Starting recipe creation with {} messages", messages.len());
+    pub async fn create_workflow(&self, mut messages: Conversation) -> Result<Workflow> {
+        tracing::info!("Starting workflow creation with {} messages", messages.len());
 
         let extensions_info = self.extension_manager.get_extensions_info().await;
         tracing::debug!("Retrieved {} extensions info", extensions_info.len());
@@ -1585,7 +1585,7 @@ impl Agent {
 
         // Get model name from provider
         let provider = self.provider().await.map_err(|e| {
-            tracing::error!("Failed to get provider for recipe creation: {}", e);
+            tracing::error!("Failed to get provider for workflow creation: {}", e);
             e
         })?;
         let model_config = provider.get_model_config();
@@ -1600,45 +1600,45 @@ impl Agent {
             .with_extension_and_tool_counts(extension_count, tool_count)
             .build();
 
-        let recipe_prompt = prompt_manager.get_recipe_prompt().await;
+        let workflow_prompt = prompt_manager.get_workflow_prompt().await;
         let tools = self
             .extension_manager
             .get_prefixed_tools(None)
             .await
             .map_err(|e| {
-                tracing::error!("Failed to get tools for recipe creation: {}", e);
+                tracing::error!("Failed to get tools for workflow creation: {}", e);
                 e
             })?;
 
-        messages.push(Message::user().with_text(recipe_prompt));
+        messages.push(Message::user().with_text(workflow_prompt));
 
         let (messages, issues) = fix_conversation(messages);
         if !issues.is_empty() {
             issues
                 .iter()
-                .for_each(|issue| tracing::warn!(recipe.conversation.issue = issue));
+                .for_each(|issue| tracing::warn!(workflow.conversation.issue = issue));
         }
 
         tracing::debug!(
-            "Added recipe prompt to messages, total messages: {}",
+            "Added workflow prompt to messages, total messages: {}",
             messages.len()
         );
 
-        tracing::info!("Calling provider to generate recipe content");
+        tracing::info!("Calling provider to generate workflow content");
         let (result, _usage) = self
             .provider
             .lock()
             .await
             .as_ref()
             .ok_or_else(|| {
-                let error = anyhow!("Provider not available during recipe creation");
+                let error = anyhow!("Provider not available during workflow creation");
                 tracing::error!("{}", error);
                 error
             })?
             .complete(&system_prompt, messages.messages(), &tools)
             .await
             .map_err(|e| {
-                tracing::error!("Provider completion failed during recipe creation: {}", e);
+                tracing::error!("Provider completion failed during workflow creation: {}", e);
                 e
             })?;
 
@@ -1737,7 +1737,7 @@ impl Agent {
         };
 
         tracing::debug!(
-            "Building recipe with {} activities and {} extensions",
+            "Building workflow with {} activities and {} extensions",
             activities.len(),
             extension_configs.len()
         );
@@ -1747,24 +1747,24 @@ impl Agent {
                 let title = json_content
                     .get("title")
                     .and_then(|t| t.as_str())
-                    .unwrap_or("Custom recipe from chat")
+                    .unwrap_or("Custom workflow from chat")
                     .to_string();
 
                 let description = json_content
                     .get("description")
                     .and_then(|d| d.as_str())
-                    .unwrap_or("a custom recipe instance from this chat session")
+                    .unwrap_or("a custom workflow instance from this chat session")
                     .to_string();
 
                 (title, description)
             } else {
                 (
-                    "Custom recipe from chat".to_string(),
-                    "a custom recipe instance from this chat session".to_string(),
+                    "Custom workflow from chat".to_string(),
+                    "a custom workflow instance from this chat session".to_string(),
                 )
             };
 
-        let recipe = Recipe::builder()
+        let workflow = Workflow::builder()
             .title(title)
             .description(description)
             .instructions(instructions)
@@ -1774,19 +1774,19 @@ impl Agent {
             .author(author)
             .build()
             .map_err(|e| {
-                tracing::error!("Failed to build recipe: {}", e);
-                anyhow!("Recipe build failed: {}", e)
+                tracing::error!("Failed to build workflow: {}", e);
+                anyhow!("Workflow build failed: {}", e)
             })?;
 
-        tracing::info!("Recipe creation completed successfully");
-        Ok(recipe)
+        tracing::info!("Workflow creation completed successfully");
+        Ok(workflow)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::recipe::Response;
+    use crate::workflow::Response;
 
     #[tokio::test]
     async fn test_add_final_output_tool() -> Result<()> {

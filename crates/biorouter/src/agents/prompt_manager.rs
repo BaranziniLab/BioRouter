@@ -243,10 +243,10 @@ impl PromptManager {
         }
     }
 
-    pub async fn get_recipe_prompt(&self) -> String {
+    pub async fn get_workflow_prompt(&self) -> String {
         let context: HashMap<&str, Value> = HashMap::new();
-        prompt_template::render_global_file("recipe.md", &context)
-            .unwrap_or_else(|_| "The recipe prompt is busted. Tell the user.".to_string())
+        prompt_template::render_global_file("workflow.md", &context)
+            .unwrap_or_else(|_| "The workflow prompt is busted. Tell the user.".to_string())
     }
 }
 
