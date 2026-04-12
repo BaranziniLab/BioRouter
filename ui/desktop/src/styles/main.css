@@ -50,7 +50,7 @@
 
 :root {
   /* fonts */
-  --font-sans: 'Cash Sans', sans-serif;
+  --font-sans: Arial, Helvetica, sans-serif;
   --font-mono: monospace;
 
   /* theming accents */
@@ -193,7 +193,7 @@
   --color-text-warning: var(--text-warning);
   --color-text-info: var(--text-info);
 
-  --font-sans: 'Cash Sans', sans-serif;
+  --font-sans: Arial, Helvetica, sans-serif;
   --font-mono: monospace;
   --font-serif: serif;
 
@@ -219,46 +219,7 @@
   }
 }
 
-@font-face {
-  font-family: 'Cash Sans';
-  src:
-    url(https://cash-f.squarecdn.com/static/fonts/cashsans/woff2/CashSans-Light.woff2)
-      format('woff2'),
-    url(https://cash-f.squarecdn.com/static/fonts/cashsans/woff/CashSans-Light.woff) format('woff');
-  font-weight: 300;
-  font-style: normal;
-}
-
-@font-face {
-  font-family: 'Cash Sans';
-  src:
-    url(https://cash-f.squarecdn.com/static/fonts/cashsans/woff2/CashSans-Regular.woff2)
-      format('woff2'),
-    url(https://cash-f.squarecdn.com/static/fonts/cashsans/woff/CashSans-Regular.woff)
-      format('woff');
-  font-weight: 400;
-  font-style: normal;
-}
-
-@font-face {
-  font-family: 'Cash Sans';
-  src:
-    url(https://cash-f.squarecdn.com/static/fonts/cashsans/woff2/CashSans-Medium.woff2)
-      format('woff2'),
-    url(https://cash-f.squarecdn.com/static/fonts/cashsans/woff/CashSans-Medium.woff) format('woff');
-  font-weight: 500;
-  font-style: normal;
-}
-
-@font-face {
-  font-family: 'Cash Sans';
-  src:
-    url(https://cash-f.squarecdn.com/static/fonts/cashsans/woff2/CashSans-Bold.woff2)
-      format('woff2'),
-    url(https://cash-f.squarecdn.com/static/fonts/cashsans/woff/CashSans-Bold.woff) format('woff');
-  font-weight: 700;
-  font-style: normal;
-}
+/* Arial is a system font — no @font-face needed */
 
 /* animations */
 @keyframes appear {

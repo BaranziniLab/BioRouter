@@ -10,7 +10,7 @@ function getCurrentPage(): string {
 
 // Capture unhandled promise rejections
 window.addEventListener('unhandledrejection', (event) => {
-  window.electron.logInfo(`[UNHANDLED REJECTION] ${event.reason}`);
+  window.electron?.logInfo?.(`[UNHANDLED REJECTION] ${event.reason}`);
   trackErrorWithContext(event.reason, {
     component: 'global',
     page: getCurrentPage(),
@@ -21,7 +21,7 @@ window.addEventListener('unhandledrejection', (event) => {
 
 // Capture global errors
 window.addEventListener('error', (event) => {
-  window.electron.logInfo(
+  window.electron?.logInfo?.(
     `[GLOBAL ERROR] ${event.message} at ${event.filename}:${event.lineno}:${event.colno}`
   );
   trackErrorWithContext(event.error || event.message, {
@@ -85,7 +85,7 @@ export class ErrorBoundary extends React.Component<
 
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     // Send error to main process
-    window.electron.logInfo(`[ERROR] ${error.toString()}\n${errorInfo.componentStack}`);
+    window.electron?.logInfo?.(`[ERROR] ${error.toString()}\n${errorInfo.componentStack}`);
 
     const componentMatch = errorInfo.componentStack?.match(/^\s*at\s+(\w+)/);
     const componentName = componentMatch ? componentMatch[1] : undefined;

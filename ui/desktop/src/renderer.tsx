@@ -1,3 +1,8 @@
+// Browser compatibility: polyfill Node globals that Electron provides
+if (typeof (globalThis as Record<string, unknown>).process === 'undefined') {
+  (globalThis as Record<string, unknown>).process = { env: {}, platform: 'darwin', versions: {} };
+}
+
 import React, { Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom/client';
 import { ConfigProvider } from './components/ConfigContext';
@@ -10,6 +15,36 @@ import { readConfig } from './api';
 const App = lazy(() => import('./App'));
 
 const TELEMETRY_CONFIG_KEY = 'BIOROUTER_TELEMETRY_ENABLED';
+
+// Browser dev mode: inject a no-op electron mock so the app renders without Electron
+if (typeof window.electron === 'undefined') {
+  (window as unknown as Record<string, unknown>).electron = {
+    getGoosedHostPort: async () => 'http://127.0.0.1:3000',
+    getSecretKey: async () => 'devkey',
+    logInfo: () => {},
+    logError: () => {},
+    reloadApp: () => window.location.reload(),
+    reactReady: () => {},
+    openExternal: (url: string) => window.open(url, '_blank'),
+    on: () => () => {},
+    off: () => {},
+    once: () => {},
+    emit: () => {},
+    removeListener: () => {},
+    removeAllListeners: () => {},
+    platform: 'darwin',
+    createChatWindow: () => {},
+    directoryChooser: async () => null,
+    showSaveDialog: async () => null,
+    showOpenDialog: async () => null,
+    getVersion: async () => '0.0.0-browser',
+    startPowerSaveBlocker: () => {},
+    stopPowerSaveBlocker: () => {},
+    getBiorouterDir: async () => '/',
+    checkForUpdates: async () => null,
+    installUpdate: () => {},
+  };
+}
 
 (async () => {
   // Check if we're in the launcher view (doesn't need goosed connection)
