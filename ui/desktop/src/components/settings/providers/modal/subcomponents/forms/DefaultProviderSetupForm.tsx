@@ -19,6 +19,19 @@ interface DefaultProviderSetupFormProps {
   validationErrors: ValidationErrors;
 }
 
+// Frontend-side defaults per provider — ensures defaults show up immediately
+// without requiring a backend recompile. The backend also declares these defaults
+// in Rust (azure.rs, bedrock.rs) for CLI consistency.
+const PROVIDER_KEY_DEFAULTS: Record<string, Record<string, string>> = {
+  azure_openai: {
+    AZURE_OPENAI_ENDPOINT: 'https://unified-api.ucsf.edu/general',
+    AZURE_OPENAI_API_VERSION: '2024-10-21',
+  },
+  aws_bedrock: {
+    AWS_REGION: 'us-west-2',
+  },
+};
+
 const envToPrettyName = (envVar: string) => {
   const wordReplacements: { [w: string]: string } = {
     Api: 'API',
@@ -54,14 +67,20 @@ export default function DefaultProviderSetupForm({
     try {
       const values: { [k: string]: ConfigInput } = {};
 
+      const frontendDefaults = PROVIDER_KEY_DEFAULTS[provider.name] ?? {};
+
       for (const parameter of parameters) {
         const configKey = `${parameter.name}`;
         const configValue = (await read(configKey, parameter.secret || false)) as ConfigValue;
 
         if (configValue) {
           values[parameter.name] = { serverValue: configValue };
-        } else if (parameter.default !== undefined && parameter.default !== null) {
-          values[parameter.name] = { value: parameter.default };
+        } else {
+          const defaultValue =
+            parameter.default ?? frontendDefaults[parameter.name] ?? null;
+          if (defaultValue !== null) {
+            values[parameter.name] = { value: defaultValue };
+          }
         }
       }
 
@@ -87,8 +106,10 @@ export default function DefaultProviderSetupForm({
       }
     }
 
-    if (parameter.default !== undefined && parameter.default !== null) {
-      return parameter.default;
+    const defaultValue =
+      parameter.default ?? (PROVIDER_KEY_DEFAULTS[provider.name] ?? {})[parameter.name] ?? null;
+    if (defaultValue !== null) {
+      return defaultValue;
     }
 
     const name = parameter.name.toLowerCase();

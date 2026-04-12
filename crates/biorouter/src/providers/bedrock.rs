@@ -204,7 +204,7 @@ impl Provider for BedrockProvider {
             BEDROCK_DOC_LINK,
             vec![
                 ConfigKey::new("AWS_PROFILE", true, false, Some("default")),
-                ConfigKey::new("AWS_REGION", true, false, None),
+                ConfigKey::new("AWS_REGION", true, false, Some("us-west-2")),
             ],
         )
     }
