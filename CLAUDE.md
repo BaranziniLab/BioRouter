@@ -1,0 +1,118 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+**BioRouter** (v1.20.0) is an AI-powered integrated research environment for biomedical discovery built by UCSF's Baranzini Lab. It unifies multiple LLM providers, AI agents, MCP-based extensions, and customizable workflows into a single extensible tool. The architecture has three layers: Interface (Electron GUI or CLI) → Agent (reasoning loop with session state) → Extensions (pluggable MCP servers providing tools).
+
+## Tech Stack
+
+- **Backend:** Rust workspace (`crates/`) with Rust 1.92 (see `rust-toolchain.toml`)
+- **Frontend:** Electron + React 19 + TypeScript, built with Vite and packaged via Electron Forge
+- **Task runner:** `just` (see `Justfile` for all available tasks)
+- **Node requirement:** Node 24+
+
+## Key Commands
+
+### Development
+
+```bash
+source bin/activate-hermit      # Activate hermit environment (run first)
+cargo build                     # Debug build of Rust backend
+just install-deps               # Install npm/Yarn deps (run once)
+just run-ui                     # Build backend + frontend and launch GUI
+just run-server                 # Run REST API server only (biorouterd)
+just run-ui-only                # Run frontend without rebuilding backend
+just debug-ui                   # Run frontend against external backend
+```
+
+### Testing
+
+```bash
+cargo test                                      # Run all Rust tests
+cargo test --test mcp_integration_test          # Run MCP integration tests
+cd ui/desktop && npm run test:run               # Run frontend unit tests (Vitest)
+cd ui/desktop && npm run test-e2e               # Run Playwright E2E tests
+```
+
+### Code Quality
+
+```bash
+cargo fmt                           # Format Rust code
+./scripts/clippy-lint.sh            # Run clippy linter
+cd ui/desktop && npm run lint:check # ESLint + Prettier check
+just check-everything               # Run all style/lint checks
+```
+
+### Build & Release
+
+```bash
+just release-binary     # macOS ARM64 release build
+just release-intel      # macOS Intel release build
+just make-ui            # Package Electron app (macOS ARM64)
+just make-ui-linux      # Package for Linux (requires Docker)
+just make-ui-windows    # Package for Windows (requires Docker)
+just generate-openapi   # Regenerate OpenAPI spec from server routes
+```
+
+## Architecture
+
+### Rust Workspace (`crates/`)
+
+| Crate | Binary | Purpose |
+|-------|--------|---------|
+| `biorouter` | — | Core agent library: main agent loop, LLM providers, MCP extension manager, session/conversation state, recipe execution, scheduling |
+| `biorouter-server` | `biorouterd` | Axum REST API + WebSocket server; routes in `src/routes/`; OpenAPI spec generated via utoipa |
+| `biorouter-cli` | `biorouter` | Interactive CLI; subcommands in `src/commands/` |
+| `biorouter-mcp` | — | Built-in MCP servers (Developer, Computer Controller, Memory, Auto Visualiser) |
+| `biorouter-acp` | — | Agent Communication Protocol for multi-agent orchestration |
+| `biorouter-bench` | — | Benchmarking harness |
+| `biorouter-test` | — | Integration tests |
+
+### Core Agent Library (`crates/biorouter/src/`)
+
+- **`agents/agent.rs`** (~77KB) — Main agent loop: LLM interaction, tool dispatch, context management
+- **`agents/extension_manager.rs`** (~71KB) — MCP extension lifecycle and tool registration
+- **`providers/`** — 43+ provider modules (Anthropic, OpenAI, Azure, AWS Bedrock, Databricks, Ollama, etc.); `factory.rs` creates providers, `base.rs` defines the abstract interface
+- **`session/`** — Session persistence (SQLite via sqlx)
+- **`recipe/`** — Recipe definition, Jinja-style templating (minijinja), and execution
+- **`context_mgmt/`** — Token counting (tiktoken-rs) and context window pruning
+- **`security/`** — Permission modes, `.biorouterignore` handling
+- **`scheduler.rs`** — Cron-based job scheduling (tokio-cron-scheduler)
+
+### Frontend (`ui/desktop/src/`)
+
+- **`main.ts`** — Electron main process: spawns `biorouterd`, manages windows, IPC
+- **`preload.ts`** — IPC bridge between renderer and main process
+- **`api/`** — TypeScript API client auto-generated from OpenAPI spec (do not hand-edit)
+- **`components/`** — 64+ modular React UI components
+- **`contexts/`** — React Context for global state
+- **`recipe/`** — Recipe builder UI
+
+### Communication Flow
+
+```
+CLI → calls biorouter crate APIs directly
+GUI → Electron main spawns biorouterd → React renderer communicates via HTTP/WebSocket
+                                       (type-safe client from generated OpenAPI)
+```
+
+After changing server routes, always run `just generate-openapi` to regenerate the TypeScript client.
+
+## Configuration
+
+- User config: `~/.config/biorouter/config.yaml` (providers, API keys, extensions)
+- Session history: `~/.config/biorouter/sessions/` (SQLite)
+- Recipes/skills: `~/.config/biorouter/recipes/` and `~/.config/biorouter/skills/`
+
+Key environment variables:
+- `ALPHA=true` — Enable alpha features
+- `BIOROUTER_EXTERNAL_BACKEND=true` — Use external backend (for UI dev)
+- `BIOROUTER_EXTERNAL_PORT` — Backend port (default 3000)
+
+## Code Review Standards
+
+From `.github/copilot-instructions.md`: Reviews focus on **security, correctness, and architecture patterns** — not style (handled by CI) or refactoring suggestions. Flag issues only with >80% confidence. Security-sensitive code (auth, permissions, credential handling) requires human review regardless of AI assistance.
+
+From `HOWTOAI.md`: Avoid using AI-generated code for security logic, complex business rules, or schema migrations without thorough human review.

@@ -1,0 +1,5 @@
+#!/bin/sh
+if grep -qiE "^Co-Authored-By:.*claude" "$1"; then
+  echo "error: commit message must not include Claude as a co-author" >&2
+  exit 1
+fi

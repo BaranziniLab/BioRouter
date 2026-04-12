@@ -22,8 +22,11 @@ target/
 # UI
 ui/desktop/node_modules/
 ui/desktop/out/
-# Compiled binary (>100MB, exceeds GitHub limit)
-ui/desktop/src/bin/biorouter
+# Staged binaries for Electron packaging (compiled, >100MB)
+ui/desktop/src/bin/
+
+# Hermit toolchain environment
+.hermit/
 
 # Claude
 .claude

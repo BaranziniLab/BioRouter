@@ -1,7 +1,7 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "goose-server",
+    "title": "biorouter-server",
     "description": "An AI agent",
     "contact": {
       "name": "Block",
@@ -2909,6 +2909,31 @@
           }
         }
       },
+      "BioRouterApp": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/McpAppResource"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/WindowProps"
+              }
+            ],
+            "nullable": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "mcpServer": {
+                "type": "string",
+                "nullable": true
+              }
+            }
+          }
+        ],
+        "description": "A BioRouter App combining MCP resource data with BioRouter-specific metadata"
+      },
       "CallToolRequest": {
         "type": "object",
         "required": [
@@ -3508,7 +3533,7 @@
           },
           {
             "type": "object",
-            "description": "Built-in extension that is part of the bundled goose MCP server",
+            "description": "Built-in extension that is part of the bundled biorouter MCP server",
             "required": [
               "name",
               "description",
@@ -3857,31 +3882,6 @@
           }
         }
       },
-      "GooseApp": {
-        "allOf": [
-          {
-            "$ref": "#/components/schemas/McpAppResource"
-          },
-          {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/WindowProps"
-              }
-            ],
-            "nullable": true
-          },
-          {
-            "type": "object",
-            "properties": {
-              "mcpServer": {
-                "type": "string",
-                "nullable": true
-              }
-            }
-          }
-        ],
-        "description": "A Goose App combining MCP resource data with Goose-specific metadata"
-      },
       "Icon": {
         "type": "object",
         "required": [
@@ -3993,7 +3993,7 @@
           "apps": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/GooseApp"
+              "$ref": "#/components/schemas/BioRouterApp"
             }
           }
         }
@@ -5730,11 +5730,11 @@
       "Settings": {
         "type": "object",
         "properties": {
-          "goose_model": {
+          "biorouter_model": {
             "type": "string",
             "nullable": true
           },
-          "goose_provider": {
+          "biorouter_provider": {
             "type": "string",
             "nullable": true
           },
