@@ -15,11 +15,27 @@ use crate::model::ModelConfig;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
-pub const AZURE_DEFAULT_MODEL: &str = "gpt-5-2025-08-07";
+pub const AZURE_DEFAULT_MODEL: &str = "gpt-5.2-2025-12-11";
 pub const AZURE_DOC_URL: &str =
     "https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/models";
-pub const AZURE_DEFAULT_API_VERSION: &str = "2024-10-21";
-pub const AZURE_OPENAI_KNOWN_MODELS: &[&str] = &["gpt-4o", "gpt-4o-mini", "gpt-4", "gpt-5-2025-08-07"];
+// Use 2025-01-01-preview to support o1/o3-mini/o4-mini alongside GPT models.
+pub const AZURE_DEFAULT_API_VERSION: &str = "2025-01-01-preview";
+// Verified working on UCSF unified-api.ucsf.edu/general Azure proxy (April 2026).
+// Deployment names must match the exact deployment name configured in the Azure OpenAI resource.
+// o-series models require API version >= 2024-12-01-preview.
+pub const AZURE_OPENAI_KNOWN_MODELS: &[&str] = &[
+    // GPT-5 (latest)
+    "gpt-5.2-2025-12-11",
+    // GPT-4.1 family
+    "gpt-4.1-2025-04-14",
+    "gpt-4.1-mini-2025-04-14",
+    // GPT-4o
+    "gpt-4o-2024-11-20",
+    // o-series reasoning models (requires API version >= 2024-12-01-preview)
+    "o4-mini-2025-04-16",
+    "o3-mini-2025-01-31",
+    "o1-2024-12-17",
+];
 
 #[derive(Debug)]
 pub struct AzureProvider {

@@ -22,12 +22,18 @@ use super::formats::bedrock::{
 pub const BEDROCK_DOC_LINK: &str =
     "https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html";
 
-pub const BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-sonnet-4-5-20250929-v1:0";
+pub const BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-sonnet-4-6";
+// Verified working on UCSF MuleSoft Bedrock proxy (April 2026).
+// Short-form IDs (e.g. claude-sonnet-4-6) are cross-region inference profiles accepted by the proxy.
+// Versioned IDs (v1:0 suffix) are the full inference-profile ARN names.
 pub const BEDROCK_KNOWN_MODELS: &[&str] = &[
-    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    // Claude Sonnet 4.6 — latest, preferred default
+    "us.anthropic.claude-sonnet-4-6",
+    // Claude Sonnet 4.0 (May 2025 versioned ID)
     "us.anthropic.claude-sonnet-4-20250514-v1:0",
-    "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
-    "us.anthropic.claude-opus-4-20250514-v1:0",
+    // Claude Opus 4.5 (Nov 2025 versioned ID)
+    "us.anthropic.claude-opus-4-5-20251101-v1:0",
+    // Claude Opus 4.1 (Aug 2025 versioned ID)
     "us.anthropic.claude-opus-4-1-20250805-v1:0",
 ];
 

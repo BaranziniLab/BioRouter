@@ -31,20 +31,22 @@ use crate::providers::base::MessageStream;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
-pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-4o";
-pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-4o-mini";
+pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-4.1";
+pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-4.1-mini";
+// Verified working against OpenAI API (April 2026).
 pub const OPEN_AI_KNOWN_MODELS: &[(&str, usize)] = &[
+    // GPT-4.1 family (latest)
+    ("gpt-4.1", 1_047_576),
+    ("gpt-4.1-mini", 1_047_576),
+    ("gpt-4.1-nano", 1_047_576),
+    // GPT-4o family
     ("gpt-4o", 128_000),
     ("gpt-4o-mini", 128_000),
-    ("gpt-4.1", 128_000),
-    ("gpt-4.1-mini", 128_000),
-    ("o1", 200_000),
+    // o-series reasoning models
+    ("o4-mini", 200_000),
     ("o3", 200_000),
-    ("gpt-3.5-turbo", 16_385),
-    ("gpt-4-turbo", 128_000),
-    ("o4-mini", 128_000),
-    ("gpt-5.1-codex", 400_000),
-    ("gpt-5-codex", 400_000),
+    ("o3-mini", 200_000),
+    ("o1", 200_000),
 ];
 
 pub const OPEN_AI_DOC_URL: &str = "https://platform.openai.com/docs/models";

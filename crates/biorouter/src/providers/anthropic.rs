@@ -22,21 +22,20 @@ use crate::providers::retry::ProviderRetry;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
-pub const ANTHROPIC_DEFAULT_MODEL: &str = "claude-sonnet-4-5";
+pub const ANTHROPIC_DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 const ANTHROPIC_DEFAULT_FAST_MODEL: &str = "claude-haiku-4-5";
+// Verified working against Anthropic API (April 2026).
 const ANTHROPIC_KNOWN_MODELS: &[&str] = &[
-    // Claude 4.5 models with aliases
+    // Claude 4.6 models (latest)
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
+    // Claude 4.5 models
+    "claude-opus-4-5",
+    "claude-opus-4-5-20251101",
     "claude-sonnet-4-5",
     "claude-sonnet-4-5-20250929",
     "claude-haiku-4-5",
     "claude-haiku-4-5-20251001",
-    "claude-opus-4-5",
-    "claude-opus-4-5-20251101",
-    // Legacy Claude 4.0 models
-    "claude-sonnet-4-0",
-    "claude-sonnet-4-20250514",
-    "claude-opus-4-0",
-    "claude-opus-4-20250514",
 ];
 
 const ANTHROPIC_DOC_URL: &str = "https://docs.anthropic.com/en/docs/about-claude/models";
