@@ -18,7 +18,7 @@ use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 6;
+pub const CURRENT_SCHEMA_VERSION: i32 = 7;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -838,6 +838,37 @@ impl SessionStorage {
                 )
                 .execute(pool)
                 .await?;
+            }
+            7 => {
+                // Rename pre-v1.50.0 columns: recipe_json → workflow_json
+                // and user_recipe_values_json → user_workflow_values_json
+                let recipe_col_count: i32 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'recipe_json'",
+                )
+                .fetch_one(pool)
+                .await?;
+
+                if recipe_col_count > 0 {
+                    sqlx::query(
+                        "ALTER TABLE sessions RENAME COLUMN recipe_json TO workflow_json",
+                    )
+                    .execute(pool)
+                    .await?;
+                }
+
+                let user_recipe_col_count: i32 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = 'user_recipe_values_json'",
+                )
+                .fetch_one(pool)
+                .await?;
+
+                if user_recipe_col_count > 0 {
+                    sqlx::query(
+                        "ALTER TABLE sessions RENAME COLUMN user_recipe_values_json TO user_workflow_values_json",
+                    )
+                    .execute(pool)
+                    .await?;
+                }
             }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
