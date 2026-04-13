@@ -34,14 +34,15 @@ use rmcp::model::Tool;
 pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-5.2";
 pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-4.1-mini";
 // Verified working against OpenAI API (April 2026).
-// Note: gpt-5.4 exists but requires /v1/responses (not chat completions) — not yet supported.
+// Models marked [responses] route to /v1/responses instead of /v1/chat/completions.
 pub const OPEN_AI_KNOWN_MODELS: &[(&str, usize)] = &[
     // GPT-5 family (latest)
     ("gpt-5", 1_047_576),
     ("gpt-5-2025-08-07", 1_047_576),
     ("gpt-5.1", 1_047_576),
-    ("gpt-5.1-codex", 400_000),
+    ("gpt-5.1-codex", 400_000), // [responses]
     ("gpt-5.2", 1_047_576),
+    ("gpt-5.4", 1_047_576),     // [responses] — requires /v1/responses API
     // GPT-4.1 family
     ("gpt-4.1", 1_047_576),
     ("gpt-4.1-mini", 1_047_576),
@@ -198,7 +199,9 @@ impl OpenAiProvider {
     }
 
     fn uses_responses_api(model_name: &str) -> bool {
-        model_name.starts_with("gpt-5-codex") || model_name.starts_with("gpt-5.1-codex")
+        model_name.starts_with("gpt-5-codex")
+            || model_name.starts_with("gpt-5.1-codex")
+            || model_name.starts_with("gpt-5.4")
     }
 
     async fn post(&self, payload: &Value) -> Result<Value, ProviderError> {
