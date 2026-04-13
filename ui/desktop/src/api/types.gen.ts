@@ -68,10 +68,10 @@ export type CallToolResponse = {
 
 export type ChatRequest = {
     conversation_so_far?: Array<Message> | null;
-    workflow_name?: string | null;
-    workflow_version?: string | null;
     session_id: string;
     user_message: Message;
+    workflow_name?: string | null;
+    workflow_version?: string | null;
 };
 
 export type CheckProviderRequest = {
@@ -129,6 +129,12 @@ export type Content = RawTextContent | RawImageContent | RawEmbeddedResource | R
 
 export type Conversation = Array<Message>;
 
+export type CreateScheduleRequest = {
+    cron: string;
+    id: string;
+    workflow_source: string;
+};
+
 export type CreateWorkflowRequest = {
     author?: AuthorRequest | null;
     session_id: string;
@@ -137,12 +143,6 @@ export type CreateWorkflowRequest = {
 export type CreateWorkflowResponse = {
     error?: string | null;
     workflow?: Workflow | null;
-};
-
-export type CreateScheduleRequest = {
-    cron: string;
-    id: string;
-    workflow_source: string;
 };
 
 /**
@@ -414,12 +414,12 @@ export type ListAppsResponse = {
     apps: Array<BioRouterApp>;
 };
 
-export type ListWorkflowResponse = {
-    manifests: Array<WorkflowManifest>;
-};
-
 export type ListSchedulesResponse = {
     jobs: Array<ScheduledJob>;
+};
+
+export type ListWorkflowResponse = {
+    manifests: Array<WorkflowManifest>;
 };
 
 export type LoadedProvider = {
@@ -725,52 +725,6 @@ export type ReadResourceResponse = {
     uri: string;
 };
 
-export type Workflow = {
-    activities?: Array<string> | null;
-    author?: Author | null;
-    description: string;
-    extensions?: Array<ExtensionConfig> | null;
-    instructions?: string | null;
-    parameters?: Array<WorkflowParameter> | null;
-    prompt?: string | null;
-    response?: Response | null;
-    retry?: RetryConfig | null;
-    settings?: Settings | null;
-    sub_workflows?: Array<SubWorkflow> | null;
-    title: string;
-    version?: string;
-};
-
-export type WorkflowManifest = {
-    file_path: string;
-    id: string;
-    last_modified: string;
-    workflow: Workflow;
-    schedule_cron?: string | null;
-    slash_command?: string | null;
-};
-
-export type WorkflowParameter = {
-    default?: string | null;
-    description: string;
-    input_type: WorkflowParameterInputType;
-    key: string;
-    options?: Array<string> | null;
-    requirement: WorkflowParameterRequirement;
-};
-
-export type WorkflowParameterInputType = 'string' | 'number' | 'boolean' | 'date' | 'file' | 'select';
-
-export type WorkflowParameterRequirement = 'required' | 'optional' | 'user_prompt';
-
-export type WorkflowToYamlRequest = {
-    workflow: Workflow;
-};
-
-export type WorkflowToYamlResponse = {
-    yaml: string;
-};
-
 export type RedactedThinkingContent = {
     data: string;
 };
@@ -904,15 +858,15 @@ export type Session = {
     name: string;
     output_tokens?: number | null;
     provider_name?: string | null;
-    workflow?: Workflow | null;
     schedule_id?: string | null;
     session_type?: SessionType;
     total_tokens?: number | null;
     updated_at: string;
+    user_set_name?: boolean;
     user_workflow_values?: {
         [key: string]: string;
     } | null;
-    user_set_name?: boolean;
+    workflow?: Workflow | null;
     working_dir: string;
 };
 
@@ -1230,6 +1184,52 @@ export type WindowProps = {
     height: number;
     resizable: boolean;
     width: number;
+};
+
+export type Workflow = {
+    activities?: Array<string> | null;
+    author?: Author | null;
+    description: string;
+    extensions?: Array<ExtensionConfig> | null;
+    instructions?: string | null;
+    parameters?: Array<WorkflowParameter> | null;
+    prompt?: string | null;
+    response?: Response | null;
+    retry?: RetryConfig | null;
+    settings?: Settings | null;
+    sub_workflows?: Array<SubWorkflow> | null;
+    title: string;
+    version?: string;
+};
+
+export type WorkflowManifest = {
+    file_path: string;
+    id: string;
+    last_modified: string;
+    schedule_cron?: string | null;
+    slash_command?: string | null;
+    workflow: Workflow;
+};
+
+export type WorkflowParameter = {
+    default?: string | null;
+    description: string;
+    input_type: WorkflowParameterInputType;
+    key: string;
+    options?: Array<string> | null;
+    requirement: WorkflowParameterRequirement;
+};
+
+export type WorkflowParameterInputType = 'string' | 'number' | 'boolean' | 'date' | 'file' | 'select';
+
+export type WorkflowParameterRequirement = 'required' | 'optional' | 'user_prompt';
+
+export type WorkflowToYamlRequest = {
+    workflow: Workflow;
+};
+
+export type WorkflowToYamlResponse = {
+    yaml: string;
 };
 
 export type ConfirmToolActionData = {
@@ -2274,294 +2274,6 @@ export type McpUiProxyResponses = {
     200: unknown;
 };
 
-export type CreateWorkflowData = {
-    body: CreateWorkflowRequest;
-    path?: never;
-    query?: never;
-    url: '/workflows/create';
-};
-
-export type CreateWorkflowErrors = {
-    /**
-     * Bad request
-     */
-    400: unknown;
-    /**
-     * Precondition failed - Agent not available
-     */
-    412: unknown;
-    /**
-     * Internal server error
-     */
-    500: unknown;
-};
-
-export type CreateWorkflowResponses = {
-    /**
-     * Workflow created successfully
-     */
-    200: CreateWorkflowResponse;
-};
-
-export type CreateWorkflowResponse2 = CreateWorkflowResponses[keyof CreateWorkflowResponses];
-
-export type DecodeWorkflowData = {
-    body: DecodeWorkflowRequest;
-    path?: never;
-    query?: never;
-    url: '/workflows/decode';
-};
-
-export type DecodeWorkflowErrors = {
-    /**
-     * Bad request
-     */
-    400: unknown;
-};
-
-export type DecodeWorkflowResponses = {
-    /**
-     * Workflow decoded successfully
-     */
-    200: DecodeWorkflowResponse;
-};
-
-export type DecodeWorkflowResponse2 = DecodeWorkflowResponses[keyof DecodeWorkflowResponses];
-
-export type DeleteWorkflowData = {
-    body: DeleteWorkflowRequest;
-    path?: never;
-    query?: never;
-    url: '/workflows/delete';
-};
-
-export type DeleteWorkflowErrors = {
-    /**
-     * Unauthorized - Invalid or missing API key
-     */
-    401: unknown;
-    /**
-     * Workflow not found
-     */
-    404: unknown;
-    /**
-     * Internal server error
-     */
-    500: unknown;
-};
-
-export type DeleteWorkflowResponses = {
-    /**
-     * Workflow deleted successfully
-     */
-    204: void;
-};
-
-export type DeleteWorkflowResponse = DeleteWorkflowResponses[keyof DeleteWorkflowResponses];
-
-export type EncodeWorkflowData = {
-    body: EncodeWorkflowRequest;
-    path?: never;
-    query?: never;
-    url: '/workflows/encode';
-};
-
-export type EncodeWorkflowErrors = {
-    /**
-     * Bad request
-     */
-    400: unknown;
-};
-
-export type EncodeWorkflowResponses = {
-    /**
-     * Workflow encoded successfully
-     */
-    200: EncodeWorkflowResponse;
-};
-
-export type EncodeWorkflowResponse2 = EncodeWorkflowResponses[keyof EncodeWorkflowResponses];
-
-export type ListWorkflowsData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/workflows/list';
-};
-
-export type ListWorkflowsErrors = {
-    /**
-     * Unauthorized - Invalid or missing API key
-     */
-    401: unknown;
-    /**
-     * Internal server error
-     */
-    500: unknown;
-};
-
-export type ListWorkflowsResponses = {
-    /**
-     * Get workflow list successfully
-     */
-    200: ListWorkflowResponse;
-};
-
-export type ListWorkflowsResponse = ListWorkflowsResponses[keyof ListWorkflowsResponses];
-
-export type ParseWorkflowData = {
-    body: ParseWorkflowRequest;
-    path?: never;
-    query?: never;
-    url: '/workflows/parse';
-};
-
-export type ParseWorkflowErrors = {
-    /**
-     * Bad request - Invalid workflow format
-     */
-    400: ErrorResponse;
-    /**
-     * Internal server error
-     */
-    500: ErrorResponse;
-};
-
-export type ParseWorkflowError = ParseWorkflowErrors[keyof ParseWorkflowErrors];
-
-export type ParseWorkflowResponses = {
-    /**
-     * Workflow parsed successfully
-     */
-    200: ParseWorkflowResponse;
-};
-
-export type ParseWorkflowResponse2 = ParseWorkflowResponses[keyof ParseWorkflowResponses];
-
-export type SaveWorkflowData = {
-    body: SaveWorkflowRequest;
-    path?: never;
-    query?: never;
-    url: '/workflows/save';
-};
-
-export type SaveWorkflowErrors = {
-    /**
-     * Unauthorized
-     */
-    401: ErrorResponse;
-    /**
-     * Not found
-     */
-    404: ErrorResponse;
-    /**
-     * Internal server error
-     */
-    500: ErrorResponse;
-};
-
-export type SaveWorkflowError = SaveWorkflowErrors[keyof SaveWorkflowErrors];
-
-export type SaveWorkflowResponses = {
-    /**
-     * Workflow saved to file successfully
-     */
-    204: SaveWorkflowResponse;
-};
-
-export type SaveWorkflowResponse2 = SaveWorkflowResponses[keyof SaveWorkflowResponses];
-
-export type ScanWorkflowData = {
-    body: ScanWorkflowRequest;
-    path?: never;
-    query?: never;
-    url: '/workflows/scan';
-};
-
-export type ScanWorkflowResponses = {
-    /**
-     * Workflow scanned successfully
-     */
-    200: ScanWorkflowResponse;
-};
-
-export type ScanWorkflowResponse2 = ScanWorkflowResponses[keyof ScanWorkflowResponses];
-
-export type ScheduleWorkflowData = {
-    body: ScheduleWorkflowRequest;
-    path?: never;
-    query?: never;
-    url: '/workflows/schedule';
-};
-
-export type ScheduleWorkflowErrors = {
-    /**
-     * Workflow not found
-     */
-    404: unknown;
-    /**
-     * Internal server error
-     */
-    500: unknown;
-};
-
-export type ScheduleWorkflowResponses = {
-    /**
-     * Workflow scheduled successfully
-     */
-    200: unknown;
-};
-
-export type SetWorkflowSlashCommandData = {
-    body: SetSlashCommandRequest;
-    path?: never;
-    query?: never;
-    url: '/workflows/slash-command';
-};
-
-export type SetWorkflowSlashCommandErrors = {
-    /**
-     * Workflow not found
-     */
-    404: unknown;
-    /**
-     * Internal server error
-     */
-    500: unknown;
-};
-
-export type SetWorkflowSlashCommandResponses = {
-    /**
-     * Slash command set successfully
-     */
-    200: unknown;
-};
-
-export type WorkflowToYamlData = {
-    body: WorkflowToYamlRequest;
-    path?: never;
-    query?: never;
-    url: '/workflows/to-yaml';
-};
-
-export type WorkflowToYamlErrors = {
-    /**
-     * Bad request - Failed to convert workflow to YAML
-     */
-    400: ErrorResponse;
-};
-
-export type WorkflowToYamlError = WorkflowToYamlErrors[keyof WorkflowToYamlErrors];
-
-export type WorkflowToYamlResponses = {
-    /**
-     * Workflow converted to YAML successfully
-     */
-    200: WorkflowToYamlResponse;
-};
-
-export type WorkflowToYamlResponse2 = WorkflowToYamlResponses[keyof WorkflowToYamlResponses];
-
 export type ReplyData = {
     body: ChatRequest;
     path?: never;
@@ -3345,3 +3057,291 @@ export type StopTunnelResponses = {
      */
     200: unknown;
 };
+
+export type CreateWorkflowData = {
+    body: CreateWorkflowRequest;
+    path?: never;
+    query?: never;
+    url: '/workflows/create';
+};
+
+export type CreateWorkflowErrors = {
+    /**
+     * Bad request
+     */
+    400: unknown;
+    /**
+     * Precondition failed - Agent not available
+     */
+    412: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type CreateWorkflowResponses = {
+    /**
+     * Workflow created successfully
+     */
+    200: CreateWorkflowResponse;
+};
+
+export type CreateWorkflowResponse2 = CreateWorkflowResponses[keyof CreateWorkflowResponses];
+
+export type DecodeWorkflowData = {
+    body: DecodeWorkflowRequest;
+    path?: never;
+    query?: never;
+    url: '/workflows/decode';
+};
+
+export type DecodeWorkflowErrors = {
+    /**
+     * Bad request
+     */
+    400: unknown;
+};
+
+export type DecodeWorkflowResponses = {
+    /**
+     * Workflow decoded successfully
+     */
+    200: DecodeWorkflowResponse;
+};
+
+export type DecodeWorkflowResponse2 = DecodeWorkflowResponses[keyof DecodeWorkflowResponses];
+
+export type DeleteWorkflowData = {
+    body: DeleteWorkflowRequest;
+    path?: never;
+    query?: never;
+    url: '/workflows/delete';
+};
+
+export type DeleteWorkflowErrors = {
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Workflow not found
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type DeleteWorkflowResponses = {
+    /**
+     * Workflow deleted successfully
+     */
+    204: void;
+};
+
+export type DeleteWorkflowResponse = DeleteWorkflowResponses[keyof DeleteWorkflowResponses];
+
+export type EncodeWorkflowData = {
+    body: EncodeWorkflowRequest;
+    path?: never;
+    query?: never;
+    url: '/workflows/encode';
+};
+
+export type EncodeWorkflowErrors = {
+    /**
+     * Bad request
+     */
+    400: unknown;
+};
+
+export type EncodeWorkflowResponses = {
+    /**
+     * Workflow encoded successfully
+     */
+    200: EncodeWorkflowResponse;
+};
+
+export type EncodeWorkflowResponse2 = EncodeWorkflowResponses[keyof EncodeWorkflowResponses];
+
+export type ListWorkflowsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/workflows/list';
+};
+
+export type ListWorkflowsErrors = {
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type ListWorkflowsResponses = {
+    /**
+     * Get workflow list successfully
+     */
+    200: ListWorkflowResponse;
+};
+
+export type ListWorkflowsResponse = ListWorkflowsResponses[keyof ListWorkflowsResponses];
+
+export type ParseWorkflowData = {
+    body: ParseWorkflowRequest;
+    path?: never;
+    query?: never;
+    url: '/workflows/parse';
+};
+
+export type ParseWorkflowErrors = {
+    /**
+     * Bad request - Invalid workflow format
+     */
+    400: ErrorResponse;
+    /**
+     * Internal server error
+     */
+    500: ErrorResponse;
+};
+
+export type ParseWorkflowError = ParseWorkflowErrors[keyof ParseWorkflowErrors];
+
+export type ParseWorkflowResponses = {
+    /**
+     * Workflow parsed successfully
+     */
+    200: ParseWorkflowResponse;
+};
+
+export type ParseWorkflowResponse2 = ParseWorkflowResponses[keyof ParseWorkflowResponses];
+
+export type SaveWorkflowData = {
+    body: SaveWorkflowRequest;
+    path?: never;
+    query?: never;
+    url: '/workflows/save';
+};
+
+export type SaveWorkflowErrors = {
+    /**
+     * Unauthorized
+     */
+    401: ErrorResponse;
+    /**
+     * Not found
+     */
+    404: ErrorResponse;
+    /**
+     * Internal server error
+     */
+    500: ErrorResponse;
+};
+
+export type SaveWorkflowError = SaveWorkflowErrors[keyof SaveWorkflowErrors];
+
+export type SaveWorkflowResponses = {
+    /**
+     * Workflow saved to file successfully
+     */
+    204: SaveWorkflowResponse;
+};
+
+export type SaveWorkflowResponse2 = SaveWorkflowResponses[keyof SaveWorkflowResponses];
+
+export type ScanWorkflowData = {
+    body: ScanWorkflowRequest;
+    path?: never;
+    query?: never;
+    url: '/workflows/scan';
+};
+
+export type ScanWorkflowResponses = {
+    /**
+     * Workflow scanned successfully
+     */
+    200: ScanWorkflowResponse;
+};
+
+export type ScanWorkflowResponse2 = ScanWorkflowResponses[keyof ScanWorkflowResponses];
+
+export type ScheduleWorkflowData = {
+    body: ScheduleWorkflowRequest;
+    path?: never;
+    query?: never;
+    url: '/workflows/schedule';
+};
+
+export type ScheduleWorkflowErrors = {
+    /**
+     * Workflow not found
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type ScheduleWorkflowResponses = {
+    /**
+     * Workflow scheduled successfully
+     */
+    200: unknown;
+};
+
+export type SetWorkflowSlashCommandData = {
+    body: SetSlashCommandRequest;
+    path?: never;
+    query?: never;
+    url: '/workflows/slash-command';
+};
+
+export type SetWorkflowSlashCommandErrors = {
+    /**
+     * Workflow not found
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type SetWorkflowSlashCommandResponses = {
+    /**
+     * Slash command set successfully
+     */
+    200: unknown;
+};
+
+export type WorkflowToYamlData = {
+    body: WorkflowToYamlRequest;
+    path?: never;
+    query?: never;
+    url: '/workflows/to-yaml';
+};
+
+export type WorkflowToYamlErrors = {
+    /**
+     * Bad request - Failed to convert workflow to YAML
+     */
+    400: ErrorResponse;
+};
+
+export type WorkflowToYamlError = WorkflowToYamlErrors[keyof WorkflowToYamlErrors];
+
+export type WorkflowToYamlResponses = {
+    /**
+     * Workflow converted to YAML successfully
+     */
+    200: WorkflowToYamlResponse;
+};
+
+export type WorkflowToYamlResponse2 = WorkflowToYamlResponses[keyof WorkflowToYamlResponses];
