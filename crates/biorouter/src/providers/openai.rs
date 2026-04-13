@@ -31,11 +31,18 @@ use crate::providers::base::MessageStream;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
-pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-4.1";
+pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-5.2";
 pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-4.1-mini";
 // Verified working against OpenAI API (April 2026).
+// Note: gpt-5.4 exists but requires /v1/responses (not chat completions) — not yet supported.
 pub const OPEN_AI_KNOWN_MODELS: &[(&str, usize)] = &[
-    // GPT-4.1 family (latest)
+    // GPT-5 family (latest)
+    ("gpt-5", 1_047_576),
+    ("gpt-5-2025-08-07", 1_047_576),
+    ("gpt-5.1", 1_047_576),
+    ("gpt-5.1-codex", 400_000),
+    ("gpt-5.2", 1_047_576),
+    // GPT-4.1 family
     ("gpt-4.1", 1_047_576),
     ("gpt-4.1-mini", 1_047_576),
     ("gpt-4.1-nano", 1_047_576),
