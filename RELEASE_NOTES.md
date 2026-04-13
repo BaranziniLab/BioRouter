@@ -1,103 +1,101 @@
-# BioRouter v1.20.0 Release Notes
+# BioRouter v1.60.0 Release Notes
 
-**Release Date:** February 2026
+**Release Date:** April 2026
 **Repository:** [github.com/BaranziniLab/BioRouter](https://github.com/BaranziniLab/BioRouter)
-
 
 ## Downloads
 
-This release includes native installers for all major platforms — all available in the same GitHub Release:
+This release includes native installers for all major platforms and the BioRouter CLI binary — all available in the same GitHub Release:
+
+### GUI App
 
 | Platform | File | Install |
-|----------|------|---------|
-| **macOS** (Apple Silicon / M chip) | `BioRouter-1.20.0-arm64.dmg` | Open DMG and drag `BioRouter.app` to `/Applications` |
-| **macOS** (Intel) | `BioRouter-1.20.0-x64.dmg` | Open DMG and drag `BioRouter.app` to `/Applications` |
-| **Windows** (x64) | `BioRouter-win32-x64-1.20.0.zip` | Unzip and run `BioRouter.exe` |
-| **Linux** Ubuntu / Pop!_OS (x64) | `biorouter_1.20.0_amd64.deb` | `sudo dpkg -i biorouter_1.20.0_amd64.deb` |
-| **Linux** Fedora / RHEL (x64) | `BioRouter-1.20.0-1.x86_64.rpm` | `sudo rpm -i BioRouter-1.20.0-1.x86_64.rpm` |
+| -------- | ---- | ------- |
+| **macOS** (Apple Silicon / M chip) | `BioRouter-1.60.0-arm64.dmg` | Open DMG and drag `BioRouter.app` to `/Applications` |
+| **macOS** (Intel) | `BioRouter-1.60.0-x64.dmg` | Open DMG and drag `BioRouter.app` to `/Applications` |
+| **Windows** (x64) | `BioRouter-win32-x64-1.60.0.zip` | Unzip and run `BioRouter.exe` |
+| **Linux** Ubuntu / Pop!_OS (x64) | `biorouter_1.60.0_amd64.deb` | `sudo dpkg -i biorouter_1.60.0_amd64.deb` |
+| **Linux** Fedora / RHEL (x64) | `BioRouter-1.60.0-1.x86_64.rpm` | `sudo rpm -i BioRouter-1.60.0-1.x86_64.rpm` |
 
+### CLI Binary
+
+| Platform | File | Usage |
+| -------- | ---- | ----- |
+| **macOS** (Apple Silicon) | `biorouter-cli-macos-arm64` | `chmod +x biorouter-cli-macos-arm64 && ./biorouter-cli-macos-arm64` |
+| **macOS** (Intel) | `biorouter-cli-macos-x64` | `chmod +x biorouter-cli-macos-x64 && ./biorouter-cli-macos-x64` |
+| **Linux** (x64) | `biorouter-cli-linux-x64` | `chmod +x biorouter-cli-linux-x64 && ./biorouter-cli-linux-x64` |
+| **Windows** (x64) | `biorouter-cli-windows-x64.exe` | Run directly from Command Prompt or PowerShell |
 
 ## What's New
 
-### New Default Models
+### Expanded Model Support — All Providers Updated
 
-Updated default model selections across providers to reflect the latest available options (Claude Sonnet 4, GPT-4.1, and others), ensuring users get the best out-of-the-box experience without manual configuration.
+Comprehensive model list update across every provider, verified against live APIs.
 
-### Refined System Prompts
+#### Amazon Bedrock (UCSF MuleSoft Proxy)
 
-Improved agent system prompts for the desktop, sub-agent, and recipe instruction contexts — better task decomposition, more consistent behavior across providers, and clearer identity framing for the BioRouter agent.
+- Default model updated to `us.anthropic.claude-sonnet-4-6`
+- Confirmed available: Claude Sonnet 4.6, Claude Sonnet 4.0, Claude Opus 4.1, Claude Opus 4.5
+- Removed models the UCSF proxy IAM policy does not permit — no more silent auth failures
 
-### Updated Logo & Branding
+#### Azure OpenAI (UCSF Unified API)
 
-New UCSF BioRouter logo applied throughout the app — desktop icon, documentation site, and in-app UI all use the updated visual identity.
+- Default model updated to `gpt-5.2-2025-12-11`
+- Confirmed available: GPT-5.2, GPT-4.1, GPT-4.1-mini, GPT-4o, o1, o3-mini, o4-mini
+- API version bumped to `2025-01-01-preview` — unlocks o1/o3-mini/o4-mini reasoning models
 
-### Simplified Provider Settings
+#### Anthropic (Direct API)
 
-Cleaned up the provider configuration panel — removed unused provider entries and streamlined the grid layout so only supported, actively maintained providers are shown.
+- Default updated to `claude-sonnet-4-6`
+- Added Claude 4.6 family: `claude-opus-4-6`, `claude-sonnet-4-6`
 
-### Streamlined Chat Settings
+#### OpenAI (Direct API)
 
-Removed the BioRouter hints modal and associated chat configuration options that added friction without value. The chat interface is now cleaner and more focused.
+- Default updated to `gpt-5.2`
+- Added full GPT-5 series: `gpt-5`, `gpt-5.1`, `gpt-5.1-codex`, `gpt-5.2`, `gpt-5.4`
+- Added `o3-mini`; updated context window sizes throughout
 
-### Simplified Landing Page
+#### Google (Direct API)
 
-The provider guard/onboarding screen has been significantly simplified — reduced from ~200 lines of configuration UI to a focused entry point that gets users to the chat faster.
+- Added Gemini 3 series: `gemini-3-flash-preview`, `gemini-3-pro-preview`, `gemini-3-pro-image-preview`
+- Default remains `gemini-2.5-pro`
 
-### Removed Dictation Feature
+### GPT-5.4 Support via OpenAI Responses API
 
-Removed the experimental voice dictation input from the chat interface to reduce complexity and focus on core text-based workflows.
+GPT-5.4 requires OpenAI's `/v1/responses` endpoint rather than `/v1/chat/completions`. BioRouter now automatically routes requests to the correct endpoint based on the model — users simply select `gpt-5.4` and everything works transparently. Full tool use and streaming are supported.
 
-### Simplified App Settings
+### Amazon Bedrock Endpoint Normalization
 
-Cleaned up the app settings panel — streamlined update configuration and removed settings that were not yet functional.
+Users setting `AWS_ENDPOINT_URL_BEDROCK` (the intuitive short form) previously got a silent authentication failure because the AWS SDK for Rust expects `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`. BioRouter now auto-promotes the short form to the correct key before the SDK initializes — both names work transparently.
 
-### Documentation Suite
+### Session History Fix (upgrade from pre-v1.50.0)
 
-Added a full documentation set under `documentation/`:
+Users upgrading from older versions saw "Error Loading Sessions" due to a column rename (`recipe_json` → `workflow_json`) that lacked a database migration. Migration v7 now runs automatically on startup and safely renames the columns on existing databases, restoring full chat history for all users.
 
-- **Architecture** — how BioRouter components fit together
-- **Installation & Setup** — step-by-step guide for all platforms
-- **Providers & Models** — supported LLM providers and configuration
-- **Extensions, Skills & MCP** — how to extend BioRouter with tools
-- **Recipes** — authoring and running automated workflows
-- **Schedulers** — time-based and event-driven task automation
-- **Data Privacy** — what data is collected and how it is handled
+### BioRouter CLI Included in Releases
 
-### Multi-Platform Build Infrastructure
+The `biorouter` CLI binary is now published alongside the GUI installer for all platforms. The CLI provides the same agent capabilities as the desktop app and can be used in terminal workflows, scripts, and headless environments.
 
-Added complete cross-compilation pipelines for Windows and Linux from a macOS development machine:
+## Bug Fixes
 
-- Windows x64 via Docker + `mingw-w64` cross-compiler
-- Linux x64 via Docker + `x86_64-unknown-linux-gnu` Rust target
-- Electron Forge packaging for `.deb` and `.rpm` inside a `linux/amd64` Docker container
-
-### macOS — Signed & Notarized
-
-Both macOS builds (Apple Silicon and Intel) are signed with a Developer ID certificate and notarized by Apple. The app opens without Gatekeeper warnings on supported systems.
-
-
-## Bug Fixes & Internal Changes
-
-- Updated `rmcp` dependency to the latest version for improved MCP protocol compatibility
-- Fixed Azure provider default model configuration
-- Removed unused `jbang`, `npx`, `uvx`, and `node` helper scripts from bundled binaries (tools are now sourced from the system or user environment)
-- Improved stability of the backend Rust service on startup
-- Fixed drag-and-drop support for folders onto the dock icon
-- Cleaned up GitHub Actions CI workflows
-
-
-## Known Limitations
-
-- **Flatpak:** A Linux Flatpak package is not included in this release — it requires additional build tooling (`flatpak-builder`) that will be added to the CI pipeline in a future release.
-- **Auto-update:** Auto-update is not yet enabled; check GitHub Releases for new versions.
+- Fixed `AWS_ENDPOINT_URL_BEDROCK` not being recognized by the AWS SDK; the correct `AWS_ENDPOINT_URL_BEDROCK_RUNTIME` is now set automatically
+- Fixed "Error Loading Sessions" on databases created before the v1.50.0 workflow rename
+- Bumped Azure default API version from `2024-10-21` to `2025-01-01-preview` to support o-series reasoning models
+- Removed model IDs unavailable on UCSF proxies, eliminating confusing error messages on model selection
 
 ## Upgrading
 
-There is no automatic migration needed. Simply replace your existing installation with the new package for your platform.
+No manual migration needed. Simply replace your existing installation with the new package for your platform.
 
-- On macOS, replace the existing `BioRouter.app` in `/Applications` with the new one from the DMG.
-- On Linux, install the new `.deb` or `.rpm` over the existing installation (`dpkg -i` and `rpm -U` handle upgrades automatically).
+- On macOS, replace `BioRouter.app` in `/Applications` with the new one from the DMG
+- On Linux, install the new `.deb` or `.rpm` over the existing installation (`dpkg -i` and `rpm -U` handle upgrades automatically)
+- On Windows, unzip and replace the existing installation folder
 
+## Known Limitations
+
+- **gpt-5.4 tool use**: While gpt-5.4 works via the Responses API, complex multi-tool conversations may behave differently from chat-completions models
+- **Google free tier**: `gemini-2.5-pro` and `gemini-2.0-flash` require a paid Google AI API plan; `gemini-2.5-flash` works on the free tier
+- **Auto-update**: Auto-update is not yet enabled; check GitHub Releases for new versions
 
 *UCSF BioRouter is developed by the [Baranzini Lab](https://baranzinilab.ucsf.edu/) at the University of California, San Francisco.*
 *Licensed under the [Apache 2.0 License](https://opensource.org/licenses/Apache-2.0).*

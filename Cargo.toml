@@ -4,7 +4,7 @@ resolver = "2"
 
 [workspace.package]
 edition = "2021"
-version = "1.50.0"
+version = "1.60.0"
 authors = ["Block <ai-oss-tools@block.xyz>"]
 license = "Apache-2.0"
 repository = "https://github.com/BaranziniLab/BioRouter"
