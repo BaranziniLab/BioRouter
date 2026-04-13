@@ -65,6 +65,16 @@ impl BedrockProvider {
         set_aws_env_vars(config.all_values());
         set_aws_env_vars(config.all_secrets());
 
+        // Normalize AWS_ENDPOINT_URL_BEDROCK → AWS_ENDPOINT_URL_BEDROCK_RUNTIME.
+        // The AWS SDK for Rust reads the service-specific key AWS_ENDPOINT_URL_BEDROCK_RUNTIME,
+        // but users (and older configs) often set the shorter AWS_ENDPOINT_URL_BEDROCK.
+        // Accept either: if only the short form is set, promote it to the correct key.
+        if std::env::var("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").is_err() {
+            if let Ok(url) = std::env::var("AWS_ENDPOINT_URL_BEDROCK") {
+                std::env::set_var("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", url);
+            }
+        }
+
         // Use load_defaults() which supports AWS SSO, profiles, and environment variables
         let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
 
