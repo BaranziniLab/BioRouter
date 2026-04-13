@@ -1,5 +1,8 @@
 #!/bin/sh
-if grep -qiE "^Co-Authored-By:.*claude" "$1"; then
-  echo "error: commit message must not include Claude as a co-author" >&2
+# Reject commits containing AI co-author attribution lines.
+
+if grep -qiE "^Co-Authored-By:.*anthropic|^Co-Authored-By:.*claude|^Co-Authored-By:.*openai|^Co-Authored-By:.*chatgpt|^Co-Authored-By:.*gemini|^Co-Authored-By:.*copilot" "$1"; then
+  echo "error: commit message contains an AI co-author line."
+  echo "       Remove the 'Co-Authored-By:' trailer and try again."
   exit 1
 fi
