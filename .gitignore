@@ -32,8 +32,6 @@ ui/desktop/src/bin/
 .claude
 
 # Sensitive credentials — never commit
-APPLE_DEVELOPER_NOTES.md
-UCSF-AppleDeveloper-Main_Application.p12
 notarization/
 
 debug_*.txt
