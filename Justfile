@@ -265,8 +265,9 @@ make-ui-windows:
         echo "Cleaning destination directory..." && \
         rm -rf ./ui/desktop/src/bin && \
         mkdir -p ./ui/desktop/src/bin && \
-        echo "Copying Windows binary and DLLs..." && \
+        echo "Copying Windows binaries and DLLs..." && \
         cp -f ./target/x86_64-pc-windows-gnu/release/biorouterd.exe ./ui/desktop/src/bin/ && \
+        cp -f ./target/x86_64-pc-windows-gnu/release/biorouter.exe ./ui/desktop/src/bin/ && \
         cp -f ./target/x86_64-pc-windows-gnu/release/*.dll ./ui/desktop/src/bin/ && \
         echo "Starting Windows package build..." && \
         (cd ui/desktop && npm run bundle:windows) && \
