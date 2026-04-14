@@ -130,18 +130,53 @@ function copyPlatformFiles(targetPlatform) {
     }
 }
 
+// Validate that required platform binaries are present before packaging
+function validateRequiredBinaries(targetPlatform) {
+    const required = {
+        win32: ['biorouterd.exe'],
+        darwin: ['biorouterd'],
+        linux:  ['biorouterd'],
+    };
+
+    const requiredForPlatform = required[targetPlatform];
+    if (!requiredForPlatform) return;
+
+    const missing = requiredForPlatform.filter(name => {
+        const fullPath = path.join(srcBinDir, name);
+        return !fs.existsSync(fullPath);
+    });
+
+    if (missing.length > 0) {
+        const platformLabel = targetPlatform === 'win32' ? 'Windows' : targetPlatform === 'darwin' ? 'macOS' : 'Linux';
+        console.error(`\n❌ PACKAGING ERROR: Missing required ${platformLabel} binary/binaries:`);
+        missing.forEach(name => console.error(`   - ${path.join(srcBinDir, name)}`));
+        console.error('\nBuild the backend first:');
+        if (targetPlatform === 'win32') {
+            console.error('  just release-windows   (cross-compile from macOS/Linux via Docker)');
+            console.error('  just win-bld-rls       (native Windows build)');
+        } else {
+            console.error('  cargo build --release  (then: just copy-binary)');
+        }
+        console.error('');
+        process.exit(1);
+    }
+}
+
 // Main function
 function preparePlatformBinaries() {
     const targetPlatform = process.env.ELECTRON_PLATFORM || process.platform;
-    
+
     console.log(`Preparing binaries for platform: ${targetPlatform}`);
-    
+
     // First copy platform-specific files if needed
     copyPlatformFiles(targetPlatform);
-    
+
     // Then clean up cross-platform files
     cleanBinDirectory(targetPlatform);
-    
+
+    // Fail fast if the backend binary is absent — prevents silent broken packages
+    validateRequiredBinaries(targetPlatform);
+
     console.log('Platform binary preparation complete');
 }
 
