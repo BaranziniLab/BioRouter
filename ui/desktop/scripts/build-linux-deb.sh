@@ -22,9 +22,16 @@ for f in biorouterd biorouter jbang npx uvx node; do
         echo "  Removed macOS binary: $f"
     fi
 done
+# Remove Windows executables and DLLs — they do not belong in Linux packages
+for f in "$BIN_DIR"/*.exe "$BIN_DIR"/*.dll "$BIN_DIR"/*.cmd; do
+    if [ -f "$f" ]; then
+        rm -f "$f"
+        echo "  Removed Windows file: $(basename "$f")"
+    fi
+done
 
 # Copy Linux x64 Rust binaries
-if [ ! -f "$LINUX_RELEASE/biorouter" ]; then
+if [ ! -f "$LINUX_RELEASE/biorouter" ] || [ ! -f "$LINUX_RELEASE/biorouterd" ]; then
     echo "ERROR: Linux binaries not found at $LINUX_RELEASE"
     echo "       Run step 1 (Rust cross-compilation) before this step."
     exit 1
@@ -32,6 +39,9 @@ fi
 cp "$LINUX_RELEASE/biorouter" "$BIN_DIR/biorouter"
 chmod +x "$BIN_DIR/biorouter"
 echo "  Installed Linux x64: biorouter"
+cp "$LINUX_RELEASE/biorouterd" "$BIN_DIR/biorouterd"
+chmod +x "$BIN_DIR/biorouterd"
+echo "  Installed Linux x64: biorouterd"
 
 echo "Running electron-forge make for Linux x64 (deb, rpm, zip)..."
 cd "$DESKTOP_DIR"
