@@ -22,16 +22,21 @@ source bin/activate-hermit      # Activate hermit environment (run first)
 cargo build                     # Debug build of Rust backend
 just install-deps               # Install npm/Yarn deps (run once)
 just run-ui                     # Build backend + frontend and launch GUI
+just run-dev                    # Build debug (not release) backend + launch GUI
 just run-server                 # Run REST API server only (biorouterd)
 just run-ui-only                # Run frontend without rebuilding backend
 just debug-ui                   # Run frontend against external backend
+just debug-server               # Run server with secret=test (pairs with debug-ui)
+just debug-ui-main-process      # Run UI with Chrome DevTools on localhost:9229
 ```
 
 ### Testing
 
 ```bash
 cargo test                                      # Run all Rust tests
+cargo test -p biorouter-mcp                     # Run tests for a single crate
 cargo test --test mcp_integration_test          # Run MCP integration tests
+BIOROUTER_RECORD_MCP=1 just record-mcp-tests    # Re-record MCP test cassettes
 cd ui/desktop && npm run test:run               # Run frontend unit tests (Vitest)
 cd ui/desktop && npm run test-e2e               # Run Playwright E2E tests
 ```
@@ -65,7 +70,7 @@ just generate-openapi   # Regenerate OpenAPI spec from server routes
 | `biorouter` | — | Core agent library: main agent loop, LLM providers, MCP extension manager, session/conversation state, recipe execution, scheduling |
 | `biorouter-server` | `biorouterd` | Axum REST API + WebSocket server; routes in `src/routes/`; OpenAPI spec generated via utoipa |
 | `biorouter-cli` | `biorouter` | Interactive CLI; subcommands in `src/commands/` |
-| `biorouter-mcp` | — | Built-in MCP servers (Developer, Computer Controller, Memory, Auto Visualiser) |
+| `biorouter-mcp` | — | Built-in MCP servers (Developer, Computer Controller, Memory, Auto Visualiser, Tutorial) |
 | `biorouter-acp` | — | Agent Communication Protocol for multi-agent orchestration |
 | `biorouter-bench` | — | Benchmarking harness |
 | `biorouter-test` | — | Integration tests |
@@ -76,7 +81,7 @@ just generate-openapi   # Regenerate OpenAPI spec from server routes
 - **`agents/extension_manager.rs`** (~71KB) — MCP extension lifecycle and tool registration
 - **`providers/`** — 43+ provider modules (Anthropic, OpenAI, Azure, AWS Bedrock, Databricks, Ollama, etc.); `factory.rs` creates providers, `base.rs` defines the abstract interface
 - **`session/`** — Session persistence (SQLite via sqlx)
-- **`recipe/`** — Recipe definition, Jinja-style templating (minijinja), and execution
+- **`workflow/`** — Workflow definition (YAML/JSON), Jinja-style templating (minijinja), and execution
 - **`context_mgmt/`** — Token counting (tiktoken-rs) and context window pruning
 - **`security/`** — Permission modes, `.biorouterignore` handling
 - **`scheduler.rs`** — Cron-based job scheduling (tokio-cron-scheduler)
@@ -88,7 +93,7 @@ just generate-openapi   # Regenerate OpenAPI spec from server routes
 - **`api/`** — TypeScript API client auto-generated from OpenAPI spec (do not hand-edit)
 - **`components/`** — 64+ modular React UI components
 - **`contexts/`** — React Context for global state
-- **`recipe/`** — Recipe builder UI
+- **`workflow/`** — Workflow builder UI
 
 ### Communication Flow
 
@@ -110,9 +115,13 @@ Key environment variables:
 - `ALPHA=true` — Enable alpha features
 - `BIOROUTER_EXTERNAL_BACKEND=true` — Use external backend (for UI dev)
 - `BIOROUTER_EXTERNAL_PORT` — Backend port (default 3000)
+- `BIOROUTER_SERVER__SECRET_KEY` — Server auth key (default `test` in debug-server mode); uses `__` for nested config keys
+- `BIOROUTER_RECORD_MCP=1` — Re-record MCP integration test cassettes (VCR-style)
 
 ## Code Review Standards
 
-From `.github/copilot-instructions.md`: Reviews focus on **security, correctness, and architecture patterns** — not style (handled by CI) or refactoring suggestions. Flag issues only with >80% confidence. Security-sensitive code (auth, permissions, credential handling) requires human review regardless of AI assistance.
+From `.github/copilot-instructions.md`: Reviews focus on **security, correctness, and architecture patterns** — not style (handled by CI) or refactoring suggestions. Flag issues only with >80% confidence. Security-sensitive code (auth, permissions, credential handling) requires human review regardless of AI assistance. Note: this file still references old crate names (`goose`, `goose-cli`, etc.) — the correct names are `biorouter`, `biorouter-cli`, `biorouter-server`, `biorouter-mcp`.
 
-From `HOWTOAI.md`: Avoid using AI-generated code for security logic, complex business rules, or schema migrations without thorough human review.
+From `HOWTOAI.md`: Avoid using AI-generated code for security logic, complex business rules, or schema migrations without thorough human review. Always get human review for MCP protocol implementations and async/concurrency logic.
+
+Use `.biorouterhints` to guide BioRouter's coding style (patterns, error handling, tests) and `.biorouterignore` to protect sensitive files from being read by the agent.
