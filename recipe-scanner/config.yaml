@@ -1,5 +1,5 @@
-GOOSE_MODEL: gpt-4o
-GOOSE_PROVIDER: openai
+BIOROUTER_MODEL: gpt-4o
+BIOROUTER_PROVIDER: openai
 extensions:
   developer:
     bundled: true

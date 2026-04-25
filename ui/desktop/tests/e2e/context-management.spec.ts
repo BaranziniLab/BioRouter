@@ -13,7 +13,7 @@ test.describe('Context Management E2E Tests', () => {
       env: {
         ...process.env,
         NODE_ENV: 'test',
-        GOOSE_TEST_MODE: 'true',
+        BIOROUTER_TEST_MODE: 'true',
       },
     });
 
@@ -83,7 +83,7 @@ test.describe('Context Management E2E Tests', () => {
       await page.keyboard.press('Enter');
       
       // Wait for response before sending next message
-      await page.waitForSelector('[data-testid="loading-goose"]', { state: 'hidden', timeout: 30000 });
+      await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
       await page.waitForTimeout(1000); // Brief pause between messages
     }
     
@@ -97,12 +97,12 @@ test.describe('Context Management E2E Tests', () => {
     await compactButton.click();
     
     // Verify compaction loading state
-    const loadingGoose = page.locator('[data-testid="loading-goose"]');
-    await expect(loadingGoose).toBeVisible();
-    await expect(loadingGoose).toContainText('goose is compacting the conversation...');
+    const loadingBioRouter = page.locator('[data-testid="loading-biorouter"]');
+    await expect(loadingBioRouter).toBeVisible();
+    await expect(loadingBioRouter).toContainText('biorouter is compacting the conversation...');
     
     // Wait for compaction to complete
-    await page.waitForSelector('[data-testid="loading-goose"]', { state: 'hidden', timeout: 30000 });
+    await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
     
     // Verify compaction marker appears
     const compactionMarker = page.locator('text=Conversation compacted and summarized');
@@ -127,7 +127,7 @@ test.describe('Context Management E2E Tests', () => {
     for (const message of testMessages) {
       await chatInput.fill(message);
       await page.keyboard.press('Enter');
-      await page.waitForSelector('[data-testid="loading-goose"]', { state: 'hidden', timeout: 30000 });
+      await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
       await page.waitForTimeout(1000);
     }
     
@@ -137,7 +137,7 @@ test.describe('Context Management E2E Tests', () => {
     await page.click('text=Compact now');
     
     // Wait for compaction to complete
-    await page.waitForSelector('[data-testid="loading-goose"]', { state: 'hidden', timeout: 30000 });
+    await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
     await expect(page.locator('text=Conversation compacted and summarized')).toBeVisible();
     
     // Scroll up to verify past messages are still visible
@@ -174,7 +174,7 @@ test.describe('Context Management E2E Tests', () => {
     await chatInput.fill('Test message for error handling');
     await page.keyboard.press('Enter');
     
-    await page.waitForSelector('[data-testid="loading-goose"]', { state: 'hidden', timeout: 30000 });
+    await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
     
     // Attempt compaction
     await page.waitForSelector('[data-testid="alert-indicator"]', { timeout: 15000 });
@@ -182,7 +182,7 @@ test.describe('Context Management E2E Tests', () => {
     await page.click('text=Compact now');
     
     // Wait for compaction to fail
-    await page.waitForSelector('[data-testid="loading-goose"]', { state: 'hidden', timeout: 30000 });
+    await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
     
     // Verify error message appears
     const errorMarker = page.locator('text=Compaction failed. Please try again or start a new session.');
@@ -205,17 +205,17 @@ test.describe('Context Management E2E Tests', () => {
     
     await chatInput.fill('What is React?');
     await page.keyboard.press('Enter');
-    await page.waitForSelector('[data-testid="loading-goose"]', { state: 'hidden', timeout: 30000 });
+    await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
     
     await chatInput.fill('Can you give me an example?');
     await page.keyboard.press('Enter');
-    await page.waitForSelector('[data-testid="loading-goose"]', { state: 'hidden', timeout: 30000 });
+    await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
     
     // Perform compaction
     await page.waitForSelector('[data-testid="alert-indicator"]', { timeout: 15000 });
     await page.click('[data-testid="alert-indicator"]');
     await page.click('text=Compact now');
-    await page.waitForSelector('[data-testid="loading-goose"]', { state: 'hidden', timeout: 30000 });
+    await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
     
     // Verify compaction marker
     await expect(page.locator('text=Conversation compacted and summarized')).toBeVisible();
@@ -225,11 +225,11 @@ test.describe('Context Management E2E Tests', () => {
     await page.keyboard.press('Enter');
     
     // Verify that the conversation continues normally
-    await page.waitForSelector('[data-testid="loading-goose"]', { timeout: 30000 });
-    await expect(page.locator('[data-testid="loading-goose"]')).toBeVisible();
+    await page.waitForSelector('[data-testid="loading-biorouter"]', { timeout: 30000 });
+    await expect(page.locator('[data-testid="loading-biorouter"]')).toBeVisible();
     
     // Wait for response
-    await page.waitForSelector('[data-testid="loading-goose"]', { state: 'hidden', timeout: 30000 });
+    await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
     
     // Verify new message appears after compaction
     const messages = page.locator('[data-testid="message"]');
@@ -242,7 +242,7 @@ test.describe('Context Management E2E Tests', () => {
     const chatInput = page.locator('[data-testid="chat-input"]');
     await chatInput.fill('Test message for loading state verification');
     await page.keyboard.press('Enter');
-    await page.waitForSelector('[data-testid="loading-goose"]', { state: 'hidden', timeout: 30000 });
+    await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
     
     // Start compaction
     await page.waitForSelector('[data-testid="alert-indicator"]', { timeout: 15000 });
@@ -250,16 +250,16 @@ test.describe('Context Management E2E Tests', () => {
     await page.click('text=Compact now');
     
     // Verify loading state immediately after clicking compact
-    const loadingGoose = page.locator('[data-testid="loading-goose"]');
-    await expect(loadingGoose).toBeVisible();
-    await expect(loadingGoose).toContainText('goose is compacting the conversation...');
+    const loadingBioRouter = page.locator('[data-testid="loading-biorouter"]');
+    await expect(loadingBioRouter).toBeVisible();
+    await expect(loadingBioRouter).toContainText('biorouter is compacting the conversation...');
     
     // Verify chat input is disabled during compaction
     const submitButton = page.locator('[data-testid="submit-button"]');
     await expect(submitButton).toBeDisabled();
     
     // Wait for compaction to complete
-    await page.waitForSelector('[data-testid="loading-goose"]', { state: 'hidden', timeout: 30000 });
+    await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
     
     // Verify chat input is re-enabled after compaction
     await expect(submitButton).toBeEnabled();
@@ -270,7 +270,7 @@ test.describe('Context Management E2E Tests', () => {
     const chatInput = page.locator('[data-testid="chat-input"]');
     await chatInput.fill('Test message for rapid compaction test');
     await page.keyboard.press('Enter');
-    await page.waitForSelector('[data-testid="loading-goose"]', { state: 'hidden', timeout: 30000 });
+    await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
     
     // Open alert and try to click compact multiple times rapidly
     await page.waitForSelector('[data-testid="alert-indicator"]', { timeout: 15000 });
@@ -287,7 +287,7 @@ test.describe('Context Management E2E Tests', () => {
     await expect(alertBox).not.toBeVisible();
     
     // Verify only one compaction occurs
-    await page.waitForSelector('[data-testid="loading-goose"]', { state: 'hidden', timeout: 30000 });
+    await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
     
     const compactionMarkers = page.locator('text=Conversation compacted and summarized');
     await expect(compactionMarkers).toHaveCount(1);

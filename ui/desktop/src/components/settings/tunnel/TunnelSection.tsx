@@ -116,7 +116,7 @@ export default function TunnelSection() {
       secret: tunnelInfo.secret,
     });
     const urlEncodedConfig = encodeURIComponent(configJson);
-    return `goosechat://configure?data=${urlEncodedConfig}`;
+    return `biorouter://configure?data=${urlEncodedConfig}`;
   };
 
   if (tunnelInfo.state === 'disabled') {

@@ -4,7 +4,7 @@
 
 We want everyone to use BioRouter safely and responsibly. You agree you will not use, or allow others to use, BioRouter to:
 
-### 1. Violate the law or others’ rights, including use of goose to:
+### 1. Violate the law or others’ rights, including use of BioRouter to:
 
 a. Engage in, promote, generate, contribute to, encourage, plan, incite, or further illegal or unlawful activity or content, such as:
    - Violence or terrorism

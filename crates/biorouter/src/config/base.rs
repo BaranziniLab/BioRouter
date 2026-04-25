@@ -100,7 +100,7 @@ impl From<keyring::Error> for ConfigError {
 /// checking for environment overrides. e.g. openai_api_key will check for an
 /// environment variable OPENAI_API_KEY
 ///
-/// For biorouter-specific configuration, consider prefixing with "goose_" to avoid conflicts.
+/// For biorouter-specific configuration, consider prefixing with "biorouter_" to avoid conflicts.
 pub struct Config {
     config_path: PathBuf,
     secrets: SecretStorage,

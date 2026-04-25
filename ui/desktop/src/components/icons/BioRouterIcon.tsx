@@ -3,7 +3,7 @@ interface Props {
   [key: string]: any; // This will allow any other SVG props to pass through
 }
 
-export function Geese({ ...props }: Props) {
+export function BioRouterIcon({ ...props }: Props) {
   return (
     <svg
       width="35"

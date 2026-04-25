@@ -36,8 +36,8 @@ docker run --rm -v "$(pwd)":/app -it --platform linux/arm64 arm64v8/ubuntu /bin/
 ```sh 
 apt update
 apt install libxcb1 libxcb1-dev libdbus-1-3 nvi
-mkdir -p ~/.config/goose
-# create goose config file
+mkdir -p ~/.config/biorouter
+# create biorouter config file
 # set api key env variable
 ```
 
@@ -70,8 +70,8 @@ docker run --rm -v "$(pwd)":/app -it --platform linux/amd64 ubuntu:latest /bin/b
 ```sh 
 apt update
 apt install libxcb1 libxcb1-dev libdbus-1-3 nvi
-mkdir -p ~/.config/goose
-# create goose config file
+mkdir -p ~/.config/biorouter
+# create biorouter config file
 # set api key env variable
 ```
 
@@ -86,7 +86,7 @@ There is no docker image available for aarch64-apple-darwin. It will fall back t
 #### testing the build
 If the binary is signed with a certificate, run
 ```sh
-xattr -d com.apple.quarantine goose
+xattr -d com.apple.quarantine biorouter
 ````
 
 ### x86_64-apple-darwin
@@ -101,7 +101,7 @@ There is no docker image available for x86_64-apple-darwin. It will fall back to
 #### testing the build
 1. If the binary is signed with a certificate, run
 ```sh
-xattr -d com.apple.quarantine goose
+xattr -d com.apple.quarantine biorouter
 ````
 2. If you are on Apple Silicon (ARM), you can use Rosetta to test the binary
 ```sh
@@ -109,5 +109,5 @@ softwareupdate --install-rosetta # make sure Rosetta 2 is installed
 ```
 
 ```sh
-arch -x86_64 ./goose help
+arch -x86_64 ./biorouter help
 ```

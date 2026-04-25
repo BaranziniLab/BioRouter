@@ -14,9 +14,8 @@ export default function MessageCopyLink({ text, contentRef }: MessageCopyLinkPro
   const handleCopy = async () => {
     try {
       if (contentRef?.current) {
-        // Create a temporary container to handle HTML content
-        const container = document.createElement('div');
-        container.innerHTML = contentRef.current.innerHTML;
+        // Clone the DOM node to avoid innerHTML re-serialization
+        const container = contentRef.current.cloneNode(true) as HTMLDivElement;
 
         // Clean up any copy buttons from the content
         const copyButtons = container.querySelectorAll('button');

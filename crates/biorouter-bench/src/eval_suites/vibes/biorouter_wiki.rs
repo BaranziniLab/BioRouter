@@ -121,7 +121,7 @@ impl Evaluation for BioRouterWiki {
     }
 
     fn name(&self) -> &str {
-        "goose_wiki"
+        "biorouter_wiki"
     }
 
     fn required_extensions(&self) -> ExtensionRequirements {

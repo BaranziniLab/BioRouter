@@ -13,7 +13,7 @@ use std::sync::Arc;
 use tokio::sync::{oneshot, Mutex};
 use tracing::warn;
 
-use crate::oauth::persist::GooseCredentialStore;
+use crate::oauth::persist::BioRouterCredentialStore;
 
 const CALLBACK_TEMPLATE: &str = include_str!("oauth_callback.html");
 
@@ -32,7 +32,7 @@ pub async fn oauth_flow(
     mcp_server_url: &String,
     name: &String,
 ) -> Result<AuthorizationManager, anyhow::Error> {
-    let credential_store = GooseCredentialStore::new(name.clone());
+    let credential_store = BioRouterCredentialStore::new(name.clone());
     let mut auth_manager = AuthorizationManager::new(mcp_server_url).await?;
     auth_manager.set_credential_store(credential_store.clone());
 

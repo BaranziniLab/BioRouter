@@ -287,7 +287,8 @@ impl Agent {
             return Ok(None);
         }
 
-        let workflow_content = std::fs::read_to_string(&workflow_path)
+        let workflow_content = tokio::fs::read_to_string(&workflow_path)
+            .await
             .map_err(|e| anyhow!("Failed to read workflow file: {}", e))?;
 
         let workflow_dir = workflow_path

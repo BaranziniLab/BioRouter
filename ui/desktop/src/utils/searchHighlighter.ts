@@ -276,7 +276,9 @@ export class SearchHighlighter {
     this.highlights = [];
     this.currentTerm = '';
     this.currentMatchIndex = -1;
-    this.overlay.innerHTML = '';
+    while (this.overlay.firstChild) {
+      this.overlay.removeChild(this.overlay.firstChild);
+    }
   }
 
   destroy() {

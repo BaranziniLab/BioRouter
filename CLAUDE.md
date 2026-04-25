@@ -120,7 +120,7 @@ Key environment variables:
 
 ## Code Review Standards
 
-From `.github/copilot-instructions.md`: Reviews focus on **security, correctness, and architecture patterns** — not style (handled by CI) or refactoring suggestions. Flag issues only with >80% confidence. Security-sensitive code (auth, permissions, credential handling) requires human review regardless of AI assistance. Note: this file still references old crate names (`goose`, `goose-cli`, etc.) — the correct names are `biorouter`, `biorouter-cli`, `biorouter-server`, `biorouter-mcp`.
+From `.github/copilot-instructions.md`: Reviews focus on **security, correctness, and architecture patterns** — not style (handled by CI) or refactoring suggestions. Flag issues only with >80% confidence. Security-sensitive code (auth, permissions, credential handling) requires human review regardless of AI assistance. Note: this file previously referenced old crate names but has been updated to use `biorouter`, `biorouter-cli`, `biorouter-server`, `biorouter-mcp`.
 
 From `HOWTOAI.md`: Avoid using AI-generated code for security logic, complex business rules, or schema migrations without thorough human review. Always get human review for MCP protocol implementations and async/concurrency logic.
 

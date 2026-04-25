@@ -39,12 +39,12 @@
 ## Project-Specific Context
 
 - This is a Rust project using cargo workspaces
-- Core crates: `goose` (agent logic), `goose-cli` (CLI), `goose-server` (backend), `goose-mcp` (MCP servers)
+- Core crates: `biorouter` (agent logic), `biorouter-cli` (CLI), `biorouter-server` (backend), `biorouter-mcp` (MCP servers)
 - Error handling: Use `anyhow::Result`, not `unwrap()` in production code
 - Async runtime: tokio
 - See HOWTOAI.md for AI-assisted code standards
 - MCP protocol implementations require extra scrutiny
-- Naming convention: In `documentation/docs` and `documentation/blog`, always refer to the project as "goose" (lowercase), never "Goose" (even at the start of sentences)
+- Naming convention: In `documentation/docs` and `documentation/blog`, always refer to the project as "biorouter" (lowercase), never "BioRouter" (even at the start of sentences)
 - No prerelease docs: PRs should not contain updates in `/documentation` that correspond to code changes in the PR so that the public docs stay in sync with the latest released version. New topics should be marked with `unlisted: true`; other content should be removed or hidden from public view.
 
 ## CI Pipeline Context

@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useForm } from '@tanstack/react-form';
 import { Workflow, generateDeepLink, Parameter } from '../../workflow';
 import { Check, ExternalLink, Play, Save, X } from 'lucide-react';
-import { Geese } from '../icons/Geese';
+import { BioRouterIcon } from '../icons/BioRouterIcon';
 import Copy from '../icons/Copy';
 import { ExtensionConfig } from '../ConfigContext';
 import { Button } from '../ui/button';
@@ -334,7 +334,7 @@ export default function CreateEditWorkflowModal({
         <div className="flex items-center justify-between p-6 border-b border-borderSubtle">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 bg-background-default rounded-full flex items-center justify-center">
-              <Geese className="w-6 h-6 text-iconProminent" />
+              <BioRouterIcon className="w-6 h-6 text-iconProminent" />
             </div>
             <div>
               <h1 className="text-xl font-medium text-textProminent">

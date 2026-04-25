@@ -36,7 +36,7 @@ const LoadingBioRouter = ({ message, chatState = ChatState.Idle }: LoadingBioRou
   return (
     <div className="w-full animate-fade-slide-up">
       <div
-        data-testid="loading-indicator"
+        data-testid="loading-biorouter"
         className="flex items-center gap-2 text-xs text-textStandard py-2"
       >
         {icon}

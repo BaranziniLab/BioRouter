@@ -245,7 +245,7 @@ impl ModelConfig {
             Ok(tokens) => {
                 if tokens <= 0 {
                     return Err(ConfigError::InvalidRange(
-                        "goose_max_tokens".to_string(),
+                        "biorouter_max_tokens".to_string(),
                         "must be greater than 0".to_string(),
                     ));
                 }
@@ -253,7 +253,7 @@ impl ModelConfig {
             }
             Err(crate::config::ConfigError::NotFound(_)) => Ok(None),
             Err(e) => Err(ConfigError::InvalidValue(
-                "goose_max_tokens".to_string(),
+                "biorouter_max_tokens".to_string(),
                 String::new(),
                 e.to_string(),
             )),

@@ -42,16 +42,16 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
         setProvider(providerDisplayName);
       } else {
         // Fallback to original provider lookup
-        const gooseProvider = (await read('BIOROUTER_PROVIDER', false)) as string;
+        const providerName = (await read('BIOROUTER_PROVIDER', false)) as string;
         const providers = await getProviders(true);
-        const providerDetailsList = providers.filter((provider) => provider.name === gooseProvider);
+        const providerDetailsList = providers.filter((provider) => provider.name === providerName);
 
         if (providerDetailsList.length != 1) {
           toastError({
             title: UNKNOWN_PROVIDER_TITLE,
             msg: UNKNOWN_PROVIDER_MSG,
           });
-          setProvider(gooseProvider);
+          setProvider(providerName);
         } else {
           const fallbackProviderDisplayName = providerDetailsList[0].metadata.display_name;
           setProvider(fallbackProviderDisplayName);

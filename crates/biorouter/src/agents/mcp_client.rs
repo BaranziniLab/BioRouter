@@ -114,24 +114,24 @@ pub trait McpClientTrait: Send + Sync {
     }
 }
 
-pub struct GooseClient {
+pub struct BioRouterClient {
     notification_handlers: Arc<Mutex<Vec<Sender<ServerNotification>>>>,
     provider: SharedProvider,
 }
 
-impl GooseClient {
+impl BioRouterClient {
     pub fn new(
         handlers: Arc<Mutex<Vec<Sender<ServerNotification>>>>,
         provider: SharedProvider,
     ) -> Self {
-        GooseClient {
+        BioRouterClient {
             notification_handlers: handlers,
             provider,
         }
     }
 }
 
-impl ClientHandler for GooseClient {
+impl ClientHandler for BioRouterClient {
     async fn on_progress(
         &self,
         params: rmcp::model::ProgressNotificationParam,
@@ -305,7 +305,7 @@ impl ClientHandler for GooseClient {
 
 /// The MCP client is the interface for MCP operations.
 pub struct McpClient {
-    client: Mutex<RunningService<RoleClient, GooseClient>>,
+    client: Mutex<RunningService<RoleClient, BioRouterClient>>,
     notification_subscribers: Arc<Mutex<Vec<mpsc::Sender<ServerNotification>>>>,
     server_info: Option<InitializeResult>,
     timeout: std::time::Duration,
@@ -324,8 +324,8 @@ impl McpClient {
         let notification_subscribers =
             Arc::new(Mutex::new(Vec::<mpsc::Sender<ServerNotification>>::new()));
 
-        let client = GooseClient::new(notification_subscribers.clone(), provider);
-        let client: rmcp::service::RunningService<rmcp::RoleClient, GooseClient> =
+        let client = BioRouterClient::new(notification_subscribers.clone(), provider);
+        let client: rmcp::service::RunningService<rmcp::RoleClient, BioRouterClient> =
             client.serve(transport).await?;
         let server_info = client.peer_info().cloned();
 

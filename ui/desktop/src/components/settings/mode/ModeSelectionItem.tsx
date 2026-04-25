@@ -3,13 +3,13 @@ import { Gear } from '../../icons';
 import { ConfigureApproveMode } from './ConfigureApproveMode';
 import PermissionRulesModal from '../permission/PermissionRulesModal';
 
-export interface GooseMode {
+export interface BioRouterMode {
   key: string;
   label: string;
   description: string;
 }
 
-export const all_goose_modes: GooseMode[] = [
+export const all_biorouter_modes: BioRouterMode[] = [
   {
     key: 'auto',
     label: 'Autonomous',
@@ -34,7 +34,7 @@ export const all_goose_modes: GooseMode[] = [
 
 interface ModeSelectionItemProps {
   currentMode: string;
-  mode: GooseMode;
+  mode: BioRouterMode;
   showDescription: boolean;
   isApproveModeConfigure: boolean;
   handleModeChange: (newMode: string) => void;

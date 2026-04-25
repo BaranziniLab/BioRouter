@@ -472,23 +472,23 @@ use std::sync::LazyLock;
 static SENSITIVE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     vec![
         // File paths with usernames (Unix)
-        Regex::new(r"/Users/[^/\s]+").unwrap(),
-        Regex::new(r"/home/[^/\s]+").unwrap(),
+        Regex::new(r"/Users/[^/\s]+").expect("invalid regex pattern"),
+        Regex::new(r"/home/[^/\s]+").expect("invalid regex pattern"),
         // File paths with usernames (Windows)
-        Regex::new(r"(?i)C:\\Users\\[^\\\s]+").unwrap(),
+        Regex::new(r"(?i)C:\\Users\\[^\\\s]+").expect("invalid regex pattern"),
         // API keys and tokens (common patterns)
-        Regex::new(r"sk-[a-zA-Z0-9]{20,}").unwrap(),
-        Regex::new(r"pk-[a-zA-Z0-9]{20,}").unwrap(),
-        Regex::new(r"(?i)key[_-]?[a-zA-Z0-9]{16,}").unwrap(),
-        Regex::new(r"(?i)token[_-]?[a-zA-Z0-9]{16,}").unwrap(),
-        Regex::new(r"(?i)bearer\s+[a-zA-Z0-9._-]+").unwrap(),
+        Regex::new(r"sk-[a-zA-Z0-9]{20,}").expect("invalid regex pattern"),
+        Regex::new(r"pk-[a-zA-Z0-9]{20,}").expect("invalid regex pattern"),
+        Regex::new(r"(?i)key[_-]?[a-zA-Z0-9]{16,}").expect("invalid regex pattern"),
+        Regex::new(r"(?i)token[_-]?[a-zA-Z0-9]{16,}").expect("invalid regex pattern"),
+        Regex::new(r"(?i)bearer\s+[a-zA-Z0-9._-]+").expect("invalid regex pattern"),
         // Email addresses
-        Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").unwrap(),
+        Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").expect("invalid regex pattern"),
         // URLs with auth info
-        Regex::new(r"https?://[^:]+:[^@]+@").unwrap(),
+        Regex::new(r"https?://[^:]+:[^@]+@").expect("invalid regex pattern"),
         // UUIDs (might be session/user IDs in error messages)
         Regex::new(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
-            .unwrap(),
+            .expect("invalid regex pattern"),
     ]
 });
 

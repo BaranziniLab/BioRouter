@@ -31,6 +31,14 @@ export async function openSharedSessionFromDeepLink(
       if (savedSessionConfig) {
         try {
           const config = JSON.parse(savedSessionConfig);
+          if (
+            typeof config !== 'object' ||
+            config === null ||
+            typeof config.enabled !== 'boolean' ||
+            (config.baseUrl !== undefined && typeof config.baseUrl !== 'string')
+          ) {
+            throw new Error('Invalid session sharing config structure');
+          }
           if (config.enabled && config.baseUrl) {
             baseUrl = config.baseUrl;
           } else {

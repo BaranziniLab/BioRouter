@@ -7,9 +7,9 @@ The developer extension now supports using AI models for enhanced code editing t
 Set these environment variables to enable AI-powered code editing:
 
 ```bash
-export GOOSE_EDITOR_API_KEY="your-api-key-here"
-export GOOSE_EDITOR_HOST="https://api.openai.com/v1"
-export GOOSE_EDITOR_MODEL="gpt-4o"
+export BIOROUTER_EDITOR_API_KEY="your-api-key-here"
+export BIOROUTER_EDITOR_HOST="https://api.openai.com/v1"
+export BIOROUTER_EDITOR_MODEL="gpt-4o"
 ```
 
 **All three environment variables must be set and non-empty for the feature to activate.**
@@ -20,37 +20,37 @@ Any OpenAI-compatible API endpoint should work. Examples:
 
 **OpenAI:**
 ```bash
-export GOOSE_EDITOR_API_KEY="sk-..."
-export GOOSE_EDITOR_HOST="https://api.openai.com/v1"
-export GOOSE_EDITOR_MODEL="gpt-4o"
+export BIOROUTER_EDITOR_API_KEY="sk-..."
+export BIOROUTER_EDITOR_HOST="https://api.openai.com/v1"
+export BIOROUTER_EDITOR_MODEL="gpt-4o"
 ```
 
 **Anthropic (via OpenAI-compatible proxy):**
 ```bash
-export GOOSE_EDITOR_API_KEY="sk-ant-..."
-export GOOSE_EDITOR_HOST="https://api.anthropic.com/v1"
-export GOOSE_EDITOR_MODEL="claude-sonnet-4-20250514"
+export BIOROUTER_EDITOR_API_KEY="sk-ant-..."
+export BIOROUTER_EDITOR_HOST="https://api.anthropic.com/v1"
+export BIOROUTER_EDITOR_MODEL="claude-sonnet-4-20250514"
 ```
 
 **Morph:**
 ```bash
-export GOOSE_EDITOR_API_KEY="sk-..."
-export GOOSE_EDITOR_HOST="https://api.morphllm.com/v1"
-export GOOSE_EDITOR_MODEL="morph-v3-large"
+export BIOROUTER_EDITOR_API_KEY="sk-..."
+export BIOROUTER_EDITOR_HOST="https://api.morphllm.com/v1"
+export BIOROUTER_EDITOR_MODEL="morph-v3-large"
 ```
 
 **Relace**
 ```bash
-export GOOSE_EDITOR_API_KEY="rlc-..."
-export GOOSE_EDITOR_HOST="https://instantapply.endpoint.relace.run/v1/apply"
-export GOOSE_EDITOR_MODEL="auto"
+export BIOROUTER_EDITOR_API_KEY="rlc-..."
+export BIOROUTER_EDITOR_HOST="https://instantapply.endpoint.relace.run/v1/apply"
+export BIOROUTER_EDITOR_MODEL="auto"
 ```
 
 **Local/Custom endpoints:**
 ```bash
-export GOOSE_EDITOR_API_KEY="your-key"
-export GOOSE_EDITOR_HOST="http://localhost:8000/v1"
-export GOOSE_EDITOR_MODEL="your-model"
+export BIOROUTER_EDITOR_API_KEY="your-key"
+export BIOROUTER_EDITOR_HOST="http://localhost:8000/v1"
+export BIOROUTER_EDITOR_MODEL="your-model"
 ```
 
 ## How it works

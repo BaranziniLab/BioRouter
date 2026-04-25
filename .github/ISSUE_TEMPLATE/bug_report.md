@@ -9,10 +9,10 @@ assignees: ''
 **Describe the bug**
 
 💡 Before filing, please check common issues:  
-https://block.github.io/goose/docs/troubleshooting  
+[BioRouter Troubleshooting Guide](https://baranzinilab.github.io/biorouter-landing/docs.html)
 
-📦 To help us debug faster, attach your **diagnostics zip** if possible.  
-👉 How to capture it: https://block.github.io/goose/docs/troubleshooting/diagnostics-and-reporting/
+📦 To help us debug faster, please describe your setup and attach any relevant logs from `~/.config/biorouter/logs/`.  
+👉 [Full troubleshooting guide](https://baranzinilab.github.io/biorouter-landing/docs.html)
 
 A clear and concise description of what the bug is.
 

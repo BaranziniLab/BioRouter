@@ -1,6 +1,6 @@
-# goose Benchmarking Framework
+# BioRouter Benchmarking Framework
 
-The `goose-bench` crate provides a framework for benchmarking and evaluating LLM models with the goose framework. This tool helps quantify model performance across various tasks and generate structured reports.
+The `biorouter-bench` crate provides a framework for benchmarking and evaluating LLM models with the BioRouter framework. This tool helps quantify model performance across various tasks and generate structured reports.
 
 ## Features
 
@@ -26,7 +26,7 @@ Running benchmarks is a two-step process:
 First, run the benchmark evaluations with your configuration:
 
 ```bash
-goose bench run --config /path/to/your-config.json
+biorouter bench run --config /path/to/your-config.json
 ```
 
 This will execute all evaluations for all models specified in your configuration and create a benchmark directory with results.
@@ -36,7 +36,7 @@ This will execute all evaluations for all models specified in your configuration
 After the benchmarks complete, generate the leaderboard and aggregated metrics:
 
 ```bash
-goose bench generate-leaderboard --benchmark-dir /path/to/benchmark-output-directory
+biorouter bench generate-leaderboard --benchmark-dir /path/to/benchmark-output-directory
 ```
 
 The benchmark directory path will be shown in the output of the previous command, typically in the format `benchmark-YYYY-MM-DD-HH:MM:SS`.
@@ -85,12 +85,12 @@ Benchmark configuration is provided through a JSON file. Here's a sample configu
     },
     {
       "selector": "vibes:blog_summary",
-      "post_process_cmd": "/Users/ahau/Development/goose-1.0/goose/scripts/bench-postprocess-scripts/llm-judges/run_vibes_judge.sh",
+      "post_process_cmd": "/path/to/biorouter/scripts/bench-postprocess-scripts/llm-judges/run_vibes_judge.sh",
       "parallel_safe": true
     },
     {
       "selector": "vibes:restaurant_research",
-      "post_process_cmd": "/Users/ahau/Development/goose-1.0/goose/scripts/bench-postprocess-scripts/llm-judges/run_vibes_judge.sh",
+      "post_process_cmd": "/path/to/biorouter/scripts/bench-postprocess-scripts/llm-judges/run_vibes_judge.sh",
       "parallel_safe": true
     }
   ],
@@ -100,7 +100,7 @@ Benchmark configuration is provided through a JSON file. Here's a sample configu
   "output_dir": "/path/to/output/directory",
   "eval_result_filename": "eval-results.json",
   "run_summary_filename": "run-results-summary.json",
-  "env_file": "/path/to/.goosebench.env"
+  "env_file": "/path/to/.biorouterbench.env"
 }
 ```
 
@@ -133,7 +133,7 @@ Benchmark configuration is provided through a JSON file. Here's a sample configu
 
 ## Environment Variables
 
-You can provide environment variables through the `env_file` configuration option. This is useful for provider API keys and other sensitive information. Example `.goosebench.env` file:
+You can provide environment variables through the `env_file` configuration option. This is useful for provider API keys and other sensitive information. Example `.biorouterbench.env` file:
 
 ```bash
 OPENAI_API_KEY=your_openai_api_key_here
@@ -191,7 +191,7 @@ Each model gets its own directory, containing run results and aggregated CSV fil
 
 ## Error Handling and Troubleshooting
 
-**Important**: The current version of goose-bench does not have robust error handling for common issues that can occur during evaluation runs, such as:
+**Important**: The current version of biorouter-bench does not have robust error handling for common issues that can occur during evaluation runs, such as:
 
 - Rate limiting from inference providers
 - Network timeouts or connection errors
@@ -254,20 +254,20 @@ We recommend monitoring evaluation progress and checking for errors regularly, e
 
 ### List Evaluations
 ```bash
-goose bench selectors --config /path/to/config.json
+biorouter bench selectors --config /path/to/config.json
 ```
 
 ### Generate Initial Config
 ```bash
-goose bench init-config --name my-benchmark-config.json
+biorouter bench init-config --name my-benchmark-config.json
 ```
 
 ### Run Benchmarks
 ```bash
-goose bench run --config /path/to/config.json
+biorouter bench run --config /path/to/config.json
 ```
 
 ### Generate Leaderboard
 ```bash
-goose bench generate-leaderboard --benchmark-dir /path/to/benchmark-output
+biorouter bench generate-leaderboard --benchmark-dir /path/to/benchmark-output
 ```

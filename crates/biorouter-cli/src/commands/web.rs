@@ -131,8 +131,8 @@ fn is_loopback_address(host: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn validate_network_auth(host: &str, auth_token: &Option<String>, no_auth: bool) {
-    if !is_loopback_address(host) && auth_token.is_none() && !no_auth {
+fn validate_network_auth(host: &str, auth_token: &Option<String>) {
+    if !is_loopback_address(host) && auth_token.is_none() {
         eprintln!(
             "Error: --auth-token is required when the server is exposed on the network ({}).",
             host
@@ -140,7 +140,6 @@ fn validate_network_auth(host: &str, auth_token: &Option<String>, no_auth: bool)
         eprintln!(
             "For security, use --auth-token <TOKEN> or bind to a local address (e.g., localhost)."
         );
-        eprintln!("To skip this check, use --no-auth (unsafe).");
         std::process::exit(1);
     }
 }
@@ -235,9 +234,9 @@ pub async fn handle_web(
     host: String,
     open: bool,
     auth_token: Option<String>,
-    no_auth: bool,
+    _no_auth: bool, // kept for CLI backwards compatibility but no longer bypasses auth
 ) -> Result<()> {
-    validate_network_auth(&host, &auth_token, no_auth);
+    validate_network_auth(&host, &auth_token);
     crate::logging::setup_logging(Some("biorouter-web"), None)?;
 
     let (provider_name, model) = get_provider_and_model();

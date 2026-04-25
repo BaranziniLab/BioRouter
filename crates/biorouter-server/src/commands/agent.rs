@@ -3,7 +3,8 @@ use crate::state;
 use anyhow::Result;
 use axum::middleware;
 use biorouter_server::auth::check_token;
-use tower_http::cors::{Any, CorsLayer};
+use http::HeaderValue;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::info;
 
 // Graceful shutdown signal
@@ -30,13 +31,25 @@ pub async fn run() -> Result<()> {
 
     let settings = configuration::Settings::new()?;
 
-    let secret_key =
-        std::env::var("BIOROUTER_SERVER__SECRET_KEY").unwrap_or_else(|_| "test".to_string());
+    let secret_key = std::env::var("BIOROUTER_SERVER__SECRET_KEY").unwrap_or_else(|_| {
+        let bytes: [u8; 16] = rand::random();
+        let key = hex::encode(bytes);
+        tracing::warn!(
+            "BIOROUTER_SERVER__SECRET_KEY not set; using randomly generated key for this session"
+        );
+        key
+    });
 
     let app_state = state::AppState::new().await?;
 
     let cors = CorsLayer::new()
-        .allow_origin(Any)
+        .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
+            let origin_str = origin.to_str().unwrap_or("");
+            origin_str.starts_with("http://localhost:")
+                || origin_str.starts_with("http://127.0.0.1:")
+                || origin_str == "http://localhost"
+                || origin_str == "http://127.0.0.1"
+        }))
         .allow_methods(Any)
         .allow_headers(Any);
 

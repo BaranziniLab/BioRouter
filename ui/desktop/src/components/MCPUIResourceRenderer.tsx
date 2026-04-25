@@ -98,12 +98,12 @@ export default function MCPUIResourceRenderer({
   useEffect(() => {
     const fetchProxyUrl = async () => {
       try {
-        const gooseApiHost = await window.electron.getGoosedHostPort();
+        const apiHost = await window.electron.getBiorouterdHostPort();
         const secretKey = await window.electron.getSecretKey();
-        if (gooseApiHost && secretKey) {
-          setProxyUrl(`${gooseApiHost}/mcp-ui-proxy?secret=${encodeURIComponent(secretKey)}`);
+        if (apiHost && secretKey) {
+          setProxyUrl(`${apiHost}/mcp-ui-proxy?secret=${encodeURIComponent(secretKey)}`);
         } else {
-          console.error('Failed to get goosed host/port or secret key');
+          console.error('Failed to get biorouterd host/port or secret key');
         }
       } catch (error) {
         console.error('Error fetching MCP-UI Proxy URL:', error);

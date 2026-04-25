@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { Card } from '../../ui/card';
 import { Button } from '../../ui/button';
-import { GooseMode, ModeSelectionItem } from './ModeSelectionItem';
+import { BioRouterMode, ModeSelectionItem } from './ModeSelectionItem';
 
 interface ConfigureApproveModeProps {
   onClose: () => void;
@@ -14,7 +14,7 @@ export function ConfigureApproveMode({
   handleModeChange,
   currentMode,
 }: ConfigureApproveModeProps) {
-  const approveModes: GooseMode[] = [
+  const approveModes: BioRouterMode[] = [
     {
       key: 'approve',
       label: 'Manual approval',

@@ -91,7 +91,7 @@ export default function DefaultProviderSetupForm({
     } finally {
       setIsLoading(false);
     }
-  }, [parameters, read, setConfigValues]);
+  }, [parameters, provider.name, read, setConfigValues]);
 
   useEffect(() => {
     loadConfigValues();

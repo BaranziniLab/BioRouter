@@ -48,10 +48,10 @@ This is an electron forge app, using vite and react.js. `biorouterd` runs as mul
 ```python
             f"        process.env.BIOROUTER_PROVIDER__TYPE = '{os.getenv("BIOROUTER_BUNDLE_TYPE")}';",
             f"        process.env.BIOROUTER_PROVIDER__HOST = '{os.getenv("BIOROUTER_BUNDLE_HOST")}';",
-            f"        process.env.GOOSE_PROVIDER__MODEL = '{os.getenv("GOOSE_BUNDLE_MODEL")}';"
+            f"        process.env.BIOROUTER_PROVIDER__MODEL = '{os.getenv("BIOROUTER_BUNDLE_MODEL")}';"
 ```
 
-This allows you to set for example GOOSE_PROVIDER__TYPE to be "databricks" by default if you want (so when people start goose.app - they will get that out of the box). There is no way to set an api key in that bundling as that would be a terrible idea, so only use providers that can do oauth (like databricks can), otherwise stick to default goose.
+This allows you to set for example BIOROUTER_PROVIDER__TYPE to be "databricks" by default if you want (so when people start biorouter.app - they will get that out of the box). Only use providers that support OAuth, otherwise use the default BioRouter.
 
 ### Linux
 For Linux builds, first ensure you have the required system dependencies installed (see above), then:
@@ -59,13 +59,13 @@ For Linux builds, first ensure you have the required system dependencies install
 1. Build the Rust backend:
 ```bash
 cd ../..  # Go to project root
-cargo build --release -p goose-server
+cargo build --release -p biorouter-server
 ```
 
 2. Copy the server binary to the expected location:
 ```bash
 mkdir -p src/bin
-cp ../../target/release/goosed src/bin/
+cp ../../target/release/biorouterd src/bin/
 ```
 
 3. Build the application:
@@ -81,18 +81,18 @@ npm run make -- --targets=@electron-forge/maker-flatpak
 ```
 
 The built application will be available in:
-- ZIP: `out/make/zip/linux/x64/goose-linux-x64-{version}.zip`
-- DEB: `out/make/deb/x64/goose_{version}_amd64.deb`
+- ZIP: `out/make/zip/linux/x64/biorouter-linux-x64-{version}.zip`
+- DEB: `out/make/deb/x64/biorouter_{version}_amd64.deb`
 - Flatpak: `out/make/flatpak/x86_64/*.flatpak`
-- Executable: `out/goose-linux-x64/goose`
+- Executable: `out/biorouter-linux-x64/biorouter`
 
 ### Windows
 Use the existing Windows build process as documented.
 
 
-# Running with goosed server from source
+# Running with biorouterd server from source
 
 Set `VITE_START_EMBEDDED_SERVER=yes` to no in `.env`.
-Run `cargo run -p goose-server` from parent dir.
+Run `cargo run -p biorouter-server` from parent dir.
 `npm run start` will then run against this.
 You can try server directly with `./test.sh`

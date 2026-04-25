@@ -125,20 +125,20 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
 
   const getCurrentModelAndProviderForDisplay = useCallback(async () => {
     const modelProvider = await getCurrentModelAndProvider();
-    const gooseModel = modelProvider.model;
-    const gooseProvider = modelProvider.provider;
+    const model = modelProvider.model;
+    const providerName = modelProvider.provider;
 
     // lookup display name
     let metadata: ProviderMetadata;
 
     try {
-      metadata = await getProviderMetadata(String(gooseProvider), getProviders);
+      metadata = await getProviderMetadata(String(providerName), getProviders);
     } catch {
-      return { model: gooseModel, provider: gooseProvider };
+      return { model: model, provider: providerName };
     }
     const providerDisplayName = metadata.display_name;
 
-    return { model: gooseModel, provider: providerDisplayName };
+    return { model: model, provider: providerDisplayName };
   }, [getCurrentModelAndProvider, getProviders]);
 
   const getCurrentModelDisplayName = useCallback(async () => {

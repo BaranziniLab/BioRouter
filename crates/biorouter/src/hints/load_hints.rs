@@ -133,7 +133,7 @@ mod tests {
     }
 
     #[test]
-    fn test_goosehints_when_present() {
+    fn test_biorouterhints_when_present() {
         let dir = TempDir::new().unwrap();
 
         fs::write(dir.path().join(BIOROUTER_HINTS_FILENAME), "Test hint content").unwrap();
@@ -144,7 +144,7 @@ mod tests {
     }
 
     #[test]
-    fn test_goosehints_when_missing() {
+    fn test_biorouterhints_when_missing() {
         let dir = TempDir::new().unwrap();
 
         let gitignore = create_dummy_gitignore();
@@ -154,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn test_goosehints_multiple_filenames() {
+    fn test_biorouterhints_multiple_filenames() {
         let dir = TempDir::new().unwrap();
 
         fs::write(
@@ -180,7 +180,7 @@ mod tests {
     }
 
     #[test]
-    fn test_goosehints_configurable_filename() {
+    fn test_biorouterhints_configurable_filename() {
         let dir = TempDir::new().unwrap();
 
         fs::write(dir.path().join("CLAUDE.md"), "Custom hints file content").unwrap();
@@ -192,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_goosehints_with_git_root() {
+    fn test_nested_biorouterhints_with_git_root() {
         let temp_dir = TempDir::new().unwrap();
         let project_root = temp_dir.path();
 
@@ -227,7 +227,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_goosehints_without_git_root() {
+    fn test_nested_biorouterhints_without_git_root() {
         let temp_dir = TempDir::new().unwrap();
         let base_dir = temp_dir.path();
 
@@ -259,7 +259,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nested_goosehints_mixed_filenames() {
+    fn test_nested_biorouterhints_mixed_filenames() {
         let temp_dir = TempDir::new().unwrap();
         let project_root = temp_dir.path();
 

@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { all_goose_modes, ModeSelectionItem } from './ModeSelectionItem';
+import { all_biorouter_modes, ModeSelectionItem } from './ModeSelectionItem';
 import { useConfig } from '../../ConfigContext';
 import { ConversationLimitsDropdown } from './ConversationLimitsDropdown';
 
@@ -57,7 +57,7 @@ export const ModeSection = () => {
   return (
     <div className="space-y-1">
       {/* Mode Selection */}
-      {all_goose_modes.map((mode) => (
+      {all_biorouter_modes.map((mode) => (
         <ModeSelectionItem
           key={mode.key}
           mode={mode}

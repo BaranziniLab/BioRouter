@@ -125,7 +125,7 @@ export const BioRouterHintsModal = ({ directory, setIsBioRouterHintsModalOpen }:
               Saved successfully
             </span>
           )}
-          <Button variant="outline" onClick={() => setIsBioRouterhintsModalOpen(false)}>
+          <Button variant="outline" onClick={() => setIsBioRouterHintsModalOpen(false)}>
             Close
           </Button>
           <Button onClick={writeFile} disabled={isSaving}>

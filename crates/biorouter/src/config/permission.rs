@@ -43,12 +43,16 @@ impl PermissionManager {
     pub fn new(config_dir: PathBuf) -> Self {
         let permission_path = config_dir.join(PERMISSION_FILE);
         let permission_map = if permission_path.exists() {
-            let file_contents =
-                fs::read_to_string(&permission_path).expect("Failed to read permission.yaml");
+            let file_contents = fs::read_to_string(&permission_path).unwrap_or_else(|e| {
+                tracing::warn!("Failed to read permission.yaml: {}", e);
+                String::new()
+            });
             serde_yaml::from_str(&file_contents).unwrap_or_else(|_| HashMap::new())
         } else {
             // Consolidate directory creation for re-use in global singleton or ACP.
-            fs::create_dir_all(&config_dir).expect("Failed to create config directory");
+            if let Err(e) = fs::create_dir_all(&config_dir) {
+                tracing::warn!("Failed to create config directory: {}", e);
+            }
             HashMap::new()
         };
         PermissionManager {
@@ -151,9 +155,14 @@ impl PermissionManager {
         }
 
         // Serialize the updated permission map and write it back to the config file
-        let yaml_content =
-            serde_yaml::to_string(&*map).expect("Failed to serialize permission config");
-        fs::write(&self.config_path, yaml_content).expect("Failed to write to permission.yaml");
+        match serde_yaml::to_string(&*map) {
+            Ok(yaml_content) => {
+                if let Err(e) = fs::write(&self.config_path, yaml_content) {
+                    tracing::warn!("Failed to write to permission.yaml: {}", e);
+                }
+            }
+            Err(e) => tracing::warn!("Failed to serialize permission config: {}", e),
+        }
     }
 
     /// Removes all entries where the principal name starts with the given extension name.
@@ -171,9 +180,14 @@ impl PermissionManager {
                 .retain(|p| !p.starts_with(extension_name));
         }
 
-        let yaml_content =
-            serde_yaml::to_string(&*map).expect("Failed to serialize permission config");
-        fs::write(&self.config_path, yaml_content).expect("Failed to write to permission.yaml");
+        match serde_yaml::to_string(&*map) {
+            Ok(yaml_content) => {
+                if let Err(e) = fs::write(&self.config_path, yaml_content) {
+                    tracing::warn!("Failed to write to permission.yaml: {}", e);
+                }
+            }
+            Err(e) => tracing::warn!("Failed to serialize permission config: {}", e),
+        }
     }
 }
 

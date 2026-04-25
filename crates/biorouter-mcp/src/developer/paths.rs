@@ -25,13 +25,31 @@ pub async fn get_shell_path_dirs() -> Result<&'static Vec<PathBuf>> {
 }
 
 async fn get_shell_path_async() -> Result<String> {
-    let shell = env::var("SHELL").unwrap_or_else(|_| {
-        if cfg!(windows) {
-            "cmd".to_string()
+    #[cfg(not(windows))]
+    let shell = {
+        let s = env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+        let allowed = [
+            "/bin/bash",
+            "/bin/zsh",
+            "/bin/sh",
+            "/usr/bin/bash",
+            "/usr/bin/zsh",
+            "/usr/bin/sh",
+            "/usr/local/bin/bash",
+            "/usr/local/bin/zsh",
+        ];
+        if allowed.contains(&s.as_str()) {
+            s
         } else {
+            tracing::warn!(
+                "$SHELL '{}' is not in allowed list, falling back to /bin/bash",
+                s
+            );
             "/bin/bash".to_string()
         }
-    });
+    };
+    #[cfg(windows)]
+    let shell = env::var("SHELL").unwrap_or_else(|_| "cmd".to_string());
 
     if cfg!(windows) {
         get_windows_path_async(&shell).await

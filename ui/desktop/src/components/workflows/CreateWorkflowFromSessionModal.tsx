@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useForm } from '@tanstack/react-form';
 import { Workflow } from '../../workflow';
-import { Geese } from '../icons/Geese';
+import { BioRouterIcon } from '../icons/BioRouterIcon';
 import { X, Save, Play, Loader2 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { WorkflowFormFields } from './shared/WorkflowFormFields';
@@ -227,7 +227,7 @@ export default function CreateWorkflowFromSessionModal({
         >
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 bg-background-default rounded-full flex items-center justify-center">
-              <Geese className="w-6 h-6 text-iconProminent" />
+              <BioRouterIcon className="w-6 h-6 text-iconProminent" />
             </div>
             <div>
               <h1 className="text-xl font-medium text-textProminent">Create Workflow from Session</h1>
@@ -270,7 +270,7 @@ export default function CreateWorkflowFromSessionModal({
                 {analysisStage}
               </div>
               <div className="flex items-center space-x-2 text-textSubtle">
-                <Geese className="w-5 h-5 animate-pulse" />
+                <BioRouterIcon className="w-5 h-5 animate-pulse" />
                 <span className="text-sm">Extracting insights from your chat</span>
               </div>
             </div>

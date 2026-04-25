@@ -438,28 +438,29 @@ impl ServerHandler for DeveloperServer {
                         )));
                     }
 
-                    let value_str = value.as_str().unwrap_or_default();
-                    if value_str.len() > 1000 {
+                    // Validate key with allowlist: only alphanumeric, underscore, dash, dot
+                    if !key
+                        .chars()
+                        .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
+                    {
                         return std::future::ready(Err(ErrorData::new(
                             ErrorCode::INVALID_PARAMS,
-                            "Argument values must not exceed 1000 characters".to_string(),
+                            format!(
+                                "Invalid parameter key '{}': only alphanumeric, underscore, dash, and dot characters are allowed",
+                                key
+                            ),
                             None,
                         )));
                     }
 
-                    // Check for potentially dangerous patterns
-                    let dangerous_patterns = ["../", "//", "\\\\", "<script>", "{{", "}}"];
-                    for pattern in dangerous_patterns {
-                        if key.contains(pattern) || value_str.contains(pattern) {
-                            return std::future::ready(Err(ErrorData::new(
-                                ErrorCode::INVALID_PARAMS,
-                                format!(
-                                    "Arguments contain potentially unsafe pattern: {}",
-                                    pattern
-                                ),
-                                None,
-                            )));
-                        }
+                    let value_str = value.as_str().unwrap_or_default();
+                    // Reject values longer than 1MB
+                    if value_str.len() > 1_048_576 {
+                        return std::future::ready(Err(ErrorData::new(
+                            ErrorCode::INVALID_PARAMS,
+                            "Argument values must not exceed 1MB".to_string(),
+                            None,
+                        )));
                     }
                 }
 
@@ -1278,13 +1279,75 @@ impl DeveloperServer {
         let expanded = expand_path(path_str);
         let path = Path::new(&expanded);
 
-        // If the path is absolute, return it as-is
-        if is_absolute_path(&expanded) {
-            Ok(path.to_path_buf())
+        let resolved = if is_absolute_path(&expanded) {
+            path.to_path_buf()
         } else {
-            // For relative paths, resolve them relative to the current working directory
-            Ok(cwd.join(path))
+            cwd.join(path)
+        };
+
+        // Canonicalize the cwd for comparison
+        let canonical_cwd = std::fs::canonicalize(&cwd).map_err(|e| {
+            ErrorData::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                format!("Failed to canonicalize working directory: {}", e),
+                None,
+            )
+        })?;
+
+        // Check that the resolved path stays within cwd
+        if resolved.exists() {
+            let canonical_resolved = std::fs::canonicalize(&resolved).map_err(|e| {
+                ErrorData::new(
+                    rmcp::model::ErrorCode::INTERNAL_ERROR,
+                    format!("Failed to canonicalize path: {}", e),
+                    None,
+                )
+            })?;
+            if !canonical_resolved.starts_with(&canonical_cwd) {
+                return Err(ErrorData::new(
+                    rmcp::model::ErrorCode::INVALID_PARAMS,
+                    format!("Path '{}' is outside the working directory", path_str),
+                    None,
+                ));
+            }
+        } else {
+            // Path doesn't exist yet — check its nearest existing ancestor
+            let mut ancestor = resolved.as_path();
+            loop {
+                if let Some(parent) = ancestor.parent() {
+                    if parent.exists() {
+                        let canonical_parent = std::fs::canonicalize(parent).map_err(|e| {
+                            ErrorData::new(
+                                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                                format!("Failed to canonicalize path: {}", e),
+                                None,
+                            )
+                        })?;
+                        if !canonical_parent.starts_with(&canonical_cwd) {
+                            return Err(ErrorData::new(
+                                rmcp::model::ErrorCode::INVALID_PARAMS,
+                                format!(
+                                    "Path '{}' is outside the working directory",
+                                    path_str
+                                ),
+                                None,
+                            ));
+                        }
+                        break;
+                    }
+                    ancestor = parent;
+                } else {
+                    // Reached root without finding an existing ancestor within cwd
+                    return Err(ErrorData::new(
+                        rmcp::model::ErrorCode::INVALID_PARAMS,
+                        format!("Path '{}' is outside the working directory", path_str),
+                        None,
+                    ));
+                }
+            }
         }
+
+        Ok(resolved)
     }
 
     fn build_ignore_patterns(cwd: &PathBuf) -> Gitignore {

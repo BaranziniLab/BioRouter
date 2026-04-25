@@ -19,7 +19,7 @@ const TELEMETRY_CONFIG_KEY = 'BIOROUTER_TELEMETRY_ENABLED';
 // Browser dev mode: inject a no-op electron mock so the app renders without Electron
 if (typeof window.electron === 'undefined') {
   (window as unknown as Record<string, unknown>).electron = {
-    getGoosedHostPort: async () => 'http://127.0.0.1:3000',
+    getBiorouterdHostPort: async () => 'http://127.0.0.1:3000',
     getSecretKey: async () => 'devkey',
     logInfo: () => {},
     logError: () => {},
@@ -47,12 +47,12 @@ if (typeof window.electron === 'undefined') {
 }
 
 (async () => {
-  // Check if we're in the launcher view (doesn't need goosed connection)
+  // Check if we're in the launcher view (doesn't need biorouterd connection)
   const isLauncher = window.location.hash === '#/launcher';
 
   if (!isLauncher) {
     console.log('window created, getting biorouterd connection info');
-    const biorouterApiHost = await window.electron.getGoosedHostPort();
+    const biorouterApiHost = await window.electron.getBiorouterdHostPort();
     if (biorouterApiHost === null) {
       window.alert('failed to start biorouter backend process');
       return;

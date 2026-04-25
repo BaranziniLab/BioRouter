@@ -14,7 +14,9 @@ use std::time::{Duration, SystemTime};
 pub fn prepare_log_directory(component: &str, use_date_subdir: bool) -> Result<PathBuf> {
     let base_log_dir = Paths::in_state_dir("logs");
 
-    let _ = cleanup_old_logs(component);
+    if let Err(e) = cleanup_old_logs(component) {
+        tracing::warn!("Log cleanup failed: {}", e);
+    }
 
     let component_dir = base_log_dir.join(component);
 
@@ -47,7 +49,13 @@ pub fn cleanup_old_logs(component: &str) -> Result<()> {
         if let Ok(metadata) = entry.metadata() {
             if let Ok(modified) = metadata.modified() {
                 if modified < two_weeks && path.is_dir() {
-                    let _ = fs::remove_dir_all(&path);
+                    if let Err(e) = fs::remove_dir_all(&path) {
+                        tracing::warn!(
+                            "Failed to clean up old log directory {:?}: {}",
+                            path,
+                            e
+                        );
+                    }
                 }
             }
         }

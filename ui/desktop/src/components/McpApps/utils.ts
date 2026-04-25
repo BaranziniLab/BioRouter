@@ -14,10 +14,10 @@ export async function fetchMcpAppProxyUrl(
   } | null
 ): Promise<string | null> {
   try {
-    const baseUrl = await window.electron.getGoosedHostPort();
+    const baseUrl = await window.electron.getBiorouterdHostPort();
     const secretKey = await window.electron.getSecretKey();
     if (!baseUrl || !secretKey) {
-      console.error('Failed to get goosed host/port or secret key');
+      console.error('Failed to get biorouterd host/port or secret key');
       return null;
     }
 

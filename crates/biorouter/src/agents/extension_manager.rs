@@ -588,7 +588,7 @@ impl ExtensionManager {
                 let dir = tempdir()?;
                 let file_path = dir.path().join(format!("{}.py", name));
                 temp_dir = Some(dir);
-                std::fs::write(&file_path, code)?;
+                tokio::fs::write(&file_path, code).await?;
 
                 let command = Command::new("uvx").configure(|command| {
                     command.arg("--with").arg("mcp");

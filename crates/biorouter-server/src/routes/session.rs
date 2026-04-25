@@ -78,6 +78,12 @@ pub struct EditMessageResponse {
 
 const MAX_NAME_LENGTH: usize = 200;
 
+fn is_valid_session_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 128
+        && id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+}
+
 #[utoipa::path(
     get,
     path = "/sessions",
@@ -124,6 +130,9 @@ async fn get_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> Result<Json<Session>, StatusCode> {
+    if !is_valid_session_id(&session_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let session = state
         .session_manager()
         .get_session(&session_id, true)
@@ -180,6 +189,9 @@ async fn update_session_name(
     Path(session_id): Path<String>,
     Json(request): Json<UpdateSessionNameRequest>,
 ) -> Result<StatusCode, StatusCode> {
+    if !is_valid_session_id(&session_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let name = request.name.trim();
     if name.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
@@ -223,6 +235,12 @@ async fn update_session_user_workflow_values(
     Path(session_id): Path<String>,
     Json(request): Json<UpdateSessionUserWorkflowValuesRequest>,
 ) -> Result<Json<UpdateSessionUserWorkflowValuesResponse>, ErrorResponse> {
+    if !is_valid_session_id(&session_id) {
+        return Err(ErrorResponse {
+            message: "Invalid session ID".to_string(),
+            status: StatusCode::BAD_REQUEST,
+        });
+    }
     state
         .session_manager()
         .update(&session_id)
@@ -294,6 +312,9 @@ async fn delete_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> Result<StatusCode, StatusCode> {
+    if !is_valid_session_id(&session_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     state
         .session_manager()
         .delete_session(&session_id)
@@ -330,6 +351,9 @@ async fn export_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> Result<Json<String>, StatusCode> {
+    if !is_valid_session_id(&session_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let exported = state
         .session_manager()
         .export_session(&session_id)
@@ -391,6 +415,9 @@ async fn edit_message(
     Path(session_id): Path<String>,
     Json(request): Json<EditMessageRequest>,
 ) -> Result<Json<EditMessageResponse>, StatusCode> {
+    if !is_valid_session_id(&session_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let manager = state.session_manager();
     match request.edit_type {
         EditType::Fork => {
@@ -460,6 +487,9 @@ async fn get_session_extensions(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> Result<Json<SessionExtensionsResponse>, StatusCode> {
+    if !is_valid_session_id(&session_id) {
+        return Err(StatusCode::BAD_REQUEST);
+    }
     let session = state
         .session_manager()
         .get_session(&session_id, false)

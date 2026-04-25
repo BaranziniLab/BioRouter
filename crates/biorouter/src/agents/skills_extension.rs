@@ -763,12 +763,12 @@ Global claude content
         .unwrap();
 
         // Simulate ~/.config/biorouter/skills (global, medium priority)
-        let global_goose = temp_dir.path().join("global-biorouter");
-        fs::create_dir(&global_goose).unwrap();
-        let skill_global_goose = global_goose.join("my-skill");
-        fs::create_dir(&skill_global_goose).unwrap();
+        let global_biorouter = temp_dir.path().join("global-biorouter");
+        fs::create_dir(&global_biorouter).unwrap();
+        let skill_global_biorouter = global_biorouter.join("my-skill");
+        fs::create_dir(&skill_global_biorouter).unwrap();
         fs::write(
-            skill_global_goose.join("SKILL.md"),
+            skill_global_biorouter.join("SKILL.md"),
             r#"---
 name: my-skill
 description: From global biorouter config
@@ -795,12 +795,12 @@ Working dir claude content
         .unwrap();
 
         // Simulate $PWD/.biorouter/skills (working dir, highest priority)
-        let working_goose = temp_dir.path().join("working-biorouter");
-        fs::create_dir(&working_goose).unwrap();
-        let skill_working_goose = working_goose.join("my-skill");
-        fs::create_dir(&skill_working_goose).unwrap();
+        let working_biorouter = temp_dir.path().join("working-biorouter");
+        fs::create_dir(&working_biorouter).unwrap();
+        let skill_working_biorouter = working_biorouter.join("my-skill");
+        fs::create_dir(&skill_working_biorouter).unwrap();
         fs::write(
-            skill_working_goose.join("SKILL.md"),
+            skill_working_biorouter.join("SKILL.md"),
             r#"---
 name: my-skill
 description: From working dir biorouter
@@ -810,17 +810,17 @@ Working dir biorouter content
         )
         .unwrap();
 
-        // Test priority order: global_claude < global_goose < working_claude < working_goose
+        // Test priority order: global_claude < global_biorouter < working_claude < working_biorouter
         let skills = SkillsClient::discover_skills_in_directories(&[
             global_claude,
-            global_goose,
+            global_biorouter,
             working_claude,
-            working_goose,
+            working_biorouter,
         ]);
 
         assert_eq!(skills.len(), 1);
         assert!(skills.contains_key("my-skill"));
-        // The last directory (working_goose) should win
+        // The last directory (working_biorouter) should win
         assert_eq!(
             skills.get("my-skill").unwrap().metadata.description,
             "From working dir biorouter"

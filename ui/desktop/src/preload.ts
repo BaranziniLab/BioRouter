@@ -1,6 +1,6 @@
 import Electron, { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { Workflow } from './workflow';
-import { GooseApp } from './api';
+import { BioRouterApp } from './api';
 
 interface NotificationData {
   title: string;
@@ -94,7 +94,7 @@ type ElectronAPI = {
   getSettings: () => Promise<unknown | null>;
   saveSettings: (settings: unknown) => Promise<boolean>;
   getSecretKey: () => Promise<string>;
-  getGoosedHostPort: () => Promise<string | null>;
+  getBiorouterdHostPort: () => Promise<string | null>;
   setWakelock: (enable: boolean) => Promise<boolean>;
   getWakelockState: () => Promise<boolean>;
   setSpellcheck: (enable: boolean) => Promise<boolean>;
@@ -137,7 +137,7 @@ type ElectronAPI = {
   hasAcceptedWorkflowBefore: (workflow: Workflow) => Promise<boolean>;
   recordWorkflowHash: (workflow: Workflow) => Promise<boolean>;
   openDirectoryInExplorer: (directoryPath: string) => Promise<boolean>;
-  launchApp: (app: GooseApp) => Promise<void>;
+  launchApp: (app: BioRouterApp) => Promise<void>;
   addRecentDir: (dir: string) => Promise<boolean>;
 };
 
@@ -202,7 +202,7 @@ const electronAPI: ElectronAPI = {
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings: unknown) => ipcRenderer.invoke('save-settings', settings),
   getSecretKey: () => ipcRenderer.invoke('get-secret-key'),
-  getGoosedHostPort: () => ipcRenderer.invoke('get-goosed-host-port'),
+  getBiorouterdHostPort: () => ipcRenderer.invoke('get-biorouterd-host-port'),
   setWakelock: (enable: boolean) => ipcRenderer.invoke('set-wakelock', enable),
   getWakelockState: () => ipcRenderer.invoke('get-wakelock-state'),
   setSpellcheck: (enable: boolean) => ipcRenderer.invoke('set-spellcheck', enable),
@@ -277,7 +277,7 @@ const electronAPI: ElectronAPI = {
   recordWorkflowHash: (workflow: Workflow) => ipcRenderer.invoke('record-workflow-hash', workflow),
   openDirectoryInExplorer: (directoryPath: string) =>
     ipcRenderer.invoke('open-directory-in-explorer', directoryPath),
-  launchApp: (app: GooseApp) => ipcRenderer.invoke('launch-app', app),
+  launchApp: (app: BioRouterApp) => ipcRenderer.invoke('launch-app', app),
   addRecentDir: (dir: string) => ipcRenderer.invoke('add-recent-dir', dir),
 };
 

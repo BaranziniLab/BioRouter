@@ -153,13 +153,27 @@ pub async fn kill_process_group(
     {
         if let Some(pid) = pid {
             // Try SIGTERM first
-            let _sigterm_result = unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
+            let sigterm_result = unsafe { libc::kill(-(pid as i32), libc::SIGTERM) };
+            if sigterm_result != 0 {
+                tracing::warn!(
+                    "SIGTERM to process group {} failed with errno {}",
+                    pid,
+                    sigterm_result
+                );
+            }
 
             // Wait a brief moment for graceful shutdown
             tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
 
             // Force kill with SIGKILL
-            let _sigkill_result = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+            let sigkill_result = unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+            if sigkill_result != 0 {
+                tracing::warn!(
+                    "SIGKILL to process group {} failed with errno {}",
+                    pid,
+                    sigkill_result
+                );
+            }
         }
 
         // Last fallback, return the result of tokio's kill

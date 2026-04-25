@@ -105,7 +105,7 @@ export class GitHubUpdater {
         if (arch === 'arm64') {
           assetName = 'BioRouter.zip';
         } else {
-          assetName = 'Goose_intel_mac.zip';
+          assetName = 'BioRouter_intel_mac.zip';
         }
       } else if (platform === 'win32') {
         // Windows - for future support

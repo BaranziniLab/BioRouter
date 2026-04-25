@@ -20,7 +20,7 @@ export function containsHTML(str: string): boolean {
 
   // Only detect potentially dangerous HTML tags that could execute or affect layout
   const dangerousHTMLRegex =
-    /<(script|style|iframe|object|embed|form|input|button|link|meta|base|br|hr|img|div|span|p|h[1-6]|a|strong|em|b|i|u|s|pre|code|blockquote|section|article|header|footer|nav|aside|main|table|tr|td|th|ul|ol|li)(?:\s[^>]*)?(?:\s*\/?>|>[^<]*<\/\1>)/i;
+    /<(script|style|iframe|object|embed|form|link|meta|base)(?:\s[^>]*)?(?:\s*\/?>|>[^<]*<\/\1>)/i;
   const hasDangerousHTML = dangerousHTMLRegex.test(withoutCodeBlocks);
 
   return hasComments || hasDangerousHTML;

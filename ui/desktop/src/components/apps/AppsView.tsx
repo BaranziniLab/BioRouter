@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Button } from '../ui/button';
 import { Play } from 'lucide-react';
-import { GooseApp, listApps } from '../../api';
+import { BioRouterApp, listApps } from '../../api';
 import { useChatContext } from '../../contexts/ChatContext';
 
 const GridLayout = ({ children }: { children: React.ReactNode }) => {
@@ -20,7 +20,7 @@ const GridLayout = ({ children }: { children: React.ReactNode }) => {
 };
 
 export default function AppsView() {
-  const [apps, setApps] = useState<GooseApp[]>([]);
+  const [apps, setApps] = useState<BioRouterApp[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const chatContext = useChatContext();
@@ -95,7 +95,7 @@ export default function AppsView() {
     }
   }, [sessionId, apps.length]);
 
-  const handleLaunchApp = async (app: GooseApp) => {
+  const handleLaunchApp = async (app: BioRouterApp) => {
     try {
       await window.electron.launchApp(app);
     } catch (err) {

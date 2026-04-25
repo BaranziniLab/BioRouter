@@ -242,7 +242,7 @@ pub async fn reply(
     let task_cancel = cancel_token.clone();
     let task_tx = tx.clone();
 
-    drop(tokio::spawn(async move {
+    let _handle = tokio::spawn(async move {
         let agent = match state.get_agent(session_id.clone()).await {
             Ok(agent) => agent,
             Err(e) => {
@@ -449,7 +449,7 @@ pub async fn reply(
             &cancel_token,
         )
         .await;
-    }));
+    });
     Ok(SseResponse::new(stream))
 }
 

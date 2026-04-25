@@ -49,7 +49,7 @@ import {
 import { UPDATES_ENABLED } from './updates';
 import './utils/workflowHash';
 import { Client, createClient, createConfig } from './api/client';
-import { GooseApp } from './api';
+import { BioRouterApp } from './api';
 import installExtension, { REACT_DEVELOPER_TOOLS } from 'electron-devtools-installer';
 
 // Updater functions (moved here to keep updates.ts minimal for release replacement)
@@ -495,8 +495,8 @@ const { defaultProvider, defaultModel, predefinedModels, baseUrlShare, version }
 const GENERATED_SECRET = crypto.randomBytes(32).toString('hex');
 
 const getServerSecret = (settings: ReturnType<typeof loadSettings>): string => {
-  if (settings.externalGoosed?.enabled && settings.externalGoosed.secret) {
-    return settings.externalGoosed.secret;
+  if (settings.externalBiorouterd?.enabled && settings.externalBiorouterd.secret) {
+    return settings.externalBiorouterd.secret;
   }
   if (process.env.BIOROUTER_EXTERNAL_BACKEND) {
     return 'test';
@@ -515,7 +515,7 @@ let appConfig = {
 };
 
 const windowMap = new Map<number, BrowserWindow>();
-const goosedClients = new Map<number, Client>();
+const biorouterdClients = new Map<number, Client>();
 
 // Track power save blockers per window
 const windowPowerSaveBlockers = new Map<number, number>(); // windowId -> blockerId
@@ -544,7 +544,7 @@ const createChat = async (
     serverSecret,
     dir: dir || os.homedir(),
     env: { BIOROUTER_PATH_ROOT: process.env.BIOROUTER_PATH_ROOT },
-    externalGoosed: settings.externalGoosed,
+    externalBiorouterd: settings.externalBiorouterd,
   });
 
   const { baseUrl, workingDir, process: biorouterdProcess, errorLog } = biorouterdResult;
@@ -601,7 +601,7 @@ const createChat = async (
       .catch((err) => log.info('failed to install react dev tools:', err));
   }
 
-  const goosedClient = createClient(
+  const biorouterdClient = createClient(
     createConfig({
       baseUrl,
       headers: {
@@ -610,18 +610,18 @@ const createChat = async (
       },
     })
   );
-  goosedClients.set(mainWindow.id, goosedClient);
+  biorouterdClients.set(mainWindow.id, biorouterdClient);
 
-  const serverReady = await checkServerStatus(goosedClient, errorLog);
+  const serverReady = await checkServerStatus(biorouterdClient, errorLog);
   if (!serverReady) {
-    const isUsingExternalBackend = settings.externalGoosed?.enabled;
+    const isUsingExternalBackend = settings.externalBiorouterd?.enabled;
 
     if (isUsingExternalBackend) {
       const response = dialog.showMessageBoxSync({
         type: 'error',
         title: 'External Backend Unreachable',
-        message: `Could not connect to external backend at ${settings.externalGoosed?.url}`,
-        detail: 'The external goosed server may not be running.',
+        message: `Could not connect to external backend at ${settings.externalBiorouterd?.url}`,
+        detail: 'The external biorouterd server may not be running.',
         buttons: ['Disable External Backend & Retry', 'Quit'],
         defaultId: 0,
         cancelId: 1,
@@ -630,10 +630,10 @@ const createChat = async (
       if (response === 0) {
         const updatedSettings = {
           ...settings,
-          externalGoosed: {
+          externalBiorouterd: {
             enabled: false,
-            url: settings.externalGoosed?.url || '',
-            secret: settings.externalGoosed?.secret || '',
+            url: settings.externalBiorouterd?.url || '',
+            secret: settings.externalBiorouterd?.secret || '',
           },
         };
         saveSettings(updatedSettings);
@@ -1169,13 +1169,22 @@ const handleFatalError = (error: Error) => {
   });
 };
 
+function sanitizeErrorForLogging(err: unknown): string {
+  const msg =
+    err instanceof Error ? err.message + '\n' + (err.stack || '') : String(err);
+  return msg
+    .replace(/sk-[a-zA-Z0-9]{20,}/g, 'sk-***')
+    .replace(/[Aa]pi[_-]?[Kk]ey[=:]\s*\S+/g, 'api_key=***')
+    .replace(/[Bb]earer\s+\S+/g, 'Bearer ***');
+}
+
 process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
+  console.error('Uncaught Exception:', sanitizeErrorForLogging(error));
   handleFatalError(error);
 });
 
 process.on('unhandledRejection', (error) => {
-  console.error('Unhandled Rejection:', error);
+  console.error('Unhandled Rejection:', sanitizeErrorForLogging(error));
   handleFatalError(error instanceof Error ? error : new Error(String(error)));
 });
 
@@ -1220,11 +1229,13 @@ ipcMain.on('react-ready', (event) => {
 // Handle external URL opening
 ipcMain.handle('open-external', async (_event, url: string) => {
   try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new Error(`Blocked: unsafe URL protocol '${parsed.protocol}'`);
+    }
     await shell.openExternal(url);
-    return true;
-  } catch (error) {
-    console.error('Error opening external URL:', error);
-    throw error;
+  } catch (err) {
+    console.error('open-external blocked:', err);
   }
 });
 
@@ -1236,9 +1247,10 @@ ipcMain.handle('directory-chooser', async () => {
 });
 
 ipcMain.handle('add-recent-dir', (_event, dir: string) => {
-  if (dir) {
-    addRecentDir(dir);
-  }
+  if (!dir || typeof dir !== 'string') return;
+  const normalized = path.resolve(dir);
+  if (!path.isAbsolute(normalized)) return;
+  addRecentDir(normalized);
 });
 
 // Handle scheduling engine settings
@@ -1252,6 +1264,10 @@ ipcMain.handle('get-settings', () => {
 });
 
 ipcMain.handle('save-settings', (_event, settings) => {
+  if (typeof settings !== 'object' || settings === null || Array.isArray(settings)) {
+    console.error('save-settings: invalid settings object received');
+    return;
+  }
   try {
     saveSettings(settings);
     return true;
@@ -1266,12 +1282,12 @@ ipcMain.handle('get-secret-key', () => {
   return getServerSecret(settings);
 });
 
-ipcMain.handle('get-goosed-host-port', async (event) => {
+ipcMain.handle('get-biorouterd-host-port', async (event) => {
   const windowId = BrowserWindow.fromWebContents(event.sender)?.id;
   if (!windowId) {
     return null;
   }
-  const client = goosedClients.get(windowId);
+  const client = biorouterdClients.get(windowId);
   if (!client) {
     return null;
   }
@@ -1757,6 +1773,18 @@ ipcMain.handle('check-ollama', async () => {
 ipcMain.handle('read-file', async (_event, filePath) => {
   try {
     const expandedPath = expandTilde(filePath);
+    const resolvedPath = path.resolve(expandedPath);
+    const allowedRoots = [
+      os.homedir(),
+      app.getPath('userData'),
+      app.getPath('temp'),
+    ];
+    const isAllowed = allowedRoots.some(
+      (root) => resolvedPath.startsWith(root + path.sep) || resolvedPath === root
+    );
+    if (!isAllowed) {
+      throw new Error(`Access denied: path '${resolvedPath}' is outside allowed directories`);
+    }
     if (process.platform === 'win32') {
       const buffer = await fs.readFile(expandedPath);
       return { file: buffer.toString('utf8'), filePath: expandedPath, error: null, found: true };
@@ -1896,12 +1924,12 @@ async function appMain() {
     ];
 
     const settings = loadSettings();
-    if (settings.externalGoosed?.enabled && settings.externalGoosed.url) {
+    if (settings.externalBiorouterd?.enabled && settings.externalBiorouterd.url) {
       try {
-        const externalUrl = new URL(settings.externalGoosed.url);
+        const externalUrl = new URL(settings.externalBiorouterd.url);
         sources.push(externalUrl.origin);
       } catch {
-        console.warn('Invalid external goosed URL in settings, skipping CSP entry');
+        console.warn('Invalid external biorouterd URL in settings, skipping CSP entry');
       }
     }
 
@@ -1916,7 +1944,7 @@ async function appMain() {
         'Content-Security-Policy':
           "default-src 'self';" +
           "style-src 'self' 'unsafe-inline';" +
-          "script-src 'self' 'unsafe-inline';" +
+          "script-src 'self';" +
           "img-src 'self' data: https:;" +
           `connect-src ${buildConnectSrc()};` +
           "object-src 'none';" +
@@ -2439,7 +2467,7 @@ async function appMain() {
     }
   });
 
-  ipcMain.handle('launch-app', async (event, gooseApp: GooseApp) => {
+  ipcMain.handle('launch-app', async (event, biorouterApp: BioRouterApp) => {
     try {
       const launchingWindow = BrowserWindow.fromWebContents(event.sender);
       if (!launchingWindow) {
@@ -2447,7 +2475,7 @@ async function appMain() {
       }
 
       const launchingWindowId = launchingWindow.id;
-      const launchingClient = goosedClients.get(launchingWindowId);
+      const launchingClient = biorouterdClients.get(launchingWindowId);
       if (!launchingClient) {
         throw new Error('No client found for launching window');
       }
@@ -2456,10 +2484,10 @@ async function appMain() {
       const baseUrl = new URL(currentUrl).origin;
 
       const appWindow = new BrowserWindow({
-        title: gooseApp.name,
-        width: gooseApp.width ?? 800,
-        height: gooseApp.height ?? 600,
-        resizable: gooseApp.resizable ?? true,
+        title: biorouterApp.name,
+        width: biorouterApp.width ?? 800,
+        height: biorouterApp.height ?? 600,
+        resizable: biorouterApp.resizable ?? true,
         webPreferences: {
           preload: path.join(__dirname, 'preload.js'),
           nodeIntegration: false,
@@ -2469,19 +2497,19 @@ async function appMain() {
         },
       });
 
-      goosedClients.set(appWindow.id, launchingClient);
+      biorouterdClients.set(appWindow.id, launchingClient);
 
       appWindow.on('close', () => {
-        goosedClients.delete(appWindow.id);
+        biorouterdClients.delete(appWindow.id);
       });
 
       const workingDir = app.getPath('home');
-      const extensionName = gooseApp.mcpServer ?? '';
+      const extensionName = biorouterApp.mcpServer ?? '';
       const standaloneUrl =
         `${baseUrl}/#/standalone-app?` +
-        `resourceUri=${encodeURIComponent(gooseApp.uri)}` +
+        `resourceUri=${encodeURIComponent(biorouterApp.uri)}` +
         `&extensionName=${encodeURIComponent(extensionName)}` +
-        `&appName=${encodeURIComponent(gooseApp.name)}` +
+        `&appName=${encodeURIComponent(biorouterApp.name)}` +
         `&workingDir=${encodeURIComponent(workingDir)}`;
 
       await appWindow.loadURL(standaloneUrl);
