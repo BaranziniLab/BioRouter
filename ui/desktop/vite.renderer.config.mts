@@ -11,6 +11,10 @@ export default defineConfig({
 
   plugins: [tailwindcss()],
 
+  optimizeDeps: {
+    entries: ['index.html'],
+  },
+
   build: {
     target: 'esnext'
   },
