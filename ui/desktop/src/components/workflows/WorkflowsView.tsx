@@ -16,7 +16,6 @@ import {
   Download,
 } from 'lucide-react';
 import { ScrollArea } from '../ui/scroll-area';
-import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { Skeleton } from '../ui/skeleton';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
@@ -458,7 +457,7 @@ export default function WorkflowsView() {
   }: {
     workflowManifestResponse: WorkflowManifest;
   }) => (
-    <Card className="py-2 px-4 mb-2 bg-background-default border-none hover:-translate-y-0.5 transition-all duration-150" style={{ boxShadow: 'var(--shadow-default)' }}>
+    <div className="py-3 px-4 mb-1.5 bg-background-default rounded-xl border border-border-subtle hover:bg-background-muted hover:border-border-strong transition-colors duration-150">
       <div className="flex justify-between items-start gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-1">
@@ -591,11 +590,11 @@ export default function WorkflowsView() {
           </Button>
         </div>
       </div>
-    </Card>
+    </div>
   );
 
   const WorkflowSkeleton = () => (
-    <Card className="p-2 mb-2 bg-background-default">
+    <div className="py-3 px-4 mb-1.5 bg-background-default rounded-xl border border-border-subtle">
       <div className="flex justify-between items-start gap-4">
         <div className="min-w-0 flex-1">
           <Skeleton className="h-5 w-3/4 mb-2" />
@@ -610,7 +609,7 @@ export default function WorkflowsView() {
           <Skeleton className="h-8 w-8" />
         </div>
       </div>
-    </Card>
+    </div>
   );
 
   const renderContent = () => {
@@ -677,37 +676,30 @@ export default function WorkflowsView() {
     <>
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
-          {/* Floating header card */}
-          <div
-            className="mx-4 mt-4 bg-background-default rounded-2xl mb-4 relative overflow-hidden flex-shrink-0"
-            style={{ boxShadow: 'var(--shadow-default)' }}
-          >
-            <div className="px-8 pb-6 pt-12">
-              <div className="flex flex-col page-transition">
-                <div className="flex justify-between items-center mb-1">
-                  <h1 className="text-4xl font-light">Workflows</h1>
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={() => setShowCreateDialog(true)}
-                      variant="outline"
-                      size="sm"
-                      className="flex items-center gap-2"
-                    >
-                      <FileText className="w-4 h-4" />
-                      Create Workflow
-                    </Button>
-                    <ImportWorkflowButton onClick={() => setShowImportDialog(true)} />
-                  </div>
-                </div>
-                <p className="text-sm text-text-muted">
-                  View and manage your saved workflows to quickly start new sessions with predefined
-                  configurations. {getSearchShortcutText()} to search.
-                </p>
+          {/* Flat page header */}
+          <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
+            <div className="flex justify-between items-center mb-1 page-transition">
+              <h1 className="text-2xl font-semibold tracking-tight">Workflows</h1>
+              <div className="flex gap-2">
+                <Button
+                  onClick={() => setShowCreateDialog(true)}
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-2"
+                >
+                  <FileText className="w-4 h-4" />
+                  Create Workflow
+                </Button>
+                <ImportWorkflowButton onClick={() => setShowImportDialog(true)} />
               </div>
             </div>
+            <p className="text-sm text-text-muted">
+              View and manage your saved workflows to quickly start new sessions with predefined
+              configurations. {getSearchShortcutText()} to search.
+            </p>
           </div>
 
-          <div className="flex-1 min-h-0 relative px-4">
+          <div className="flex-1 min-h-0 relative px-4 pt-6">
             <ScrollArea className="h-full">
               <SearchView onSearch={(term) => setSearchTerm(term)} placeholder="Search workflows...">
                 <div

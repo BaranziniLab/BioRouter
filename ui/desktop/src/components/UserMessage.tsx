@@ -28,9 +28,13 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
   // Extract image paths from the message
   const imagePaths = extractImagePaths(textContent);
 
-  // Remove image paths from text for display - memoized for performance
+  // Remove image paths and injected context blocks from display text
   const displayText = useMemo(
-    () => removeImagePathsFromText(textContent, imagePaths),
+    () =>
+      removeImagePathsFromText(textContent, imagePaths).replace(
+        /<info-msg>[\s\S]*?<\/info-msg>(\s*\\?")?/gi,
+        ''
+      ).trim(),
     [textContent, imagePaths]
   );
 

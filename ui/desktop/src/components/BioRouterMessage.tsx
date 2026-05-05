@@ -46,6 +46,11 @@ export default function BioRouterMessage({
 
   let textContent = getTextContent(message);
 
+  // Strip injected context blocks that are meant for the model, not the user.
+  // The trailing (\s*\\?") also consumes any closing \" the model places after </info-msg>
+  // to wrap a quoted echo — which Markdown would otherwise render as a stray \.
+  textContent = textContent.replace(/<info-msg>[\s\S]*?<\/info-msg>(\s*\\?")?/gi, '').trim();
+
   const splitChainOfThought = (text: string): { visibleText: string; cotText: string | null } => {
     const regex = /<think>([\s\S]*?)<\/think>/i;
     const match = text.match(regex);

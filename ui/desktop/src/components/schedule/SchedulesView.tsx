@@ -12,7 +12,6 @@ import {
   ScheduledJob,
 } from '../../schedule';
 import { ScrollArea } from '../ui/scroll-area';
-import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { TrashIcon } from '../icons/TrashIcon';
 import { Plus, RefreshCw, Pause, Play, Edit, Square, Eye, CircleDotDashed } from 'lucide-react';
@@ -60,9 +59,8 @@ const ScheduleCard: React.FC<{
   const formattedLastRun = formatToLocalDateWithTimezone(job.last_run);
 
   return (
-    <Card
-      className="py-2 px-4 mb-2 bg-background-default border-none cursor-pointer transition-all duration-150 hover:-translate-y-0.5"
-      style={{ boxShadow: 'var(--shadow-default)' }}
+    <div
+      className="py-3 px-4 mb-1.5 bg-background-default rounded-xl border border-border-subtle cursor-pointer hover:bg-background-muted hover:border-border-strong transition-colors duration-150"
       onClick={() => onNavigateToDetail(job.id)}
     >
       <div className="flex justify-between items-start gap-4">
@@ -180,7 +178,7 @@ const ScheduleCard: React.FC<{
           </Button>
         </div>
       </div>
-    </Card>
+    </div>
   );
 };
 
@@ -448,47 +446,40 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
     <>
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
-          {/* Floating header card */}
-          <div
-            className="mx-4 mt-4 bg-background-default rounded-2xl mb-4 relative overflow-hidden flex-shrink-0"
-            style={{ boxShadow: 'var(--shadow-default)' }}
-          >
-            <div className="px-8 pb-6 pt-12">
-              <div className="flex flex-col page-transition">
-                <div className="flex justify-between items-center mb-1">
-                  <h1 className="text-4xl font-light">Scheduler</h1>
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={handleRefresh}
-                      disabled={isRefreshing || isLoading}
-                      variant="outline"
-                      size="sm"
-                      className="flex items-center gap-2"
-                    >
-                      <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-                      {isRefreshing ? 'Refreshing...' : 'Refresh'}
-                    </Button>
-                    <Button
-                      onClick={() => {
-                        setSubmitApiError(null);
-                        setIsModalOpen(true);
-                      }}
-                      size="sm"
-                      className="flex items-center gap-2"
-                    >
-                      <Plus className="h-4 w-4" />
-                      Create Schedule
-                    </Button>
-                  </div>
-                </div>
-                <p className="text-sm text-text-muted">
-                  Create and manage scheduled tasks to run workflows automatically at specified times.
-                </p>
+          {/* Flat page header */}
+          <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
+            <div className="flex justify-between items-center mb-1 page-transition">
+              <h1 className="text-2xl font-semibold tracking-tight">Scheduler</h1>
+              <div className="flex gap-2">
+                <Button
+                  onClick={handleRefresh}
+                  disabled={isRefreshing || isLoading}
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-2"
+                >
+                  <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  {isRefreshing ? 'Refreshing...' : 'Refresh'}
+                </Button>
+                <Button
+                  onClick={() => {
+                    setSubmitApiError(null);
+                    setIsModalOpen(true);
+                  }}
+                  size="sm"
+                  className="flex items-center gap-2"
+                >
+                  <Plus className="h-4 w-4" />
+                  Create Schedule
+                </Button>
               </div>
             </div>
+            <p className="text-sm text-text-muted">
+              Create and manage scheduled tasks to run workflows automatically at specified times.
+            </p>
           </div>
 
-          <div className="flex-1 min-h-0 relative px-4">
+          <div className="flex-1 min-h-0 relative px-4 pt-6">
             <ScrollArea className="h-full">
               <div className="h-full relative">
                 {apiError && (

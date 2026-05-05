@@ -160,20 +160,14 @@ export function SessionInsights() {
 
   return (
     <div className="bg-background-muted flex flex-col h-full">
-      {/* Hero — text directly on canvas; coral accent line at top of viewport */}
-      <div className="relative">
-        <div
-          className="absolute top-0 left-0 right-0 h-[3px]"
-          style={{ background: 'linear-gradient(90deg, #cf6d47 0%, #e8935f 60%, #d4784e 100%)' }}
-        />
-        <div className="px-8 pt-16 pb-4">
-          <p className="text-xs font-medium text-text-muted uppercase tracking-widest mb-3">BioRouter</p>
-          <Greeting />
-        </div>
+      {/* Hero — text directly on canvas */}
+      <div className="px-8 pt-16 pb-6">
+        <p className="text-xs font-medium text-text-muted uppercase tracking-widest mb-3">BioRouter</p>
+        <Greeting />
       </div>
 
       {/* Inline stats row */}
-      <div className="flex items-end gap-6 px-8 pb-6">
+      <div className="flex items-end gap-6 px-8 pb-8">
         {error ? (
           <div className="flex items-center gap-2 text-xs text-orange-600 dark:text-orange-400">
             <div className="w-2 h-2 bg-orange-400 rounded-full flex-shrink-0" />
