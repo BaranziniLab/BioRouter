@@ -12,7 +12,6 @@ import {
   ExternalLink,
   Puzzle,
 } from 'lucide-react';
-import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { ScrollArea } from '../ui/scroll-area';
 import { formatMessageTimestamp } from '../../utils/timeUtils';
@@ -570,76 +569,46 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       );
 
       return (
-        <Card
+        <div
           onClick={handleCardClick}
-          className="session-item h-full py-3 px-4 cursor-pointer transition-all duration-150 flex flex-col justify-between relative group border-none hover:-translate-y-0.5"
-          style={{ boxShadow: 'var(--shadow-default)' }}
+          className="session-item flex items-center gap-3 py-3 px-4 rounded-xl cursor-pointer transition-all duration-150 relative group border border-border-subtle bg-background-default hover:bg-background-muted hover:border-border-strong"
           ref={(el) => setSessionRefs(session.id, el)}
         >
-          <div className="flex items-start justify-between gap-2 mb-1">
-            <h3 className="text-base break-words line-clamp-2 flex-1 min-w-0">{session.name}</h3>
-            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0">
-              <button
-                onClick={handleOpenInNewWindowClick}
-                className="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
-                title="Open in new window"
-              >
-                <ExternalLink className="w-3 h-3 text-textSubtle hover:text-textStandard" />
-              </button>
-              <button
-                onClick={handleEditClick}
-                className="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
-                title="Edit session name"
-              >
-                <Edit2 className="w-3 h-3 text-textSubtle hover:text-textStandard" />
-              </button>
-              <button
-                onClick={handleDeleteClick}
-                className="p-2 rounded hover:bg-red-50 dark:hover:bg-red-900/20 cursor-pointer transition-colors"
-                title="Delete session"
-              >
-                <Trash2 className="w-3 h-3 text-red-500 hover:text-red-600" />
-              </button>
-              <button
-                onClick={handleExportClick}
-                className="p-2 rounded hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
-                title="Export session"
-              >
-                <Download className="w-3 h-3 text-textSubtle hover:text-textStandard" />
-              </button>
+          {/* Title + metadata */}
+          <div className="flex-1 min-w-0">
+            <h3 className="text-sm font-medium truncate">{session.name}</h3>
+            <div className="flex items-center gap-3 mt-0.5 text-text-muted text-xs">
+              <div className="flex items-center gap-1">
+                <Calendar className="w-3 h-3 flex-shrink-0" />
+                <span>{formatMessageTimestamp(Date.parse(session.updated_at) / 1000)}</span>
+              </div>
+              <div className="flex items-center gap-1 min-w-0">
+                <Folder className="w-3 h-3 flex-shrink-0" />
+                <span className="truncate max-w-[240px]">{session.working_dir}</span>
+              </div>
             </div>
           </div>
 
-          <div className="flex-1">
-            <div className="flex items-center text-text-muted text-xs mb-1">
-              <Calendar className="w-3 h-3 mr-1 flex-shrink-0" />
-              <span>{formatMessageTimestamp(Date.parse(session.updated_at) / 1000)}</span>
-            </div>
-            <div className="flex items-center text-text-muted text-xs mb-1">
-              <Folder className="w-3 h-3 mr-1 flex-shrink-0" />
-              <span className="truncate">{session.working_dir}</span>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between mt-1 pt-2">
-            <div className="flex items-center space-x-3 text-xs text-text-muted">
-              <div className="flex items-center">
-                <MessageSquareText className="w-3 h-3 mr-1" />
-                <span className="font-mono">{session.message_count}</span>
+          {/* Right-side stats + hover actions */}
+          <div className="flex items-center gap-3 flex-shrink-0">
+            <div className="flex items-center gap-3 text-xs text-text-muted font-mono">
+              <div className="flex items-center gap-1">
+                <MessageSquareText className="w-3 h-3" />
+                <span>{session.message_count}</span>
               </div>
               {session.total_tokens !== null && (
-                <div className="flex items-center">
-                  <Target className="w-3 h-3 mr-1" />
-                  <span className="font-mono">{(session.total_tokens || 0).toLocaleString()}</span>
+                <div className="flex items-center gap-1">
+                  <Target className="w-3 h-3" />
+                  <span>{(session.total_tokens || 0).toLocaleString()}</span>
                 </div>
               )}
               {extensionNames.length > 0 && (
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <div className="flex items-center" onClick={(e) => e.stopPropagation()}>
-                        <Puzzle className="w-3 h-3 mr-1" />
-                        <span className="font-mono">{extensionNames.length}</span>
+                      <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+                        <Puzzle className="w-3 h-3" />
+                        <span>{extensionNames.length}</span>
                       </div>
                     </TooltipTrigger>
                     <TooltipContent side="top" className="max-w-xs">
@@ -656,8 +625,38 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 </TooltipProvider>
               )}
             </div>
+            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+              <button
+                onClick={handleOpenInNewWindowClick}
+                className="p-1.5 rounded hover:bg-background-medium transition-colors"
+                title="Open in new window"
+              >
+                <ExternalLink className="w-3 h-3 text-text-muted" />
+              </button>
+              <button
+                onClick={handleEditClick}
+                className="p-1.5 rounded hover:bg-background-medium transition-colors"
+                title="Edit session name"
+              >
+                <Edit2 className="w-3 h-3 text-text-muted" />
+              </button>
+              <button
+                onClick={handleDeleteClick}
+                className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                title="Delete session"
+              >
+                <Trash2 className="w-3 h-3 text-red-500" />
+              </button>
+              <button
+                onClick={handleExportClick}
+                className="p-1.5 rounded hover:bg-background-medium transition-colors"
+                title="Export session"
+              >
+                <Download className="w-3 h-3 text-text-muted" />
+              </button>
+            </div>
           </div>
-        </Card>
+        </div>
       );
     });
 
@@ -667,32 +666,19 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       const tokenWidths = ['w-12', 'w-10', 'w-14', 'w-8'];
 
       return (
-        <Card className="session-skeleton h-full py-3 px-4 flex flex-col justify-between">
-          <div className="flex-1">
-            <Skeleton className={`h-5 ${titleWidths[variant % titleWidths.length]} mb-2`} />
-            <div className="flex items-center mb-1">
-              <Skeleton className="h-3 w-3 mr-1 rounded-sm" />
-              <Skeleton className="h-4 w-20" />
-            </div>
-            <div className="flex items-center mb-1">
-              <Skeleton className="h-3 w-3 mr-1 rounded-sm" />
-              <Skeleton className={`h-4 ${pathWidths[variant % pathWidths.length]}`} />
+        <div className="session-skeleton flex items-center gap-3 py-3 px-4 rounded-xl border border-border-subtle bg-background-default">
+          <div className="flex-1 min-w-0">
+            <Skeleton className={`h-4 ${titleWidths[variant % titleWidths.length]} mb-1.5`} />
+            <div className="flex items-center gap-3">
+              <Skeleton className="h-3 w-20" />
+              <Skeleton className={`h-3 ${pathWidths[variant % pathWidths.length]}`} />
             </div>
           </div>
-
-          <div className="flex items-center justify-between mt-1 pt-2">
-            <div className="flex items-center space-x-3">
-              <div className="flex items-center">
-                <Skeleton className="h-3 w-3 mr-1 rounded-sm" />
-                <Skeleton className="h-4 w-8" />
-              </div>
-              <div className="flex items-center">
-                <Skeleton className="h-3 w-3 mr-1 rounded-sm" />
-                <Skeleton className={`h-4 ${tokenWidths[variant % tokenWidths.length]}`} />
-              </div>
-            </div>
+          <div className="flex items-center gap-3">
+            <Skeleton className="h-3 w-8" />
+            <Skeleton className={`h-3 ${tokenWidths[variant % tokenWidths.length]}`} />
           </div>
-        </Card>
+        </div>
       );
     });
 
@@ -739,7 +725,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
               <div className="sticky top-0 z-10 bg-background-muted/95 backdrop-blur-sm">
                 <h2 className="text-text-muted">{group.label}</h2>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+              <div className="session-grid">
                 {group.sessions.map((session) => (
                   <SessionItem
                     key={session.id}
@@ -770,31 +756,24 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       <>
         <MainPanelLayout>
           <div className="flex-1 flex flex-col min-h-0">
-            {/* Floating header card */}
-            <div
-              className="mx-4 mt-4 bg-background-default rounded-2xl mb-4 relative overflow-hidden flex-shrink-0"
-              style={{ boxShadow: 'var(--shadow-default)' }}
-            >
-              <div className="px-8 pb-6 pt-12">
-                <div className="flex flex-col page-transition">
-                  <div className="flex justify-between items-center mb-1">
-                    <h1 className="text-4xl font-light">Chat history</h1>
-                    <Button
-                      onClick={handleImportClick}
-                      variant="outline"
-                      size="sm"
-                      className="flex items-center gap-2"
-                    >
-                      <Upload className="w-4 h-4" />
-                      Import Session
-                    </Button>
-                  </div>
-                  <p className="text-sm text-text-muted">
-                    View and search your past conversations with BioRouter. {getSearchShortcutText()} to
-                    search.
-                  </p>
-                </div>
+            {/* Flat page header */}
+            <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
+              <div className="flex justify-between items-center mb-1 page-transition">
+                <h1 className="text-2xl font-semibold tracking-tight">Chat history</h1>
+                <Button
+                  onClick={handleImportClick}
+                  variant="outline"
+                  size="sm"
+                  className="flex items-center gap-2"
+                >
+                  <Upload className="w-4 h-4" />
+                  Import Session
+                </Button>
               </div>
+              <p className="text-sm text-text-muted">
+                View and search your past conversations with BioRouter. {getSearchShortcutText()} to
+                search.
+              </p>
             </div>
 
             <div className="flex-1 min-h-0 relative px-4 pb-4">
@@ -819,7 +798,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                         {/* Today section */}
                         <div className="space-y-4">
                           <Skeleton className="h-6 w-16" />
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                          <div className="session-grid">
                             <SessionSkeleton variant={0} />
                             <SessionSkeleton variant={1} />
                             <SessionSkeleton variant={2} />
@@ -831,7 +810,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                         {/* Yesterday section */}
                         <div className="space-y-4">
                           <Skeleton className="h-6 w-20" />
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                          <div className="session-grid">
                             <SessionSkeleton variant={1} />
                             <SessionSkeleton variant={2} />
                             <SessionSkeleton variant={3} />
@@ -844,7 +823,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                         {/* Additional section */}
                         <div className="space-y-4">
                           <Skeleton className="h-6 w-24" />
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4">
+                          <div className="session-grid">
                             <SessionSkeleton variant={3} />
                             <SessionSkeleton variant={0} />
                             <SessionSkeleton variant={1} />
