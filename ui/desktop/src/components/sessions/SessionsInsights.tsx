@@ -112,47 +112,30 @@ export function SessionInsights() {
 
   const renderSkeleton = () => (
     <div className="bg-background-muted flex flex-col h-full">
-      {/* Header — floating card */}
-      <div className="mx-4 mt-4 bg-background-default rounded-2xl mb-4" style={{ boxShadow: 'var(--shadow-default)' }}>
-        <div className="px-8 pb-12 pt-16">
-          <Greeting />
+      {/* Hero — text on canvas, no card wrapper */}
+      <div className="px-8 pt-16 pb-4">
+        <Greeting />
+      </div>
+
+      {/* Inline metrics skeleton */}
+      <div className="flex gap-6 px-8 pb-6">
+        <div>
+          <Skeleton className="h-8 w-16 mb-1" />
+          <span className="text-[11px] text-text-muted uppercase tracking-wider">Sessions</span>
+        </div>
+        <div className="w-px bg-border-default self-stretch mx-1" />
+        <div>
+          <Skeleton className="h-8 w-24 mb-1" />
+          <span className="text-[11px] text-text-muted uppercase tracking-wider">Tokens</span>
         </div>
       </div>
 
-      {/* Cards area */}
+      {/* Recent chats skeleton */}
       <div className="flex flex-col flex-1 gap-3 px-4 pb-4">
-        <div className="grid grid-cols-2 gap-3">
-          <Card className="w-full py-7 px-6 border-none rounded-2xl bg-background-default" style={{ boxShadow: 'var(--shadow-default)' }}>
-            <CardContent className="flex flex-col justify-end h-full p-0">
-              <div className="flex flex-col justify-end">
-                <Skeleton className="h-10 w-16 mb-2" />
-                <span className="text-xs text-text-muted uppercase tracking-wider">Total sessions</span>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card className="w-full py-7 px-6 border-none rounded-2xl bg-background-default" style={{ boxShadow: 'var(--shadow-default)' }}>
-            <CardContent className="flex flex-col justify-end h-full p-0">
-              <div className="flex flex-col justify-end">
-                <Skeleton className="h-10 w-24 mb-2" />
-                <span className="text-xs text-text-muted uppercase tracking-wider">Total tokens</span>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <Card className="w-full py-7 px-6 border-none rounded-2xl bg-background-default" style={{ boxShadow: 'var(--shadow-default)' }}>
+        <Card className="w-full py-5 px-6 rounded-2xl bg-background-default border border-border-subtle">
           <CardContent className="p-0">
-            <div className="flex justify-between items-center mb-5">
-              <span className="text-sm font-medium text-text-default uppercase tracking-wider">Recent chats</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-xs text-text-muted !px-0 hover:bg-transparent hover:underline hover:text-text-default"
-                onClick={navigateToSessionHistory}
-              >
-                See all
-              </Button>
+            <div className="flex justify-between items-center mb-4">
+              <span className="text-[11px] font-medium text-text-muted uppercase tracking-wider">Recent chats</span>
             </div>
             <div className="space-y-0 min-h-[96px] divide-y divide-border-default">
               {[48, 40, 52].map((w, i) => (
@@ -167,8 +150,6 @@ export function SessionInsights() {
             </div>
           </CardContent>
         </Card>
-
-        <div className="rounded-2xl flex-1 bg-background-muted" />
       </div>
     </div>
   );
@@ -179,77 +160,47 @@ export function SessionInsights() {
 
   return (
     <div className="bg-background-muted flex flex-col h-full">
-      {/* Header — floating card with gap from window top */}
-      <div
-        className="mx-4 mt-4 bg-background-default rounded-2xl mb-4 relative overflow-hidden"
-        style={{ boxShadow: 'var(--shadow-default)' }}
-      >
-        {/* Coral accent line across the very top of the card */}
+      {/* Hero — text directly on canvas; coral accent line at top of viewport */}
+      <div className="relative">
         <div
           className="absolute top-0 left-0 right-0 h-[3px]"
           style={{ background: 'linear-gradient(90deg, #cf6d47 0%, #e8935f 60%, #d4784e 100%)' }}
         />
-        <div className="px-8 pb-10 pt-16">
+        <div className="px-8 pt-16 pb-4">
           <p className="text-xs font-medium text-text-muted uppercase tracking-widest mb-3">BioRouter</p>
           <Greeting />
         </div>
       </div>
 
-      {/* Dashboard cards with proper breathing room */}
-      <div className="flex flex-col flex-1 gap-3 px-4 pb-4">
-        {error && (
-          <div className="px-4 py-2 bg-orange-50 dark:bg-orange-950/20 border border-orange-200 dark:border-orange-800/30 rounded-xl">
-            <div className="flex items-center space-x-2">
-              <div className="w-2 h-2 bg-orange-400 rounded-full flex-shrink-0" />
-              <span className="text-xs text-orange-700 dark:text-orange-300">
-                Failed to load insights
-              </span>
-            </div>
+      {/* Inline stats row */}
+      <div className="flex items-end gap-6 px-8 pb-6">
+        {error ? (
+          <div className="flex items-center gap-2 text-xs text-orange-600 dark:text-orange-400">
+            <div className="w-2 h-2 bg-orange-400 rounded-full flex-shrink-0" />
+            Failed to load insights
           </div>
+        ) : (
+          <>
+            <div className="page-transition">
+              <p className="text-3xl font-mono font-light leading-none mb-1">
+                {Math.max(insights?.totalSessions ?? 0, 0)}
+              </p>
+              <span className="text-[11px] text-text-muted uppercase tracking-wider">Sessions</span>
+            </div>
+            <div className="w-px bg-border-default self-stretch mb-1" />
+            <div className="page-transition">
+              <p className="text-3xl font-mono font-light leading-none mb-1">
+                {formatTokens(insights?.totalTokens)}
+              </p>
+              <span className="text-[11px] text-text-muted uppercase tracking-wider">Tokens</span>
+            </div>
+          </>
         )}
+      </div>
 
-        {/* Stats row — two equal cards */}
-        <div className="grid grid-cols-2 gap-3">
-          {/* Sessions card */}
-          <Card
-            className="w-full py-7 px-6 border-none rounded-2xl bg-background-default"
-            style={{ boxShadow: 'var(--shadow-default)' }}
-          >
-            <CardContent className="page-transition flex flex-col justify-end h-full p-0">
-              <div className="flex flex-col justify-end">
-                <p className="text-4xl font-mono font-light mb-1.5">
-                  {Math.max(insights?.totalSessions ?? 0, 0)}
-                </p>
-                <span className="text-[11px] text-text-muted uppercase tracking-wider">
-                  Total sessions
-                </span>
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Tokens card */}
-          <Card
-            className="w-full py-7 px-6 border-none rounded-2xl bg-background-default"
-            style={{ boxShadow: 'var(--shadow-default)' }}
-          >
-            <CardContent className="page-transition flex flex-col justify-end h-full p-0">
-              <div className="flex flex-col justify-end">
-                <p className="text-4xl font-mono font-light mb-1.5">
-                  {formatTokens(insights?.totalTokens)}
-                </p>
-                <span className="text-[11px] text-text-muted uppercase tracking-wider">
-                  Total tokens
-                </span>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Recent chats card */}
-        <Card
-          className="w-full py-7 px-6 border-none rounded-2xl bg-background-default"
-          style={{ boxShadow: 'var(--shadow-default)' }}
-        >
+      {/* Recent chats — bordered card, no shadow */}
+      <div className="flex flex-col flex-1 gap-3 px-4 pb-4">
+        <Card className="w-full py-5 px-6 rounded-2xl bg-background-default border border-border-subtle">
           <CardContent className="page-transition p-0">
             <div className="flex justify-between items-center mb-4">
               <CardDescription className="mb-0">
@@ -309,8 +260,7 @@ export function SessionInsights() {
           </CardContent>
         </Card>
 
-        {/* Bottom spacer — intentionally empty, blends into background */}
-        <div className="rounded-2xl flex-1" />
+        <div className="flex-1" />
       </div>
     </div>
   );

@@ -78,7 +78,7 @@ export default function Hub({
         )}
       </div>
 
-      <div className="mx-4 mb-4 rounded-2xl overflow-hidden" style={{ boxShadow: 'var(--shadow-default)' }}>
+      <div className="mx-4 mb-4 rounded-xl overflow-hidden border border-border-subtle bg-background-default">
         <ChatInput
           sessionId={null}
           handleSubmit={handleSubmit}
