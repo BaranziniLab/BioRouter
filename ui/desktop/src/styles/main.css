@@ -20,18 +20,18 @@
   --color-block-teal: #cf6d47;
   --color-block-orange: #b85a32;
 
-  /* Warm yellow-cream neutral palette — anchored on rgb(248,242,223) */
-  --color-neutral-50: #fcf8ed;
-  --color-neutral-100: #f8f2df;
-  --color-neutral-200: #ece5cf;
-  --color-neutral-300: #d7cfb6;
-  --color-neutral-400: #b6ae93;
-  --color-neutral-500: #8e856b;
-  --color-neutral-600: #665d46;
-  --color-neutral-700: #443c2a;
-  --color-neutral-800: #2a2416;
-  --color-neutral-900: #18140a;
-  --color-neutral-950: #0e0b05;
+  /* Warm cream-gray neutral palette — calmer than the yellow-cast original */
+  --color-neutral-50:  #faf8f3;
+  --color-neutral-100: #f4f0e6;
+  --color-neutral-200: #e8e1d2;
+  --color-neutral-300: #d4cab6;
+  --color-neutral-400: #b0a892;
+  --color-neutral-500: #88806a;
+  --color-neutral-600: #615a46;
+  --color-neutral-700: #403928;
+  --color-neutral-800: #282217;
+  --color-neutral-900: #16120c;
+  --color-neutral-950: #0d0a06;
 
   --color-red-100: #f07575;
   --color-red-200: #e85252;
@@ -99,11 +99,14 @@
   --sidebar-border: var(--border-default);
   --sidebar-ring: var(--border-default);
 
-  /* custom shadow */
-
+  /* custom shadow — flat by default; popover for elevated menus/modals */
   --shadow-default:
-    0px 12px 32px 0px rgba(0, 0, 0, 0.04), 0px 8px 16px 0px rgba(0, 0, 0, 0.02),
-    0px 2px 4px 0px rgba(0, 0, 0, 0.04), 0px 0px 1px 0px rgba(0, 0, 0, 0.2);
+    0px 1px 3px 0px rgba(0, 0, 0, 0.06),
+    0px 0px 1px 0px rgba(0, 0, 0, 0.12);
+  --shadow-popover:
+    0px 8px 24px 0px rgba(32, 25, 15, 0.10),
+    0px 0px 1px 0px rgba(0, 0, 0, 0.15);
+  --border-subtle: var(--color-neutral-200);
 }
 
 .dark {
@@ -154,8 +157,12 @@
   --sidebar-ring: var(--border-default);
 
   --shadow-default:
-    0px 12px 32px 0px rgba(0, 0, 0, 0.2), 0px 8px 16px 0px rgba(0, 0, 0, 0.15),
-    0px 2px 4px 0px rgba(0, 0, 0, 0.1), 0px 0px 1px 0px rgba(0, 0, 0, 0.3);
+    0px 1px 3px 0px rgba(0, 0, 0, 0.25),
+    0px 0px 1px 0px rgba(0, 0, 0, 0.35);
+  --shadow-popover:
+    0px 8px 24px 0px rgba(0, 0, 0, 0.4),
+    0px 0px 1px 0px rgba(0, 0, 0, 0.5);
+  --border-subtle: var(--color-neutral-800);
 }
 
 @theme inline {
@@ -178,6 +185,7 @@
   --color-text-on-accent: var(--text-on-accent);
 
   --color-border-default: var(--border-default);
+  --color-border-subtle: var(--border-subtle);
   --color-border-input: var(--border-input);
   --color-border-strong: var(--border-strong);
   --color-border-danger: var(--border-danger);
