@@ -95,47 +95,38 @@ export default function ExtensionsView({
         className="flex flex-col min-w-0 flex-1 overflow-y-auto relative"
         data-search-scroll-area
       >
-        {/* Floating header card */}
-        <div
-          className="mx-4 mt-4 bg-background-default rounded-2xl mb-4 relative overflow-hidden flex-shrink-0"
-          style={{ boxShadow: 'var(--shadow-default)' }}
-        >
-          <div className="px-8 pb-6 pt-12">
-            <div className="flex flex-col page-transition">
-              <div className="flex justify-between items-center mb-1">
-                <h1 className="text-4xl font-light">Extensions</h1>
-              </div>
-              <p className="text-sm text-text-muted mb-2">
-                These extensions use the Model Context Protocol (MCP). They can expand BioRouter's
-                capabilities using three main components: Prompts, Resources, and Tools.{' '}
-                {getSearchShortcutText()} to search.
-              </p>
-              <p className="text-sm text-text-muted mb-4">
-                Extensions enabled here are used as the default for new chats. You can also toggle
-                active extensions during chat.
-              </p>
-
-              {/* Action Buttons */}
-              <div className="flex gap-4">
-                <Button
-                  className="flex items-center gap-2 justify-center"
-                  variant="default"
-                  onClick={() => setIsAddModalOpen(true)}
-                >
-                  <Plus className="h-4 w-4" />
-                  Add custom extension
-                </Button>
-                <Button
-                  className="flex items-center gap-2 justify-center"
-                  variant="secondary"
-                  onClick={() =>
-                    window.open('https://baranzinilab.github.io/biorouter-landing/baam.html', '_blank')
-                  }
-                >
-                  <GPSIcon size={12} />
-                  Browse extensions
-                </Button>
-              </div>
+        {/* Flat page header */}
+        <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
+          <div className="flex flex-col page-transition">
+            <h1 className="text-2xl font-semibold tracking-tight mb-1">Extensions</h1>
+            <p className="text-sm text-text-muted mb-1">
+              These extensions use the Model Context Protocol (MCP). They can expand BioRouter's
+              capabilities using three main components: Prompts, Resources, and Tools.{' '}
+              {getSearchShortcutText()} to search.
+            </p>
+            <p className="text-sm text-text-muted mb-4">
+              Extensions enabled here are used as the default for new chats. You can also toggle
+              active extensions during chat.
+            </p>
+            <div className="flex gap-3">
+              <Button
+                className="flex items-center gap-2"
+                variant="default"
+                onClick={() => setIsAddModalOpen(true)}
+              >
+                <Plus className="h-4 w-4" />
+                Add custom extension
+              </Button>
+              <Button
+                className="flex items-center gap-2"
+                variant="outline"
+                onClick={() =>
+                  window.open('https://baranzinilab.github.io/biorouter-landing/baam.html', '_blank')
+                }
+              >
+                <GPSIcon size={12} />
+                Browse extensions
+              </Button>
             </div>
           </div>
         </div>
