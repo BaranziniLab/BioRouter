@@ -383,7 +383,7 @@ export default function ImportWorkflowForm({ isOpen, onClose, onSuccess }: Impor
 
 export function ImportWorkflowButton({ onClick }: { onClick: () => void }) {
   return (
-    <Button onClick={onClick} variant="default" size="sm" className="flex items-center gap-2">
+    <Button onClick={onClick} variant="outline" className="flex items-center gap-2">
       <Download className="w-4 h-4" />
       Import Workflow
     </Button>

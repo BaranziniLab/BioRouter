@@ -570,7 +570,6 @@ p > code.bg-inline-code {
 .session-grid {
   display: flex;
   flex-direction: column;
-  gap: 0.375rem; /* 6px between rows */
   contain: layout style paint;
 }
 

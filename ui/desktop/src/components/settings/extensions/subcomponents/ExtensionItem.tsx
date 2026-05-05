@@ -4,13 +4,12 @@ import { Switch } from '../../../ui/switch';
 import { Gear } from '../../../icons';
 import { FixedExtensionEntry } from '../../../ConfigContext';
 import { getSubtitle, getFriendlyTitle } from './ExtensionList';
-import { Card, CardHeader, CardTitle, CardContent, CardAction } from '../../../ui/card';
 
 interface ExtensionItemProps {
   extension: FixedExtensionEntry;
   onToggle: (extension: FixedExtensionEntry) => Promise<boolean | void> | void;
   onConfigure?: (extension: FixedExtensionEntry) => void;
-  isStatic?: boolean; // to not allow users to edit configuration
+  isStatic?: boolean;
 }
 
 export default function ExtensionItem({
@@ -19,91 +18,68 @@ export default function ExtensionItem({
   onConfigure,
   isStatic,
 }: ExtensionItemProps) {
-  // Add local state to track the visual toggle state
   const [visuallyEnabled, setVisuallyEnabled] = useState(extension.enabled);
-  // Track if we're in the process of toggling
   const [isToggling, setIsToggling] = useState(false);
 
   const handleToggle = async (ext: FixedExtensionEntry) => {
-    // Prevent multiple toggles while one is in progress
     if (isToggling) return;
-
     setIsToggling(true);
-
-    // Immediately update visual state
     const newState = !ext.enabled;
     setVisuallyEnabled(newState);
-
     try {
-      // Call the actual toggle function that performs the async operation
       await onToggle(ext);
-      // Success case is handled by the useEffect below when extension.enabled changes
     } catch {
-      // If there was an error, revert the visual state
-      console.log('Toggle failed, reverting visual state');
       setVisuallyEnabled(!newState);
     } finally {
       setIsToggling(false);
     }
   };
 
-  // Update visual state when the actual extension state changes
   useEffect(() => {
     if (!isToggling) {
       setVisuallyEnabled(extension.enabled);
     }
   }, [extension.enabled, isToggling]);
 
-  const renderSubtitle = () => {
-    const { description, command } = getSubtitle(extension);
-    return (
-      <>
-        {description && <span>{description}</span>}
-        {description && command && <br />}
-        {command && <span className="font-mono text-xs">{command}</span>}
-      </>
-    );
-  };
+  const { description, command } = getSubtitle(extension);
 
-  // Bundled extensions and builtins are not editable
-  // Over time we can take the first part of the conditional away as people have bundled: true in their config.yaml entries
-
-  // allow configuration editing if extension is not a builtin/bundled extension AND isStatic = false
   const editable =
     !(extension.type === 'builtin' || ('bundled' in extension && extension.bundled)) && !isStatic;
 
   return (
-    <Card
+    <div
       id={`extension-${kebabCase(extension.name)}`}
-      className="transition-all duration-200 min-h-[120px] overflow-hidden"
+      className="flex items-center gap-4 py-3 px-3 -mx-3 rounded-lg hover:bg-background-medium transition-colors duration-150 group"
     >
-      <CardHeader>
-        <CardTitle>{getFriendlyTitle(extension)}</CardTitle>
-
-        <CardAction>
-          <div className="flex items-center justify-end gap-2">
-            {editable && (
-              <button
-                className="text-textSubtle hover:text-textStandard"
-                aria-label={`Configure ${getFriendlyTitle(extension)} Extension`}
-                onClick={() => onConfigure?.(extension)}
-              >
-                <Gear className="w-4 h-4" />
-              </button>
-            )}
-            <Switch
-              checked={(isToggling && visuallyEnabled) || extension.enabled}
-              onCheckedChange={() => handleToggle(extension)}
-              disabled={isToggling}
-              variant="mono"
-              aria-label={`Toggle ${getFriendlyTitle(extension)} extension On or Off`}
-            />
-          </div>
-        </CardAction>
-      </CardHeader>
-      <CardContent className="px-4 overflow-hidden text-sm break-words text-text-muted">
-        {renderSubtitle()}
-      </CardContent>
-    </Card>
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-text-default leading-snug">
+          {getFriendlyTitle(extension)}
+        </p>
+        {description && (
+          <p className="text-xs text-text-muted mt-0.5 line-clamp-1">{description}</p>
+        )}
+        {command && (
+          <p className="text-xs font-mono text-text-muted mt-0.5 truncate">{command}</p>
+        )}
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0">
+        {editable && (
+          <button
+            className="opacity-0 group-hover:opacity-100 transition-opacity text-text-muted hover:text-text-default"
+            aria-label={`Configure ${getFriendlyTitle(extension)} extension`}
+            onClick={() => onConfigure?.(extension)}
+          >
+            <Gear className="w-4 h-4" />
+          </button>
+        )}
+        <Switch
+          checked={(isToggling && visuallyEnabled) || extension.enabled}
+          onCheckedChange={() => handleToggle(extension)}
+          disabled={isToggling}
+          variant="mono"
+          aria-label={`Toggle ${getFriendlyTitle(extension)} extension`}
+        />
+      </div>
+    </div>
   );
 }

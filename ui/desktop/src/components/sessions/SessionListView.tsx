@@ -571,7 +571,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       return (
         <div
           onClick={handleCardClick}
-          className="session-item flex items-center gap-3 py-3 px-4 rounded-xl cursor-pointer transition-all duration-150 relative group border border-border-subtle bg-background-default hover:bg-background-muted hover:border-border-strong"
+          className="session-item flex items-center gap-3 py-3 px-3 rounded-lg cursor-pointer transition-colors duration-150 relative group hover:bg-background-medium"
           ref={(el) => setSessionRefs(session.id, el)}
         >
           {/* Title + metadata */}
@@ -666,7 +666,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       const tokenWidths = ['w-12', 'w-10', 'w-14', 'w-8'];
 
       return (
-        <div className="session-skeleton flex items-center gap-3 py-3 px-4 rounded-xl border border-border-subtle bg-background-default">
+        <div className="session-skeleton flex items-center gap-3 py-3 px-3">
           <div className="flex-1 min-w-0">
             <Skeleton className={`h-4 ${titleWidths[variant % titleWidths.length]} mb-1.5`} />
             <div className="flex items-center gap-3">
@@ -722,10 +722,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         <div className="space-y-8">
           {visibleDateGroups.map((group) => (
             <div key={group.label} className="space-y-4">
-              <div className="sticky top-0 z-10 bg-background-muted/95 backdrop-blur-sm">
-                <h2 className="text-text-muted">{group.label}</h2>
+              <div className="sticky top-0 z-10 bg-background-muted/95 backdrop-blur-sm pt-2 pb-2">
+                <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider">{group.label}</h2>
               </div>
-              <div className="session-grid">
+              <div className="session-grid divide-y divide-border-subtle">
                 {group.sessions.map((session) => (
                   <SessionItem
                     key={session.id}
@@ -763,7 +763,6 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 <Button
                   onClick={handleImportClick}
                   variant="outline"
-                  size="sm"
                   className="flex items-center gap-2"
                 >
                   <Upload className="w-4 h-4" />
@@ -776,7 +775,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
               </p>
             </div>
 
-            <div className="flex-1 min-h-0 relative px-4 pb-4">
+            <div className="flex-1 min-h-0 relative px-8 pt-6 pb-8">
               <ScrollArea handleScroll={handleScroll} className="h-full" paddingX={1} data-search-scroll-area>
                 <div ref={containerRef} className="h-full relative">
                   <SearchView

@@ -99,11 +99,12 @@ export default function ExtensionsView({
         <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
           <div className="flex flex-col page-transition">
             <h1 className="text-2xl font-semibold tracking-tight mb-1">Extensions</h1>
-            <p className="text-sm text-text-muted mb-4">
+            <p className="text-sm text-text-muted mb-0">
               MCP extensions expand BioRouter's capabilities with Prompts, Resources, and Tools.
               Enabled extensions apply to all new chats. {getSearchShortcutText()} to search.
             </p>
-            <div className="flex gap-3">
+          </div>
+          <div className="flex gap-3 mt-5">
               <Button
                 className="flex items-center gap-2"
                 variant="default"
@@ -123,10 +124,9 @@ export default function ExtensionsView({
                 Browse extensions
               </Button>
             </div>
-          </div>
         </div>
 
-        <div className="px-4 pt-6 pb-4">
+        <div className="px-8 pt-6 pb-8">
           <SearchView onSearch={(term) => setSearchTerm(term)} placeholder="Search extensions...">
             <ExtensionsSection
               key={refreshKey}

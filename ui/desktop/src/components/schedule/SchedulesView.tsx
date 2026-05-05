@@ -60,7 +60,7 @@ const ScheduleCard: React.FC<{
 
   return (
     <div
-      className="py-3 px-4 mb-1.5 bg-background-default rounded-xl border border-border-subtle cursor-pointer hover:bg-background-muted hover:border-border-strong transition-colors duration-150"
+      className="py-3 px-4 mb-1.5 bg-background-default rounded-xl border border-border-subtle cursor-pointer hover:bg-background-medium transition-colors duration-150"
       onClick={() => onNavigateToDetail(job.id)}
     >
       <div className="flex justify-between items-start gap-4">
@@ -448,38 +448,35 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
         <div className="flex-1 flex flex-col min-h-0">
           {/* Flat page header */}
           <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
-            <div className="flex justify-between items-center mb-1 page-transition">
-              <h1 className="text-2xl font-semibold tracking-tight">Scheduler</h1>
-              <div className="flex gap-2">
-                <Button
-                  onClick={handleRefresh}
-                  disabled={isRefreshing || isLoading}
-                  variant="outline"
-                  size="sm"
-                  className="flex items-center gap-2"
-                >
-                  <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-                  {isRefreshing ? 'Refreshing...' : 'Refresh'}
-                </Button>
-                <Button
-                  onClick={() => {
-                    setSubmitApiError(null);
-                    setIsModalOpen(true);
-                  }}
-                  size="sm"
-                  className="flex items-center gap-2"
-                >
-                  <Plus className="h-4 w-4" />
-                  Create Schedule
-                </Button>
-              </div>
-            </div>
-            <p className="text-sm text-text-muted">
+            <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">Scheduler</h1>
+            <p className="text-sm text-text-muted mb-0">
               Create and manage scheduled tasks to run workflows automatically at specified times.
             </p>
+            <div className="flex gap-3 mt-5">
+              <Button
+                onClick={() => {
+                  setSubmitApiError(null);
+                  setIsModalOpen(true);
+                }}
+                variant="default"
+                className="flex items-center gap-2"
+              >
+                <Plus className="h-4 w-4" />
+                Create Schedule
+              </Button>
+              <Button
+                onClick={handleRefresh}
+                disabled={isRefreshing || isLoading}
+                variant="outline"
+                className="flex items-center gap-2"
+              >
+                <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                {isRefreshing ? 'Refreshing...' : 'Refresh'}
+              </Button>
+            </div>
           </div>
 
-          <div className="flex-1 min-h-0 relative px-4 pt-6">
+          <div className="flex-1 min-h-0 relative px-8 pt-6">
             <ScrollArea className="h-full">
               <div className="h-full relative">
                 {apiError && (

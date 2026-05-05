@@ -50,11 +50,11 @@ export default function ExtensionList({
     <div className="space-y-8">
       {sortedEnabledExtensions.length > 0 && (
         <div>
-          <h2 className="text-lg font-medium text-text-default mb-4 flex items-center gap-2">
-            <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+            <span className="w-1.5 h-1.5 bg-green-500 rounded-full flex-shrink-0"></span>
             Default Extensions ({sortedEnabledExtensions.length})
           </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2">
+          <div className="divide-y divide-border-subtle">
             {sortedEnabledExtensions.map((extension) => (
               <ExtensionItem
                 key={extension.name}
@@ -70,11 +70,11 @@ export default function ExtensionList({
 
       {sortedDisabledExtensions.length > 0 && (
         <div>
-          <h2 className="text-lg font-medium text-text-muted mb-4 flex items-center gap-2">
-            <span className="w-2 h-2 bg-gray-400 rounded-full"></span>
+          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+            <span className="w-1.5 h-1.5 bg-neutral-400 rounded-full flex-shrink-0"></span>
             Available Extensions ({sortedDisabledExtensions.length})
           </h2>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-2">
+          <div className="divide-y divide-border-subtle">
             {sortedDisabledExtensions.map((extension) => (
               <ExtensionItem
                 key={extension.name}
@@ -89,7 +89,7 @@ export default function ExtensionList({
       )}
 
       {extensions.length === 0 && (
-        <div className="text-center text-text-muted py-8">No extensions available</div>
+        <div className="text-text-muted text-sm py-8">No extensions available</div>
       )}
     </div>
   );

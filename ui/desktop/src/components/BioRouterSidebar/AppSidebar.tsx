@@ -184,7 +184,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
                 onClick={() => handleNavigation(entry.path)}
                 isActive={isActivePath(entry.path)}
                 tooltip={entry.tooltip}
-                className="w-full justify-start px-3 py-2 rounded-lg text-[13.5px] hover:bg-background-medium transition-colors duration-150 data-[active=true]:bg-background-medium data-[active=true]:font-medium"
+                className="w-full justify-start px-3 py-2 rounded-lg text-[13.5px] hover:bg-background-medium transition-colors duration-150 data-[active=true]:bg-neutral-200 data-[active=true]:font-medium"
               >
                 <IconComponent className="w-4 h-4" />
                 <span>{entry.label}</span>
