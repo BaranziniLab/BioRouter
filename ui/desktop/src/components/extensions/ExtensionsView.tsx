@@ -17,6 +17,7 @@ import { activateExtensionDefault } from '../settings/extensions';
 import { useConfig } from '../ConfigContext';
 import { SearchView } from '../conversation/SearchView';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
+import { BrxtInstallModal } from '../BrxtInstallModal';
 
 export type ExtensionsViewOptions = {
   deepLinkConfig?: ExtensionConfig;
@@ -31,6 +32,7 @@ export default function ExtensionsView({
   viewOptions: ExtensionsViewOptions;
 }) {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isBrxtModalOpen, setIsBrxtModalOpen] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
   const { addExtension } = useConfig();
@@ -105,25 +107,33 @@ export default function ExtensionsView({
             </p>
           </div>
           <div className="flex gap-3 mt-5">
-              <Button
-                className="flex items-center gap-2"
-                variant="default"
-                onClick={() => setIsAddModalOpen(true)}
-              >
-                <Plus className="h-4 w-4" />
-                Add custom extension
-              </Button>
-              <Button
-                className="flex items-center gap-2"
-                variant="outline"
-                onClick={() =>
-                  window.open('https://baranzinilab.github.io/biorouter-landing/baam.html', '_blank')
-                }
-              >
-                <GPSIcon size={12} />
-                Browse extensions
-              </Button>
-            </div>
+            <Button
+              className="flex items-center gap-2"
+              variant="default"
+              onClick={() => setIsBrxtModalOpen(true)}
+            >
+              <Plus className="h-4 w-4" />
+              Add extension
+            </Button>
+            <Button
+              className="flex items-center gap-2"
+              variant="outline"
+              onClick={() =>
+                window.open('https://baranzinilab.github.io/biorouter-landing/baam.html', '_blank')
+              }
+            >
+              <GPSIcon size={12} />
+              Browse extensions
+            </Button>
+            <Button
+              className="flex items-center gap-2"
+              variant="outline"
+              onClick={() => setIsAddModalOpen(true)}
+            >
+              <Plus className="h-4 w-4" />
+              Add custom extension
+            </Button>
+          </div>
         </div>
 
         <div className="px-8 pt-6 pb-8">
@@ -151,6 +161,12 @@ export default function ExtensionsView({
           onSubmit={handleAddExtension}
           submitLabel="Add Extension"
           modalType={'add'}
+        />
+      )}
+      {isBrxtModalOpen && (
+        <BrxtInstallModal
+          onClose={() => setIsBrxtModalOpen(false)}
+          onInstalled={() => setRefreshKey((prev) => prev + 1)}
         />
       )}
     </MainPanelLayout>

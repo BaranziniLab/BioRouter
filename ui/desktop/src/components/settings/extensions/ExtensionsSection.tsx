@@ -14,6 +14,7 @@ import {
 
 import { activateExtensionDefault, deleteExtension, toggleExtensionDefault } from './index';
 import { ExtensionConfig } from '../../../api/types.gen';
+import { BrxtInstallModal } from '../../BrxtInstallModal';
 
 interface ExtensionSectionProps {
   deepLinkConfig?: ExtensionConfig;
@@ -40,6 +41,7 @@ export default function ExtensionsSection({
   const [selectedExtension, setSelectedExtension] = useState<FixedExtensionEntry | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [isBrxtModalOpen, setIsBrxtModalOpen] = useState(false);
   const [deepLinkConfigStateVar, setDeepLinkConfigStateVar] = useState<
     ExtensionConfig | undefined | null
   >(deepLinkConfig);
@@ -195,18 +197,28 @@ export default function ExtensionsSection({
             <Button
               className="flex items-center gap-2 justify-center"
               variant="default"
+              onClick={() => setIsBrxtModalOpen(true)}
+            >
+              <Plus className="h-4 w-4" />
+              Add extension
+            </Button>
+            <Button
+              className="flex items-center gap-2 justify-center"
+              variant="outline"
+              onClick={() =>
+                window.open('https://baranzinilab.github.io/biorouter-landing/baam.html', '_blank')
+              }
+            >
+              <GPSIcon size={12} />
+              Browse extensions
+            </Button>
+            <Button
+              className="flex items-center gap-2 justify-center"
+              variant="outline"
               onClick={() => setIsAddModalOpen(true)}
             >
               <Plus className="h-4 w-4" />
               Add custom extension
-            </Button>
-            <Button
-              className="flex items-center gap-2 justify-center"
-              variant="secondary"
-              onClick={() => window.open('https://baranzinilab.github.io/biorouter-landing/baam.html', '_blank')}
-            >
-              <GPSIcon size={12} />
-              Browse extensions
             </Button>
           </div>
         )}
@@ -251,6 +263,12 @@ export default function ExtensionsSection({
           />
         )}
       </div>
+      {isBrxtModalOpen && (
+        <BrxtInstallModal
+          onClose={() => setIsBrxtModalOpen(false)}
+          onInstalled={fetchExtensions}
+        />
+      )}
     </section>
   );
 }
