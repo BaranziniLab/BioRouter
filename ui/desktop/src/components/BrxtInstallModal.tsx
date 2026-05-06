@@ -214,7 +214,11 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      const fp = await window.electron.openBrxtFilePicker();
+                      if (fp) processFile(fp);
+                    }}
                   >
                     Browse file…
                   </Button>

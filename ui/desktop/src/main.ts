@@ -1910,6 +1910,17 @@ ipcMain.handle('get-allowed-extensions', async () => {
   return await getAllowList();
 });
 
+ipcMain.handle('brxt:open-file-dialog', async (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  const result = await dialog.showOpenDialog(win!, {
+    title: 'Select BioRouter Extension Bundle',
+    filters: [{ name: 'BioRouter Extension Bundle', extensions: ['brxt'] }],
+    properties: ['openFile'],
+  });
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return result.filePaths[0];
+});
+
 ipcMain.handle(
   'brxt:validate-and-read',
   async (_event, { filePath }: { filePath: string }) => {
