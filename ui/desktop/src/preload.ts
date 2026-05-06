@@ -140,6 +140,8 @@ type ElectronAPI = {
   openDirectoryInExplorer: (directoryPath: string) => Promise<boolean>;
   launchApp: (app: BioRouterApp) => Promise<void>;
   addRecentDir: (dir: string) => Promise<boolean>;
+  validateBrxtBundle: (filePath: string) => Promise<{ manifest: import('./types/brxt').BrxtManifest } | { error: string }>;
+  installBrxtBundle: (filePath: string, extensionName: string) => Promise<{ success: true; installDir: string } | { error: string }>;
 };
 
 type AppConfigAPI = {
@@ -281,6 +283,10 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.invoke('open-directory-in-explorer', directoryPath),
   launchApp: (app: BioRouterApp) => ipcRenderer.invoke('launch-app', app),
   addRecentDir: (dir: string) => ipcRenderer.invoke('add-recent-dir', dir),
+  validateBrxtBundle: (filePath: string) =>
+    ipcRenderer.invoke('brxt:validate-and-read', { filePath }),
+  installBrxtBundle: (filePath: string, extensionName: string) =>
+    ipcRenderer.invoke('brxt:install', { filePath, extensionName }),
 };
 
 const appConfigAPI: AppConfigAPI = {
