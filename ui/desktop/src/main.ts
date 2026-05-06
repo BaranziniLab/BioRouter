@@ -23,6 +23,7 @@ import started from 'electron-squirrel-startup';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'child_process';
+import AdmZip from 'adm-zip';
 import 'dotenv/config';
 import { checkServerStatus, startBiorouterd } from './biorouterd';
 import { expandTilde } from './utils/pathUtils';
@@ -1886,6 +1887,42 @@ ipcMain.handle('show-save-dialog', async (_event, options) => {
 ipcMain.handle('get-allowed-extensions', async () => {
   return await getAllowList();
 });
+
+ipcMain.handle(
+  'brxt:validate-and-read',
+  async (_event, { filePath }: { filePath: string }) => {
+    try {
+      const zip = new AdmZip(filePath);
+      const entries = zip.getEntries().map((e) => e.entryName);
+
+      if (!entries.some((e) => e === 'manifest.json'))
+        return { error: 'Missing manifest.json — not a valid .brxt bundle' };
+      if (!entries.some((e) => e.toLowerCase() === 'readme.md'))
+        return { error: 'Missing README.md — not a valid .brxt bundle' };
+      if (!entries.some((e) => e === 'pyproject.toml'))
+        return { error: 'Missing pyproject.toml — not a valid .brxt bundle' };
+      if (!entries.some((e) => e.startsWith('src/')))
+        return { error: 'Missing src/ directory — not a valid .brxt bundle' };
+
+      const manifestEntry = zip.getEntry('manifest.json');
+      if (!manifestEntry) return { error: 'Could not read manifest.json' };
+
+      const manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
+
+      for (const field of ['name', 'display_name', 'description', 'version', 'entry_point', 'repository']) {
+        if (!manifest[field])
+          return { error: `manifest.json missing required field: "${field}"` };
+      }
+
+      if (!Array.isArray(manifest.env_vars))
+        return { error: 'manifest.json "env_vars" must be an array' };
+
+      return { manifest };
+    } catch (err) {
+      return { error: `Failed to read bundle: ${(err as Error).message}` };
+    }
+  }
+);
 
 const createNewWindow = async (app: App, dir?: string | null) => {
   const recentDirs = loadRecentDirs();
