@@ -497,6 +497,16 @@ export function AppInner() {
   }, []);
 
   useEffect(() => {
+    const handleOpenBrxtFile = (_event: IpcRendererEvent, ...args: unknown[]) => {
+      const filePath = args[0] as string;
+      console.log('Received open-brxt-file IPC event:', filePath);
+      navigate('/extensions', { state: { brxtFilePath: filePath } });
+    };
+    window.electron.on('open-brxt-file', handleOpenBrxtFile);
+    return () => window.electron.off('open-brxt-file', handleOpenBrxtFile);
+  }, [navigate]);
+
+  useEffect(() => {
     const handleSetView = (_event: IpcRendererEvent, ...args: unknown[]) => {
       const newView = args[0] as View;
       const section = args[1] as string | undefined;

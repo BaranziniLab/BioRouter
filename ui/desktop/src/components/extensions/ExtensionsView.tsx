@@ -22,6 +22,7 @@ import { BrxtInstallModal } from '../BrxtInstallModal';
 export type ExtensionsViewOptions = {
   deepLinkConfig?: ExtensionConfig;
   showEnvVars?: boolean;
+  brxtFilePath?: string;
 };
 
 export default function ExtensionsView({
@@ -33,6 +34,7 @@ export default function ExtensionsView({
 }) {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isBrxtModalOpen, setIsBrxtModalOpen] = useState(false);
+  const [brxtPreloadedPath, setBrxtPreloadedPath] = useState<string | undefined>(undefined);
   const [refreshKey, setRefreshKey] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
   const { addExtension } = useConfig();
@@ -67,6 +69,14 @@ export default function ExtensionsView({
       scrollToExtension(viewOptions.deepLinkConfig?.name);
     }
   }, [viewOptions.deepLinkConfig?.name, refreshKey]);
+
+  // Open BrxtInstallModal automatically when a file path is pre-loaded via IPC
+  useEffect(() => {
+    if (viewOptions.brxtFilePath) {
+      setBrxtPreloadedPath(viewOptions.brxtFilePath);
+      setIsBrxtModalOpen(true);
+    }
+  }, [viewOptions.brxtFilePath]);
 
   const handleModalClose = () => {
     setIsAddModalOpen(false);
@@ -165,8 +175,9 @@ export default function ExtensionsView({
       )}
       {isBrxtModalOpen && (
         <BrxtInstallModal
-          onClose={() => setIsBrxtModalOpen(false)}
-          onInstalled={() => setRefreshKey((prev) => prev + 1)}
+          onClose={() => { setIsBrxtModalOpen(false); setBrxtPreloadedPath(undefined); }}
+          onInstalled={() => { setRefreshKey((prev) => prev + 1); }}
+          preloadedFilePath={brxtPreloadedPath}
         />
       )}
     </MainPanelLayout>
