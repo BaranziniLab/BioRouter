@@ -498,8 +498,8 @@ export function AppInner() {
 
   useEffect(() => {
     const handleOpenBrxtFile = (_event: IpcRendererEvent, ...args: unknown[]) => {
-      const filePath = args[0] as string;
-      console.log('Received open-brxt-file IPC event:', filePath);
+      const filePath = args[0];
+      if (typeof filePath !== 'string') return;
       navigate('/extensions', { state: { brxtFilePath: filePath } });
     };
     window.electron.on('open-brxt-file', handleOpenBrxtFile);
