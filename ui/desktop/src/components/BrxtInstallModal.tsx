@@ -1,5 +1,5 @@
 // ui/desktop/src/components/BrxtInstallModal.tsx
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import {
   Dialog,
   DialogContent,
@@ -28,9 +28,10 @@ type Step = 'drop' | 'configure';
 interface Props {
   onClose: () => void;
   onInstalled: () => void;
+  preloadedFilePath?: string;
 }
 
-export function BrxtInstallModal({ onClose, onInstalled }: Props) {
+export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Props) {
   const [step, setStep] = useState<Step>('drop');
   const [filePath, setFilePath] = useState<string | null>(null);
   const [manifest, setManifest] = useState<BrxtManifest | null>(null);
@@ -43,11 +44,10 @@ export function BrxtInstallModal({ onClose, onInstalled }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { addExtension } = useConfig();
 
-  const processFile = useCallback(async (file: File) => {
+  const processFile = useCallback(async (fp: string) => {
     setError(null);
     setManifest(null);
     setIsValidating(true);
-    const fp = window.electron.getPathForFile(file);
     setFilePath(fp);
 
     const result = await window.electron.validateBrxtBundle(fp);
@@ -70,6 +70,12 @@ export function BrxtInstallModal({ onClose, onInstalled }: Props) {
     }
   }, []);
 
+  useEffect(() => {
+    if (preloadedFilePath) {
+      processFile(preloadedFilePath);
+    }
+  }, [preloadedFilePath, processFile]);
+
   const handleDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
@@ -80,7 +86,7 @@ export function BrxtInstallModal({ onClose, onInstalled }: Props) {
         setError('Please drop a .brxt file');
         return;
       }
-      processFile(file);
+      processFile(window.electron.getPathForFile(file));
     },
     [processFile]
   );
@@ -88,7 +94,7 @@ export function BrxtInstallModal({ onClose, onInstalled }: Props) {
   const handleFileInput = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
-      if (file) processFile(file);
+      if (file) processFile(window.electron.getPathForFile(file));
       // reset so same file can be re-selected after an error
       e.target.value = '';
     },
@@ -97,6 +103,14 @@ export function BrxtInstallModal({ onClose, onInstalled }: Props) {
 
   const setEnvValue = (key: string, value: string) =>
     setEnvEntries((prev) => prev.map((e) => (e.key === key ? { ...e, value } : e)));
+
+  const handleNext = () => {
+    if (manifest && manifest.env_vars.length === 0) {
+      handleInstall();
+    } else {
+      setStep('configure');
+    }
+  };
 
   const handleInstall = async () => {
     if (!filePath || !manifest) return;
@@ -238,10 +252,10 @@ export function BrxtInstallModal({ onClose, onInstalled }: Props) {
                 Cancel
               </Button>
               <Button
-                disabled={!manifest || !!error || isValidating}
-                onClick={() => setStep('configure')}
+                disabled={!manifest || !!error || isValidating || isInstalling}
+                onClick={handleNext}
               >
-                Next: Configure →
+                {isInstalling ? 'Installing…' : 'Next: Configure →'}
               </Button>
             </DialogFooter>
           </div>
