@@ -51,8 +51,23 @@ let cfg = {
         LSHandlerRank: 'Alternate',
         LSItemContentTypes: ['public.directory', 'public.folder'],
       },
+      {
+        CFBundleTypeName: 'BioRouter Extension Bundle',
+        CFBundleTypeRole: 'Viewer',
+        CFBundleTypeExtensions: ['brxt'],
+        LSHandlerRank: 'Owner',
+      },
     ],
   },
+  // Windows file associations
+  fileAssociations: [
+    {
+      ext: 'brxt',
+      name: 'BioRouter Extension Bundle',
+      description: 'BioRouter Extension Bundle',
+      role: 'Viewer',
+    },
+  ],
 };
 
 module.exports = {
@@ -99,6 +114,7 @@ module.exports = {
         maintainer: 'BaranziniLab',
         homepage: 'https://github.com/BaranziniLab/BioRouter',
         categories: ['Development'],
+        mimeType: ['application/x-biorouter-brxt'],
         desktopTemplate: './forge.deb.desktop',
         options: {
           icon: 'src/images/icon.png',
@@ -114,6 +130,7 @@ module.exports = {
         maintainer: 'BaranziniLab',
         homepage: 'https://github.com/BaranziniLab/BioRouter',
         categories: ['Development'],
+        mimeType: ['application/x-biorouter-brxt'],
         desktopTemplate: './forge.rpm.desktop',
         options: {
           icon: 'src/images/icon.png',

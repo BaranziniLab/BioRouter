@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-biorouter-brxt">
+    <comment>BioRouter Extension Bundle</comment>
+    <glob pattern="*.brxt"/>
+  </mime-type>
+</mime-info>
