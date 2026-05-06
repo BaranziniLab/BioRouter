@@ -22,7 +22,7 @@ import fsSync from 'node:fs';
 import started from 'electron-squirrel-startup';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import AdmZip from 'adm-zip';
 import 'dotenv/config';
 import { checkServerStatus, startBiorouterd } from './biorouterd';
@@ -1920,6 +1920,37 @@ ipcMain.handle(
       return { manifest };
     } catch (err) {
       return { error: `Failed to read bundle: ${(err as Error).message}` };
+    }
+  }
+);
+
+ipcMain.handle(
+  'brxt:install',
+  async (_event, { filePath, extensionName }: { filePath: string; extensionName: string }) => {
+    try {
+      const installDir = path.join(os.homedir(), '.config', 'biorouter', 'extensions', extensionName);
+
+      // Create install directory
+      fsSync.mkdirSync(installDir, { recursive: true });
+
+      // Extract bundle
+      const zip = new AdmZip(filePath);
+      zip.extractAllTo(installDir, /* overwrite */ true);
+
+      // Pre-build the virtual environment
+      const uvResult = spawnSync('uv', ['sync'], {
+        cwd: installDir,
+        encoding: 'utf8',
+        timeout: 120_000,
+      });
+
+      if (uvResult.status !== 0) {
+        throw new Error(`uv sync failed:\n${uvResult.stderr || uvResult.stdout}`);
+      }
+
+      return { success: true, installDir };
+    } catch (err) {
+      return { error: `Installation failed: ${(err as Error).message}` };
     }
   }
 );
