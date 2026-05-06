@@ -154,8 +154,9 @@ async function configureProxy() {
 if (started) app.quit();
 
 if (process.env.ENABLE_PLAYWRIGHT) {
-  console.log('[Main] Enabling Playwright remote debugging on port 9222');
-  app.commandLine.appendSwitch('remote-debugging-port', '9222');
+  const cdpPort = process.env.PLAYWRIGHT_CDP_PORT ?? '9222';
+  console.log(`[Main] Enabling Playwright remote debugging on port ${cdpPort}`);
+  app.commandLine.appendSwitch('remote-debugging-port', cdpPort);
 }
 
 // In development mode, force registration as the default protocol client
@@ -1911,6 +1912,10 @@ ipcMain.handle('get-allowed-extensions', async () => {
 });
 
 ipcMain.handle('brxt:open-file-dialog', async (event) => {
+  // Allow automated tests to inject a file path without a native dialog
+  if (process.env.PLAYWRIGHT_BRXT_FILE) {
+    return process.env.PLAYWRIGHT_BRXT_FILE;
+  }
   const win = BrowserWindow.fromWebContents(event.sender);
   const result = await dialog.showOpenDialog(win!, {
     title: 'Select BioRouter Extension Bundle',
