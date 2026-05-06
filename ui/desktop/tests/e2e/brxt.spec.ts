@@ -1,0 +1,421 @@
+/**
+ * E2E tests for the .brxt extension bundle feature.
+ *
+ * Tests 13-15 and 22: Button layout, drag-and-drop modal, invalid bundle error,
+ * env var form, and no-env-var bundle skip.
+ *
+ * Notes:
+ * - Tests that call brxt:install are skipped because they require `uv` to be
+ *   installed and an actual Python environment set up.
+ * - All .brxt fixtures are real zip archives created on disk via AdmZip so that
+ *   the Electron main-process IPC handler (brxt:validate-and-read) can read them.
+ */
+
+import { test, expect, ElectronApplication, Page } from '@playwright/test';
+import { _electron as electron } from '@playwright/test';
+import * as path from 'path';
+import * as fs from 'fs';
+import * as os from 'os';
+
+// AdmZip is a production dependency in ui/desktop/package.json
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const AdmZip = require('adm-zip');
+
+// ---------------------------------------------------------------------------
+// Fixture helpers
+// ---------------------------------------------------------------------------
+
+const VALID_MANIFEST = {
+  name: 'testextension',
+  display_name: 'Test Extension',
+  description: 'A test extension for E2E tests',
+  version: '1.0.0',
+  entry_point: 'testextension',
+  repository: 'https://github.com/example/testextension',
+  env_vars: [
+    {
+      key: 'TEST_KEY',
+      required: true,
+      auto_propagate: false,
+      description: 'A required API key',
+      secret: true,
+    },
+    {
+      key: 'OPTIONAL_KEY',
+      required: false,
+      auto_propagate: true,
+      default: 'default-value',
+      description: 'An optional setting',
+      secret: false,
+    },
+  ],
+};
+
+const VALID_MANIFEST_NO_ENV = {
+  name: 'noenvextension',
+  display_name: 'No Env Extension',
+  description: 'An extension with no env vars',
+  version: '0.1.0',
+  entry_point: 'noenvextension',
+  repository: 'https://github.com/example/noenvextension',
+  env_vars: [],
+};
+
+/** Create a well-formed .brxt zip archive at `outPath`. */
+function createValidBrxt(manifest: object, outPath: string): void {
+  const zip = new AdmZip();
+  zip.addFile('manifest.json', Buffer.from(JSON.stringify(manifest)));
+  zip.addFile('README.md', Buffer.from('# Test extension'));
+  zip.addFile('pyproject.toml', Buffer.from('[project]\nname = "test"\nversion = "0.1.0"'));
+  zip.addFile('src/__init__.py', Buffer.from(''));
+  zip.writeZip(outPath);
+}
+
+/** Create an invalid .brxt that is missing manifest.json. */
+function createInvalidBrxt(outPath: string): void {
+  const zip = new AdmZip();
+  zip.addFile('README.md', Buffer.from('# Missing manifest'));
+  zip.writeZip(outPath);
+}
+
+// ---------------------------------------------------------------------------
+// Test suite
+// ---------------------------------------------------------------------------
+
+let electronApp: ElectronApplication;
+let page: Page;
+
+/** Temporary directory for fixture files — cleaned up in afterAll. */
+let tmpDir: string;
+
+test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
+  test.beforeAll(async () => {
+    // Create temp directory for .brxt fixture files
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'brxt-e2e-'));
+
+    // Launch Electron app
+    electronApp = await electron.launch({
+      args: [path.join(__dirname, '../../.vite/build/main.js')],
+      cwd: path.join(__dirname, '../..'),
+      env: {
+        ...process.env,
+        ELECTRON_IS_DEV: '1',
+        NODE_ENV: 'development',
+        BIOROUTER_ALLOWLIST_BYPASS: 'true',
+      },
+    });
+
+    page = await electronApp.firstWindow();
+    await page.waitForLoadState('domcontentloaded');
+
+    // Wait for the React tree to mount
+    await page.waitForFunction(() => {
+      const root = document.getElementById('root');
+      return root && root.children.length > 0;
+    });
+
+    // Allow the app to settle (animations, IPC handshakes, etc.)
+    await page.waitForTimeout(3000);
+  });
+
+  test.afterAll(async () => {
+    if (electronApp) {
+      await electronApp.close().catch(() => {});
+    }
+    // Clean up temp fixture files
+    if (tmpDir && fs.existsSync(tmpDir)) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // Helper: navigate to the Extensions tab
+  // -------------------------------------------------------------------------
+  async function goToExtensions(): Promise<void> {
+    const extensionsButton = await page.waitForSelector(
+      '[data-testid="sidebar-extensions-button"]',
+      { timeout: 10000, state: 'visible' }
+    );
+    await extensionsButton.click();
+    // Wait for the Extensions heading to confirm navigation
+    await page.waitForSelector('h1:has-text("Extensions")', {
+      timeout: 10000,
+      state: 'visible',
+    });
+    await page.waitForTimeout(500);
+  }
+
+  // -------------------------------------------------------------------------
+  // Helper: open the BrxtInstallModal via "Add extension" button
+  // -------------------------------------------------------------------------
+  async function openBrxtModal(): Promise<void> {
+    const addBtn = await page.waitForSelector('button:has-text("Add extension")', {
+      timeout: 10000,
+      state: 'visible',
+    });
+    await addBtn.click();
+    // Wait for the dialog to appear
+    await page.waitForSelector('[role="dialog"]', { timeout: 5000, state: 'visible' });
+    await page.waitForTimeout(300);
+  }
+
+  // -------------------------------------------------------------------------
+  // Helper: close modal if open (press Escape)
+  // -------------------------------------------------------------------------
+  async function closeModalIfOpen(): Promise<void> {
+    const dialog = await page.$('[role="dialog"]');
+    if (dialog) {
+      await page.keyboard.press('Escape');
+      await page.waitForSelector('[role="dialog"]', { state: 'hidden', timeout: 3000 }).catch(() => {});
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Test 1: Button layout in the Extensions tab header
+  // ---------------------------------------------------------------------------
+  test('Extensions tab has correct button layout — Add extension, Browse extensions, Add custom extension', async () => {
+    await goToExtensions();
+
+    // Verify all three buttons are visible
+    const addExtBtn = page.locator('button:has-text("Add extension")');
+    const browseBtn = page.locator('button:has-text("Browse extensions")');
+    const addCustomBtn = page.locator('button:has-text("Add custom extension")');
+
+    await expect(addExtBtn).toBeVisible();
+    await expect(browseBtn).toBeVisible();
+    await expect(addCustomBtn).toBeVisible();
+
+    // "Add extension" should have the default (dark) variant: check it does NOT have
+    // the outline variant class pattern (it should have bg-primary or similar dark bg).
+    // We inspect the class attribute and confirm the outline buttons differ from it.
+    const addExtClass = await addExtBtn.getAttribute('class') ?? '';
+    const browseClass = await browseBtn.getAttribute('class') ?? '';
+    const addCustomClass = await addCustomBtn.getAttribute('class') ?? '';
+
+    // Outline buttons typically include "outline" or "border" in their class string;
+    // the default button uses bg-primary (dark background).
+    // We assert that the browse/add-custom buttons have "outline" in their variant class.
+    expect(browseClass).toContain('outline');
+    expect(addCustomClass).toContain('outline');
+
+    // "Add extension" should NOT share the same class pattern as outline buttons —
+    // it should carry a background-colour class (the default variant).
+    // At minimum it should be different from an outline button.
+    expect(addExtClass).not.toEqual(browseClass);
+
+    // Verify DOM order: "Add extension" appears before "Browse extensions" which
+    // appears before "Add custom extension".
+    const buttonTexts: string[] = await page.$$eval(
+      '[data-search-scroll-area] .flex.gap-3 button',
+      (btns: Element[]) => btns.map((b) => b.textContent?.trim() ?? '')
+    );
+    const addIdx = buttonTexts.findIndex((t) => t.includes('Add extension'));
+    const browseIdx = buttonTexts.findIndex((t) => t.includes('Browse extensions'));
+    const customIdx = buttonTexts.findIndex((t) => t.includes('Add custom extension'));
+
+    expect(addIdx).toBeGreaterThanOrEqual(0);
+    expect(browseIdx).toBeGreaterThan(addIdx);
+    expect(customIdx).toBeGreaterThan(browseIdx);
+
+    await page.screenshot({ path: 'test-results/brxt-button-layout.png' });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test 2: Selecting a valid .brxt file opens the modal with manifest info
+  // ---------------------------------------------------------------------------
+  test('Selecting a valid .brxt file shows manifest info card in modal', async () => {
+    await goToExtensions();
+    await openBrxtModal();
+
+    // Create valid .brxt fixture
+    const brxtPath = path.join(tmpDir, 'valid.brxt');
+    createValidBrxt(VALID_MANIFEST, brxtPath);
+
+    // The BrxtInstallModal renders a hidden <input type="file" accept=".brxt">.
+    // We target it with setInputFiles, which triggers the onChange handler.
+    const fileInput = page.locator('input[type="file"][accept=".brxt"]');
+    await fileInput.setInputFiles(brxtPath);
+
+    // Wait for the manifest preview card to appear
+    await page.waitForSelector('text=Detected from bundle', { timeout: 10000 });
+
+    // Verify display_name and version are shown
+    await expect(page.locator('text=Test Extension')).toBeVisible();
+    await expect(page.locator('text=1.0.0')).toBeVisible();
+
+    // The modal title should still say "Add Extension" (step === 'drop')
+    await expect(page.locator('[role="dialog"] [data-slot="dialog-title"]')).toContainText('Add Extension');
+
+    await page.screenshot({ path: 'test-results/brxt-valid-manifest.png' });
+
+    await closeModalIfOpen();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test 3: Invalid .brxt (missing manifest.json) shows error banner
+  // ---------------------------------------------------------------------------
+  test('Selecting an invalid .brxt shows an error banner', async () => {
+    await goToExtensions();
+    await openBrxtModal();
+
+    // Create invalid .brxt fixture (no manifest.json)
+    const invalidPath = path.join(tmpDir, 'invalid.brxt');
+    createInvalidBrxt(invalidPath);
+
+    const fileInput = page.locator('input[type="file"][accept=".brxt"]');
+    await fileInput.setInputFiles(invalidPath);
+
+    // Wait for the error banner — it should contain a descriptive message
+    await page.waitForSelector('.text-red-600, .text-red-400', { timeout: 10000 });
+
+    const errorBanner = page.locator('.text-red-600, .text-red-400').first();
+    const errorText = await errorBanner.textContent();
+    expect(errorText).toBeTruthy();
+
+    // The error should mention missing manifest.json or similar validation failure
+    const lowerError = (errorText ?? '').toLowerCase();
+    const mentionsMissing =
+      lowerError.includes('manifest') ||
+      lowerError.includes('missing') ||
+      lowerError.includes('invalid') ||
+      lowerError.includes('bundle') ||
+      lowerError.includes('valid');
+    expect(mentionsMissing).toBe(true);
+
+    await page.screenshot({ path: 'test-results/brxt-invalid-error.png' });
+
+    await closeModalIfOpen();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test 4: Env var form — clicking "Next: Configure →" shows required/optional fields
+  // ---------------------------------------------------------------------------
+  test('Next: Configure → shows required field with asterisk and optional with default', async () => {
+    await goToExtensions();
+    await openBrxtModal();
+
+    const brxtPath = path.join(tmpDir, 'env-vars.brxt');
+    createValidBrxt(VALID_MANIFEST, brxtPath);
+
+    const fileInput = page.locator('input[type="file"][accept=".brxt"]');
+    await fileInput.setInputFiles(brxtPath);
+
+    // Wait for manifest preview to confirm successful read
+    await page.waitForSelector('text=Detected from bundle', { timeout: 10000 });
+
+    // Click "Next: Configure →"
+    const nextBtn = page.locator('button:has-text("Next: Configure")');
+    await expect(nextBtn).toBeEnabled({ timeout: 5000 });
+    await nextBtn.click();
+
+    // Step 2: configure — modal title should change
+    await page.waitForSelector('[role="dialog"] [data-slot="dialog-title"]:has-text("Configure")', {
+      timeout: 5000,
+    });
+
+    // Required field label should have a red asterisk *
+    const requiredLabel = page.locator('label:has-text("TEST_KEY")');
+    await expect(requiredLabel).toBeVisible();
+    const asterisk = requiredLabel.locator('span.text-red-500');
+    await expect(asterisk).toBeVisible();
+    await expect(asterisk).toContainText('*');
+
+    // "Install Extension" button should be disabled because required field is empty
+    const installBtn = page.locator('button:has-text("Install Extension")');
+    await expect(installBtn).toBeDisabled({ timeout: 3000 });
+
+    // The optional var (OPTIONAL_KEY) should have a "Show N optional variables" toggle
+    const showOptionalToggle = page.locator('button:has-text("Show")').or(
+      page.locator('button:has-text("optional variable")')
+    );
+    await expect(showOptionalToggle).toBeVisible();
+
+    await page.screenshot({ path: 'test-results/brxt-configure-step.png' });
+
+    await closeModalIfOpen();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test 5: Bundle with no env vars — clicking Next triggers install immediately
+  //         (no configure step shown)
+  //
+  // NOTE: The actual install step calls brxt:install which spawns `uv sync`.
+  // We only verify that the UI skips the configure step and moves toward install.
+  // The install itself is skipped to avoid requiring `uv` in the test environment.
+  // ---------------------------------------------------------------------------
+  test.skip('No-env-var bundle skips configure step and goes directly to install (requires uv)', async () => {
+    await goToExtensions();
+    await openBrxtModal();
+
+    const brxtPath = path.join(tmpDir, 'no-env.brxt');
+    createValidBrxt(VALID_MANIFEST_NO_ENV, brxtPath);
+
+    const fileInput = page.locator('input[type="file"][accept=".brxt"]');
+    await fileInput.setInputFiles(brxtPath);
+
+    // Wait for manifest preview
+    await page.waitForSelector('text=Detected from bundle', { timeout: 10000 });
+
+    // Click "Next: Configure →" — for a no-env bundle this calls handleInstall directly
+    const nextBtn = page.locator('button:has-text("Next: Configure")');
+    await expect(nextBtn).toBeEnabled({ timeout: 5000 });
+    await nextBtn.click();
+
+    // The configure step should NOT appear — the dialog title should NOT change to "Configure"
+    // Instead we should see "Installing…" spinner or the dialog closes
+    await page.waitForTimeout(1000);
+
+    const configureTitle = await page
+      .$('[role="dialog"] [data-slot="dialog-title"]:has-text("Configure")')
+      .catch(() => null);
+    expect(configureTitle).toBeNull();
+
+    await page.screenshot({ path: 'test-results/brxt-no-env-install.png' });
+
+    await closeModalIfOpen();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Bonus: No-env-var bundle — verify configure step is skipped (without install)
+  // We check that handleNext would call handleInstall immediately by confirming
+  // the "Configure" title never appears after clicking Next.
+  // ---------------------------------------------------------------------------
+  test('No-env-var bundle: clicking Next does not show configure step', async () => {
+    await goToExtensions();
+    await openBrxtModal();
+
+    const brxtPath = path.join(tmpDir, 'no-env-check.brxt');
+    createValidBrxt(VALID_MANIFEST_NO_ENV, brxtPath);
+
+    const fileInput = page.locator('input[type="file"][accept=".brxt"]');
+    await fileInput.setInputFiles(brxtPath);
+
+    // Wait for manifest preview
+    await page.waitForSelector('text=Detected from bundle', { timeout: 10000 });
+    await page.waitForTimeout(300);
+
+    // Confirm the manifest shows 0 required env vars
+    const infoCard = page.locator('text=0 required env var');
+    await expect(infoCard).toBeVisible();
+
+    // Click Next — this will trigger handleInstall internally (no configure step).
+    // We do NOT wait for install completion (requires uv), but we verify the
+    // "Configure" title never appears, confirming the step was skipped.
+    const nextBtn = page.locator('button:has-text("Next: Configure")');
+    await expect(nextBtn).toBeEnabled({ timeout: 5000 });
+    await nextBtn.click();
+
+    // Give the UI a moment to react
+    await page.waitForTimeout(800);
+
+    // The dialog either shows "Installing…" or closes — it must NOT show "Configure …"
+    const configTitle = await page
+      .$('[data-slot="dialog-title"]:has-text("Configure")')
+      .catch(() => null);
+    expect(configTitle).toBeNull();
+
+    await page.screenshot({ path: 'test-results/brxt-no-env-skips-configure.png' });
+
+    await closeModalIfOpen();
+  });
+});
