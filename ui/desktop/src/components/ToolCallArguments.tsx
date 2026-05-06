@@ -30,7 +30,7 @@ export function ToolCallArguments({ args }: ToolCallArgumentsProps) {
         return (
           <div className="font-sans text-sm mb-2">
             <div className="flex flex-row">
-              <span className="text-textSubtle min-w-[140px]">{key}</span>
+              <span className="text-text-muted min-w-[140px]">{key}</span>
               <span className="text-textPlaceholder">{value}</span>
             </div>
           </div>
@@ -42,7 +42,7 @@ export function ToolCallArguments({ args }: ToolCallArgumentsProps) {
           <div className={`flex flex-row items-stretch ${isExpanded ? '' : 'truncate min-w-0'}`}>
             <button
               onClick={() => toggleKey(key)}
-              className="flex text-left text-textSubtle min-w-[140px]"
+              className="flex text-left text-text-muted min-w-[140px]"
             >
               <span>{key}</span>
             </button>
@@ -85,7 +85,7 @@ export function ToolCallArguments({ args }: ToolCallArgumentsProps) {
     return (
       <div className="mb-2">
         <div className="flex flex-row font-sans text-sm">
-          <span className="text-textSubtle min-w-[140px]">{key}</span>
+          <span className="text-text-muted min-w-[140px]">{key}</span>
           <pre className="whitespace-pre-wrap text-textPlaceholder overflow-x-auto max-w-full">
             {content}
           </pre>

@@ -18,16 +18,14 @@ export const SpellcheckToggle = () => {
   };
 
   return (
-    <div className="flex items-center justify-between py-2 px-2 hover:bg-background-muted rounded-lg transition-all">
+    <div className="flex items-center justify-between py-4">
       <div>
-        <h3 className="text-text-default">Enable Spellcheck</h3>
-        <p className="text-xs text-text-muted max-w-md mt-[2px]">
+        <p className="text-sm font-medium text-text-default">Enable Spellcheck</p>
+        <p className="text-xs text-text-muted mt-0.5 max-w-md">
           Check spelling in the chat input. Requires restart to take effect.
         </p>
       </div>
-      <div className="flex items-center">
-        <Switch checked={enabled} onCheckedChange={handleToggle} variant="mono" />
-      </div>
+      <Switch checked={enabled} onCheckedChange={handleToggle} variant="mono" />
     </div>
   );
 };

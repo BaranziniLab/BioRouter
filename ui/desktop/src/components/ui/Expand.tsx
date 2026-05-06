@@ -1,4 +1,4 @@
-import { ChevronUp } from 'lucide-react';
+import { ChevronUp } from '../icons/app-icons';
 
 export default function Expand({ size, isExpanded }: { size: number; isExpanded: boolean }) {
   return (

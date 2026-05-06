@@ -1,6 +1,6 @@
 import { SyntheticEvent } from 'react';
 import { Button } from '../../../../ui/button';
-import { Trash2, AlertTriangle } from 'lucide-react';
+import { Trash2, AlertTriangle } from '../../../../icons/app-icons';
 import { ConfigKey } from '../../../../../api';
 
 interface ProviderSetupActionsProps {
@@ -13,13 +13,9 @@ interface ProviderSetupActionsProps {
   canDelete?: boolean;
   providerName?: string;
   requiredParameters?: ConfigKey[];
-  isActiveProvider?: boolean; // Made optional with default false
+  isActiveProvider?: boolean;
 }
 
-/**
- * Renders the action buttons at the bottom of the provider modal.
- * Includes submit, cancel, and delete functionality with confirmation.
- */
 export default function ProviderSetupActions({
   onCancel,
   onSubmit,
@@ -30,111 +26,73 @@ export default function ProviderSetupActions({
   canDelete,
   providerName,
   requiredParameters,
-  isActiveProvider = false, // Default value provided
+  isActiveProvider = false,
 }: ProviderSetupActionsProps) {
-  // If we're showing delete confirmation, render the delete confirmation buttons
   if (showDeleteConfirmation) {
-    // Check if this is the active provider
     if (isActiveProvider) {
       return (
-        <div className="w-full">
-          <div className="w-full px-6 py-4 bg-yellow-600/20 border-t border-yellow-500/30">
-            <p className="text-yellow-500 text-sm mb-2 flex items-start">
-              <AlertTriangle className="h-4 w-4 mr-2 mt-0.5 flex-shrink-0" />
-              <span>
-                You cannot delete {providerName} while it's currently in use. Please switch to a
-                different model before deleting this provider.
-              </span>
-            </p>
+        <div className="flex items-start gap-3 w-full">
+          <div className="flex-1 flex items-start gap-2 text-sm text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50 rounded-lg px-3 py-2.5">
+            <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
+            <span>
+              Switch to a different model before removing <strong>{providerName}</strong>.
+            </span>
           </div>
-          <Button
-            variant="ghost"
-            onClick={onCancelDelete}
-            className="w-full h-[60px] rounded-none hover:bg-bgSubtle text-textSubtle hover:text-textStandard text-md font-regular"
-          >
-            Ok
+          <Button variant="ghost" size="sm" onClick={onCancelDelete}>
+            OK
           </Button>
         </div>
       );
     }
 
-    // Normal delete confirmation
     return (
-      <div className="w-full">
-        <div className="w-full px-6 py-4 bg-red-900/20 border-t border-red-500/30">
-          <p className="text-red-400 text-sm mb-2">
-            Are you sure you want to delete the configuration parameters for {providerName}? This
-            action cannot be undone.
-          </p>
+      <div className="flex items-center justify-between w-full gap-3">
+        <p className="flex-1 text-sm text-text-muted">
+          Delete <strong className="text-text-default">{providerName}</strong> configuration? This
+          cannot be undone.
+        </p>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <Button variant="ghost" size="sm" onClick={onCancelDelete}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            onClick={onConfirmDelete}
+            className="bg-red-600 hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600 text-white border-0"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            Delete
+          </Button>
         </div>
-        <Button
-          onClick={onConfirmDelete}
-          className="w-full h-[60px] rounded-none border-b border-borderSubtle bg-transparent hover:bg-red-900/20 text-red-500 font-medium text-md"
-        >
-          <Trash2 className="h-4 w-4 mr-2" /> Confirm Delete
-        </Button>
-        <Button
-          variant="ghost"
-          onClick={onCancelDelete}
-          className="w-full h-[60px] rounded-none hover:bg-bgSubtle text-textSubtle hover:text-textStandard text-md font-regular"
-        >
-          Cancel
-        </Button>
       </div>
     );
   }
 
-  // Regular buttons (with delete if applicable)
   return (
-    <div className="w-full">
+    <div className="flex items-center w-full">
+      {/* Left: destructive delete */}
       {canDelete && onDelete && (
         <Button
           type="button"
+          variant="ghost"
+          size="sm"
           onClick={onDelete}
-          className="w-full h-[60px] rounded-none border-t border-borderSubtle bg-transparent hover:bg-bgSubtle text-red-500 font-medium text-md"
+          className="text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 mr-auto"
         >
-          <Trash2 className="h-4 w-4 mr-2" /> Delete Provider
+          <Trash2 className="w-3.5 h-3.5" />
+          Remove
         </Button>
       )}
-      {requiredParameters && requiredParameters.length > 0 ? (
-        <>
-          <Button
-            type="submit"
-            variant="ghost"
-            onClick={onSubmit}
-            className="w-full h-[60px] rounded-none border-t border-borderSubtle text-md hover:bg-bgSubtle text-textProminent font-medium"
-          >
-            Submit
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={onCancel}
-            className="w-full h-[60px] rounded-none border-t border-borderSubtle hover:text-textStandard text-textSubtle hover:bg-bgSubtle text-md font-regular"
-          >
-            Cancel
-          </Button>
-        </>
-      ) : (
-        <>
-          <Button
-            type="submit"
-            variant="ghost"
-            onClick={onSubmit}
-            className="w-full h-[60px] rounded-none border-t border-borderSubtle text-md hover:bg-bgSubtle text-textProminent font-medium"
-          >
-            Enable Provider
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            onClick={onCancel}
-            className="w-full h-[60px] rounded-none border-t border-borderSubtle hover:text-textStandard text-textSubtle hover:bg-bgSubtle text-md font-regular"
-          >
-            Cancel
-          </Button>
-        </>
-      )}
+
+      {/* Right: cancel + primary action */}
+      <div className={`flex items-center gap-2 ${!canDelete || !onDelete ? 'ml-auto' : ''}`}>
+        <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
+          Cancel
+        </Button>
+        <Button type="submit" size="sm" onClick={onSubmit}>
+          {requiredParameters && requiredParameters.length > 0 ? 'Save' : 'Enable'}
+        </Button>
+      </div>
     </div>
   );
 }

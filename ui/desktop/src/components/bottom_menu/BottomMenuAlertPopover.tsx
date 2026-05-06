@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
-import { FaCircle } from 'react-icons/fa';
+import { CircleIcon } from '../icons/app-icons';
 import { isEqual } from 'lodash';
 import { cn } from '../../utils';
 import { Alert, AlertType } from '../alerts';
@@ -227,7 +227,7 @@ export default function BottomMenuAlertPopover({ alerts }: AlertPopoverProps) {
           }}
         >
           <div className={cn('relative', triggerColor)}>
-            <FaCircle size={5} />
+            <CircleIcon size={5} />
           </div>
         </button>
       </div>

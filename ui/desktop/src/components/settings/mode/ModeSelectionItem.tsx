@@ -53,13 +53,13 @@ export const ModeSelectionItem = forwardRef<HTMLDivElement, ModeSelectionItemPro
     return (
       <div ref={ref} className="group hover:cursor-pointer text-sm">
         <div
-          className={`flex items-center justify-between text-text-default py-2 px-2 ${checked ? 'bg-background-muted' : 'bg-background-default hover:bg-background-muted'} rounded-lg transition-all`}
+          className={`flex items-center justify-between text-text-default py-3 px-2 -mx-2 rounded-lg cursor-pointer transition-colors duration-150 ${checked ? 'bg-background-medium' : 'hover:bg-background-medium'}`}
           onClick={() => handleModeChange(mode.key)}
         >
           <div className="flex">
             <div>
-              <h3 className="text-text-default">{mode.label}</h3>
-              {showDescription && <p className="text-text-muted mt-[2px]">{mode.description}</p>}
+              <p className="text-sm font-medium text-text-default">{mode.label}</p>
+              {showDescription && <p className="text-xs text-text-muted mt-0.5">{mode.description}</p>}
             </div>
           </div>
 

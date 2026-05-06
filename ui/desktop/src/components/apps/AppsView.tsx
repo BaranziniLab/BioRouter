@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Button } from '../ui/button';
-import { Play } from 'lucide-react';
+import { Play } from '../icons/app-icons';
 import { BioRouterApp, listApps } from '../../api';
 import { useChatContext } from '../../contexts/ChatContext';
 

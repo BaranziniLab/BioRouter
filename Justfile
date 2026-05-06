@@ -176,6 +176,14 @@ run-ui-playwright:
     echo "Using isolated directory: $RUN_DIR"
     cd ui/desktop && ENABLE_PLAYWRIGHT=true BIOROUTER_PATH_ROOT="$RUN_DIR" npm run start-gui
 
+# Run debug build + Electron with CDP on port 9222 (for Playwright MCP debugging via .mcp.json)
+dev-ui-playwright:
+    @echo "Building debug binary..."
+    cargo build
+    @just copy-binary debug
+    @echo "Starting Electron with CDP on port 9222 — connect via .mcp.json playwright-electron server"
+    cd ui/desktop && ENABLE_PLAYWRIGHT=true npm run start-gui
+
 run-ui-only:
     @echo "Running UI..."
     cd ui/desktop && npm install && npm run start-gui

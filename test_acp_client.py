@@ -1,31 +1,57 @@
 #!/usr/bin/env python3
 """
-Simple ACP client to test the goose ACP agent.
-Connects to goose acp running on stdio.
+Simple ACP client to test the BioRouter ACP agent.
+Connects to biorouter acp running on stdio.
 
 Tests:
 1. Initialize - Establish connection and verify capabilities
 2. session/new - Create a new session
 3. session/prompt - Send a prompt to the session
-4. session/load - Load an existing session (new feature)
+4. session/load - Load an existing session
 """
 
 import subprocess
 import json
 import os
+import shutil
 import sys
 import time
+
+# Resolve the repo root (one level up from this script) so we can find the
+# hermit-managed cargo even when the hermit environment is not active.
+_REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+_HERMIT_BIN = os.path.join(_REPO_ROOT, "bin")
+
+def _cargo_env():
+    """Return an env dict that includes the hermit bin dir on PATH."""
+    env = os.environ.copy()
+    path_dirs = env.get("PATH", "").split(os.pathsep)
+    if _HERMIT_BIN not in path_dirs:
+        path_dirs.insert(0, _HERMIT_BIN)
+    env["PATH"] = os.pathsep.join(path_dirs)
+    return env
+
+def _find_cargo():
+    env = _cargo_env()
+    cargo = shutil.which("cargo", path=env["PATH"])
+    if cargo is None:
+        raise FileNotFoundError(
+            f"cargo not found. Activate the hermit env first:\n  source {_HERMIT_BIN}/activate-hermit"
+        )
+    return cargo
 
 
 class AcpClient:
     def __init__(self):
         self.process = subprocess.Popen(
-            ['cargo', 'run', '-p', 'goose-cli', '--', 'acp'],
+            [_find_cargo(), 'run', '-p', 'biorouter-cli', '--', 'acp'],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            bufsize=0
+            bufsize=0,
+            env=_cargo_env(),
+            cwd=_REPO_ROOT,
         )
         self.request_id = 0
 

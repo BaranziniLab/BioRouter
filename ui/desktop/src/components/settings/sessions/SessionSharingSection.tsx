@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Input } from '../../ui/input';
-import { Check, Lock, Loader2, AlertCircle } from 'lucide-react';
+import { Check, Lock, Loader2, AlertCircle } from '../../icons/app-icons';
 import { Switch } from '../../ui/switch';
 import { Button } from '../../ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../ui/card';
@@ -192,7 +192,7 @@ export default function SessionSharingSection() {
                   <label htmlFor="session-sharing-url" className="text-sm text-text-default">
                     Base URL
                   </label>
-                  {isUrlConfigured && <Check className="w-5 h-5 text-green-500" />}
+                  {isUrlConfigured && <Check className="w-5 h-5 text-green-500 dark:text-green-400" />}
                 </div>
                 <div className="flex items-center">
                   <Input
@@ -204,7 +204,7 @@ export default function SessionSharingSection() {
                     {...(envBaseUrlShare ? {} : { onChange: handleBaseUrlChange })}
                   />
                 </div>
-                {urlError && <p className="text-red-500 text-sm">{urlError}</p>}
+                {urlError && <p className="text-red-500 dark:text-red-400 text-sm">{urlError}</p>}
 
                 {(isUrlConfigured || (envBaseUrlShare as string)) && (
                   <div className="space-y-2">
@@ -230,8 +230,8 @@ export default function SessionSharingSection() {
                       <div
                         className={`flex items-start gap-2 p-3 rounded-md text-sm ${
                           testResult.status === 'success'
-                            ? 'bg-green-50 text-green-800 border border-green-200'
-                            : 'bg-red-50 text-red-800 border border-red-200'
+                            ? 'bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-300 border border-green-200 dark:border-green-800/50'
+                            : 'bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-300 border border-red-200 dark:border-red-800/50'
                         }`}
                       >
                         {testResult.status === 'success' ? (

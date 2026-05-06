@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { FileText, Clock, Home, Puzzle, History, AppWindow } from 'lucide-react';
+import { Clock, Home, Puzzle, History, AppWindow, MessageSquare, Pipeline, Settings } from '../icons/app-icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   SidebarContent,
@@ -11,7 +11,6 @@ import {
   SidebarGroupContent,
   SidebarSeparator,
 } from '../ui/sidebar';
-import { ChatSmart, Gear } from '../icons';
 import { BioRouter } from '../icons/BioRouter';
 import { ViewOptions, View } from '../../utils/navigationUtils';
 import { useChatContext } from '../../contexts/ChatContext';
@@ -54,7 +53,7 @@ const menuItems: NavigationEntry[] = [
     type: 'item',
     path: '/pair',
     label: 'Chat',
-    icon: ChatSmart,
+    icon: MessageSquare,
     tooltip: 'Start pairing with BioRouter',
   },
   {
@@ -69,7 +68,7 @@ const menuItems: NavigationEntry[] = [
     type: 'item',
     path: '/workflows',
     label: 'Workflows',
-    icon: FileText,
+    icon: Pipeline,
     tooltip: 'Browse your saved workflows',
   },
   {
@@ -98,7 +97,7 @@ const menuItems: NavigationEntry[] = [
     type: 'item',
     path: '/settings',
     label: 'Settings',
-    icon: Gear,
+    icon: Settings,
     tooltip: 'Configure BioRouter settings',
   },
 ];
@@ -214,7 +213,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
       <SidebarFooter className="pb-6 px-3 flex items-center justify-center">
         <div className="flex flex-col items-center">
           <BioRouter className="size-14 biorouter-icon-animation" />
-          <span className="text-base font-medium">BioRouter</span>
+          <span className="text-base font-medium">UCSF BioRouter</span>
         </div>
         <EnvironmentBadge />
       </SidebarFooter>

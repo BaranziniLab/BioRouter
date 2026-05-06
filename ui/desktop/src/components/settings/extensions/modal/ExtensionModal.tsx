@@ -12,7 +12,7 @@ import { ExtensionFormData } from '../utils';
 import EnvVarsSection from './EnvVarsSection';
 import HeadersSection from './HeadersSection';
 import ExtensionConfigFields from './ExtensionConfigFields';
-import { PlusIcon, Edit, Trash2, AlertTriangle, Info } from 'lucide-react';
+import { PlusIcon, Edit, Trash2, AlertTriangle, Info } from '../../../icons/app-icons';
 import ExtensionInfoFields from './ExtensionInfoFields';
 import ExtensionTimeoutField from './ExtensionTimeoutField';
 import { upsertConfig } from '../../../../api';
@@ -197,7 +197,7 @@ export default function ExtensionModal({
   // Function to determine which icon to display with proper styling
   const getModalIcon = () => {
     if (showDeleteConfirmation) {
-      return <AlertTriangle className="text-red-500" size={24} />;
+      return <AlertTriangle className="text-red-500 dark:text-red-400" size={24} />;
     }
     return modalType === 'add' ? (
       <PlusIcon className="text-iconStandard" size={24} />
@@ -323,21 +323,21 @@ export default function ExtensionModal({
 
           {showDeleteConfirmation ? (
             <div className="py-4">
-              <p className="text-textStandard">
+              <p className="text-text-default">
                 This will permanently remove this extension and all of its settings.
               </p>
             </div>
           ) : (
             <div className="py-4 space-y-6">
               {formData.installation_notes && (
-                <div className="bg-bgSubtle border border-borderSubtle rounded-lg p-4">
+                <div className="bg-background-medium border border-border-subtle rounded-lg p-4">
                   <div className="flex items-start gap-2">
                     <Info className="h-5 w-5 text-blue-400 shrink-0 mt-0.5" />
                     <div>
-                      <h4 className="text-sm font-medium text-textStandard mb-1">
+                      <h4 className="text-sm font-medium text-text-default mb-1">
                         Installation Notes
                       </h4>
-                      <p className="text-sm text-textSubtle">{formData.installation_notes}</p>
+                      <p className="text-sm text-text-muted">{formData.installation_notes}</p>
                     </div>
                   </div>
                 </div>
@@ -353,7 +353,7 @@ export default function ExtensionModal({
                 submitAttempted={submitAttempted}
               />
 
-              <hr className="border-t border-borderSubtle" />
+              <hr className="border-t border-border-subtle" />
 
               {/* Command */}
               <div>
@@ -375,7 +375,7 @@ export default function ExtensionModal({
 
               {formData.type === 'stdio' && (
                 <>
-                  <hr className="border-t border-borderSubtle" />
+                  <hr className="border-t border-border-subtle" />
 
                   <div>
                     <EnvVarsSection
@@ -393,7 +393,7 @@ export default function ExtensionModal({
               {formData.type === 'streamable_http' && (
                 <>
                   {/* Divider */}
-                  <hr className="border-t border-borderSubtle" />
+                  <hr className="border-t border-border-subtle" />
 
                   <div>
                     <HeadersSection
@@ -435,7 +435,7 @@ export default function ExtensionModal({
                   <Button
                     onClick={() => setShowDeleteConfirmation(true)}
                     variant="outline"
-                    className="text-red-500 hover:text-red-600"
+                    className="text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300"
                   >
                     <Trash2 className="h-4 w-4 mr-2" />
                     Remove extension

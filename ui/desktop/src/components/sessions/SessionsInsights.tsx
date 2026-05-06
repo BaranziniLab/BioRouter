@@ -148,10 +148,10 @@ export function SessionInsights() {
   }
 
   return (
-    <div className="bg-background-muted flex flex-col h-full">
+    <div className="bg-background-muted flex flex-col h-full" style={{ fontFamily: 'Arial, sans-serif' }}>
       {/* Hero — text directly on canvas */}
       <div className="px-8 pt-16 pb-6">
-        <p className="text-xs font-medium text-text-muted uppercase tracking-widest mb-3">BioRouter</p>
+        <p className="text-xs font-medium text-text-muted tracking-widest mb-3">UCSF BioRouter</p>
         <Greeting />
       </div>
 
@@ -165,13 +165,13 @@ export function SessionInsights() {
         ) : (
           <>
             <div className="page-transition">
-              <p className="text-3xl font-mono font-light leading-none mb-1.5">
+              <p className="text-3xl font-normal leading-none mb-1.5">
                 {Math.max(insights?.totalSessions ?? 0, 0)}
               </p>
               <span className="text-[11px] text-text-muted uppercase tracking-wider">Sessions</span>
             </div>
             <div className="page-transition">
-              <p className="text-3xl font-mono font-light leading-none mb-1.5">
+              <p className="text-3xl font-normal leading-none mb-1.5">
                 {formatTokens(insights?.totalTokens)}
               </p>
               <span className="text-[11px] text-text-muted uppercase tracking-wider">Tokens</span>
@@ -226,7 +226,7 @@ export function SessionInsights() {
                   <ChatSmart className="h-4 w-4 text-text-muted flex-shrink-0" />
                   <span className="truncate max-w-[300px]">{session.name}</span>
                 </div>
-                <span className="text-text-muted font-mono font-light text-xs flex-shrink-0">
+                <span className="text-text-muted text-xs flex-shrink-0">
                   {formatDateOnly(session.updated_at)}
                 </span>
               </div>

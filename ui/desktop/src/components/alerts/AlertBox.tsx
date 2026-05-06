@@ -1,15 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { IoIosCloseCircle, IoIosWarning, IoIosInformationCircle } from 'react-icons/io';
-import { FaPencilAlt, FaSave } from 'react-icons/fa';
+import { X, AlertTriangle, Info, Edit, Save } from '../icons/app-icons';
 import { cn } from '../../utils';
 import { Alert, AlertType } from './types';
 import { upsertConfig } from '../../api';
 import { useConfig } from '../ConfigContext';
 
 const alertIcons: Record<AlertType, React.ReactNode> = {
-  [AlertType.Error]: <IoIosCloseCircle className="h-5 w-5" />,
-  [AlertType.Warning]: <IoIosWarning className="h-5 w-5" />,
-  [AlertType.Info]: <IoIosInformationCircle className="h-5 w-5" />,
+  [AlertType.Error]: <X className="h-5 w-5" />,
+  [AlertType.Warning]: <AlertTriangle className="h-5 w-5" />,
+  [AlertType.Info]: <Info className="h-5 w-5" />,
 };
 
 interface AlertBoxProps {
@@ -174,7 +173,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
                   className="p-1 hover:opacity-60 transition-opacity cursor-pointer relative z-50"
                   style={{ minWidth: '20px', minHeight: '20px', pointerEvents: 'auto' }}
                 >
-                  <FaSave className="w-3 h-3" />
+                  <Save className="w-3 h-3" />
                 </button>
               </>
             ) : (
@@ -192,7 +191,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
                   className="p-1 hover:opacity-60 transition-opacity cursor-pointer relative z-10"
                   style={{ minWidth: '20px', minHeight: '20px' }}
                 >
-                  <FaPencilAlt className="w-3 h-3 opacity-70" />
+                  <Edit className="w-3 h-3 opacity-70" />
                 </button>
               </>
             )}

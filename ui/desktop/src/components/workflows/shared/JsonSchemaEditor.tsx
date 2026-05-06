@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { X } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { useEscapeKey } from '../../../hooks/useEscapeKey';
 
@@ -94,20 +95,16 @@ export default function JsonSchemaEditor({
     >
       <div className="bg-background-default border border-border-subtle rounded-lg p-6 w-[800px] max-w-[90vw] max-h-[90vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-lg font-medium text-text-standard">JSON Schema Editor</h3>
-          <button
-            type="button"
-            onClick={handleCancel}
-            className="text-text-muted hover:text-text-standard text-2xl leading-none"
-          >
-            ×
-          </button>
+          <h3 className="text-base font-semibold text-text-default">JSON Schema Editor</h3>
+          <Button type="button" variant="ghost" size="sm" onClick={handleCancel}>
+            <X className="w-4 h-4" />
+          </Button>
         </div>
 
         <div className="flex-1 flex flex-col min-h-0">
           <div className="mb-4">
             <div className="flex items-center justify-between mb-2">
-              <label className="block text-sm font-medium text-text-standard">
+              <label className="block text-sm font-medium text-text-default">
                 Response JSON Schema
               </label>
               <Button
@@ -132,8 +129,8 @@ export default function JsonSchemaEditor({
                 setLocalValue(e.target.value);
                 setLocalError('');
               }}
-              className={`w-full h-full min-h-[400px] p-3 border rounded-lg bg-background-default text-text-standard focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none font-mono text-sm ${
-                localError || error ? 'border-red-500' : 'border-border-subtle'
+              className={`w-full h-full min-h-[400px] px-3 py-2 text-sm border rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 resize-none font-mono ${
+                localError || error ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
               }`}
               placeholder={`{
   "type": "object",
@@ -147,7 +144,7 @@ export default function JsonSchemaEditor({
 }`}
             />
             {(localError || error) && (
-              <p className="text-red-500 text-sm mt-2">{localError || error}</p>
+              <p className="text-red-500 dark:text-red-400 text-sm mt-2">{localError || error}</p>
             )}
           </div>
         </div>

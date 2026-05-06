@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Tornado } from 'lucide-react';
+import { Tornado } from '../icons/app-icons';
 import { all_biorouter_modes, ModeSelectionItem } from '../settings/mode/ModeSelectionItem';
 import { useConfig } from '../ConfigContext';
 import {

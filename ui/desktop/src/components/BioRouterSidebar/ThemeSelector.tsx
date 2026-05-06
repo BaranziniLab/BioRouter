@@ -1,5 +1,5 @@
 import React from 'react';
-import { Moon, Sliders, Sun } from 'lucide-react';
+import { Moon, Sliders, Sun } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { useTheme } from '../../contexts/ThemeContext';
 

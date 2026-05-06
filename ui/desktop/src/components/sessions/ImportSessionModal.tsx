@@ -1,5 +1,5 @@
-import { useState, useCallback, useRef } from 'react';
-import { Upload, Folder, Download } from '../icons/app-icons';
+import React, { useState, useCallback, useRef } from 'react';
+import { Upload, Folder } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import {
   Dialog,
@@ -9,34 +9,14 @@ import {
   DialogDescription,
   DialogFooter,
 } from '../ui/dialog';
-import { toastSuccess } from '../../toasts';
-import { saveWorkflow } from '../../workflow/workflow_management';
-import { parseWorkflow } from '../../api';
-import type { Workflow } from '../../workflow';
 
-interface ImportWorkflowFormProps {
+interface ImportSessionModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSuccess: () => void;
+  onImport: (json: string) => Promise<void>;
 }
 
-async function parseWorkflowFromFile(fileContent: string): Promise<Workflow> {
-  try {
-    const response = await parseWorkflow({
-      body: { content: fileContent },
-      throwOnError: true,
-    });
-    return response.data.workflow;
-  } catch (error) {
-    const msg =
-      typeof error === 'object' && error !== null && 'message' in error
-        ? (error as { message: string }).message
-        : 'Unknown error';
-    throw new Error(msg);
-  }
-}
-
-export default function ImportWorkflowForm({ isOpen, onClose, onSuccess }: ImportWorkflowFormProps) {
+export function ImportSessionModal({ isOpen, onClose, onImport }: ImportSessionModalProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [filePath, setFilePath] = useState('');
   const [error, setError] = useState('');
@@ -55,37 +35,26 @@ export default function ImportWorkflowForm({ isOpen, onClose, onSuccess }: Impor
     onClose();
   };
 
-  const processContent = useCallback(
-    async (content: string, filename: string) => {
-      const isYaml = /\.(ya?ml)$/i.test(filename);
-      const isJson = /\.json$/i.test(filename);
-      if (!isYaml && !isJson) {
-        setError('Please provide a YAML or JSON workflow file.');
+  const processFile = useCallback(
+    async (file: File) => {
+      if (!file.name.endsWith('.json') && file.type !== 'application/json') {
+        setError('Please provide a JSON file.');
         return;
       }
       setError('');
       setIsSubmitting(true);
       try {
-        const workflow = await parseWorkflowFromFile(content);
-        await saveWorkflow(workflow, null);
+        const json = await file.text();
+        JSON.parse(json); // validate
+        await onImport(json);
         reset();
         onClose();
-        onSuccess();
-        toastSuccess({ title: workflow.title?.trim() || 'Workflow', msg: 'Workflow imported successfully' });
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setError(e instanceof SyntaxError ? 'Invalid JSON file.' : String(e));
         setIsSubmitting(false);
       }
     },
-    [onClose, onSuccess]
-  );
-
-  const processFile = useCallback(
-    async (file: File) => {
-      const content = await file.text();
-      await processContent(content, file.name);
-    },
-    [processContent]
+    [onImport, onClose]
   );
 
   const handleDrop = useCallback(
@@ -127,20 +96,24 @@ export default function ImportWorkflowForm({ isOpen, onClose, onSuccess }: Impor
       if (!result || !result.found) {
         throw new Error('Could not read file.');
       }
-      await processContent(result.file as string, trimmed);
+      const json = result.file as string;
+      JSON.parse(json); // validate
+      await onImport(json);
+      reset();
+      onClose();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(e instanceof SyntaxError ? 'Invalid JSON file.' : String(e));
       setIsSubmitting(false);
     }
-  }, [filePath, processContent]);
+  }, [filePath, onImport, onClose]);
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && handleClose()}>
       <DialogContent className="sm:max-w-[480px]">
         <DialogHeader>
-          <DialogTitle>Import Workflow</DialogTitle>
+          <DialogTitle>Import Session</DialogTitle>
           <DialogDescription>
-            Drag and drop a workflow YAML or JSON file, or enter its path below.
+            Drag and drop a session JSON file, or enter its path below.
           </DialogDescription>
         </DialogHeader>
 
@@ -160,12 +133,12 @@ export default function ImportWorkflowForm({ isOpen, onClose, onSuccess }: Impor
           }`}
         >
           <Upload className="w-7 h-7 text-text-muted" />
-          <p className="text-sm text-text-default font-medium">Drop a YAML or JSON file here</p>
+          <p className="text-sm text-text-default font-medium">Drop a JSON file here</p>
           <p className="text-xs text-text-muted">or click to browse</p>
           <input
             ref={fileInputRef}
             type="file"
-            accept=".yaml,.yml,.json"
+            accept=".json,application/json"
             onChange={handleFileInputChange}
             className="hidden"
           />
@@ -180,11 +153,9 @@ export default function ImportWorkflowForm({ isOpen, onClose, onSuccess }: Impor
 
         {/* File path input */}
         <div className="flex gap-2">
-          <div
-            className={`flex flex-1 items-center rounded-lg border bg-background-default transition-colors duration-150 focus-within:border-border-strong ${
-              error ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
-            }`}
-          >
+          <div className={`flex flex-1 items-center rounded-lg border bg-background-default transition-colors duration-150 focus-within:border-border-strong ${
+            error ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
+          }`}>
             <input
               type="text"
               value={filePath}
@@ -193,7 +164,7 @@ export default function ImportWorkflowForm({ isOpen, onClose, onSuccess }: Impor
                 setError('');
               }}
               onKeyDown={(e) => e.key === 'Enter' && !isSubmitting && handlePathImport()}
-              placeholder="/path/to/workflow.yaml"
+              placeholder="/path/to/session.json"
               className="flex-1 px-3 py-2 text-sm bg-transparent text-text-default placeholder:text-text-muted focus:outline-none"
             />
             <button
@@ -216,11 +187,9 @@ export default function ImportWorkflowForm({ isOpen, onClose, onSuccess }: Impor
           </Button>
         </div>
 
-        {error && <p className="text-sm text-red-500 dark:text-red-400 -mt-1">{error}</p>}
-
-        <p className="text-xs text-text-muted -mt-1">
-          Review workflow file contents before importing. Accepts .yaml, .yml, or .json.
-        </p>
+        {error && (
+          <p className="text-sm text-red-500 dark:text-red-400 -mt-1">{error}</p>
+        )}
 
         <DialogFooter>
           <Button variant="outline" onClick={handleClose} disabled={isSubmitting}>
@@ -229,14 +198,5 @@ export default function ImportWorkflowForm({ isOpen, onClose, onSuccess }: Impor
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-export function ImportWorkflowButton({ onClick }: { onClick: () => void }) {
-  return (
-    <Button onClick={onClick} variant="outline" className="flex items-center gap-2">
-      <Download className="w-4 h-4" />
-      Import Workflow
-    </Button>
   );
 }

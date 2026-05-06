@@ -1,5 +1,5 @@
 import React from 'react';
-import { Calendar, MessageSquareText, Folder, Target, LoaderCircle, Share2 } from 'lucide-react';
+import { Calendar, MessageSquareText, Folder, Target, LoaderCircle, Share2 } from '../icons/app-icons';
 import { type SharedSessionDetails } from '../../sharedSessions';
 import { SessionMessages } from './SessionViewComponents';
 import { formatMessageTimestamp } from '../../utils/timeUtils';

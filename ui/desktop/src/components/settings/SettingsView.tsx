@@ -6,7 +6,7 @@ import AppSettingsSection from './app/AppSettingsSection';
 import ConfigSettings from './config/ConfigSettings';
 import { ExtensionConfig } from '../../api';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
-import { Bot, Monitor, MessageSquare } from 'lucide-react';
+import { Brain, Monitor, MessageSquare } from '../icons/app-icons';
 import { useState, useEffect, useRef } from 'react';
 import ChatSettingsSection from './chat/ChatSettingsSection';
 import { CONFIGURATION_ENABLED } from '../../updates';
@@ -100,7 +100,7 @@ export default function SettingsView({
                     className="flex gap-2 rounded-none border-b-2 border-transparent data-[state=active]:border-text-default data-[state=active]:bg-transparent bg-transparent px-3 pb-3 text-sm"
                     data-testid="settings-models-tab"
                   >
-                    <Bot className="h-4 w-4" />
+                    <Brain className="h-4 w-4" />
                     Models
                   </TabsTrigger>
                   <TabsTrigger
@@ -131,7 +131,7 @@ export default function SettingsView({
                     <ChatSettingsSection />
                   </TabsContent>
                   <TabsContent value="app" className="mt-0 focus-visible:outline-none">
-                    <div className="space-y-8">
+                    <div className="space-y-10">
                       {CONFIGURATION_ENABLED && <ConfigSettings />}
                       <AppSettingsSection scrollToSection={viewOptions.section} />
                     </div>

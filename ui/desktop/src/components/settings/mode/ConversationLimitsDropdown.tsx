@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown } from '../../icons/app-icons';
 import { Input } from '../../ui/input';
 
 interface ConversationLimitsDropdownProps {
@@ -21,7 +21,7 @@ export const ConversationLimitsDropdown = ({
     <div className="pt-4">
       <button
         onClick={toggleExpanded}
-        className="w-full flex items-center justify-between py-2 px-2 hover:bg-background-muted rounded-lg transition-all group"
+        className="w-full flex items-center justify-between py-3 px-2 -mx-2 rounded-lg hover:bg-background-medium transition-colors duration-150 group"
       >
         <h3 className="text-text-default">Conversation Limits</h3>
 
@@ -38,7 +38,7 @@ export const ConversationLimitsDropdown = ({
         }`}
       >
         <div className="space-y-3 pb-2">
-          <div className="flex items-center justify-between py-2 px-2 bg-background-subtle rounded-lg transform transition-all duration-200 ease-in-out">
+          <div className="flex items-center justify-between py-3 px-2 bg-background-medium rounded-lg">
             <div>
               <h4 className="text-text-default text-sm">Max Turns</h4>
               <p className="text-xs text-text-muted mt-[2px]">

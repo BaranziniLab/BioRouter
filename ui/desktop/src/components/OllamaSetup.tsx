@@ -142,8 +142,8 @@ export function OllamaSetup({ onSuccess, onCancel }: OllamaSetupProps) {
     <div className="space-y-6">
       {/* Header with icon above heading - left aligned like onboarding cards */}
       <div className="text-left">
-        <Ollama className="w-6 h-6 mb-3 text-text-standard" />
-        <h3 className="text-lg font-semibold text-text-standard mb-2">Ollama Setup</h3>
+        <Ollama className="w-6 h-6 mb-3 text-text-default" />
+        <h3 className="text-lg font-semibold text-text-default mb-2">Ollama Setup</h3>
         <p className="text-text-muted">
           Ollama lets you run AI models for free, private and locally on your computer.
         </p>
@@ -174,7 +174,7 @@ export function OllamaSetup({ onSuccess, onCancel }: OllamaSetupProps) {
               <button
                 onClick={handleDownloadModel}
                 disabled={false}
-                className="w-full px-6 py-3 bg-background-muted text-text-standard rounded-lg hover:bg-background-hover transition-colors font-medium flex items-center justify-center gap-2"
+                className="w-full px-6 py-3 bg-background-muted text-text-default rounded-lg hover:bg-background-medium transition-colors font-medium flex items-center justify-center gap-2"
               >
                 Download {getPreferredModel()} (~11GB)
               </button>
@@ -209,7 +209,7 @@ export function OllamaSetup({ onSuccess, onCancel }: OllamaSetupProps) {
             <button
               onClick={handleConnectOllama}
               disabled={isConnecting}
-              className="w-full px-6 py-3 bg-background-muted text-text-standard rounded-lg hover:bg-background-hover transition-colors font-medium flex items-center justify-center gap-2"
+              className="w-full px-6 py-3 bg-background-muted text-text-default rounded-lg hover:bg-background-medium transition-colors font-medium flex items-center justify-center gap-2"
             >
               {isConnecting ? 'Connecting...' : 'Use BioRouter with Ollama'}
             </button>
@@ -239,7 +239,7 @@ export function OllamaSetup({ onSuccess, onCancel }: OllamaSetupProps) {
               target="_blank"
               rel="noopener noreferrer"
               onClick={handleInstallClick}
-              className="block w-full px-6 py-3 bg-background-muted text-text-standard rounded-lg hover:bg-background-hover transition-colors font-medium text-center"
+              className="block w-full px-6 py-3 bg-background-muted text-text-default rounded-lg hover:bg-background-medium transition-colors font-medium text-center"
             >
               Install Ollama
             </a>

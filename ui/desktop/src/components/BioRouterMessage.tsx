@@ -108,8 +108,8 @@ export default function BioRouterMessage({
     <div className="biorouter-message flex w-[90%] justify-start min-w-0">
       <div className="flex flex-col w-full min-w-0">
         {cotText && (
-          <details className="bg-bgSubtle border border-borderSubtle rounded p-2 mb-2">
-            <summary className="cursor-pointer text-sm text-textSubtle select-none">
+          <details className="bg-background-medium border border-border-subtle rounded p-2 mb-2">
+            <summary className="cursor-pointer text-sm text-text-muted select-none">
               Show thinking
             </summary>
             <div className="mt-2">

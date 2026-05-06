@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown } from '../../icons/app-icons';
 import { DictationProvider, DictationSettings } from '../../../hooks/useDictationSettings';
 import { useConfig } from '../../ConfigContext';
 import { ElevenLabsKeyInput } from './ElevenLabsKeyInput';

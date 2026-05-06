@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, Users, Pill, HeartPulse } from 'lucide-react';
+import { Activity, Users, Pill, HeartPulse } from './icons/app-icons';
 
 interface PopularChatTopicsProps {
   append: (text: string) => void;
@@ -51,7 +51,7 @@ export default function PopularChatTopics({ append }: PopularChatTopicsProps) {
         {POPULAR_TOPICS.map((topic) => (
           <div
             key={topic.id}
-            className="flex items-center justify-between py-1.5 hover:bg-bgSubtle rounded-md cursor-pointer transition-colors"
+            className="flex items-center justify-between py-1.5 hover:bg-background-medium rounded-md cursor-pointer transition-colors"
             onClick={() => handleTopicClick(topic.prompt)}
           >
             <div className="flex items-center gap-3 flex-1 min-w-0">

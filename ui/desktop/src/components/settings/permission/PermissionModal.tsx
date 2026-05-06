@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '../../ui/button';
-import { ChevronDownIcon, SlidersHorizontal } from 'lucide-react';
+import { ChevronDownIcon, SlidersHorizontal } from '../../icons/app-icons';
 import { getTools, PermissionLevel, ToolInfo, upsertPermissions } from '../../../api';
 import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../../ui/dialog';
 import {
@@ -149,10 +149,10 @@ export default function PermissionModal({ extensionName, onClose }: PermissionMo
                   className="flex items-center justify-between grid grid-cols-12"
                 >
                   <div className="flex flex-col col-span-8">
-                    <label className="block text-sm font-medium text-textStandard">
+                    <label className="block text-sm font-medium text-text-default">
                       {tool.name}
                     </label>
-                    <p className="text-sm text-textSubtle mb-2">
+                    <p className="text-sm text-text-muted mb-2">
                       {getFirstSentence(tool.description)}
                     </p>
                   </div>

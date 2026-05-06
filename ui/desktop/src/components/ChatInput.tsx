@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
-import { Bug, ScrollText, ChefHat } from 'lucide-react';
+import { CodeAnalysis, ScrollText, Pipeline } from './icons/app-icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Button } from './ui/button';
 import type { View } from '../utils/navigationUtils';
@@ -1174,8 +1174,8 @@ export default function ChatInput({
         disableAnimation ? '' : 'page-transition'
       } ${
         isFocused
-          ? 'border-borderProminent hover:border-borderProminent'
-          : 'border-borderSubtle hover:border-borderStandard'
+          ? 'border-border-strong hover:border-border-strong'
+          : 'border-border-subtle hover:border-border-subtle'
       } bg-background-default z-10 rounded-t-2xl`}
       data-drop-zone="true"
       onDrop={handleLocalDrop}
@@ -1193,7 +1193,7 @@ export default function ChatInput({
           onTriggerQueueProcessing={handleResumeQueue}
           editingMessageIdRef={editingMessageIdRef}
           isPaused={queuePausedRef.current}
-          className="border-b border-borderSubtle"
+          className="border-b border-border-subtle"
         />
       )}
       {/* Input row with inline action buttons wrapped in form */}
@@ -1218,7 +1218,7 @@ export default function ChatInput({
               maxHeight: `${maxHeight}px`,
               overflowY: 'auto',
             }}
-            className="w-full outline-none border-none focus:ring-0 bg-transparent px-3 pt-3 pb-1.5 pr-20 text-sm resize-none text-textStandard placeholder:text-textPlaceholder"
+            className="w-full outline-none border-none focus:ring-0 bg-transparent px-3 pt-3 pb-1.5 pr-20 text-sm resize-none text-text-default placeholder:text-textPlaceholder"
           />
         </div>
 
@@ -1276,7 +1276,7 @@ export default function ChatInput({
 
       {/* Combined files and images preview */}
       {(pastedImages.length > 0 || allDroppedFiles.length > 0) && (
-        <div className="flex flex-wrap gap-2 p-4 mt-2 border-t border-borderSubtle">
+        <div className="flex flex-wrap gap-2 p-4 mt-2 border-t border-border-subtle">
           {/* Render pasted images first */}
           {pastedImages.map((img) => (
             <div key={img.id} className="relative group w-20 h-20">
@@ -1284,7 +1284,7 @@ export default function ChatInput({
                 <img
                   src={img.dataUrl}
                   alt={`Pasted image ${img.id}`}
-                  className={`w-full h-full object-cover rounded border ${img.error ? 'border-red-500' : 'border-borderStandard'}`}
+                  className={`w-full h-full object-cover rounded border ${img.error ? 'border-red-500' : 'border-border-subtle'}`}
                 />
               )}
               {img.isLoading && (
@@ -1336,7 +1336,7 @@ export default function ChatInput({
                     <img
                       src={file.dataUrl}
                       alt={file.name}
-                      className={`w-full h-full object-cover rounded border ${file.error ? 'border-red-500' : 'border-borderStandard'}`}
+                      className={`w-full h-full object-cover rounded border ${file.error ? 'border-red-500' : 'border-border-subtle'}`}
                     />
                   )}
                   {file.isLoading && (
@@ -1354,15 +1354,15 @@ export default function ChatInput({
                 </div>
               ) : (
                 // File box preview
-                <div className="flex items-center gap-2 px-3 py-2 bg-bgSubtle border border-borderStandard rounded-lg min-w-[120px] max-w-[200px]">
-                  <div className="flex-shrink-0 w-8 h-8 bg-background-default border border-borderSubtle rounded flex items-center justify-center text-xs font-mono text-textSubtle">
+                <div className="flex items-center gap-2 px-3 py-2 bg-background-medium border border-border-subtle rounded-lg min-w-[120px] max-w-[200px]">
+                  <div className="flex-shrink-0 w-8 h-8 bg-background-default border border-border-subtle rounded flex items-center justify-center text-xs font-mono text-text-muted">
                     {file.name.split('.').pop()?.toUpperCase() || 'FILE'}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm text-textStandard truncate" title={file.name}>
+                    <p className="text-sm text-text-default truncate" title={file.name}>
                       {file.name}
                     </p>
-                    <p className="text-xs text-textSubtle">{file.type || 'Unknown type'}</p>
+                    <p className="text-xs text-text-muted">{file.type || 'Unknown type'}</p>
                   </div>
                 </div>
               )}
@@ -1464,7 +1464,7 @@ export default function ChatInput({
                       size="sm"
                       className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer"
                     >
-                      <ChefHat size={16} />
+                      <Pipeline size={16} />
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
@@ -1487,7 +1487,7 @@ export default function ChatInput({
                   size="sm"
                   className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer transition-colors"
                 >
-                  <Bug className="w-4 h-4" />
+                  <CodeAnalysis className="w-4 h-4" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Generate diagnostics bundle</TooltipContent>

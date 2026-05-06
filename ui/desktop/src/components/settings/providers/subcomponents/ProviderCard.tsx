@@ -1,9 +1,8 @@
 import { useMemo } from 'react';
-import CardContainer from './CardContainer';
-import CardHeader from './CardHeader';
-import CardBody from './CardBody';
+import { Check } from '../../../icons/app-icons';
 import DefaultCardButtons from './buttons/DefaultCardButtons';
 import { ProviderDetails, ProviderMetadata } from '../../../../api';
+import { Tooltip, TooltipContent, TooltipTrigger } from '../../../ui/Tooltip';
 
 type ProviderCardProps = {
   provider: ProviderDetails;
@@ -18,44 +17,76 @@ export const ProviderCard = function ProviderCard({
   onLaunch,
   isOnboarding,
 }: ProviderCardProps) {
-  // Safely access metadata with null checks
   const providerMetadata: ProviderMetadata | null = provider?.metadata || null;
-
-  // Instead of useEffect for logging, use useMemo to memoize the metadata
   const metadata = useMemo(() => providerMetadata, [providerMetadata]);
 
   if (!metadata) {
     return <div>ProviderCard error: No metadata provided</div>;
   }
 
+  const isGrayedOut = !provider.is_configured && isOnboarding;
+  const displayName = metadata.display_name || provider?.name || 'Unknown Provider';
+  const initial = displayName[0].toUpperCase();
+
   const handleCardClick = () => {
-    if (!isOnboarding) {
-      onConfigure();
-    }
+    if (!isOnboarding) onConfigure();
   };
 
   return (
-    <CardContainer
-      testId={`provider-card-${provider.name.toLowerCase()}`}
-      grayedOut={!provider.is_configured && isOnboarding} // onboarding page will have grayed out cards if not configured
-      onClick={handleCardClick}
-      header={
-        <CardHeader
-          name={metadata.display_name || provider?.name || 'Unknown Provider'}
-          description={metadata.description || ''}
-          isConfigured={provider?.is_configured || false}
-        />
-      }
-      body={
-        <CardBody>
+    <div
+      data-testid={`provider-card-${provider.name.toLowerCase()}`}
+      onClick={!isGrayedOut ? handleCardClick : undefined}
+      className={[
+        'flex items-center gap-3 py-3 px-4 rounded-xl',
+        'transition-colors duration-150 group',
+        isGrayedOut ? 'opacity-50 cursor-default' : 'cursor-pointer hover:bg-background-medium',
+      ].join(' ')}
+    >
+      {/* Provider initial avatar */}
+      <div className="w-8 h-8 rounded-lg bg-background-medium flex items-center justify-center flex-shrink-0 text-sm font-semibold text-text-muted select-none">
+        {initial}
+      </div>
+
+      {/* Name + description */}
+      <div className="flex-1 min-w-0">
+        <p className="text-sm font-medium text-text-default truncate">{displayName}</p>
+        {metadata.description && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <p className="text-xs text-text-muted mt-0.5 truncate cursor-default">
+                {metadata.description}
+              </p>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="max-w-72 text-wrap">
+              {metadata.description}
+            </TooltipContent>
+          </Tooltip>
+        )}
+      </div>
+
+      {/* Right: configured badge + action buttons */}
+      <div className="flex items-center gap-3 flex-shrink-0">
+        {provider.is_configured && (
+          <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400 font-medium">
+            <Check className="w-3 h-3" />
+            Configured
+          </span>
+        )}
+        <div
+          className={
+            !isOnboarding
+              ? 'opacity-0 group-hover:opacity-100 transition-opacity duration-150'
+              : ''
+          }
+        >
           <DefaultCardButtons
             provider={provider}
             onConfigure={onConfigure}
             onLaunch={onLaunch}
             isOnboardingPage={isOnboarding}
           />
-        </CardBody>
-      }
-    />
+        </div>
+      </div>
+    </div>
   );
 };

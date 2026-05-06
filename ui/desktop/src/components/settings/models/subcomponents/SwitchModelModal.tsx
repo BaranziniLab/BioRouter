@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
-import { Bot, ExternalLink } from 'lucide-react';
+import { Brain, ExternalLink } from '../../../icons/app-icons';
 
 import {
   Dialog,
@@ -350,7 +350,7 @@ export const SwitchModelModal = ({
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Bot size={24} className="text-textStandard" />
+            <Brain size={24} className="text-text-default" />
             {titleOverride || 'Switch models'}
           </DialogTitle>
           <DialogDescription>
@@ -362,61 +362,67 @@ export const SwitchModelModal = ({
           {usePredefinedModels ? (
             <div className="w-full flex flex-col gap-4">
               <div className="flex justify-between items-center">
-                <label className="text-sm font-medium text-textStandard">Choose a model:</label>
+                <label className="text-sm font-medium text-text-default">Choose a model:</label>
               </div>
 
-              <div className="space-y-2 max-h-64 overflow-y-auto">
-                {predefinedModels.map((model) => (
-                  <div key={model.id || model.name} className="group hover:cursor-pointer text-sm">
+              <div className="flex flex-col max-h-72 overflow-y-auto -mx-1 px-1">
+                {predefinedModels.map((model) => {
+                  const isSelected = selectedPredefinedModel?.name === model.name;
+                  return (
                     <div
-                      className={`flex items-center justify-between text-text-default py-2 px-2 ${
-                        selectedPredefinedModel?.name === model.name
-                          ? 'bg-background-muted'
-                          : 'bg-background-default hover:bg-background-muted'
-                      } rounded-lg transition-all`}
+                      key={model.id || model.name}
                       onClick={() => setSelectedPredefinedModel(model)}
+                      className={[
+                        'flex items-start gap-3 py-2.5 px-3 rounded-xl cursor-pointer transition-colors duration-150',
+                        isSelected ? 'bg-background-medium' : 'hover:bg-background-medium',
+                      ].join(' ')}
                     >
-                      <div className="flex-1">
-                        <div className="flex items-center justify-between">
-                          <span className="text-text-default font-medium">
+                      {/* Radio dot */}
+                      <div
+                        className={[
+                          'mt-0.5 h-4 w-4 rounded-full border-2 flex-shrink-0 flex items-center justify-center transition-all duration-150',
+                          isSelected
+                            ? 'border-text-default bg-text-default'
+                            : 'border-border-subtle',
+                        ].join(' ')}
+                      >
+                        {isSelected && (
+                          <div className="h-1.5 w-1.5 rounded-full bg-background-default" />
+                        )}
+                      </div>
+
+                      {/* Model info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-medium text-text-default">
                             {model.alias || model.name}
                           </span>
-                          {model.alias?.includes('recommended') && (
-                            <span className="text-xs bg-background-muted text-textStandard px-2 py-1 rounded-full border border-borderSubtle ml-2">
+                          {model.alias?.toLowerCase().includes('recommended') && (
+                            <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted border border-border-subtle px-1.5 py-0.5 rounded-md">
                               Recommended
                             </span>
                           )}
                         </div>
-                        <div className="flex items-center gap-2 mt-[2px]">
-                          <span className="text-xs text-text-muted">{model.subtext}</span>
-                          <span className="text-xs text-text-muted">•</span>
-                          <span className="text-xs text-text-muted">{model.provider}</span>
-                        </div>
+                        {model.subtext && (
+                          <p className="text-xs text-text-muted mt-0.5 line-clamp-2 leading-relaxed">
+                            {model.subtext}
+                          </p>
+                        )}
                       </div>
 
-                      <div className="relative flex items-center ml-3">
-                        <input
-                          type="radio"
-                          name="predefined-model"
-                          value={model.name}
-                          checked={selectedPredefinedModel?.name === model.name}
-                          onChange={() => setSelectedPredefinedModel(model)}
-                          className="peer sr-only"
-                        />
-                        <div
-                          className="h-4 w-4 rounded-full border border-border-default 
-                                peer-checked:border-[6px] peer-checked:border-black dark:peer-checked:border-white
-                                peer-checked:bg-white dark:peer-checked:bg-black
-                                transition-all duration-200 ease-in-out group-hover:border-border-default"
-                        ></div>
-                      </div>
+                      {/* Provider badge */}
+                      {model.provider && (
+                        <span className="text-[11px] text-text-muted bg-background-medium border border-border-subtle px-1.5 py-0.5 rounded-md flex-shrink-0 mt-0.5">
+                          {model.provider}
+                        </span>
+                      )}
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
 
               {attemptedSubmit && validationErrors.model && (
-                <div className="text-red-500 text-sm mt-1">{validationErrors.model}</div>
+                <div className="text-red-500 dark:text-red-400 text-sm mt-1">{validationErrors.model}</div>
               )}
             </div>
           ) : (
@@ -443,7 +449,7 @@ export const SwitchModelModal = ({
                   isClearable
                 />
                 {attemptedSubmit && validationErrors.provider && (
-                  <div className="text-red-500 text-sm mt-1">{validationErrors.provider}</div>
+                  <div className="text-red-500 dark:text-red-400 text-sm mt-1">{validationErrors.provider}</div>
                 )}
               </div>
 
@@ -470,16 +476,16 @@ export const SwitchModelModal = ({
                       />
 
                       {attemptedSubmit && validationErrors.model && (
-                        <div className="text-red-500 text-sm mt-1">{validationErrors.model}</div>
+                        <div className="text-red-500 dark:text-red-400 text-sm mt-1">{validationErrors.model}</div>
                       )}
                     </div>
                   ) : (
                     <div className="flex flex-col gap-2">
                       <div className="flex justify-between">
-                        <label className="text-sm text-textSubtle">Custom model name</label>
+                        <label className="text-sm text-text-muted">Custom model name</label>
                         <button
                           onClick={() => setIsCustomModel(false)}
-                          className="text-sm text-textSubtle"
+                          className="text-sm text-text-muted"
                         >
                           Back to model list
                         </button>
@@ -491,7 +497,7 @@ export const SwitchModelModal = ({
                         value={model}
                       />
                       {attemptedSubmit && validationErrors.model && (
-                        <div className="text-red-500 text-sm mt-1">{validationErrors.model}</div>
+                        <div className="text-red-500 dark:text-red-400 text-sm mt-1">{validationErrors.model}</div>
                       )}
                     </div>
                   )}
@@ -506,7 +512,7 @@ export const SwitchModelModal = ({
             href={QUICKSTART_GUIDE_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="inline-flex items-center text-text-muted hover:text-textStandard text-sm mr-auto"
+            className="inline-flex items-center text-text-muted hover:text-text-default text-sm mr-auto"
           >
             <ExternalLink size={14} className="mr-1" />
             Quick start guide

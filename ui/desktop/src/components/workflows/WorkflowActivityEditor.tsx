@@ -60,29 +60,28 @@ export default function WorkflowActivityEditor({
 
   return (
     <div>
-      <label htmlFor="activities" className="block text-md text-textProminent mb-2 font-bold">
+      <label htmlFor="activities" className="block text-sm font-medium text-text-default mb-1">
         Activities
       </label>
-      <p className="text-sm text-textSubtle space-y-2 pb-4">
+      <p className="text-xs text-text-muted mb-4">
         The top-line prompts and activity buttons that will display in the workflow chat window.
       </p>
 
       {/* Message Field */}
-      <div>
-        <label htmlFor="message" className="block text-sm font-medium text-textStandard mb-2">
+      <div className="mb-4">
+        <label htmlFor="message" className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
           Message
         </label>
-        <p className="text-xs text-textSubtle mb-2">
-          A formatted message that will appear at the top of the workflow. Supports markdown
-          formatting.
+        <p className="text-xs text-text-muted mb-2">
+          Appears at the top of the workflow. Supports markdown formatting.
         </p>
         <textarea
           id="message"
           value={messageContent}
           onChange={(e) => handleMessageChange(e.target.value)}
           onBlur={onBlur}
-          className="w-full px-4 py-3 border rounded-lg bg-background-default text-textStandard placeholder-textPlaceholder focus:outline-none focus:ring-2 focus:ring-borderProminent resize-vertical"
-          placeholder="Enter a user facing introduction message for your workflow (supports **bold**, *italic*, `code`, etc.)"
+          className="w-full px-3 py-2 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 resize-none"
+          placeholder="Enter a user-facing introduction message (supports **bold**, *italic*, `code`…)"
           rows={3}
           autoCorrect="off"
           autoCapitalize="off"
@@ -90,58 +89,58 @@ export default function WorkflowActivityEditor({
         />
       </div>
 
-      {/* Regular Activities */}
-      <div className="space-y-4">
+      {/* Activity Buttons */}
+      <div className="space-y-3">
         <div>
-          <label className="block text-sm font-medium text-textStandard mb-2">
+          <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
             Activity Buttons
           </label>
-          <p className="text-xs text-textSubtle mb-3">
-            Clickable buttons that will appear below the message to help users interact with your
-            workflow.
+          <p className="text-xs text-text-muted mb-3">
+            Clickable buttons that appear below the message to help users interact with your workflow.
           </p>
         </div>
 
         {nonMessageActivities.length > 0 && (
-          <div className="flex flex-wrap gap-3">
+          <div className="flex flex-wrap gap-2">
             {nonMessageActivities.map((activity, index) => (
               <div
                 key={index}
-                className="inline-flex items-center bg-background-default border-2 border-borderSubtle rounded-full px-4 py-2 text-sm text-textStandard"
+                className="inline-flex items-center gap-1.5 bg-background-medium border border-border-subtle rounded-lg px-3 py-1.5 text-sm text-text-default"
                 title={activity.length > 100 ? activity : undefined}
               >
-                <span>{activity.length > 100 ? activity.slice(0, 100) + '...' : activity}</span>
-                <Button
+                <span>{activity.length > 100 ? activity.slice(0, 100) + '…' : activity}</span>
+                <button
                   type="button"
                   onClick={() => handleRemoveActivity(activity)}
-                  variant="ghost"
-                  size="sm"
-                  className="ml-2 text-textStandard hover:text-textSubtle transition-colors p-0 h-auto"
+                  className="text-text-muted hover:text-red-500 transition-colors leading-none"
+                  aria-label={`Remove ${activity}`}
                 >
                   ×
-                </Button>
+                </button>
               </div>
             ))}
           </div>
         )}
-        <div className="flex gap-2 mt-3">
+
+        <div className="flex gap-2">
           <input
             type="text"
             value={newActivity}
             onChange={(e) => setNewActivity(e.target.value)}
             onKeyPress={(e) => e.key === 'Enter' && handleAddActivity()}
             onBlur={onBlur}
-            className="flex-1 px-3 py-2 border border-border-subtle rounded-lg bg-background-default text-text-standard focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
-            placeholder="Add new activity..."
+            className="flex-1 h-9 px-3 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150"
+            placeholder="Add activity button label…"
           />
-          <button
+          <Button
             type="button"
             onClick={handleAddActivity}
             disabled={!newActivity.trim()}
-            className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+            variant="outline"
+            size="sm"
           >
-            Add activity
-          </button>
+            Add
+          </Button>
         </div>
       </div>
     </div>

@@ -11,34 +11,31 @@ import {
 } from '../../ui/dialog';
 
 const HelpText = () => (
-  <div className="text-sm flex-col space-y-4 text-textSubtle">
-    <p>
-      .biorouterhints is a text file used to provide additional context about your project and improve
-      the communication with BioRouter.
-    </p>
-    <p>
-      Please make sure <span className="font-bold">Developer</span> extension is enabled in the
-      extensions page. This extension is required to use .biorouterhints. You'll need to restart your
-      session for .biorouterhints updates to take effect.
-    </p>
+  <div className="text-xs text-text-muted leading-relaxed p-3 rounded-lg bg-background-muted border border-border-subtle">
+    <span className="font-medium text-text-default">.biorouterhints</span> gives BioRouter
+    additional context about your project. The{' '}
+    <span className="font-medium text-text-default">Developer</span> extension must be enabled
+    (Extensions page), and sessions must be restarted for changes to take effect.
   </div>
 );
 
 const ErrorDisplay = ({ error }: { error: Error }) => (
-  <div className="text-sm text-textSubtle">
-    <div className="text-red-600">Error reading .biorouterhints file: {JSON.stringify(error)}</div>
+  <div className="text-xs text-red-600 dark:text-red-400 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50">
+    Error reading .biorouterhints: {error.message}
   </div>
 );
 
 const FileInfo = ({ filePath, found }: { filePath: string; found: boolean }) => (
-  <div className="text-sm font-medium mb-2">
+  <div className="flex items-center gap-1.5 text-xs mb-2">
     {found ? (
-      <div className="text-green-600">
-        <Check className="w-4 h-4 inline-block" /> .biorouterhints file found at: {filePath}
-      </div>
+      <span className="flex items-center gap-1 text-green-600 dark:text-green-400 font-medium flex-shrink-0">
+        <Check className="w-3 h-3" />
+        Found
+      </span>
     ) : (
-      <div>Creating new .biorouterhints file at: {filePath}</div>
+      <span className="text-text-muted flex-shrink-0">New file</span>
     )}
+    <span className="text-text-muted font-mono truncate">{filePath}</span>
   </div>
 );
 
@@ -49,7 +46,10 @@ interface BioRouterHintsModalProps {
   setIsBioRouterHintsModalOpen: (isOpen: boolean) => void;
 }
 
-export const BioRouterHintsModal = ({ directory, setIsBioRouterHintsModalOpen }: BioRouterHintsModalProps) => {
+export const BioRouterHintsModal = ({
+  directory,
+  setIsBioRouterHintsModalOpen,
+}: BioRouterHintsModalProps) => {
   const biorouterHintsFilePath = `${directory}/.biorouterhints`;
   const [biorouterHintsFile, setBioRouterHintsFile] = useState<string>('');
   const [biorouterHintsFileFound, setBioRouterHintsFileFound] = useState<boolean>(false);
@@ -90,46 +90,45 @@ export const BioRouterHintsModal = ({ directory, setIsBioRouterHintsModalOpen }:
 
   return (
     <Dialog open={true} onOpenChange={(open) => setIsBioRouterHintsModalOpen(open)}>
-      <DialogContent className="w-[80vw] max-w-[80vw] sm:max-w-[80vw] max-h-[90vh] flex flex-col">
+      <DialogContent className="sm:max-w-2xl max-h-[85vh] flex flex-col">
         <DialogHeader>
-          <DialogTitle>Configure Project Hints (.biorouterhints)</DialogTitle>
+          <DialogTitle>Project Hints</DialogTitle>
           <DialogDescription>
-            Provide additional context about your project to improve communication with BioRouter
+            Configure <code className="font-mono text-xs">.biorouterhints</code> to give BioRouter
+            additional context about your project
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 overflow-y-auto space-y-4 pt-2 pb-4">
+        <div className="flex-1 overflow-y-auto space-y-3 py-2">
           <HelpText />
 
-          <div>
-            {biorouterHintsFileReadError ? (
-              <ErrorDisplay error={new Error(biorouterHintsFileReadError)} />
-            ) : (
-              <div className="space-y-2">
-                <FileInfo filePath={biorouterHintsFilePath} found={biorouterHintsFileFound} />
-                <textarea
-                  value={biorouterHintsFile}
-                  className="w-full h-80 border rounded-md p-2 text-sm resize-none bg-background-default text-textStandard border-borderStandard focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  onChange={(event) => setBioRouterHintsFile(event.target.value)}
-                  placeholder="Enter project hints here..."
-                />
-              </div>
-            )}
-          </div>
+          {biorouterHintsFileReadError ? (
+            <ErrorDisplay error={new Error(biorouterHintsFileReadError)} />
+          ) : (
+            <div>
+              <FileInfo filePath={biorouterHintsFilePath} found={biorouterHintsFileFound} />
+              <textarea
+                value={biorouterHintsFile}
+                className="w-full h-72 border border-border-subtle rounded-lg p-3 text-sm font-mono resize-none bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150"
+                onChange={(event) => setBioRouterHintsFile(event.target.value)}
+                placeholder="# Project context for BioRouter&#10;# e.g. language, frameworks, coding style, important files..."
+              />
+            </div>
+          )}
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="border-t border-border-subtle pt-4 mt-1">
           {saveSuccess && (
-            <span className="text-green-600 text-sm flex items-center gap-1 mr-auto">
-              <Check className="w-4 h-4" />
-              Saved successfully
+            <span className="text-green-600 dark:text-green-400 text-xs flex items-center gap-1 mr-auto font-medium">
+              <Check className="w-3.5 h-3.5" />
+              Saved
             </span>
           )}
-          <Button variant="outline" onClick={() => setIsBioRouterHintsModalOpen(false)}>
+          <Button variant="ghost" size="sm" onClick={() => setIsBioRouterHintsModalOpen(false)}>
             Close
           </Button>
-          <Button onClick={writeFile} disabled={isSaving}>
-            {isSaving ? 'Saving...' : 'Save'}
+          <Button size="sm" onClick={writeFile} disabled={isSaving}>
+            {isSaving ? 'Saving…' : 'Save'}
           </Button>
         </DialogFooter>
       </DialogContent>

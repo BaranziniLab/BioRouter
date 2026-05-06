@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown } from '../icons/app-icons';
 import { Button } from '../ui/button';
 
 interface WorkflowExpandableInfoProps {
@@ -39,7 +39,7 @@ export default function WorkflowExpandableInfo({
         </label>
       </div>
 
-      <div className="relative rounded-lg bg-background-default text-textStandard">
+      <div className="relative rounded-lg bg-background-default text-text-default">
         {infoValue && (
           <>
             <div

@@ -2,7 +2,7 @@ import React from 'react';
 import { Button } from '../../../../ui/button';
 import clsx from 'clsx';
 import { TooltipWrapper } from './TooltipWrapper';
-import { Check, Rocket, Sliders } from 'lucide-react';
+import { Check, Rocket, Sliders } from '../../../../icons/app-icons';
 
 interface ActionButtonProps extends React.ComponentProps<typeof Button> {
   /** Icon component to render, e.g. `RefreshCw` from lucide-react */

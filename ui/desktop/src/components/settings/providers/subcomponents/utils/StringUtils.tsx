@@ -7,7 +7,7 @@ export function OllamaNotConfiguredTooltipMessage() {
         href="https://ollama.com/download"
         target="_blank"
         rel="noopener noreferrer"
-        className="text-blue-600 underline hover:text-blue-800"
+        className="text-blue-600 dark:text-blue-400 underline hover:text-blue-800 dark:hover:text-blue-300"
       >
         Ollama app
       </a>{' '}
@@ -26,7 +26,7 @@ interface ProviderDescriptionProps {
 
 export function ProviderDescription({ description }: ProviderDescriptionProps) {
   return (
-    <p className="text-xs text-textSubtle mt-1.5 mb-3 leading-normal overflow-y-auto max-h-[54px]">
+    <p className="text-xs text-text-muted mt-1.5 mb-3 leading-normal overflow-y-auto max-h-[54px]">
       {description}
     </p>
   );

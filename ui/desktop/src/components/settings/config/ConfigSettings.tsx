@@ -3,11 +3,10 @@ import { Input } from '../../ui/input';
 import { Button } from '../../ui/button';
 import { useConfig } from '../../ConfigContext';
 import { cn } from '../../../utils';
-import { Save, RotateCcw, FileText, Settings } from 'lucide-react';
+import { Save, RotateCcw, FileText, Settings } from '../../icons/app-icons';
 import { toastSuccess, toastError } from '../../../toasts';
 import { getUiNames, providerPrefixes } from '../../../utils/configUtils';
 import type { ConfigData, ConfigValue } from '../../../types/config';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../ui/card';
 import {
   Dialog,
   DialogContent,
@@ -143,21 +142,18 @@ export default function ConfigSettings() {
   }, [originalKeyOrder, configValues, currentProvider]);
 
   return (
-    <Card className="rounded-lg">
-      <CardHeader className="pb-0">
-        <CardTitle className="flex items-center gap-2">
-          <FileText className="text-iconStandard" size={20} />
-          Configuration
-        </CardTitle>
-        <CardDescription>
-          Edit your biorouter configuration settings
-          {currentProvider && ` (current settings for ${currentProvider})`}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="pt-4 px-4">
+    <div>
+      <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+        Configuration
+      </h2>
+      <p className="text-xs text-text-muted mb-4">
+        Edit your BioRouter configuration settings
+        {currentProvider && ` (current settings for ${currentProvider})`}
+      </p>
+      <div className="border-t border-border-subtle pt-4">
         <Dialog open={isModalOpen} onOpenChange={handleModalClose}>
           <DialogTrigger asChild>
-            <Button className="flex items-center gap-2" variant="secondary" size="sm">
+            <Button className="flex items-center gap-2" variant="secondary">
               <Settings className="h-4 w-4" />
               Edit Configuration
             </Button>
@@ -177,18 +173,18 @@ export default function ConfigSettings() {
             <div className="flex-1 max-h-[60vh] overflow-auto pr-4">
               <div className="space-y-4">
                 {configEntries.length === 0 ? (
-                  <p className="text-textSubtle">No configuration settings found.</p>
+                  <p className="text-text-muted">No configuration settings found.</p>
                 ) : (
                   configEntries.map(([key, _value]) => (
                     <div key={key} className="grid grid-cols-[200px_1fr_auto] gap-3 items-center">
-                      <label className="text-sm font-medium text-textStandard" title={key}>
+                      <label className="text-sm font-medium text-text-default" title={key}>
                         {getUiNames(key)}
                       </label>
                       <Input
                         value={String(configValues[key] || '')}
                         onChange={(e) => handleChange(key, e.target.value)}
                         className={cn(
-                          'text-textStandard border-borderSubtle hover:border-borderStandard transition-colors',
+                          'text-text-default border-border-subtle hover:border-border-subtle transition-colors',
                           modifiedKeys.has(key) && 'border-blue-500 focus:ring-blue-500/20'
                         )}
                         placeholder={`Enter ${getUiNames(key)}`}
@@ -225,7 +221,7 @@ export default function ConfigSettings() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }

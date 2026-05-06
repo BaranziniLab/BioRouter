@@ -14,7 +14,7 @@ import {
 import { ScrollArea } from '../ui/scroll-area';
 import { Button } from '../ui/button';
 import { TrashIcon } from '../icons/TrashIcon';
-import { Plus, RefreshCw, Pause, Play, Edit, Square, Eye, CircleDotDashed } from 'lucide-react';
+import { Plus, RefreshCw, Pause, Play, Edit, Square, Eye, CircleDotDashed } from '../icons/app-icons';
 import { NewSchedulePayload, ScheduleModal } from './ScheduleModal';
 import ScheduleDetailView from './ScheduleDetailView';
 import { toastError, toastSuccess } from '../../toasts';
@@ -192,7 +192,6 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingSchedule, setEditingSchedule] = useState<ScheduledJob | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [pendingDeepLink, setPendingDeepLink] = useState<string | null>(null);
   const [actionsInProgress, setActionsInProgress] = useState<Set<string>>(new Set());
   const [viewingScheduleId, setViewingScheduleId] = useState<string | null>(null);
 
@@ -220,7 +219,6 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
 
       const locationState = location.state as ViewOptions | null;
       if (locationState?.pendingScheduleDeepLink) {
-        setPendingDeepLink(locationState.pendingScheduleDeepLink);
         setIsModalOpen(true);
         window.history.replaceState({}, document.title);
       }
@@ -261,8 +259,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       } else {
         const newPayload = payload as NewSchedulePayload;
         await createSchedule(newPayload);
-        const sourceType = pendingDeepLink ? 'deeplink' : 'file';
-        trackScheduleCreated(sourceType, true);
+        trackScheduleCreated('file', true);
       }
       await fetchSchedules();
       setIsModalOpen(false);
@@ -273,8 +270,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       setSubmitApiError(errorMsg);
 
       if (!editingSchedule) {
-        const sourceType = pendingDeepLink ? 'deeplink' : 'file';
-        trackScheduleCreated(sourceType, false, getErrorType(error));
+        trackScheduleCreated('file', false, getErrorType(error));
       }
     } finally {
       setIsSubmitting(false);
@@ -532,13 +528,11 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
           setIsModalOpen(false);
           setEditingSchedule(null);
           setSubmitApiError(null);
-          setPendingDeepLink(null);
         }}
         onSubmit={handleModalSubmit}
         schedule={editingSchedule}
         isLoadingExternally={isSubmitting}
         apiErrorExternally={submitApiError}
-        initialDeepLink={pendingDeepLink}
       />
     </>
   );

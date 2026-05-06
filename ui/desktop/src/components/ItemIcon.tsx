@@ -15,7 +15,7 @@ import {
   Zap,
   BookOpen,
   Wrench,
-} from 'lucide-react';
+} from './icons/app-icons';
 import { DisplayItem } from './MentionPopover';
 
 interface FileIconProps {

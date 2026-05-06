@@ -41,14 +41,14 @@ export function ResponseStyleSelectionItem({
   return (
     <div className="group hover:cursor-pointer text-sm">
       <div
-        className={`flex items-center justify-between text-text-default py-2 px-2 ${checked ? 'bg-background-muted' : 'bg-background-default hover:bg-background-muted'} rounded-lg transition-all`}
+        className={`flex items-center justify-between text-text-default py-3 px-2 -mx-2 rounded-lg cursor-pointer transition-colors duration-150 ${checked ? 'bg-background-medium' : 'hover:bg-background-medium'}`}
         onClick={() => handleStyleChange(style.key)}
       >
         <div className="flex">
           <div>
-            <h3 className="text-text-default">{style.label}</h3>
+            <p className="text-sm font-medium text-text-default">{style.label}</p>
             {showDescription && (
-              <p className="text-xs text-text-muted mt-[2px]">{style.description}</p>
+              <p className="text-xs text-text-muted mt-0.5">{style.description}</p>
             )}
           </div>
         </div>

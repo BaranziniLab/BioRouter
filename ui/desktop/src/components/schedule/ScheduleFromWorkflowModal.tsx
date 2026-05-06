@@ -4,7 +4,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Workflow, generateDeepLink } from '../../workflow';
 import Copy from '../icons/Copy';
-import { Check } from 'lucide-react';
+import { Check } from '../icons/app-icons';
 
 interface ScheduleFromWorkflowModalProps {
   isOpen: boolean;
@@ -120,7 +120,7 @@ export const ScheduleFromWorkflowModal: React.FC<ScheduleFromWorkflowModalProps>
             type="button"
             variant="outline"
             onClick={handleClose}
-            className="flex-1 rounded-xl hover:bg-bgSubtle text-textSubtle"
+            className="flex-1 rounded-xl hover:bg-background-medium text-text-muted"
           >
             Cancel
           </Button>

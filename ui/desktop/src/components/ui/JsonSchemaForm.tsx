@@ -168,9 +168,9 @@ export default function JsonSchemaForm({
             checked={Boolean(value)}
             onChange={(e) => handleChange(key, e.target.checked)}
             disabled={disabled}
-            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            className="h-4 w-4 rounded border-gray-300 dark:border-border-strong text-blue-600 dark:text-blue-400 focus:ring-blue-500 dark:focus:ring-blue-400"
           />
-          <span className="text-sm text-textStandard">{prop.description || key}</span>
+          <span className="text-sm text-text-default">{prop.description || key}</span>
         </label>
       );
     }
@@ -190,7 +190,7 @@ export default function JsonSchemaForm({
           max={prop.maximum}
           step={prop.type === 'integer' ? 1 : 'any'}
           disabled={disabled}
-          className={error ? 'border-red-500' : ''}
+          className={error ? 'border-red-500 dark:border-red-400' : ''}
         />
       );
     }
@@ -204,13 +204,13 @@ export default function JsonSchemaForm({
         minLength={prop.minLength}
         maxLength={prop.maxLength}
         disabled={disabled}
-        className={error ? 'border-red-500' : ''}
+        className={error ? 'border-red-500 dark:border-red-400' : ''}
       />
     );
   };
 
   if (!schema.properties || Object.keys(schema.properties).length === 0) {
-    return <div className="text-textSubtle text-sm">No fields to display</div>;
+    return <div className="text-text-muted text-sm">No fields to display</div>;
   }
 
   return (
@@ -223,22 +223,22 @@ export default function JsonSchemaForm({
           return (
             <div key={key} className="flex flex-col gap-1">
               {renderField(key, prop)}
-              {error && <span className="text-red-500 text-xs">{error}</span>}
+              {error && <span className="text-red-500 dark:text-red-400 text-xs">{error}</span>}
             </div>
           );
         }
 
         return (
           <div key={key} className="flex flex-col gap-1">
-            <label htmlFor={key} className="text-sm font-medium text-textStandard">
+            <label htmlFor={key} className="text-sm font-medium text-text-default">
               {key}
-              {isRequired && <span className="text-red-500 ml-1">*</span>}
+              {isRequired && <span className="text-red-500 dark:text-red-400 ml-1">*</span>}
             </label>
             {prop.description && prop.type !== 'boolean' && (
-              <span className="text-xs text-textSubtle">{prop.description}</span>
+              <span className="text-xs text-text-muted">{prop.description}</span>
             )}
             {renderField(key, prop)}
-            {error && <span className="text-red-500 text-xs">{error}</span>}
+            {error && <span className="text-red-500 dark:text-red-400 text-xs">{error}</span>}
           </div>
         );
       })}

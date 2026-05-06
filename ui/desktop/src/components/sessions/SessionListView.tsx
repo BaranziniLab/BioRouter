@@ -11,7 +11,7 @@ import {
   Upload,
   ExternalLink,
   Puzzle,
-} from 'lucide-react';
+} from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { ScrollArea } from '../ui/scroll-area';
 import { formatMessageTimestamp } from '../../utils/timeUtils';
@@ -22,6 +22,7 @@ import { groupSessionsByDate, type DateGroup } from '../../utils/dateUtils';
 import { Skeleton } from '../ui/skeleton';
 import { toast } from 'react-toastify';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
+import { ImportSessionModal } from './ImportSessionModal';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/Tooltip';
 import {
   deleteSession,
@@ -128,7 +129,7 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
     return (
       <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/50">
         <div className="bg-background-default border border-border-subtle rounded-lg p-6 w-[500px] max-w-[90vw]">
-          <h3 className="text-lg font-medium text-text-standard mb-4">Edit Session Description</h3>
+          <h3 className="text-lg font-medium text-text-default mb-4">Edit Session Description</h3>
 
           <div className="space-y-4">
             <div>
@@ -137,7 +138,7 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
                 type="text"
                 value={description}
                 onChange={handleInputChange}
-                className="w-full p-3 border border-border-subtle rounded-lg bg-background-default text-text-standard focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full p-3 border border-border-subtle rounded-lg bg-background-default text-text-default focus:outline-none focus:ring-2 focus:ring-blue-500"
                 placeholder="Enter session description"
                 autoFocus
                 maxLength={200}
@@ -218,6 +219,9 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
     const [sessionToDelete, setSessionToDelete] = useState<Session | null>(null);
 
+    // Import modal state
+    const [showImportModal, setShowImportModal] = useState(false);
+
     // Search state for debouncing
     const [searchTerm, setSearchTerm] = useState('');
     const [caseSensitive, setCaseSensitive] = useState(false);
@@ -234,8 +238,6 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         delete sessionRefs.current[itemId];
       }
     };
-
-    const fileInputRef = useRef<HTMLInputElement>(null);
 
     const visibleDateGroups = useMemo(() => {
       return dateGroups.slice(0, visibleGroupsCount);
@@ -476,30 +478,14 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     }, []);
 
     const handleImportClick = useCallback(() => {
-      fileInputRef.current?.click();
+      setShowImportModal(true);
     }, []);
 
     const handleImportSession = useCallback(
-      async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (!file) return;
-
-        try {
-          const json = await file.text();
-          await importSession({
-            body: { json },
-            throwOnError: true,
-          });
-
-          toast.success('Session imported successfully');
-          await loadSessions();
-        } catch (error) {
-          toast.error(`Failed to import session: ${error}`);
-        } finally {
-          if (fileInputRef.current) {
-            fileInputRef.current.value = '';
-          }
-        }
+      async (json: string) => {
+        await importSession({ body: { json }, throwOnError: true });
+        toast.success('Session imported successfully');
+        await loadSessions();
       },
       [loadSessions]
     );
@@ -846,19 +832,17 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           </div>
         </MainPanelLayout>
 
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".json"
-          onChange={handleImportSession}
-          className="hidden"
-        />
-
         <EditSessionModal
           session={editingSession}
           isOpen={showEditModal}
           onClose={handleModalClose}
           onSave={handleModalSave}
+        />
+
+        <ImportSessionModal
+          isOpen={showImportModal}
+          onClose={() => setShowImportModal(false)}
+          onImport={handleImportSession}
         />
 
         <ConfirmationModal

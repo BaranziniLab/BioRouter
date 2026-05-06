@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button } from '../../ui/button';
-import { FolderKey } from 'lucide-react';
+import { FolderKey } from '../../icons/app-icons';
 import { BioRouterHintsModal } from './BioRouterHintsModal';
 
 export const BioRouterHintsSection = () => {
@@ -9,18 +9,17 @@ export const BioRouterHintsSection = () => {
 
   return (
     <>
-      <div className="flex items-center justify-between px-2 py-2">
+      <div className="flex items-center justify-between py-4">
         <div className="flex-1">
-          <h3 className="text-text-default">Project Hints (.biorouterhints)</h3>
-          <p className="text-xs text-text-muted mt-[2px]">
+          <p className="text-sm font-medium text-text-default">Project Hints (.biorouterhints)</p>
+          <p className="text-xs text-text-muted mt-0.5">
             Configure your project's .biorouterhints file to provide additional context to BioRouter
           </p>
         </div>
         <Button
           onClick={() => setIsModalOpen(true)}
           variant="outline"
-          size="sm"
-          className="flex items-center gap-2"
+          className="flex items-center gap-2 ml-4"
         >
           <FolderKey size={16} />
           Configure

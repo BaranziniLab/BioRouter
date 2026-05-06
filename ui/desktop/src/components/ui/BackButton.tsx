@@ -1,5 +1,5 @@
 import React, { useEffect, useCallback } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft } from '../icons/app-icons';
 import { Button } from './button';
 import type { VariantProps } from 'class-variance-authority';
 import { buttonVariants } from './button';
@@ -15,8 +15,8 @@ interface BackButtonProps extends VariantProps<typeof buttonVariants> {
 const BackButton: React.FC<BackButtonProps> = ({
   onClick,
   className = '',
-  variant = 'secondary',
-  size = 'default',
+  variant = 'ghost',
+  size = 'sm',
   shape = 'pill',
   showText = true,
   ...props
@@ -68,10 +68,7 @@ const BackButton: React.FC<BackButtonProps> = ({
       variant={variant}
       size={size}
       shape={shape}
-      className={cn(
-        'rounded-full px-6 py-2 flex items-center gap-2 text-text-default hover:cursor-pointer',
-        className
-      )}
+      className={cn('flex items-center gap-1.5 text-text-muted hover:text-text-default', className)}
       {...props}
     >
       <ArrowLeft />

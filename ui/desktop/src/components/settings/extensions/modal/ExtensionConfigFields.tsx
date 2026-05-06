@@ -21,16 +21,16 @@ export default function ExtensionConfigFields({
     return (
       <div className="space-y-4">
         <div>
-          <label className="text-sm font-medium mb-2 block text-textStandard">Command</label>
+          <label className="text-sm font-medium mb-2 block text-text-default">Command</label>
           <div className="relative">
             <Input
               value={full_cmd}
               onChange={(e) => onChange('cmd', e.target.value)}
               placeholder="e.g. npx -y @modelcontextprotocol/my-extension <filepath>"
-              className={`w-full ${!submitAttempted || isValid ? 'border-borderSubtle' : 'border-red-500'} text-textStandard`}
+              className={`w-full ${!submitAttempted || isValid ? 'border-border-subtle' : 'border-red-500'} text-text-default`}
             />
             {submitAttempted && !isValid && (
-              <div className="absolute text-xs text-red-500 mt-1">Command is required</div>
+              <div className="absolute text-xs text-red-500 dark:text-red-400 mt-1">Command is required</div>
             )}
           </div>
         </div>
@@ -39,16 +39,16 @@ export default function ExtensionConfigFields({
   } else {
     return (
       <div>
-        <label className="text-sm font-medium mb-2 block text-textStandard">Endpoint</label>
+        <label className="text-sm font-medium mb-2 block text-text-default">Endpoint</label>
         <div className="relative">
           <Input
             value={endpoint}
             onChange={(e) => onChange('endpoint', e.target.value)}
             placeholder="Enter endpoint URL..."
-            className={`w-full ${!submitAttempted || isValid ? 'border-borderSubtle' : 'border-red-500'} text-textStandard`}
+            className={`w-full ${!submitAttempted || isValid ? 'border-border-subtle' : 'border-red-500'} text-text-default`}
           />
           {submitAttempted && !isValid && (
-            <div className="absolute text-xs text-red-500 mt-1">Endpoint URL is required</div>
+            <div className="absolute text-xs text-red-500 dark:text-red-400 mt-1">Endpoint URL is required</div>
           )}
         </div>
       </div>

@@ -1,50 +1,35 @@
 import React, { memo, useMemo, useCallback, useState } from 'react';
 import { ProviderCard } from './subcomponents/ProviderCard';
-import CardContainer from './subcomponents/CardContainer';
 import ProviderConfigurationModal from './modal/ProviderConfiguationModal';
 import {
   DeclarativeProviderConfig,
   ProviderDetails,
   UpdateCustomProviderRequest,
 } from '../../../api';
-import { Plus } from 'lucide-react';
+import { Plus } from '../../icons/app-icons';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../ui/dialog';
 import CustomProviderForm from './modal/subcomponents/forms/CustomProviderForm';
 import { SwitchModelModal } from '../models/subcomponents/SwitchModelModal';
 import type { View } from '../../../utils/navigationUtils';
 
 const GridLayout = memo(function GridLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <div
-      className="grid gap-4 [&_*]:z-20 p-1"
-      style={{
-        gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 200px))',
-        justifyContent: 'center',
-      }}
-    >
-      {children}
-    </div>
-  );
+  return <div className="flex flex-col">{children}</div>;
 });
 
 const CustomProviderCard = memo(function CustomProviderCard({ onClick }: { onClick: () => void }) {
   return (
-    <CardContainer
-      testId="add-custom-provider-card"
+    <button
+      data-testid="add-custom-provider-card"
       onClick={onClick}
-      header={null}
-      body={
-        <div className="flex flex-col items-center justify-center min-h-[200px]">
-          <Plus className="w-8 h-8 text-gray-400 mb-2" />
-          <div className="text-sm text-gray-600 dark:text-gray-400 text-center">
-            <div>Add</div>
-            <div>Custom Provider</div>
-          </div>
-        </div>
-      }
-      grayedOut={false}
-      borderStyle="dashed"
-    />
+      className="w-full flex items-center gap-3 py-3 px-4 rounded-xl
+        cursor-pointer hover:bg-background-medium
+        transition-colors duration-150 text-left"
+    >
+      <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0">
+        <Plus className="w-4 h-4 text-text-muted" />
+      </div>
+      <p className="text-sm text-text-muted">Add Custom Provider</p>
+    </button>
   );
 });
 

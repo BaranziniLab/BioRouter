@@ -71,17 +71,17 @@ export default function ImagePreview({
           alt={alt}
           onError={handleError}
           onClick={toggleExpand}
-          className={`rounded border border-borderSubtle cursor-pointer hover:border-borderStandard transition-all ${
+          className={`rounded border border-border-subtle cursor-pointer hover:border-border-subtle transition-all ${
             isExpanded ? 'max-w-full max-h-96' : 'max-h-40 max-w-40'
           } ${isLoading ? 'hidden' : ''}`}
           style={{ objectFit: 'contain' }}
         />
       )}
       {isExpanded && !error && !isLoading && imageData && (
-        <div className="text-xs text-textSubtle mt-1">Click to collapse</div>
+        <div className="text-xs text-text-muted mt-1">Click to collapse</div>
       )}
       {!isExpanded && !error && !isLoading && imageData && (
-        <div className="text-xs text-textSubtle mt-1">Click to expand</div>
+        <div className="text-xs text-text-muted mt-1">Click to expand</div>
       )}
     </div>
   );

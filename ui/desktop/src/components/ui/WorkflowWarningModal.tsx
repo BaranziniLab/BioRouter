@@ -72,21 +72,21 @@ export function WorkflowWarningModal({
 
           <div className="flex-1 overflow-y-auto p-6 pt-4">
             <div className="bg-background-muted p-4 rounded-lg">
-              <h3 className="font-medium mb-3 text-text-standard">Workflow Preview:</h3>
+              <h3 className="font-medium mb-3 text-text-default">Workflow Preview:</h3>
               <div className="space-y-4">
                 {workflowDetails.title && (
-                  <p className="text-text-standard">
+                  <p className="text-text-default">
                     <strong>Title:</strong> {workflowDetails.title}
                   </p>
                 )}
                 {workflowDetails.description && (
-                  <p className="text-text-standard">
+                  <p className="text-text-default">
                     <strong>Description:</strong> {workflowDetails.description}
                   </p>
                 )}
                 {workflowDetails.instructions && (
                   <div>
-                    <h4 className="font-medium text-text-standard mb-1">Instructions:</h4>
+                    <h4 className="font-medium text-text-default mb-1">Instructions:</h4>
                     <MarkdownContent content={workflowDetails.instructions} className="text-sm" />
                   </div>
                 )}

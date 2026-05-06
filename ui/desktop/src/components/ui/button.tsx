@@ -13,9 +13,9 @@ const buttonVariants = cva(
         destructive:
           'bg-background-danger text-white hover:bg-background-danger/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-background-danger/60',
         outline:
-          'border border-neutral-300 bg-background-default text-text-default hover:bg-background-medium hover:border-neutral-400 active:translate-y-px transition-all',
+          'bg-background-medium text-text-default hover:bg-background-strong active:translate-y-px transition-all',
         secondary:
-          'bg-background-medium text-text-default border border-neutral-200 hover:bg-background-strong hover:border-neutral-300 transition-all',
+          'bg-background-medium text-text-default hover:bg-background-strong transition-all',
         ghost: 'hover:bg-background-medium dark:hover:bg-background-medium/50',
         link: 'text-text-accent underline-offset-4 hover:underline',
       },

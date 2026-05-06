@@ -7,7 +7,7 @@ interface GreetingProps {
 }
 
 export function Greeting({
-  className = 'mt-1 text-3xl font-normal leading-snug animate-in fade-in duration-300',
+  className = 'mt-1 text-3xl font-normal leading-snug animate-in fade-in duration-300 [font-family:Arial,sans-serif]',
   forceRefresh = false,
 }: GreetingProps) {
   const prefixes = ['Hello!'];

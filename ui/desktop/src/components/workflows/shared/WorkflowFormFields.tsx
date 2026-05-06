@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Parameter } from '../../../workflow';
-import { ChevronDown } from 'lucide-react';
+import { ChevronDown } from '../../icons/app-icons';
 
 import ParameterInput from '../../parameter/ParameterInput';
 import WorkflowActivityEditor from '../WorkflowActivityEditor';
@@ -9,6 +9,8 @@ import InstructionsEditor from './InstructionsEditor';
 import { Button } from '../../ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../ui/collapsible';
 import { WorkflowFormApi, WorkflowFormData } from './workflowFormSchema';
+import { getExtensions } from '../../../api';
+import type { ExtensionConfig } from '../../../api';
 
 // Type for field API to avoid linting issues - use any to bypass complex type constraints
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -17,6 +19,10 @@ type FormFieldApi<_T = any> = any;
 interface WorkflowFormFieldsProps {
   // Form instance from parent
   form: WorkflowFormApi;
+
+  // Extensions state managed by parent
+  extensions?: ExtensionConfig[];
+  onExtensionsChange?: (exts: ExtensionConfig[]) => void;
 
   // Event handlers
   onTitleChange?: (value: string) => void;
@@ -49,6 +55,8 @@ export const extractTemplateVariables = (content: string): string[] => {
 
 export function WorkflowFormFields({
   form,
+  extensions = [],
+  onExtensionsChange,
   onTitleChange,
   onDescriptionChange,
   onInstructionsChange,
@@ -59,6 +67,15 @@ export function WorkflowFormFields({
   const [showInstructionsEditor, setShowInstructionsEditor] = useState(false);
   const [newParameterName, setNewParameterName] = useState('');
   const [expandedParameters, setExpandedParameters] = useState<Set<string>>(new Set());
+  const [availableExtensions, setAvailableExtensions] = useState<ExtensionConfig[]>([]);
+
+  useEffect(() => {
+    getExtensions({ throwOnError: false }).then((res) => {
+      if (res.data?.extensions) {
+        setAvailableExtensions(res.data.extensions.map((e) => ({ ...e })));
+      }
+    });
+  }, []);
 
   // Force re-render when instructions, prompt, or activities change
   const [_forceRender, setForceRender] = useState(0);
@@ -145,14 +162,32 @@ export function WorkflowFormFields({
     return usedInInstructions || usedInPrompt || usedInActivities;
   };
 
-  const checkHasAdvancedData = React.useCallback((values: WorkflowFormData) => {
-    const hasActivities = Boolean(values.activities && values.activities.length > 0);
-    const hasParameters = Boolean(values.parameters && values.parameters.length > 0);
-    const hasJsonSchema = Boolean(values.jsonSchema && values.jsonSchema.trim());
-    return hasActivities || hasParameters || hasJsonSchema;
-  }, []);
+  const checkHasAdvancedData = React.useCallback(
+    (values: WorkflowFormData) => {
+      const hasActivities = Boolean(values.activities && values.activities.length > 0);
+      const hasParameters = Boolean(values.parameters && values.parameters.length > 0);
+      const hasJsonSchema = Boolean(values.jsonSchema && values.jsonSchema.trim());
+      const hasSettings = Boolean(
+        values.settings?.biorouter_provider ||
+          values.settings?.biorouter_model ||
+          values.settings?.temperature !== undefined
+      );
+      const hasExtensions = extensions.length > 0;
+      return hasActivities || hasParameters || hasJsonSchema || hasSettings || hasExtensions;
+    },
+    [extensions]
+  );
 
   const [advancedOpen, setAdvancedOpen] = useState(() => checkHasAdvancedData(form.state.values));
+  const hasAutoOpenedForExtensions = React.useRef(false);
+
+  // Auto-open Advanced Options when pre-loaded extensions arrive (e.g. from session)
+  useEffect(() => {
+    if (extensions.length > 0 && !hasAutoOpenedForExtensions.current) {
+      hasAutoOpenedForExtensions.current = true;
+      setAdvancedOpen(true);
+    }
+  }, [extensions]);
 
   return (
     <div className="space-y-4" data-testid="workflow-form">
@@ -162,9 +197,9 @@ export function WorkflowFormFields({
           <div>
             <label
               htmlFor="workflow-title"
-              className="block text-sm font-medium text-text-standard mb-2"
+              className="block text-sm font-medium text-text-default mb-2"
             >
-              Title <span className="text-red-500">*</span>
+              Title <span className="text-red-500 dark:text-red-400">*</span>
             </label>
             <input
               id="workflow-title"
@@ -175,14 +210,14 @@ export function WorkflowFormFields({
                 onTitleChange?.(e.target.value);
               }}
               onBlur={field.handleBlur}
-              className={`w-full p-3 border rounded-lg bg-background-default text-text-standard focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                field.state.meta.errors.length > 0 ? 'border-red-500' : 'border-border-subtle'
+              className={`w-full h-9 px-3 text-sm border rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 ${
+                field.state.meta.errors.length > 0 ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
               }`}
               placeholder="Workflow title"
               data-testid="title-input"
             />
             {field.state.meta.errors.length > 0 && (
-              <p className="text-red-500 text-sm mt-1">{field.state.meta.errors[0]}</p>
+              <p className="text-red-500 dark:text-red-400 text-sm mt-1">{field.state.meta.errors[0]}</p>
             )}
           </div>
         )}
@@ -194,9 +229,9 @@ export function WorkflowFormFields({
           <div>
             <label
               htmlFor="workflow-description"
-              className="block text-sm font-medium text-text-standard mb-2"
+              className="block text-sm font-medium text-text-default mb-2"
             >
-              Description <span className="text-red-500">*</span>
+              Description <span className="text-red-500 dark:text-red-400">*</span>
             </label>
             <input
               id="workflow-description"
@@ -207,14 +242,14 @@ export function WorkflowFormFields({
                 onDescriptionChange?.(e.target.value);
               }}
               onBlur={field.handleBlur}
-              className={`w-full p-3 border rounded-lg bg-background-default text-text-standard focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-                field.state.meta.errors.length > 0 ? 'border-red-500' : 'border-border-subtle'
+              className={`w-full h-9 px-3 text-sm border rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 ${
+                field.state.meta.errors.length > 0 ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
               }`}
               placeholder="Brief description of what this workflow does"
               data-testid="description-input"
             />
             {field.state.meta.errors.length > 0 && (
-              <p className="text-red-500 text-sm mt-1">{field.state.meta.errors[0]}</p>
+              <p className="text-red-500 dark:text-red-400 text-sm mt-1">{field.state.meta.errors[0]}</p>
             )}
           </div>
         )}
@@ -227,9 +262,9 @@ export function WorkflowFormFields({
             <div className="flex items-center justify-between mb-2">
               <label
                 htmlFor="workflow-instructions"
-                className="block text-sm font-medium text-text-standard"
+                className="block text-sm font-medium text-text-default"
               >
-                Instructions <span className="text-red-500">*</span>
+                Instructions <span className="text-red-500 dark:text-red-400">*</span>
               </label>
               <Button
                 type="button"
@@ -252,8 +287,8 @@ export function WorkflowFormFields({
                 field.handleBlur();
                 updateParametersFromFields();
               }}
-              className={`w-full p-3 border rounded-lg bg-background-default text-text-standard focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none font-mono text-sm ${
-                field.state.meta.errors.length > 0 ? 'border-red-500' : 'border-border-subtle'
+              className={`w-full px-3 py-2 text-sm border rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 resize-none font-mono ${
+                field.state.meta.errors.length > 0 ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
               }`}
               placeholder="Detailed instructions for the AI, hidden from the user"
               rows={8}
@@ -264,7 +299,7 @@ export function WorkflowFormFields({
               workflow.
             </p>
             {field.state.meta.errors.length > 0 && (
-              <p className="text-red-500 text-sm mt-1">{field.state.meta.errors[0]}</p>
+              <p className="text-red-500 dark:text-red-400 text-sm mt-1">{field.state.meta.errors[0]}</p>
             )}
 
             {/* Instructions Editor Modal */}
@@ -289,7 +324,7 @@ export function WorkflowFormFields({
           <div>
             <label
               htmlFor="workflow-prompt"
-              className="block text-sm font-medium text-text-standard mb-2"
+              className="block text-sm font-medium text-text-default mb-2"
             >
               Initial Prompt
             </label>
@@ -307,7 +342,7 @@ export function WorkflowFormFields({
                 field.handleBlur();
                 updateParametersFromFields();
               }}
-              className="w-full p-3 border border-border-subtle rounded-lg bg-background-default text-text-standard focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+              className="w-full px-3 py-2 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 resize-none"
               placeholder="Pre-filled prompt when the workflow starts"
               rows={3}
               data-testid="prompt-input"
@@ -318,17 +353,17 @@ export function WorkflowFormFields({
 
       {/* Advanced Section - Collapsible */}
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen} className="mt-6">
-        <CollapsibleTrigger className="flex items-baseline gap-2 w-full py-3 px-4 bg-bgSubtle hover:bg-bgSubtle/80 rounded-lg transition-colors border border-borderSubtle">
+        <CollapsibleTrigger className="flex items-baseline gap-2 w-full py-3 px-4 bg-background-medium hover:bg-background-medium/80 rounded-lg transition-colors border border-border-subtle">
           <ChevronDown
-            className={`w-4 h-4 text-textSubtle transition-transform duration-200 flex-shrink-0 relative top-0.5 ${
+            className={`w-4 h-4 text-text-muted transition-transform duration-200 flex-shrink-0 relative top-0.5 ${
               advancedOpen ? 'rotate-0' : '-rotate-90'
             }`}
           />
-          <span className="text-sm font-medium text-textStandard">Advanced Options</span>
-          <span className="text-xs text-textSubtle">Activities, parameters, response schema</span>
+          <span className="text-sm font-medium text-text-default">Advanced Options</span>
+          <span className="text-xs text-text-muted">Activities, parameters, model, extensions</span>
         </CollapsibleTrigger>
 
-        <CollapsibleContent className="mt-4 space-y-4 pl-6 border-l-2 border-borderSubtle ml-2">
+        <CollapsibleContent className="mt-4 space-y-4 pl-6 border-l-2 border-border-subtle ml-2">
           {/* Activities Field */}
           <form.Field name="activities">
             {(field: FormFieldApi<string[]>) => (
@@ -398,10 +433,10 @@ export function WorkflowFormFields({
 
               return (
                 <div>
-                  <label className="block text-md text-textProminent mb-2 font-bold">
+                  <label className="block text-sm font-medium text-text-default mb-1">
                     Parameters
                   </label>
-                  <p className="text-textSubtle text-sm space-y-2 pb-4">
+                  <p className="text-text-muted text-sm space-y-2 pb-4">
                     Parameters will be automatically detected from {`{{parameter_name}}`} syntax in
                     instructions/prompt/activities or you can manually add them below.
                   </p>
@@ -413,17 +448,18 @@ export function WorkflowFormFields({
                       value={newParameterName}
                       onChange={(e) => setNewParameterName(e.target.value)}
                       onKeyPress={handleKeyPress}
-                      placeholder="Enter parameter name..."
-                      className="flex-1 px-3 py-2 border border-border-subtle rounded-lg bg-background-default text-text-standard focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm"
+                      placeholder="Parameter name…"
+                      className="flex-1 h-9 px-3 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150"
                     />
-                    <button
+                    <Button
                       type="button"
                       onClick={handleAddParameter}
                       disabled={!newParameterName.trim()}
-                      className="px-4 py-2 bg-blue-500 text-white rounded-lg text-sm hover:bg-blue-600 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+                      variant="outline"
+                      size="sm"
                     >
-                      Add parameter
-                    </button>
+                      Add
+                    </Button>
                   </div>
 
                   {field.state.value.length > 0 &&
@@ -464,10 +500,10 @@ export function WorkflowFormFields({
           <form.Field name="jsonSchema">
             {(field: FormFieldApi<string | undefined>) => (
               <div>
-                <label className="block text-md text-textProminent mb-2 font-bold">
+                <label className="block text-sm font-medium text-text-default mb-1">
                   Response JSON Schema
                 </label>
-                <p className="text-textSubtle text-sm space-y-2 pb-4">
+                <p className="text-text-muted text-sm space-y-2 pb-4">
                   Define the expected structure of the AI's response using JSON Schema format
                 </p>
                 <div className="flex items-center justify-between mb-2">
@@ -485,17 +521,17 @@ export function WorkflowFormFields({
                 {field.state.value && field.state.value.trim() && (
                   <div
                     className={`border rounded-lg p-3 bg-background-muted ${
-                      field.state.meta.errors.length > 0 ? 'border-red-500' : 'border-border-subtle'
+                      field.state.meta.errors.length > 0 ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
                     }`}
                   >
-                    <pre className="text-xs font-mono text-text-standard whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
+                    <pre className="text-xs font-mono text-text-default whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
                       {field.state.value}
                     </pre>
                   </div>
                 )}
 
                 {field.state.meta.errors.length > 0 && (
-                  <p className="text-red-500 text-sm mt-1">{field.state.meta.errors[0]}</p>
+                  <p className="text-red-500 dark:text-red-400 text-sm mt-1">{field.state.meta.errors[0]}</p>
                 )}
 
                 {/* JSON Schema Editor Modal */}
@@ -514,6 +550,122 @@ export function WorkflowFormFields({
               </div>
             )}
           </form.Field>
+
+          {/* Model Settings */}
+          <div>
+            <label className="block text-sm font-medium text-text-default mb-1">
+              Model Settings
+            </label>
+            <p className="text-xs text-text-muted mb-3">
+              Override the default LLM for this workflow. Leave blank to use the global default.
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <form.Field name="settings.biorouter_provider">
+                {(field: FormFieldApi<string | undefined>) => (
+                  <div>
+                    <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+                      Provider
+                    </label>
+                    <input
+                      type="text"
+                      value={field.state.value || ''}
+                      onChange={(e) => field.handleChange(e.target.value || undefined)}
+                      placeholder="e.g. anthropic, openai"
+                      className="w-full h-9 px-3 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150"
+                    />
+                  </div>
+                )}
+              </form.Field>
+              <form.Field name="settings.biorouter_model">
+                {(field: FormFieldApi<string | undefined>) => (
+                  <div>
+                    <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+                      Model
+                    </label>
+                    <input
+                      type="text"
+                      value={field.state.value || ''}
+                      onChange={(e) => field.handleChange(e.target.value || undefined)}
+                      placeholder="e.g. claude-opus-4-5"
+                      className="w-full h-9 px-3 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150"
+                    />
+                  </div>
+                )}
+              </form.Field>
+            </div>
+            <form.Field name="settings.temperature">
+              {(field: FormFieldApi<number | undefined>) => (
+                <div className="mt-3">
+                  <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+                    Temperature{' '}
+                    <span className="normal-case font-normal">(0–2, blank = default)</span>
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={2}
+                    step={0.1}
+                    value={field.state.value ?? ''}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      field.handleChange(v === '' ? undefined : parseFloat(v));
+                    }}
+                    placeholder="e.g. 0.7"
+                    className="w-full h-9 px-3 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150"
+                  />
+                </div>
+              )}
+            </form.Field>
+          </div>
+
+          {/* Extensions */}
+          {onExtensionsChange && (
+            <div>
+              <label className="block text-sm font-medium text-text-default mb-1">
+                Extensions
+              </label>
+              <p className="text-xs text-text-muted mb-3">
+                Select which extensions are active for this workflow. Unchecked extensions are
+                disabled regardless of global settings.
+              </p>
+              {availableExtensions.length === 0 ? (
+                <p className="text-xs text-text-muted italic">No extensions configured.</p>
+              ) : (
+                <div className="space-y-2">
+                  {availableExtensions.map((ext) => {
+                    const isSelected = extensions.some((e) => e.name === ext.name);
+                    return (
+                      <label
+                        key={ext.name}
+                        className="flex items-start gap-3 py-2.5 px-3 rounded-lg border border-border-subtle bg-background-default hover:bg-background-muted cursor-pointer transition-colors duration-150"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              onExtensionsChange([...extensions, ext]);
+                            } else {
+                              onExtensionsChange(extensions.filter((x) => x.name !== ext.name));
+                            }
+                          }}
+                          className="mt-0.5 accent-[#cf6d47] flex-shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium text-text-default">{ext.name}</p>
+                          {ext.description && (
+                            <p className="text-xs text-text-muted mt-0.5 truncate">
+                              {ext.description}
+                            </p>
+                          )}
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </CollapsibleContent>
       </Collapsible>
     </div>

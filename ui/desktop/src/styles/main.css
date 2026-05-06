@@ -470,9 +470,10 @@ body {
 
 .bg-inline-code {
   border-radius: 4px;
-  color: var(--color-neutral-200);
+  color: var(--text-default);
+  background-color: var(--background-medium);
   font-family: monospace;
-  font-size: 12px;
+  font-size: 0.85em;
   font-style: normal;
   font-weight: 400;
   line-height: normal;
@@ -487,9 +488,18 @@ pre:has(> code.bg-inline-code) {
 }
 
 li > code.bg-inline-code,
-p > code.bg-inline-code {
-  color: var(--color-block-orange);
-  padding: 2px 4px;
+p > code.bg-inline-code,
+td > code.bg-inline-code,
+th > code.bg-inline-code,
+blockquote code.bg-inline-code,
+h1 > code.bg-inline-code,
+h2 > code.bg-inline-code,
+h3 > code.bg-inline-code,
+strong > code.bg-inline-code,
+em > code.bg-inline-code {
+  color: var(--text-default);
+  background-color: var(--background-medium);
+  padding: 2px 5px;
 }
 
 .bg-inline-code:after {
@@ -717,16 +727,13 @@ p > code.bg-inline-code {
 /* KaTeX Math Rendering */
 
 .prose .katex {
-  font-size: 1.05em;
+  font-size: 1em;
   color: inherit;
 }
 
 .katex-display {
   margin: 0.75em 0;
-  padding: 1em;
-  background-color: var(--background-muted);
-  border: 1px solid var(--border-default);
-  border-radius: 6px;
+  padding: 0.5em 0;
   overflow-x: auto;
   overflow-y: hidden;
   scrollbar-width: thin;
@@ -734,12 +741,17 @@ p > code.bg-inline-code {
 }
 
 .katex-display .katex {
-  color: var(--color-neutral-800);
+  color: var(--text-default);
 }
 
 .dark .katex-display .katex {
-  color: #e6e6e6;
+  color: var(--text-default);
 }
+
+.prose .katex-display {
+  display: block;
+}
+
 
 .katex-error {
   color: var(--text-danger);

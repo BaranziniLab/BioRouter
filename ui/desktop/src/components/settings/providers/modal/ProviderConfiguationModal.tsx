@@ -16,7 +16,7 @@ import { SecureStorageNotice } from './subcomponents/SecureStorageNotice';
 import { providerConfigSubmitHandler } from './subcomponents/handlers/DefaultSubmitHandler';
 import { useConfig } from '../../../ConfigContext';
 import { useModelAndProvider } from '../../../ModelAndProviderContext';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle } from '../../../icons/app-icons';
 import { ProviderDetails, removeCustomProvider } from '../../../../api';
 import { Button } from '../../../../components/ui/button';
 
@@ -140,7 +140,7 @@ export default function ProviderConfigurationModal({
     if (showDeleteConfirmation) {
       return (
         <AlertTriangle
-          className={isActiveProvider ? 'text-yellow-500' : 'text-red-500'}
+          className={isActiveProvider ? "text-yellow-500 dark:text-yellow-400" : "text-red-500 dark:text-red-400"}
           size={24}
         />
       );
@@ -175,27 +175,21 @@ export default function ProviderConfigurationModal({
             <DialogDescription>{descriptionText}</DialogDescription>
           </DialogHeader>
 
-          <div className="py-4">
-            {/* Contains information used to set up each provider */}
-            {/* Only show the form when NOT in delete confirmation mode */}
-            {!showDeleteConfirmation ? (
-              <>
-                {/* Contains information used to set up each provider */}
-                <DefaultProviderSetupForm
-                  configValues={configValues}
-                  setConfigValues={setConfigValues}
-                  provider={provider}
-                  validationErrors={validationErrors}
-                />
+          {!showDeleteConfirmation && (
+            <div className="py-2">
+              <DefaultProviderSetupForm
+                configValues={configValues}
+                setConfigValues={setConfigValues}
+                provider={provider}
+                validationErrors={validationErrors}
+              />
+              {requiredParameters.length > 0 &&
+                provider.metadata.config_keys &&
+                provider.metadata.config_keys.length > 0 && <SecureStorageNotice />}
+            </div>
+          )}
 
-                {requiredParameters.length > 0 &&
-                  provider.metadata.config_keys &&
-                  provider.metadata.config_keys.length > 0 && <SecureStorageNotice />}
-              </>
-            ) : null}
-          </div>
-
-          <DialogFooter>
+          <DialogFooter className="border-t border-border-subtle pt-4 mt-2">
             <ProviderSetupActions
               requiredParameters={requiredParameters}
               onCancel={handleCancel}

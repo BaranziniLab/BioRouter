@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button } from './ui/button';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle } from './icons/app-icons';
 import { errorMessage } from '../utils/conversionUtils';
 import { trackErrorWithContext, trackEvent, getErrorType } from '../utils/analytics';
 
@@ -51,11 +51,11 @@ export function ErrorUI({ error }: { error: string }) {
         <h1 className="text-2xl font-semibold text-foreground dark:text-white">Honk!</h1>
 
         {window?.appConfig?.get('BIOROUTER_VERSION') !== undefined ? (
-          <p className="text-base text-textSubtle dark:text-muted-foreground mb-2">
+          <p className="text-base text-text-muted dark:text-muted-foreground mb-2">
             An error occurred in BioRouter v{window?.appConfig?.get('BIOROUTER_VERSION') as string}.
           </p>
         ) : (
-          <p className="text-base text-textSubtle dark:text-muted-foreground mb-2">
+          <p className="text-base text-text-muted dark:text-muted-foreground mb-2">
             An error occurred.
           </p>
         )}

@@ -137,7 +137,7 @@ export default function DefaultProviderSetupForm({
     return (
       <span>
         <span>{pretty}</span>
-        <span className="text-sm font-light ml-2">({parameter.name})</span>
+        <span className="text-xs text-text-muted font-normal ml-1.5">({parameter.name})</span>
       </span>
     );
   };
@@ -158,9 +158,9 @@ export default function DefaultProviderSetupForm({
   const renderParametersList = (parameters: ConfigKey[]) => {
     return parameters.map((parameter) => (
       <div key={parameter.name}>
-        <label className="block text-sm font-medium text-textStandard mb-1">
+        <label className="block text-sm font-medium text-text-default mb-1">
           {getFieldLabel(parameter)}
-          {parameter.required && <span className="text-red-500 ml-1">*</span>}
+          {parameter.required && <span className="text-red-500 dark:text-red-400 ml-1">*</span>}
         </label>
         <Input
           type="text"
@@ -175,15 +175,15 @@ export default function DefaultProviderSetupForm({
             });
           }}
           placeholder={getPlaceholder(parameter)}
-          className={`w-full h-14 px-4 font-regular rounded-lg shadow-none ${
+          className={`w-full h-9 px-3 rounded-lg shadow-none text-sm ${
             validationErrors[parameter.name]
-              ? 'border-2 border-red-500'
-              : 'border border-borderSubtle hover:border-borderStandard'
-          } bg-background-default text-lg placeholder:text-textSubtle font-regular text-textStandard`}
+              ? 'border-2 border-red-500 dark:border-red-400'
+              : 'border border-border-subtle hover:border-border-strong focus:border-border-strong'
+          } bg-background-default placeholder:text-text-muted text-text-default`}
           required={parameter.required}
         />
         {validationErrors[parameter.name] && (
-          <p className="text-red-500 text-sm mt-1">{validationErrors[parameter.name]}</p>
+          <p className="text-red-500 dark:text-red-400 text-sm mt-1">{validationErrors[parameter.name]}</p>
         )}
       </div>
     ));
@@ -201,25 +201,23 @@ export default function DefaultProviderSetupForm({
   return (
     <div className="mt-4 space-y-4">
       {aboveFoldParameters.length === 0 && belowFoldParameters.length === 0 ? (
-        <div className="text-center text-gray-500">
+        <div className="text-center text-sm text-text-muted py-2">
           No configuration parameters for this provider.
         </div>
       ) : (
         <div>
-          <div>{renderParametersList(aboveFoldParameters)}</div>
+          <div className="space-y-3">{renderParametersList(aboveFoldParameters)}</div>
           {belowFoldParameters.length > 0 && (
             <Collapsible
               open={optionalExpanded}
               onOpenChange={setOptionalExpanded}
-              className="my-4 border-2 border-dashed border-secondary rounded-lg bg-secondary/10"
+              className="mt-4 border border-border-subtle rounded-xl bg-background-muted"
             >
-              <CollapsibleTrigger className="m-3 w-full">
-                <div>
-                  <span className="text-sm">{expandCtaText}</span>
-                  <span className="text-sm">{optionalExpanded ? '↑' : '↓'}</span>
-                </div>
+              <CollapsibleTrigger className="w-full flex items-center justify-between px-4 py-2.5 text-sm text-text-muted hover:text-text-default transition-colors duration-150">
+                <span>{expandCtaText}</span>
+                <span className="text-xs">{optionalExpanded ? '▲' : '▼'}</span>
               </CollapsibleTrigger>
-              <CollapsibleContent className="mx-3 mb-3">
+              <CollapsibleContent className="px-4 pb-4 space-y-3">
                 {renderParametersList(belowFoldParameters)}
               </CollapsibleContent>
             </Collapsible>

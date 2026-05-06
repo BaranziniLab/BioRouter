@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { Switch } from '../../ui/switch';
 import { Input } from '../../ui/input';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../ui/card';
-import { AlertCircle } from 'lucide-react';
+import { AlertCircle } from '../../icons/app-icons';
 
 interface ExternalBiorouterdConfig {
   enabled: boolean;
@@ -140,7 +140,7 @@ export default function ExternalBackendSection() {
                   className={urlError ? 'border-red-500' : ''}
                 />
                 {urlError && (
-                  <p className="text-xs text-red-500 flex items-center gap-1">
+                  <p className="text-xs text-red-500 dark:text-red-400 flex items-center gap-1">
                     <AlertCircle size={12} />
                     {urlError}
                   </p>

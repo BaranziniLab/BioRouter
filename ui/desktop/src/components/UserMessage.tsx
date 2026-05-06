@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ImagePreview from './ImagePreview';
 import { extractImagePaths, removeImagePathsFromText } from '../utils/imageUtils';
-import MarkdownContent from './MarkdownContent';
 import { getTextContent } from '../types/message';
 import { Message } from '../api';
 import MessageCopyLink from './MessageCopyLink';
@@ -150,13 +149,13 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
       <div className="flex flex-col group">
         {isEditing ? (
           // Truly wide, centered, in-place edit box replacing the bubble
-          <div className="w-full max-w-4xl mx-auto bg-background-light dark:bg-background-dark text-text-prominent rounded-xl border border-border-subtle shadow-lg py-4 px-4 my-2 transition-all duration-200 ease-in-out">
+          <div className="w-full max-w-4xl mx-auto bg-background-default text-text-default rounded-xl border border-border-subtle shadow-lg py-4 px-4 my-2 transition-all duration-200 ease-in-out">
             <textarea
               ref={textareaRef}
               value={editContent}
               onChange={handleContentChange}
               onKeyDown={handleKeyDown}
-              className="w-full resize-none bg-transparent text-text-prominent placeholder:text-text-subtle border border-border-subtle rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400 transition-all duration-200 text-base leading-relaxed"
+              className="w-full resize-none bg-transparent text-text-default placeholder:text-text-muted border border-border-subtle rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400 transition-all duration-200 text-base leading-relaxed"
               style={{
                 minHeight: '120px',
                 maxHeight: '300px',
@@ -182,7 +181,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
               </div>
             )}
             <div className="flex justify-between items-center mt-4">
-              <div className="text-xs text-text-subtle">
+              <div className="text-xs text-text-muted">
                 <span className="font-semibold">Edit in Place</span> updates this session •{' '}
                 <span className="font-semibold">Fork Session</span> creates a new session
               </div>
@@ -214,11 +213,8 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
             <div className="flex-col max-w-[85%] w-fit">
               <div className="flex flex-col group">
                 <div className="flex bg-background-accent text-text-on-accent rounded-xl py-2.5 px-4">
-                  <div ref={contentRef}>
-                    <MarkdownContent
-                      content={displayText}
-                      className="text-text-on-accent prose-a:text-text-on-accent prose-headings:text-text-on-accent prose-strong:text-text-on-accent prose-em:text-text-on-accent user-message"
-                    />
+                  <div ref={contentRef} className="text-sm text-text-on-accent whitespace-pre-wrap break-words leading-relaxed">
+                    {displayText}
                   </div>
                 </div>
 
@@ -244,7 +240,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                           handleEditClick();
                         }
                       }}
-                      className="flex items-center gap-1 text-xs text-text-subtle hover:cursor-pointer hover:text-text-prominent transition-all duration-200 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-opacity-50 rounded"
+                      className="flex items-center gap-1 text-xs text-text-muted hover:cursor-pointer hover:text-text-default transition-all duration-200 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-opacity-50 rounded"
                       aria-label={`Edit message: ${displayText.substring(0, 50)}${displayText.length > 50 ? '...' : ''}`}
                       aria-expanded={isEditing}
                       title="Edit message"
@@ -262,7 +258,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
 
         {/* Edited indicator */}
         {hasBeenEdited && !isEditing && (
-          <div className="text-xs text-text-subtle mt-1 text-right transition-opacity duration-200">
+          <div className="text-xs text-text-muted mt-1 text-right transition-opacity duration-200">
             Edited
           </div>
         )}

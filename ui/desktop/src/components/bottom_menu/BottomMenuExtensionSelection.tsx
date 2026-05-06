@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
-import { Puzzle } from 'lucide-react';
+import { Puzzle } from '../icons/app-icons';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../ui/dropdown-menu';
 import { Input } from '../ui/input';
 import { Switch } from '../ui/switch';
@@ -267,7 +267,7 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
               return (
                 <div
                   key={ext.name}
-                  className={`flex items-center justify-between px-2 py-2 hover:bg-background-hover transition-all duration-300 ${
+                  className={`flex items-center justify-between px-2 py-2 hover:bg-background-medium transition-all duration-300 ${
                     isToggling ? 'cursor-wait opacity-70' : 'cursor-pointer'
                   }`}
                   onClick={() => !isToggling && handleToggle(ext)}

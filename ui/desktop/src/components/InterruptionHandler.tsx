@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { AlertTriangle, StopCircle, PauseCircle, RotateCcw, Zap, AlertCircle } from 'lucide-react';
+import { AlertTriangle, StopCircle, PauseCircle, RotateCcw, Zap, AlertCircle } from './icons/app-icons';
 import { Button } from './ui/button';
 import { InterruptionMatch } from '../utils/interruptionDetector';
 

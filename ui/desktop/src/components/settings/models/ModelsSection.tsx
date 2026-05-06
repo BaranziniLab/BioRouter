@@ -8,8 +8,6 @@ import {
   useModelAndProvider,
 } from '../../ModelAndProviderContext';
 import { toastError } from '../../../toasts';
-
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../ui/card';
 import ResetProviderSection from '../reset_provider/ResetProviderSection';
 
 interface ModelsSectionProps {
@@ -32,16 +30,13 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
     try {
       setIsLoading(true);
 
-      // Get display name (alias if available, otherwise model name)
       const modelDisplayName = await getCurrentModelDisplayName();
       setDisplayModelName(modelDisplayName);
 
-      // Get provider display name (subtext if available from predefined models, otherwise provider metadata)
       const providerDisplayName = await getCurrentProviderDisplayName();
       if (providerDisplayName) {
         setProvider(providerDisplayName);
       } else {
-        // Fallback to original provider lookup
         const providerName = (await read('BIOROUTER_PROVIDER', false)) as string;
         const providers = await getProviders(true);
         const providerDetailsList = providers.filter((provider) => provider.name === providerName);
@@ -68,7 +63,6 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
     loadModelData();
   }, [loadModelData]);
 
-  // Update display when model or provider changes - but only if they actually changed
   const prevModelRef = useRef<string | null>(null);
   const prevProviderRef = useRef<string | null>(null);
 
@@ -85,34 +79,35 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
   }, [currentModel, currentProvider, loadModelData]);
 
   return (
-    <section id="models" className="space-y-4 px-1 pr-4">
-      <Card className="p-2 pb-4">
-        <CardContent className="px-2">
+    <section id="models" className="space-y-10 pb-8">
+      <div>
+        <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
+          Current Model
+        </h2>
+        <div className="border-t border-border-subtle pt-4">
           {isLoading ? (
             <>
-              <div className="h-[20px] mb-1"></div>
-              <div className="h-[16px]"></div>
+              <div className="h-5 mb-1.5 bg-background-medium rounded w-48 animate-pulse"></div>
+              <div className="h-4 bg-background-medium rounded w-32 animate-pulse"></div>
             </>
           ) : (
             <div className="animate-in fade-in duration-100">
-              <h3 className="text-text-default">{displayModelName}</h3>
-              <h4 className="text-xs text-text-muted">{provider}</h4>
+              <p className="text-sm font-medium text-text-default">{displayModelName}</p>
+              <p className="text-xs text-text-muted mt-0.5">{provider}</p>
             </div>
           )}
           <ModelSettingsButtons setView={setView} />
-        </CardContent>
-      </Card>
-      <Card className="pb-2 rounded-lg">
-        <CardHeader className="pb-0">
-          <CardTitle className="">Reset Provider and Model</CardTitle>
-          <CardDescription>
-            Clear your selected model and provider settings to start fresh
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="px-2">
+        </div>
+      </div>
+
+      <div>
+        <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
+          Reset
+        </h2>
+        <div className="border-t border-border-subtle pt-4">
           <ResetProviderSection setView={setView} />
-        </CardContent>
-      </Card>
+        </div>
+      </div>
     </section>
   );
 }

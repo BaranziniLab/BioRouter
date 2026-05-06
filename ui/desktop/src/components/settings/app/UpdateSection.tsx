@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Button } from '../../ui/button';
-import { ExternalLink, CheckCircle, Download, AlertCircle, Loader2 } from 'lucide-react';
+import { ExternalLink, CheckCircle, Download, AlertCircle, Loader2 } from '../../icons/app-icons';
 import {
   Dialog,
   DialogContent,
@@ -126,7 +126,7 @@ export default function UpdateSection() {
               )}
               {status === 'up-to-date' && (
                 <>
-                  <CheckCircle className="w-5 h-5 text-green-600" />
+                  <CheckCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
                   You&apos;re up to date
                 </>
               )}

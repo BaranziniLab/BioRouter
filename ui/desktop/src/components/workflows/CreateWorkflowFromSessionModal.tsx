@@ -1,15 +1,15 @@
 import { useState, useEffect } from 'react';
 import { useForm } from '@tanstack/react-form';
 import { Workflow } from '../../workflow';
-import { BioRouterIcon } from '../icons/BioRouterIcon';
-import { X, Save, Play, Loader2 } from 'lucide-react';
+import { X, Save, Play, Loader2 } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { WorkflowFormFields } from './shared/WorkflowFormFields';
 import { WorkflowFormData } from './shared/workflowFormSchema';
-import { createWorkflow } from '../../api/sdk.gen';
+import { createWorkflow, getSessionExtensions } from '../../api/sdk.gen';
 import { WorkflowParameter } from './shared/workflowFormSchema';
 import { toastError } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
+import type { ExtensionConfig } from '../../api';
 
 interface CreateWorkflowFromSessionModalProps {
   isOpen: boolean;
@@ -28,6 +28,7 @@ export default function CreateWorkflowFromSessionModal({
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisStage, setAnalysisStage] = useState<string>('');
   const [hasAnalyzed, setHasAnalyzed] = useState(false);
+  const [workflowExtensions, setWorkflowExtensions] = useState<ExtensionConfig[]>([]);
 
   // Initialize form with empty values for new workflow
   const form = useForm({
@@ -73,7 +74,16 @@ export default function CreateWorkflowFromSessionModal({
         setAnalysisStage(stages[currentStageIndex]);
       }, 800);
 
-      // Call the backend to analyze messages and create a workflow
+      // Pre-select session extensions immediately — independent of workflow analysis
+      getSessionExtensions({ path: { session_id: sessionId }, throwOnError: false }).then(
+        (res) => {
+          if (res.data?.extensions) {
+            setWorkflowExtensions(res.data.extensions);
+          }
+        }
+      );
+
+      // Analyze the conversation to generate a suggested workflow
       createWorkflow({
         body: { session_id: sessionId },
         throwOnError: true,
@@ -113,17 +123,18 @@ export default function CreateWorkflowFromSessionModal({
           setTimeout(() => {
             setIsAnalyzing(false);
             setAnalysisStage('');
-          }, 500); // Brief delay to show completion
+          }, 500);
         });
     }
   }, [isOpen, sessionId, hasAnalyzed, form]);
 
-  // Reset analysis state when modal closes
+  // Reset state when modal closes
   useEffect(() => {
     if (!isOpen) {
       setHasAnalyzed(false);
       setIsAnalyzing(false);
       setAnalysisStage('');
+      setWorkflowExtensions([]);
     }
   }, [isOpen]);
 
@@ -155,6 +166,18 @@ export default function CreateWorkflowFromSessionModal({
 
     setIsCreating(true);
     try {
+      // Build settings if any model override was specified
+      const settingsConfig =
+        formData.settings?.biorouter_provider ||
+        formData.settings?.biorouter_model ||
+        formData.settings?.temperature !== undefined
+          ? {
+              biorouter_provider: formData.settings?.biorouter_provider || undefined,
+              biorouter_model: formData.settings?.biorouter_model || undefined,
+              temperature: formData.settings?.temperature,
+            }
+          : undefined;
+
       // Create the workflow object from form data
       const workflow: Workflow = {
         title: formData.title,
@@ -180,7 +203,12 @@ export default function CreateWorkflowFromSessionModal({
                 json_schema: JSON.parse(formData.jsonSchema),
               }
             : undefined,
-        extensions: [], // Will be populated based on current extensions
+        settings: settingsConfig,
+        extensions: workflowExtensions.length > 0
+          ? workflowExtensions.map((ext) =>
+              'envs' in ext ? { ...ext, envs: undefined } : ext
+            ) as ExtensionConfig[]
+          : undefined,
       };
 
       let workflowId = await saveWorkflow(workflow, null);
@@ -219,31 +247,28 @@ export default function CreateWorkflowFromSessionModal({
       className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50 p-4"
       data-testid="create-workflow-modal"
     >
-      <div className="bg-background-default border border-borderSubtle rounded-lg w-full max-w-4xl h-full max-h-[90vh] flex flex-col shadow-xl">
+      <div className="bg-background-default border border-border-subtle rounded-lg w-full max-w-4xl h-full max-h-[90vh] flex flex-col shadow-xl">
         {/* Header */}
         <div
-          className="flex items-center justify-between p-6 border-b border-borderSubtle shrink-0"
+          className="flex items-center justify-between px-6 py-5 border-b border-border-subtle shrink-0"
           data-testid="modal-header"
         >
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-background-default rounded-full flex items-center justify-center">
-              <BioRouterIcon className="w-6 h-6 text-iconProminent" />
-            </div>
-            <div>
-              <h1 className="text-xl font-medium text-textProminent">Create Workflow from Session</h1>
-              <p className="text-textSubtle text-sm">
-                Create a reusable workflow based on your current conversation.
-              </p>
-            </div>
+          <div>
+            <h2 className="text-base font-semibold text-text-default">
+              Create Workflow from Session
+            </h2>
+            <p className="text-xs text-text-muted mt-0.5">
+              Create a reusable workflow based on your current conversation
+            </p>
           </div>
           <Button
             onClick={onClose}
             variant="ghost"
             size="sm"
-            className="p-2 hover:bg-bgSubtle rounded-lg transition-colors"
+            className="p-1.5 hover:bg-background-medium rounded-lg transition-colors"
             data-testid="close-button"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </Button>
         </div>
 
@@ -251,79 +276,76 @@ export default function CreateWorkflowFromSessionModal({
         <div className="flex-1 overflow-y-auto px-6 py-4 min-h-0" data-testid="modal-content">
           {isAnalyzing ? (
             <div
-              className="flex flex-col items-center justify-center h-full min-h-[300px] space-y-4"
+              className="flex flex-col items-center justify-center h-full min-h-[300px] gap-3"
               data-testid="analyzing-state"
             >
-              <div className="flex items-center space-x-3">
-                <Loader2
-                  className="w-6 h-6 animate-spin text-iconProminent"
-                  data-testid="analysis-spinner"
-                />
-                <div
-                  className="text-lg font-medium text-textProminent"
+              <Loader2
+                className="w-6 h-6 animate-spin text-text-muted"
+                data-testid="analysis-spinner"
+              />
+              <div className="text-center">
+                <p
+                  className="text-sm font-medium text-text-default"
                   data-testid="analyzing-title"
                 >
                   Analyzing your conversation
-                </div>
-              </div>
-              <div className="text-textSubtle text-center max-w-md" data-testid="analysis-stage">
-                {analysisStage}
-              </div>
-              <div className="flex items-center space-x-2 text-textSubtle">
-                <BioRouterIcon className="w-5 h-5 animate-pulse" />
-                <span className="text-sm">Extracting insights from your chat</span>
+                </p>
+                <p className="text-xs text-text-muted mt-1" data-testid="analysis-stage">
+                  {analysisStage}
+                </p>
               </div>
             </div>
           ) : (
             <div data-testid="form-state">
-              <WorkflowFormFields form={form} />
+              <WorkflowFormFields
+                form={form}
+                extensions={workflowExtensions}
+                onExtensionsChange={setWorkflowExtensions}
+              />
             </div>
           )}
         </div>
 
         {/* Footer */}
         <div
-          className="flex items-center justify-between p-6 border-t border-borderSubtle shrink-0"
+          className="flex items-center justify-between px-6 py-4 border-t border-border-subtle shrink-0"
           data-testid="modal-footer"
         >
           <Button
             onClick={onClose}
             variant="ghost"
-            className="px-4 py-2 text-textSubtle rounded-lg hover:bg-bgSubtle transition-colors"
+            className="px-4 py-2 text-text-muted rounded-lg hover:bg-background-medium transition-colors"
             data-testid="cancel-button"
           >
             Cancel
           </Button>
 
-          <div className="flex gap-3">
-            {!isAnalyzing && (
-              <>
-                <Button
-                  onClick={() => {
-                    form.handleSubmit();
-                  }}
-                  disabled={!isFormValid || isCreating}
-                  variant="outline"
-                  className="px-4 py-2 border border-borderStandard rounded-lg hover:bg-bgSubtle transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  data-testid="create-workflow-button"
-                >
-                  <Save className="w-4 h-4 mr-2" />
-                  {isCreating ? 'Creating...' : 'Create Workflow'}
-                </Button>
-                <Button
-                  onClick={() => {
-                    handleCreateWorkflow(form.state.values, true);
-                  }}
-                  disabled={!isFormValid || isCreating}
-                  className="px-4 py-2 bg-textProminent text-bgApp rounded-lg hover:bg-opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  data-testid="create-and-run-workflow-button"
-                >
-                  <Play className="w-4 h-4 mr-2" />
-                  {isCreating ? 'Creating...' : 'Create & Run Workflow'}
-                </Button>
-              </>
-            )}
-          </div>
+          {!isAnalyzing && (
+            <div className="flex gap-3">
+              <Button
+                onClick={() => form.handleSubmit()}
+                disabled={!isFormValid || isCreating}
+                variant="outline"
+                size="default"
+                className="inline-flex items-center justify-center gap-2 px-4 py-2"
+                data-testid="create-workflow-button"
+              >
+                <Save className="w-4 h-4" />
+                {isCreating ? 'Creating…' : 'Create Workflow'}
+              </Button>
+              <Button
+                onClick={() => handleCreateWorkflow(form.state.values, true)}
+                disabled={!isFormValid || isCreating}
+                variant="default"
+                size="default"
+                className="inline-flex items-center justify-center gap-2 px-4 py-2"
+                data-testid="create-and-run-workflow-button"
+              >
+                <Play className="w-4 h-4" />
+                {isCreating ? 'Creating…' : 'Create & Run'}
+              </Button>
+            </div>
+          )}
         </div>
       </div>
     </div>

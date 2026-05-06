@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Clock, Send, GripVertical, Zap, Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
+import { X, Clock, Send, GripVertical, Zap, Sparkles, ChevronDown, ChevronUp } from './icons/app-icons';
 import { Button } from './ui/button';
 
 interface QueuedMessage {
@@ -131,7 +131,7 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
 
             {/* Queue count */}
             {remainingCount > 0 && (
-              <div className="flex items-center gap-1 text-xs text-muted-foreground bg-bgSubtle border border-borderSubtle px-2 py-1 rounded-full font-medium">
+              <div className="flex items-center gap-1 text-xs text-muted-foreground bg-background-medium border border-border-subtle px-2 py-1 rounded-full font-medium">
                 <span>+{remainingCount}</span>
               </div>
             )}

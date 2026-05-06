@@ -1,4 +1,4 @@
-import { Lock } from 'lucide-react';
+import { Lock } from '../../../../icons/app-icons';
 
 /**
  * SecureStorageNotice - A reusable component that displays a message about secure storage
@@ -13,9 +13,9 @@ export function SecureStorageNotice({
   message = 'Keys are stored securely in the keychain',
 }) {
   return (
-    <div className={`flex items-center mt-2 text-gray-600 dark:text-gray-300 ${className}`}>
-      <Lock className="w-5 h-5" />
-      <span className="text-sm font-light ml-2">{message}</span>
+    <div className={`flex items-center mt-3 text-text-muted ${className}`}>
+      <Lock className="w-3.5 h-3.5 flex-shrink-0" />
+      <span className="text-xs ml-1.5">{message}</span>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { Button } from '../../ui/button';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw } from '../../icons/app-icons';
 import { useConfig } from '../../ConfigContext';
 import { View, ViewOptions } from '../../../utils/navigationUtils';
 
@@ -23,7 +23,12 @@ export default function ResetProviderSection(_props: ResetProviderSectionProps) 
   };
 
   return (
-    <div className="p-2">
+    <div>
+      <p className="text-sm text-text-default mb-1">Reset Provider and Model</p>
+      <p className="text-xs text-text-muted mb-4">
+        This will clear your selected model and provider settings. If no defaults are available,
+        you'll be taken to the welcome screen to set them up again.
+      </p>
       <Button
         onClick={handleResetProvider}
         variant="destructive"
@@ -32,10 +37,6 @@ export default function ResetProviderSection(_props: ResetProviderSectionProps) 
         <RefreshCw className="h-4 w-4" />
         Reset Provider and Model
       </Button>
-      <p className="text-xs text-textSubtle mt-2">
-        This will clear your selected model and provider settings. If no defaults are available,
-        you'll be taken to the welcome screen to set them up again.
-      </p>
     </div>
   );
 }

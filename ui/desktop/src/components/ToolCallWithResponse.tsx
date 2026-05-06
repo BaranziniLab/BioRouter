@@ -11,7 +11,7 @@ import {
 } from '../types/message';
 import { cn, snakeToTitleCase } from '../utils';
 import { LoadingStatus } from './ui/Dot';
-import { ChevronRight, FlaskConical } from 'lucide-react';
+import { ChevronRight, FlaskConical } from './icons/app-icons';
 import { TooltipWrapper } from './settings/providers/subcomponents/buttons/TooltipWrapper';
 import MCPUIResourceRenderer from './MCPUIResourceRenderer';
 import { isUIResource } from '@mcp-ui/client';
@@ -136,7 +136,7 @@ function McpAppWrapper({
         sessionId={sessionId}
         append={append}
       />
-      <div className="mt-3 p-4 py-3 border border-borderSubtle rounded-lg bg-background-muted flex items-center">
+      <div className="mt-3 p-4 py-3 border border-border-subtle rounded-lg bg-background-muted flex items-center">
         <FlaskConical className="mr-2" size={20} />
         <div className="text-sm font-sans">
           MCP Apps are experimental and may change at any time.
@@ -177,7 +177,7 @@ export default function ToolCallWithResponse({
     <>
       <div
         className={cn(
-          'w-full text-sm font-sans rounded-lg overflow-hidden border-borderSubtle border bg-background-muted'
+          'w-full text-sm font-sans rounded-lg overflow-hidden border-border-subtle border bg-background-muted'
         )}
       >
         <ToolCallView
@@ -201,7 +201,7 @@ export default function ToolCallWithResponse({
             return (
               <div key={index} className="mt-3">
                 <MCPUIResourceRenderer content={resourceContent} appendPromptToChat={append} />
-                <div className="mt-3 p-4 py-3 border border-borderSubtle rounded-lg bg-background-muted flex items-center">
+                <div className="mt-3 p-4 py-3 border border-border-subtle rounded-lg bg-background-muted flex items-center">
                   <FlaskConical className="mr-2" size={20} />
                   <div className="text-sm font-sans">
                     MCP UI is experimental and may change at any time.
@@ -645,7 +645,7 @@ function ToolCallView({
 
         if (hasToolGraph) {
           return (
-            <div className="border-t border-borderSubtle">
+            <div className="border-t border-border-subtle">
               <ToolGraphView toolGraph={toolGraph} code={code} />
             </div>
           );
@@ -653,7 +653,7 @@ function ToolCallView({
 
         if (isToolDetails) {
           return (
-            <div className="border-t border-borderSubtle">
+            <div className="border-t border-border-subtle">
               <ToolDetailsView toolCall={toolCall} isStartExpanded={isExpandToolDetails} />
             </div>
           );
@@ -663,7 +663,7 @@ function ToolCallView({
       })()}
 
       {logs && logs.length > 0 && (
-        <div className="border-t border-borderSubtle">
+        <div className="border-t border-border-subtle">
           <ToolLogsView
             logs={logs}
             working={loadingStatus === 'loading'}
@@ -677,7 +677,7 @@ function ToolCallView({
       {toolResults.length === 0 &&
         progressEntries.length > 0 &&
         progressEntries.map((entry, index) => (
-          <div className="p-3 border-t border-borderSubtle" key={index}>
+          <div className="p-3 border-t border-border-subtle" key={index}>
             <ProgressBar progress={entry.progress} total={entry.total} message={entry.message} />
           </div>
         ))}
@@ -686,7 +686,7 @@ function ToolCallView({
       {!isCancelledMessage && (
         <>
           {toolResults.map((result, index) => (
-            <div key={index} className={cn('border-t border-borderSubtle')}>
+            <div key={index} className={cn('border-t border-border-subtle')}>
               <ToolResultView result={result} isStartExpanded={false} />
             </div>
           ))}
@@ -741,14 +741,14 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
 
   return (
     <div className="px-4 py-2">
-      <pre className="font-mono text-xs text-textSubtle whitespace-pre-wrap">{renderGraph()}</pre>
+      <pre className="font-mono text-xs text-text-muted whitespace-pre-wrap">{renderGraph()}</pre>
       {code && (
-        <div className="border-t border-borderSubtle -mx-4 mt-2">
+        <div className="border-t border-border-subtle -mx-4 mt-2">
           <ToolCallExpandable
             label={<span className="pl-4 font-sans text-sm">Code</span>}
             isStartExpanded={false}
           >
-            <pre className="font-mono text-xs text-textSubtle whitespace-pre-wrap overflow-x-auto px-4 py-2">
+            <pre className="font-mono text-xs text-text-muted whitespace-pre-wrap overflow-x-auto px-4 py-2">
               {code}
             </pre>
           </ToolCallExpandable>
@@ -854,7 +854,7 @@ function ToolLogsView({
         className={`flex flex-col items-start space-y-2 overflow-y-auto p-4 ${working ? 'max-h-[4rem]' : 'max-h-[20rem]'}`}
       >
         {logs.map((log, i) => (
-          <span key={i} className="font-sans text-sm text-textSubtle">
+          <span key={i} className="font-sans text-sm text-text-muted">
             {log}
           </span>
         ))}
@@ -869,7 +869,7 @@ const ProgressBar = ({ progress, total, message }: Omit<Progress, 'progressToken
 
   return (
     <div className="w-full space-y-2">
-      {message && <div className="font-sans text-sm text-textSubtle">{message}</div>}
+      {message && <div className="font-sans text-sm text-text-muted">{message}</div>}
 
       <div className="w-full bg-background-subtle rounded-full h-4 overflow-hidden relative">
         {isDeterminate ? (

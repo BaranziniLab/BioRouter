@@ -78,7 +78,7 @@ export default function Hub({
         )}
       </div>
 
-      <div className="mx-4 mb-4 rounded-xl overflow-hidden border border-border-subtle bg-background-default">
+      <div className="mx-4 mb-4 rounded-xl overflow-hidden bg-background-default">
         <ChatInput
           sessionId={null}
           handleSubmit={handleSubmit}

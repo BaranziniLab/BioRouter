@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useForm } from '@tanstack/react-form';
 import { Workflow, generateDeepLink, Parameter } from '../../workflow';
-import { Check, ExternalLink, Play, Save, X } from 'lucide-react';
-import { BioRouterIcon } from '../icons/BioRouterIcon';
+import { Check, ExternalLink, Play, Save, X } from '../icons/app-icons';
 import Copy from '../icons/Copy';
 import { ExtensionConfig } from '../ConfigContext';
 import { Button } from '../ui/button';
@@ -39,6 +38,13 @@ export default function CreateEditWorkflowModal({
         jsonSchema: workflow.response?.json_schema
           ? JSON.stringify(workflow.response.json_schema, null, 2)
           : '',
+        settings: workflow.settings
+          ? {
+              biorouter_provider: workflow.settings.biorouter_provider ?? undefined,
+              biorouter_model: workflow.settings.biorouter_model ?? undefined,
+              temperature: workflow.settings.temperature ?? undefined,
+            }
+          : undefined,
       };
     }
     return {
@@ -49,6 +55,7 @@ export default function CreateEditWorkflowModal({
       activities: [],
       parameters: [],
       jsonSchema: '',
+      settings: undefined,
     };
   }, [workflow]);
 
@@ -64,6 +71,7 @@ export default function CreateEditWorkflowModal({
   const [activities, setActivities] = useState(form.state.values.activities);
   const [parameters, setParameters] = useState(form.state.values.parameters);
   const [jsonSchema, setJsonSchema] = useState(form.state.values.jsonSchema);
+  const [settings, setSettings] = useState(form.state.values.settings);
 
   // Subscribe to form changes to update local state
   useEffect(() => {
@@ -75,18 +83,16 @@ export default function CreateEditWorkflowModal({
       setActivities(form.state.values.activities);
       setParameters(form.state.values.parameters);
       setJsonSchema(form.state.values.jsonSchema);
+      setSettings(form.state.values.settings);
     });
   }, [form]);
   const [copied, setCopied] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
 
-  // Initialize selected extensions for the workflow
-  const [workflowExtensions] = useState<ExtensionConfig[]>(() => {
-    if (workflow?.extensions) {
-      return workflow.extensions;
-    }
-    return [];
-  });
+  // Extensions for the workflow (editable)
+  const [workflowExtensions, setWorkflowExtensions] = useState<ExtensionConfig[]>(
+    () => workflow?.extensions ?? []
+  );
 
   // Reset form when workflow changes
   useEffect(() => {
@@ -131,6 +137,16 @@ export default function CreateEditWorkflowModal({
       }
     }
 
+    // Build settings — only include if at least one value is set
+    const settingsConfig =
+      settings?.biorouter_provider || settings?.biorouter_model || settings?.temperature !== undefined
+        ? {
+            biorouter_provider: settings?.biorouter_provider || undefined,
+            biorouter_model: settings?.biorouter_model || undefined,
+            temperature: settings?.temperature,
+          }
+        : undefined;
+
     return {
       ...workflow,
       title,
@@ -140,10 +156,13 @@ export default function CreateEditWorkflowModal({
       prompt: prompt || undefined,
       parameters: formattedParameters,
       response: responseConfig,
+      settings: settingsConfig,
       // Strip envs to avoid leaking secrets
-      extensions: workflowExtensions.map((extension) =>
-        'envs' in extension ? { ...extension, envs: undefined } : extension
-      ) as ExtensionConfig[],
+      extensions: workflowExtensions.length > 0
+        ? workflowExtensions.map((extension) =>
+            'envs' in extension ? { ...extension, envs: undefined } : extension
+          ) as ExtensionConfig[]
+        : undefined,
     };
   }, [
     workflow,
@@ -154,6 +173,7 @@ export default function CreateEditWorkflowModal({
     prompt,
     parameters,
     jsonSchema,
+    settings,
     workflowExtensions,
   ]);
 
@@ -226,6 +246,7 @@ export default function CreateEditWorkflowModal({
     activities,
     parameters,
     jsonSchema,
+    settings,
     workflowExtensions,
     getCurrentWorkflow,
   ]);
@@ -329,52 +350,51 @@ export default function CreateEditWorkflowModal({
 
   return (
     <div className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50">
-      <div className="bg-background-default border border-borderSubtle rounded-lg w-[90vw] max-w-4xl h-[90vh] flex flex-col">
+      <div className="bg-background-default border border-border-subtle rounded-lg w-[90vw] max-w-4xl h-[90vh] flex flex-col">
         {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-borderSubtle">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 bg-background-default rounded-full flex items-center justify-center">
-              <BioRouterIcon className="w-6 h-6 text-iconProminent" />
-            </div>
-            <div>
-              <h1 className="text-xl font-medium text-textProminent">
-                {isCreateMode ? 'Create Workflow' : 'View/edit workflow'}
-              </h1>
-              <p className="text-textSubtle text-sm">
-                {isCreateMode
-                  ? 'Create a new workflow to define agent behavior and capabilities for reusable chat sessions.'
-                  : "You can edit the workflow below to change the agent's behavior in a new session."}{' '}
-                <a
-                  href="https://github.com/BaranziniLab/BioRouter/docs/guides/workflows/"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-1 text-blue-500 hover:text-blue-600 hover:underline"
-                >
-                  Learn more
-                  <ExternalLink className="w-3 h-3" />
-                </a>
-              </p>
-            </div>
+        <div className="flex items-center justify-between px-6 py-5 border-b border-border-subtle flex-shrink-0">
+          <div>
+            <h1 className="text-base font-semibold text-text-default">
+              {isCreateMode ? 'Create Workflow' : 'Edit Workflow'}
+            </h1>
+            <p className="text-xs text-text-muted mt-0.5">
+              {isCreateMode
+                ? 'Define agent behavior and capabilities for reusable chat sessions.'
+                : "Edit the workflow to change agent behavior."}{' '}
+              <a
+                href="https://baranzinilab.github.io/biorouter-landing/docs.html"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-0.5 text-[#cf6d47] hover:underline"
+              >
+                Learn more
+                <ExternalLink className="w-3 h-3" />
+              </a>
+            </p>
           </div>
           <Button
             onClick={() => onClose(false)}
             variant="ghost"
             size="sm"
-            className="p-2 hover:bg-bgSubtle rounded-lg transition-colors"
+            className="p-1.5 hover:bg-background-medium rounded-lg transition-colors"
           >
-            <X className="w-5 h-5" />
+            <X className="w-4 h-4" />
           </Button>
         </div>
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
-          <WorkflowFormFields form={form} />
+          <WorkflowFormFields
+            form={form}
+            extensions={workflowExtensions}
+            onExtensionsChange={setWorkflowExtensions}
+          />
 
           {/* Deep Link Display */}
           {requiredFieldsAreFilled() && (
-            <div className="w-full p-4 bg-bgSubtle rounded-lg mt-6">
+            <div className="w-full p-4 bg-background-medium rounded-lg mt-6">
               <div className="flex items-center justify-between mb-2">
-                <div className="text-sm text-textSubtle">
+                <div className="text-sm text-text-muted">
                   Copy this link to share with friends or paste directly in Chrome to open
                 </div>
                 <Button
@@ -391,14 +411,14 @@ export default function CreateEditWorkflowModal({
                   ) : (
                     <Copy className="w-4 h-4 text-iconSubtle" />
                   )}
-                  <span className="ml-1 text-sm text-textSubtle">
+                  <span className="ml-1 text-sm text-text-muted">
                     {copied ? 'Copied!' : 'Copy'}
                   </span>
                 </Button>
               </div>
               <div
                 onClick={handleCopy}
-                className="text-sm truncate font-mono cursor-pointer text-textStandard"
+                className="text-sm truncate font-mono cursor-pointer text-text-default"
               >
                 {isGeneratingDeeplink
                   ? 'Generating deeplink...'
@@ -409,11 +429,11 @@ export default function CreateEditWorkflowModal({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between p-6 border-t border-borderSubtle">
+        <div className="flex items-center justify-between p-6 border-t border-border-subtle">
           <Button
             onClick={() => onClose(false)}
             variant="ghost"
-            className="px-4 py-2 text-textSubtle rounded-lg hover:bg-bgSubtle transition-colors"
+            className="px-4 py-2 text-text-muted rounded-lg hover:bg-background-medium transition-colors"
           >
             Close
           </Button>

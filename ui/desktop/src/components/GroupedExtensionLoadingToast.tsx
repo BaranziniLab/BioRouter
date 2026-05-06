@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible';
-import { ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronUp, Loader2 } from './icons/app-icons';
 import { Button } from './ui/button';
 import { startNewSession } from '../sessions';
 import { useNavigation } from '../hooks/useNavigation';

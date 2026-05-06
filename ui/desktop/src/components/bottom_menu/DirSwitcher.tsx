@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { FolderDot } from 'lucide-react';
+import { FolderDot } from '../icons/app-icons';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/Tooltip';
 import { updateWorkingDir } from '../../api';
 import { toast } from 'react-toastify';

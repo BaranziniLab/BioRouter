@@ -12,7 +12,7 @@ import {
   Info,
   ExternalLink,
   QrCode,
-} from 'lucide-react';
+} from '../../icons/app-icons';
 import { errorMessage } from '../../../utils/conversionUtils';
 import { startTunnel, stopTunnel, getTunnelStatus } from '../../../api/sdk.gen';
 import type { TunnelInfo } from '../../../api/types.gen';
@@ -211,7 +211,7 @@ export default function TunnelSection() {
           {tunnelInfo.state === 'running' && (
             <div className="py-4 space-y-4">
               <div className="flex justify-center">
-                <div className="p-4 bg-white rounded-lg">
+                <div className="p-4 bg-background-default rounded-lg">
                   <QRCodeSVG value={getQRCodeData()} size={200} />
                 </div>
               </div>
@@ -300,7 +300,7 @@ export default function TunnelSection() {
 
           <div className="py-4 space-y-4">
             <div className="flex justify-center">
-              <div className="p-4 bg-white rounded-lg">
+              <div className="p-4 bg-background-default rounded-lg">
                 <QRCodeSVG value={IOS_APP_STORE_URL} size={200} />
               </div>
             </div>

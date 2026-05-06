@@ -350,7 +350,7 @@ function BaseChatContent({
                   onClick={() => {
                     setView('chat');
                   }}
-                  className="px-4 py-2 text-center cursor-pointer text-textStandard border border-borderSubtle hover:bg-bgSubtle rounded-lg transition-all duration-150"
+                  className="px-4 py-2 text-center cursor-pointer text-text-default border border-border-subtle hover:bg-background-medium rounded-lg transition-all duration-150"
                 >
                   Go home
                 </button>
@@ -373,7 +373,7 @@ function BaseChatContent({
         {renderHeader && renderHeader()}
 
         {/* Chat container with sticky workflow header */}
-        <div className="flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden" style={{ boxShadow: 'var(--shadow-default)' }}>
+        <div className="flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden">
           <ScrollArea
             ref={scrollRef}
             className={`flex-1 bg-background-default rounded-2xl min-h-0 relative ${contentClassName}`}
@@ -448,7 +448,6 @@ function BaseChatContent({
 
         <div
           className={`mx-4 mb-4 rounded-2xl overflow-hidden flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`}
-          style={{ boxShadow: 'var(--shadow-default)' }}
         >
           <ChatInput
             sessionId={sessionId}

@@ -3,7 +3,7 @@ import ExtensionsSection from '../settings/extensions/ExtensionsSection';
 import { ExtensionConfig } from '../../api';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Button } from '../ui/button';
-import { Plus } from 'lucide-react';
+import { Plus } from '../icons/app-icons';
 import { GPSIcon } from '../ui/icons';
 import { useState, useEffect } from 'react';
 import kebabCase from 'lodash/kebabCase';

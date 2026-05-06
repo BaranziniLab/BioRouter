@@ -24,9 +24,12 @@ pub async fn inject_moim(
         .await
     {
         let mut messages = conversation.messages().clone();
+        // Insert MOIM *after* the last assistant message so it merges with the
+        // current user turn rather than bleeding into historical messages.
         let idx = messages
             .iter()
             .rposition(|m| m.role == Role::Assistant)
+            .map(|i| i + 1)
             .unwrap_or(0);
         messages.insert(idx, Message::user().with_text(moim));
 
@@ -67,19 +70,25 @@ mod tests {
         let result = inject_moim("test-session-id", conv, &em, &working_dir).await;
         let msgs = result.messages();
 
+        // MOIM now inserts after the last assistant, merging with the current
+        // (last) user turn — not with the historical "Hello" message.
         assert_eq!(msgs.len(), 3);
         assert_eq!(msgs[0].content[0].as_text().unwrap(), "Hello");
         assert_eq!(msgs[1].content[0].as_text().unwrap(), "Hi");
 
-        let merged_content = msgs[0]
+        // msgs[2] is MOIM merged with "Bye" (the current turn)
+        let current_turn = msgs[2]
             .content
             .iter()
             .filter_map(|c| c.as_text())
             .collect::<Vec<_>>()
             .join("");
-        assert!(merged_content.contains("Hello"));
-        assert!(merged_content.contains("<info-msg>"));
-        assert!(merged_content.contains("Working directory: /test/dir"));
+        assert!(current_turn.contains("<info-msg>"));
+        assert!(current_turn.contains("Working directory: /test/dir"));
+        assert!(current_turn.contains("Bye"));
+
+        // Historical message must NOT contain MOIM
+        assert!(!msgs[0].content[0].as_text().unwrap().contains("<info-msg>"));
     }
 
     #[tokio::test]
@@ -155,9 +164,11 @@ mod tests {
         let result = inject_moim("test-session-id", conv, &em, &working_dir).await;
         let msgs = result.messages();
 
+        // MOIM inserts after last assistant (idx 3 → insert at 4); tool_resp at [4]
+        // has effective_role "tool" so it won't merge with the plain MOIM user message.
         assert_eq!(msgs.len(), 6);
 
-        let moim_msg = &msgs[3];
+        let moim_msg = &msgs[4];
         let has_moim = moim_msg
             .content
             .iter()
@@ -165,7 +176,7 @@ mod tests {
 
         assert!(
             has_moim,
-            "MOIM should be in message before latest assistant message"
+            "MOIM should be in message after latest assistant message (before last tool response)"
         );
     }
 }

@@ -1516,6 +1516,17 @@ ipcMain.handle('select-file-or-directory', async (_event, defaultPath?: string) 
   return null;
 });
 
+// Import session: open native file dialog, read JSON, return content
+ipcMain.handle('import-session-file', async () => {
+  const result = (await dialog.showOpenDialog({
+    properties: ['openFile'],
+    filters: [{ name: 'JSON', extensions: ['json'] }],
+  })) as unknown as OpenDialogReturnValue;
+
+  if (result.canceled || result.filePaths.length === 0) return null;
+  return fs.readFile(result.filePaths[0], 'utf-8');
+});
+
 // IPC handler to save data URL to a temporary file
 ipcMain.handle('save-data-url-to-temp', async (_event, dataUrl: string, uniqueId: string) => {
   console.log(`[Main] Received save-data-url-to-temp for ID: ${uniqueId}`);

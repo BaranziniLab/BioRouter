@@ -39,6 +39,14 @@ export const workflowFormSchema = z.object({
   parameters: z.array(parameterSchema).default([]),
 
   jsonSchema: z.string().optional(),
+
+  settings: z
+    .object({
+      biorouter_provider: z.string().optional(),
+      biorouter_model: z.string().optional(),
+      temperature: z.number().min(0).max(2).optional(),
+    })
+    .optional(),
 });
 
 export type WorkflowFormData = z.infer<typeof workflowFormSchema>;

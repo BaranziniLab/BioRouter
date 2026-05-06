@@ -14,7 +14,7 @@ import {
   Share2,
   Copy,
   Download,
-} from 'lucide-react';
+} from '../icons/app-icons';
 import { ScrollArea } from '../ui/scroll-area';
 import { Button } from '../ui/button';
 import { Skeleton } from '../ui/skeleton';

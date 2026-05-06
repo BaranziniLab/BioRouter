@@ -151,74 +151,78 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   if (!hasProvider && showFirstTimeSetup) {
     return (
-      <div className="h-screen w-full bg-background-default overflow-hidden relative">
+      <div className="h-screen w-full bg-background-muted overflow-hidden relative">
         <div
           ref={scrollContainerRef}
           onScroll={checkScrollPosition}
           className="h-full overflow-y-auto"
         >
-          <div className="min-h-full flex flex-col items-center justify-center p-4 py-8">
-            <div className="max-w-2xl w-full mx-auto p-8">
-              {/* Header section */}
-              <div className="text-left mb-8 sm:mb-12">
-                <div className="space-y-3 sm:space-y-4">
-                  <div className="origin-bottom-left biorouter-icon-animation">
-                    <BioRouter className="size-6 sm:size-8" />
-                  </div>
-                  <h1 className="text-2xl sm:text-4xl font-light text-left">Welcome to BioRouter</h1>
+          <div className="min-h-full flex flex-col items-center justify-center py-12 px-4">
+            <div className="max-w-lg w-full mx-auto">
+
+              {/* Page header */}
+              <div className="mb-8">
+                <div className="mb-4 biorouter-icon-animation origin-bottom-left">
+                  <BioRouter className="size-8" />
                 </div>
-                <p className="text-text-muted text-base sm:text-lg mt-4 sm:mt-6">
-                  UCSF BioRouter is an AI-powered integrated research environment that unifies
-                  commercial, institution-hosted, and local LLMs, AI agents, Information Commons
-                  databases, and customizable workflows into one extensible tool for explorative
-                  analysis, prototyping, automation, and federated cross-institution collaboration.
-                  Since it's your first time here, let's get you set up with an AI provider so
-                  BioRouter can work its magic.
+                <h1 className="text-2xl font-semibold tracking-tight text-text-default">
+                  Welcome to BioRouter
+                </h1>
+                <p className="text-sm text-text-muted mt-2 leading-relaxed max-w-md">
+                  UCSF BioRouter unifies commercial, institution-hosted, and local LLMs, AI
+                  agents, and customizable workflows into one extensible research environment.
+                  Let's connect an AI provider to get started.
                 </p>
               </div>
 
+              {/* Quick setup card */}
               <ApiKeyTester
                 onSuccess={handleApiKeySuccess}
-                onStartTesting={() => {
-                  setUserInActiveSetup(true);
-                }}
+                onStartTesting={() => setUserInActiveSetup(true)}
               />
 
-              {/* Other providers section */}
-              <div className="w-full p-4 sm:p-6 bg-transparent border border-background-hover rounded-xl">
-                <h3 className="font-medium text-text-standard text-sm sm:text-base mb-3">
+              {/* Divider */}
+              <div className="relative my-5">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-border-subtle" />
+                </div>
+                <div className="relative flex justify-center">
+                  <span className="bg-background-muted px-3 text-xs text-text-muted">or</span>
+                </div>
+              </div>
+
+              {/* Other providers */}
+              <div className="p-5 rounded-xl border border-border-subtle bg-background-default">
+                <p className="text-[11px] font-medium uppercase tracking-wider text-text-muted mb-1">
                   Other Providers
-                </h3>
-                <p className="text-text-muted text-sm sm:text-base mb-4">
-                  Set up additional providers manually through settings. Users accessing
-                  local or institution-hosted models should set up through here.
+                </p>
+                <p className="text-sm text-text-muted mt-1 mb-3">
+                  Set up local or institution-hosted models manually through provider settings.
                 </p>
                 <button
                   onClick={() => navigate('/welcome', { replace: true })}
-                  className="text-blue-600 hover:text-blue-500 text-sm font-medium transition-colors"
+                  className="text-sm font-medium text-text-default hover:text-text-muted transition-colors duration-150"
                 >
                   Go to Provider Settings →
                 </button>
               </div>
-              <div className="mt-6">
+
+              {/* Telemetry */}
+              <div className="mt-5">
                 <TelemetrySettings isWelcome />
               </div>
+
             </div>
           </div>
         </div>
 
-        {/* Scroll indicator - fixed at bottom, hides when scrolled to bottom */}
+        {/* Scroll indicator */}
         {showScrollIndicator && (
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-none transition-opacity duration-300 opacity-60 animate-bounce">
+          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-none transition-opacity duration-300 opacity-50 animate-bounce">
             <div className="flex flex-col items-center gap-1 text-text-muted">
-              <span className="text-xs">More options below</span>
+              <span className="text-xs">Scroll for more</span>
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M19 9l-7 7-7-7"
-                />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
               </svg>
             </div>
           </div>
