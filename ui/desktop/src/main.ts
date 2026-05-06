@@ -242,11 +242,18 @@ if (process.platform !== 'darwin') {
       handleProtocolUrl(protocolUrl);
     });
   }
+
+  // Check if launched with a .brxt file argument (Windows/Linux double-click)
+  const brxtArg = process.argv.slice(1).find((arg) => arg.endsWith('.brxt'));
+  if (brxtArg) {
+    app.whenReady().then(() => handleBrxtFileOpen(brxtArg));
+  }
 }
 
 let firstOpenWindow: BrowserWindow;
 let pendingDeepLink: string | null = null;
 let openUrlHandledLaunch = false;
+let pendingBrxtFilePath: string | null = null;
 
 async function handleProtocolUrl(url: string) {
   if (!url) return;
@@ -395,6 +402,14 @@ app.on('will-finish-launching', () => {
 // Handle drag-and-drop onto dock icon
 app.on('open-file', async (event, filePath) => {
   event.preventDefault();
+  if (filePath.endsWith('.brxt')) {
+    if (app.isReady()) {
+      handleBrxtFileOpen(filePath);
+    } else {
+      app.whenReady().then(() => handleBrxtFileOpen(filePath));
+    }
+    return;
+  }
   await handleFileOpen(filePath);
 });
 
@@ -1224,6 +1239,13 @@ ipcMain.on('react-ready', (event) => {
     log.info('No pending deep link to process');
   }
 
+  if (pendingBrxtFilePath && window) {
+    const filePath = pendingBrxtFilePath;
+    pendingBrxtFilePath = null;
+    log.info('Sending pending .brxt file to ready window:', filePath);
+    window.webContents.send('open-brxt-file', filePath);
+  }
+
   log.info('React ready - window is prepared for deep links');
 });
 
@@ -1954,6 +1976,18 @@ ipcMain.handle(
     }
   }
 );
+
+function handleBrxtFileOpen(filePath: string) {
+  // Find the main window (or store for when one is ready)
+  const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+  if (win) {
+    win.webContents.send('open-brxt-file', filePath);
+    win.focus();
+  } else {
+    // Store for when window is ready
+    pendingBrxtFilePath = filePath;
+  }
+}
 
 const createNewWindow = async (app: App, dir?: string | null) => {
   const recentDirs = loadRecentDirs();
