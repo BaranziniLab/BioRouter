@@ -1507,7 +1507,566 @@ git commit -m "feat: complete .brxt extension bundle system
 
 ---
 
+## Phase E: File Association (Double-click .brxt → BioRouter)
+
+> When a user double-clicks a `.brxt` file, BioRouter opens, navigates to the Extensions tab, and auto-loads the file into `BrxtInstallModal` ready for the configure step. This requires platform-specific file type registration **and** a runtime handler in main.ts.
+
+### Task 16: BrxtInstallModal — preloaded file path + skip-configure when no env vars
+
+**Files:**
+- Modify: `ui/desktop/src/components/BrxtInstallModal.tsx`
+
+Two changes: (1) accept optional `preloadedFilePath` prop and auto-validate on mount; (2) skip Step 2 entirely when the manifest has no env vars.
+
+- [ ] **Step 1: Add preloadedFilePath prop and auto-validation**
+
+Update the `Props` interface and add a `useEffect` that runs when `preloadedFilePath` is provided:
+
+```tsx
+// Update Props interface
+interface Props {
+  onClose: () => void;
+  onInstalled: () => void;
+  preloadedFilePath?: string;   // <-- new
+}
+
+// Add inside the component, after state declarations:
+useEffect(() => {
+  if (preloadedFilePath) {
+    setFilePath(preloadedFilePath);
+    setIsValidating(true);
+    window.electron.validateBrxtBundle(preloadedFilePath).then((result) => {
+      setIsValidating(false);
+      if ('error' in result) {
+        setError(result.error);
+      } else {
+        setManifest(result.manifest);
+        setEnvEntries(
+          result.manifest.env_vars.map((v: BrxtEnvVar) => ({
+            key: v.key,
+            value: v.auto_propagate && v.default ? v.default : '',
+            secret: v.secret,
+            required: v.required,
+            description: v.description,
+            auto_propagate: v.auto_propagate,
+          }))
+        );
+      }
+    });
+  }
+}, [preloadedFilePath]);
+```
+
+- [ ] **Step 2: Skip configure step when no env vars**
+
+In the Step 1 footer, replace the single "Next: Configure →" button with conditional logic:
+
+```tsx
+<DialogFooter>
+  <Button variant="outline" onClick={onClose}>
+    Cancel
+  </Button>
+  {manifest && !error && manifest.env_vars.length === 0 ? (
+    // No env vars at all — install directly from step 1
+    <Button
+      disabled={isInstalling}
+      onClick={handleInstall}
+    >
+      {isInstalling ? 'Installing…' : 'Install Extension'}
+    </Button>
+  ) : (
+    <Button
+      disabled={!manifest || !!error || isValidating}
+      onClick={() => setStep('configure')}
+    >
+      Next: Configure →
+    </Button>
+  )}
+</DialogFooter>
+```
+
+- [ ] **Step 3: Verify TypeScript compiles**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter/ui/desktop
+npx tsc --noEmit 2>&1 | grep -v "node_modules" | head -20
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter
+git add ui/desktop/src/components/BrxtInstallModal.tsx
+git commit -m "feat: skip configure step when no env vars; support preloaded file path"
+```
+
+---
+
+### Task 17: Main process — handle .brxt file opens
+
+**Files:**
+- Modify: `ui/desktop/src/main.ts`
+
+macOS fires `app.on('open-file')`. Windows and Linux pass the file path as a CLI argument (`process.argv`). In both cases, the main process sends `open-brxt-file` to the renderer window.
+
+- [ ] **Step 1: Add a helper function to send brxt open event to renderer**
+
+Find where `mainWindow` is created in `ui/desktop/src/main.ts`. Add this helper function near the other helper functions (e.g., near `handleProtocolUrl`):
+
+```typescript
+function handleBrxtFileOpen(filePath: string) {
+  if (!filePath.endsWith('.brxt')) return;
+  // If window isn't ready yet, queue it; otherwise send immediately
+  const sendEvent = () => {
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win) {
+      win.webContents.send('open-brxt-file', filePath);
+      win.show();
+      win.focus();
+    }
+  };
+
+  const win = BrowserWindow.getAllWindows()[0];
+  if (win && !win.webContents.isLoading()) {
+    sendEvent();
+  } else {
+    app.once('browser-window-created', () => {
+      setTimeout(sendEvent, 1000);
+    });
+  }
+}
+```
+
+- [ ] **Step 2: Handle macOS open-file event**
+
+Find `app.on('open-file', ...)` in `main.ts` (search for `open-file` — it may already exist for other file types). If it already exists, add a `.brxt` branch inside it. If it doesn't exist, add it in the `app.whenReady()` block or near app initialization:
+
+```typescript
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  if (filePath.endsWith('.brxt')) {
+    handleBrxtFileOpen(filePath);
+  }
+});
+```
+
+- [ ] **Step 3: Handle Windows/Linux CLI argument**
+
+Near the existing startup code that handles `process.argv` (search for `process.argv` in `main.ts`), add a check for `.brxt` files passed as arguments. Add this after `app.whenReady()` resolves:
+
+```typescript
+// Check if launched with a .brxt file argument (Windows/Linux double-click)
+const brxtArg = process.argv.slice(app.isPackaged ? 1 : 2).find((a) => a.endsWith('.brxt'));
+if (brxtArg) {
+  app.whenReady().then(() => handleBrxtFileOpen(brxtArg));
+}
+```
+
+- [ ] **Step 4: Expose open-brxt-file in preload allowlist**
+
+In `ui/desktop/src/preload.ts`, the `window.electron.on` method already forwards any channel. Verify that `on` / `off` do not filter channels — if they have an allowlist, add `'open-brxt-file'` to it.
+
+- [ ] **Step 5: Verify TypeScript compiles**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter/ui/desktop
+npx tsc --noEmit 2>&1 | grep -v "node_modules" | head -20
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter
+git add ui/desktop/src/main.ts ui/desktop/src/preload.ts
+git commit -m "feat: handle .brxt file open via macOS open-file event and CLI args"
+```
+
+---
+
+### Task 18: BrxtFileOpenHandler — renderer listens for open-brxt-file
+
+**Files:**
+- Read then modify: `ui/desktop/src/App.tsx`
+
+The renderer needs to: (1) listen for `open-brxt-file`, (2) navigate to the Extensions view, (3) open `BrxtInstallModal` with the preloaded path.
+
+- [ ] **Step 1: Read App.tsx to understand navigation and view state**
+
+```bash
+cat /Users/wgu/Desktop/BioRouter/ui/desktop/src/App.tsx
+```
+
+Look for: how `setView` or navigation works, where `ExtensionInstallModal` is rendered, how the current view is tracked. The `BrxtFileOpenHandler` will follow the same pattern as `ExtensionInstallModal`.
+
+- [ ] **Step 2: Add BrxtFileOpenHandler component**
+
+Add this component to `App.tsx` (or as a separate file `ui/desktop/src/components/BrxtFileOpenHandler.tsx` if App.tsx is large). It mirrors the pattern of `ExtensionInstallModal`:
+
+```tsx
+// Add to App.tsx (or a new BrxtFileOpenHandler.tsx imported into App.tsx)
+import { useEffect, useState } from 'react';
+import { IpcRendererEvent } from 'electron';
+import { BrxtInstallModal } from './BrxtInstallModal';
+import { View, ViewOptions } from '../utils/navigationUtils';
+import { useConfig } from './ConfigContext';
+
+interface BrxtFileOpenHandlerProps {
+  setView: (view: View, options?: ViewOptions) => void;
+}
+
+export function BrxtFileOpenHandler({ setView }: BrxtFileOpenHandlerProps) {
+  const [pendingFilePath, setPendingFilePath] = useState<string | null>(null);
+  const { addExtension } = useConfig();  // needed by BrxtInstallModal via context
+
+  useEffect(() => {
+    const handler = (_event: IpcRendererEvent, filePath: string) => {
+      // Navigate to Extensions tab first, then open the modal
+      setView('extensions');
+      setPendingFilePath(filePath);
+    };
+    window.electron.on('open-brxt-file', handler);
+    return () => window.electron.off('open-brxt-file', handler);
+  }, [setView]);
+
+  if (!pendingFilePath) return null;
+
+  return (
+    <BrxtInstallModal
+      preloadedFilePath={pendingFilePath}
+      onClose={() => setPendingFilePath(null)}
+      onInstalled={() => setPendingFilePath(null)}
+    />
+  );
+}
+```
+
+- [ ] **Step 3: Mount BrxtFileOpenHandler in App.tsx**
+
+In `App.tsx`, find where `ExtensionInstallModal` is rendered and add `BrxtFileOpenHandler` next to it, passing the same `setView` prop:
+
+```tsx
+<BrxtFileOpenHandler setView={setView} />
+```
+
+- [ ] **Step 4: Verify TypeScript compiles**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter/ui/desktop
+npx tsc --noEmit 2>&1 | grep -v "node_modules" | head -20
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter
+git add ui/desktop/src/App.tsx ui/desktop/src/components/BrxtFileOpenHandler.tsx 2>/dev/null; \
+git add ui/desktop/src/components/BrxtInstallModal.tsx
+git commit -m "feat: add BrxtFileOpenHandler — navigate to Extensions on .brxt double-click"
+```
+
+---
+
+### Task 19: File association — macOS (forge.config.ts)
+
+**Files:**
+- Modify: `ui/desktop/forge.config.ts`
+
+The forge config already has `extendInfo.CFBundleDocumentTypes` with a folder entry. Add `.brxt` as a recognized document type.
+
+- [ ] **Step 1: Add .brxt to CFBundleDocumentTypes**
+
+In `ui/desktop/forge.config.ts`, find the `CFBundleDocumentTypes` array inside `extendInfo`. Add a new entry:
+
+```javascript
+{
+  CFBundleTypeName: 'BioRouter Extension Bundle',
+  CFBundleTypeExtensions: ['brxt'],
+  CFBundleTypeRole: 'Viewer',
+  LSHandlerRank: 'Owner',
+  CFBundleTypeIconFile: 'AppIcon',
+},
+```
+
+The full `CFBundleDocumentTypes` array should look like:
+
+```javascript
+CFBundleDocumentTypes: [
+  {
+    CFBundleTypeName: 'Folders',
+    CFBundleTypeRole: 'Viewer',
+    LSHandlerRank: 'Alternate',
+    LSItemContentTypes: ['public.directory', 'public.folder'],
+  },
+  {
+    CFBundleTypeName: 'BioRouter Extension Bundle',
+    CFBundleTypeExtensions: ['brxt'],
+    CFBundleTypeRole: 'Viewer',
+    LSHandlerRank: 'Owner',
+    CFBundleTypeIconFile: 'AppIcon',
+  },
+],
+```
+
+- [ ] **Step 2: Commit**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter
+git add ui/desktop/forge.config.ts
+git commit -m "feat: register .brxt file association for macOS"
+```
+
+---
+
+### Task 20: File association — Linux deb + rpm (.desktop files + MIME type)
+
+**Files:**
+- Modify: `ui/desktop/forge.deb.desktop`
+- Modify: `ui/desktop/forge.rpm.desktop`
+- Create: `ui/desktop/brxt-mime.xml`
+
+Linux file association requires: (1) a MIME type XML definition, (2) the `.desktop` file advertising the MIME type.
+
+- [ ] **Step 1: Create MIME type XML**
+
+Create `ui/desktop/brxt-mime.xml`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="application/x-brxt">
+    <comment>BioRouter Extension Bundle</comment>
+    <glob pattern="*.brxt"/>
+  </mime-type>
+</mime-info>
+```
+
+- [ ] **Step 2: Update forge.deb.desktop**
+
+Read `ui/desktop/forge.deb.desktop`. Add `application/x-brxt;` to the `MimeType` line:
+
+```ini
+MimeType=x-scheme-handler/biorouter;application/x-brxt;
+```
+
+- [ ] **Step 3: Update forge.rpm.desktop**
+
+Read `ui/desktop/forge.rpm.desktop`. Apply the same change:
+
+```ini
+MimeType=x-scheme-handler/biorouter;application/x-brxt;
+```
+
+- [ ] **Step 4: Add MIME XML to deb maker config in forge.config.ts**
+
+In `forge.config.ts`, find the `@electron-forge/maker-deb` config block and add `mimeType` and the XML file reference. The deb maker supports injecting files via `fpm` arguments:
+
+```javascript
+{
+  name: '@electron-forge/maker-deb',
+  config: {
+    name: 'BioRouter',
+    bin: 'BioRouter',
+    maintainer: 'BaranziniLab',
+    homepage: 'https://github.com/BaranziniLab/BioRouter',
+    categories: ['Development'],
+    desktopTemplate: './forge.deb.desktop',
+    options: {
+      icon: 'src/images/icon.png',
+      prefix: '/opt',
+      fpm: [
+        '--after-install', 'scripts/post-install.sh',  // only if script exists
+      ],
+    },
+  },
+},
+```
+
+Actually, for the MIME XML on deb/rpm, the cleanest approach is to create a post-install script that runs `xdg-mime install`:
+
+- [ ] **Step 5: Create post-install script**
+
+Create `ui/desktop/scripts/post-install.sh`:
+
+```bash
+#!/bin/bash
+# Register .brxt MIME type with the system
+if command -v xdg-mime >/dev/null 2>&1; then
+  xdg-mime install /opt/BioRouter/resources/brxt-mime.xml --novendor 2>/dev/null || true
+  update-mime-database /usr/share/mime 2>/dev/null || true
+fi
+```
+
+Make it executable:
+```bash
+chmod +x /Users/wgu/Desktop/BioRouter/ui/desktop/scripts/post-install.sh
+```
+
+Add `brxt-mime.xml` to `extraResource` in `forge.config.ts` so it's bundled inside the app:
+
+```javascript
+extraResource: ['src/bin', 'src/images', 'brxt-mime.xml'],
+```
+
+Update the deb and rpm maker `fpm` arrays to reference the post-install script:
+
+```javascript
+// In maker-deb options:
+fpm: ['--after-install', './scripts/post-install.sh']
+
+// In maker-rpm options:
+fpm: ['--after-install', './scripts/post-install.sh', '--rpm-rpmbuild-define', '_build_id_links none']
+```
+
+- [ ] **Step 6: Commit**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter
+git add ui/desktop/forge.deb.desktop ui/desktop/forge.rpm.desktop \
+        ui/desktop/brxt-mime.xml ui/desktop/forge.config.ts \
+        ui/desktop/scripts/post-install.sh
+git commit -m "feat: register .brxt MIME type for Linux deb and rpm packages"
+```
+
+---
+
+### Task 21: File association — Windows
+
+**Files:**
+- Modify: `ui/desktop/forge.config.ts`
+
+BioRouter's Windows release is a zip (not an NSIS/WiX installer), so there's no installer-time registry step. The double-click flow works via CLI argument passing (already handled in Task 17, Step 3). For the file icon/association, add to `packagerConfig`:
+
+- [ ] **Step 1: Add Windows file association to forge.config.ts**
+
+In `forge.config.ts`, inside the top-level `cfg` object (the `packagerConfig`), there is already a `win32` key. Add `fileAssociations` to `cfg`:
+
+```javascript
+// Add alongside the existing `protocols` and `extendInfo` in cfg:
+fileAssociations: [
+  {
+    ext: 'brxt',
+    name: 'BioRouter Extension Bundle',
+    description: 'BioRouter Extension Bundle',
+    role: 'Viewer',
+    icon: 'src/images/icon.ico',
+  },
+],
+```
+
+Note: `fileAssociations` in Electron Forge's packagerConfig maps to `build.fileAssociations` in electron-builder terms and is processed by `@electron/packager`. It writes the registry entries for the packaged app on Windows.
+
+- [ ] **Step 2: Verify forge.config.ts is valid JavaScript**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter/ui/desktop
+node -e "require('./forge.config.ts')" 2>&1 || node -e "const cfg = require('./forge.config.js')" 2>&1 | head -5
+```
+
+If the config is TypeScript and requires compilation, just do a syntax check:
+```bash
+npx tsc --noEmit 2>&1 | grep "forge.config" | head -5
+```
+
+- [ ] **Step 3: Commit**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter
+git add ui/desktop/forge.config.ts
+git commit -m "feat: register .brxt file association for Windows"
+```
+
+---
+
+### Task 22: Playwright test — double-click file open flow
+
+> Tests the end-to-end file association flow by simulating the `open-brxt-file` IPC event (since we can't actually double-click a file in the OS during automated tests).
+
+- [ ] **Step 1: Start BioRouter in debug mode**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter
+just run-dev
+```
+
+- [ ] **Step 2: Simulate open-brxt-file event via browser console**
+
+Use `mcp__playwright-electron__browser_evaluate` to simulate the IPC event that double-clicking would produce:
+
+```javascript
+// In browser console:
+window.electron.emit('open-brxt-file', '/tmp/bundle-work/cdwagent.brxt')
+```
+
+- [ ] **Step 3: Verify navigation and modal**
+
+After emitting the event, use `mcp__playwright-electron__browser_snapshot` to verify:
+- The Extensions view is now active
+- `BrxtInstallModal` is open
+- The manifest preview card shows "CDWAgent" (auto-validated from preloaded path)
+
+- [ ] **Step 4: Test no-env-var skip**
+
+Create a minimal test bundle with no env vars:
+
+```bash
+mkdir -p /tmp/noenv-test/src/noenvpkg
+cat > /tmp/noenv-test/manifest.json << 'EOF'
+{
+  "name": "noenvtest",
+  "display_name": "No Env Test",
+  "description": "Test extension with no env vars",
+  "version": "0.1.0",
+  "entry_point": "noenvtest",
+  "repository": "https://github.com/example/noenvtest",
+  "env_vars": []
+}
+EOF
+echo "# NoEnvTest" > /tmp/noenv-test/README.md
+echo '[project]\nname = "noenvtest"\nversion = "0.1.0"' > /tmp/noenv-test/pyproject.toml
+echo "def main(): pass" > /tmp/noenv-test/src/noenvpkg/__init__.py
+cd /tmp/noenv-test
+zip -r /tmp/noenv.brxt manifest.json README.md pyproject.toml src/
+```
+
+Upload `/tmp/noenv.brxt` via the file picker in `BrxtInstallModal` (click "Add extension" → file picker → select `/tmp/noenv.brxt`).
+
+Verify:
+- Manifest preview shows "No Env Test"
+- The button reads **"Install Extension"** (not "Next: Configure →")
+- No Step 2 configure dialog appears when clicking it
+
+- [ ] **Step 5: Commit any test artifacts**
+
+```bash
+cd /Users/wgu/Desktop/BioRouter
+# No test files committed — all test bundles are in /tmp
+git status
+```
+
+---
+
 ## Self-Review Checklist
+
+- [x] Spec section 1 (bundle format + manifest schema) → Tasks 7–9 (manifest.json creation)
+- [x] Spec section 2 (install architecture, uv sync) → Task 4 (brxt:install handler)
+- [x] Spec section 3a (button reorder) → Task 6
+- [x] Spec section 3b (BrxtInstallModal, both steps) → Task 5
+- [x] Spec section 3c (Electron IPC handlers) → Tasks 3–4
+- [x] Spec section 4a (GitHub releases) → Tasks 10–12
+- [x] Spec section 4b (README updates) → Tasks 7–9 step 3
+- [x] Spec section 4c (testing strategy) → Tasks 13–15
+- [x] `window.electron.getPathForFile(file)` used (not `file.path`) → Task 5
+- [x] `installDir` returned from main process (not constructed in renderer) → Tasks 4 + 5
+- [x] `spawnSync` used instead of `execSync` (no shell injection risk) → Task 4
+- [x] Secret env vars stored via `upsertConfig` → Task 5
+- [x] Skip configure step when no env vars → Task 16
+- [x] preloadedFilePath prop for double-click flow → Tasks 16 + 18
+- [x] open-file macOS handler + CLI args Windows/Linux → Task 17
+- [x] BrxtFileOpenHandler navigates to Extensions view → Task 18
+- [x] macOS CFBundleDocumentTypes for .brxt → Task 19
+- [x] Linux deb + rpm MIME type + post-install → Task 20
+- [x] Windows fileAssociations in packagerConfig → Task 21
+- [x] Playwright test for double-click simulation + no-env-var skip → Task 22
 
 - [x] Spec section 1 (bundle format + manifest schema) → Tasks 7–9 (manifest.json creation)
 - [x] Spec section 2 (install architecture, uv sync) → Task 4 (brxt:install handler)
