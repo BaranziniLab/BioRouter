@@ -160,42 +160,48 @@ function ProviderCards({
     [refreshProviders]
   );
 
-  const providerCards = useMemo(() => {
-    // providers needs to be an array
-    const providersArray = Array.isArray(providers) ? providers : [];
-    // Remove CLI-wrapper providers from the UI
+  const { institutionalCards, localCards, commercialCards } = useMemo(() => {
     const HIDDEN_PROVIDERS = new Set(['claude-code', 'codex', 'cursor-agent']);
-    const visibleProviders = providersArray.filter((p) => !HIDDEN_PROVIDERS.has(p.name));
-    // Sort providers by priority order, then alphabetically
+    const INSTITUTIONAL = new Set(['versa_azure', 'versa_bedrock']);
+    const LOCAL = new Set(['ollama']);
+
     const priorityOrder: Record<string, number> = {
+      versa_azure: 0,
+      versa_bedrock: 1,
+      ollama: 0,
       azure_openai: 0,
       aws_bedrock: 1,
       anthropic: 2,
       openai: 3,
       google: 4,
-      ollama: 5,
     };
-    const sortedProviders = [...visibleProviders].sort((a, b) => {
-      const pa = priorityOrder[a.name] ?? 999;
-      const pb = priorityOrder[b.name] ?? 999;
-      if (pa !== pb) return pa - pb;
-      return a.name.localeCompare(b.name);
-    });
-    const cards = sortedProviders.map((provider) => (
-      <ProviderCard
-        key={provider.name}
-        provider={provider}
-        onConfigure={() => configureProviderViaModal(provider)}
-        onLaunch={() => handleProviderLaunchWithModelSelection(provider)}
-        isOnboarding={isOnboarding}
-      />
-    ));
 
-    cards.push(
-      <CustomProviderCard key="add-custom" onClick={() => setShowCustomProviderModal(true)} />
-    );
+    const providersArray = Array.isArray(providers) ? providers : [];
+    const visible = providersArray.filter((p) => !HIDDEN_PROVIDERS.has(p.name));
 
-    return cards;
+    const makeCards = (subset: ProviderDetails[]) =>
+      [...subset]
+        .sort((a, b) => {
+          const pa = priorityOrder[a.name] ?? 999;
+          const pb = priorityOrder[b.name] ?? 999;
+          if (pa !== pb) return pa - pb;
+          return a.name.localeCompare(b.name);
+        })
+        .map((provider) => (
+          <ProviderCard
+            key={provider.name}
+            provider={provider}
+            onConfigure={() => configureProviderViaModal(provider)}
+            onLaunch={() => handleProviderLaunchWithModelSelection(provider)}
+            isOnboarding={isOnboarding}
+          />
+        ));
+
+    return {
+      institutionalCards: makeCards(visible.filter((p) => INSTITUTIONAL.has(p.name))),
+      localCards: makeCards(visible.filter((p) => LOCAL.has(p.name))),
+      commercialCards: makeCards(visible.filter((p) => !INSTITUTIONAL.has(p.name) && !LOCAL.has(p.name))),
+    };
   }, [providers, isOnboarding, configureProviderViaModal, handleProviderLaunchWithModelSelection]);
 
   const initialData = editingProvider && {
@@ -211,7 +217,43 @@ function ProviderCards({
   const title = (editingProvider ? (editable ? 'Edit' : 'Configure') : 'Add') + '  Provider';
   return (
     <>
-      {providerCards}
+      <div className="space-y-8">
+        {institutionalCards.length > 0 && (
+          <div>
+            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+              <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full flex-shrink-0" />
+              Institutional Models
+            </h2>
+            <div className="divide-y divide-border-subtle">
+              {institutionalCards}
+            </div>
+          </div>
+        )}
+
+        {localCards.length > 0 && (
+          <div>
+            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+              <span className="w-1.5 h-1.5 bg-green-500 rounded-full flex-shrink-0" />
+              Local Models
+            </h2>
+            <div className="divide-y divide-border-subtle">
+              {localCards}
+            </div>
+          </div>
+        )}
+
+        <div>
+          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+            <span className="w-1.5 h-1.5 bg-amber-500 rounded-full flex-shrink-0" />
+            Commercial Models
+          </h2>
+          <div className="divide-y divide-border-subtle">
+            {commercialCards}
+            <CustomProviderCard onClick={() => setShowCustomProviderModal(true)} />
+          </div>
+        </div>
+      </div>
+
       <Dialog open={showCustomProviderModal} onOpenChange={handleCloseModal}>
         <DialogContent className="sm:max-w-[600px]">
           <DialogHeader>
