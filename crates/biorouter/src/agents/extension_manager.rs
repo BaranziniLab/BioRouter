@@ -779,57 +779,68 @@ impl ExtensionManager {
             .map(|(name, ext)| (name.clone(), ext.config.clone(), ext.get_client()))
             .collect();
 
-        let cancel_token = CancellationToken::default();
         let client_futures = clients.into_iter().map(|(name, config, client)| {
-            let cancel_token = cancel_token.clone();
             let ext_name = name.clone();
             async move {
-                let mut tools = Vec::new();
-                let client_guard = client.lock().await;
-                let mut client_tools = match client_guard
-                    .list_tools(None, cancel_token.clone())
-                    .await
-                {
-                    Ok(t) => t,
-                    Err(e) => {
-                        warn!(extension = %ext_name, error = %e, "Failed to list tools");
-                        return (name, vec![]);
-                    }
-                };
-
-                loop {
-                    for tool in client_tools.tools {
-                        if config.is_tool_available(&tool.name) {
-                            tools.push(Tool {
-                                name: format!("{}__{}", name, tool.name).into(),
-                                description: tool.description,
-                                input_schema: tool.input_schema,
-                                annotations: tool.annotations,
-                                output_schema: tool.output_schema,
-                                icons: tool.icons,
-                                title: tool.title,
-                                meta: tool.meta,
-                            });
-                        }
-                    }
-
-                    if client_tools.next_cursor.is_none() {
-                        break;
-                    }
-
-                    client_tools = match client_guard
-                        .list_tools(client_tools.next_cursor, cancel_token.clone())
+                let per_ext = async {
+                    let cancel_token = CancellationToken::default();
+                    let mut tools = Vec::new();
+                    let client_guard = client.lock().await;
+                    let mut client_tools = match client_guard
+                        .list_tools(None, cancel_token.clone())
                         .await
                     {
                         Ok(t) => t,
                         Err(e) => {
-                            warn!(extension = %ext_name, error = %e, "Failed to list tools (pagination)");
-                            break;
+                            warn!(extension = %ext_name, error = %e, "Failed to list tools");
+                            return vec![];
                         }
                     };
-                }
 
-                (name, tools)
+                    loop {
+                        for tool in client_tools.tools {
+                            if config.is_tool_available(&tool.name) {
+                                tools.push(Tool {
+                                    name: format!("{}__{}", name, tool.name).into(),
+                                    description: tool.description,
+                                    input_schema: tool.input_schema,
+                                    annotations: tool.annotations,
+                                    output_schema: tool.output_schema,
+                                    icons: tool.icons,
+                                    title: tool.title,
+                                    meta: tool.meta,
+                                });
+                            }
+                        }
+
+                        if client_tools.next_cursor.is_none() {
+                            break;
+                        }
+
+                        client_tools = match client_guard
+                            .list_tools(client_tools.next_cursor, cancel_token.clone())
+                            .await
+                        {
+                            Ok(t) => t,
+                            Err(e) => {
+                                warn!(extension = %ext_name, error = %e, "Failed to list tools (pagination)");
+                                break;
+                            }
+                        };
+                    }
+
+                    tools
+                };
+
+                // 10s cap per extension — a hanging MCP server (e.g. one waiting on a DB
+                // it can't reach) must not block tool listing for all other extensions.
+                match tokio::time::timeout(std::time::Duration::from_secs(10), per_ext).await {
+                    Ok(tools) => (ext_name, tools),
+                    Err(_) => {
+                        warn!(extension = %ext_name, "Timed out listing tools after 10s; extension will be skipped");
+                        (ext_name, vec![])
+                    }
+                }
             }
         });
 

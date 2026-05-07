@@ -1,5 +1,6 @@
 // ui/desktop/src/components/BrxtInstallModal.tsx
 import { useState, useCallback, useRef, useEffect } from 'react';
+import { Package } from './icons/app-icons';
 import {
   Dialog,
   DialogContent,
@@ -127,25 +128,32 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
 
     const { installDir } = result;
 
-    // Store secrets in BioRouter's secret store
-    for (const entry of envEntries.filter((e) => e.secret && e.value)) {
-      await upsertConfig({
+    // Store secrets in BioRouter's keyring; track which ones succeeded
+    const secretEnvKeys: string[] = [];
+    for (const entry of envEntries.filter((e) => e.secret && e.value.trim())) {
+      const res = await upsertConfig({
         body: { is_secret: true, key: entry.key, value: entry.value },
-      }).catch(() => {});
+      }).catch(() => null);
+      if (res && !res.error) {
+        secretEnvKeys.push(entry.key);
+      }
     }
 
-    // Build envs map for extension config
+    // Non-secret values go in envs; secrets that failed keyring storage are fallback-included
     const envs: Record<string, string> = {};
-    envEntries.forEach(({ key, value }) => { if (value) envs[key] = value; });
+    envEntries.forEach(({ key, value, secret }) => {
+      if (!value.trim()) return;
+      if (!secret || !secretEnvKeys.includes(key)) envs[key] = value;
+    });
 
     const extensionConfig = {
       name: manifest.name,
-      display_name: manifest.display_name,
       description: manifest.description,
       type: 'stdio' as const,
-      cmd: `uv run --directory "${installDir}" ${manifest.entry_point}`,
-      args: [] as string[],
+      cmd: 'uv',
+      args: ['run', '--directory', installDir, manifest.entry_point],
       envs,
+      env_keys: secretEnvKeys,
       timeout: 300,
     };
 
@@ -208,7 +216,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
                 <p className="text-sm text-text-muted animate-pulse">Reading bundle…</p>
               ) : (
                 <>
-                  <p className="text-3xl mb-2">📦</p>
+                  <Package className="w-10 h-10 mx-auto mb-2 text-text-muted" />
                   <p className="text-sm font-medium mb-1">Drop your .brxt file here</p>
                   <p className="text-xs text-text-muted mb-3">or click to browse</p>
                   <Button

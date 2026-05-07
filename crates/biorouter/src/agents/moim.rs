@@ -24,13 +24,20 @@ pub async fn inject_moim(
         .await
     {
         let mut messages = conversation.messages().clone();
-        // Insert MOIM *after* the last assistant message so it merges with the
-        // current user turn rather than bleeding into historical messages.
-        let idx = messages
+        // Insert MOIM after the last assistant message AND any trailing tool
+        // responses that follow it. Inserting between an assistant tool_call and
+        // its tool_result would put a user message there, which the OpenAI API
+        // rejects with a 400 error.
+        let after_last_assistant = messages
             .iter()
             .rposition(|m| m.role == Role::Assistant)
             .map(|i| i + 1)
             .unwrap_or(0);
+        let idx = messages[after_last_assistant..]
+            .iter()
+            .position(|m| !m.is_tool_response())
+            .map(|offset| after_last_assistant + offset)
+            .unwrap_or(messages.len());
         messages.insert(idx, Message::user().with_text(moim));
 
         let (fixed, issues) = fix_conversation(Conversation::new_unvalidated(messages));
@@ -164,11 +171,13 @@ mod tests {
         let result = inject_moim("test-session-id", conv, &em, &working_dir).await;
         let msgs = result.messages();
 
-        // MOIM inserts after last assistant (idx 3 → insert at 4); tool_resp at [4]
-        // has effective_role "tool" so it won't merge with the plain MOIM user message.
+        // MOIM must insert AFTER all tool_results following the last assistant, so that
+        // no user message lands between an assistant tool_call and its tool_result.
+        // Conversation ends with [assistant+call_2, user+result_2], so MOIM appends at end.
         assert_eq!(msgs.len(), 6);
 
-        let moim_msg = &msgs[4];
+        // MOIM is at the last position (after both tool results)
+        let moim_msg = &msgs[5];
         let has_moim = moim_msg
             .content
             .iter()
@@ -176,7 +185,13 @@ mod tests {
 
         assert!(
             has_moim,
-            "MOIM should be in message after latest assistant message (before last tool response)"
+            "MOIM should be appended after the last tool response, not between tool_call and tool_result"
+        );
+
+        // The second-to-last message must be the tool_result, not MOIM
+        assert!(
+            msgs[4].is_tool_response(),
+            "tool_result must remain before MOIM"
         );
     }
 }

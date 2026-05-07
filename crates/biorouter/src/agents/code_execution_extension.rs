@@ -18,7 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "code_execution";
@@ -489,11 +490,13 @@ impl CodeExecutionClient {
             .to_string();
 
         let tools = self.get_tool_infos().await;
+        let collected_resources: Arc<Mutex<Vec<Content>>> = Arc::new(Mutex::new(Vec::new()));
         let (call_tx, call_rx) = mpsc::unbounded_channel();
         let tool_handler = tokio::spawn(Self::run_tool_handler(
             session_id.to_string(),
             call_rx,
             self.context.extension_manager.clone(),
+            Arc::clone(&collected_resources),
         ));
 
         let js_result = tokio::task::spawn_blocking(move || run_js_module(&code, &tools, call_tx))
@@ -501,7 +504,12 @@ impl CodeExecutionClient {
             .map_err(|e| format!("JS execution task failed: {e}"))?;
 
         tool_handler.abort();
-        js_result.map(|r| vec![Content::text(format!("Result: {r}"))])
+
+        let mut contents = js_result.map(|r| vec![Content::text(format!("Result: {r}"))])?;
+        // Append any resource content collected from tool calls (e.g. autovisualiser HTML charts).
+        // The UI renders these inline when the resource URI uses the ui:// scheme.
+        contents.extend(collected_resources.lock().await.drain(..));
+        Ok(contents)
     }
 
     async fn handle_read_module(
@@ -663,6 +671,7 @@ impl CodeExecutionClient {
         session_id: String,
         mut call_rx: mpsc::UnboundedReceiver<ToolCallRequest>,
         extension_manager: Option<std::sync::Weak<crate::agents::ExtensionManager>>,
+        collected_resources: Arc<Mutex<Vec<Content>>>,
     ) {
         while let Some((tool_name, arguments, response_tx)) = call_rx.recv().await {
             let result = match extension_manager.as_ref().and_then(|w| w.upgrade()) {
@@ -671,25 +680,52 @@ impl CodeExecutionClient {
                         task: None,
                         name: tool_name.into(),
                         arguments: serde_json::from_str(&arguments).ok(),
-                        meta: None};
+                        meta: None,
+                    };
                     match manager
                         .dispatch_tool_call(&session_id, tool_call, CancellationToken::new())
                         .await
                     {
                         Ok(dispatch_result) => match dispatch_result.result.await {
-                            Ok(result) => Ok(if let Some(sc) = &result.structured_content {
-                                serde_json::to_string(sc).unwrap_or_default()
-                            } else {
-                                result
+                            Ok(result) => {
+                                // Collect resource content (e.g. autovisualiser HTML blobs) so
+                                // handle_execute_code can append them to its result for inline
+                                // UI rendering. Resources are not representable as JS strings so
+                                // they are passed out-of-band via the shared collector.
+                                let resources: Vec<Content> = result
                                     .content
                                     .iter()
-                                    .filter_map(|c| match &c.raw {
-                                        RawContent::Text(t) => Some(t.text.clone()),
-                                        _ => None,
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                            }),
+                                    .filter(|c| matches!(c.raw, RawContent::Resource(_)))
+                                    .cloned()
+                                    .collect();
+                                let has_resources = !resources.is_empty();
+                                if has_resources {
+                                    collected_resources.lock().await.extend(resources);
+                                }
+
+                                Ok(if let Some(sc) = &result.structured_content {
+                                    serde_json::to_string(sc).unwrap_or_default()
+                                } else {
+                                    let text: String = result
+                                        .content
+                                        .iter()
+                                        .filter_map(|c| match &c.raw {
+                                            RawContent::Text(t) => Some(t.text.clone()),
+                                            _ => None,
+                                        })
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    // When a tool (e.g. autovisualiser) returns only resource
+                                    // content and no text, JS would receive an empty string and
+                                    // the model would see `Result: ""` and loop retrying. Return
+                                    // a terse confirmation so the model knows it succeeded.
+                                    if text.is_empty() && has_resources {
+                                        "[rendered inline]".to_string()
+                                    } else {
+                                        text
+                                    }
+                                })
+                            }
                             Err(e) => Err(format!("Tool error: {}", e.message)),
                         },
                         Err(e) => Err(format!("Dispatch error: {e}")),
