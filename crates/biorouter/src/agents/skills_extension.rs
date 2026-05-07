@@ -79,7 +79,7 @@ impl SkillsClient {
                     && !skill
                         .bundle_name
                         .as_deref()
-                        .map_or(false, |b| disabled.contains(b))
+                        .is_some_and(|b| disabled.contains(b))
             })
             .collect();
 
@@ -1040,7 +1040,7 @@ Working dir biorouter content
                     && !skill
                         .bundle_name
                         .as_deref()
-                        .map_or(false, |b| disabled.contains(b))
+                        .is_some_and(|b| disabled.contains(b))
             })
             .collect();
 
