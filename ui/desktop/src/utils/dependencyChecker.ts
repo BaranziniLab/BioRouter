@@ -20,7 +20,7 @@ import log from './logger';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface DependencyInfo {
-  name: 'git' | 'python' | 'uv' | 'npm';
+  name: 'git' | 'python' | 'uv' | 'npm' | 'aws';
   displayName: string;
   version: string | null;
   installed: boolean;
@@ -144,7 +144,7 @@ function probeVersion(cmd: string, args: string[]): string | null {
 // ─── Install command builders ─────────────────────────────────────────────────
 
 function buildInstallInfo(
-  dep: 'git' | 'python' | 'uv' | 'npm',
+  dep: 'git' | 'python' | 'uv' | 'npm' | 'aws',
   distro: LinuxDistro,
 ): { cmd: string; requiresSudo: boolean; downloadUrl: string } {
   const platform = process.platform;
@@ -175,6 +175,12 @@ function buildInstallInfo(
           requiresSudo: false,
           downloadUrl: 'https://nodejs.org/en/download',
         };
+      case 'aws':
+        return {
+          cmd: 'brew install awscli',
+          requiresSudo: false,
+          downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html',
+        };
     }
   }
 
@@ -204,6 +210,12 @@ function buildInstallInfo(
           requiresSudo: false,
           downloadUrl: 'https://nodejs.org/en/download',
         };
+      case 'aws':
+        return {
+          cmd: 'winget install Amazon.AWSCLI',
+          requiresSudo: false,
+          downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html',
+        };
     }
   }
 
@@ -214,6 +226,16 @@ function buildInstallInfo(
       requiresSudo: false,
       downloadUrl: 'https://docs.astral.sh/uv/getting-started/installation/',
     };
+  }
+
+  if (dep === 'aws') {
+    if (distro === 'deb') {
+      return { cmd: 'sudo apt-get install -y awscli', requiresSudo: true, downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html' };
+    }
+    if (distro === 'rpm') {
+      return { cmd: 'sudo dnf install -y awscli', requiresSudo: true, downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html' };
+    }
+    return { cmd: 'pip install awscli', requiresSudo: false, downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html' };
   }
 
   if (distro === 'deb') {
@@ -253,7 +275,7 @@ export function checkAllDependencies(): DependencyInfo[] {
   const distro = getLinuxDistro();
 
   const checks: Array<{
-    name: 'git' | 'python' | 'uv' | 'npm';
+    name: 'git' | 'python' | 'uv' | 'npm' | 'aws';
     displayName: string;
     probes: Array<[string, string[]]>;
   }> = [
@@ -280,6 +302,11 @@ export function checkAllDependencies(): DependencyInfo[] {
       name: 'npm',
       displayName: 'npm (Node.js)',
       probes: [['npm', ['--version']]],
+    },
+    {
+      name: 'aws' as const,
+      displayName: 'AWS CLI (optional)',
+      probes: [['aws', ['--version']]],
     },
   ];
 
