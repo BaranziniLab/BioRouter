@@ -42,6 +42,7 @@ import * as yaml from 'yaml';
 import windowStateKeeper from 'electron-window-state';
 import {
   getUpdateAvailable,
+  openUpdateSettings,
   registerUpdateIpcHandlers,
   setTrayRef,
   setupAutoUpdater,

@@ -757,7 +757,7 @@ function updateTrayIcon(hasUpdate: boolean) {
 }
 
 // Function to open settings and scroll to update section
-function openUpdateSettings() {
+export function openUpdateSettings() {
   const windows = BrowserWindow.getAllWindows();
   if (windows.length > 0) {
     const mainWindow = windows[0];
