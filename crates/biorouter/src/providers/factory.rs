@@ -19,6 +19,8 @@ use super::{
     snowflake::SnowflakeProvider,
     tetrate::TetrateProvider,
     venice::VeniceProvider,
+    versa_azure::VersaAzureProvider,
+    versa_bedrock::VersaBedrockProvider,
     xai::XaiProvider,
 };
 use crate::model::ModelConfig;
@@ -42,6 +44,14 @@ async fn init_registry() -> RwLock<ProviderRegistry> {
             .register::<AnthropicProvider, _>(|m| Box::pin(AnthropicProvider::from_env(m)), true);
         registry.register::<AzureProvider, _>(|m| Box::pin(AzureProvider::from_env(m)), false);
         registry.register::<BedrockProvider, _>(|m| Box::pin(BedrockProvider::from_env(m)), false);
+        registry.register::<VersaAzureProvider, _>(
+            |m| Box::pin(VersaAzureProvider::from_env(m)),
+            false,
+        );
+        registry.register::<VersaBedrockProvider, _>(
+            |m| Box::pin(VersaBedrockProvider::from_env(m)),
+            false,
+        );
         registry
             .register::<DatabricksProvider, _>(|m| Box::pin(DatabricksProvider::from_env(m)), true);
         registry.register::<GcpVertexAIProvider, _>(

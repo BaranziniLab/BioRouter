@@ -32,6 +32,8 @@ pub mod toolshim;
 pub mod usage_estimator;
 pub mod utils;
 pub mod venice;
+pub mod versa_azure;
+pub mod versa_bedrock;
 pub mod xai;
 
 pub use factory::{
