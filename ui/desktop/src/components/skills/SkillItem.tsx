@@ -25,8 +25,8 @@ export default function SkillItem({ skill, onClick, onDelete, onShare }: SkillIt
       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5">
         <Button
           variant="ghost"
-          size="xs"
-          shape="round"
+          size="sm"
+          className="h-7 w-7 p-0"
           onClick={(e) => { e.stopPropagation(); onShare(); }}
           title="Share / Export"
         >
@@ -34,9 +34,8 @@ export default function SkillItem({ skill, onClick, onDelete, onShare }: SkillIt
         </Button>
         <Button
           variant="ghost"
-          size="xs"
-          shape="round"
-          className="text-destructive hover:text-destructive hover:bg-destructive/10"
+          size="sm"
+          className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
           onClick={(e) => { e.stopPropagation(); onDelete(); }}
           title="Delete"
         >
