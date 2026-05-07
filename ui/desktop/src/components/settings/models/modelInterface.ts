@@ -49,8 +49,10 @@ export interface ProviderModelsResult {
 }
 
 /**
- * Fetches recommended models for all active providers in parallel.
- * Falls back to known_models if fetching fails or returns no models.
+ * Fetches models for all active providers in parallel.
+ * When a provider has a curated known_models list, that is used exclusively
+ * (avoids showing deprecated/unsupported models from the live API).
+ * For providers without known_models (e.g. Ollama), falls back to live API.
  */
 export async function fetchModelsForProviders(
   activeProviders: ProviderDetails[],
@@ -58,12 +60,18 @@ export async function fetchModelsForProviders(
 ): Promise<ProviderModelsResult[]> {
   const modelPromises = activeProviders.map(async (p) => {
     const providerName = p.name;
+    const knownModels = p.metadata.known_models?.map((m) => m.name) || [];
+
+    // When a curated known_models list exists, use it exclusively so only
+    // tested/supported models are shown (live API includes old deprecated models).
+    if (knownModels.length > 0) {
+      return { provider: p, models: knownModels, error: null };
+    }
+
+    // No curated list — use the live API (e.g. Ollama, custom providers).
     try {
-      let models = await getProviderModelsFunc(providerName);
-      if ((!models || models.length === 0) && p.metadata.known_models?.length) {
-        models = p.metadata.known_models.map((m) => m.name);
-      }
-      return { provider: p, models, error: null };
+      const models = await getProviderModelsFunc(providerName);
+      return { provider: p, models: models || [], error: null };
     } catch (e: unknown) {
       const errorMessage = `Failed to fetch models for ${providerName}${e instanceof Error ? `: ${e.message}` : ''}`;
       return {
