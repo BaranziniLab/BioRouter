@@ -86,6 +86,19 @@ impl SkillsClient {
 
         dirs.push(Paths::config_dir().join("skills"));
 
+        // Scan installed .brxt extension skills subdirectories
+        let extensions_dir = Paths::config_dir().join("extensions");
+        if extensions_dir.exists() {
+            if let Ok(entries) = std::fs::read_dir(&extensions_dir) {
+                for entry in entries.flatten() {
+                    let skills_subdir = entry.path().join("skills");
+                    if skills_subdir.is_dir() {
+                        dirs.push(skills_subdir);
+                    }
+                }
+            }
+        }
+
         if let Ok(working_dir) = std::env::current_dir() {
             dirs.push(working_dir.join(".claude/skills"));
             dirs.push(working_dir.join(".biorouter/skills"));
@@ -830,5 +843,59 @@ Working dir biorouter content
             .unwrap()
             .body
             .contains("Working dir biorouter content"));
+    }
+
+    #[test]
+    fn test_discover_extension_skills() {
+        let temp_dir = TempDir::new().unwrap();
+        let skill_dir = temp_dir
+            .path()
+            .join("extensions")
+            .join("myext")
+            .join("skills")
+            .join("my-ext-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-ext-skill\ndescription: An extension skill\n---\n\nBody here.",
+        )
+        .unwrap();
+
+        let ext_skills_dir = temp_dir.path().join("extensions").join("myext").join("skills");
+        let skills = SkillsClient::discover_skills_in_directories(&[ext_skills_dir]);
+        assert!(skills.contains_key("my-ext-skill"), "extension skill not found");
+        assert_eq!(
+            skills["my-ext-skill"].metadata.description,
+            "An extension skill"
+        );
+    }
+
+    #[test]
+    fn test_get_default_skill_directories_includes_extensions() {
+        let temp_dir = TempDir::new().unwrap();
+        let ext_skills = temp_dir
+            .path()
+            .join("config")
+            .join("extensions")
+            .join("myext")
+            .join("skills");
+        fs::create_dir_all(&ext_skills).unwrap();
+        let skill_dir = ext_skills.join("my-ext-skill");
+        fs::create_dir_all(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-ext-skill\ndescription: test\n---\nbody",
+        )
+        .unwrap();
+
+        std::env::set_var("BIOROUTER_PATH_ROOT", temp_dir.path());
+        let dirs = SkillsClient::get_default_skill_directories();
+        std::env::remove_var("BIOROUTER_PATH_ROOT");
+
+        assert!(
+            dirs.iter().any(|d| d == &ext_skills),
+            "extension skills dir not in default dirs: {:?}",
+            dirs
+        );
     }
 }
