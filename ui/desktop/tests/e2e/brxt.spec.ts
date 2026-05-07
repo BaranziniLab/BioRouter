@@ -196,45 +196,36 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
   // ---------------------------------------------------------------------------
   // Test 1: Button layout in the Extensions tab header
   // ---------------------------------------------------------------------------
-  test('Extensions tab has correct button layout — Add extension, Browse extensions, Add custom extension', async () => {
+  test('Extensions tab has correct button layout — Add Extension, Browse Extensions, Add Custom Extension', async () => {
     await goToExtensions();
 
-    // Verify all three buttons are visible
-    const addExtBtn = page.locator('button:has-text("Add extension")');
-    const browseBtn = page.locator('button:has-text("Browse extensions")');
-    const addCustomBtn = page.locator('button:has-text("Add custom extension")');
+    // Verify all three buttons are visible (UI uses title-case)
+    const addExtBtn = page.locator('button:has-text("Add Extension")').first();
+    const browseBtn = page.locator('button:has-text("Browse Extensions")').first();
+    const addCustomBtn = page.locator('button:has-text("Add Custom Extension")').first();
 
     await expect(addExtBtn).toBeVisible();
     await expect(browseBtn).toBeVisible();
     await expect(addCustomBtn).toBeVisible();
 
-    // "Add extension" should have the default (dark) variant: check it does NOT have
-    // the outline variant class pattern (it should have bg-primary or similar dark bg).
-    // We inspect the class attribute and confirm the outline buttons differ from it.
-    const addExtClass = await addExtBtn.getAttribute('class') ?? '';
+    // Browse and Add Custom use the outline variant
     const browseClass = await browseBtn.getAttribute('class') ?? '';
     const addCustomClass = await addCustomBtn.getAttribute('class') ?? '';
-
-    // Outline buttons typically include "outline" or "border" in their class string;
-    // the default button uses bg-primary (dark background).
-    // We assert that the browse/add-custom buttons have "outline" in their variant class.
     expect(browseClass).toContain('outline');
     expect(addCustomClass).toContain('outline');
 
-    // "Add extension" should NOT share the same class pattern as outline buttons —
-    // it should carry a background-colour class (the default variant).
-    // At minimum it should be different from an outline button.
+    // Add Extension uses the default (filled) variant — different from outline
+    const addExtClass = await addExtBtn.getAttribute('class') ?? '';
     expect(addExtClass).not.toEqual(browseClass);
 
-    // Verify DOM order: "Add extension" appears before "Browse extensions" which
-    // appears before "Add custom extension".
+    // Verify DOM order in the header button row (.flex.gap-3 above the scroll area)
     const buttonTexts: string[] = await page.$$eval(
-      '[data-search-scroll-area] .flex.gap-3 button',
+      '.flex.gap-3.mt-5 button',
       (btns: Element[]) => btns.map((b) => b.textContent?.trim() ?? '')
     );
-    const addIdx = buttonTexts.findIndex((t) => t.includes('Add extension'));
-    const browseIdx = buttonTexts.findIndex((t) => t.includes('Browse extensions'));
-    const customIdx = buttonTexts.findIndex((t) => t.includes('Add custom extension'));
+    const addIdx = buttonTexts.findIndex((t) => t.includes('Add Extension'));
+    const browseIdx = buttonTexts.findIndex((t) => t.includes('Browse Extensions'));
+    const customIdx = buttonTexts.findIndex((t) => t.includes('Add Custom Extension'));
 
     expect(addIdx).toBeGreaterThanOrEqual(0);
     expect(browseIdx).toBeGreaterThan(addIdx);
@@ -262,9 +253,12 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
     // Wait for the manifest preview card to appear
     await page.waitForSelector('text=Detected from bundle', { timeout: 10000 });
 
+    // Scope assertions to the modal to avoid strict-mode violations
+    const dialog = page.locator('[role="dialog"]');
+
     // Verify display_name and version are shown
-    await expect(page.locator('text=Test Extension')).toBeVisible();
-    await expect(page.locator('text=1.0.0')).toBeVisible();
+    await expect(dialog.getByText('Test Extension', { exact: true })).toBeVisible();
+    await expect(dialog.locator('text=1.0.0')).toBeVisible();
 
     // The modal title should still say "Add Extension" (step === 'drop')
     await expect(page.locator('[role="dialog"] [data-slot="dialog-title"]')).toContainText('Add Extension');
