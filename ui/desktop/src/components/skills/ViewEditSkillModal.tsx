@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Button } from '../ui/button';
 import { Skill, parseSkillFrontmatter } from './skillUtils';
 import { toastSuccess, toastError } from '../../toasts';
-import { Share2 } from 'lucide-react';
+import { Share2 } from '../icons/app-icons';
 
 interface Props {
   skill: Skill;

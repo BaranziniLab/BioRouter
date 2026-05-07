@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Button } from '../ui/button';
-import { Plus } from '../icons/app-icons';
-import { Upload, Globe } from 'lucide-react';
+import { Plus, Upload, Globe } from '../icons/app-icons';
 import { Skill, BIOROUTER_SKILLS_DIR, OTHER_SKILL_DIRS, loadSkillsFromDirs } from './skillUtils';
 import SkillItem from './SkillItem';
 import AddSkillModal from './AddSkillModal';
@@ -54,8 +53,10 @@ export default function SkillsView() {
     if (result.response !== 1) return;
     const ok = await window.electron.deleteFile(skill.filePath);
     if (ok) {
+      // Optimistically remove from state immediately for instant visual feedback
+      setBioRouterSkills((prev) => prev.filter((s) => s.filePath !== skill.filePath));
+      setOtherSkills((prev) => prev.filter((s) => s.filePath !== skill.filePath));
       toastSuccess({ title: skill.name, msg: 'Skill deleted' });
-      loadSkills();
     } else {
       toastError({ title: 'Delete failed', msg: `Could not delete ${skill.filePath}` });
     }

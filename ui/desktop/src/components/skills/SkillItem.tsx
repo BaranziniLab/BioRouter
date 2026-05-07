@@ -1,6 +1,6 @@
 import { Skill, BIOROUTER_SKILLS_DIR } from './skillUtils';
 import { Button } from '../ui/button';
-import { Share2, Trash2 } from 'lucide-react';
+import { Share2, Trash2 } from '../icons/app-icons';
 
 interface SkillItemProps {
   skill: Skill;

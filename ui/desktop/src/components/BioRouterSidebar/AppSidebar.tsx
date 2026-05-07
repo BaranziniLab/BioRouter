@@ -218,12 +218,10 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
       </SidebarContent>
 
       <SidebarFooter className="pb-4 px-4">
-        <div className="flex items-center gap-3">
-          <BioRouter className="size-8 biorouter-icon-animation flex-shrink-0" />
-          <div className="flex flex-col">
-            <span className="text-sm font-semibold leading-tight">UCSF Biorouter</span>
-            <EnvironmentBadge />
-          </div>
+        <div className="flex items-center gap-2">
+          <BioRouter className="size-7 biorouter-icon-animation flex-shrink-0" />
+          <span className="text-sm font-semibold leading-none">Biorouter</span>
+          <EnvironmentBadge />
         </div>
       </SidebarFooter>
     </>
