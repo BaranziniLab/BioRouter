@@ -102,7 +102,6 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
     [isHubView, togglingSkill, sessionOverrides]
   );
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   const skillsList = useMemo(() => {
     const hubOverrides = getSkillOverrides();
     return allSkills.map((skill) => {
@@ -116,6 +115,8 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
       }
       return { ...skill, enabled };
     });
+    // hubUpdateTrigger intentionally triggers re-evaluation when hub overrides change
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allSkills, isHubView, sessionOverrides, hubUpdateTrigger]);
 
   const filteredSkills = useMemo(() => {
