@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Button } from '../ui/button';
-import { parseSkillFrontmatter, BIOROUTER_SKILLS_DIR } from './skillUtils';
+import { parseSkillFrontmatter, toSlug, BIOROUTER_SKILLS_DIR } from './skillUtils';
 import { toastSuccess, toastError } from '../../toasts';
 
 const TEMPLATE = `---
@@ -43,17 +43,17 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
     setError(null);
     setIsSaving(true);
 
-    const filename = `${parsed.name.replace(/[^a-z0-9-_]/gi, '-').toLowerCase()}.md`;
-    await window.electron.ensureDirectory(BIOROUTER_SKILLS_DIR);
-    const destPath = `${BIOROUTER_SKILLS_DIR}/${filename}`;
-    const ok = await window.electron.writeFile(destPath, content);
+    const slug = toSlug(parsed.name);
+    const destFolder = `${BIOROUTER_SKILLS_DIR}/${slug}`;
+    await window.electron.ensureDirectory(destFolder);
+    const ok = await window.electron.writeFile(`${destFolder}/SKILL.md`, content);
     setIsSaving(false);
     if (ok) {
       toastSuccess({ title: parsed.name, msg: 'Skill saved to BioRouter Skills' });
       onSaved();
       onClose();
     } else {
-      toastError({ title: 'Save failed', msg: `Could not write to ${destPath}` });
+      toastError({ title: 'Save failed', msg: `Could not write to ${destFolder}/SKILL.md` });
     }
   };
 
@@ -67,7 +67,9 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
 
         <div className="p-6 flex flex-col gap-3 flex-1 overflow-hidden">
           <p className="text-xs text-text-muted">
-            Edit the YAML frontmatter (<code>name</code> and <code>description</code> required), then write your skill instructions below.
+            Edit the YAML frontmatter (<code>name</code> and <code>description</code> required),
+            then write your skill instructions below. A folder named after the skill will be created
+            in BioRouter Skills with a <code>SKILL.md</code> inside.
           </p>
           <textarea
             className="flex-1 min-h-[300px] font-mono text-sm bg-background-medium/30 border border-border-subtle rounded-lg p-3 resize-none outline-none focus:ring-1 focus:ring-blue-500"

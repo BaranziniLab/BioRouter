@@ -1,9 +1,9 @@
 export interface Skill {
-  filePath: string;    // absolute path to the .md file
-  sourceDir: string;   // directory it came from
-  name: string;        // from YAML frontmatter
-  description: string; // from YAML frontmatter
-  content: string;     // full raw file content
+  folderPath: string;   // absolute path to the skill folder  e.g. ~/.config/biorouter/skills/my-skill
+  sourceDir: string;    // parent directory (one of the watched dirs)
+  name: string;         // from SKILL.md frontmatter
+  description: string;  // from SKILL.md frontmatter
+  content: string;      // raw SKILL.md content
 }
 
 export const BIOROUTER_SKILLS_DIR = '~/.config/biorouter/skills';
@@ -14,7 +14,7 @@ export const OTHER_SKILL_DIRS = [
 export const ALL_SKILL_DIRS = [BIOROUTER_SKILLS_DIR, ...OTHER_SKILL_DIRS];
 
 /**
- * Parse YAML frontmatter from a skill .md file.
+ * Parse YAML frontmatter from a SKILL.md file.
  * Returns { name, description } if valid, null if missing or malformed.
  */
 export function parseSkillFrontmatter(
@@ -31,21 +31,21 @@ export function parseSkillFrontmatter(
 
 /**
  * Load all skills from a list of directories using Electron IPC.
- * Returns a flat array of Skill objects. Silently skips files that fail
- * to read or have invalid frontmatter.
+ * Each skill is a subdirectory containing a SKILL.md file.
+ * Silently skips folders that have no readable SKILL.md or invalid frontmatter.
  */
 export async function loadSkillsFromDirs(dirs: string[]): Promise<Skill[]> {
   const skills: Skill[] = [];
   for (const dir of dirs) {
-    const filenames: string[] = await window.electron.listFiles(dir, '.md');
-    for (const filename of filenames) {
-      const filePath = `${dir}/${filename}`;
-      const result = await window.electron.readFile(filePath);
+    const folders: string[] = await window.electron.listSkillDirs(dir);
+    for (const folder of folders) {
+      const skillMdPath = `${dir}/${folder}/SKILL.md`;
+      const result = await window.electron.readFile(skillMdPath);
       if (!result.found || !result.file) continue;
       const parsed = parseSkillFrontmatter(result.file);
       if (!parsed) continue;
       skills.push({
-        filePath,
+        folderPath: `${dir}/${folder}`,
         sourceDir: dir,
         name: parsed.name,
         description: parsed.description,
@@ -54,4 +54,17 @@ export async function loadSkillsFromDirs(dirs: string[]): Promise<Skill[]> {
     }
   }
   return skills;
+}
+
+/**
+ * Derive a safe folder/file slug from a skill name or filename.
+ * e.g. "My Skill!" → "my-skill"
+ */
+export function toSlug(input: string): string {
+  return input
+    .replace(/\.md$/i, '')
+    .replace(/[^a-z0-9-_]/gi, '-')
+    .replace(/-{2,}/g, '-')
+    .replace(/^-|-$/g, '')
+    .toLowerCase();
 }

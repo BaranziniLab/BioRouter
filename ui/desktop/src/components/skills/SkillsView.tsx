@@ -7,7 +7,6 @@ import { Skill, BIOROUTER_SKILLS_DIR, OTHER_SKILL_DIRS, loadSkillsFromDirs } fro
 import SkillItem from './SkillItem';
 import AddSkillModal from './AddSkillModal';
 import CustomSkillModal from './CustomSkillModal';
-import ViewEditSkillModal from './ViewEditSkillModal';
 import { toastSuccess, toastError } from '../../toasts';
 import { SearchView } from '../conversation/SearchView';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
@@ -17,7 +16,6 @@ export default function SkillsView() {
   const [otherSkills, setOtherSkills] = useState<Skill[]>([]);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
-  const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
   const [skillToDelete, setSkillToDelete] = useState<Skill | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -44,26 +42,30 @@ export default function SkillsView() {
     return skill.name.toLowerCase().includes(q) || skill.description.toLowerCase().includes(q);
   };
 
+  const handleOpen = async (skill: Skill) => {
+    await window.electron.openDirectoryInExplorer(skill.folderPath);
+  };
+
   const confirmDelete = async () => {
     if (!skillToDelete) return;
     setIsDeleting(true);
     const skill = skillToDelete;
-    const ok = await window.electron.deleteFile(skill.filePath);
+    const ok = await window.electron.deleteDirectory(skill.folderPath);
     setIsDeleting(false);
     setSkillToDelete(null);
     if (ok) {
-      setBioRouterSkills((prev) => prev.filter((s) => s.filePath !== skill.filePath));
-      setOtherSkills((prev) => prev.filter((s) => s.filePath !== skill.filePath));
+      setBioRouterSkills((prev) => prev.filter((s) => s.folderPath !== skill.folderPath));
+      setOtherSkills((prev) => prev.filter((s) => s.folderPath !== skill.folderPath));
       toastSuccess({ title: skill.name, msg: 'Skill deleted' });
     } else {
-      toastError({ title: 'Delete failed', msg: `Could not delete ${skill.filePath}` });
+      toastError({ title: 'Delete failed', msg: `Could not delete ${skill.folderPath}` });
     }
   };
 
   const handleShare = async (skill: Skill) => {
     try {
       await navigator.clipboard.writeText(skill.content);
-      toastSuccess({ title: skill.name, msg: 'Copied to clipboard as Markdown' });
+      toastSuccess({ title: skill.name, msg: 'SKILL.md copied to clipboard' });
     } catch {
       toastError({ title: 'Copy failed', msg: 'Could not copy to clipboard' });
     }
@@ -128,9 +130,9 @@ export default function SkillsView() {
                 </p>
                 {filteredBR.map((skill) => (
                   <SkillItem
-                    key={skill.filePath}
+                    key={skill.folderPath}
                     skill={skill}
-                    onClick={() => setSelectedSkill(skill)}
+                    onClick={() => handleOpen(skill)}
                     onDelete={() => setSkillToDelete(skill)}
                     onShare={() => handleShare(skill)}
                   />
@@ -146,9 +148,9 @@ export default function SkillsView() {
                 </p>
                 {filteredOther.map((skill) => (
                   <SkillItem
-                    key={skill.filePath}
+                    key={skill.folderPath}
                     skill={skill}
-                    onClick={() => setSelectedSkill(skill)}
+                    onClick={() => handleOpen(skill)}
                     onDelete={() => setSkillToDelete(skill)}
                     onShare={() => handleShare(skill)}
                   />
@@ -173,17 +175,10 @@ export default function SkillsView() {
       {isCustomModalOpen && (
         <CustomSkillModal onClose={() => setIsCustomModalOpen(false)} onSaved={loadSkills} />
       )}
-      {selectedSkill && (
-        <ViewEditSkillModal
-          skill={selectedSkill}
-          onClose={() => setSelectedSkill(null)}
-          onSaved={loadSkills}
-        />
-      )}
       <ConfirmationModal
         isOpen={skillToDelete !== null}
         title={`Delete "${skillToDelete?.name}"?`}
-        message="This will permanently remove the skill file from disk. This action cannot be undone."
+        message="This will permanently remove the skill folder from disk. This action cannot be undone."
         confirmLabel="Delete"
         cancelLabel="Cancel"
         confirmVariant="destructive"

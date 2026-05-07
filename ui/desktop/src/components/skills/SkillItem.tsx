@@ -1,6 +1,6 @@
 import { Skill, BIOROUTER_SKILLS_DIR } from './skillUtils';
 import { Button } from '../ui/button';
-import { Share2, Trash2 } from '../icons/app-icons';
+import { Share2, Trash2, FolderDot } from '../icons/app-icons';
 
 interface SkillItemProps {
   skill: Skill;
@@ -27,8 +27,17 @@ export default function SkillItem({ skill, onClick, onDelete, onShare }: SkillIt
           variant="ghost"
           size="sm"
           className="h-7 w-7 p-0"
+          onClick={(e) => { e.stopPropagation(); onClick(); }}
+          title="Open in Finder"
+        >
+          <FolderDot className="h-3.5 w-3.5" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 w-7 p-0"
           onClick={(e) => { e.stopPropagation(); onShare(); }}
-          title="Share / Export"
+          title="Copy SKILL.md to clipboard"
         >
           <Share2 className="h-3.5 w-3.5" />
         </Button>

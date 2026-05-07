@@ -1922,6 +1922,35 @@ ipcMain.handle('delete-file', async (_event, filePath: string) => {
   }
 });
 
+ipcMain.handle('list-skill-dirs', async (_event, dirPath: string) => {
+  try {
+    const expandedPath = expandTilde(dirPath);
+    const entries = await fs.readdir(expandedPath, { withFileTypes: true });
+    return entries.filter((e) => e.isDirectory()).map((e) => e.name);
+  } catch {
+    return [];
+  }
+});
+
+ipcMain.handle('delete-directory', async (_event, dirPath: string) => {
+  try {
+    const expandedPath = expandTilde(dirPath);
+    const resolvedPath = path.resolve(expandedPath);
+    const allowedRoots = [os.homedir(), app.getPath('userData'), app.getPath('temp')];
+    const isAllowed = allowedRoots.some(
+      (root) => resolvedPath.startsWith(root + path.sep) || resolvedPath === root
+    );
+    if (!isAllowed) {
+      throw new Error(`Access denied: '${resolvedPath}' is outside allowed directories`);
+    }
+    await fs.rm(resolvedPath, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    console.error('Error deleting directory:', error);
+    return false;
+  }
+});
+
 ipcMain.handle('show-message-box', async (_event, options) => {
   return dialog.showMessageBox(options);
 });
