@@ -1899,6 +1899,29 @@ ipcMain.handle('list-files', async (_event, dirPath, extension) => {
   }
 });
 
+ipcMain.handle('delete-file', async (_event, filePath: string) => {
+  try {
+    const expandedPath = expandTilde(filePath);
+    const resolvedPath = path.resolve(expandedPath);
+    const allowedRoots = [
+      os.homedir(),
+      app.getPath('userData'),
+      app.getPath('temp'),
+    ];
+    const isAllowed = allowedRoots.some(
+      (root) => resolvedPath.startsWith(root + path.sep) || resolvedPath === root
+    );
+    if (!isAllowed) {
+      throw new Error(`Access denied: path '${resolvedPath}' is outside allowed directories`);
+    }
+    await fs.unlink(expandedPath);
+    return true;
+  } catch (error) {
+    console.error('Error deleting file:', error);
+    return false;
+  }
+});
+
 ipcMain.handle('show-message-box', async (_event, options) => {
   return dialog.showMessageBox(options);
 });

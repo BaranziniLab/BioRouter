@@ -86,6 +86,7 @@ type ElectronAPI = {
   writeFile: (directory: string, content: string) => Promise<boolean>;
   ensureDirectory: (dirPath: string) => Promise<boolean>;
   listFiles: (dirPath: string, extension?: string) => Promise<string[]>;
+  deleteFile: (filePath: string) => Promise<boolean>;
   getAllowedExtensions: () => Promise<string[]>;
   getPathForFile: (file: File) => string;
   setMenuBarIcon: (show: boolean) => Promise<boolean>;
@@ -198,6 +199,7 @@ const electronAPI: ElectronAPI = {
   ensureDirectory: (dirPath: string) => ipcRenderer.invoke('ensure-directory', dirPath),
   listFiles: (dirPath: string, extension?: string) =>
     ipcRenderer.invoke('list-files', dirPath, extension),
+  deleteFile: (filePath: string) => ipcRenderer.invoke('delete-file', filePath),
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   getAllowedExtensions: () => ipcRenderer.invoke('get-allowed-extensions'),
   setMenuBarIcon: (show: boolean) => ipcRenderer.invoke('set-menu-bar-icon', show),
