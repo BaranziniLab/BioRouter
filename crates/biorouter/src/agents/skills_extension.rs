@@ -91,6 +91,9 @@ impl SkillsClient {
         if extensions_dir.exists() {
             if let Ok(entries) = std::fs::read_dir(&extensions_dir) {
                 for entry in entries.flatten() {
+                    if !entry.path().is_dir() {
+                        continue;
+                    }
                     let skills_subdir = entry.path().join("skills");
                     if skills_subdir.is_dir() {
                         dirs.push(skills_subdir);
