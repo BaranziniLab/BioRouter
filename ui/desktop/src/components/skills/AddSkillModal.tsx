@@ -22,6 +22,10 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
       return;
     }
     const reader = new FileReader();
+    reader.onerror = () => {
+      setError('Failed to read file. Please try again.');
+      setPreview(null);
+    };
     reader.onload = (e) => {
       const content = e.target?.result as string;
       const parsed = parseSkillFrontmatter(content);
@@ -46,6 +50,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
   const handleBrowse = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) processFile(file);
+    e.target.value = '';  // allow re-selecting same file
   };
 
   const handleInstall = async () => {
