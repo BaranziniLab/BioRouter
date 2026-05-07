@@ -149,12 +149,19 @@ type ElectronAPI = {
     skillsPreview: Array<{ slug: string; name: string; description: string }>;
   } | { error: string }>;
   uninstallBrxtExtension: (extensionName: string) => Promise<{ success: true } | { error: string }>;
-  extractSkillZip: (filePath: string) => Promise<{
-    files: [string, string][];
-    name: string;
-    description: string;
-    slug: string;
-  } | { error: string }>;
+  extractSkillZip: (filePath: string) => Promise<
+    | { isBundle: false; files: [string, string][]; name: string; description: string; slug: string }
+    | {
+        isBundle: true;
+        bundleName: string;
+        bundleSkills: Array<{ name: string; description: string }>;
+        files: [string, string][];
+        slug: string;
+        name: string;
+        description: string;
+      }
+    | { error: string }
+  >;
   installBrxtBundle: (filePath: string, extensionName: string) => Promise<{ success: true; installDir: string } | { error: string }>;
   // Dependency checker
   checkDependencies: () => Promise<import('./utils/dependencyChecker').DependencyInfo[]>;

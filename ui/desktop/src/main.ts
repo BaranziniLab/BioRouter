@@ -1862,8 +1862,8 @@ ipcMain.handle('read-file', async (_event, filePath) => {
 
 ipcMain.handle('write-file', async (_event, filePath, content) => {
   try {
-    // Expand tilde to home directory
     const expandedPath = expandTilde(filePath);
+    await fs.mkdir(path.dirname(expandedPath), { recursive: true });
     await fs.writeFile(expandedPath, content, { encoding: 'utf8' });
     return true;
   } catch (error) {
@@ -2100,47 +2100,100 @@ ipcMain.handle(
       const zip = new AdmZip(filePath);
       const entries = zip.getEntries();
 
-      // Find SKILL.md at root or one level deep (<slug>/SKILL.md)
+      const TEXT_EXTENSIONS = ['.md', '.txt', '.yaml', '.yml', '.json', '.py', '.sh'];
+
+      // --- Single skill: root SKILL.md ---
       let skillEntry = entries.find((e) => e.entryName === 'SKILL.md');
       let prefix = '';
 
       if (!skillEntry) {
-        skillEntry = entries.find((e) => /^[^/]+\/SKILL\.md$/.test(e.entryName));
-        if (skillEntry) {
-          prefix = skillEntry.entryName.replace(/\/SKILL\.md$/, '') + '/';
+        // Single skill inside a folder: <slug>/SKILL.md
+        const single = entries.find((e) => /^[^/]+\/SKILL\.md$/.test(e.entryName));
+        if (single) {
+          skillEntry = single;
+          prefix = single.entryName.replace(/\/SKILL\.md$/, '') + '/';
         }
       }
 
-      if (!skillEntry) {
+      if (skillEntry) {
+        // --- Single skill install ---
+        const parsed = parseFrontmatterFromSkillMd(skillEntry.getData().toString('utf8'));
+        if (!parsed) {
+          return {
+            error: 'SKILL.md must have valid frontmatter with "name" and "description".',
+          };
+        }
+
+        const slug = parsed.name
+          .replace(/[^a-z0-9-_]/gi, '-')
+          .replace(/-{2,}/g, '-')
+          .replace(/^-|-$/g, '')
+          .toLowerCase();
+
+        const files: [string, string][] = [];
+        for (const entry of entries) {
+          if (entry.isDirectory) continue;
+          if (prefix && !entry.entryName.startsWith(prefix)) continue;
+          const relName = prefix ? entry.entryName.slice(prefix.length) : entry.entryName;
+          if (!relName) continue;
+          const ext = path.extname(relName).toLowerCase();
+          if (!TEXT_EXTENSIONS.includes(ext)) continue;
+          files.push([relName, entry.getData().toString('utf8')]);
+        }
+
+        return { isBundle: false as const, files, name: parsed.name, description: parsed.description, slug };
+      }
+
+      // --- Bundle detection: <bundleName>/<subSlug>/SKILL.md ---
+      const bundleSkillEntries = entries.filter((e) =>
+        /^[^/]+\/[^/]+\/SKILL\.md$/.test(e.entryName)
+      );
+
+      if (bundleSkillEntries.length === 0) {
         return { error: 'No SKILL.md found in the ZIP file.' };
       }
 
-      const parsed = parseFrontmatterFromSkillMd(skillEntry.getData().toString('utf8'));
-      if (!parsed) {
-        return {
-          error: 'SKILL.md must have valid frontmatter with "name" and "description".',
-        };
+      // Group by bundle folder (first path component)
+      const bundleFolder = bundleSkillEntries[0].entryName.split('/')[0];
+      const bundlePrefix = bundleFolder + '/';
+      const bundleSkills: Array<{ name: string; description: string }> = [];
+
+      for (const entry of bundleSkillEntries) {
+        if (!entry.entryName.startsWith(bundlePrefix)) continue;
+        const parsed = parseFrontmatterFromSkillMd(entry.getData().toString('utf8'));
+        if (parsed) bundleSkills.push(parsed);
       }
 
-      const slug = parsed.name
+      if (bundleSkills.length === 0) {
+        return { error: 'No valid SKILL.md files found in bundle.' };
+      }
+
+      const bundleFiles: [string, string][] = [];
+      for (const entry of entries) {
+        if (entry.isDirectory) continue;
+        if (!entry.entryName.startsWith(bundlePrefix)) continue;
+        const relName = entry.entryName.slice(bundlePrefix.length);
+        if (!relName) continue;
+        const ext = path.extname(relName).toLowerCase();
+        if (!TEXT_EXTENSIONS.includes(ext)) continue;
+        bundleFiles.push([relName, entry.getData().toString('utf8')]);
+      }
+
+      const slug = bundleFolder
         .replace(/[^a-z0-9-_]/gi, '-')
         .replace(/-{2,}/g, '-')
         .replace(/^-|-$/g, '')
         .toLowerCase();
 
-      const TEXT_EXTENSIONS = ['.md', '.txt', '.yaml', '.yml', '.json', '.py', '.sh'];
-      const files: [string, string][] = [];
-      for (const entry of entries) {
-        if (entry.isDirectory) continue;
-        if (prefix && !entry.entryName.startsWith(prefix)) continue;
-        const relName = prefix ? entry.entryName.slice(prefix.length) : entry.entryName;
-        if (!relName) continue;
-        const ext = path.extname(relName).toLowerCase();
-        if (!TEXT_EXTENSIONS.includes(ext)) continue;
-        files.push([relName, entry.getData().toString('utf8')]);
-      }
-
-      return { files, name: parsed.name, description: parsed.description, slug };
+      return {
+        isBundle: true as const,
+        bundleName: bundleFolder,
+        bundleSkills,
+        files: bundleFiles,
+        slug,
+        name: bundleFolder,
+        description: `Bundle of ${bundleSkills.length} skills`,
+      };
     } catch (err) {
       return { error: `Failed to read ZIP: ${(err as Error).message}` };
     }
