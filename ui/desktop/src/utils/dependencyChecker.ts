@@ -427,3 +427,15 @@ export function setupDependencyChecker(): void {
     }
   }, 4000);
 }
+
+export function triggerDependencyCheck(): void {
+  try {
+    const deps = checkAllDependencies();
+    const payload: DependencyEvent = { type: 'check-results', deps };
+    BrowserWindow.getAllWindows().forEach((win) => {
+      if (!win.isDestroyed()) win.webContents.send('dependency-event', payload);
+    });
+  } catch (err) {
+    log.error('[DependencyChecker] manual check error:', err);
+  }
+}

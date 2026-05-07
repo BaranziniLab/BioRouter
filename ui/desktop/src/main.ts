@@ -50,7 +50,7 @@ import {
 } from './utils/autoUpdater';
 import { UPDATES_ENABLED } from './updates';
 import './utils/workflowHash';
-import { registerDependencyIpcHandlers, setupDependencyChecker } from './utils/dependencyChecker';
+import { registerDependencyIpcHandlers, setupDependencyChecker, triggerDependencyCheck } from './utils/dependencyChecker';
 import { scheduleExtensionUpdateCheck } from './utils/extensionUpdater';
 import { Client, createClient, createConfig } from './api/client';
 import { BioRouterApp } from './api';
