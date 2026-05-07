@@ -772,58 +772,41 @@ export function openUpdateSettings() {
 export function updateTrayMenu(hasUpdate: boolean) {
   if (!trayRef) return;
 
+  // Helper: show any existing window, then navigate to a view.
+  // If no windows are open, create one first.
+  const showAndNavigate = (view: string) => {
+    const windows = BrowserWindow.getAllWindows();
+    if (windows.length === 0) {
+      const recentDirs = loadRecentDirs();
+      const openDir = recentDirs.length > 0 ? recentDirs[0] : null;
+      ipcMain.emit('create-chat-window', {}, undefined, openDir);
+      return;
+    }
+    windows.forEach((win) => {
+      if (!win.isVisible()) win.show();
+      win.focus();
+    });
+    windows[windows.length - 1].webContents.send('set-view', view);
+  };
+
   const menuItems: MenuItemConstructorOptions[] = [];
 
-  // Add update menu item if update is available
   if (hasUpdate) {
-    menuItems.push({
-      label: 'Update Available...',
-      click: openUpdateSettings,
-    });
+    menuItems.push({ label: 'Update Available…', click: openUpdateSettings });
+    menuItems.push({ type: 'separator' });
   }
 
   menuItems.push(
-    {
-      label: 'Show Window',
-      click: async () => {
-        const windows = BrowserWindow.getAllWindows();
-        if (windows.length === 0) {
-          log.info('No windows are open, creating a new one...');
-          // Get recent directories for the new window
-          const recentDirs = loadRecentDirs();
-          const openDir = recentDirs.length > 0 ? recentDirs[0] : null;
-
-          // Emit event to create new window (handled in main.ts)
-          ipcMain.emit('create-chat-window', {}, undefined, openDir);
-          return;
-        }
-
-        // Show all windows with offset
-        const initialOffsetX = 30;
-        const initialOffsetY = 30;
-
-        windows.forEach((win: BrowserWindow, index: number) => {
-          const currentBounds = win.getBounds();
-          const newX = currentBounds.x + initialOffsetX * index;
-          const newY = currentBounds.y + initialOffsetY * index;
-
-          win.setBounds({
-            x: newX,
-            y: newY,
-            width: currentBounds.width,
-            height: currentBounds.height,
-          });
-
-          if (!win.isVisible()) {
-            win.show();
-          }
-
-          win.focus();
-        });
-      },
-    },
+    { label: 'Home',       click: () => showAndNavigate('') },
+    { label: 'New Chat',   click: () => showAndNavigate('') },
+    { label: 'Settings',   click: () => showAndNavigate('settings') },
     { type: 'separator' },
-    { label: 'Quit', click: () => app.quit() }
+    { label: 'Extensions', click: () => showAndNavigate('extensions') },
+    { label: 'Skills',     click: () => showAndNavigate('skills') },
+    { type: 'separator' },
+    { label: 'Check for Updates', click: openUpdateSettings },
+    { type: 'separator' },
+    { label: 'Quit', click: () => app.quit() },
   );
 
   const contextMenu = Menu.buildFromTemplate(menuItems);
