@@ -33,7 +33,8 @@ export default function SkillsView() {
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
   const [skillToDelete, setSkillToDelete] = useState<Skill | null>(null);
   const [bundleToDelete, setBundleToDelete] = useState<SkillBundle | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
+  const [isDeletingSkill, setIsDeletingSkill] = useState(false);
+  const [isDeletingBundle, setIsDeletingBundle] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [overrideTrigger, setOverrideTrigger] = useState(0);
 
@@ -99,10 +100,10 @@ export default function SkillsView() {
 
   const confirmDeleteSkill = async () => {
     if (!skillToDelete) return;
-    setIsDeleting(true);
+    setIsDeletingSkill(true);
     const skill = skillToDelete;
     const ok = await window.electron.deleteDirectory(skill.folderPath);
-    setIsDeleting(false);
+    setIsDeletingSkill(false);
     setSkillToDelete(null);
     if (ok) {
       setBioRouterSkills((prev) => prev.filter((s) => s.folderPath !== skill.folderPath));
@@ -115,10 +116,10 @@ export default function SkillsView() {
 
   const confirmDeleteBundle = async () => {
     if (!bundleToDelete) return;
-    setIsDeleting(true);
+    setIsDeletingBundle(true);
     const bundle = bundleToDelete;
     const ok = await window.electron.deleteDirectory(bundle.folderPath);
-    setIsDeleting(false);
+    setIsDeletingBundle(false);
     setBundleToDelete(null);
     if (ok) {
       setBioBundles((prev) => prev.filter((b) => b.folderPath !== bundle.folderPath));
@@ -279,7 +280,7 @@ export default function SkillsView() {
         confirmLabel="Delete"
         cancelLabel="Cancel"
         confirmVariant="destructive"
-        isSubmitting={isDeleting}
+        isSubmitting={isDeletingSkill}
         onConfirm={confirmDeleteSkill}
         onCancel={() => setSkillToDelete(null)}
       />
@@ -291,7 +292,7 @@ export default function SkillsView() {
         confirmLabel="Delete Bundle"
         cancelLabel="Cancel"
         confirmVariant="destructive"
-        isSubmitting={isDeleting}
+        isSubmitting={isDeletingBundle}
         onConfirm={confirmDeleteBundle}
         onCancel={() => setBundleToDelete(null)}
       />
@@ -334,7 +335,7 @@ function BundleItem({ bundle, enabled, onClick, onDelete, onToggle }: BundleItem
             variant="ghost"
             size="sm"
             className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
-            onClick={() => onDelete()}
+            onClick={onDelete}
             title="Delete bundle"
           >
             <Trash2 className="h-3.5 w-3.5" />
