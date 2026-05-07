@@ -10,6 +10,7 @@ import CustomSkillModal from './CustomSkillModal';
 import { toastSuccess, toastError } from '../../toasts';
 import { SearchView } from '../conversation/SearchView';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
+import { loadSkillOverrides, saveSkillOverrides, setSkillOverride, isSkillEnabled } from '../../store/skillOverrides';
 
 export default function SkillsView() {
   const [bioRouterSkills, setBioRouterSkills] = useState<Skill[]>([]);
@@ -19,6 +20,7 @@ export default function SkillsView() {
   const [skillToDelete, setSkillToDelete] = useState<Skill | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [overrideTrigger, setOverrideTrigger] = useState(0);
 
   const loadSkills = useCallback(async () => {
     try {
@@ -34,7 +36,16 @@ export default function SkillsView() {
     }
   }, []);
 
-  useEffect(() => { loadSkills(); }, [loadSkills]);
+  useEffect(() => {
+    loadSkills();
+    loadSkillOverrides();
+  }, [loadSkills]);
+
+  const handleToggle = async (skill: Skill, enabled: boolean) => {
+    setSkillOverride(skill.name, enabled);
+    await saveSkillOverrides();
+    setOverrideTrigger((prev) => prev + 1);
+  };
 
   const filterSkill = (skill: Skill) => {
     if (!searchTerm) return true;
@@ -121,7 +132,7 @@ export default function SkillsView() {
 
         {/* List */}
         <SearchView onSearch={(term, _caseSensitive) => setSearchTerm(term)} placeholder="Search skills...">
-          <div className="px-6 py-4">
+          <div key={overrideTrigger} className="px-6 py-4">
             {filteredBR.length > 0 && (
               <>
                 <p className="text-[11px] font-medium text-text-subtle uppercase tracking-widest mb-2 px-2 flex items-center gap-1.5">
@@ -132,9 +143,11 @@ export default function SkillsView() {
                   <SkillItem
                     key={skill.folderPath}
                     skill={skill}
+                    enabled={isSkillEnabled(skill.name)}
                     onClick={() => handleOpen(skill)}
                     onDelete={() => setSkillToDelete(skill)}
                     onShare={() => handleShare(skill)}
+                    onToggle={(e) => handleToggle(skill, e)}
                   />
                 ))}
               </>
@@ -150,9 +163,11 @@ export default function SkillsView() {
                   <SkillItem
                     key={skill.folderPath}
                     skill={skill}
+                    enabled={isSkillEnabled(skill.name)}
                     onClick={() => handleOpen(skill)}
                     onDelete={() => setSkillToDelete(skill)}
                     onShare={() => handleShare(skill)}
+                    onToggle={(e) => handleToggle(skill, e)}
                   />
                 ))}
               </>

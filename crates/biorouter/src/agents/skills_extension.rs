@@ -70,6 +70,11 @@ impl SkillsClient {
             .filter(|d| d.exists())
             .collect::<Vec<_>>();
         let skills = Self::discover_skills_in_directories(&directories);
+        let disabled = Self::get_disabled_skills();
+        let skills = skills
+            .into_iter()
+            .filter(|(name, _)| !disabled.contains(name))
+            .collect();
 
         let mut client = Self { info, skills };
         client.info.instructions = Some(client.generate_instructions());
@@ -109,6 +114,25 @@ impl SkillsClient {
         }
 
         dirs
+    }
+
+    fn get_disabled_skills() -> std::collections::HashSet<String> {
+        let config_file = Paths::config_dir().join("skills-config.json");
+        let Ok(content) = std::fs::read_to_string(&config_file) else {
+            return std::collections::HashSet::new();
+        };
+        let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) else {
+            return std::collections::HashSet::new();
+        };
+        config
+            .get("disabled")
+            .and_then(|d| d.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn parse_skill_file(path: &Path) -> Result<Skill> {

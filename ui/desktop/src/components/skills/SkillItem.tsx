@@ -1,15 +1,18 @@
 import { Skill, BIOROUTER_SKILLS_DIR } from './skillUtils';
 import { Button } from '../ui/button';
+import { Switch } from '../ui/switch';
 import { Share2, Trash2, FolderDot } from '../icons/app-icons';
 
 interface SkillItemProps {
   skill: Skill;
+  enabled: boolean;
   onClick: () => void;
   onDelete: () => void;
   onShare: () => void;
+  onToggle: (enabled: boolean) => void;
 }
 
-export default function SkillItem({ skill, onClick, onDelete, onShare }: SkillItemProps) {
+export default function SkillItem({ skill, enabled, onClick, onDelete, onShare, onToggle }: SkillItemProps) {
   return (
     <div
       className="flex items-start py-3 border-b border-border-subtle last:border-b-0 hover:bg-background-medium/30 transition-colors group cursor-pointer gap-3 px-2"
@@ -22,34 +25,46 @@ export default function SkillItem({ skill, onClick, onDelete, onShare }: SkillIt
           <p className="text-[11px] text-text-subtle mt-0.5 font-mono">{skill.sourceDir}</p>
         )}
       </div>
-      <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-0.5">
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 w-7 p-0"
-          onClick={(e) => { e.stopPropagation(); onClick(); }}
-          title="Open in Finder"
+      <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
+        <div
+          className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+          onClick={(e) => e.stopPropagation()}
         >
-          <FolderDot className="h-3.5 w-3.5" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 w-7 p-0"
-          onClick={(e) => { e.stopPropagation(); onShare(); }}
-          title="Copy SKILL.md to clipboard"
-        >
-          <Share2 className="h-3.5 w-3.5" />
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
-          onClick={(e) => { e.stopPropagation(); onDelete(); }}
-          title="Delete"
-        >
-          <Trash2 className="h-3.5 w-3.5" />
-        </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0"
+            onClick={() => onClick()}
+            title="Open in Finder"
+          >
+            <FolderDot className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0"
+            onClick={() => onShare()}
+            title="Copy SKILL.md to clipboard"
+          >
+            <Share2 className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+            onClick={() => onDelete()}
+            title="Delete"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+        <div onClick={(e) => e.stopPropagation()}>
+          <Switch
+            checked={enabled}
+            onCheckedChange={onToggle}
+            variant="mono"
+          />
+        </div>
       </div>
     </div>
   );
