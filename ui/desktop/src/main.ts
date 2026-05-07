@@ -2639,9 +2639,13 @@ async function appMain() {
     event.returnValue = app.getVersion();
   });
 
-  ipcMain.handle('open-directory-in-explorer', async (_event, path: string) => {
+  ipcMain.handle('open-directory-in-explorer', async (_event, dirPath: string) => {
     try {
-      return !!(await shell.openPath(path));
+      const expanded = path.resolve(expandTilde(dirPath));
+      const err = await shell.openPath(expanded);
+      // shell.openPath returns an empty string on success, error message on failure
+      if (err) console.error('Error opening directory in explorer:', err);
+      return !err;
     } catch (error) {
       console.error('Error opening directory in explorer:', error);
       return false;
