@@ -21,12 +21,17 @@ export default function SkillsView() {
   const [searchTerm, setSearchTerm] = useState('');
 
   const loadSkills = useCallback(async () => {
-    const [brSkills, others] = await Promise.all([
-      loadSkillsFromDirs([BIOROUTER_SKILLS_DIR]),
-      loadSkillsFromDirs(OTHER_SKILL_DIRS),
-    ]);
-    setBioRouterSkills(brSkills);
-    setOtherSkills(others);
+    try {
+      const [brSkills, others] = await Promise.all([
+        loadSkillsFromDirs([BIOROUTER_SKILLS_DIR]),
+        loadSkillsFromDirs(OTHER_SKILL_DIRS),
+      ]);
+      setBioRouterSkills(brSkills);
+      setOtherSkills(others);
+    } catch {
+      setBioRouterSkills([]);
+      setOtherSkills([]);
+    }
   }, []);
 
   useEffect(() => { loadSkills(); }, [loadSkills]);
@@ -114,7 +119,7 @@ export default function SkillsView() {
         </div>
 
         {/* List */}
-        <SearchView onSearch={(term) => setSearchTerm(term)} placeholder="Search skills...">
+        <SearchView onSearch={(term, _caseSensitive) => setSearchTerm(term)} placeholder="Search skills...">
           <div className="px-6 py-4">
             {filteredBR.length > 0 && (
               <>
