@@ -4,6 +4,14 @@ export interface Skill {
   name: string;         // from SKILL.md frontmatter
   description: string;  // from SKILL.md frontmatter
   content: string;      // raw SKILL.md content
+  bundleName?: string;  // optional: parent bundle name if part of a bundle
+}
+
+export interface SkillBundle {
+  bundleName: string;   // folder name of the bundle
+  folderPath: string;   // absolute path to the bundle folder
+  sourceDir: string;    // parent directory (one of the watched dirs)
+  skills: Skill[];      // array of skills in this bundle
 }
 
 export const BIOROUTER_SKILLS_DIR = '~/.config/biorouter/skills';
@@ -31,29 +39,69 @@ export function parseSkillFrontmatter(
 
 /**
  * Load all skills from a list of directories using Electron IPC.
- * Each skill is a subdirectory containing a SKILL.md file.
- * Silently skips folders that have no readable SKILL.md or invalid frontmatter.
+ *
+ * Detection rule per directory entry `<slug>`:
+ *   - `<dir>/<slug>/SKILL.md` exists → single skill
+ *   - No root SKILL.md, but sub-dirs of `<dir>/<slug>/` contain SKILL.md → bundle
+ *   - Otherwise → ignored
  */
-export async function loadSkillsFromDirs(dirs: string[]): Promise<Skill[]> {
-  const skills: Skill[] = [];
+export async function loadSkillsFromDirs(
+  dirs: string[]
+): Promise<{ singles: Skill[]; bundles: SkillBundle[] }> {
+  const singles: Skill[] = [];
+  const bundles: SkillBundle[] = [];
+
   for (const dir of dirs) {
     const folders: string[] = await window.electron.listSkillDirs(dir);
+
     for (const folder of folders) {
       const skillMdPath = `${dir}/${folder}/SKILL.md`;
       const result = await window.electron.readFile(skillMdPath);
-      if (!result.found || !result.file) continue;
-      const parsed = parseSkillFrontmatter(result.file);
-      if (!parsed) continue;
-      skills.push({
-        folderPath: `${dir}/${folder}`,
-        sourceDir: dir,
-        name: parsed.name,
-        description: parsed.description,
-        content: result.file,
-      });
+
+      if (result.found && result.file) {
+        const parsed = parseSkillFrontmatter(result.file);
+        if (!parsed) continue;
+        singles.push({
+          folderPath: `${dir}/${folder}`,
+          sourceDir: dir,
+          name: parsed.name,
+          description: parsed.description,
+          content: result.file,
+        });
+      } else {
+        // No SKILL.md at root — check if sub-dirs have SKILL.md (bundle)
+        const subFolders: string[] = await window.electron.listSkillDirs(`${dir}/${folder}`);
+        const bundleSkills: Skill[] = [];
+
+        for (const sub of subFolders) {
+          const subPath = `${dir}/${folder}/${sub}/SKILL.md`;
+          const subResult = await window.electron.readFile(subPath);
+          if (!subResult.found || !subResult.file) continue;
+          const parsed = parseSkillFrontmatter(subResult.file);
+          if (!parsed) continue;
+          bundleSkills.push({
+            folderPath: `${dir}/${folder}/${sub}`,
+            sourceDir: dir,
+            name: parsed.name,
+            description: parsed.description,
+            content: subResult.file,
+            bundleName: folder,
+          });
+        }
+
+        if (bundleSkills.length > 0) {
+          bundles.push({
+            bundleName: folder,
+            folderPath: `${dir}/${folder}`,
+            sourceDir: dir,
+            skills: bundleSkills,
+          });
+        }
+      }
     }
   }
-  return skills;
+
+  return { singles, bundles };
 }
 
 /**
