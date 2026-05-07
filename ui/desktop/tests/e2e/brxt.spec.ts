@@ -124,6 +124,7 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
         ELECTRON_IS_DEV: '1',
         NODE_ENV: 'development',
         BIOROUTER_ALLOWLIST_BYPASS: 'true',
+        ELECTRON_RUN_AS_NODE: '',
       },
     });
 

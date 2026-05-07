@@ -2,17 +2,21 @@ import fs from 'fs';
 import path from 'path';
 import { app } from 'electron';
 
-const RECENT_DIRS_FILE = path.join(app.getPath('userData'), 'recent-dirs.json');
 const MAX_RECENT_DIRS = 10;
+
+function getRecentDirsFile(): string {
+  return path.join(app.getPath('userData'), 'recent-dirs.json');
+}
 
 interface RecentDirs {
   dirs: string[];
 }
 
 export function loadRecentDirs(): string[] {
+  const recentDirsFile = getRecentDirsFile();
   try {
-    if (fs.existsSync(RECENT_DIRS_FILE)) {
-      const data = fs.readFileSync(RECENT_DIRS_FILE, 'utf8');
+    if (fs.existsSync(recentDirsFile)) {
+      const data = fs.readFileSync(recentDirsFile, 'utf8');
       const recentDirs: RecentDirs = JSON.parse(data);
 
       // Filter out invalid directories (non-existent or not directories)
@@ -39,7 +43,7 @@ export function loadRecentDirs(): string[] {
 
       // Save the cleaned list back if it changed
       if (validDirs.length !== recentDirs.dirs.length) {
-        fs.writeFileSync(RECENT_DIRS_FILE, JSON.stringify({ dirs: validDirs }, null, 2));
+        fs.writeFileSync(recentDirsFile, JSON.stringify({ dirs: validDirs }, null, 2));
       }
 
       return validDirs;
@@ -79,7 +83,7 @@ export function addRecentDir(dir: string): void {
     // Keep only the most recent MAX_RECENT_DIRS
     dirs = dirs.slice(0, MAX_RECENT_DIRS);
 
-    fs.writeFileSync(RECENT_DIRS_FILE, JSON.stringify({ dirs }, null, 2));
+    fs.writeFileSync(getRecentDirsFile(), JSON.stringify({ dirs }, null, 2));
   } catch (error) {
     console.error('Error saving recent directory:', error);
   }

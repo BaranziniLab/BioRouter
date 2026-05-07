@@ -22,7 +22,9 @@ export interface Settings {
   externalBiorouterd?: ExternalBiorouterdConfig;
 }
 
-const SETTINGS_FILE = path.join(app.getPath('userData'), 'settings.json');
+function getSettingsFile(): string {
+  return path.join(app.getPath('userData'), 'settings.json');
+}
 
 const defaultSettings: Settings = {
   envToggles: {
@@ -38,8 +40,8 @@ const defaultSettings: Settings = {
 // Settings management
 export function loadSettings(): Settings {
   try {
-    if (fs.existsSync(SETTINGS_FILE)) {
-      const data = fs.readFileSync(SETTINGS_FILE, 'utf8');
+    if (fs.existsSync(getSettingsFile())) {
+      const data = fs.readFileSync(getSettingsFile(), 'utf8');
       return JSON.parse(data);
     }
   } catch (error) {
@@ -50,7 +52,7 @@ export function loadSettings(): Settings {
 
 export function saveSettings(settings: Settings): void {
   try {
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2));
+    fs.writeFileSync(getSettingsFile(), JSON.stringify(settings, null, 2));
   } catch (error) {
     console.error('Error saving settings:', error);
   }
