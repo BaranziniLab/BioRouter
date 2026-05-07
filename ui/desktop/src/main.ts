@@ -1,4 +1,4 @@
-import type { OpenDialogOptions, OpenDialogReturnValue } from 'electron';
+import type { MenuItemConstructorOptions, OpenDialogOptions, OpenDialogReturnValue } from 'electron';
 import {
   app,
   App,
@@ -42,6 +42,7 @@ import * as yaml from 'yaml';
 import windowStateKeeper from 'electron-window-state';
 import {
   getUpdateAvailable,
+  openUpdateSettings,
   registerUpdateIpcHandlers,
   setTrayRef,
   setupAutoUpdater,
@@ -49,8 +50,8 @@ import {
 } from './utils/autoUpdater';
 import { UPDATES_ENABLED } from './updates';
 import './utils/workflowHash';
-import { registerDependencyIpcHandlers, setupDependencyChecker } from './utils/dependencyChecker';
-import { scheduleExtensionUpdateCheck } from './utils/extensionUpdater';
+import { registerDependencyIpcHandlers, setupDependencyChecker, triggerDependencyCheck } from './utils/dependencyChecker';
+import { runExtensionUpdateCheck, scheduleExtensionUpdateCheck } from './utils/extensionUpdater';
 import { Client, createClient, createConfig } from './api/client';
 import { BioRouterApp } from './api';
 import installExtension, { REACT_DEVELOPER_TOOLS } from 'electron-devtools-installer';
@@ -2077,6 +2078,309 @@ const focusWindow = () => {
   }
 };
 
+function buildApplicationMenu() {
+  const isMac = process.platform === 'darwin';
+
+  // Find submenu — inserted into Edit after Select All (roles don't allow inline custom items)
+  const findSubmenu: MenuItemConstructorOptions[] = [
+    {
+      label: 'Find…',
+      accelerator: isMac ? 'Command+F' : 'Control+F',
+      click() { BrowserWindow.getFocusedWindow()?.webContents.send('find-command'); },
+    },
+    {
+      label: 'Find Next',
+      accelerator: isMac ? 'Command+G' : 'Control+G',
+      click() { BrowserWindow.getFocusedWindow()?.webContents.send('find-next'); },
+    },
+    {
+      label: 'Find Previous',
+      accelerator: isMac ? 'Shift+Command+G' : 'Shift+Control+G',
+      click() { BrowserWindow.getFocusedWindow()?.webContents.send('find-previous'); },
+    },
+    ...(isMac
+      ? [{
+          label: 'Use Selection for Find',
+          accelerator: 'Command+E',
+          click() { BrowserWindow.getFocusedWindow()?.webContents.send('use-selection-find'); },
+        } as MenuItemConstructorOptions]
+      : []),
+  ];
+
+  const template: MenuItemConstructorOptions[] = [
+    // ── BioRouter app menu (macOS only) ──────────────────────────────────
+    ...(isMac
+      ? [{
+          label: 'BioRouter',
+          submenu: [
+            { role: 'about' as const },
+            { type: 'separator' as const },
+            {
+              label: 'Settings',
+              accelerator: 'CmdOrCtrl+,',
+              click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'settings'); },
+            },
+            { type: 'separator' as const },
+            {
+              label: 'Check for Updates…',
+              click: openUpdateSettings,
+            },
+            {
+              label: 'Check for Dependencies…',
+              click() { triggerDependencyCheck(); },
+            },
+            {
+              label: 'Check for Extension Updates',
+              click() { runExtensionUpdateCheck(); },
+            },
+            { type: 'separator' as const },
+            { role: 'quit' as const, label: 'Quit BioRouter' },
+          ],
+        } as MenuItemConstructorOptions]
+      : []),
+
+    // ── Go ────────────────────────────────────────────────────────────────
+    {
+      label: 'Go',
+      submenu: [
+        {
+          label: 'Home',
+          accelerator: 'CmdOrCtrl+1',
+          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', ''); },
+        },
+        {
+          label: 'New Chat',
+          accelerator: 'CmdOrCtrl+T',
+          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', ''); },
+        },
+        {
+          label: 'History',
+          accelerator: 'CmdOrCtrl+2',
+          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'sessions'); },
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Workflows',
+          accelerator: 'CmdOrCtrl+3',
+          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'workflows'); },
+        },
+        {
+          label: 'Scheduler',
+          accelerator: 'CmdOrCtrl+4',
+          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'schedules'); },
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Extensions',
+          accelerator: 'CmdOrCtrl+5',
+          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'extensions'); },
+        },
+        {
+          label: 'Skills',
+          accelerator: 'CmdOrCtrl+6',
+          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'skills'); },
+        },
+      ],
+    },
+
+    // ── File ─────────────────────────────────────────────────────────────
+    {
+      label: 'File',
+      submenu: [
+        {
+          label: 'New Chat',
+          accelerator: 'CmdOrCtrl+T',
+          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', ''); },
+        },
+        {
+          label: 'New Window',
+          accelerator: isMac ? 'Cmd+N' : 'Ctrl+N',
+          click() { ipcMain.emit('create-chat-window'); },
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Open Directory…',
+          accelerator: 'CmdOrCtrl+O',
+          click: () => openDirectoryDialog(),
+        },
+        ...(buildRecentFilesMenu().length > 0
+          ? [{
+              label: 'Recent Directories',
+              submenu: buildRecentFilesMenu(),
+            } as MenuItemConstructorOptions]
+          : []),
+        { type: 'separator' as const },
+        { role: 'close' as const },
+        {
+          label: 'Focus BioRouter Window',
+          accelerator: 'CmdOrCtrl+Alt+G',
+          click() { focusWindow(); },
+        },
+      ],
+    },
+
+    // ── Edit (standard roles + Find inserted after build) ─────────────
+    { role: 'editMenu' as const },
+
+    // ── Extensions ───────────────────────────────────────────────────────
+    {
+      label: 'Extensions',
+      submenu: [
+        {
+          label: 'Install Extension (.brxt)…',
+          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'extensions'); },
+        },
+        {
+          label: 'Browse Extensions',
+          click() { shell.openExternal('https://baranzinilab.github.io/biorouter-landing/baam.html'); },
+        },
+        {
+          label: 'Add Custom Extension…',
+          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'extensions'); },
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Check for Extension Updates',
+          click() { runExtensionUpdateCheck(); },
+        },
+      ],
+    },
+
+    // ── Providers ────────────────────────────────────────────────────────
+    {
+      label: 'Providers',
+      submenu: [
+        {
+          label: 'Configure Providers…',
+          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'configure-providers'); },
+        },
+        {
+          label: 'Switch Model…',
+          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'settings', 'models'); },
+        },
+        {
+          label: 'Reset Provider',
+          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'configure-providers'); },
+        },
+      ],
+    },
+
+    // ── View (theme toggles + standard Electron view roles) ──────────────
+    {
+      label: 'View',
+      submenu: [
+        {
+          label: 'Light Mode',
+          click() {
+            BrowserWindow.getAllWindows().forEach((w) =>
+              w.webContents.send('theme-changed', { theme: 'light', useSystemTheme: false })
+            );
+          },
+        },
+        {
+          label: 'Dark Mode',
+          click() {
+            BrowserWindow.getAllWindows().forEach((w) =>
+              w.webContents.send('theme-changed', { theme: 'dark', useSystemTheme: false })
+            );
+          },
+        },
+        {
+          label: 'System Mode',
+          click() {
+            // useSystemTheme: true — ThemeContext reads OS preference and ignores the theme field
+            BrowserWindow.getAllWindows().forEach((w) =>
+              w.webContents.send('theme-changed', { theme: 'light', useSystemTheme: true })
+            );
+          },
+        },
+        { type: 'separator' as const },
+        { role: 'reload' as const },
+        { role: 'forceReload' as const },
+        { role: 'toggleDevTools' as const },
+        { type: 'separator' as const },
+        { role: 'resetZoom' as const },
+        { role: 'zoomIn' as const },
+        { role: 'zoomOut' as const },
+        { type: 'separator' as const },
+        { role: 'togglefullscreen' as const },
+      ],
+    },
+
+    // ── Help ─────────────────────────────────────────────────────────────
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'Biorouter Documentation',
+          click() { shell.openExternal('https://baranzinilab.github.io/biorouter-landing/docs.html'); },
+        },
+        { type: 'separator' as const },
+        {
+          label: 'Report a Bug…',
+          click() {
+            shell.openExternal(
+              'https://github.com/BaranziniLab/BioRouter/issues/new?template=bug_report.md'
+            );
+          },
+        },
+        {
+          label: 'Request a Feature…',
+          click() {
+            shell.openExternal(
+              'https://github.com/BaranziniLab/BioRouter/issues/new?template=feature_request.md'
+            );
+          },
+        },
+        { type: 'separator' as const },
+        { label: `v${version || app.getVersion()}`, enabled: false },
+      ],
+    },
+
+    // ── Window (standard roles; Always on Top added after build) ─────────
+    { role: 'windowMenu' as const },
+  ];
+
+  const menu = Menu.buildFromTemplate(template);
+
+  // Insert Find submenu into Edit after Select All
+  // (role: 'editMenu' expands to system defaults; custom items can't be inlined)
+  const editMenu = menu.items.find((item) => item.label === 'Edit');
+  if (editMenu?.submenu) {
+    const selectAllIndex = editMenu.submenu.items.findIndex((item) => item.label === 'Select All');
+    if (selectAllIndex >= 0) {
+      editMenu.submenu.insert(
+        selectAllIndex + 1,
+        new MenuItem({ label: 'Find', submenu: Menu.buildFromTemplate(findSubmenu) })
+      );
+    }
+  }
+
+  // Add Always on Top to Window menu
+  const windowMenu = menu.items.find((item) => item.label === 'Window');
+  if (windowMenu?.submenu) {
+    windowMenu.submenu.append(
+      new MenuItem({
+        label: 'Always on Top',
+        type: 'checkbox',
+        accelerator: isMac ? 'Cmd+Shift+T' : 'Ctrl+Shift+T',
+        click(menuItem) {
+          const win = BrowserWindow.getFocusedWindow();
+          if (!win) return;
+          const alwaysOnTop = menuItem.checked;
+          if (isMac) {
+            win.setAlwaysOnTop(alwaysOnTop, 'floating');
+          } else {
+            win.setAlwaysOnTop(alwaysOnTop);
+          }
+        },
+      })
+    );
+  }
+
+  Menu.setApplicationMenu(menu);
+}
+
 async function appMain() {
   await configureProxy();
 
@@ -2215,234 +2519,7 @@ async function appMain() {
     app.dock?.setMenu(dockMenu);
   }
 
-  // Get the existing menu
-  const menu = Menu.getApplicationMenu();
-
-  // App menu
-  const appMenu = menu?.items.find((item) => item.label === 'BioRouter');
-  if (appMenu?.submenu) {
-    // add Settings to app menu after About
-    appMenu.submenu.insert(1, new MenuItem({ type: 'separator' }));
-    appMenu.submenu.insert(
-      1,
-      new MenuItem({
-        label: 'Settings',
-        accelerator: 'CmdOrCtrl+,',
-        click() {
-          const focusedWindow = BrowserWindow.getFocusedWindow();
-          if (focusedWindow) focusedWindow.webContents.send('set-view', 'settings');
-        },
-      })
-    );
-    appMenu.submenu.insert(1, new MenuItem({ type: 'separator' }));
-  }
-
-  // Add Find submenu to Edit menu
-  const editMenu = menu?.items.find((item) => item.label === 'Edit');
-  if (editMenu?.submenu) {
-    // Find the index of Select All to insert after it
-    const selectAllIndex = editMenu.submenu.items.findIndex((item) => item.label === 'Select All');
-
-    // Create Find submenu
-    const findSubmenu = Menu.buildFromTemplate([
-      {
-        label: 'Find…',
-        accelerator: process.platform === 'darwin' ? 'Command+F' : 'Control+F',
-        click() {
-          const focusedWindow = BrowserWindow.getFocusedWindow();
-          if (focusedWindow) focusedWindow.webContents.send('find-command');
-        },
-      },
-      {
-        label: 'Find Next',
-        accelerator: process.platform === 'darwin' ? 'Command+G' : 'Control+G',
-        click() {
-          const focusedWindow = BrowserWindow.getFocusedWindow();
-          if (focusedWindow) focusedWindow.webContents.send('find-next');
-        },
-      },
-      {
-        label: 'Find Previous',
-        accelerator: process.platform === 'darwin' ? 'Shift+Command+G' : 'Shift+Control+G',
-        click() {
-          const focusedWindow = BrowserWindow.getFocusedWindow();
-          if (focusedWindow) focusedWindow.webContents.send('find-previous');
-        },
-      },
-      {
-        label: 'Use Selection for Find',
-        accelerator: process.platform === 'darwin' ? 'Command+E' : undefined,
-        click() {
-          const focusedWindow = BrowserWindow.getFocusedWindow();
-          if (focusedWindow) focusedWindow.webContents.send('use-selection-find');
-        },
-        visible: process.platform === 'darwin', // Only show on Mac
-      },
-    ]);
-
-    // Add Find submenu to Edit menu
-    editMenu.submenu.insert(
-      selectAllIndex + 1,
-      new MenuItem({
-        label: 'Find',
-        submenu: findSubmenu,
-      })
-    );
-  }
-
-  const fileMenu = menu?.items.find((item) => item.label === 'File');
-
-  if (fileMenu?.submenu) {
-    fileMenu.submenu.insert(
-      0,
-      new MenuItem({
-        label: 'New Chat',
-        accelerator: 'CmdOrCtrl+T',
-        click() {
-          const focusedWindow = BrowserWindow.getFocusedWindow();
-          if (focusedWindow) focusedWindow.webContents.send('set-view', '');
-        },
-      })
-    );
-
-    fileMenu.submenu.insert(
-      1,
-      new MenuItem({
-        label: 'New Chat Window',
-        accelerator: process.platform === 'darwin' ? 'Cmd+N' : 'Ctrl+N',
-        click() {
-          ipcMain.emit('create-chat-window');
-        },
-      })
-    );
-
-    // Open biorouter to specific dir and set that as its working space
-    fileMenu.submenu.insert(
-      2,
-      new MenuItem({
-        label: 'Open Directory...',
-        accelerator: 'CmdOrCtrl+O',
-        click: () => openDirectoryDialog(),
-      })
-    );
-
-    // Add Recent Files submenu
-    const recentFilesSubmenu = buildRecentFilesMenu();
-    if (recentFilesSubmenu.length > 0) {
-      fileMenu.submenu.insert(
-        3,
-        new MenuItem({
-          label: 'Recent Directories',
-          submenu: recentFilesSubmenu,
-        })
-      );
-    }
-
-    fileMenu.submenu.insert(4, new MenuItem({ type: 'separator' }));
-
-    // The Close Window item is here.
-
-    // Add menu item to tell the user about the keyboard shortcut
-    fileMenu.submenu.append(
-      new MenuItem({
-        label: 'Focus BioRouter Window',
-        accelerator: 'CmdOrCtrl+Alt+G',
-        click() {
-          focusWindow();
-        },
-      })
-    );
-  }
-
-  if (menu) {
-    let windowMenu = menu.items.find((item) => item.label === 'Window');
-
-    if (!windowMenu) {
-      windowMenu = new MenuItem({
-        label: 'Window',
-        submenu: Menu.buildFromTemplate([]),
-      });
-
-      const helpMenuIndex = menu.items.findIndex((item) => item.label === 'Help');
-      if (helpMenuIndex >= 0) {
-        menu.items.splice(helpMenuIndex, 0, windowMenu);
-      } else {
-        menu.items.push(windowMenu);
-      }
-    }
-
-    if (windowMenu.submenu) {
-      windowMenu.submenu.append(
-        new MenuItem({
-          label: 'Always on Top',
-          type: 'checkbox',
-          accelerator: process.platform === 'darwin' ? 'Cmd+Shift+T' : 'Ctrl+Shift+T',
-          click(menuItem) {
-            const focusedWindow = BrowserWindow.getFocusedWindow();
-            if (focusedWindow) {
-              const isAlwaysOnTop = menuItem.checked;
-
-              if (process.platform === 'darwin') {
-                focusedWindow.setAlwaysOnTop(isAlwaysOnTop, 'floating');
-              } else {
-                focusedWindow.setAlwaysOnTop(isAlwaysOnTop);
-              }
-
-              console.log(
-                `[Main] Set always-on-top to ${isAlwaysOnTop} for window ${focusedWindow.id}`
-              );
-            }
-          },
-        })
-      );
-    }
-  }
-
-  // on macOS, the topbar is hidden
-  if (menu && process.platform !== 'darwin') {
-    let helpMenu = menu.items.find((item) => item.label === 'Help');
-
-    // If Help menu doesn't exist, create it and add it to the menu
-    if (!helpMenu) {
-      helpMenu = new MenuItem({
-        label: 'Help',
-        submenu: Menu.buildFromTemplate([]), // Start with an empty submenu
-      });
-      // Find a reasonable place to insert the Help menu, usually near the end
-      const insertIndex = menu.items.length > 0 ? menu.items.length - 1 : 0;
-      menu.items.splice(insertIndex, 0, helpMenu);
-    }
-
-    // Ensure the Help menu has a submenu before appending
-    if (helpMenu.submenu) {
-      // Add a separator before the About item if the submenu is not empty
-      if (helpMenu.submenu.items.length > 0) {
-        helpMenu.submenu.append(new MenuItem({ type: 'separator' }));
-      }
-
-      // Create the About BioRouter menu item with a submenu
-      const aboutBioRouterMenuItem = new MenuItem({
-        label: 'About BioRouter',
-        submenu: Menu.buildFromTemplate([]), // Start with an empty submenu for About
-      });
-
-      // Add the Version menu item (display only) to the About BioRouter submenu
-      if (aboutBioRouterMenuItem.submenu) {
-        aboutBioRouterMenuItem.submenu.append(
-          new MenuItem({
-            label: `Version ${version || app.getVersion()}`,
-            enabled: false,
-          })
-        );
-      }
-
-      helpMenu.submenu.append(aboutBioRouterMenuItem);
-    }
-  }
-
-  if (menu) {
-    Menu.setApplicationMenu(menu);
-  }
+  buildApplicationMenu();
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
