@@ -1,38 +1,57 @@
 import { useState, useEffect, useCallback } from 'react';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Button } from '../ui/button';
+import { Switch } from '../ui/switch';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
-import { Plus, Upload, Globe } from '../icons/app-icons';
-import { Skill, BIOROUTER_SKILLS_DIR, OTHER_SKILL_DIRS, loadSkillsFromDirs } from './skillUtils';
+import { Plus, Upload, Globe, Trash2 } from '../icons/app-icons';
+import {
+  Skill,
+  SkillBundle,
+  BIOROUTER_SKILLS_DIR,
+  OTHER_SKILL_DIRS,
+  loadSkillsFromDirs,
+} from './skillUtils';
 import SkillItem from './SkillItem';
 import AddSkillModal from './AddSkillModal';
 import CustomSkillModal from './CustomSkillModal';
 import { toastSuccess, toastError } from '../../toasts';
 import { SearchView } from '../conversation/SearchView';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
-import { loadSkillOverrides, saveSkillOverrides, setSkillOverride, isSkillEnabled } from '../../store/skillOverrides';
+import {
+  loadSkillOverrides,
+  saveSkillOverrides,
+  setSkillOverride,
+  isSkillEnabled,
+} from '../../store/skillOverrides';
 
 export default function SkillsView() {
   const [bioRouterSkills, setBioRouterSkills] = useState<Skill[]>([]);
   const [otherSkills, setOtherSkills] = useState<Skill[]>([]);
+  const [bioBundles, setBioBundles] = useState<SkillBundle[]>([]);
+  const [otherBundles, setOtherBundles] = useState<SkillBundle[]>([]);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
   const [skillToDelete, setSkillToDelete] = useState<Skill | null>(null);
+  const [bundleToDelete, setBundleToDelete] = useState<SkillBundle | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [overrideTrigger, setOverrideTrigger] = useState(0);
 
   const loadSkills = useCallback(async () => {
     try {
-      const [brSkills, others] = await Promise.all([
+      const [brResult, otherResult] = await Promise.all([
         loadSkillsFromDirs([BIOROUTER_SKILLS_DIR]),
         loadSkillsFromDirs(OTHER_SKILL_DIRS),
       ]);
-      setBioRouterSkills(brSkills);
-      setOtherSkills(others);
+      setBioRouterSkills(brResult.singles);
+      setBioBundles(brResult.bundles);
+      setOtherSkills(otherResult.singles);
+      setOtherBundles(otherResult.bundles);
     } catch {
       setBioRouterSkills([]);
+      setBioBundles([]);
       setOtherSkills([]);
+      setOtherBundles([]);
     }
   }, []);
 
@@ -47,17 +66,38 @@ export default function SkillsView() {
     setOverrideTrigger((prev) => prev + 1);
   };
 
+  const handleBundleToggle = async (bundle: SkillBundle, enabled: boolean) => {
+    setSkillOverride(bundle.bundleName, enabled);
+    await saveSkillOverrides();
+    setOverrideTrigger((prev) => prev + 1);
+  };
+
   const filterSkill = (skill: Skill) => {
     if (!searchTerm) return true;
     const q = searchTerm.toLowerCase();
     return skill.name.toLowerCase().includes(q) || skill.description.toLowerCase().includes(q);
   };
 
+  const filterBundle = (bundle: SkillBundle) => {
+    if (!searchTerm) return true;
+    const q = searchTerm.toLowerCase();
+    return (
+      bundle.bundleName.toLowerCase().includes(q) ||
+      bundle.skills.some(
+        (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
+      )
+    );
+  };
+
   const handleOpen = async (skill: Skill) => {
     await window.electron.openDirectoryInExplorer(skill.folderPath);
   };
 
-  const confirmDelete = async () => {
+  const handleOpenBundle = async (bundle: SkillBundle) => {
+    await window.electron.openDirectoryInExplorer(bundle.folderPath);
+  };
+
+  const confirmDeleteSkill = async () => {
     if (!skillToDelete) return;
     setIsDeleting(true);
     const skill = skillToDelete;
@@ -73,6 +113,22 @@ export default function SkillsView() {
     }
   };
 
+  const confirmDeleteBundle = async () => {
+    if (!bundleToDelete) return;
+    setIsDeleting(true);
+    const bundle = bundleToDelete;
+    const ok = await window.electron.deleteDirectory(bundle.folderPath);
+    setIsDeleting(false);
+    setBundleToDelete(null);
+    if (ok) {
+      setBioBundles((prev) => prev.filter((b) => b.folderPath !== bundle.folderPath));
+      setOtherBundles((prev) => prev.filter((b) => b.folderPath !== bundle.folderPath));
+      toastSuccess({ title: bundle.bundleName, msg: 'Bundle deleted' });
+    } else {
+      toastError({ title: 'Delete failed', msg: `Could not delete ${bundle.folderPath}` });
+    }
+  };
+
   const handleShare = async (skill: Skill) => {
     try {
       await navigator.clipboard.writeText(skill.content);
@@ -84,6 +140,11 @@ export default function SkillsView() {
 
   const filteredBR = bioRouterSkills.filter(filterSkill);
   const filteredOther = otherSkills.filter(filterSkill);
+  const filteredBRBundles = bioBundles.filter(filterBundle);
+  const filteredOtherBundles = otherBundles.filter(filterBundle);
+
+  const totalBR = filteredBR.length + filteredBRBundles.length;
+  const totalOther = filteredOther.length + filteredOtherBundles.length;
 
   return (
     <MainPanelLayout>
@@ -133,12 +194,22 @@ export default function SkillsView() {
         {/* List */}
         <SearchView onSearch={(term, _caseSensitive) => setSearchTerm(term)} placeholder="Search skills...">
           <div key={overrideTrigger} className="px-6 py-4">
-            {filteredBR.length > 0 && (
+            {totalBR > 0 && (
               <>
                 <p className="text-[11px] font-medium text-text-subtle uppercase tracking-widest mb-2 px-2 flex items-center gap-1.5">
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />
-                  BioRouter Skills ({filteredBR.length})
+                  BioRouter Skills ({totalBR})
                 </p>
+                {filteredBRBundles.map((bundle) => (
+                  <BundleItem
+                    key={bundle.folderPath}
+                    bundle={bundle}
+                    enabled={isSkillEnabled(bundle.bundleName)}
+                    onClick={() => handleOpenBundle(bundle)}
+                    onDelete={() => setBundleToDelete(bundle)}
+                    onToggle={(e) => handleBundleToggle(bundle, e)}
+                  />
+                ))}
                 {filteredBR.map((skill) => (
                   <SkillItem
                     key={skill.folderPath}
@@ -153,12 +224,22 @@ export default function SkillsView() {
               </>
             )}
 
-            {filteredOther.length > 0 && (
+            {totalOther > 0 && (
               <>
                 <p className="text-[11px] font-medium text-text-subtle uppercase tracking-widest mt-6 mb-2 px-2 flex items-center gap-1.5">
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-neutral-400" />
-                  Skills From Other Agents ({filteredOther.length})
+                  Skills From Other Agents ({totalOther})
                 </p>
+                {filteredOtherBundles.map((bundle) => (
+                  <BundleItem
+                    key={bundle.folderPath}
+                    bundle={bundle}
+                    enabled={isSkillEnabled(bundle.bundleName)}
+                    onClick={() => handleOpenBundle(bundle)}
+                    onDelete={() => setBundleToDelete(bundle)}
+                    onToggle={(e) => handleBundleToggle(bundle, e)}
+                  />
+                ))}
                 {filteredOther.map((skill) => (
                   <SkillItem
                     key={skill.folderPath}
@@ -173,7 +254,7 @@ export default function SkillsView() {
               </>
             )}
 
-            {filteredBR.length === 0 && filteredOther.length === 0 && (
+            {totalBR === 0 && totalOther === 0 && (
               <p className="text-sm text-text-muted mt-10 text-center">
                 {searchTerm
                   ? 'No skills match your search.'
@@ -190,6 +271,7 @@ export default function SkillsView() {
       {isCustomModalOpen && (
         <CustomSkillModal onClose={() => setIsCustomModalOpen(false)} onSaved={loadSkills} />
       )}
+
       <ConfirmationModal
         isOpen={skillToDelete !== null}
         title={`Delete "${skillToDelete?.name}"?`}
@@ -198,9 +280,70 @@ export default function SkillsView() {
         cancelLabel="Cancel"
         confirmVariant="destructive"
         isSubmitting={isDeleting}
-        onConfirm={confirmDelete}
+        onConfirm={confirmDeleteSkill}
         onCancel={() => setSkillToDelete(null)}
       />
+
+      <ConfirmationModal
+        isOpen={bundleToDelete !== null}
+        title={`Delete bundle "${bundleToDelete?.bundleName}"?`}
+        message={`This will permanently remove all ${bundleToDelete?.skills.length ?? 0} skills in this bundle. This action cannot be undone.`}
+        confirmLabel="Delete Bundle"
+        cancelLabel="Cancel"
+        confirmVariant="destructive"
+        isSubmitting={isDeleting}
+        onConfirm={confirmDeleteBundle}
+        onCancel={() => setBundleToDelete(null)}
+      />
     </MainPanelLayout>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inline bundle row component
+// ---------------------------------------------------------------------------
+interface BundleItemProps {
+  bundle: SkillBundle;
+  enabled: boolean;
+  onClick: () => void;
+  onDelete: () => void;
+  onToggle: (enabled: boolean) => void;
+}
+
+function BundleItem({ bundle, enabled, onClick, onDelete, onToggle }: BundleItemProps) {
+  return (
+    <div
+      className="flex items-start py-3 border-b border-border-subtle last:border-b-0 hover:bg-background-medium/30 transition-colors group cursor-pointer gap-3 px-2"
+      onClick={onClick}
+    >
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <p className="text-sm font-semibold text-text-default">{bundle.bundleName}</p>
+          <span className="text-[11px] text-text-subtle">· {bundle.skills.length} skills</span>
+        </div>
+        <p className="text-xs text-text-subtle mt-1 font-mono leading-relaxed">
+          {bundle.skills.map((s) => s.name).join(' · ')}
+        </p>
+      </div>
+      <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
+        <div
+          className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+            onClick={() => onDelete()}
+            title="Delete bundle"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+        <div onClick={(e) => e.stopPropagation()}>
+          <Switch checked={enabled} onCheckedChange={onToggle} variant="mono" />
+        </div>
+      </div>
+    </div>
   );
 }
