@@ -6,6 +6,7 @@ import { Plus } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from '../ui/sidebar';
 import { getInitialWorkingDir } from '../../utils/workingDir';
+import DependencySetupModal from '../DependencySetupModal';
 
 const AppLayoutContent: React.FC = () => {
   const navigate = useNavigate();
@@ -106,6 +107,7 @@ export const AppLayout: React.FC = () => {
   return (
     <SidebarProvider>
       <AppLayoutContent />
+      <DependencySetupModal />
     </SidebarProvider>
   );
 };

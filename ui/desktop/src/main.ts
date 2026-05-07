@@ -49,6 +49,8 @@ import {
 } from './utils/autoUpdater';
 import { UPDATES_ENABLED } from './updates';
 import './utils/workflowHash';
+import { registerDependencyIpcHandlers, setupDependencyChecker } from './utils/dependencyChecker';
+import { scheduleExtensionUpdateCheck } from './utils/extensionUpdater';
 import { Client, createClient, createConfig } from './api/client';
 import { BioRouterApp } from './api';
 import installExtension, { REACT_DEVELOPER_TOOLS } from 'electron-devtools-installer';
@@ -2082,6 +2084,7 @@ async function appMain() {
   await ensureWinShims();
 
   registerUpdateIpcHandlers();
+  registerDependencyIpcHandlers();
 
   // Handle microphone permission requests
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
@@ -2192,6 +2195,12 @@ async function appMain() {
       }
     }
   }, 2000); // 2 second delay after window is shown
+
+  // Dependency check: runs 4s after window is ready (see dependencyChecker.ts)
+  setupDependencyChecker();
+
+  // Extension update check: runs 8s after window is ready (see extensionUpdater.ts)
+  scheduleExtensionUpdateCheck();
 
   // Setup macOS dock menu
   if (process.platform === 'darwin') {

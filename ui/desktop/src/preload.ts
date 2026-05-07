@@ -146,6 +146,11 @@ type ElectronAPI = {
   openBrxtFilePicker: () => Promise<string | null>;
   validateBrxtBundle: (filePath: string) => Promise<{ manifest: import('./types/brxt').BrxtManifest } | { error: string }>;
   installBrxtBundle: (filePath: string, extensionName: string) => Promise<{ success: true; installDir: string } | { error: string }>;
+  // Dependency checker
+  checkDependencies: () => Promise<import('./utils/dependencyChecker').DependencyInfo[]>;
+  installDependency: (dep: string) => Promise<{ started: boolean } | { error: string }>;
+  // Extension updater (events pushed via 'extension-update-event' channel)
+  onExtensionUpdateEvent: (callback: (event: import('./utils/extensionUpdater').ExtensionUpdateEvent) => void) => void;
 };
 
 type AppConfigAPI = {
@@ -295,6 +300,11 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.invoke('brxt:validate-and-read', { filePath }),
   installBrxtBundle: (filePath: string, extensionName: string) =>
     ipcRenderer.invoke('brxt:install', { filePath, extensionName }),
+  checkDependencies: () => ipcRenderer.invoke('dep:check'),
+  installDependency: (dep: string) => ipcRenderer.invoke('dep:install', dep),
+  onExtensionUpdateEvent: (callback) => {
+    ipcRenderer.on('extension-update-event', (_event, data) => callback(data));
+  },
 };
 
 const appConfigAPI: AppConfigAPI = {
