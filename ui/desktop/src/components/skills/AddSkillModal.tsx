@@ -8,55 +8,128 @@ interface Props {
   onSaved: () => void;
 }
 
-interface Preview {
+interface SinglePreview {
+  isBundle: false;
   name: string;
   description: string;
   slug: string;
-  /** Files to write: [ [destRelPath, content], ... ] */
   files: [string, string][];
   label: string;
 }
 
-/** Walk a FileList from a webkitdirectory input, find SKILL.md, validate, collect all files. */
+interface BundlePreview {
+  isBundle: true;
+  bundleName: string;
+  slug: string;
+  bundleSkills: Array<{ name: string; description: string }>;
+  files: [string, string][];
+  label: string;
+}
+
+type Preview = SinglePreview | BundlePreview;
+
+/** Walk a FileList from a webkitdirectory input, detect single skill or bundle. */
 function parseUploadedFolder(fileList: FileList): Promise<Preview> {
   return new Promise((resolve, reject) => {
     const files = Array.from(fileList);
-    const skillMdFile = files.find((f) => f.name === 'SKILL.md');
-    if (!skillMdFile) {
-      reject(new Error('Folder must contain a SKILL.md file.'));
+    if (files.length === 0) { reject(new Error('No files found in folder.')); return; }
+
+    const topFolder = files[0].webkitRelativePath.split('/')[0] ?? 'skill';
+
+    // Check for root SKILL.md: path like "topFolder/SKILL.md" (2 parts)
+    const rootSkillMdFile = files.find((f) => {
+      const parts = f.webkitRelativePath.split('/');
+      return parts.length === 2 && f.name === 'SKILL.md';
+    });
+
+    if (rootSkillMdFile) {
+      // --- Single skill ---
+      const skillReader = new FileReader();
+      skillReader.onerror = () => reject(new Error('Failed to read SKILL.md'));
+      skillReader.onload = (e) => {
+        const skillMdContent = e.target?.result as string;
+        const parsed = parseSkillFrontmatter(skillMdContent);
+        if (!parsed) {
+          reject(new Error('SKILL.md must have valid YAML frontmatter with "name" and "description".'));
+          return;
+        }
+        const slug = toSlug(parsed.name) || toSlug(topFolder);
+        const filePairs: [string, string][] = [];
+        let remaining = files.length;
+        files.forEach((file) => {
+          const rel = file.webkitRelativePath.replace(/^[^/]+\/?/, '') || file.name;
+          const fr = new FileReader();
+          fr.onerror = () => reject(new Error(`Failed to read ${file.name}`));
+          fr.onload = (ev) => {
+            filePairs.push([rel, ev.target?.result as string]);
+            remaining--;
+            if (remaining === 0) {
+              resolve({ isBundle: false, name: parsed.name, description: parsed.description, slug, files: filePairs, label: topFolder });
+            }
+          };
+          fr.readAsText(file);
+        });
+      };
+      skillReader.readAsText(rootSkillMdFile);
       return;
     }
 
-    const skillReader = new FileReader();
-    skillReader.onerror = () => reject(new Error('Failed to read SKILL.md'));
-    skillReader.onload = (e) => {
-      const skillMdContent = e.target?.result as string;
-      const parsed = parseSkillFrontmatter(skillMdContent);
-      if (!parsed) {
-        reject(new Error('SKILL.md must have valid YAML frontmatter with "name" and "description".'));
+    // --- Bundle detection: sub-level SKILL.md at "topFolder/<sub>/SKILL.md" (3 parts) ---
+    const subSkillMdFiles = files.filter((f) => {
+      const parts = f.webkitRelativePath.split('/');
+      return parts.length === 3 && f.name === 'SKILL.md';
+    });
+
+    if (subSkillMdFiles.length === 0) {
+      reject(new Error('Folder must contain a SKILL.md file, or sub-folders that each contain a SKILL.md.'));
+      return;
+    }
+
+    const bundleSkills: Array<{ name: string; description: string }> = [];
+    let skillPending = subSkillMdFiles.length;
+    const filePairs: [string, string][] = [];
+    let filePending = files.length;
+
+    const tryResolve = () => {
+      if (skillPending !== 0 || filePending !== 0) return;
+      if (bundleSkills.length === 0) {
+        reject(new Error('No valid SKILL.md files found in sub-folders.'));
         return;
       }
-      const topFolder = files[0]?.webkitRelativePath.split('/')[0] ?? 'skill';
-      const slug = toSlug(parsed.name) || toSlug(topFolder);
-      const filePairs: [string, string][] = [];
-      let remaining = files.length;
-
-      files.forEach((file) => {
-        // strip the top folder prefix from the relative path
-        const rel = file.webkitRelativePath.replace(/^[^/]+\/?/, '') || file.name;
-        const fr = new FileReader();
-        fr.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-        fr.onload = (ev) => {
-          filePairs.push([rel, ev.target?.result as string]);
-          remaining--;
-          if (remaining === 0) {
-            resolve({ name: parsed.name, description: parsed.description, slug, files: filePairs, label: topFolder });
-          }
-        };
-        fr.readAsText(file);
+      resolve({
+        isBundle: true,
+        bundleName: topFolder,
+        slug: toSlug(topFolder),
+        bundleSkills,
+        files: filePairs,
+        label: topFolder,
       });
     };
-    skillReader.readAsText(skillMdFile);
+
+    subSkillMdFiles.forEach((skillMdFile) => {
+      const fr = new FileReader();
+      fr.onerror = () => { skillPending--; tryResolve(); };
+      fr.onload = (e) => {
+        const content = e.target?.result as string;
+        const parsed = parseSkillFrontmatter(content);
+        if (parsed) bundleSkills.push(parsed);
+        skillPending--;
+        tryResolve();
+      };
+      fr.readAsText(skillMdFile);
+    });
+
+    files.forEach((file) => {
+      const rel = file.webkitRelativePath.replace(/^[^/]+\/?/, '') || file.name;
+      const fr = new FileReader();
+      fr.onerror = () => { filePending--; tryResolve(); };
+      fr.onload = (ev) => {
+        filePairs.push([rel, ev.target?.result as string]);
+        filePending--;
+        tryResolve();
+      };
+      fr.readAsText(file);
+    });
   });
 }
 
@@ -87,6 +160,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
       }
       setError(null);
       setPreview({
+        isBundle: false,
         name: parsed.name,
         description: parsed.description,
         slug: toSlug(parsed.name) || toSlug(file.name),
@@ -138,13 +212,25 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
       return;
     }
     setError(null);
-    setPreview({
-      name: result.name,
-      description: result.description,
-      slug: result.slug,
-      files: result.files,
-      label: file.name,
-    });
+    if (result.isBundle) {
+      setPreview({
+        isBundle: true,
+        bundleName: result.bundleName,
+        slug: result.slug,
+        bundleSkills: result.bundleSkills,
+        files: result.files,
+        label: file.name,
+      });
+    } else {
+      setPreview({
+        isBundle: false,
+        name: result.name,
+        description: result.description,
+        slug: result.slug,
+        files: result.files,
+        label: file.name,
+      });
+    }
   };
 
   const handleZipBrowse = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -165,8 +251,10 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
       if (!ok) { allOk = false; break; }
     }
     setIsInstalling(false);
+
     if (allOk) {
-      toastSuccess({ title: preview.name, msg: 'Skill installed to BioRouter Skills' });
+      const displayName = preview.isBundle ? preview.bundleName : preview.name;
+      toastSuccess({ title: displayName, msg: 'Installed to BioRouter Skills' });
       onSaved();
       onClose();
     } else {
@@ -183,7 +271,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
         </div>
 
         <div className="p-6 flex flex-col gap-4 overflow-y-auto">
-          {/* Drop zone — .md files */}
+          {/* Drop zone */}
           <div
             onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
             onDragLeave={() => setIsDragging(false)}
@@ -220,7 +308,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
             Browse for Skill Folder
           </Button>
           <p className="text-xs text-text-subtle -mt-2 text-center">
-            Folder must contain a <code>SKILL.md</code> file
+            Folder with <code>SKILL.md</code> (single skill) or sub-folders each with <code>SKILL.md</code> (bundle)
           </p>
           <input
             ref={folderInputRef}
@@ -238,7 +326,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
             Browse for Skill ZIP
           </Button>
           <p className="text-xs text-text-subtle -mt-2 text-center">
-            ZIP must contain a <code>SKILL.md</code> file
+            ZIP with <code>SKILL.md</code> (single skill) or a bundle folder containing sub-skills
           </p>
           <input
             ref={zipInputRef}
@@ -254,11 +342,35 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
             </div>
           )}
 
-          {preview && (
+          {preview && !preview.isBundle && (
             <div className="bg-background-medium/30 rounded-lg px-4 py-3">
               <p className="text-sm font-semibold">{preview.name}</p>
               <p className="text-xs text-text-muted mt-0.5">{preview.description}</p>
               <p className="text-[11px] text-text-subtle mt-1 font-mono">
+                {preview.files.length} file{preview.files.length !== 1 ? 's' : ''} · from {preview.label}
+              </p>
+            </div>
+          )}
+
+          {preview && preview.isBundle && (
+            <div className="bg-background-medium/30 rounded-lg px-4 py-3">
+              <p className="text-sm font-semibold">
+                Bundle: {preview.bundleName}
+                <span className="ml-2 text-xs text-text-subtle font-normal">
+                  {preview.bundleSkills.length} skills
+                </span>
+              </p>
+              <div className="mt-1.5 max-h-[120px] overflow-y-auto">
+                {preview.bundleSkills.map((s, i) => (
+                  <p key={i} className="text-xs text-text-muted leading-relaxed">
+                    · {s.name}
+                    {s.description && (
+                      <span className="text-text-subtle"> — {s.description}</span>
+                    )}
+                  </p>
+                ))}
+              </div>
+              <p className="text-[11px] text-text-subtle mt-1.5 font-mono">
                 {preview.files.length} file{preview.files.length !== 1 ? 's' : ''} · from {preview.label}
               </p>
             </div>
@@ -268,7 +380,11 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
         <div className="px-6 py-4 border-t border-border-subtle flex justify-end gap-2">
           <Button variant="outline" onClick={onClose}>Cancel</Button>
           <Button variant="default" onClick={handleInstall} disabled={!preview || isInstalling}>
-            {isInstalling ? 'Installing…' : 'Install Skill'}
+            {isInstalling
+              ? 'Installing…'
+              : preview?.isBundle
+              ? `Install Bundle (${preview.bundleSkills.length} skills)`
+              : 'Install Skill'}
           </Button>
         </div>
       </div>
