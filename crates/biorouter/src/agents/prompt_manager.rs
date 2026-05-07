@@ -14,7 +14,7 @@ use crate::{
 };
 use std::path::Path;
 
-const MAX_EXTENSIONS: usize = 5;
+const MAX_EXTENSIONS: usize = 10;
 const MAX_TOOLS: usize = 50;
 
 pub struct PromptManager {
