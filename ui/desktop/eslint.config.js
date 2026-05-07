@@ -104,6 +104,8 @@ module.exports = [
         MediaStream: 'readonly',
         Blob: 'readonly',
         FormData: 'readonly',
+        Buffer: 'readonly',
+        Element: 'readonly',
       },
     },
     plugins: {
