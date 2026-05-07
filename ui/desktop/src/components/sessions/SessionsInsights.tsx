@@ -151,7 +151,7 @@ export function SessionInsights() {
     <div className="bg-background-muted flex flex-col h-full" style={{ fontFamily: 'Arial, sans-serif' }}>
       {/* Hero — text directly on canvas */}
       <div className="px-8 pt-16 pb-6">
-        <p className="text-xs font-medium text-text-muted tracking-widest mb-3">UCSF BioRouter</p>
+        <p className="text-xs font-medium text-text-muted tracking-widest mb-3">UCSF Biorouter</p>
         <Greeting />
       </div>
 

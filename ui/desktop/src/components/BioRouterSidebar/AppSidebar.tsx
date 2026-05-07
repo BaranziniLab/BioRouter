@@ -136,7 +136,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
       (item) => item.type === 'item' && item.path === currentPath
     ) as NavigationItem | undefined;
 
-    const titleBits = ['BioRouter'];
+    const titleBits = ['Biorouter'];
 
     if (
       currentPath === '/pair' &&
@@ -210,12 +210,14 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
         </SidebarMenu>
       </SidebarContent>
 
-      <SidebarFooter className="pb-6 px-3 flex items-center justify-center">
-        <div className="flex flex-col items-center">
-          <BioRouter className="size-14 biorouter-icon-animation" />
-          <span className="text-base font-medium">UCSF BioRouter</span>
+      <SidebarFooter className="pb-4 px-4">
+        <div className="flex items-center gap-3">
+          <BioRouter className="size-8 biorouter-icon-animation flex-shrink-0" />
+          <div className="flex flex-col">
+            <span className="text-sm font-semibold leading-tight">UCSF Biorouter</span>
+            <EnvironmentBadge />
+          </div>
         </div>
-        <EnvironmentBadge />
       </SidebarFooter>
     </>
   );

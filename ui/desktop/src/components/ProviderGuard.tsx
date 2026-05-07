@@ -169,7 +169,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
                   Welcome to BioRouter
                 </h1>
                 <p className="text-sm text-text-muted mt-2 leading-relaxed max-w-md">
-                  UCSF BioRouter unifies commercial, institution-hosted, and local LLMs, AI
+                  UCSF Biorouter unifies commercial, institution-hosted, and local LLMs, AI
                   agents, and customizable workflows into one extensible research environment.
                   Let's connect an AI provider to get started.
                 </p>
