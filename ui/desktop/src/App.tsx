@@ -38,6 +38,7 @@ import PermissionSettingsView from './components/settings/permission/PermissionS
 
 import ExtensionsView, { ExtensionsViewOptions } from './components/extensions/ExtensionsView';
 import WorkflowsView from './components/workflows/WorkflowsView';
+import SkillsView from './components/skills/SkillsView';
 import AppsView from './components/apps/AppsView';
 import StandaloneAppView from './components/apps/StandaloneAppView';
 import { View, ViewOptions } from './utils/navigationUtils';
@@ -206,6 +207,8 @@ const SchedulesRoute = () => {
 const WorkflowsRoute = () => {
   return <WorkflowsView />;
 };
+
+const SkillsRoute = () => <SkillsView />;
 
 const PermissionRoute = () => {
   const location = useLocation();
@@ -621,6 +624,7 @@ export function AppInner() {
             <Route path="sessions" element={<SessionsRoute />} />
             <Route path="schedules" element={<SchedulesRoute />} />
             <Route path="workflows" element={<WorkflowsRoute />} />
+            <Route path="skills" element={<SkillsRoute />} />
             <Route
               path="shared-session"
               element={

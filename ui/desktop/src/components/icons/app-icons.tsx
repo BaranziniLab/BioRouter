@@ -563,8 +563,28 @@ export const Upload = (props: IconProps) => (
   </Svg>
 );
 
+/** Package — downward arrow into tray (install / bundle drop zone) */
+export const Package = (props: IconProps) => (
+  <Svg {...props}>
+    <path
+      fillRule="evenodd"
+      clipRule="evenodd"
+      d="M7 8H10V2H14V8H17L12 13L7 8ZM3 15H21V20C21 21.1046 20.1046 22 19 22H5C3.89543 22 3 21.1046 3 20V15Z"
+    />
+  </Svg>
+);
+
 /** Edit2 — alias for Edit (pencil) */
 export const Edit2 = Edit;
+
+/** Layers — stacked layers icon for Skills sidebar entry */
+export const Layers = (props: IconProps) => (
+  <Svg {...props}>
+    <path d="M12 2 1 8l11 6 11-6L12 2Z" />
+    <path d="M1 14l11 6 11-6" />
+    <path d="M1 10l11 6 11-6" />
+  </Svg>
+);
 
 // ---------------------------------------------------------------------------
 // LucideIcon type alias for components that import the type
