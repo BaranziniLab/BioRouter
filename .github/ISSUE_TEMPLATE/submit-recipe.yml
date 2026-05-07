@@ -1,31 +1,31 @@
-name: 🧑‍🍳 Submit a recipe to the biorouter cookbook
-description: Share a reusable biorouter recipe with the community!
-title: "[Recipe] <your recipe title here>"
-labels: ["recipe submission"]
+name: 🧑‍🍳 Submit a workflow to the biorouter cookbook
+description: Share a reusable biorouter workflow with the community!
+title: "[Workflow] <your workflow title here>"
+labels: ["workflow submission"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for contributing to the biorouter cookbook! 🍳  
-        Recipes are reusable sessions created in biorouter desktop or CLI and shared with the community to help others vibe code faster.
+        Thanks for contributing to the biorouter cookbook! 🍳
+        Workflows are reusable sessions created in biorouter desktop or CLI and shared with the community to help others work faster.
 
         📌 **How to Submit**
-        - Create your recipe using biorouter ("Make recipe from this session")
+        - Create your workflow using biorouter ("Make workflow from this session")
         - Fill out the YAML below using the format provided
         - Paste it into the field and submit the issue — we'll review and add it to the cookbook!
 
         🪄 **What Happens After?**
-        - If accepted, we'll publish your recipe to the [BioRouter recipes cookbook](https://baranzinilab.github.io/biorouter-landing/docs.html)
-        - Your GitHub handle will be displayed and linked on the recipe card
+        - If accepted, we'll publish your workflow to the BioRouter cookbook
+        - Your GitHub handle will be displayed and linked on the workflow card
         - If the YAML has any issues, biorouter will comment with validation errors so you can fix and resubmit.
 
-        🧪 **Pro Tip:** You can test your recipe locally in your terminal with:  
-        `biorouter recipe validate your-recipe.yaml`
+        🧪 **Pro Tip:** You can test your workflow locally in your terminal with:
+        `biorouter workflow validate your-workflow.yaml`
 
   - type: textarea
-    id: recipe-yaml
+    id: workflow-yaml
     attributes:
-      label: Paste Your Full Recipe YAML Below
+      label: Paste Your Full Workflow YAML Below
       description: Use the structure below and we'll auto-fill your GitHub handle for `author.contact` after submission.
       placeholder: |
         version: "1.0.0"
@@ -74,7 +74,7 @@ body:
             timeout: 300
             bundled: true
             description: Access developer tools
-        
+
         activities:
           - Remove feature flag definitions
           - Clean up feature flag usage sites
@@ -87,13 +87,13 @@ body:
   - type: markdown
     attributes:
       value: |
-        🛠 **Recipe Field Tips**
+        🛠 **Workflow Field Tips**
         - `version` must be "1.0.0" for now
-        - `id` should be lowercase, hyphenated, and unique (e.g. `my-awesome-recipe`)
-        - `title` is the display name of your recipe
-        - `description` should clearly explain what the recipe does
+        - `id` should be lowercase, hyphenated, and unique (e.g. `my-awesome-workflow`)
+        - `title` is the display name of your workflow
+        - `description` should clearly explain what the workflow does
         - `instructions` are specific steps biorouter should follow — supports template variables like `{{ variable_name }}`
-        - `prompt` is the first thing biorouter sees when the recipe is launched
+        - `prompt` is the first thing biorouter sees when the workflow is launched
         - `parameters` should include required or optional inputs — optional ones must have `default`
         - `extensions` must follow the full format with `type`, `cmd`, `args`, `timeout`, etc.
-        - `activities` describe the main actions the recipe performs
+        - `activities` describe the main actions the workflow performs

@@ -44,14 +44,14 @@
 - Async runtime: tokio
 - See HOWTOAI.md for AI-assisted code standards
 - MCP protocol implementations require extra scrutiny
-- Naming convention: In `documentation/docs` and `documentation/blog`, always refer to the project as "biorouter" (lowercase), never "BioRouter" (even at the start of sentences)
-- No prerelease docs: PRs should not contain updates in `/documentation` that correspond to code changes in the PR so that the public docs stay in sync with the latest released version. New topics should be marked with `unlisted: true`; other content should be removed or hidden from public view.
+- Naming convention: In `docs/`, always refer to the project as "BioRouter" (capitalized as a proper noun)
+- No prerelease docs: PRs should not contain updates in `/docs` that correspond to unreleased code changes, so that the public docs stay in sync with the latest released version.
 
 ## CI Pipeline Context
 
 **Important**: You review PRs immediately, before CI completes. Do not flag issues that CI will catch.
 
-### What Our CI Checks (`.github/workflows/ci.yml`)
+### What Our CI Checks (`.github/workflows/check-commits.yml` and related)
 
 **Rust checks:**
 - `cargo fmt --check` - Code formatting (rustfmt)
