@@ -31,6 +31,19 @@ ui/desktop/src/bin/
 # Claude
 .claude
 
+# Playwright MCP session cache and debug artifacts
+.playwright-mcp/
+.mcp.json
+
+# Superpowers plugin session data
+.superpowers/
+
+# Frontend build output
+ui/desktop/dist/
+
+# Root-level screenshot debug artifacts
+*.png
+
 # Sensitive credentials — never commit
 notarization/
 

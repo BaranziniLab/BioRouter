@@ -200,7 +200,7 @@ export default function ExtensionsSection({
               onClick={() => setIsBrxtModalOpen(true)}
             >
               <Plus className="h-4 w-4" />
-              Add extension
+              Add Extension
             </Button>
             <Button
               className="flex items-center gap-2 justify-center"
@@ -210,7 +210,7 @@ export default function ExtensionsSection({
               }
             >
               <GPSIcon size={12} />
-              Browse extensions
+              Browse Extensions
             </Button>
             <Button
               className="flex items-center gap-2 justify-center"
@@ -218,7 +218,7 @@ export default function ExtensionsSection({
               onClick={() => setIsAddModalOpen(true)}
             >
               <Plus className="h-4 w-4" />
-              Add custom extension
+              Add Custom Extension
             </Button>
           </div>
         )}
