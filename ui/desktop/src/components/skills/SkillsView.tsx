@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Button } from '../ui/button';
+import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { Plus, Upload, Globe } from '../icons/app-icons';
 import { Skill, BIOROUTER_SKILLS_DIR, OTHER_SKILL_DIRS, loadSkillsFromDirs } from './skillUtils';
 import SkillItem from './SkillItem';
@@ -17,6 +18,8 @@ export default function SkillsView() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
   const [selectedSkill, setSelectedSkill] = useState<Skill | null>(null);
+  const [skillToDelete, setSkillToDelete] = useState<Skill | null>(null);
+  const [isDeleting, setIsDeleting] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
 
   const loadSkills = useCallback(async () => {
@@ -41,19 +44,14 @@ export default function SkillsView() {
     return skill.name.toLowerCase().includes(q) || skill.description.toLowerCase().includes(q);
   };
 
-  const handleDelete = async (skill: Skill) => {
-    const result = await window.electron.showMessageBox({
-      type: 'warning',
-      buttons: ['Cancel', 'Delete'],
-      defaultId: 0,
-      title: 'Delete Skill',
-      message: `Delete "${skill.name}"?`,
-      detail: 'This will remove the file from disk. This action cannot be undone.',
-    });
-    if (result.response !== 1) return;
+  const confirmDelete = async () => {
+    if (!skillToDelete) return;
+    setIsDeleting(true);
+    const skill = skillToDelete;
     const ok = await window.electron.deleteFile(skill.filePath);
+    setIsDeleting(false);
+    setSkillToDelete(null);
     if (ok) {
-      // Optimistically remove from state immediately for instant visual feedback
       setBioRouterSkills((prev) => prev.filter((s) => s.filePath !== skill.filePath));
       setOtherSkills((prev) => prev.filter((s) => s.filePath !== skill.filePath));
       toastSuccess({ title: skill.name, msg: 'Skill deleted' });
@@ -133,7 +131,7 @@ export default function SkillsView() {
                     key={skill.filePath}
                     skill={skill}
                     onClick={() => setSelectedSkill(skill)}
-                    onDelete={() => handleDelete(skill)}
+                    onDelete={() => setSkillToDelete(skill)}
                     onShare={() => handleShare(skill)}
                   />
                 ))}
@@ -151,7 +149,7 @@ export default function SkillsView() {
                     key={skill.filePath}
                     skill={skill}
                     onClick={() => setSelectedSkill(skill)}
-                    onDelete={() => handleDelete(skill)}
+                    onDelete={() => setSkillToDelete(skill)}
                     onShare={() => handleShare(skill)}
                   />
                 ))}
@@ -182,6 +180,17 @@ export default function SkillsView() {
           onSaved={loadSkills}
         />
       )}
+      <ConfirmationModal
+        isOpen={skillToDelete !== null}
+        title={`Delete "${skillToDelete?.name}"?`}
+        message="This will permanently remove the skill file from disk. This action cannot be undone."
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        confirmVariant="destructive"
+        isSubmitting={isDeleting}
+        onConfirm={confirmDelete}
+        onCancel={() => setSkillToDelete(null)}
+      />
     </MainPanelLayout>
   );
 }
