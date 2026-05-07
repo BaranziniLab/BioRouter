@@ -144,7 +144,17 @@ type ElectronAPI = {
   launchApp: (app: BioRouterApp) => Promise<void>;
   addRecentDir: (dir: string) => Promise<boolean>;
   openBrxtFilePicker: () => Promise<string | null>;
-  validateBrxtBundle: (filePath: string) => Promise<{ manifest: import('./types/brxt').BrxtManifest } | { error: string }>;
+  validateBrxtBundle: (filePath: string) => Promise<{
+    manifest: import('./types/brxt').BrxtManifest;
+    skillsPreview: Array<{ slug: string; name: string; description: string }>;
+  } | { error: string }>;
+  uninstallBrxtExtension: (extensionName: string) => Promise<{ success: true } | { error: string }>;
+  extractSkillZip: (filePath: string) => Promise<{
+    files: [string, string][];
+    name: string;
+    description: string;
+    slug: string;
+  } | { error: string }>;
   installBrxtBundle: (filePath: string, extensionName: string) => Promise<{ success: true; installDir: string } | { error: string }>;
   // Dependency checker
   checkDependencies: () => Promise<import('./utils/dependencyChecker').DependencyInfo[]>;
@@ -300,6 +310,10 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.invoke('brxt:validate-and-read', { filePath }),
   installBrxtBundle: (filePath: string, extensionName: string) =>
     ipcRenderer.invoke('brxt:install', { filePath, extensionName }),
+  uninstallBrxtExtension: (extensionName: string) =>
+    ipcRenderer.invoke('brxt:uninstall', { extensionName }),
+  extractSkillZip: (filePath: string) =>
+    ipcRenderer.invoke('skills:extract-zip', { filePath }),
   checkDependencies: () => ipcRenderer.invoke('dep:check'),
   installDependency: (dep: string) => ipcRenderer.invoke('dep:install', dep),
   onExtensionUpdateEvent: (callback) => {
