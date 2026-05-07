@@ -275,7 +275,7 @@ Execute commands from an instruction file or stdin. Check out the [full guide](/
 - **`--system <TEXT>`**: Provide additional system instructions to customize the agent's behavior
 - **`--workflow <RECIPE_FILE_NAME> <OPTIONS>`**: Load a custom workflow in current session
 - **`--params <KEY=VALUE>`**: Key-value parameters to pass to the workflow file. Can be specified multiple times
-- **`--sub-workflow <RECIPE>`**: Specify sub-workflows to include alongside the main workflow. Can be specified multiple times
+- **`--sub-workflow <WORKFLOW>`**: Specify sub-workflows to include alongside the main workflow. Can be specified multiple times
 
 **Session Options:**
 - **`-s, --interactive`**: Continue in interactive mode after processing initial input

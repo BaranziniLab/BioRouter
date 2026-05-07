@@ -35,7 +35,7 @@ You can prevent these issues by customizing your shell to handle these commands 
 
 ### Context Length Exceeded Error
 
-This error occurs when the input provided to biorouter exceeds the maximum token limit of the LLM being used. To resolve this, try breaking down your input into smaller parts. You can also use [`.biorouterhints`][goosehints] as a way to provide biorouter with detailed context and use [message queues](/docs/guides/sessions/in-session-actions#queue-messages) in biorouter Desktop.
+This error occurs when the input provided to biorouter exceeds the maximum token limit of the LLM being used. To resolve this, try breaking down your input into smaller parts. You can also use [`.biorouterhints`][biorouterhints] as a way to provide biorouter with detailed context and use [message queues](/docs/guides/sessions/in-session-actions#queue-messages) in biorouter Desktop.
 
 ---
 
@@ -457,6 +457,6 @@ Still running into issues? We're here to help! Join our [Discord Community][disc
 [handling-rate-limits]: /docs/guides/handling-llm-rate-limits-with-biorouter
 [installation]: /docs/getting-started/installation
 [discord]: https://discord.gg/biorouter-oss
-[goosehints]: /docs/guides/context-engineering/using-biorouterhints
+[biorouterhints]: /docs/guides/context-engineering/using-biorouterhints
 [configure-llm-provider]: /docs/getting-started/providers
 [extensions-directory]: /extensions
