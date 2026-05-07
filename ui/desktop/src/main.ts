@@ -1969,7 +1969,7 @@ ipcMain.handle('get-allowed-extensions', async () => {
 function parseFrontmatterFromSkillMd(
   content: string
 ): { name: string; description: string } | null {
-  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---(\r?\n|$)/);
   if (!match) return null;
   const fm = match[1];
   const nameMatch = fm.match(/^name:\s*([^\n]+)$/m);
@@ -2075,13 +2075,14 @@ ipcMain.handle(
   'brxt:uninstall',
   async (_event, { extensionName }: { extensionName: string }) => {
     try {
-      const installDir = path.join(
-        os.homedir(),
-        '.config',
-        'biorouter',
-        'extensions',
-        extensionName
-      );
+      if (!extensionName || /[/\\]/.test(extensionName) || extensionName === '..' || extensionName === '.') {
+        return { error: 'Invalid extension name.' };
+      }
+      const installDir = path.join(os.homedir(), '.config', 'biorouter', 'extensions', extensionName);
+      const extensionsBase = path.join(os.homedir(), '.config', 'biorouter', 'extensions');
+      if (!installDir.startsWith(extensionsBase + path.sep)) {
+        return { error: 'Invalid extension name.' };
+      }
       if (fsSync.existsSync(installDir)) {
         fsSync.rmSync(installDir, { recursive: true, force: true });
       }
@@ -2127,11 +2128,15 @@ ipcMain.handle(
         .replace(/^-|-$/g, '')
         .toLowerCase();
 
+      const TEXT_EXTENSIONS = ['.md', '.txt', '.yaml', '.yml', '.json', '.py', '.sh'];
       const files: [string, string][] = [];
       for (const entry of entries) {
         if (entry.isDirectory) continue;
+        if (prefix && !entry.entryName.startsWith(prefix)) continue;
         const relName = prefix ? entry.entryName.slice(prefix.length) : entry.entryName;
         if (!relName) continue;
+        const ext = path.extname(relName).toLowerCase();
+        if (!TEXT_EXTENSIONS.includes(ext)) continue;
         files.push([relName, entry.getData().toString('utf8')]);
       }
 
@@ -2283,7 +2288,6 @@ function buildApplicationMenu() {
       submenu: [
         {
           label: 'New Chat',
-          accelerator: 'CmdOrCtrl+T',
           click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', ''); },
         },
         {
@@ -2297,12 +2301,12 @@ function buildApplicationMenu() {
           accelerator: 'CmdOrCtrl+O',
           click: () => openDirectoryDialog(),
         },
-        ...(buildRecentFilesMenu().length > 0
-          ? [{
-              label: 'Recent Directories',
-              submenu: buildRecentFilesMenu(),
-            } as MenuItemConstructorOptions]
-          : []),
+        ...(() => {
+          const recentFiles = buildRecentFilesMenu();
+          return recentFiles.length > 0
+            ? [{ label: 'Recent Directories', submenu: recentFiles } as MenuItemConstructorOptions]
+            : [];
+        })(),
         { type: 'separator' as const },
         { role: 'close' as const },
         {
@@ -2321,7 +2325,7 @@ function buildApplicationMenu() {
       label: 'Extensions',
       submenu: [
         {
-          label: 'Install Extension (.brxt)…',
+          label: 'Install Extension (.brxt)',
           click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'extensions'); },
         },
         {
