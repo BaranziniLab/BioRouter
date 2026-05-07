@@ -36,13 +36,22 @@ pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-4.1-mini";
 // Verified working against OpenAI API (April 2026).
 // Models marked [responses] route to /v1/responses instead of /v1/chat/completions.
 pub const OPEN_AI_KNOWN_MODELS: &[(&str, usize)] = &[
-    // GPT-5 family (latest)
+    // GPT-5.5 family [responses] — requires /v1/responses API
+    ("gpt-5.5", 1_047_576),
+    ("gpt-5.5-pro", 1_047_576),
+    // GPT-5.4 family [responses] — requires /v1/responses API
+    ("gpt-5.4", 1_047_576),
+    ("gpt-5.4-pro", 1_047_576),
+    ("gpt-5.4-mini", 1_047_576),
+    ("gpt-5.4-nano", 1_047_576),
+    // GPT-5 family
     ("gpt-5", 1_047_576),
     ("gpt-5-2025-08-07", 1_047_576),
+    ("gpt-5-mini", 1_047_576),
+    ("gpt-5-nano", 1_047_576),
     ("gpt-5.1", 1_047_576),
     ("gpt-5.1-codex", 400_000), // [responses]
     ("gpt-5.2", 1_047_576),
-    ("gpt-5.4", 1_047_576),     // [responses] — requires /v1/responses API
     // GPT-4.1 family
     ("gpt-4.1", 1_047_576),
     ("gpt-4.1-mini", 1_047_576),
@@ -202,6 +211,7 @@ impl OpenAiProvider {
         model_name.starts_with("gpt-5-codex")
             || model_name.starts_with("gpt-5.1-codex")
             || model_name.starts_with("gpt-5.4")
+            || model_name.starts_with("gpt-5.5")
     }
 
     async fn post(&self, payload: &Value) -> Result<Value, ProviderError> {
