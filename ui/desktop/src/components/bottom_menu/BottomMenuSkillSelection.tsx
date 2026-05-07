@@ -36,7 +36,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
 
   const loadAll = useCallback(() => {
     return loadSkillOverrides().then(() => {
-      loadSkillsFromDirs(ALL_SKILL_DIRS).then(({ singles, bundles }) => {
+      return loadSkillsFromDirs(ALL_SKILL_DIRS).then(({ singles, bundles }) => {
         setAllSkills(singles);
         setAllBundles(bundles);
       });
