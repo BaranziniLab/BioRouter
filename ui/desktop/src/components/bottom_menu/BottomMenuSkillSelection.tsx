@@ -10,40 +10,48 @@ import {
   isSkillEnabled,
   getSkillOverrides,
 } from '../../store/skillOverrides';
-import { Skill, ALL_SKILL_DIRS, loadSkillsFromDirs } from '../skills/skillUtils';
+import { Skill, SkillBundle, ALL_SKILL_DIRS, loadSkillsFromDirs } from '../skills/skillUtils';
 import { toastService } from '../../toasts';
 
 interface BottomMenuSkillSelectionProps {
   sessionId: string | null;
 }
 
+type SkillEntry =
+  | { kind: 'single'; skill: Skill; enabled: boolean }
+  | { kind: 'bundle'; bundle: SkillBundle; enabled: boolean };
+
 export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelectionProps) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [allSkills, setAllSkills] = useState<Skill[]>([]);
+  const [allBundles, setAllBundles] = useState<SkillBundle[]>([]);
   const [hubUpdateTrigger, setHubUpdateTrigger] = useState(0);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [pendingSort, setPendingSort] = useState(false);
-  const [togglingSkill, setTogglingSkill] = useState<string | null>(null);
-  // Per-session overrides (local only, no backend API)
+  const [togglingKey, setTogglingKey] = useState<string | null>(null);
   const [sessionOverrides, setSessionOverrides] = useState<Map<string, boolean>>(new Map());
   const sortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isHubView = !sessionId;
 
-  useEffect(() => {
-    loadSkillOverrides().then(() => {
-      loadSkillsFromDirs(ALL_SKILL_DIRS).then(setAllSkills);
+  const loadAll = useCallback(() => {
+    return loadSkillOverrides().then(() => {
+      loadSkillsFromDirs(ALL_SKILL_DIRS).then(({ singles, bundles }) => {
+        setAllSkills(singles);
+        setAllBundles(bundles);
+      });
     });
   }, []);
 
   useEffect(() => {
+    loadAll();
+  }, [loadAll]);
+
+  useEffect(() => {
     if (isOpen) {
-      loadSkillOverrides().then(() => {
-        loadSkillsFromDirs(ALL_SKILL_DIRS).then(setAllSkills);
-        setHubUpdateTrigger((prev) => prev + 1);
-      });
+      loadAll().then(() => setHubUpdateTrigger((prev) => prev + 1));
     }
-  }, [isOpen]);
+  }, [isOpen, loadAll]);
 
   useEffect(() => {
     return () => {
@@ -52,88 +60,111 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
   }, []);
 
   const handleToggle = useCallback(
-    async (skill: Skill) => {
-      if (togglingSkill === skill.name) return;
+    async (key: string, displayName: string) => {
+      if (togglingKey === key) return;
 
       setIsTransitioning(true);
-      setTogglingSkill(skill.name);
+      setTogglingKey(key);
 
-      if (isHubView) {
-        const currentEnabled = isSkillEnabled(skill.name);
-        setSkillOverride(skill.name, !currentEnabled);
-        await saveSkillOverrides();
+      const scheduleSort = () => {
         setPendingSort(true);
         if (sortTimeoutRef.current) clearTimeout(sortTimeoutRef.current);
         sortTimeoutRef.current = setTimeout(() => {
           setHubUpdateTrigger((prev) => prev + 1);
           setPendingSort(false);
           setIsTransitioning(false);
-          setTogglingSkill(null);
+          setTogglingKey(null);
         }, 800);
+      };
+
+      if (isHubView) {
+        const currentEnabled = isSkillEnabled(key);
+        setSkillOverride(key, !currentEnabled);
+        await saveSkillOverrides();
+        scheduleSort();
         toastService.success({
           title: 'Skill Updated',
-          msg: `${skill.name} will be ${!currentEnabled ? 'enabled' : 'disabled'} in new chats`,
+          msg: `${displayName} will be ${!currentEnabled ? 'enabled' : 'disabled'} in new chats`,
         });
         return;
       }
 
       // Session view: local state only
-      const currentEnabled = sessionOverrides.has(skill.name)
-        ? sessionOverrides.get(skill.name)!
-        : isSkillEnabled(skill.name);
+      const currentEnabled = sessionOverrides.has(key)
+        ? sessionOverrides.get(key)!
+        : isSkillEnabled(key);
       const newEnabled = !currentEnabled;
       setSessionOverrides((prev) => {
         const next = new Map(prev);
-        next.set(skill.name, newEnabled);
+        next.set(key, newEnabled);
         return next;
       });
-      setPendingSort(true);
-      if (sortTimeoutRef.current) clearTimeout(sortTimeoutRef.current);
-      sortTimeoutRef.current = setTimeout(() => {
-        setPendingSort(false);
-        setIsTransitioning(false);
-        setTogglingSkill(null);
-      }, 800);
+      scheduleSort();
       toastService.success({
         title: 'Skill Updated',
-        msg: `${skill.name} ${newEnabled ? 'enabled' : 'disabled'} for this session`,
+        msg: `${displayName} ${newEnabled ? 'enabled' : 'disabled'} for this session`,
       });
     },
-    [isHubView, togglingSkill, sessionOverrides]
+    [isHubView, togglingKey, sessionOverrides]
   );
 
-  const skillsList = useMemo(() => {
+  const entries = useMemo((): SkillEntry[] => {
     const hubOverrides = getSkillOverrides();
-    return allSkills.map((skill) => {
-      let enabled: boolean;
-      if (!isHubView && sessionOverrides.has(skill.name)) {
-        enabled = sessionOverrides.get(skill.name)!;
-      } else if (hubOverrides.has(skill.name)) {
-        enabled = hubOverrides.get(skill.name)!;
-      } else {
-        enabled = true; // default enabled
-      }
-      return { ...skill, enabled };
-    });
+    const resolveEnabled = (key: string): boolean => {
+      if (!isHubView && sessionOverrides.has(key)) return sessionOverrides.get(key)!;
+      if (hubOverrides.has(key)) return hubOverrides.get(key)!;
+      return true;
+    };
+
+    const singles: SkillEntry[] = allSkills.map((skill) => ({
+      kind: 'single',
+      skill,
+      enabled: resolveEnabled(skill.name),
+    }));
+
+    const bundles: SkillEntry[] = allBundles.map((bundle) => ({
+      kind: 'bundle',
+      bundle,
+      enabled: resolveEnabled(bundle.bundleName),
+    }));
+
+    return [...bundles, ...singles];
     // hubUpdateTrigger intentionally triggers re-evaluation when hub overrides change
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allSkills, isHubView, sessionOverrides, hubUpdateTrigger]);
+  }, [allSkills, allBundles, isHubView, sessionOverrides, hubUpdateTrigger]);
 
-  const filteredSkills = useMemo(() => {
+  const filteredEntries = useMemo(() => {
     const q = searchQuery.toLowerCase();
-    return skillsList.filter(
-      (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
-    );
-  }, [skillsList, searchQuery]);
-
-  const sortedSkills = useMemo(() => {
-    return [...filteredSkills].sort((a, b) => {
-      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
-      return a.name.localeCompare(b.name);
+    if (!q) return entries;
+    return entries.filter((e) => {
+      if (e.kind === 'single') {
+        return (
+          e.skill.name.toLowerCase().includes(q) ||
+          e.skill.description.toLowerCase().includes(q)
+        );
+      }
+      return (
+        e.bundle.bundleName.toLowerCase().includes(q) ||
+        e.bundle.skills.some(
+          (s) => s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q)
+        )
+      );
     });
-  }, [filteredSkills]);
+  }, [entries, searchQuery]);
 
-  const activeCount = useMemo(() => skillsList.filter((s) => s.enabled).length, [skillsList]);
+  const sortedEntries = useMemo(() => {
+    return [...filteredEntries].sort((a, b) => {
+      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
+      const nameA = a.kind === 'single' ? a.skill.name : a.bundle.bundleName;
+      const nameB = b.kind === 'single' ? b.skill.name : b.bundle.bundleName;
+      return nameA.localeCompare(nameB);
+    });
+  }, [filteredEntries]);
+
+  const activeCount = useMemo(
+    () => entries.filter((e) => e.enabled).length,
+    [entries]
+  );
 
   return (
     <DropdownMenu
@@ -145,7 +176,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
           if (sortTimeoutRef.current) clearTimeout(sortTimeoutRef.current);
           setIsTransitioning(false);
           setPendingSort(false);
-          setTogglingSkill(null);
+          setTogglingKey(null);
         }
       }}
     >
@@ -182,27 +213,67 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
             isTransitioning && pendingSort ? 'opacity-50' : 'opacity-100'
           }`}
         >
-          {sortedSkills.length === 0 ? (
+          {sortedEntries.length === 0 ? (
             <div className="px-2 py-4 text-center text-sm text-text-default/70">
               {searchQuery ? 'no skills found' : 'no skills available'}
             </div>
           ) : (
-            sortedSkills.map((skill) => {
-              const isToggling = togglingSkill === skill.name;
+            sortedEntries.map((entry) => {
+              if (entry.kind === 'single') {
+                const { skill, enabled } = entry;
+                const isToggling = togglingKey === skill.name;
+                return (
+                  <div
+                    key={skill.folderPath}
+                    className={`flex items-center justify-between px-2 py-2 hover:bg-background-medium transition-all duration-300 ${
+                      isToggling ? 'cursor-wait opacity-70' : 'cursor-pointer'
+                    }`}
+                    onClick={() => !isToggling && handleToggle(skill.name, skill.name)}
+                    title={skill.description || skill.name}
+                  >
+                    <div className="text-sm font-medium text-text-default">{skill.name}</div>
+                    <div onClick={(e) => e.stopPropagation()}>
+                      <Switch
+                        checked={enabled}
+                        onCheckedChange={() => handleToggle(skill.name, skill.name)}
+                        variant="mono"
+                        disabled={isToggling}
+                      />
+                    </div>
+                  </div>
+                );
+              }
+
+              // Bundle entry
+              const { bundle, enabled } = entry;
+              const isToggling = togglingKey === bundle.bundleName;
+              const subNames = bundle.skills.map((s) => s.name).join(', ');
               return (
                 <div
-                  key={skill.folderPath}
-                  className={`flex items-center justify-between px-2 py-2 hover:bg-background-medium transition-all duration-300 ${
+                  key={bundle.folderPath}
+                  className={`flex items-start justify-between px-2 py-2 hover:bg-background-medium transition-all duration-300 ${
                     isToggling ? 'cursor-wait opacity-70' : 'cursor-pointer'
                   }`}
-                  onClick={() => !isToggling && handleToggle(skill)}
-                  title={skill.description || skill.name}
+                  onClick={() =>
+                    !isToggling && handleToggle(bundle.bundleName, bundle.bundleName)
+                  }
+                  title={`Bundle: ${subNames}`}
                 >
-                  <div className="text-sm font-medium text-text-default">{skill.name}</div>
-                  <div onClick={(e) => e.stopPropagation()}>
+                  <div className="flex-1 min-w-0 pr-2">
+                    <div className="text-sm font-medium text-text-default">
+                      {bundle.bundleName}
+                      <span className="ml-1 text-[10px] text-text-subtle font-normal">
+                        bundle
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-text-subtle truncate">{subNames}</div>
+                  </div>
+                  <div onClick={(e) => e.stopPropagation()} className="flex-shrink-0 mt-0.5">
                     <Switch
-                      checked={skill.enabled}
-                      onCheckedChange={() => handleToggle(skill)}
+                      checked={enabled}
+                      onCheckedChange={() =>
+                        handleToggle(bundle.bundleName, bundle.bundleName)
+                      }
                       variant="mono"
                       disabled={isToggling}
                     />
