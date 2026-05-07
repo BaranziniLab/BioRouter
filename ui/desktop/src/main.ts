@@ -971,7 +971,7 @@ const createTray = () => {
     setTrayRef(tray);
     updateTrayMenu(getUpdateAvailable());
 
-    if (process.platform === 'win32') {
+    if (process.platform === 'win32' || process.platform === 'darwin') {
       tray.on('click', showWindow);
     }
   } catch (error) {
