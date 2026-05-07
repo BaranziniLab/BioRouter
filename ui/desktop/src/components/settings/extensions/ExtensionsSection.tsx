@@ -13,6 +13,7 @@ import {
 } from './utils';
 
 import { activateExtensionDefault, deleteExtension, toggleExtensionDefault } from './index';
+import { toastService } from '../../../toasts';
 import { ExtensionConfig } from '../../../api/types.gen';
 import { BrxtInstallModal } from '../../BrxtInstallModal';
 
@@ -155,11 +156,34 @@ export default function ExtensionsSection({
   const handleDeleteExtension = async (name: string) => {
     handleModalClose();
 
+    // Detect .brxt-installed extensions by their --directory arg pointing to extensions/
+    const config = extensionsList.find((e) => e.name === name);
+    const isBrxtInstalled =
+      config?.type === 'stdio' &&
+      Array.isArray(config.args) &&
+      config.args.some(
+        (arg) => typeof arg === 'string' && arg.includes('biorouter/extensions/')
+      );
+
     try {
+      if (isBrxtInstalled) {
+        const uninstallResult = await window.electron.uninstallBrxtExtension(name);
+        if ('error' in uninstallResult) {
+          toastService.error({
+            title: name,
+            msg: `Failed to remove extension files: ${uninstallResult.error}`,
+          });
+          return;
+        }
+      }
       await deleteExtension({
         name,
         removeFromConfig: removeExtension,
+        extensionConfig: config,
       });
+      if (isBrxtInstalled) {
+        toastService.success({ title: name, msg: 'Extension and its skills removed' });
+      }
     } catch (error) {
       console.error('Failed to delete extension:', error);
     } finally {
