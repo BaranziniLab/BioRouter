@@ -1914,7 +1914,7 @@ ipcMain.handle('delete-file', async (_event, filePath: string) => {
     if (!isAllowed) {
       throw new Error(`Access denied: path '${resolvedPath}' is outside allowed directories`);
     }
-    await fs.unlink(expandedPath);
+    await fs.unlink(resolvedPath);
     return true;
   } catch (error) {
     console.error('Error deleting file:', error);
