@@ -62,17 +62,26 @@ pub fn check_provider_configured(metadata: &ProviderMetadata, provider_type: Pro
         .cloned()
         .collect();
 
-    // If there are no non-default keys, this provider needs at least one key explicitly set
+    // If there are no non-default keys, check ONLY BioRouter's stored config (not env vars).
+    // Config::get_param() checks env vars first by design, so we use all_values()/all_secrets()
+    // which read directly from the config file and keychain. This prevents a false "Configured"
+    // state after Remove: providers like Bedrock set AWS_ env vars during initialization via
+    // std::env::set_var(), and those vars can also exist from the system environment
+    // (e.g. ~/.zshrc), surviving even after the user deletes the stored config.
     if required_non_default_keys.is_empty() {
+        let file_values = config.all_values().unwrap_or_default();
+        let secret_values = config.all_secrets().unwrap_or_default();
         return required_keys.iter().any(|key| {
-            let is_set_in_env = env::var(&key.name).is_ok();
-            let is_set_in_config = config.get(&key.name, key.secret).is_ok();
-
-            is_set_in_env || is_set_in_config
+            if key.secret {
+                secret_values.contains_key(&key.name)
+            } else {
+                file_values.contains_key(&key.name)
+            }
         });
     }
 
-    // Otherwise, all non-default keys must be set
+    // Otherwise, all non-default keys must be set (env vars are a valid source here since
+    // keys without defaults won't be set accidentally by provider initialization)
     required_non_default_keys.iter().all(|key| {
         let is_set_in_env = env::var(&key.name).is_ok();
         let is_set_in_config = config.get(&key.name, key.secret).is_ok();

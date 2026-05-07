@@ -26,7 +26,9 @@ pub const ANTHROPIC_DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 const ANTHROPIC_DEFAULT_FAST_MODEL: &str = "claude-haiku-4-5";
 // Verified working against Anthropic API (April 2026).
 const ANTHROPIC_KNOWN_MODELS: &[&str] = &[
-    // Claude 4.6 models (latest)
+    // Claude 4.7 models (latest)
+    "claude-opus-4-7",
+    // Claude 4.6 models
     "claude-opus-4-6",
     "claude-sonnet-4-6",
     // Claude 4.5 models
