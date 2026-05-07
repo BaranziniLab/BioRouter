@@ -78,6 +78,28 @@ function createInvalidBrxt(outPath: string): void {
   zip.writeZip(outPath);
 }
 
+/** Create a .brxt with bundled skills in skills/<slug>/SKILL.md entries. */
+function createValidBrxtWithSkills(
+  manifest: object,
+  skills: Array<{ slug: string; name: string; description: string }>,
+  outPath: string
+): void {
+  const zip = new AdmZip();
+  zip.addFile('manifest.json', Buffer.from(JSON.stringify(manifest)));
+  zip.addFile('README.md', Buffer.from('# Test extension'));
+  zip.addFile('pyproject.toml', Buffer.from('[project]\nname = "test"\nversion = "0.1.0"'));
+  zip.addFile('src/__init__.py', Buffer.from(''));
+  for (const skill of skills) {
+    zip.addFile(
+      `skills/${skill.slug}/SKILL.md`,
+      Buffer.from(
+        `---\nname: ${skill.name}\ndescription: ${skill.description}\n---\n\nSkill body.`
+      )
+    );
+  }
+  zip.writeZip(outPath);
+}
+
 // ---------------------------------------------------------------------------
 // Test suite
 // ---------------------------------------------------------------------------
@@ -415,6 +437,52 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
     expect(configTitle).toBeNull();
 
     await page.screenshot({ path: 'test-results/brxt-no-env-skips-configure.png' });
+
+    await closeModalIfOpen();
+  });
+
+  // ---------------------------------------------------------------------------
+  // Test: Bundle with skills — verify skills preview section is shown
+  // ---------------------------------------------------------------------------
+  test('Bundle with skills shows "Skills included" section in manifest preview', async () => {
+    await goToExtensions();
+    await openBrxtModal();
+
+    const brxtPath = path.join(tmpDir, 'with-skills.brxt');
+    createValidBrxtWithSkills(
+      VALID_MANIFEST_NO_ENV,
+      [
+        {
+          slug: 'cdw-query-cohorts',
+          name: 'cdw-query-cohorts',
+          description: 'Build patient cohorts from CDW data',
+        },
+        {
+          slug: 'cdw-explore-schema',
+          name: 'cdw-explore-schema',
+          description: 'Explore the CDW schema',
+        },
+      ],
+      brxtPath
+    );
+
+    const fileInput = page.locator('input[type="file"][accept=".brxt"]');
+    await fileInput.setInputFiles(brxtPath);
+
+    // Wait for manifest preview to appear
+    await page.waitForSelector('text=Detected from bundle', { timeout: 10000 });
+
+    // The skills count should appear in the metadata line: "2 skills"
+    await expect(page.locator('text=2 skills')).toBeVisible({ timeout: 5000 });
+
+    // The "Skills included" section header should be visible
+    await expect(page.locator('text=Skills included')).toBeVisible({ timeout: 5000 });
+
+    // Both skill names should be listed
+    await expect(page.locator('text=cdw-query-cohorts')).toBeVisible();
+    await expect(page.locator('text=cdw-explore-schema')).toBeVisible();
+
+    await page.screenshot({ path: 'test-results/brxt-skills-preview.png' });
 
     await closeModalIfOpen();
   });
