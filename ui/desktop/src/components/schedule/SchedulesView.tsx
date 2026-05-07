@@ -60,7 +60,7 @@ const ScheduleCard: React.FC<{
 
   return (
     <div
-      className="py-3 px-4 mb-1.5 bg-background-default rounded-xl border border-border-subtle cursor-pointer hover:bg-background-medium transition-colors duration-150"
+      className="py-4 px-2 border-b border-border-subtle last:border-b-0 cursor-pointer hover:bg-background-medium/40 transition-colors duration-150"
       onClick={() => onNavigateToDetail(job.id)}
     >
       <div className="flex justify-between items-start gap-4">
