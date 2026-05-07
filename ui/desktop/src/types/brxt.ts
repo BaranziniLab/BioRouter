@@ -7,6 +7,11 @@ export interface BrxtEnvVar {
   secret: boolean;
 }
 
+export interface BrxtSkillMeta {
+  name: string;
+  description: string;
+}
+
 export interface BrxtManifest {
   name: string;
   display_name: string;
@@ -16,4 +21,5 @@ export interface BrxtManifest {
   repository: string;
   tools_count?: number;
   env_vars: BrxtEnvVar[];
+  skills?: BrxtSkillMeta[];
 }
