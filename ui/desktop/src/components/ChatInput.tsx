@@ -12,6 +12,7 @@ import { DirSwitcher } from './bottom_menu/DirSwitcher';
 import ModelsBottomBar from './settings/models/bottom_bar/ModelsBottomBar';
 import { BottomMenuModeSelection } from './bottom_menu/BottomMenuModeSelection';
 import { BottomMenuExtensionSelection } from './bottom_menu/BottomMenuExtensionSelection';
+import { BottomMenuSkillSelection } from './bottom_menu/BottomMenuSkillSelection';
 import { AlertType, useAlerts } from './alerts';
 import { useConfig } from './ConfigContext';
 import { useModelAndProvider } from './ModelAndProviderContext';
@@ -1444,6 +1445,8 @@ export default function ChatInput({
           <BottomMenuModeSelection />
           <div className="w-px h-4 bg-border-default mx-2" />
           <BottomMenuExtensionSelection sessionId={sessionId} />
+          <div className="w-px h-4 bg-border-default mx-2" />
+          <BottomMenuSkillSelection sessionId={sessionId} />
           {sessionId && messages.length > 0 && (
             <>
               <div className="w-px h-4 bg-border-default mx-2" />
