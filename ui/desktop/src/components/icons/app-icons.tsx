@@ -1,593 +1,214 @@
 /**
- * App icon library — Streamline Ultimate Bold (CC BY 4.0, streamlinehq.com)
- * Drop-in replacements for lucide-react with filled/bold aesthetics.
- * Lucide is kept as a fallback for icons with no free Streamline equivalent.
+ * App icon library — Lucide React (ISC, lucide.dev)
+ * All icons render at strokeWidth=1.5 for a consistent light/outline appearance.
  */
 
 import React from 'react';
 import {
-  Activity,
-  AppWindow,
-  Archive,
-  BookOpen,
-  CircleDotDashed,
-  Code,
-  Database,
-  File,
-  FolderKey,
-  Github,
-  HeartPulse,
-  Image,
-  Link,
-  Monitor,
-  Moon,
-  Music,
-  PanelLeftIcon,
-  Palette,
-  Pill,
-  QrCode,
-  Rocket,
-  ScrollText,
-  Send,
-  Target,
-  Terminal,
-  Tornado,
-  Users,
-  Video,
-  Wrench,
+  Activity as _Activity,
+  AlertCircle as _AlertCircle,
+  AlertTriangle as _AlertTriangle,
+  AppWindow as _AppWindow,
+  AppWindowMac as _AppWindowMac,
+  Archive as _Archive,
+  ArrowLeft as _ArrowLeft,
+  BookOpen as _BookOpen,
+  Bot as _Bot,
+  Brain as _Brain,
+  Calendar as _Calendar,
+  Check as _Check,
+  CheckCircle as _CheckCircle,
+  ChevronDown as _ChevronDown,
+  ChevronLeft as _ChevronLeft,
+  ChevronRight as _ChevronRight,
+  ChevronUp as _ChevronUp,
+  Circle as _Circle,
+  CircleDotDashed as _CircleDotDashed,
+  Clock as _Clock,
+  Code as _Code,
+  Copy as _Copy,
+  Database as _Database,
+  Download as _Download,
+  Edit as _Edit,
+  Edit2 as _Edit2,
+  ExternalLink as _ExternalLink,
+  Eye as _Eye,
+  File as _File,
+  FileText as _FileText,
+  FlaskConical as _FlaskConical,
+  Folder as _Folder,
+  FolderDot as _FolderDot,
+  FolderKey as _FolderKey,
+  Github as _Github,
+  Globe as _Globe,
+  GripVertical as _GripVertical,
+  HeartPulse as _HeartPulse,
+  History as _History,
+  Home as _Home,
+  Image as _Image,
+  Info as _Info,
+  Layers as _Layers,
+  Link as _Link,
+  Loader2 as _Loader2,
+  LoaderCircle as _LoaderCircle,
+  Lock as _Lock,
+  MessageSquare as _MessageSquare,
+  MessageSquareText as _MessageSquareText,
+  Monitor as _Monitor,
+  Moon as _Moon,
+  Music as _Music,
+  Package as _Package,
+  Palette as _Palette,
+  PanelLeftIcon as _PanelLeftIcon,
+  Pause as _Pause,
+  PauseCircle as _PauseCircle,
+  Pill as _Pill,
+  Play as _Play,
+  Plus as _Plus,
+  Puzzle as _Puzzle,
+  QrCode as _QrCode,
+  RefreshCw as _RefreshCw,
+  Rocket as _Rocket,
+  RotateCcw as _RotateCcw,
+  Save as _Save,
+  ScrollText as _ScrollText,
+  Search as _Search,
+  SearchCode as _SearchCode,
+  Send as _Send,
+  Settings as _Settings,
+  Share2 as _Share2,
+  Sliders as _Sliders,
+  SlidersHorizontal as _SlidersHorizontal,
+  Sparkles as _Sparkles,
+  StopCircle as _StopCircle,
+  Sun as _Sun,
+  Target as _Target,
+  Terminal as _Terminal,
+  Tornado as _Tornado,
+  Trash2 as _Trash2,
+  Upload as _Upload,
+  Users as _Users,
+  Video as _Video,
+  Workflow as _Workflow,
+  Wrench as _Wrench,
+  X as _X,
+  Zap as _Zap,
+  type LucideIcon,
+  type LucideProps,
 } from 'lucide-react';
 
-export {
-  Activity,
-  AppWindow,
-  Archive,
-  BookOpen,
-  CircleDotDashed,
-  Code,
-  Database,
-  File,
-  FolderKey,
-  Github,
-  HeartPulse,
-  Image,
-  Link,
-  Monitor,
-  Moon,
-  Music,
-  PanelLeftIcon,
-  Palette,
-  Pill,
-  QrCode,
-  Rocket,
-  ScrollText,
-  Send,
-  Target,
-  Terminal,
-  Tornado,
-  Users,
-  Video,
-  Wrench,
-};
+// ---------------------------------------------------------------------------
+// Light wrapper — sets strokeWidth=1.5 as the default; caller can override.
+// ---------------------------------------------------------------------------
+const light =
+  (Icon: LucideIcon): React.FC<LucideProps> =>
+  ({ strokeWidth = 1.5, ...props }) =>
+    <Icon strokeWidth={strokeWidth} {...props} />;
 
 // ---------------------------------------------------------------------------
-// Base type — matches lucide-react's LucideProps for drop-in compatibility
+// Named exports — same names as the original file so no consumer changes.
 // ---------------------------------------------------------------------------
 
-type IconProps = React.SVGProps<globalThis.SVGSVGElement> & {
-  size?: number | string;
-  strokeWidth?: number | string;
-  color?: string;
-};
-
-// The SVG wrapper: fills use currentColor so CSS `color` / Tailwind `text-*` work.
-const Svg = ({
-  size = 24,
-  className,
-  color,
-  style,
-  strokeWidth: _sw,
-  width: _w,
-  height: _h,
-  children,
-  ...rest
-}: IconProps & { children: React.ReactNode }) => (
-  <svg
-    xmlns="http://www.w3.org/2000/svg"
-    viewBox="0 0 24 24"
-    width={size}
-    height={size}
-    fill="currentColor"
-    className={className}
-    style={color ? { color, ...style } : style}
-    aria-hidden="true"
-    {...rest}
-  >
-    {children}
-  </svg>
-);
-
-// ---------------------------------------------------------------------------
-// Streamline Ultimate Bold icon components
-// ---------------------------------------------------------------------------
-
-/** Chevron / arrow — rotated for Down / Up / Right / Left variants */
-const ChevronBase = ({ deg = 0, ...props }: IconProps & { deg?: number }) => (
-  <Svg {...props}>
-    <path
-      style={deg ? { transformOrigin: 'center', transform: `rotate(${deg}deg)` } : undefined}
-      d="M23.4665 16.6854 12.71 4.4914c-0.409-0.4322-1.097-0.4322-1.506 0L0.4866 16.6854c-0.1737.1957-0.2618.4528-0.2445.7139.0215.2632.1484.5066.3521.6747l1.809 1.5157c.2117.1859.4933.2714.7725.2347.2618-.0189.5049-.1423.6748-.3422l7.9892-9.2409c.1029-.1019.2687-.1019.3716 0l7.9891 9.2409c.1699.1999.4131.3233.6748.3422.2616.0253.5224-.0557.7236-.2249l1.8091-1.5255c.2036-.1681.3306-.4115.352-.6747.0042-.2681-.1018-.5262-.2934-.7138Z"
-    />
-  </Svg>
-);
-
-export const ChevronUp = (props: IconProps) => <ChevronBase {...props} />;
-export const ChevronDown = (props: IconProps) => <ChevronBase deg={180} {...props} />;
-export const ChevronRight = (props: IconProps) => <ChevronBase deg={90} {...props} />;
-export const ChevronLeft = (props: IconProps) => <ChevronBase deg={-90} {...props} />;
-export const ChevronDownIcon = ChevronDown;
-export const ChevronRightIcon = ChevronRight;
-
-export const ArrowLeft = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M22.91 9H11.55a.25.25 0 0 1-.23-.15.23.23 0 0 1 0-.26l4.23-4.94a1 1 0 0 0 .15-1.07 1 1 0 0 0-.87-.58H9.14a1 1 0 0 0-.75.33l-8 9a1 1 0 0 0 0 1.34l8.05 9a1 1 0 0 0 .75.33h5.69a1 1 0 0 0 .91-.58 1 1 0 0 0-.15-1.07l-4.23-4.94a.23.23 0 0 1 0-.26.25.25 0 0 1 .23-.15h11.27a1 1 0 0 0 1-1v-4a1 1 0 0 0-1-1Z" />
-  </Svg>
-);
-
-/** Warning — octagon with exclamation (alert-octagon-1) */
-export const AlertTriangle = (props: IconProps) => (
-  <Svg {...props}>
-    <path
-      fillRule="evenodd"
-      d="M7.35.05a.75.75 0 0 0-.526.216l-6.6 6.5A.75.75 0 0 0 0 7.3v9.4c0 .2.08.393.224.534l6.6 6.5a.75.75 0 0 0 .526.216h9.3a.75.75 0 0 0 .526-.216l6.6-6.5A.75.75 0 0 0 24 16.7V7.3a.75.75 0 0 0-.224-.534l-6.6-6.5A.75.75 0 0 0 16.65.05h-9.3ZM12 18.974a1.509 1.509 0 1 0 0-3.018 1.509 1.509 0 0 0 0 3.018Zm.316-6.215ZM9.339 7.188A2.668 2.668 0 0 1 12 4.526a2.668 2.668 0 0 1 2.661 2.662c0 .38-.14.966-.318 1.573a29.8 29.8 0 0 1-.689 2.025 27.61 27.61 0 0 1-.744 1.8c-.11.237-.216.445-.307.598a1.651 1.651 0 0 1-.15.219.738.738 0 0 1-.125.118.549.549 0 0 1-.35.11.555.555 0 0 1-.32-.123.772.772 0 0 1-.115-.115 1.747 1.747 0 0 1-.148-.218 7.34 7.34 0 0 1-.305-.6 28.161 28.161 0 0 1-.744-1.797 29.767 29.767 0 0 1-.689-2.02c-.178-.605-.318-1.19-.318-1.57Z"
-      clipRule="evenodd"
-    />
-  </Svg>
-);
-
-/** Info / error circle — information-circle */
-export const AlertCircle = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M12 0a12 12 0 1 0 12 12A12 12 0 0 0 12 0Zm.25 5a1.5 1.5 0 1 1-1.5 1.5 1.5 1.5 0 0 1 1.5-1.5Zm2.25 13.5h-4a1 1 0 0 1 0-2h.75a.25.25 0 0 0 .25-.25v-4.5a.25.25 0 0 0-.25-.25h-.75a1 1 0 0 1 0-2h1a2 2 0 0 1 2 2v4.75a.25.25 0 0 0 .25.25h.75a1 1 0 0 1 0 2Z" />
-  </Svg>
-);
-
-/** Information circle — same shape, used for tooltip/info icons */
-export const Info = AlertCircle;
-
-/** Plus / add — add-circle-bold */
-export const Plus = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M0.5 12A11.5 11.5 0 1 0 12 0.5 11.51 11.51 0 0 0 0.5 12Zm5-.5a1 1 0 0 1 1-1h3.75a.25.25 0 0 0 .25-.25V6.5a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v3.75a.25.25 0 0 0 .25.25h3.75a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1h-3.75a.25.25 0 0 0-.25.25v3.75a1 1 0 0 1-1 1h-1a1 1 0 0 1-1-1v-3.75a.25.25 0 0 0-.25-.25H6.5a1 1 0 0 1-1-1Z" />
-  </Svg>
-);
-export const PlusIcon = Plus;
-
-/** X / close — delete-2 (circle with X) */
-export const X = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M24 12a12 12 0 1 0-12 12 12 12 0 0 0 12-12Zm-7.29 3.28a1 1 0 0 1 0 1.41 1 1 0 0 1-1.42 0l-3.11-3.11a.26.26 0 0 0-.35 0l-3.11 3.11a1 1 0 0 1-1.41-1.41l3.11-3.11a.26.26 0 0 0 0-.35L7.31 8.71a1 1 0 0 1 0-1.42 1 1 0 0 1 1.41 0l3.11 3.11a.24.24 0 0 0 .35 0l3.11-3.11a1 1 0 1 1 1.42 1.42l-3.11 3.11a.24.24 0 0 0 0 .35Z" />
-  </Svg>
-);
-export const XIcon = X;
-
-/** Play — button-play (filled circle) */
-export const Play = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M12 0C9.62663 0 7.30655.703788 5.33316 2.02236 3.35977 3.34094 1.8217 5.21509.913451 7.4078.00519943 9.60051-.232441 12.0133.230582 14.3411c.463023 2.3278 1.605908 4.466 3.284138 6.1442 1.67823 1.6782 3.81643 2.8211 6.1442 3.2841 2.32778.463 4.74058.2254 6.93328-.6828 2.1927-.9083 4.0669-2.4464 5.3854-4.4198C23.2962 16.6935 24 14.3734 24 12c0-3.1826-1.2643-6.23485-3.5147-8.48528C18.2348 1.26428 15.1826 0 12 0Zm4.83 12.89-7.37999 3.69c-.15223.0767-.32155.1132-.49186.1061-.17032-.0071-.33598-.0577-.48126-.1469-.14528-.0891-.26536-.214-.34882-.3626-.08346-.1486-.12755-.3161-.12806-.4866V8.31c-.0012-.17131.04163-.34006.12439-.49006.08276-.14999.20266-.27622.34822-.36656.14555-.09035.31188-.14179.48303-.14938.17114-.0076.34137.0289.49436.106L16.83 11.1c.1664.0829.3064.2106.4043.3687.0978.1581.1496.3404.1496.5263s-.0518.3682-.1496.5263c-.0979.1581-.2379.2858-.4043.3687Z" />
-  </Svg>
-);
-
-/** Pause — two vertical bars */
-export const Pause = (props: IconProps) => (
-  <Svg {...props}>
-    <rect x="4.5" y="3" width="5" height="18" rx="1.5" />
-    <rect x="14.5" y="3" width="5" height="18" rx="1.5" />
-  </Svg>
-);
-
-/** PauseCircle — circle with two vertical bars */
-export const PauseCircle = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M12 0a12 12 0 1 0 12 12A12 12 0 0 0 12 0Zm-2 15.5a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5v-7a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 .5.5Zm5 0a.5.5 0 0 1-.5.5h-2a.5.5 0 0 1-.5-.5v-7a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 .5.5Z" />
-  </Svg>
-);
-
-/** Stop / Square / StopCircle — button-stop (circle with square) */
-export const Square = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M12 24A12 12 0 1 0 0 12a12 12 0 0 0 12 12ZM7.5 9A1.5 1.5 0 0 1 9 7.5h6A1.5 1.5 0 0 1 16.5 9v6a1.5 1.5 0 0 1-1.5 1.5H9A1.5 1.5 0 0 1 7.5 15Z" />
-  </Svg>
-);
-export const StopCircle = Square;
-
-/** Loader / spinner — loading-circle radial dots (use with animate-spin) */
-export const Loader2 = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M12 6.38a1.22 1.22 0 0 0 1.22-1.23V1.24a1.22 1.22 0 0 0-2.44 0v3.91A1.22 1.22 0 0 0 12 6.38Z" />
-    <path d="M6.79 6.39A1.21 1.21 0 0 0 7.85 7a1.26 1.26 0 0 0 .61-.16 1.22 1.22 0 0 0 .44-1.67L8.17 3.9a1.22 1.22 0 0 0-1.67-.45 1.23 1.23 0 0 0-.45 1.67Z" opacity=".85" />
-    <path d="m2.92 9.15 1.27.73a1.21 1.21 0 0 0 .61.12 1.23 1.23 0 0 0 1.06-.61 1.22 1.22 0 0 0-.45-1.67L4.14 7a1.22 1.22 0 0 0-1.67.45 1.24 1.24 0 0 0 .45 1.7Z" opacity=".7" />
-    <path d="M2.22 14.2h1.47a1.23 1.23 0 0 0 0-2.45H2.22a1.23 1.23 0 0 0 0 2.45Z" opacity=".55" />
-    <path d="m4.19 16.07-1.27.74a1.22 1.22 0 1 0 1.22 2.11l1.27-.73a1.22 1.22 0 0 0 .45-1.67 1.24 1.24 0 0 0-1.67-.45Z" opacity=".45" />
-    <path d="M6.5 22.5a1.2 1.2 0 0 0 1.67-.45l.73-1.27a1.22 1.22 0 1 0-2.11-1.22l-.74 1.27a1.23 1.23 0 0 0 .45 1.67Z" opacity=".35" />
-    <path d="M12 24a1.22 1.22 0 0 0 1.22-1.23v-1.48a1.22 1.22 0 1 0-2.44 0v1.46A1.22 1.22 0 0 0 12 24Z" opacity=".25" />
-    <path d="M15.83 22.05A1.22 1.22 0 0 0 18 20.83l-.74-1.27a1.22 1.22 0 1 0-2.11 1.22Z" opacity=".2" />
-    <path d="m21.08 16.81-1.27-.74a1.24 1.24 0 0 0-1.67.45 1.22 1.22 0 0 0 .45 1.67l1.27.73a1.22 1.22 0 1 0 1.22-2.11Z" opacity=".15" />
-    <path d="M19.09 13a1.22 1.22 0 0 0 1.22 1.22h1.47a1.23 1.23 0 0 0 0-2.45h-1.47A1.23 1.23 0 0 0 19.09 13Z" opacity=".1" />
-    <path d="M18.14 9.43a1.23 1.23 0 0 0 1.06.57 1.21 1.21 0 0 0 .61-.16l1.27-.73a1.24 1.24 0 0 0 .45-1.67A1.22 1.22 0 0 0 19.86 7l-1.27.73a1.22 1.22 0 0 0-.45 1.7Z" opacity=".07" />
-    <path d="M15.54 6.84a1.26 1.26 0 0 0 .61.16 1.21 1.21 0 0 0 1.06-.61L18 5.12a1.23 1.23 0 0 0-.45-1.67 1.22 1.22 0 0 0-1.67.45l-.78 1.27a1.22 1.22 0 0 0 .44 1.67Z" opacity=".04" />
-  </Svg>
-);
-export const LoaderCircle = Loader2;
-
-/** Edit / pencil — content-paper-edit */
-export const Edit = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M12.06 20.13a.25.25 0 0 0-.42.13L11 23.4a.51.51 0 0 0 .14.45.47.47 0 0 0 .35.15h.1l3.14-.63a.24.24 0 0 0 .19-.17.23.23 0 0 0-.06-.25Z" />
-    <path d="M23.23 11.77a2.61 2.61 0 0 0-3.7 0L13 18.27a.48.48 0 0 0 0 .7l3 3a.48.48 0 0 0 .7 0l6.51-6.5a2.61 2.61 0 0 0 .02-3.7Z" />
-    <path d="M11.3 17.65a.25.25 0 0 0-.23-.15H2.5A.5.5 0 0 1 2 17V2.5a.5.5 0 0 1 .5-.5h13a.5.5 0 0 1 .5.5v10.07a.25.25 0 0 0 .15.23.26.26 0 0 0 .28-.05l1.28-1.28a1.05 1.05 0 0 0 .29-.71V2a2 2 0 0 0-2-2H2a2 2 0 0 0-2 2v15.5a2 2 0 0 0 2 2h7.87a.5.5 0 0 0 .48-.35 1.86 1.86 0 0 1 .5-.82l.4-.4a.26.26 0 0 0 .05-.28Z" />
-  </Svg>
-);
-
-/** Check / confirm — filled checkmark */
-export const Check = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="m23.15 5.4-2.8-2.8a.5.5 0 0 0-.7 0L7.85 14.4a.5.5 0 0 1-.7 0l-2.8-2.8a.5.5 0 0 0-.7 0l-2.8 2.8a.5.5 0 0 0 0 .7l6.3 6.3a.5.5 0 0 0 .7 0l15.3-15.3a.5.5 0 0 0 0-.7Z" />
-  </Svg>
-);
+export const Activity = light(_Activity);
+export const AlertCircle = light(_AlertCircle);
+export const Info = light(_Info);
+export const AlertTriangle = light(_AlertTriangle);
+export const AppWindow = light(_AppWindow);
+export const AppWindowMac = light(_AppWindowMac);
+export const Archive = light(_Archive);
+export const ArrowLeft = light(_ArrowLeft);
+export const BookOpen = light(_BookOpen);
+export const Bot = light(_Bot);
+export const Brain = light(_Brain);
+export const Calendar = light(_Calendar);
+export const Check = light(_Check);
 export const CheckIcon = Check;
-
-/** CheckCircle — check-badge (verified badge shape) */
-export const CheckCircle = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="m22.72 10.35-1.84-1.48a1.09 1.09 0 0 1-.4-1l.25-2.34a2.09 2.09 0 0 0-2.3-2.31l-2.35.25a1.09 1.09 0 0 1-1-.4l-1.45-1.81a2.16 2.16 0 0 0-3.26 0L8.89 3.1a1.09 1.09 0 0 1-1 .4l-2.32-.25a2.09 2.09 0 0 0-2.3 2.31l.25 2.34a1.09 1.09 0 0 1-.4 1l-1.84 1.45a2.09 2.09 0 0 0 0 3.26l1.84 1.48a1.1 1.1 0 0 1 .4 1l-.25 2.35a2.07 2.07 0 0 0 .6 1.7 2 2 0 0 0 1.7.6l2.35-.25a1.09 1.09 0 0 1 1 .4l1.48 1.84a2.09 2.09 0 0 0 3.26 0l1.48-1.84a1.09 1.09 0 0 1 1-.4l2.35.25a2 2 0 0 0 1.7-.6 2.07 2.07 0 0 0 .6-1.7l-.25-2.35a1.1 1.1 0 0 1 .4-1l1.84-1.48a2.09 2.09 0 0 0 0-3.26Zm-10.32 4.7a1.79 1.79 0 0 1-2.67.19L7.29 12.8a1 1 0 1 1 1.42-1.42L11 13.63l3.91-5.21a1 1 0 0 1 1.6 1.2Z" />
-  </Svg>
-);
-
-/** CircleIcon — plain filled circle */
-export const CircleIcon = (props: IconProps) => (
-  <Svg {...props}>
-    <circle cx="12" cy="12" r="11.5" />
-  </Svg>
-);
-
-/** Trash / delete — bin-1 */
-export const Trash2 = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M19.45 7.5H4.55a.5.5 0 0 0-.5.54l1.28 14.14a2 2 0 0 0 2 1.82h9.34a2 2 0 0 0 2-1.82L20 8a.5.5 0 0 0-.5-.54Zm-9.2 13a.75.75 0 0 1-1.5 0v-9a.75.75 0 0 1 1.5 0Zm5 0a.75.75 0 0 1-1.5 0v-9a.75.75 0 0 1 1.5 0Z" />
-    <path d="M22 4h-4.75a.25.25 0 0 1-.25-.25V2.5A2.5 2.5 0 0 0 14.5 0h-5A2.5 2.5 0 0 0 7 2.5v1.25a.25.25 0 0 1-.25.25H2a1 1 0 0 0 0 2h20a1 1 0 0 0 0-2ZM9 3.75V2.5a.5.5 0 0 1 .5-.5h5a.5.5 0 0 1 .5.5v1.25a.25.25 0 0 1-.25.25h-5.5A.25.25 0 0 1 9 3.75Z" />
-  </Svg>
-);
-
-/** Settings / config sliders — settings-slider-desktop-horizontal */
-export const Sliders = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M22.5 0h-21A1.5 1.5 0 0 0 0 1.5v13.75a.25.25 0 0 0 .25.25h23.5a.25.25 0 0 0 .25-.25V1.5A1.5 1.5 0 0 0 22.5 0ZM4.77 4.5h1.71a.75.75 0 0 1 0 1.5H4.77a.75.75 0 0 1 0-1.5Zm5.25 7H4.77a.75.75 0 0 1 0-1.5H10a.75.75 0 0 1 0 1.5Zm.3-4.5A1.75 1.75 0 1 1 12 5.16 1.75 1.75 0 0 1 10.32 7Zm3.53 5.5a1.75 1.75 0 1 1 1.66-1.84 1.76 1.76 0 0 1-1.66 1.84Zm5.38-1h-1.71a.75.75 0 0 1 0-1.5h1.71a.75.75 0 0 1 0 1.5Zm0-5.5H14a.75.75 0 0 1 0-1.5h5.25a.75.75 0 0 1 0 1.5Z" />
-    <path d="M23.75 17H.25a.25.25 0 0 0-.25.25v1.25A1.5 1.5 0 0 0 1.5 20h8.3l-2.25 3.21a.49.49 0 0 0 0 .52A.48.48 0 0 0 8 24h8a.48.48 0 0 0 .44-.27.49.49 0 0 0 0-.52L14.2 20h8.3a1.5 1.5 0 0 0 1.5-1.5v-1.25a.25.25 0 0 0-.25-.25Z" />
-  </Svg>
-);
-export const SlidersHorizontal = Sliders;
-
-/** Save — stacked files (common-file-stack) */
-export const Save = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M18.17 18.5H8a.5.5 0 0 1-.5-.5V4.33a1 1 0 0 0-2 0v14.34a1.83 1.83 0 0 0 1.83 1.83h10.84a1 1 0 0 0 0-2Z" />
-    <path d="M14.67 22H4.5a.5.5 0 0 1-.5-.5V7.83a1 1 0 0 0-2 0v14.34A1.83 1.83 0 0 0 3.83 24h10.84a1 1 0 1 0 0-2Z" />
-    <path d="m21.48 3.57-2.86-3a1.82 1.82 0 0 0-1.3-.57H11a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h9.17A1.83 1.83 0 0 0 22 15.17V4.84a1.78 1.78 0 0 0-.52-1.27Z" />
-  </Svg>
-);
-
-/** External link / open in new tab — share-2 (arrow leaving box) */
-export const ExternalLink = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M11.5 9.5v2a3 3 0 0 1-6 0v-2a8.33 8.33 0 0 1 .29-2.19.23.23 0 0 0 0-.21.24.24 0 0 0-.24-.1H2a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-1a2.5 2.5 0 0 0-2.5 2.5Z" />
-    <path d="m23.71 3.29-3-3a1 1 0 0 0-1.09-.21A1 1 0 0 0 19 1v1.75a.25.25 0 0 1-.25.25H14a6.51 6.51 0 0 0-6.5 6.5v2a1 1 0 0 0 2 0v-2A4.51 4.51 0 0 1 14 5h4.75a.25.25 0 0 1 .25.25V7a1 1 0 0 0 .62.92 1 1 0 0 0 1.09-.21l3-3a1 1 0 0 0 0-1.42Z" />
-  </Svg>
-);
-/** Share2 — share-network: three nodes connected by lines */
-export const Share2 = (props: IconProps) => (
-  <Svg {...props}>
-    <circle cx="5" cy="12" r="3" />
-    <circle cx="20" cy="4" r="3" />
-    <circle cx="20" cy="20" r="3" />
-    <rect x="7.25" y="7.75" width="10.5" height="1.5" rx="0.75" transform="rotate(-29 12.5 8.5)" />
-    <rect x="7.25" y="14.75" width="10.5" height="1.5" rx="0.75" transform="rotate(29 12.5 15.5)" />
-  </Svg>
-);
-
-/** Download — download-bottom (arrow + tray) */
-export const Download = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M22.67 16.94a1.22 1.22 0 0 0-1.22 1.21V20a1.57 1.57 0 0 1-1.57 1.57H4.12A1.57 1.57 0 0 1 2.55 20v-1.85a1.22 1.22 0 0 0-2.43 0V20a4 4 0 0 0 4 4h15.76a4 4 0 0 0 4-4v-1.85a1.21 1.21 0 0 0-1.21-1.21Z" />
-    <path d="M12 0a1.94 1.94 0 0 0-1.94 1.94V11a.25.25 0 0 1-.25.25H7.15a1 1 0 0 0-.73 1.6l4.85 5.58a1 1 0 0 0 1.46 0l4.85-5.58a1 1 0 0 0-.73-1.6h-2.66a.25.25 0 0 1-.25-.25V1.94A1.94 1.94 0 0 0 12 0Z" />
-  </Svg>
-);
-
-/** Brain — Computer Chip 1, redrawn on 24×24: large body, subtle pins, hollow center */
-export const Brain = (props: IconProps) => (
-  <Svg {...props}>
-    <path
-      fillRule="evenodd"
-      clipRule="evenodd"
-      d="M6 4H8V2.5H9.5V4H14.5V2.5H16V4H18A2 2 0 0 1 20 6V8H21.5V9.5H20V14.5H21.5V16H20V18A2 2 0 0 1 18 20H16V21.5H14.5V20H9.5V21.5H8V20H6A2 2 0 0 1 4 18V16H2.5V14.5H4V9.5H2.5V8H4V6A2 2 0 0 1 6 4ZM8.5 8.5H15.5V15.5H8.5Z"
-    />
-  </Svg>
-);
-
-/** Folder — bold filled folder with tab (Streamline Bold style) */
-export const Folder = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M2 0H10L12 4H22A2 2 0 0 1 24 6V22A2 2 0 0 1 22 24H2A2 2 0 0 1 0 22V2A2 2 0 0 1 2 0Z" />
-  </Svg>
-);
-
-/** FolderDot — bold folder with a dot indicator cut out */
-export const FolderDot = (props: IconProps) => (
-  <Svg {...props}>
-    <path
-      fillRule="evenodd"
-      clipRule="evenodd"
-      d="M2 0H10L12 4H22A2 2 0 0 1 24 6V22A2 2 0 0 1 22 24H2A2 2 0 0 1 0 22V2A2 2 0 0 1 2 0ZM10 14A2 2 0 1 0 14 14A2 2 0 0 0 10 14Z"
-    />
-  </Svg>
-);
-
-/** Bot / AI model — computer-chip-core (CPU chip = AI processing) */
-export const Bot = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M12.53 6a.75.75 0 0 1-1.06 0L9.76 4.32a.26.26 0 0 0-.17-.07H9.5a.25.25 0 0 0-.25.25v15a.25.25 0 0 0 .25.25h.09a.26.26 0 0 0 .17-.07L11.47 18a.75.75 0 0 1 1.06 0l1.71 1.71a.26.26 0 0 0 .17.07h.09a.25.25 0 0 0 .25-.25V4.5a.25.25 0 0 0-.25-.25h-.09a.26.26 0 0 0-.17.07Z" />
-    <path d="M21 9.5a1 1 0 0 0 0-2h-1.75a.25.25 0 0 1-.25-.25v-1a.25.25 0 0 1 .25-.25H21a1 1 0 0 0 0-2h-1.75a.25.25 0 0 1-.25-.25V1.5A1.5 1.5 0 0 0 17.5 0h-11A1.5 1.5 0 0 0 5 1.5v2.25a.25.25 0 0 1-.25.25H3a1 1 0 0 0 0 2h1.75a.25.25 0 0 1 .25.25v1a.25.25 0 0 1-.25.25H3a1 1 0 0 0 0 2h1.75a.25.25 0 0 1 .25.25v1a.25.25 0 0 1-.25.25H3a1 1 0 0 0 0 2h1.75a.25.25 0 0 1 .25.25v1a.25.25 0 0 1-.25.25H3a1 1 0 0 0 0 2h1.75a.25.25 0 0 1 .25.25v1a.25.25 0 0 1-.25.25H3a1 1 0 0 0 0 2h1.75a.25.25 0 0 1 .25.25v2.25A1.5 1.5 0 0 0 6.5 24h11a1.5 1.5 0 0 0 1.5-1.5v-2.25a.25.25 0 0 1 .25-.25H21a1 1 0 0 0 0-2h-1.75a.25.25 0 0 1-.25-.25v-1a.25.25 0 0 1 .25-.25H21a1 1 0 0 0 0-2h-1.75a.25.25 0 0 1-.25-.25v-1a.25.25 0 0 1 .25-.25H21a1 1 0 0 0 0-2h-1.75a.25.25 0 0 1-.25-.25v-1a.25.25 0 0 1 .25-.25Zm-4.75-6v17a.76.76 0 0 1-.75.75H14a.75.75 0 0 1-.53-.22l-1.29-1.29a.25.25 0 0 0-.36 0L10.53 21a.75.75 0 0 1-.53.22H8.5a.76.76 0 0 1-.75-.75V3.5a.76.76 0 0 1 .75-.75H10a.75.75 0 0 1 .53.22l1.29 1.29a.25.25 0 0 0 .36 0L13.47 3a.75.75 0 0 1 .53-.25h1.5a.76.76 0 0 1 .75.75Z" />
-  </Svg>
-);
-
-/** CodeAnalysis — magnifier over code brackets (Streamline Core Solid, scaled 14→24) */
-export const CodeAnalysis = (props: IconProps) => (
-  <Svg {...props}>
-    <path
-      fillRule="evenodd"
-      clipRule="evenodd"
-      transform="scale(1.71429)"
-      d="M1.516 6.36a4.844 4.844 0 1 1 9.687 0 4.844 4.844 0 0 1-9.687 0ZM6.359 0.015a6.344 6.344 0 1 0 3.723 11.48l2.195 2.195a1 1 0 0 0 1.415-1.414l-2.196-2.195A6.344 6.344 0 0 0 6.36 0.016Zm-0.745 4.026a0.625 0.625 0 0 1 0 0.884L4.056 6.484l1.558 1.558a0.625 0.625 0 0 1-0.884 0.884l-2-2a0.625 0.625 0 0 1 0-0.884l2-2a0.625 0.625 0 0 1 0.884 0Zm2.5 0a0.625 0.625 0 0 0-0.884 0.884l1.558 1.558L7.23 8.042a0.625 0.625 0 0 0 0.884 0.884l2-2a0.625 0.625 0 0 0 0-0.884l-2-2Z"
-    />
-  </Svg>
-);
-
-/** Zap / power / priority — power-button */
-export const Zap = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M10.5 10.92a1.5 1.5 0 1 0 3 0V1.5a1.5 1.5 0 0 0-3 0Z" />
-    <path d="M1.2 11.53a10.92 10.92 0 0 0 18.52 9.28 10.83 10.83 0 0 0 3.08-9.28 11 11 0 0 0-5.73-8.13A1.5 1.5 0 1 0 15.63 6a8 8 0 0 1 4.2 6 7.84 7.84 0 0 1-2.23 6.73 7.92 7.92 0 0 1-11.2 0A7.83 7.83 0 0 1 4.17 12a8 8 0 0 1 4.19-6 1.5 1.5 0 0 0-1.44-2.6 11 11 0 0 0-5.72 8.13Z" />
-  </Svg>
-);
-
-/** Settings gear — cog */
-export const Settings = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M22.5 9.5h-1.86a9.51 9.51 0 0 0-.76-1.84l1.31-1.32a1.46 1.46 0 0 0 .44-1.06 1.47 1.47 0 0 0-.44-1.06l-1.41-1.41a1.49 1.49 0 0 0-2.12 0l-1.32 1.32a9 9 0 0 0-1.84-.77V1.5A1.5 1.5 0 0 0 13 0h-2a1.5 1.5 0 0 0-1.5 1.5v1.86a9 9 0 0 0-1.84.77L6.34 2.81a1.49 1.49 0 0 0-2.12 0L2.81 4.22a1.47 1.47 0 0 0-.44 1.06 1.44 1.44 0 0 0 .44 1.06l1.31 1.32a9.51 9.51 0 0 0-.76 1.84H1.5A1.5 1.5 0 0 0 0 11v2a1.5 1.5 0 0 0 1.5 1.5h1.86a9.26 9.26 0 0 0 .76 1.84l-1.31 1.32a1.5 1.5 0 0 0 0 2.12l1.41 1.41a1.53 1.53 0 0 0 2.12 0l1.32-1.31a9.26 9.26 0 0 0 1.84.76v1.86A1.5 1.5 0 0 0 11 24h2a1.5 1.5 0 0 0 1.5-1.5v-1.86a9.26 9.26 0 0 0 1.84-.76l1.32 1.31a1.49 1.49 0 0 0 2.12 0l1.41-1.41a1.5 1.5 0 0 0 0-2.12l-1.31-1.32a9.26 9.26 0 0 0 .76-1.84h1.86A1.5 1.5 0 0 0 24 13v-2a1.5 1.5 0 0 0-1.5-1.5ZM12 17a5 5 0 1 1 5-5 5 5 0 0 1-5 5Z" />
-  </Svg>
-);
-
-/** RotateCcw / reset — synchronize-arrows-three */
-export const RotateCcw = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M13 20.57a1.25 1.25 0 0 0 .6 2.43 10.47 10.47 0 0 0 7.66-8.21.25.25 0 0 1 .22-.21l1.69-.15a.49.49 0 0 0 .42-.31.51.51 0 0 0-.09-.52L20.3 10a.51.51 0 0 0-.42-.16.48.48 0 0 0-.38.23L17 14.18a.5.5 0 0 0 .42.76l.89-.08a.25.25 0 0 1 .26.32A7.92 7.92 0 0 1 13 20.57Z" />
-    <path d="M8.23 2.75A.24.24 0 0 1 8 2.64L7.08 1.2a.51.51 0 0 0-.47-.2.5.5 0 0 0-.42.32L4.4 5.71a.52.52 0 0 0 0 .44.47.47 0 0 0 .38.24l4.8.48a.51.51 0 0 0 .43-.76l-.46-.76a.24.24 0 0 1 0-.23.22.22 0 0 1 .22-.12 7.89 7.89 0 0 1 7.3 2.67 1.24 1.24 0 0 0 1 .45 1.27 1.27 0 0 0 .81-.3A1.25 1.25 0 0 0 19 6 10.44 10.44 0 0 0 8.23 2.75Z" />
-    <path d="M2.56 8.75A1.24 1.24 0 0 0 1 9.51a10.5 10.5 0 0 0 2.59 11 .26.26 0 0 1 0 .29l-.8 1.47a.5.5 0 0 0 .44.74S3 23 8 22.27a.53.53 0 0 0 .4-.27.51.51 0 0 0 0-.45l-2-4.34a.5.5 0 0 0-.4-.28.48.48 0 0 0-.45.26L5.1 18a.26.26 0 0 1-.19.13.25.25 0 0 1-.22-.13 8 8 0 0 1-1.37-7.67 1.24 1.24 0 0 0-.76-1.58Z" />
-  </Svg>
-);
-
-/** RefreshCw / refresh — synchronize-refresh-arrow */
-export const RefreshCw = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M12.57 1.25a10.83 10.83 0 0 0-9.75 7.14.25.25 0 0 1-.27.16L.86 8.31a.5.5 0 0 0-.49.21.51.51 0 0 0 0 .53L3 13.75a.5.5 0 0 0 .4.25.46.46 0 0 0 .42-.14l3.77-3.74a.51.51 0 0 0 .12-.51.48.48 0 0 0-.4-.34L5.59 9a.25.25 0 0 1-.18-.12.26.26 0 0 1 0-.23 8.34 8.34 0 0 1 7.26-4.9 8.25 8.25 0 1 1-6.36 13.13 1.25 1.25 0 1 0-2 1.48 10.75 10.75 0 1 0 8.26-17.11Z" />
-  </Svg>
-);
-
-/** Puzzle / extensions — module-puzzle-2 */
-export const Puzzle = (props: IconProps) => (
-  <Svg {...props}>
-    <path
-      fillRule="evenodd"
-      d="M12.622.25a2 2 0 0 0-1.414.585L8.612 3.43A4.25 4.25 0 1 0 3.43 8.613L.836 11.207a2 2 0 0 0 0 2.829l2.11 2.106a.5.5 0 0 0 .815-.16 3.25 3.25 0 1 1 4.257 4.257.5.5 0 0 0-.16.814l2.106 2.107a2 2 0 0 0 2.829 0l2.594-2.59a4.252 4.252 0 0 0 4.942 3.098 4.25 4.25 0 0 0 .241-8.281l2.595-2.594a2 2 0 0 0 0-2.829l-2.112-2.106a.5.5 0 0 0-.814.16 3.25 3.25 0 1 1-4.257-4.257.5.5 0 0 0 .16-.814L14.036.836A2 2 0 0 0 12.622.25Z"
-      clipRule="evenodd"
-    />
-  </Svg>
-);
-
-/** MessageSquare / chat — Chat Two Bubbles Square 2 style */
-export const MessageSquare = (props: IconProps) => (
-  <Svg {...props}>
-    {/* Back bubble (upper-right) — cut out where front bubble overlaps */}
-    <path
-      fillRule="evenodd"
-      clipRule="evenodd"
-      d="M10 1H22a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H10a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2ZM8 9H17V14H8Z"
-    />
-    {/* Front bubble (lower-left) with tail */}
-    <path d="M3 9H15a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8L5 24V22H3a2 2 0 0 1-2-2V11a2 2 0 0 1 2-2Z" />
-  </Svg>
-);
-export const MessageSquareText = MessageSquare;
-
-/** Lock / secure — lock-5 */
-export const Lock = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M18.75 11.72v-5a6.75 6.75 0 0 0-13.5 0v5a8 8 0 1 0 13.5 0ZM12 18a2 2 0 1 1 2-2 2 2 0 0 1-2 2Zm4.25-9.62a.52.52 0 0 1-.24.43.48.48 0 0 1-.48 0 7.92 7.92 0 0 0-7.06 0 .48.48 0 0 1-.48 0 .52.52 0 0 1-.24-.43V6.75a4.25 4.25 0 0 1 8.5 0Z" />
-  </Svg>
-);
-
-/** FileText / document — office-file-text */
-export const FileText = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M21.71 5.71 16.29.29a1 1 0 0 0-.7-.29H4a2 2 0 0 0-2 2v20a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6.41a1 1 0 0 0-.29-.7ZM20 21.5a.5.5 0 0 1-.5.5h-15a.5.5 0 0 1-.5-.5v-19a.5.5 0 0 1 .5-.5h10.25a.25.25 0 0 1 .25.25V5a2 2 0 0 0 2 2h2.75a.25.25 0 0 1 .25.25Z" />
-    <path d="M16 9.5H8a1 1 0 0 0-1 1V12a1 1 0 0 0 2 0v-.25a.25.25 0 0 1 .25-.25h1.5a.25.25 0 0 1 .25.25v5a.25.25 0 0 1-.25.25H9.5a1 1 0 0 0 0 2h5a1 1 0 0 0 0-2h-1.25a.25.25 0 0 1-.25-.25v-5a.25.25 0 0 1 .25-.25h1.5a.25.25 0 0 1 .25.25V12a1 1 0 0 0 2 0v-1.5a1 1 0 0 0-1-1Z" />
-  </Svg>
-);
-
-/** Eye / view — view-square (eye in frame) */
-export const Eye = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M22 0H2a2 2 0 0 0-2 2v20a2 2 0 0 0 2 2h20a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2Zm-2.55 13.62-.3.31c-1.33 1.43-3.55 3.81-7 3.81s-5.42-2.28-6.65-3.63l-.45-.5a2 2 0 0 1 0-2.75l.45-.5C6.73 9 8.77 6.74 12.12 6.74s5.7 2.38 7 3.8l.3.32a2 2 0 0 1 .03 2.76Z" />
-    <path d="M12.25 8.24a4 4 0 1 0 4 4 4 4 0 0 0-4-4Zm0 5.5a1.5 1.5 0 1 1 1.5-1.5 1.5 1.5 0 0 1-1.5 1.5Z" />
-  </Svg>
-);
-
-/** Clock / time / schedule — time-clock-circle */
-export const Clock = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M12 0a12 12 0 1 0 12 12A12 12 0 0 0 12 0Zm5.2 17.22a1 1 0 0 1-1.42.06l-5-4.54a1 1 0 0 1-.28-.74V6.5a1 1 0 0 1 2 0v5.06l4.63 4.25a1 1 0 0 1 .07 1.41Z" />
-  </Svg>
-);
-
-/** Copy — duplicate (two overlapping squares) */
-export const Copy = (props: IconProps) => (
-  <Svg {...props}>
-    <path
-      fillRule="evenodd"
-      d="M0 2C0 .895429.895431 0 2 0h14c1.1046 0 2 .895432 2 2v1.5c0 .55228-.4477 1-1 1s-1-.44772-1-1V2L2 2v14h1.5c.55228 0 1 .4477 1 1s-.44772 1-1 1H2c-1.10457 0-2-.8954-2-2V2Z"
-      clipRule="evenodd"
-    />
-    <path
-      fillRule="evenodd"
-      d="M8 6c-1.10457 0-2 .89543-2 2v14c0 1.1046.89543 2 2 2h14c1.1046 0 2-.8954 2-2V8c0-1.10457-.8954-2-2-2H8Z"
-      clipRule="evenodd"
-    />
-  </Svg>
-);
-
-/** Search — search-circle-alternate (magnifier in circle) */
-export const Search = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M6.25 10.75a4.5 4.5 0 1 0 9 0 4.5 4.5 0 1 0-9 0" />
-    <path d="M12 0a12 12 0 1 0 12 12A12 12 0 0 0 12 0Zm7.46 18.05a1 1 0 0 1 0 1.41 1 1 0 0 1-1.42 0l-3.33-3.33a.21.21 0 0 0-.28 0 6.49 6.49 0 1 1 2.82-5.35 6.4 6.4 0 0 1-1.14 3.66.26.26 0 0 0 0 .32Z" />
-  </Svg>
-);
+export const CheckCircle = light(_CheckCircle);
+export const ChevronUp = light(_ChevronUp);
+export const ChevronDown = light(_ChevronDown);
+export const ChevronDownIcon = ChevronDown;
+export const ChevronRight = light(_ChevronRight);
+export const ChevronRightIcon = ChevronRight;
+export const ChevronLeft = light(_ChevronLeft);
+export const CircleIcon = light(_Circle);
+export const CircleDotDashed = light(_CircleDotDashed);
+export const Clock = light(_Clock);
+export const Code = light(_Code);
+export const CodeAnalysis = light(_SearchCode);
+export const Copy = light(_Copy);
+export const Database = light(_Database);
+export const Download = light(_Download);
+export const Edit = light(_Edit);
+export const Edit2 = light(_Edit2);
+export const ExternalLink = light(_ExternalLink);
+export const Eye = light(_Eye);
+export const File = light(_File);
+export const FileText = light(_FileText);
+export const FlaskConical = light(_FlaskConical);
+export const Folder = light(_Folder);
+export const FolderDot = light(_FolderDot);
+export const FolderKey = light(_FolderKey);
+export const Github = light(_Github);
+export const Globe = light(_Globe);
+export const GripVertical = light(_GripVertical);
+export const HeartPulse = light(_HeartPulse);
+export const History = light(_History);
+export const Home = light(_Home);
+export const Image = light(_Image);
+export const Layers = light(_Layers);
+export const Link = light(_Link);
+export const Loader2 = light(_Loader2);
+export const LoaderCircle = light(_LoaderCircle);
+export const Lock = light(_Lock);
+export const MessageSquare = light(_MessageSquare);
+export const MessageSquareText = light(_MessageSquareText);
+export const Monitor = light(_Monitor);
+export const Moon = light(_Moon);
+export const Music = light(_Music);
+export const Package = light(_Package);
+export const Palette = light(_Palette);
+export const PanelLeftIcon = light(_PanelLeftIcon);
+export const Pause = light(_Pause);
+export const PauseCircle = light(_PauseCircle);
+export const Pill = light(_Pill);
+export const Play = light(_Play);
+export const Plus = light(_Plus);
+export const PlusIcon = Plus;
+export const Puzzle = light(_Puzzle);
+export const QrCode = light(_QrCode);
+export const RefreshCw = light(_RefreshCw);
+export const Rocket = light(_Rocket);
+export const RotateCcw = light(_RotateCcw);
+export const Save = light(_Save);
+export const ScrollText = light(_ScrollText);
+export const Search = light(_Search);
 export const SearchIcon = Search;
-
-/** Sparkles / AI indicator — reward-stars-2 (sparkle star) */
-export const Sparkles = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M20.82 12.6762c.7544 0 1.2259-.8167.8487-1.47-.1751-.3032-.4986-.49-.8487-.49-6.0564-.1372-8.82-2.94-8.82-8.82 0-.5412-.4388-.98-.98-.98-.5412 0-.98.4388-.98.98 0 5.929-2.8322 8.7318-8.82 8.82-.7544 0-1.2259.8167-.8487 1.47.1751.3032.4986.49.8487.49 5.9388 0 8.7318 2.8028 8.82 8.82 0 .5413.4387.98.98.98.5412 0 .98-.4388.98-.98.3038-6.0466 3.087-8.82 8.7612-8.82Z" />
-    <path d="M16.9196 3.9738h1.225v1.225c0 .5658.6125.9194 1.1025.6365.2274-.1313.3675-.3739.3675-.6365v-1.225h1.225c.5658 0 .9194-.6125.6365-1.1025-.1313-.2274-.3739-.3675-.6365-.3675h-1.225v-1.225c0-.5658-.6125-.9194-1.1025-.6365-.2274.1313-.3675.3739-.3675.6365v1.225h-1.225c-.5658 0-.9194.6125-.6365 1.1025.1313.2274.3739.3675.6365.3675Z" />
-    <path d="M23.025 20.0262H21.8v-1.225c0-.5658-.6125-.9194-1.1025-.6365-.2274.1313-.3675.3739-.3675.6365v1.225h-1.225c-.5658 0-.9194.6125-.6365 1.1025.1313.2274.3739.3675.6365.3675h1.225v1.225c0 .5658.6125.9194 1.1025.6365.2274-.1313.3675-.3739.3675-.6365v-1.225h1.225c.5658 0 .9194-.6125.6365-1.1025-.1313-.2274-.3739-.3675-.6365-.3675Z" />
-  </Svg>
-);
-
-/** GripVertical / drag handle — hand-drag */
-export const GripVertical = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M20.443 3.8587c-.2528-.0044-.5035.0449-.7358.1447-.1102.0481-.1813.1572-.1809.2774v6.0307c0 .4643-.5025.7544-.9046.5223-.1866-.1077-.3015-.3068-.3015-.5223V3.4124c-.0759-1.1042-.9919-1.9623-2.0987-1.966-.2527-.0044-.5035.045-.7358.1447-.1102.0482-.1813.1572-.1809.2775v7.864c0 .4642-.5025.7544-.9046.5223-.1866-.1078-.3015-.3069-.3015-.5223V2.2063C14.0228 1.1021 13.1068.244 12 .2403c-.2527-.0044-.5035.0449-.7358.1447-.1102.0481-.1813.1571-.1809.2774v8.443c0 .4642-.5025.7544-.9046.5223-.1866-.1078-.3015-.3068-.3015-.5223v-5.693C9.7121 1.796 7.859.9644 6.5417 1.9157c-.5296.3824-.8523.9885-.8739 1.6415v11.4342c0 .4642-.5026.7544-.9046.5222-.1866-.1077-.3016-.3068-.3016-.5222V9.5879c0-.1666-.135-.3016-.3015-.3016H3.557c-1.1658 0-2.1107.945-2.1107 2.1108v4.8245c0 2.545 3.7752 7.5384 8.3344 7.5384h6.4408c3.4944-.0066 6.3256-2.8378 6.3322-6.3322V5.9694c0-1.1657-.945-2.1107-2.1107-2.1107Z" />
-  </Svg>
-);
-
-/** FlaskConical / tool call — lab-tube-experiment */
-export const FlaskConical = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M17.5.62A1.49 1.49 0 0 0 16.28 0H7.71A1.49 1.49 0 0 0 6.5.62 1.53 1.53 0 0 0 6.3 2 12.83 12.83 0 0 1 7 6.19V19a5 5 0 1 0 10 0V6.19A12.82 12.82 0 0 1 17.7 2a1.51 1.51 0 0 0-.2-1.38ZM9.66 14.74A1.26 1.26 0 1 1 10.92 16a1.25 1.25 0 0 1-1.26-1.26ZM12.92 21a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 1 1 0 2.5Zm.5-9a1.24 1.24 0 0 1-1.25-1.24 1.26 1.26 0 0 1 1.25-1.26 1.25 1.25 0 1 1 0 2.5Zm2-9.38A14.79 14.79 0 0 0 15 6.19V7.5a.5.5 0 0 1-.5.5h-5a.5.5 0 0 1-.5-.5V6.19a15.16 15.16 0 0 0-.42-3.57.48.48 0 0 1 .09-.43.49.49 0 0 1 .38-.19H15a.5.5 0 0 1 .48.62Z" />
-  </Svg>
-);
-
-/** Calendar — calendar-3 (grid calendar) */
-export const Calendar = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M7.5 10.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Z" />
-    <path d="M12.5 10.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Z" />
-    <path d="M17.5 10.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Z" />
-    <path d="M7.5 14.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Z" />
-    <path d="M12.5 14.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Z" />
-    <path d="M17.5 14.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Z" />
-    <path d="M7.5 18.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Z" />
-    <path d="M12.5 18.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Z" />
-    <path d="M17.5 18.5h-1a1 1 0 0 0 0 2h1a1 1 0 0 0 0-2Z" />
-    <path d="M21.5 3h-2.75a.25.25 0 0 1-.25-.25V1a1 1 0 0 0-2 0v4.75a.75.75 0 0 1-1.5 0V3.5a.5.5 0 0 0-.5-.5H8.25A.25.25 0 0 1 8 2.75V1a1 1 0 0 0-2 0v4.75a.75.75 0 0 1-1.5 0V3.5A.5.5 0 0 0 4 3H2.5a2 2 0 0 0-2 2v17a2 2 0 0 0 2 2h19a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm0 18.5a.5.5 0 0 1-.5.5H3a.5.5 0 0 1-.5-.5v-12A.5.5 0 0 1 3 9h18a.5.5 0 0 1 .5.5Z" />
-  </Svg>
-);
-
-/** AppWindow — app-window-bookmark (browser window) */
-export const AppWindowMac = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M24 4.5a3 3 0 0 0-3-3H3a3 3 0 0 0-3 3v15a3 3 0 0 0 3 3h18a3 3 0 0 0 3-3ZM3 5a1 1 0 1 1 1 1 1 1 0 0 1-1-1Zm3 0a1 1 0 1 1 1 1 1 1 0 0 1-1-1Zm3 0a1 1 0 1 1 1 1 1 1 0 0 1-1-1Zm13 14.5a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V9a.5.5 0 0 1 .5-.5h19a.5.5 0 0 1 .5.5Z" />
-    <path d="M13.54 18.47a.8.8 0 0 0 .34.07.85.85 0 0 0 .61-.26l1.83-1.83a.27.27 0 0 1 .36 0l1.83 1.83a.86.86 0 0 0 .95.19.87.87 0 0 0 .54-.81V9.82a.5.5 0 0 0-.5-.5h-6a.5.5 0 0 0-.5.5v7.84a.87.87 0 0 0 .54.81Z" />
-  </Svg>
-);
-
-/** Sun — weather-sun */
-export const Sun = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M12 4.64A7.36 7.36 0 1 0 19.36 12 7.37 7.37 0 0 0 12 4.64Zm0 12.72A5.36 5.36 0 1 1 17.36 12 5.37 5.37 0 0 1 12 17.36Z" />
-    <path d="M12 3.47a1 1 0 0 0 1-1V1a1 1 0 0 0-2 0v1.47a1 1 0 0 0 1 1Z" />
-    <path d="M4.55 6a1 1 0 0 0 .71.29A1 1 0 0 0 6 6a1 1 0 0 0 0-1.45l-1-1a1 1 0 0 0-1.49 1.38Z" />
-    <path d="M2.47 11H1a1 1 0 0 0 0 2h1.47a1 1 0 1 0 0-2Z" />
-    <path d="m4.55 18-1 1a1 1 0 0 0 0 1.42 1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29l1-1A1 1 0 0 0 4.55 18Z" />
-    <path d="M12 20.53a1 1 0 0 0-1 1V23a1 1 0 0 0 2 0v-1.47a1 1 0 0 0-1-1Z" />
-    <path d="M19.45 18A1 1 0 0 0 18 19.45l1 1a1 1 0 0 0 .71.29 1 1 0 0 0 .71-.29 1 1 0 0 0 0-1.42Z" />
-    <path d="M23 11h-1.47a1 1 0 0 0 0 2H23a1 1 0 0 0 0-2Z" />
-    <path d="M18.74 6.26a1 1 0 0 0 .71-.26l1-1a1 1 0 1 0-1.42-1.42l-1 1A1 1 0 0 0 18 6a1 1 0 0 0 .74.26Z" />
-  </Svg>
-);
-
-/** Home — bold filled house */
-export const Home = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M22.78 10.91L12.53 1.31a.76.76 0 0 0-1.06 0L1.22 10.91a.75.75 0 0 0 .53 1.28h2V21.5A1.5 1.5 0 0 0 5.25 23H9V17a3 3 0 0 1 6 0v6h3.75a1.5 1.5 0 0 0 1.5-1.5V12.19h2a.75.75 0 0 0 .53-1.28Z" />
-  </Svg>
-);
-
-/** History — Search History (Streamline Sharp Solid, 24×24) */
-export const History = (props: IconProps) => (
-  <Svg {...props}>
-    <path
-      fillRule="evenodd"
-      clipRule="evenodd"
-      d="M11.203 3.636a7.567 7.567 0 1 0 0 15.135 7.567 7.567 0 0 0 0-15.135ZM1.136 11.203c0-5.56 4.507-10.067 10.067-10.067 5.56 0 10.068 4.507 10.068 10.067 0 2.33-0.791 4.475-2.12 6.18l3.713 3.713-1.768 1.768-3.713-3.713a10.024 10.024 0 0 1-6.18 2.12c-5.56 0-10.067-4.508-10.067-10.068ZM12.27 5.73v4.039h4.23v2.5H9.77V5.73h2.5Z"
-    />
-  </Svg>
-);
-
-/** Pipeline / Workflow — Line Arrow Roadmap (Streamline Core Solid, scaled 14→24) */
-export const Pipeline = (props: IconProps) => (
-  <Svg {...props}>
-    <path
-      fillRule="evenodd"
-      clipRule="evenodd"
-      transform="scale(1.71429)"
-      d="M6.23256 3c-0.34581 0.5978-0.99216 1-1.73244 1-0.74028 0-1.38662-0.4022-1.73243-1H1c-0.552285 0-1-0.44772-1-1s0.447715-1 1-1h1.76769c0.34581-0.597801 0.99215-1 1.73243-1 0.74028 0 1.38663 0.402199 1.73244 1H10.75C12.5449 1 14 2.45507 14 4.25S12.5449 7.5 10.75 7.5h-0.5174c-0.34574 0.59807-0.99224 1.00049-1.73272 1.00049-0.74049 0-1.38698-0.40242-1.73272-1.00049H3.5C2.67157 7.5 2 8.17157 2 9s0.67157 1.5 1.5 1.5h0.26797c0.34588-0.59753 0.99207-0.99951 1.73215-0.99951 0.74008 0 1.38628 0.40198 1.73216 0.99951H11V9.49951c0-0.20223 0.1218-0.38455 0.3087-0.46194 0.1868-0.07739 0.4019-0.03461 0.5449 0.10839l2 2.00004c0.1952 0.1952 0.1952 0.5118 0 0.7071l-2 2c-0.143 0.143-0.3581 0.1857-0.5449 0.1084-0.1869-0.0774-0.3087-0.2598-0.3087-0.462V12.5H7.23284c-0.34574 0.5981-0.99223 1.0005-1.73272 1.0005-0.74048 0-1.38698-0.4024-1.73272-1.0005H3.5C1.567 12.5 0 10.933 0 9s1.567-3.5 3.5-3.5h3.26772c0.34588-0.59753 0.99208-0.99951 1.73216-0.99951S9.88615 4.90247 10.232 5.5h0.518c0.6904 0 1.25-0.55964 1.25-1.25S11.4404 3 10.75 3H6.23256Z"
-    />
-  </Svg>
-);
-
-/** Upload — inverse of Download (arrow pointing up from tray) */
-export const Upload = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M22.67 16.94a1.22 1.22 0 0 0-1.22 1.21V20a1.57 1.57 0 0 1-1.57 1.57H4.12A1.57 1.57 0 0 1 2.55 20v-1.85a1.22 1.22 0 0 0-2.43 0V20a4 4 0 0 0 4 4h15.76a4 4 0 0 0 4-4v-1.85a1.21 1.21 0 0 0-1.21-1.21Z" />
-    <path d="M11.46 0a1 1 0 0 0-1.46 0L5.15 5.58a1 1 0 0 0 .73 1.6h2.66A.25.25 0 0 1 8.79 7.43v9.63A1.94 1.94 0 0 0 10.73 19h.27A1.94 1.94 0 0 0 12.94 17.06V7.43a.25.25 0 0 1 .25-.25h2.66a1 1 0 0 0 .73-1.6Z" />
-  </Svg>
-);
-
-/** Package — downward arrow into tray (install / bundle drop zone) */
-export const Package = (props: IconProps) => (
-  <Svg {...props}>
-    <path
-      fillRule="evenodd"
-      clipRule="evenodd"
-      d="M7 8H10V2H14V8H17L12 13L7 8ZM3 15H21V20C21 21.1046 20.1046 22 19 22H5C3.89543 22 3 21.1046 3 20V15Z"
-    />
-  </Svg>
-);
-
-/** Edit2 — alias for Edit (pencil) */
-export const Edit2 = Edit;
-
-/** Layers — stacked layers icon for Skills sidebar entry */
-export const Layers = (props: IconProps) => (
-  <Svg {...props}>
-    <path d="M12 2 1 8l11 6 11-6L12 2Z" />
-    <path d="M1 14l11 6 11-6" />
-    <path d="M1 10l11 6 11-6" />
-  </Svg>
-);
+export const Send = light(_Send);
+export const Settings = light(_Settings);
+export const Share2 = light(_Share2);
+export const Sliders = light(_Sliders);
+export const SlidersHorizontal = light(_SlidersHorizontal);
+export const Sparkles = light(_Sparkles);
+// The original 'Square' icon was visually a circle-with-square (stop button),
+// which corresponds to lucide's StopCircle. Keep both names pointing to it.
+export const Square = light(_StopCircle);
+export const StopCircle = Square;
+export const Sun = light(_Sun);
+export const Target = light(_Target);
+export const Terminal = light(_Terminal);
+export const Tornado = light(_Tornado);
+export const Trash2 = light(_Trash2);
+export const Upload = light(_Upload);
+export const Users = light(_Users);
+export const Video = light(_Video);
+// No direct 'Pipeline' in lucide; Workflow is the closest visual match.
+export const Pipeline = light(_Workflow);
+export const Wrench = light(_Wrench);
+export const X = light(_X);
+export const XIcon = X;
+export const Zap = light(_Zap);
 
 // ---------------------------------------------------------------------------
-// LucideIcon type alias for components that import the type
+// LucideIcon type re-export — kept for consumers that import the type.
 // ---------------------------------------------------------------------------
-
-export type LucideIcon = React.FC<IconProps>;
+export type { LucideIcon };
