@@ -32,7 +32,10 @@ check "no .mp4/.mp3 files in docs/" \
 
 check "no goose/geese references in markdown (outside superpowers/)" \
   "grep -ril 'goose\|geese' '$DOCS' --include='*.md' 2>/dev/null \
-   | grep -v 'superpowers/' || true"
+   | grep -v 'superpowers/' \
+   | xargs -I{} grep -l -i 'goose\|geese' {} 2>/dev/null \
+   | xargs -I{} sh -c 'grep -i \"goose\\|geese\" {} | grep -iv mongoose > /dev/null && echo {}' 2>/dev/null \
+   || true"
 
 check "no recipe/recipes references in markdown (outside superpowers/)" \
   "grep -ril '\brecipe\b\|\brecipes\b' '$DOCS' --include='*.md' 2>/dev/null \
