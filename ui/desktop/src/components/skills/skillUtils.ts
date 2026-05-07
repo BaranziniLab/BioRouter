@@ -23,8 +23,8 @@ export function parseSkillFrontmatter(
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!match) return null;
   const fm = match[1];
-  const nameMatch = fm.match(/^name:\s*(.+)$/m);
-  const descMatch = fm.match(/^description:\s*(.+)$/m);
+  const nameMatch = fm.match(/^name:\s*([^\n]+)$/m);
+  const descMatch = fm.match(/^description:\s*([^\n]+)$/m);
   if (!nameMatch?.[1]?.trim() || !descMatch?.[1]?.trim()) return null;
   return { name: nameMatch[1].trim(), description: descMatch[1].trim() };
 }
