@@ -10,7 +10,8 @@
 
 ## Menu Bar Structure
 
-### 🍎 BioRouter (app menu — macOS only)
+### BioRouter (app menu — macOS only)
+
 - About BioRouter *(existing)*
 - — separator —
 - Settings `⌘,`
@@ -21,7 +22,8 @@
 - — separator —
 - Quit BioRouter `⌘Q`
 
-### 🧭 Go
+### Go
+
 - Home `⌘1`
 - New Chat `⌘T`
 - History `⌘2`
@@ -32,7 +34,8 @@
 - Extensions `⌘5`
 - Skills `⌘6`
 
-### 📁 File
+### File
+
 - New Chat `⌘T`
 - New Window `⌘N`
 - — separator —
@@ -42,26 +45,30 @@
 - Close Window `⌘W`
 - Focus BioRouter Window `⌥⌘G`
 
-### 🔌 Extensions
+### Extensions
+
 - Install Extension (.brxt)…
 - Browse Extensions *(opens https://baranzinilab.github.io/biorouter-landing/baam.html)*
 - Add Custom Extension…
 - — separator —
 - Check for Extension Updates
 
-### 🤖 Providers
+### Providers
+
 - Configure Providers…
 - Switch Model…
 - Reset Provider
 
-### 🖥 View
+### View
+
 - Light Mode
 - Dark Mode
 - System Mode
 - — separator —
 - *(standard Electron view items: Reload, Force Reload, Toggle DevTools, Zoom In/Out/Reset, Toggle Fullscreen)*
 
-### ❓ Help
+### Help
+
 - Biorouter Documentation *(opens https://baranzinilab.github.io/biorouter-landing/docs.html)*
 - — separator —
 - Report a Bug… *(opens GitHub issues)*
@@ -70,6 +77,7 @@
 - v{version} *(disabled label showing current app version)*
 
 ### Edit, Window
+
 Kept unchanged — macOS requires these for standard system behavior (copy/paste shortcuts, window management).
 
 ---
@@ -78,15 +86,16 @@ Kept unchanged — macOS requires these for standard system behavior (copy/paste
 
 **Left click (macOS):** Show window silently — no dropdown, brings BioRouter to front immediately. Matches existing Windows behavior (already implemented via `tray.on('click', showWindow)`). Fix: add the same `tray.on('click', showWindow)` handler for `darwin`.
 
-**Right click → context menu:**
-- 🏠 Home
-- 💬 New Chat
-- ⚙ Settings
+**Right click — context menu:**
+
+- Home
+- New Chat
+- Settings
 - — separator —
-- 🔌 Extensions
-- 🧠 Skills
+- Extensions
+- Skills
 - — separator —
-- 🔄 Check for Updates
+- Check for Updates
 - — separator —
 - Quit
 
@@ -95,18 +104,22 @@ Kept unchanged — macOS requires these for standard system behavior (copy/paste
 ## Navigation IPC Pattern
 
 All "Go to X" menu items send to the focused window:
+
 ```js
 webContents.send('set-view', 'home')      // or 'chat', 'sessions', 'schedules',
                                            // 'workflows', 'extensions', 'skills'
 ```
+
 This matches the existing `set-view` handler already wired in the renderer. For tray items that need a window to exist first, the handler creates one if none are open (same pattern as existing "Show Window" in tray).
 
 External links use `shell.openExternal(url)`.
 
 Theme switching sends:
+
 ```js
 webContents.send('set-theme', 'light' | 'dark' | 'system')
 ```
+
 The renderer's existing theme system handles this via the `ThemeSelector` component context.
 
 ---
@@ -121,6 +134,7 @@ The renderer's existing theme system handles this via the `ThemeSelector` compon
 ---
 
 ## Out of Scope
+
 - No changes to the renderer routing logic
 - No new IPC channels (reuse `set-view`, `set-theme`, existing check/install handlers)
 - Windows and Linux menu bars follow the same structure (BioRouter app menu is macOS-only; other platforms get Go/File/Extensions/Providers/View/Help)
