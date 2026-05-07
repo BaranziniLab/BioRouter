@@ -67,6 +67,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
   const [isInstalling, setIsInstalling] = useState(false);
   const mdInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
+  const zipInputRef = useRef<HTMLInputElement>(null);
 
   const processMdFile = (file: File) => {
     if (!file.name.endsWith('.md')) {
@@ -100,7 +101,12 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
     e.preventDefault();
     setIsDragging(false);
     const file = e.dataTransfer.files[0];
-    if (file) processMdFile(file);
+    if (!file) return;
+    if (file.name.endsWith('.zip')) {
+      processZipFile(file);
+    } else {
+      processMdFile(file);
+    }
   };
 
   const handleMdBrowse = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -120,6 +126,30 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
       setError((err as Error).message);
       setPreview(null);
     }
+    e.target.value = '';
+  };
+
+  const processZipFile = async (file: File) => {
+    const filePath = window.electron.getPathForFile(file);
+    const result = await window.electron.extractSkillZip(filePath);
+    if ('error' in result) {
+      setError(result.error);
+      setPreview(null);
+      return;
+    }
+    setError(null);
+    setPreview({
+      name: result.name,
+      description: result.description,
+      slug: result.slug,
+      files: result.files,
+      label: file.name,
+    });
+  };
+
+  const handleZipBrowse = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) await processZipFile(file);
     e.target.value = '';
   };
 
@@ -166,7 +196,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
             }`}
           >
             <p className="text-sm text-text-muted">
-              Drop a <code>.md</code> skill file here, or{' '}
+              Drop a <code>.md</code> or <code>.zip</code> skill file here, or{' '}
               <span className="text-blue-600 underline">browse for file</span>
             </p>
             <p className="text-xs text-text-subtle mt-1">
@@ -199,6 +229,23 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
             webkitdirectory=""
             className="hidden"
             onChange={handleFolderBrowse}
+          />
+          <Button
+            variant="outline"
+            className="w-full"
+            onClick={() => zipInputRef.current?.click()}
+          >
+            Browse for Skill ZIP
+          </Button>
+          <p className="text-xs text-text-subtle -mt-2 text-center">
+            ZIP must contain a <code>SKILL.md</code> file
+          </p>
+          <input
+            ref={zipInputRef}
+            type="file"
+            accept=".zip"
+            className="hidden"
+            onChange={handleZipBrowse}
           />
 
           {error && (
