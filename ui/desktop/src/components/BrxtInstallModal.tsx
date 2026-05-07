@@ -41,6 +41,9 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
   const [isInstalling, setIsInstalling] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [envEntries, setEnvEntries] = useState<EnvEntry[]>([]);
+  const [skillsPreview, setSkillsPreview] = useState<
+    Array<{ slug: string; name: string; description: string }>
+  >([]);
   const [showOptional, setShowOptional] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { addExtension } = useConfig();
@@ -58,6 +61,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
       setError(result.error);
     } else {
       setManifest(result.manifest);
+      setSkillsPreview(result.skillsPreview);
       setEnvEntries(
         result.manifest.env_vars.map((v: BrxtEnvVar) => ({
           key: v.key,
@@ -251,11 +255,26 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
                 <p className="text-xs text-text-muted mt-0.5">
                   v{manifest.version}
                   {manifest.tools_count ? ` · ${manifest.tools_count} tools` : ''}
+                  {skillsPreview.length > 0
+                    ? ` · ${skillsPreview.length} skill${skillsPreview.length !== 1 ? 's' : ''}`
+                    : ''}
                   {' · '}
                   {requiredVars.length} required env var
                   {requiredVars.length !== 1 ? 's' : ''}
                 </p>
                 <p className="text-sm text-text-default mt-2">{manifest.description}</p>
+                {skillsPreview.length > 0 && (
+                  <div className="mt-2 pt-2 border-t border-border-subtle">
+                    <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-1">
+                      Skills included
+                    </p>
+                    {skillsPreview.map((skill) => (
+                      <p key={skill.slug} className="text-xs text-text-muted leading-relaxed">
+                        · <span className="font-medium">{skill.name}</span> — {skill.description}
+                      </p>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
