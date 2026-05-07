@@ -245,8 +245,13 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
 
     const destFolder = `${BIOROUTER_SKILLS_DIR}/${preview.slug}`;
     await window.electron.ensureDirectory(destFolder);
+    const TEXT_EXTENSIONS = new Set(['.md', '.txt', '.yaml', '.yml', '.json', '.py', '.sh']);
+    const textFiles = preview.files.filter(([relPath]) => {
+      const ext = relPath.slice(relPath.lastIndexOf('.')).toLowerCase();
+      return TEXT_EXTENSIONS.has(ext) || !relPath.includes('.');
+    });
     let allOk = true;
-    for (const [relPath, content] of preview.files) {
+    for (const [relPath, content] of textFiles) {
       const ok = await window.electron.writeFile(`${destFolder}/${relPath}`, content);
       if (!ok) { allOk = false; break; }
     }
@@ -361,8 +366,8 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
                 </span>
               </p>
               <div className="mt-1.5 max-h-[120px] overflow-y-auto">
-                {preview.bundleSkills.map((s, i) => (
-                  <p key={i} className="text-xs text-text-muted leading-relaxed">
+                {preview.bundleSkills.map((s) => (
+                  <p key={s.name} className="text-xs text-text-muted leading-relaxed">
                     · {s.name}
                     {s.description && (
                       <span className="text-text-subtle"> — {s.description}</span>
