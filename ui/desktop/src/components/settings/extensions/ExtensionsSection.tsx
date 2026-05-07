@@ -161,9 +161,11 @@ export default function ExtensionsSection({
     const isBrxtInstalled =
       config?.type === 'stdio' &&
       Array.isArray(config.args) &&
-      config.args.some(
-        (arg) => typeof arg === 'string' && arg.includes('biorouter/extensions/')
-      );
+      config.args[0] === 'uv' &&
+      config.args[1] === 'run' &&
+      config.args[2] === '--directory' &&
+      typeof config.args[3] === 'string' &&
+      config.args[3].includes('biorouter/extensions/');
 
     try {
       if (isBrxtInstalled) {

@@ -51,6 +51,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
   const processFile = useCallback(async (fp: string) => {
     setError(null);
     setManifest(null);
+    setSkillsPreview([]);
     setIsValidating(true);
     setFilePath(fp);
 

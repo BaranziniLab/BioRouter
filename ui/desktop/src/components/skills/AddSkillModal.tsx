@@ -97,13 +97,13 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
     reader.readAsText(file);
   };
 
-  const handleDrop = (e: DragEvent<HTMLDivElement>) => {
+  const handleDrop = async (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setIsDragging(false);
     const file = e.dataTransfer.files[0];
     if (!file) return;
     if (file.name.endsWith('.zip')) {
-      processZipFile(file);
+      await processZipFile(file);
     } else {
       processMdFile(file);
     }
