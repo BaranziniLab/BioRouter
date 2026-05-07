@@ -1966,6 +1966,18 @@ ipcMain.handle('get-allowed-extensions', async () => {
   return await getAllowList();
 });
 
+function parseFrontmatterFromSkillMd(
+  content: string
+): { name: string; description: string } | null {
+  const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+  if (!match) return null;
+  const fm = match[1];
+  const nameMatch = fm.match(/^name:\s*([^\n]+)$/m);
+  const descMatch = fm.match(/^description:\s*([^\n]+)$/m);
+  if (!nameMatch?.[1]?.trim() || !descMatch?.[1]?.trim()) return null;
+  return { name: nameMatch[1].trim(), description: descMatch[1].trim() };
+}
+
 ipcMain.handle('brxt:open-file-dialog', async (event) => {
   // Allow automated tests to inject a file path without a native dialog
   if (process.env.PLAYWRIGHT_BRXT_FILE) {
@@ -2010,7 +2022,18 @@ ipcMain.handle(
       if (!Array.isArray(manifest.env_vars))
         return { error: 'manifest.json "env_vars" must be an array' };
 
-      return { manifest };
+      // Scan for bundled skills in skills/<slug>/SKILL.md
+      const skillsPreview: Array<{ slug: string; name: string; description: string }> = [];
+      for (const entry of zip.getEntries()) {
+        const m = entry.entryName.match(/^skills\/([^/]+)\/SKILL\.md$/);
+        if (m) {
+          const slug = m[1];
+          const parsed = parseFrontmatterFromSkillMd(entry.getData().toString('utf8'));
+          if (parsed) skillsPreview.push({ slug, name: parsed.name, description: parsed.description });
+        }
+      }
+
+      return { manifest, skillsPreview };
     } catch (err) {
       return { error: `Failed to read bundle: ${(err as Error).message}` };
     }
@@ -2044,6 +2067,77 @@ ipcMain.handle(
       return { success: true, installDir };
     } catch (err) {
       return { error: `Installation failed: ${(err as Error).message}` };
+    }
+  }
+);
+
+ipcMain.handle(
+  'brxt:uninstall',
+  async (_event, { extensionName }: { extensionName: string }) => {
+    try {
+      const installDir = path.join(
+        os.homedir(),
+        '.config',
+        'biorouter',
+        'extensions',
+        extensionName
+      );
+      if (fsSync.existsSync(installDir)) {
+        fsSync.rmSync(installDir, { recursive: true, force: true });
+      }
+      return { success: true as const };
+    } catch (err) {
+      return { error: `Uninstall failed: ${(err as Error).message}` };
+    }
+  }
+);
+
+ipcMain.handle(
+  'skills:extract-zip',
+  async (_event, { filePath }: { filePath: string }) => {
+    try {
+      const zip = new AdmZip(filePath);
+      const entries = zip.getEntries();
+
+      // Find SKILL.md at root or one level deep (<slug>/SKILL.md)
+      let skillEntry = entries.find((e) => e.entryName === 'SKILL.md');
+      let prefix = '';
+
+      if (!skillEntry) {
+        skillEntry = entries.find((e) => /^[^/]+\/SKILL\.md$/.test(e.entryName));
+        if (skillEntry) {
+          prefix = skillEntry.entryName.replace(/\/SKILL\.md$/, '') + '/';
+        }
+      }
+
+      if (!skillEntry) {
+        return { error: 'No SKILL.md found in the ZIP file.' };
+      }
+
+      const parsed = parseFrontmatterFromSkillMd(skillEntry.getData().toString('utf8'));
+      if (!parsed) {
+        return {
+          error: 'SKILL.md must have valid frontmatter with "name" and "description".',
+        };
+      }
+
+      const slug = parsed.name
+        .replace(/[^a-z0-9-_]/gi, '-')
+        .replace(/-{2,}/g, '-')
+        .replace(/^-|-$/g, '')
+        .toLowerCase();
+
+      const files: [string, string][] = [];
+      for (const entry of entries) {
+        if (entry.isDirectory) continue;
+        const relName = prefix ? entry.entryName.slice(prefix.length) : entry.entryName;
+        if (!relName) continue;
+        files.push([relName, entry.getData().toString('utf8')]);
+      }
+
+      return { files, name: parsed.name, description: parsed.description, slug };
+    } catch (err) {
+      return { error: `Failed to read ZIP: ${(err as Error).message}` };
     }
   }
 );
