@@ -457,7 +457,7 @@ export default function WorkflowsView() {
   }: {
     workflowManifestResponse: WorkflowManifest;
   }) => (
-    <div className="py-3 px-4 mb-1.5 bg-background-default rounded-xl border border-border-subtle hover:bg-background-medium transition-colors duration-150">
+    <div className="py-4 px-2 border-b border-border-subtle last:border-b-0 hover:bg-background-medium/40 transition-colors duration-150 group">
       <div className="flex justify-between items-start gap-4">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-1">
@@ -594,7 +594,7 @@ export default function WorkflowsView() {
   );
 
   const WorkflowSkeleton = () => (
-    <div className="py-3 px-4 mb-1.5 bg-background-default rounded-xl border border-border-subtle">
+    <div className="py-4 px-2 border-b border-border-subtle last:border-b-0">
       <div className="flex justify-between items-start gap-4">
         <div className="min-w-0 flex-1">
           <Skeleton className="h-5 w-3/4 mb-2" />
