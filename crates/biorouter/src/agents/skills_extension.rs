@@ -33,6 +33,7 @@ struct Skill {
     body: String,
     directory: PathBuf,
     supporting_files: Vec<PathBuf>,
+    bundle_name: Option<String>,
 }
 
 pub struct SkillsClient {
@@ -73,7 +74,13 @@ impl SkillsClient {
         let disabled = Self::get_disabled_skills();
         let skills = skills
             .into_iter()
-            .filter(|(name, _)| !disabled.contains(name))
+            .filter(|(name, skill)| {
+                !disabled.contains(name)
+                    && !skill
+                        .bundle_name
+                        .as_deref()
+                        .map_or(false, |b| disabled.contains(b))
+            })
             .collect();
 
         let mut client = Self { info, skills };
@@ -135,7 +142,7 @@ impl SkillsClient {
             .unwrap_or_default()
     }
 
-    fn parse_skill_file(path: &Path) -> Result<Skill> {
+    fn parse_skill_file(path: &Path, bundle_name: Option<String>) -> Result<Skill> {
         let content = std::fs::read_to_string(path)?;
 
         let (metadata, body) = Self::parse_frontmatter(&content)?;
@@ -152,6 +159,7 @@ impl SkillsClient {
             body,
             directory,
             supporting_files,
+            bundle_name,
         })
     }
 
@@ -201,11 +209,40 @@ impl SkillsClient {
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     let path = entry.path();
-                    if path.is_dir() {
-                        let skill_file = path.join("SKILL.md");
-                        if skill_file.exists() {
-                            if let Ok(skill) = Self::parse_skill_file(&skill_file) {
-                                skills.insert(skill.metadata.name.clone(), skill);
+                    if !path.is_dir() {
+                        continue;
+                    }
+
+                    let skill_file = path.join("SKILL.md");
+                    if skill_file.exists() {
+                        // Single skill
+                        if let Ok(skill) = Self::parse_skill_file(&skill_file, None) {
+                            skills.insert(skill.metadata.name.clone(), skill);
+                        }
+                    } else {
+                        // Bundle: check if sub-directories contain SKILL.md
+                        let bundle_name = path
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .map(str::to_string);
+
+                        if let (Some(bundle_name), Ok(sub_entries)) =
+                            (bundle_name, std::fs::read_dir(&path))
+                        {
+                            for sub_entry in sub_entries.flatten() {
+                                let sub_path = sub_entry.path();
+                                if !sub_path.is_dir() {
+                                    continue;
+                                }
+                                let sub_skill_file = sub_path.join("SKILL.md");
+                                if sub_skill_file.exists() {
+                                    if let Ok(skill) = Self::parse_skill_file(
+                                        &sub_skill_file,
+                                        Some(bundle_name.clone()),
+                                    ) {
+                                        skills.insert(skill.metadata.name.clone(), skill);
+                                    }
+                                }
                             }
                         }
                     }
@@ -432,7 +469,7 @@ description: A test skill
         fs::create_dir(skill_dir.join("templates")).unwrap();
         fs::write(skill_dir.join("templates/template.txt"), "template").unwrap();
 
-        let skill = SkillsClient::parse_skill_file(&skill_file).unwrap();
+        let skill = SkillsClient::parse_skill_file(&skill_file, None).unwrap();
         assert_eq!(skill.metadata.name, "test-skill");
         assert_eq!(skill.metadata.description, "A test skill");
         assert!(skill.body.contains("# Test Skill Content"));
@@ -924,5 +961,89 @@ Working dir biorouter content
             "extension skills dir not in default dirs: {:?}",
             dirs
         );
+    }
+
+    #[test]
+    fn test_discover_single_skill() {
+        let temp_dir = TempDir::new().unwrap();
+        let skill_dir = temp_dir.path().join("my-skill");
+        fs::create_dir(&skill_dir).unwrap();
+        fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: my-skill\ndescription: A test skill\n---\nBody",
+        )
+        .unwrap();
+
+        let skills = SkillsClient::discover_skills_in_directories(&[temp_dir.path().to_path_buf()]);
+        assert_eq!(skills.len(), 1);
+        let skill = skills.get("my-skill").unwrap();
+        assert_eq!(skill.metadata.name, "my-skill");
+        assert!(skill.bundle_name.is_none());
+    }
+
+    #[test]
+    fn test_discover_bundle() {
+        let temp_dir = TempDir::new().unwrap();
+        let bundle_dir = temp_dir.path().join("superpowers");
+        fs::create_dir(&bundle_dir).unwrap();
+
+        let sub1 = bundle_dir.join("brainstorming");
+        fs::create_dir(&sub1).unwrap();
+        fs::write(
+            sub1.join("SKILL.md"),
+            "---\nname: brainstorming\ndescription: Brainstorm ideas\n---\nBody",
+        )
+        .unwrap();
+
+        let sub2 = bundle_dir.join("debugging");
+        fs::create_dir(&sub2).unwrap();
+        fs::write(
+            sub2.join("SKILL.md"),
+            "---\nname: debugging\ndescription: Debug code\n---\nBody",
+        )
+        .unwrap();
+
+        let skills = SkillsClient::discover_skills_in_directories(&[temp_dir.path().to_path_buf()]);
+        assert_eq!(skills.len(), 2);
+
+        let br = skills.get("brainstorming").unwrap();
+        assert_eq!(br.bundle_name.as_deref(), Some("superpowers"));
+
+        let dbg = skills.get("debugging").unwrap();
+        assert_eq!(dbg.bundle_name.as_deref(), Some("superpowers"));
+    }
+
+    #[test]
+    fn test_bundle_disabled_by_bundle_name() {
+        let temp_dir = TempDir::new().unwrap();
+        let bundle_dir = temp_dir.path().join("superpowers");
+        fs::create_dir(&bundle_dir).unwrap();
+
+        let sub = bundle_dir.join("brainstorming");
+        fs::create_dir(&sub).unwrap();
+        fs::write(
+            sub.join("SKILL.md"),
+            "---\nname: brainstorming\ndescription: Brainstorm ideas\n---\nBody",
+        )
+        .unwrap();
+
+        let skills = SkillsClient::discover_skills_in_directories(&[temp_dir.path().to_path_buf()]);
+        assert_eq!(skills.len(), 1);
+
+        let mut disabled = std::collections::HashSet::new();
+        disabled.insert("superpowers".to_string());
+
+        let filtered: Vec<_> = skills
+            .into_iter()
+            .filter(|(name, skill)| {
+                !disabled.contains(name)
+                    && !skill
+                        .bundle_name
+                        .as_deref()
+                        .map_or(false, |b| disabled.contains(b))
+            })
+            .collect();
+
+        assert!(filtered.is_empty(), "bundle skill should be filtered when bundle name is disabled");
     }
 }
