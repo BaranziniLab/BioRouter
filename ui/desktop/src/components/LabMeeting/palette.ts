@@ -1,0 +1,49 @@
+export const ACCENT_PALETTE: readonly string[] = [
+  '#14b8a6', // teal
+  '#6366f1', // indigo
+  '#f59e0b', // amber
+  '#f43f5e', // rose
+  '#84cc16', // lime
+  '#0ea5e9', // sky
+  '#8b5cf6', // violet
+  '#fb7185', // coral
+  '#10b981', // mint
+  '#eab308', // gold
+  '#d946ef', // magenta
+  '#64748b', // slate
+] as const;
+
+export const NAME_POOL: readonly string[] = [
+  'Atlas',
+  'Nova',
+  'Prism',
+  'Echo',
+  'Lyra',
+  'Orion',
+  'Sage',
+  'Vega',
+  'Wren',
+  'Zephyr',
+  'Juno',
+  'Kai',
+  'Mira',
+  'Neo',
+  'Pax',
+  'Rune',
+  'Soren',
+  'Tess',
+] as const;
+
+export function pickAccentColor(usedColors: readonly string[]): string {
+  for (const color of ACCENT_PALETTE) {
+    if (!usedColors.includes(color)) return color;
+  }
+  // All used — pick by ring buffer
+  const ringIndex = usedColors.length % ACCENT_PALETTE.length;
+  return ACCENT_PALETTE[ringIndex];
+}
+
+export function generateName(index: number): string {
+  if (index < NAME_POOL.length) return NAME_POOL[index];
+  return `Chat #${index + 1}`;
+}
