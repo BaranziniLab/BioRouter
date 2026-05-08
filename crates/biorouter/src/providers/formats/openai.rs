@@ -641,11 +641,19 @@ pub fn create_request(
         ));
     }
 
-    let is_ox_model = model_config.model_name.starts_with("o1")
-        || model_config.model_name.starts_with("o2")
-        || model_config.model_name.starts_with("o3")
-        || model_config.model_name.starts_with("o4")
-        || model_config.model_name.starts_with("gpt-5");
+    // gpt-5.4+ and gpt-5.5+ use the /v1/responses API (not /v1/chat/completions)
+    // so they should not be treated as ox-model here — those go through create_responses_request()
+    let uses_responses_api = model_config.model_name.starts_with("gpt-5.4")
+        || model_config.model_name.starts_with("gpt-5.5")
+        || model_config.model_name.starts_with("gpt-5-codex")
+        || model_config.model_name.starts_with("gpt-5.1-codex");
+
+    let is_ox_model = !uses_responses_api
+        && (model_config.model_name.starts_with("o1")
+            || model_config.model_name.starts_with("o2")
+            || model_config.model_name.starts_with("o3")
+            || model_config.model_name.starts_with("o4")
+            || model_config.model_name.starts_with("gpt-5"));
 
     // Only extract reasoning effort for O-series models
     let (model_name, reasoning_effort) = if is_ox_model {

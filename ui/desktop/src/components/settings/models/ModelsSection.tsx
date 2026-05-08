@@ -38,7 +38,7 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
         setProvider(providerDisplayName);
       } else {
         const providerName = (await read('BIOROUTER_PROVIDER', false)) as string;
-        const providers = await getProviders(true);
+        const providers = await getProviders(false);
         const providerDetailsList = providers.filter((provider) => provider.name === providerName);
 
         if (providerDetailsList.length != 1) {
@@ -61,7 +61,8 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
 
   useEffect(() => {
     loadModelData();
-  }, [loadModelData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const prevModelRef = useRef<string | null>(null);
   const prevProviderRef = useRef<string | null>(null);
