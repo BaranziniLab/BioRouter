@@ -69,6 +69,9 @@ function buildAugmentedPath(): string {
     const programFiles = process.env.ProgramFiles || 'C:\\Program Files';
     const programFilesX86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
     extra.push(
+      // BioRouter's own bundled shims (uv.exe, uvx.exe, npx.cmd, git shim if added)
+      // — must be first so bundled tools take priority over stale system installs
+      path.join(localAppData, 'BioRouter', 'bin'),
       path.join(programFiles, 'Git', 'bin'),
       path.join(programFilesX86, 'Git', 'bin'),
       path.join(localAppData, 'Programs', 'Python', 'Python312'),
@@ -78,6 +81,8 @@ function buildAugmentedPath(): string {
       path.join(localAppData, 'Programs', 'nodejs'),
       path.join(home, '.cargo', 'bin'),
       path.join(localAppData, 'uv', 'bin'),
+      // Bundled git fallback — appended last so system git always takes priority
+      path.join(localAppData, 'BioRouter', 'git', 'cmd'),
     );
   } else {
     // Linux
@@ -310,12 +315,23 @@ export function checkAllDependencies(): DependencyInfo[] {
     },
   ];
 
+  // On Windows, uv manages its own Python runtime via uvx — system Python is not
+  // required for extensions. If uv is present, mark Python as satisfied.
+  const uvVersion = process.platform === 'win32' ? probeVersion('uv', ['--version']) : null;
+
   return checks.map(({ name, displayName, probes }) => {
     let version: string | null = null;
-    for (const [cmd, args] of probes) {
-      version = probeVersion(cmd, args);
-      if (version) break;
+
+    if (name === 'python' && uvVersion !== null) {
+      // uv bundles Python internally; no separate system Python needed on Windows
+      version = `managed by uv ${uvVersion}`;
+    } else {
+      for (const [cmd, args] of probes) {
+        version = probeVersion(cmd, args);
+        if (version) break;
+      }
     }
+
     const { cmd, requiresSudo, downloadUrl } = buildInstallInfo(name, distro);
     return { name, displayName, version, installed: version !== null, installCmd: cmd, requiresSudo, downloadUrl };
   });

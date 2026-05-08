@@ -19,7 +19,7 @@ export default function SkillItem({ skill, enabled, onClick, onDelete, onShare, 
       onClick={onClick}
     >
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-text-default">{skill.name}</p>
+        <p className="text-sm text-text-default">{skill.name}</p>
         <p className="text-xs text-text-muted mt-0.5 line-clamp-1">{skill.description}</p>
         {skill.sourceDir !== BIOROUTER_SKILLS_DIR && (
           <p className="text-[11px] text-text-subtle mt-0.5 font-mono">{skill.sourceDir}</p>

@@ -10,7 +10,8 @@ const windowsFiles = [
     '*.exe',
     '*.dll',
     '*.cmd',
-    'biorouter-npm/**/*'
+    'biorouter-npm/**/*',
+    'git/**/*',
 ];
 
 const macosFiles = [

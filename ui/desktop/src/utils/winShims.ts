@@ -10,12 +10,9 @@ import log from './logger';
 export async function ensureWinShims(): Promise<void> {
   if (process.platform !== 'win32') return;
 
-  const srcDir = path.join(process.resourcesPath, 'bin'); // existing dir
-  const tgtDir = path.join(
-    process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local'),
-    'BioRouter',
-    'bin'
-  );
+  const srcDir = path.join(process.resourcesPath, 'bin');
+  const localAppData = process.env.LOCALAPPDATA ?? path.join(os.homedir(), 'AppData', 'Local');
+  const tgtDir = path.join(localAppData, 'BioRouter', 'bin');
 
   try {
     await fs.promises.mkdir(tgtDir, { recursive: true });
@@ -28,7 +25,6 @@ export async function ensureWinShims(): Promise<void> {
         const src = path.join(srcDir, shim);
         const dst = path.join(tgtDir, shim);
         try {
-          // Check if source file exists before attempting to copy
           await fs.promises.access(src);
           await fs.promises.copyFile(src, dst); // overwrites with newer build
           log.info(`Copied Windows shim: ${shim} to ${dst}`);
@@ -38,25 +34,55 @@ export async function ensureWinShims(): Promise<void> {
       })
     );
 
-    // Prepend to PATH **for this process & all children only**.
+    // Prepend uv/npm shims to PATH — these take priority so bundled tools are always found.
     // This does NOT modify the user's permanent system PATH.
     const currentPath = process.env.PATH ?? '';
     if (!currentPath.toLowerCase().includes(tgtDir.toLowerCase())) {
       process.env.PATH = `${tgtDir}${path.delimiter}${currentPath}`;
       log.info(`Added ${tgtDir} to PATH for BioRouter processes only`);
     } else {
-      // If it's already in PATH, make sure it's at the beginning
       const pathParts = currentPath.split(path.delimiter);
       const binDirIndex = pathParts.findIndex((p) => p.toLowerCase() === tgtDir.toLowerCase());
-
       if (binDirIndex > 0) {
-        // Remove it from its current position and add to beginning
         pathParts.splice(binDirIndex, 1);
         process.env.PATH = `${tgtDir}${path.delimiter}${pathParts.join(path.delimiter)}`;
         log.info(`Moved ${tgtDir} to beginning of PATH for BioRouter processes only`);
       }
     }
+
+    // Bundle portable git as a fallback for users without git installed.
+    // Copied to BioRouter\git\ (separate from BioRouter\bin\) and appended to PATH
+    // AFTER all standard locations so system git always wins if present.
+    await ensureBundledGit(srcDir, localAppData);
   } catch (error) {
     log.error('Failed to ensure Windows shims:', error);
+  }
+}
+
+async function ensureBundledGit(srcBinDir: string, localAppData: string): Promise<void> {
+  const srcGitDir = path.join(srcBinDir, 'git');
+  const dstGitDir = path.join(localAppData, 'BioRouter', 'git');
+  const gitExe = path.join(dstGitDir, 'cmd', 'git.exe');
+
+  try {
+    await fs.promises.access(srcGitDir);
+  } catch {
+    // Not bundled in this build (download-mingit.js may have been skipped)
+    return;
+  }
+
+  // Only copy once per install; BioRouter updates overwrite by deleting and re-copying.
+  if (!fs.existsSync(gitExe)) {
+    log.info('Installing bundled git fallback...');
+    fs.cpSync(srcGitDir, dstGitDir, { recursive: true, force: true });
+    log.info(`Bundled git installed to ${dstGitDir}`);
+  }
+
+  // Append to PATH as last-resort fallback — system git (Program Files\Git\bin) takes priority.
+  const gitCmdDir = path.join(dstGitDir, 'cmd');
+  const currentPath = process.env.PATH ?? '';
+  if (!currentPath.toLowerCase().includes(gitCmdDir.toLowerCase())) {
+    process.env.PATH = `${currentPath}${path.delimiter}${gitCmdDir}`;
+    log.info(`Added bundled git fallback to PATH: ${gitCmdDir}`);
   }
 }

@@ -197,10 +197,10 @@ export default function SkillsView() {
           <div key={overrideTrigger} className="px-6 py-4">
             {totalBR > 0 && (
               <>
-                <p className="text-[11px] font-medium text-text-subtle uppercase tracking-widest mb-2 px-2 flex items-center gap-1.5">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />
+                <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 flex-shrink-0" />
                   BioRouter Skills ({totalBR})
-                </p>
+                </h2>
                 {filteredBRBundles.map((bundle) => (
                   <BundleItem
                     key={bundle.folderPath}
@@ -227,10 +227,10 @@ export default function SkillsView() {
 
             {totalOther > 0 && (
               <>
-                <p className="text-[11px] font-medium text-text-subtle uppercase tracking-widest mt-6 mb-2 px-2 flex items-center gap-1.5">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-neutral-400" />
+                <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mt-6 mb-3 flex items-center gap-2">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-neutral-400 flex-shrink-0" />
                   Skills From Other Agents ({totalOther})
-                </p>
+                </h2>
                 {filteredOtherBundles.map((bundle) => (
                   <BundleItem
                     key={bundle.folderPath}
@@ -319,7 +319,7 @@ function BundleItem({ bundle, enabled, onClick, onDelete, onToggle }: BundleItem
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
-          <p className="text-sm font-semibold text-text-default">{bundle.bundleName}</p>
+          <p className="text-sm text-text-default">{bundle.bundleName}</p>
           <span className="text-[11px] text-text-subtle">· {bundle.skills.length} skills</span>
         </div>
         <p className="text-xs text-text-subtle mt-1 font-mono leading-relaxed">

@@ -9,5 +9,7 @@ src/bin/biorouter-npm/
 /test-results/
 /src/bin/temporal-service
 src/bin/temporal.db
+# MinGit: downloaded at Windows build time by scripts/download-mingit.js
+src/platform/windows/bin/git/
 # Signing credentials
 .env.signing
