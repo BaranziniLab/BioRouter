@@ -23,3 +23,32 @@ Object.assign(navigator, {
     writeText: vi.fn(() => Promise.resolve()),
   },
 });
+
+// JSDOM in this version doesn't provide a usable Storage; install a minimal
+// in-memory localStorage so modules that touch it can be unit-tested.
+class MemoryStorage implements Storage {
+  private store = new Map<string, string>();
+  get length() {
+    return this.store.size;
+  }
+  clear(): void {
+    this.store.clear();
+  }
+  getItem(key: string): string | null {
+    return this.store.has(key) ? (this.store.get(key) as string) : null;
+  }
+  key(index: number): string | null {
+    return Array.from(this.store.keys())[index] ?? null;
+  }
+  removeItem(key: string): void {
+    this.store.delete(key);
+  }
+  setItem(key: string, value: string): void {
+    this.store.set(key, String(value));
+  }
+}
+const memoryLocal = new MemoryStorage();
+Object.defineProperty(globalThis, 'localStorage', {
+  value: memoryLocal,
+  writable: true,
+});
