@@ -71,17 +71,6 @@ impl SkillsClient {
             .filter(|d| d.exists())
             .collect::<Vec<_>>();
         let skills = Self::discover_skills_in_directories(&directories);
-        let disabled = Self::get_disabled_skills();
-        let skills = skills
-            .into_iter()
-            .filter(|(name, skill)| {
-                !disabled.contains(name)
-                    && !skill
-                        .bundle_name
-                        .as_deref()
-                        .is_some_and(|b| disabled.contains(b))
-            })
-            .collect();
 
         let mut client = Self { info, skills };
         client.info.instructions = Some(client.generate_instructions());
@@ -258,15 +247,25 @@ impl SkillsClient {
             return String::new();
         }
 
-        let mut instructions = String::from("You have these skills at your disposal, when it is clear they can help you solve a problem or you are asked to use them:\n\n");
+        let disabled = Self::get_disabled_skills();
+        let mut skill_list: Vec<_> = self.skills.iter()
+            .filter(|(name, skill)| {
+                !disabled.contains(*name)
+                    && !skill.bundle_name.as_deref().is_some_and(|b| disabled.contains(b))
+            })
+            .collect();
 
-        let mut skill_list: Vec<_> = self.skills.iter().collect();
+        if skill_list.is_empty() {
+            return String::new();
+        }
+
+        let mut instructions = String::from(
+            "You have these skills at your disposal, when it is clear they can help you solve a problem or you are asked to use them:\n\n"
+        );
         skill_list.sort_by_key(|(name, _)| *name);
-
         for (name, skill) in skill_list {
             instructions.push_str(&format!("- {}: {}\n", name, skill.metadata.description));
         }
-
         instructions
     }
 
@@ -280,6 +279,19 @@ impl SkillsClient {
             .get("name")
             .and_then(|v| v.as_str())
             .ok_or("Missing required parameter: name")?;
+
+        // Runtime check: reject disabled skills even mid-session
+        let disabled = Self::get_disabled_skills();
+        if let Some(skill) = self.skills.get(skill_name) {
+            let is_disabled = disabled.contains(skill_name)
+                || skill.bundle_name.as_deref().is_some_and(|b| disabled.contains(b));
+            if is_disabled {
+                return Err(format!(
+                    "Skill '{}' is currently disabled. Enable it in BioRouter's Skills settings to use it.",
+                    skill_name
+                ));
+            }
+        }
 
         let skill = self
             .skills
@@ -343,10 +355,15 @@ impl McpClientTrait for SkillsClient {
         _next_cursor: Option<String>,
         _cancellation_token: CancellationToken,
     ) -> Result<ListToolsResult, Error> {
-        let tools = if self.skills.is_empty() {
-            Vec::new()
-        } else {
+        let disabled = Self::get_disabled_skills();
+        let has_enabled_skills = self.skills.iter().any(|(name, skill)| {
+            !disabled.contains(name)
+                && !skill.bundle_name.as_deref().is_some_and(|b| disabled.contains(b))
+        });
+        let tools = if has_enabled_skills {
             Self::get_tools()
+        } else {
+            Vec::new()
         };
         Ok(ListToolsResult {
             tools,
