@@ -44,6 +44,8 @@ import StandaloneAppView from './components/apps/StandaloneAppView';
 import { View, ViewOptions } from './utils/navigationUtils';
 
 import { useNavigation } from './hooks/useNavigation';
+import { LabMeetingProvider } from './components/LabMeeting/LabMeetingProvider';
+import { LabMeetingRoute } from './components/LabMeeting/LabMeetingRoute';
 import { errorMessage } from './utils/conversionUtils';
 import { getInitialWorkingDir } from './utils/workingDir';
 import { usePageViewTracking } from './hooks/useAnalytics';
@@ -591,53 +593,56 @@ export function AppInner() {
       <ExtensionInstallModal addExtension={addExtension} setView={setView} />
       <div className="relative w-screen h-screen overflow-hidden bg-background-muted flex flex-col">
         <div className="titlebar-drag-region" />
-        <Routes>
-          <Route path="launcher" element={<LauncherView />} />
-          <Route
-            path="welcome"
-            element={<WelcomeRoute onSelectProvider={() => setDidSelectProvider(true)} />}
-          />
-          <Route path="configure-providers" element={<ConfigureProvidersRoute />} />
-          <Route path="standalone-app" element={<StandaloneAppView />} />
-          <Route
-            path="/"
-            element={
-              <ProviderGuard didSelectProvider={didSelectProvider}>
-                <ChatProvider chat={chat} setChat={setChat} contextKey="hub">
-                  <AppLayout />
-                </ChatProvider>
-              </ProviderGuard>
-            }
-          >
-            <Route index element={<HubRouteWrapper />} />
-            <Route path="pair" element={<PairRouteWrapper chat={chat} setChat={setChat} />} />
-            <Route path="settings" element={<SettingsRoute />} />
+        <LabMeetingProvider>
+          <Routes>
+            <Route path="launcher" element={<LauncherView />} />
             <Route
-              path="extensions"
-              element={
-                <ChatProvider chat={chat} setChat={setChat} contextKey="extensions">
-                  <ExtensionsRoute />
-                </ChatProvider>
-              }
+              path="welcome"
+              element={<WelcomeRoute onSelectProvider={() => setDidSelectProvider(true)} />}
             />
-            <Route path="apps" element={<AppsView />} />
-            <Route path="sessions" element={<SessionsRoute />} />
-            <Route path="schedules" element={<SchedulesRoute />} />
-            <Route path="workflows" element={<WorkflowsRoute />} />
-            <Route path="skills" element={<SkillsRoute />} />
+            <Route path="configure-providers" element={<ConfigureProvidersRoute />} />
+            <Route path="standalone-app" element={<StandaloneAppView />} />
             <Route
-              path="shared-session"
+              path="/"
               element={
-                <SharedSessionRouteWrapper
-                  isLoadingSharedSession={isLoadingSharedSession}
-                  setIsLoadingSharedSession={setIsLoadingSharedSession}
-                  sharedSessionError={sharedSessionError}
-                />
+                <ProviderGuard didSelectProvider={didSelectProvider}>
+                  <ChatProvider chat={chat} setChat={setChat} contextKey="hub">
+                    <AppLayout />
+                  </ChatProvider>
+                </ProviderGuard>
               }
-            />
-            <Route path="permission" element={<PermissionRoute />} />
-          </Route>
-        </Routes>
+            >
+              <Route index element={<HubRouteWrapper />} />
+              <Route path="pair" element={<PairRouteWrapper chat={chat} setChat={setChat} />} />
+              <Route path="settings" element={<SettingsRoute />} />
+              <Route
+                path="extensions"
+                element={
+                  <ChatProvider chat={chat} setChat={setChat} contextKey="extensions">
+                    <ExtensionsRoute />
+                  </ChatProvider>
+                }
+              />
+              <Route path="apps" element={<AppsView />} />
+              <Route path="sessions" element={<SessionsRoute />} />
+              <Route path="schedules" element={<SchedulesRoute />} />
+              <Route path="workflows" element={<WorkflowsRoute />} />
+              <Route path="skills" element={<SkillsRoute />} />
+              <Route path="lab-meeting" element={<LabMeetingRoute />} />
+              <Route
+                path="shared-session"
+                element={
+                  <SharedSessionRouteWrapper
+                    isLoadingSharedSession={isLoadingSharedSession}
+                    setIsLoadingSharedSession={setIsLoadingSharedSession}
+                    sharedSessionError={sharedSessionError}
+                  />
+                }
+              />
+              <Route path="permission" element={<PermissionRoute />} />
+            </Route>
+          </Routes>
+        </LabMeetingProvider>
       </div>
     </>
   );

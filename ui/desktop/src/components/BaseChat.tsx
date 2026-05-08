@@ -56,6 +56,10 @@ interface BaseChatProps {
   suppressEmptyState: boolean;
   sessionId: string;
   initialMessage?: string;
+  /** Render messages + input as a single coherent surface (Lab Meeting Mode). */
+  coherent?: boolean;
+  /** Hide model/mode/cost/cwd footer in ChatInput. */
+  hideStatusBar?: boolean;
 }
 
 function BaseChatContent({
@@ -65,6 +69,8 @@ function BaseChatContent({
   customMainLayoutProps = {},
   sessionId,
   initialMessage,
+  coherent = false,
+  hideStatusBar = false,
 }: BaseChatProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -373,10 +379,20 @@ function BaseChatContent({
         {renderHeader && renderHeader()}
 
         {/* Chat container with sticky workflow header */}
-        <div className="flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden">
+        <div
+          className={
+            coherent
+              ? 'flex flex-col flex-1 min-h-0 relative rounded-t-2xl overflow-hidden bg-background-default'
+              : 'flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden'
+          }
+        >
           <ScrollArea
             ref={scrollRef}
-            className={`flex-1 bg-background-default rounded-2xl min-h-0 relative ${contentClassName}`}
+            className={
+              coherent
+                ? `flex-1 min-h-0 relative ${contentClassName}`
+                : `flex-1 bg-background-default rounded-2xl min-h-0 relative ${contentClassName}`
+            }
             autoScroll
             onDrop={handleDrop}
             onDragOver={handleDragOver}
@@ -447,7 +463,11 @@ function BaseChatContent({
         </div>
 
         <div
-          className={`mx-4 mb-4 rounded-2xl overflow-hidden flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`}
+          className={
+            coherent
+              ? 'flex-shrink-0 rounded-b-2xl overflow-hidden bg-background-default border-t border-border-subtle/30'
+              : `mx-4 mb-4 rounded-2xl overflow-hidden flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`
+          }
         >
           <ChatInput
             sessionId={sessionId}
@@ -474,6 +494,7 @@ function BaseChatContent({
             workflowAccepted={!hasNotAcceptedWorkflow}
             initialPrompt={initialPrompt}
             toolCount={toolCount || 0}
+            hideStatusBar={hideStatusBar}
             {...customChatInputProps}
           />
         </div>

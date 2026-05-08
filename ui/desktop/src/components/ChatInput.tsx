@@ -97,6 +97,8 @@ interface ChatInputProps {
   toolCount: number;
   append?: (message: Message) => void;
   onWorkingDirChange?: (newDir: string) => void;
+  /** If true, hide the bottom controls row (DirSwitcher, model/mode/cost). Used by Lab Meeting Mode. */
+  hideStatusBar?: boolean;
 }
 
 export default function ChatInput({
@@ -123,6 +125,7 @@ export default function ChatInput({
   toolCount,
   append: _append,
   onWorkingDirChange,
+  hideStatusBar = false,
 }: ChatInputProps) {
   const [_value, setValue] = useState(initialValue);
   const [displayValue, setDisplayValue] = useState(initialValue); // For immediate visual feedback
@@ -1387,6 +1390,8 @@ export default function ChatInput({
 
       {/* Secondary actions and controls row below input */}
       <div className="flex flex-row items-center gap-1 p-2 relative">
+        {!hideStatusBar && (
+        <>
         <DirSwitcher
           className="mr-0"
           sessionId={sessionId ?? undefined}
@@ -1497,6 +1502,8 @@ export default function ChatInput({
             </Tooltip>
           )}
         </div>
+        </>
+        )}
         {sessionId && diagnosticsOpen && (
           <DiagnosticsModal
             isOpen={diagnosticsOpen}

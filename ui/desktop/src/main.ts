@@ -1254,6 +1254,11 @@ ipcMain.on('react-ready', (event) => {
 });
 
 // Handle external URL opening
+ipcMain.handle('lab-meeting:enter', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && !win.isMaximized()) win.maximize();
+});
+
 ipcMain.handle('open-external', async (_event, url: string) => {
   try {
     const parsed = new URL(url);

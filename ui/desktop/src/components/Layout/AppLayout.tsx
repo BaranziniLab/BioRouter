@@ -2,11 +2,12 @@ import React from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import AppSidebar from '../BioRouterSidebar/AppSidebar';
 import { View, ViewOptions } from '../../utils/navigationUtils';
-import { Plus } from '../icons/app-icons';
+import { Plus, Users } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from '../ui/sidebar';
 import { getInitialWorkingDir } from '../../utils/workingDir';
 import DependencySetupModal from '../DependencySetupModal';
+import { BackToLabMeetingPill } from '../LabMeeting/BackToLabMeetingPill';
 
 const AppLayoutContent: React.FC = () => {
   const navigate = useNavigate();
@@ -87,6 +88,15 @@ const AppLayoutContent: React.FC = () => {
           >
             <Plus className="w-4 h-4" />
           </Button>
+          <Button
+            onClick={() => navigate('/lab-meeting')}
+            className="no-drag hover:!bg-background-medium"
+            variant="ghost"
+            size="xs"
+            title="Open Lab Meeting Mode"
+          >
+            <Users className="w-4 h-4" />
+          </Button>
         </div>
       )}
       <Sidebar variant="inset" collapsible="offcanvas">
@@ -99,6 +109,7 @@ const AppLayoutContent: React.FC = () => {
       <SidebarInset>
         <Outlet />
       </SidebarInset>
+      <BackToLabMeetingPill />
     </div>
   );
 };
