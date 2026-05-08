@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { Upload, Folder } from '../icons/app-icons';
+import { Upload } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import {
   Dialog,
@@ -18,13 +18,11 @@ interface ImportSessionModalProps {
 
 export function ImportSessionModal({ isOpen, onClose, onImport }: ImportSessionModalProps) {
   const [isDragging, setIsDragging] = useState(false);
-  const [filePath, setFilePath] = useState('');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const reset = () => {
-    setFilePath('');
     setError('');
     setIsDragging(false);
     setIsSubmitting(false);
@@ -45,7 +43,7 @@ export function ImportSessionModal({ isOpen, onClose, onImport }: ImportSessionM
       setIsSubmitting(true);
       try {
         const json = await file.text();
-        JSON.parse(json); // validate
+        JSON.parse(json);
         await onImport(json);
         reset();
         onClose();
@@ -76,65 +74,30 @@ export function ImportSessionModal({ isOpen, onClose, onImport }: ImportSessionM
     [processFile]
   );
 
-  const handleBrowse = useCallback(async () => {
-    const selected = await window.electron.selectFileOrDirectory();
-    if (!selected) return;
-    setFilePath(selected);
-    setError('');
-  }, []);
-
-  const handlePathImport = useCallback(async () => {
-    const trimmed = filePath.trim();
-    if (!trimmed) {
-      setError('Please enter a file path.');
-      return;
-    }
-    setError('');
-    setIsSubmitting(true);
-    try {
-      const result = await window.electron.readFile(trimmed);
-      if (!result || !result.found) {
-        throw new Error('Could not read file.');
-      }
-      const json = result.file as string;
-      JSON.parse(json); // validate
-      await onImport(json);
-      reset();
-      onClose();
-    } catch (e) {
-      setError(e instanceof SyntaxError ? 'Invalid JSON file.' : String(e));
-      setIsSubmitting(false);
-    }
-  }, [filePath, onImport, onClose]);
-
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && handleClose()}>
       <DialogContent className="sm:max-w-[480px]">
         <DialogHeader>
           <DialogTitle>Import Session</DialogTitle>
           <DialogDescription>
-            Drag and drop a session JSON file, or enter its path below.
+            Drag and drop a session JSON file, or click to browse.
           </DialogDescription>
         </DialogHeader>
 
-        {/* Drag-and-drop zone */}
         <div
-          onDragOver={(e) => {
-            e.preventDefault();
-            setIsDragging(true);
-          }}
+          onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
-          onClick={() => fileInputRef.current?.click()}
-          className={`flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed py-8 cursor-pointer transition-colors duration-150 ${
+          onClick={() => !isSubmitting && fileInputRef.current?.click()}
+          className={[
+            'flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed py-10 cursor-pointer transition-colors duration-150 select-none',
             isDragging
               ? 'border-[#cf6d47] bg-[#cf6d47]/5'
-              : 'border-border-subtle bg-background-muted hover:border-border-strong hover:bg-background-medium'
-          }`}
+              : error
+              ? 'border-red-400 bg-red-50 dark:bg-red-900/10'
+              : 'border-border-subtle bg-background-muted hover:border-border-strong hover:bg-background-medium',
+          ].join(' ')}
         >
-          <Upload className="w-7 h-7 text-text-muted" />
-          <p className="text-sm text-text-default font-medium">Drop a JSON file here</p>
-          <p className="text-xs text-text-muted">or click to browse</p>
           <input
             ref={fileInputRef}
             type="file"
@@ -142,53 +105,19 @@ export function ImportSessionModal({ isOpen, onClose, onImport }: ImportSessionM
             onChange={handleFileInputChange}
             className="hidden"
           />
-        </div>
-
-        {/* Divider */}
-        <div className="flex items-center gap-3">
-          <div className="flex-1 h-px bg-border-subtle" />
-          <span className="text-xs text-text-muted uppercase tracking-wider">or</span>
-          <div className="flex-1 h-px bg-border-subtle" />
-        </div>
-
-        {/* File path input */}
-        <div className="flex gap-2">
-          <div className={`flex flex-1 items-center rounded-lg border bg-background-default transition-colors duration-150 focus-within:border-border-strong ${
-            error ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
-          }`}>
-            <input
-              type="text"
-              value={filePath}
-              onChange={(e) => {
-                setFilePath(e.target.value);
-                setError('');
-              }}
-              onKeyDown={(e) => e.key === 'Enter' && !isSubmitting && handlePathImport()}
-              placeholder="/path/to/session.json"
-              className="flex-1 px-3 py-2 text-sm bg-transparent text-text-default placeholder:text-text-muted focus:outline-none"
-            />
-            <button
-              type="button"
-              onClick={handleBrowse}
-              disabled={isSubmitting}
-              title="Browse for file"
-              className="px-2.5 py-2 text-text-muted hover:text-text-default disabled:opacity-50 transition-colors duration-150"
-            >
-              <Folder className="w-4 h-4" />
-            </button>
-          </div>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={handlePathImport}
-            disabled={isSubmitting || !filePath.trim()}
-          >
-            Load
-          </Button>
+          {isSubmitting ? (
+            <p className="text-sm text-text-muted animate-pulse">Importing…</p>
+          ) : (
+            <>
+              <Upload className="w-8 h-8 text-text-muted" />
+              <p className="text-sm font-medium text-text-default">Drop a JSON file here</p>
+              <p className="text-xs text-text-muted">or click to browse</p>
+            </>
+          )}
         </div>
 
         {error && (
-          <p className="text-sm text-red-500 dark:text-red-400 -mt-1">{error}</p>
+          <p className="text-sm text-red-500 dark:text-red-400">{error}</p>
         )}
 
         <DialogFooter>

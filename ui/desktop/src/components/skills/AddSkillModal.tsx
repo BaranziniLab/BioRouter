@@ -28,110 +28,6 @@ interface BundlePreview {
 
 type Preview = SinglePreview | BundlePreview;
 
-/** Walk a FileList from a webkitdirectory input, detect single skill or bundle. */
-function parseUploadedFolder(fileList: FileList): Promise<Preview> {
-  return new Promise((resolve, reject) => {
-    const files = Array.from(fileList);
-    if (files.length === 0) { reject(new Error('No files found in folder.')); return; }
-
-    const topFolder = files[0].webkitRelativePath.split('/')[0] ?? 'skill';
-
-    // Check for root SKILL.md: path like "topFolder/SKILL.md" (2 parts)
-    const rootSkillMdFile = files.find((f) => {
-      const parts = f.webkitRelativePath.split('/');
-      return parts.length === 2 && f.name === 'SKILL.md';
-    });
-
-    if (rootSkillMdFile) {
-      // --- Single skill ---
-      const skillReader = new FileReader();
-      skillReader.onerror = () => reject(new Error('Failed to read SKILL.md'));
-      skillReader.onload = (e) => {
-        const skillMdContent = e.target?.result as string;
-        const parsed = parseSkillFrontmatter(skillMdContent);
-        if (!parsed) {
-          reject(new Error('SKILL.md must have valid YAML frontmatter with "name" and "description".'));
-          return;
-        }
-        const slug = toSlug(parsed.name) || toSlug(topFolder);
-        const filePairs: [string, string][] = [];
-        let remaining = files.length;
-        files.forEach((file) => {
-          const rel = file.webkitRelativePath.replace(/^[^/]+\/?/, '') || file.name;
-          const fr = new FileReader();
-          fr.onerror = () => reject(new Error(`Failed to read ${file.name}`));
-          fr.onload = (ev) => {
-            filePairs.push([rel, ev.target?.result as string]);
-            remaining--;
-            if (remaining === 0) {
-              resolve({ isBundle: false, name: parsed.name, description: parsed.description, slug, files: filePairs, label: topFolder });
-            }
-          };
-          fr.readAsText(file);
-        });
-      };
-      skillReader.readAsText(rootSkillMdFile);
-      return;
-    }
-
-    // --- Bundle detection: sub-level SKILL.md at "topFolder/<sub>/SKILL.md" (3 parts) ---
-    const subSkillMdFiles = files.filter((f) => {
-      const parts = f.webkitRelativePath.split('/');
-      return parts.length === 3 && f.name === 'SKILL.md';
-    });
-
-    if (subSkillMdFiles.length === 0) {
-      reject(new Error('Folder must contain a SKILL.md file, or sub-folders that each contain a SKILL.md.'));
-      return;
-    }
-
-    const bundleSkills: Array<{ name: string; description: string }> = [];
-    let skillPending = subSkillMdFiles.length;
-    const filePairs: [string, string][] = [];
-    let filePending = files.length;
-
-    const tryResolve = () => {
-      if (skillPending !== 0 || filePending !== 0) return;
-      if (bundleSkills.length === 0) {
-        reject(new Error('No valid SKILL.md files found in sub-folders.'));
-        return;
-      }
-      resolve({
-        isBundle: true,
-        bundleName: topFolder,
-        slug: toSlug(topFolder),
-        bundleSkills,
-        files: filePairs,
-        label: topFolder,
-      });
-    };
-
-    subSkillMdFiles.forEach((skillMdFile) => {
-      const fr = new FileReader();
-      fr.onerror = () => { skillPending--; tryResolve(); };
-      fr.onload = (e) => {
-        const content = e.target?.result as string;
-        const parsed = parseSkillFrontmatter(content);
-        if (parsed) bundleSkills.push(parsed);
-        skillPending--;
-        tryResolve();
-      };
-      fr.readAsText(skillMdFile);
-    });
-
-    files.forEach((file) => {
-      const rel = file.webkitRelativePath.replace(/^[^/]+\/?/, '') || file.name;
-      const fr = new FileReader();
-      fr.onerror = () => { filePending--; tryResolve(); };
-      fr.onload = (ev) => {
-        filePairs.push([rel, ev.target?.result as string]);
-        filePending--;
-        tryResolve();
-      };
-      fr.readAsText(file);
-    });
-  });
-}
 
 export default function AddSkillModal({ onClose, onSaved }: Props) {
   const [isDragging, setIsDragging] = useState(false);
@@ -139,8 +35,6 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
   const [preview, setPreview] = useState<Preview | null>(null);
   const [isInstalling, setIsInstalling] = useState(false);
   const mdInputRef = useRef<HTMLInputElement>(null);
-  const folderInputRef = useRef<HTMLInputElement>(null);
-  const zipInputRef = useRef<HTMLInputElement>(null);
 
   const processMdFile = (file: File) => {
     if (!file.name.endsWith('.md')) {
@@ -183,22 +77,14 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
     }
   };
 
-  const handleMdBrowse = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleMdBrowse = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) processMdFile(file);
-    e.target.value = '';
-  };
-
-  const handleFolderBrowse = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    try {
-      const p = await parseUploadedFolder(files);
-      setError(null);
-      setPreview(p);
-    } catch (err) {
-      setError((err as Error).message);
-      setPreview(null);
+    if (file) {
+      if (file.name.endsWith('.zip')) {
+        await processZipFile(file);
+      } else {
+        processMdFile(file);
+      }
     }
     e.target.value = '';
   };
@@ -231,12 +117,6 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
         label: file.name,
       });
     }
-  };
-
-  const handleZipBrowse = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) await processZipFile(file);
-    e.target.value = '';
   };
 
   const handleInstall = async () => {
@@ -282,64 +162,23 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
             onDragLeave={() => setIsDragging(false)}
             onDrop={handleDrop}
             onClick={() => mdInputRef.current?.click()}
-            className={`border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors ${
+            className={[
+              'border-2 border-dashed rounded-xl p-10 text-center cursor-pointer select-none transition-colors duration-150',
               isDragging
-                ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20'
-                : 'border-border-subtle hover:border-blue-400 hover:bg-background-medium/30'
-            }`}
+                ? 'border-[#cf6d47] bg-[#cf6d47]/5'
+                : error
+                ? 'border-red-400 bg-red-50 dark:bg-red-900/10'
+                : 'border-border-subtle hover:border-border-strong hover:bg-background-medium/30',
+            ].join(' ')}
           >
-            <p className="text-sm text-text-muted">
-              Drop a <code>.md</code> or <code>.zip</code> skill file here, or{' '}
-              <span className="text-blue-600 underline">browse for file</span>
+            <p className="text-sm font-medium text-text-default mb-1">
+              Drop a skill file here
             </p>
-            <p className="text-xs text-text-subtle mt-1">
-              File needs YAML frontmatter with <code>name</code> and <code>description</code>.
-              A folder named after the skill with <code>SKILL.md</code> inside will be created.
+            <p className="text-xs text-text-muted">
+              or click to browse — accepts <code>.md</code> or <code>.zip</code>
             </p>
           </div>
-          <input ref={mdInputRef} type="file" accept=".md" className="hidden" onChange={handleMdBrowse} />
-
-          {/* Folder upload */}
-          <div className="flex items-center gap-3">
-            <div className="h-px flex-1 bg-border-subtle" />
-            <span className="text-xs text-text-subtle">or</span>
-            <div className="h-px flex-1 bg-border-subtle" />
-          </div>
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() => folderInputRef.current?.click()}
-          >
-            Browse for Skill Folder
-          </Button>
-          <p className="text-xs text-text-subtle -mt-2 text-center">
-            Folder with <code>SKILL.md</code> (single skill) or sub-folders each with <code>SKILL.md</code> (bundle)
-          </p>
-          <input
-            ref={folderInputRef}
-            type="file"
-            // @ts-expect-error -- webkitdirectory is non-standard but supported by Electron/Chromium
-            webkitdirectory=""
-            className="hidden"
-            onChange={handleFolderBrowse}
-          />
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() => zipInputRef.current?.click()}
-          >
-            Browse for Skill ZIP
-          </Button>
-          <p className="text-xs text-text-subtle -mt-2 text-center">
-            ZIP with <code>SKILL.md</code> (single skill) or a bundle folder containing sub-skills
-          </p>
-          <input
-            ref={zipInputRef}
-            type="file"
-            accept=".zip"
-            className="hidden"
-            onChange={handleZipBrowse}
-          />
+          <input ref={mdInputRef} type="file" accept=".md,.zip" className="hidden" onChange={handleMdBrowse} />
 
           {error && (
             <div className="text-sm text-destructive bg-destructive/10 rounded-lg px-4 py-3">
