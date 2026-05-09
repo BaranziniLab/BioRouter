@@ -25,15 +25,19 @@ export const LabMeetingRoute: React.FC = () => {
     }
   }, [lab.state.windows.length, lab]);
 
-  // Keyboard shortcuts (Cmd/Ctrl+N spawn; Cmd/Ctrl+W close focused)
+  // Keyboard shortcuts. Cmd+N and Cmd+W are owned by the Electron menu
+  // ("New Window" / OS "Close Window") and never reach the renderer first, so
+  // we use Shift modifiers to stay out of their way:
+  //   Cmd/Ctrl+Shift+N : spawn a window on the board
+  //   Cmd/Ctrl+Shift+W : close the focused window
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       const meta = e.metaKey || e.ctrlKey;
-      if (!meta) return;
-      if (e.key === 'n' || e.key === 'N') {
+      if (!meta || !e.shiftKey) return;
+      if (e.key === 'N' || e.key === 'n') {
         e.preventDefault();
         void lab.spawnWindow();
-      } else if (e.key === 'w' || e.key === 'W') {
+      } else if (e.key === 'W' || e.key === 'w') {
         if (lab.state.focusedWindowId) {
           e.preventDefault();
           lab.closeWindow(lab.state.focusedWindowId);
