@@ -114,7 +114,6 @@ export const ChatWindow: React.FC<Props> = ({
     >
       <WindowTitleBar
         name={win.name}
-        badge={win.badge}
         accentColor={win.accentColor}
         onRename={(name) => dashboard.renameWindow(win.windowId, name)}
         onClose={() => dashboard.closeWindow(win.windowId)}
@@ -127,7 +126,6 @@ export const ChatWindow: React.FC<Props> = ({
             sessionId={win.sessionId}
             suppressEmptyState={false}
             coherent
-            hideStatusBar
           />
         </ChatProvider>
       </div>

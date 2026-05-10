@@ -3,7 +3,6 @@ import { X } from '../icons/app-icons';
 
 interface Props {
   name: string;
-  badge: number;
   accentColor: string;
   onRename: (name: string) => void;
   onClose: () => void;
@@ -12,7 +11,6 @@ interface Props {
 
 export const WindowTitleBar: React.FC<Props> = ({
   name,
-  badge,
   accentColor,
   onRename,
   onClose,
@@ -71,7 +69,6 @@ export const WindowTitleBar: React.FC<Props> = ({
           {name}
         </span>
       )}
-      <span className="text-xs font-mono text-text-muted flex-shrink-0">#{badge}</span>
       <button
         type="button"
         className="flex-shrink-0 p-1 rounded hover:bg-background-medium transition-colors"

@@ -56,10 +56,8 @@ interface BaseChatProps {
   suppressEmptyState: boolean;
   sessionId: string;
   initialMessage?: string;
-  /** Render messages + input as a single coherent surface (Dashboard). */
+  /** Render messages + input as a single coherent surface (default true). */
   coherent?: boolean;
-  /** Hide model/mode/cost/cwd footer in ChatInput. */
-  hideStatusBar?: boolean;
 }
 
 function BaseChatContent({
@@ -69,8 +67,7 @@ function BaseChatContent({
   customMainLayoutProps = {},
   sessionId,
   initialMessage,
-  coherent = false,
-  hideStatusBar = false,
+  coherent = true,
 }: BaseChatProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -494,7 +491,6 @@ function BaseChatContent({
             workflowAccepted={!hasNotAcceptedWorkflow}
             initialPrompt={initialPrompt}
             toolCount={toolCount || 0}
-            hideStatusBar={hideStatusBar}
             {...customChatInputProps}
           />
         </div>
