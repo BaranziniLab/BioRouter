@@ -39,6 +39,8 @@ import { Workflow } from '../workflow';
 import { createSession } from '../sessions';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
+import { SessionNamePill } from './Dashboard/SessionNamePill';
+import { updateSessionName } from '../api';
 
 // Context for sharing current model info
 const CurrentModelContext = createContext<{ model: string; mode: string } | null>(null);
@@ -58,6 +60,10 @@ interface BaseChatProps {
   initialMessage?: string;
   /** Render messages + input as a single coherent surface (default true). */
   coherent?: boolean;
+  /** Optional: overrides the default rename behavior (which calls biorouterd updateSessionName). */
+  onRenameSession?: (newName: string) => void;
+  /** Optional accent dot color (dashboard windows pass theirs). */
+  accentColor?: string;
 }
 
 function BaseChatContent({
@@ -68,6 +74,8 @@ function BaseChatContent({
   sessionId,
   initialMessage,
   coherent = true,
+  onRenameSession,
+  accentColor,
 }: BaseChatProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -322,6 +330,18 @@ function BaseChatContent({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.name, setChat]);
 
+  const handleRename = (newName: string) => {
+    if (onRenameSession) {
+      onRenameSession(newName);
+      return;
+    }
+    if (!sessionId) return;
+    void updateSessionName({
+      path: { session_id: sessionId },
+      body: { name: newName },
+    });
+  };
+
   // Only use initialMessage for the prompt if it hasn't been submitted yet
   // If we have a workflow prompt and user workflow values, substitute parameters
   let workflowPrompt = '';
@@ -383,6 +403,13 @@ function BaseChatContent({
               : 'flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden'
           }
         >
+          <div className="flex-shrink-0 px-4 pt-3">
+            <SessionNamePill
+              name={session?.name || 'New session'}
+              onRename={handleRename}
+              accentColor={accentColor}
+            />
+          </div>
           <ScrollArea
             ref={scrollRef}
             className={

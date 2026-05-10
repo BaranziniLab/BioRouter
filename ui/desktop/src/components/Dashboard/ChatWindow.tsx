@@ -7,6 +7,7 @@ import { useDashboard } from '../../contexts/DashboardContext';
 import { WindowTitleBar } from './WindowTitleBar';
 import { ResizeHandle } from './ResizeHandle';
 import { usePointerDrag } from './useDashboardDrag';
+import { updateSessionName } from '../../api';
 
 interface Props {
   win: DashboardWindow;
@@ -126,6 +127,15 @@ export const ChatWindow: React.FC<Props> = ({
             sessionId={win.sessionId}
             suppressEmptyState={false}
             coherent
+            accentColor={win.accentColor}
+            onRenameSession={(newName) => {
+              dashboard.renameWindow(win.windowId, newName);
+              // also propagate to biorouterd so History reflects it
+              void updateSessionName({
+                path: { session_id: win.sessionId },
+                body: { name: newName },
+              });
+            }}
           />
         </ChatProvider>
       </div>
