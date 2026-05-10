@@ -2,14 +2,14 @@ import React, { useMemo, useState } from 'react';
 import BaseChat from '../BaseChat';
 import { ChatProvider, DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
 import { ChatType } from '../../types/chat';
-import { LabWindow } from '../../contexts/LabMeetingContext';
-import { useLabMeeting } from '../../contexts/LabMeetingContext';
+import { DashboardWindow } from '../../contexts/DashboardContext';
+import { useDashboard } from '../../contexts/DashboardContext';
 import { WindowTitleBar } from './WindowTitleBar';
 import { ResizeHandle } from './ResizeHandle';
-import { usePointerDrag } from './useLabMeetingDrag';
+import { usePointerDrag } from './useDashboardDrag';
 
 interface Props {
-  win: LabWindow;
+  win: DashboardWindow;
   rect: { x: number; y: number; w: number; h: number; zIndex: number };
   isFocused: boolean;
   isSolo: boolean;
@@ -29,7 +29,7 @@ export const ChatWindow: React.FC<Props> = ({
   onTuckByDrag,
   sidebarOpen,
 }) => {
-  const lab = useLabMeeting();
+  const lab = useDashboard();
   const [chat, setChat] = useState<ChatType>({
     sessionId: win.sessionId,
     name: win.name || DEFAULT_CHAT_TITLE,

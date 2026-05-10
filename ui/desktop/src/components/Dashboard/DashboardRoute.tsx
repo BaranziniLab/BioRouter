@@ -1,19 +1,18 @@
 import React, { useEffect, useRef } from 'react';
-import { useLabMeeting } from '../../contexts/LabMeetingContext';
-import { LabMeetingBoard } from './LabMeetingBoard';
-import { LabMeetingToolbar } from './LabMeetingToolbar';
-import { LabMeetingStatusBar } from './LabMeetingStatusBar';
+import { useDashboard } from '../../contexts/DashboardContext';
+import { DashboardBoard } from './DashboardBoard';
+import { DashboardToolbar } from './DashboardToolbar';
 
-export const LabMeetingRoute: React.FC = () => {
-  const lab = useLabMeeting();
+export const DashboardRoute: React.FC = () => {
+  const lab = useDashboard();
   const didAutoSpawn = useRef(false);
 
   // Maximize the BrowserWindow on entry (Electron IPC).
   useEffect(() => {
     const electron = (
-      window as unknown as { electron?: { labMeetingEnter?: () => Promise<void> | void } }
+      window as unknown as { electron?: { dashboardEnter?: () => Promise<void> | void } }
     ).electron;
-    electron?.labMeetingEnter?.();
+    electron?.dashboardEnter?.();
   }, []);
 
   // Auto-spawn one window if state is completely empty.
@@ -50,9 +49,8 @@ export const LabMeetingRoute: React.FC = () => {
 
   return (
     <div className="h-full w-full flex flex-col min-h-0 bg-background-muted">
-      <LabMeetingToolbar />
-      <LabMeetingBoard />
-      <LabMeetingStatusBar />
+      <DashboardToolbar />
+      <DashboardBoard />
     </div>
   );
 };

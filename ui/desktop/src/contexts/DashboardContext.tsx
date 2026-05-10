@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
 
-export interface LabWindow {
+export interface DashboardWindow {
   windowId: string;
   sessionId: string;
   name: string;
@@ -19,16 +19,16 @@ export interface LabWindow {
   unreadActivity: boolean;
 }
 
-export interface LabMeetingState {
-  windows: LabWindow[];
+export interface DashboardState {
+  windows: DashboardWindow[];
   focusedWindowId: string | null;
   T1: number;
   T2: number;
   isHydrating: boolean;
 }
 
-export interface LabMeetingApi {
-  state: LabMeetingState;
+export interface DashboardApi {
+  state: DashboardState;
   spawnWindow: () => Promise<void>;
   closeWindow: (windowId: string) => void;
   focusWindow: (windowId: string) => void;
@@ -41,20 +41,20 @@ export interface LabMeetingApi {
   clearAll: () => void;
   setT1: (n: number) => void;
   setT2: (n: number) => void;
-  updateWindowField: <K extends keyof LabWindow>(
+  updateWindowField: <K extends keyof DashboardWindow>(
     windowId: string,
     field: K,
-    value: LabWindow[K]
+    value: DashboardWindow[K]
   ) => void;
   markActivity: (windowId: string) => void;
 }
 
-export const LabMeetingContext = createContext<LabMeetingApi | null>(null);
+export const DashboardContext = createContext<DashboardApi | null>(null);
 
-export const useLabMeeting = (): LabMeetingApi => {
-  const ctx = useContext(LabMeetingContext);
-  if (!ctx) throw new Error('useLabMeeting must be used inside LabMeetingProvider');
+export const useDashboard = (): DashboardApi => {
+  const ctx = useContext(DashboardContext);
+  if (!ctx) throw new Error('useDashboard must be used inside DashboardProvider');
   return ctx;
 };
 
-export const useOptionalLabMeeting = (): LabMeetingApi | null => useContext(LabMeetingContext);
+export const useOptionalDashboard = (): DashboardApi | null => useContext(DashboardContext);

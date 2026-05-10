@@ -1,13 +1,13 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   STORAGE_KEY,
-  loadLabMeetingState,
-  saveLabMeetingState,
+  loadDashboardState,
+  saveDashboardState,
   filterDeadSessions,
-  type SerializedLabMeetingState,
-} from './labMeetingStorage';
+  type SerializedDashboardState,
+} from './dashboardStorage';
 
-const makeState = (over: Partial<SerializedLabMeetingState> = {}): SerializedLabMeetingState => ({
+const makeState = (over: Partial<SerializedDashboardState> = {}): SerializedDashboardState => ({
   version: 1,
   windows: [],
   focusedWindowId: null,
@@ -20,25 +20,25 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-describe('labMeetingStorage', () => {
+describe('dashboardStorage', () => {
   it('returns null when nothing stored', () => {
-    expect(loadLabMeetingState()).toBeNull();
+    expect(loadDashboardState()).toBeNull();
   });
 
   it('round-trips state', () => {
     const state = makeState({ T1: 4, T2: 9 });
-    saveLabMeetingState(state);
-    expect(loadLabMeetingState()).toEqual(state);
+    saveDashboardState(state);
+    expect(loadDashboardState()).toEqual(state);
   });
 
   it('returns null for malformed JSON', () => {
     localStorage.setItem(STORAGE_KEY, '{not json');
-    expect(loadLabMeetingState()).toBeNull();
+    expect(loadDashboardState()).toBeNull();
   });
 
   it('returns null when version mismatches', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...makeState(), version: 99 }));
-    expect(loadLabMeetingState()).toBeNull();
+    expect(loadDashboardState()).toBeNull();
   });
 
   it('filterDeadSessions removes windows whose sessionId is not present', async () => {

@@ -1,5 +1,5 @@
 import React from 'react';
-import { useLabMeeting } from '../../contexts/LabMeetingContext';
+import { useDashboard } from '../../contexts/DashboardContext';
 import { TuckedCard } from './TuckedCard';
 
 interface Props {
@@ -7,7 +7,7 @@ interface Props {
 }
 
 export const TuckSidebar: React.FC<Props> = ({ onCardDragStart }) => {
-  const lab = useLabMeeting();
+  const lab = useDashboard();
   const tucked = lab.state.windows.filter((w) => w.isTucked);
 
   if (tucked.length === 0) return null;

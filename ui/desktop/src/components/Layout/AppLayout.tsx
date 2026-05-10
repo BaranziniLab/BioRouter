@@ -7,7 +7,7 @@ import { Button } from '../ui/button';
 import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from '../ui/sidebar';
 import { getInitialWorkingDir } from '../../utils/workingDir';
 import DependencySetupModal from '../DependencySetupModal';
-import { BackToLabMeetingPill } from '../LabMeeting/BackToLabMeetingPill';
+import { BackToDashboardPill } from '../Dashboard/BackToDashboardPill';
 
 const AppLayoutContent: React.FC = () => {
   const navigate = useNavigate();
@@ -89,11 +89,11 @@ const AppLayoutContent: React.FC = () => {
             <Plus className="w-4 h-4" />
           </Button>
           <Button
-            onClick={() => navigate('/lab-meeting')}
+            onClick={() => navigate('/dashboard')}
             className="no-drag hover:!bg-background-medium"
             variant="ghost"
             size="xs"
-            title="Open Lab Meeting Mode"
+            title="Open Dashboard"
           >
             <Users className="w-4 h-4" />
           </Button>
@@ -109,7 +109,7 @@ const AppLayoutContent: React.FC = () => {
       <SidebarInset>
         <Outlet />
       </SidebarInset>
-      <BackToLabMeetingPill />
+      <BackToDashboardPill />
     </div>
   );
 };

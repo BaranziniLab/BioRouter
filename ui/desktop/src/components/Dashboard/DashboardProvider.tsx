@@ -1,16 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  LabMeetingContext,
-  LabMeetingApi,
-  LabMeetingState,
-  LabWindow,
-} from '../../contexts/LabMeetingContext';
+  DashboardContext,
+  DashboardApi,
+  DashboardState,
+  DashboardWindow,
+} from '../../contexts/DashboardContext';
 import { generateName, pickAccentColor } from './palette';
 import {
-  loadLabMeetingState,
-  SerializedLabMeetingState,
+  loadDashboardState,
+  SerializedDashboardState,
   debounceSave,
-} from './labMeetingStorage';
+} from './dashboardStorage';
 import { createSession } from '../../sessions';
 import { getInitialWorkingDir } from '../../utils/workingDir';
 
@@ -21,7 +21,7 @@ function nextWindowId(): string {
   return 'lw_' + Math.random().toString(36).slice(2, 10);
 }
 
-function serialize(state: LabMeetingState): SerializedLabMeetingState {
+function serialize(state: DashboardState): SerializedDashboardState {
   return {
     version: 1,
     windows: state.windows.map((w) => ({ ...w })),
@@ -31,8 +31,8 @@ function serialize(state: LabMeetingState): SerializedLabMeetingState {
   };
 }
 
-function hydrate(): LabMeetingState {
-  const raw = loadLabMeetingState();
+function hydrate(): DashboardState {
+  const raw = loadDashboardState();
   if (!raw) {
     return {
       windows: [],
@@ -51,7 +51,7 @@ function hydrate(): LabMeetingState {
   };
 }
 
-function enforceT2Pure(s: LabMeetingState): LabMeetingState {
+function enforceT2Pure(s: DashboardState): DashboardState {
   const onBoard = s.windows.filter((w) => !w.isTucked);
   if (onBoard.length <= s.T2) return s;
   const focusedId = s.focusedWindowId;
@@ -68,19 +68,19 @@ function enforceT2Pure(s: LabMeetingState): LabMeetingState {
   };
 }
 
-interface LabMeetingProviderProps {
+interface DashboardProviderProps {
   children: React.ReactNode;
 }
 
-export const LabMeetingProvider: React.FC<LabMeetingProviderProps> = ({ children }) => {
-  const [state, setState] = useState<LabMeetingState>(() => hydrate());
+export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }) => {
+  const [state, setState] = useState<DashboardState>(() => hydrate());
   const debouncedSaveRef = useRef(debounceSave(250));
 
   useEffect(() => {
     debouncedSaveRef.current(serialize(state));
   }, [state]);
 
-  const spawnWindow: LabMeetingApi['spawnWindow'] = useCallback(async () => {
+  const spawnWindow: DashboardApi['spawnWindow'] = useCallback(async () => {
     const cwd = getInitialWorkingDir();
     const session = await createSession(cwd);
     const sessionId = session.id;
@@ -90,7 +90,7 @@ export const LabMeetingProvider: React.FC<LabMeetingProviderProps> = ({ children
       const accentColor = pickAccentColor(usedColors);
       const badge = prev.windows.reduce((m, w) => Math.max(m, w.badge), 0) + 1;
       const name = generateName(prev.windows.length);
-      const newWin: LabWindow = {
+      const newWin: DashboardWindow = {
         windowId: nextWindowId(),
         sessionId,
         name,
@@ -104,7 +104,7 @@ export const LabMeetingProvider: React.FC<LabMeetingProviderProps> = ({ children
         lastInteraction: now,
         unreadActivity: false,
       };
-      const next: LabMeetingState = {
+      const next: DashboardState = {
         ...prev,
         windows: [...prev.windows, newWin],
         focusedWindowId: newWin.windowId,
@@ -113,7 +113,7 @@ export const LabMeetingProvider: React.FC<LabMeetingProviderProps> = ({ children
     });
   }, []);
 
-  const closeWindow: LabMeetingApi['closeWindow'] = useCallback((windowId) => {
+  const closeWindow: DashboardApi['closeWindow'] = useCallback((windowId) => {
     setState((prev) => {
       const remaining = prev.windows.filter((w) => w.windowId !== windowId);
       let focusedWindowId = prev.focusedWindowId;
@@ -127,7 +127,7 @@ export const LabMeetingProvider: React.FC<LabMeetingProviderProps> = ({ children
     });
   }, []);
 
-  const focusWindow: LabMeetingApi['focusWindow'] = useCallback((windowId) => {
+  const focusWindow: DashboardApi['focusWindow'] = useCallback((windowId) => {
     setState((prev) => ({
       ...prev,
       focusedWindowId: windowId,
@@ -137,14 +137,14 @@ export const LabMeetingProvider: React.FC<LabMeetingProviderProps> = ({ children
     }));
   }, []);
 
-  const renameWindow: LabMeetingApi['renameWindow'] = useCallback((windowId, name) => {
+  const renameWindow: DashboardApi['renameWindow'] = useCallback((windowId, name) => {
     setState((prev) => ({
       ...prev,
       windows: prev.windows.map((w) => (w.windowId === windowId ? { ...w, name } : w)),
     }));
   }, []);
 
-  const moveWindow: LabMeetingApi['moveWindow'] = useCallback((windowId, position) => {
+  const moveWindow: DashboardApi['moveWindow'] = useCallback((windowId, position) => {
     setState((prev) => ({
       ...prev,
       windows: prev.windows.map((w) =>
@@ -155,7 +155,7 @@ export const LabMeetingProvider: React.FC<LabMeetingProviderProps> = ({ children
     }));
   }, []);
 
-  const resizeWindow: LabMeetingApi['resizeWindow'] = useCallback((windowId, size) => {
+  const resizeWindow: DashboardApi['resizeWindow'] = useCallback((windowId, size) => {
     setState((prev) => ({
       ...prev,
       windows: prev.windows.map((w) =>
@@ -166,7 +166,7 @@ export const LabMeetingProvider: React.FC<LabMeetingProviderProps> = ({ children
     }));
   }, []);
 
-  const tuckWindow: LabMeetingApi['tuckWindow'] = useCallback((windowId) => {
+  const tuckWindow: DashboardApi['tuckWindow'] = useCallback((windowId) => {
     setState((prev) => {
       const win = prev.windows.find((w) => w.windowId === windowId);
       if (!win || win.isTucked) return prev;
@@ -191,11 +191,11 @@ export const LabMeetingProvider: React.FC<LabMeetingProviderProps> = ({ children
     });
   }, []);
 
-  const evokeWindow: LabMeetingApi['evokeWindow'] = useCallback((windowId, dropPos) => {
+  const evokeWindow: DashboardApi['evokeWindow'] = useCallback((windowId, dropPos) => {
     setState((prev) => {
       const win = prev.windows.find((w) => w.windowId === windowId);
       if (!win) return prev;
-      const next: LabMeetingState = {
+      const next: DashboardState = {
         ...prev,
         windows: prev.windows.map((w) =>
           w.windowId === windowId
@@ -215,7 +215,7 @@ export const LabMeetingProvider: React.FC<LabMeetingProviderProps> = ({ children
     });
   }, []);
 
-  const organize: LabMeetingApi['organize'] = useCallback(() => {
+  const organize: DashboardApi['organize'] = useCallback(() => {
     setState((prev) => ({
       ...prev,
       windows: prev.windows.map((w) => ({
@@ -227,25 +227,25 @@ export const LabMeetingProvider: React.FC<LabMeetingProviderProps> = ({ children
     }));
   }, []);
 
-  const clearAll: LabMeetingApi['clearAll'] = useCallback(() => {
+  const clearAll: DashboardApi['clearAll'] = useCallback(() => {
     setState((prev) => ({ ...prev, windows: [], focusedWindowId: null }));
   }, []);
 
-  const setT1: LabMeetingApi['setT1'] = useCallback((n) => {
+  const setT1: DashboardApi['setT1'] = useCallback((n) => {
     setState((prev) => {
       const T1 = Math.max(1, Math.floor(n));
       return { ...prev, T1, T2: Math.max(prev.T2, T1) };
     });
   }, []);
 
-  const setT2: LabMeetingApi['setT2'] = useCallback((n) => {
+  const setT2: DashboardApi['setT2'] = useCallback((n) => {
     setState((prev) => {
       const T2 = Math.max(prev.T1, Math.floor(n));
       return enforceT2Pure({ ...prev, T2 });
     });
   }, []);
 
-  const updateWindowField: LabMeetingApi['updateWindowField'] = useCallback(
+  const updateWindowField: DashboardApi['updateWindowField'] = useCallback(
     (windowId, field, value) => {
       setState((prev) => ({
         ...prev,
@@ -257,7 +257,7 @@ export const LabMeetingProvider: React.FC<LabMeetingProviderProps> = ({ children
     []
   );
 
-  const markActivity: LabMeetingApi['markActivity'] = useCallback((windowId) => {
+  const markActivity: DashboardApi['markActivity'] = useCallback((windowId) => {
     setState((prev) => ({
       ...prev,
       windows: prev.windows.map((w) =>
@@ -268,7 +268,7 @@ export const LabMeetingProvider: React.FC<LabMeetingProviderProps> = ({ children
     }));
   }, []);
 
-  const api: LabMeetingApi = useMemo(
+  const api: DashboardApi = useMemo(
     () => ({
       state,
       spawnWindow,
@@ -305,5 +305,5 @@ export const LabMeetingProvider: React.FC<LabMeetingProviderProps> = ({ children
     ]
   );
 
-  return <LabMeetingContext.Provider value={api}>{children}</LabMeetingContext.Provider>;
+  return <DashboardContext.Provider value={api}>{children}</DashboardContext.Provider>;
 };

@@ -62,7 +62,7 @@ type ElectronAPI = {
   reactReady: () => void;
   getConfig: () => Record<string, unknown>;
   hideWindow: () => void;
-  labMeetingEnter: () => Promise<void>;
+  dashboardEnter: () => Promise<void>;
   directoryChooser: () => Promise<Electron.OpenDialogReturnValue>;
   createChatWindow: (
     query?: string,
@@ -188,7 +188,7 @@ const electronAPI: ElectronAPI = {
     return config;
   },
   hideWindow: () => ipcRenderer.send('hide-window'),
-  labMeetingEnter: () => ipcRenderer.invoke('lab-meeting:enter'),
+  dashboardEnter: () => ipcRenderer.invoke('dashboard:enter'),
   directoryChooser: () => ipcRenderer.invoke('directory-chooser'),
   createChatWindow: (
     query?: string,

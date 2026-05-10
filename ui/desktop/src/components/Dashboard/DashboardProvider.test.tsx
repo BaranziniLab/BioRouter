@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { act, renderHook } from '@testing-library/react';
 import React from 'react';
-import { LabMeetingProvider } from './LabMeetingProvider';
-import { useLabMeeting } from '../../contexts/LabMeetingContext';
+import { DashboardProvider } from './DashboardProvider';
+import { useDashboard } from '../../contexts/DashboardContext';
 
 vi.mock('../../sessions', () => ({
   createSession: vi.fn(async () => ({ id: 'sess_' + Math.random().toString(36).slice(2, 6) })),
@@ -12,23 +12,23 @@ vi.mock('../../utils/workingDir', () => ({
 }));
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
-  <LabMeetingProvider>{children}</LabMeetingProvider>
+  <DashboardProvider>{children}</DashboardProvider>
 );
 
 beforeEach(() => {
   localStorage.clear();
 });
 
-describe('LabMeetingProvider', () => {
+describe('DashboardProvider', () => {
   it('starts empty', () => {
-    const { result } = renderHook(() => useLabMeeting(), { wrapper });
+    const { result } = renderHook(() => useDashboard(), { wrapper });
     expect(result.current.state.windows).toHaveLength(0);
     expect(result.current.state.T1).toBe(6);
     expect(result.current.state.T2).toBe(8);
   });
 
   it('spawn adds a window and focuses it', async () => {
-    const { result } = renderHook(() => useLabMeeting(), { wrapper });
+    const { result } = renderHook(() => useDashboard(), { wrapper });
     await act(async () => {
       await result.current.spawnWindow();
     });
@@ -37,7 +37,7 @@ describe('LabMeetingProvider', () => {
   });
 
   it('spawn beyond T2 tucks oldest non-focused', async () => {
-    const { result } = renderHook(() => useLabMeeting(), { wrapper });
+    const { result } = renderHook(() => useDashboard(), { wrapper });
     for (let i = 0; i < 9; i++) {
       await act(async () => {
         await result.current.spawnWindow();
@@ -50,7 +50,7 @@ describe('LabMeetingProvider', () => {
   });
 
   it('closeWindow drops the window and re-focuses most recent', async () => {
-    const { result } = renderHook(() => useLabMeeting(), { wrapper });
+    const { result } = renderHook(() => useDashboard(), { wrapper });
     await act(async () => {
       await result.current.spawnWindow();
     });
@@ -64,7 +64,7 @@ describe('LabMeetingProvider', () => {
   });
 
   it('tuckWindow removes from board, evokeWindow puts it back', async () => {
-    const { result } = renderHook(() => useLabMeeting(), { wrapper });
+    const { result } = renderHook(() => useDashboard(), { wrapper });
     await act(async () => {
       await result.current.spawnWindow();
     });
@@ -77,7 +77,7 @@ describe('LabMeetingProvider', () => {
   });
 
   it('renameWindow persists name', async () => {
-    const { result } = renderHook(() => useLabMeeting(), { wrapper });
+    const { result } = renderHook(() => useDashboard(), { wrapper });
     await act(async () => {
       await result.current.spawnWindow();
     });
@@ -87,7 +87,7 @@ describe('LabMeetingProvider', () => {
   });
 
   it('organize clears manual placement', async () => {
-    const { result } = renderHook(() => useLabMeeting(), { wrapper });
+    const { result } = renderHook(() => useDashboard(), { wrapper });
     await act(async () => {
       await result.current.spawnWindow();
     });
@@ -100,7 +100,7 @@ describe('LabMeetingProvider', () => {
   });
 
   it('lowering T1 then T2 below current on-board count tucks excess', async () => {
-    const { result } = renderHook(() => useLabMeeting(), { wrapper });
+    const { result } = renderHook(() => useDashboard(), { wrapper });
     for (let i = 0; i < 5; i++) {
       await act(async () => {
         await result.current.spawnWindow();
@@ -114,7 +114,7 @@ describe('LabMeetingProvider', () => {
   });
 
   it('clearAll removes all windows', async () => {
-    const { result } = renderHook(() => useLabMeeting(), { wrapper });
+    const { result } = renderHook(() => useDashboard(), { wrapper });
     await act(async () => {
       await result.current.spawnWindow();
     });

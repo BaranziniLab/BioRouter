@@ -1,7 +1,7 @@
-export const STORAGE_KEY = 'biorouter.labmeeting.v1';
+export const STORAGE_KEY = 'biorouter.dashboard.v1';
 const STORAGE_VERSION = 1;
 
-export interface SerializedLabWindow {
+export interface SerializedDashboardWindow {
   windowId: string;
   sessionId: string;
   name: string;
@@ -20,19 +20,19 @@ export interface SerializedLabWindow {
   unreadActivity: boolean;
 }
 
-export interface SerializedLabMeetingState {
+export interface SerializedDashboardState {
   version: number;
-  windows: SerializedLabWindow[];
+  windows: SerializedDashboardWindow[];
   focusedWindowId: string | null;
   T1: number;
   T2: number;
 }
 
-export function loadLabMeetingState(): SerializedLabMeetingState | null {
+export function loadDashboardState(): SerializedDashboardState | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as SerializedLabMeetingState;
+    const parsed = JSON.parse(raw) as SerializedDashboardState;
     if (parsed.version !== STORAGE_VERSION) return null;
     return parsed;
   } catch {
@@ -40,7 +40,7 @@ export function loadLabMeetingState(): SerializedLabMeetingState | null {
   }
 }
 
-export function saveLabMeetingState(state: SerializedLabMeetingState): void {
+export function saveDashboardState(state: SerializedDashboardState): void {
   try {
     const payload = { ...state, version: STORAGE_VERSION };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -49,18 +49,18 @@ export function saveLabMeetingState(state: SerializedLabMeetingState): void {
   }
 }
 
-export function debounceSave(delayMs = 250): (state: SerializedLabMeetingState) => void {
+export function debounceSave(delayMs = 250): (state: SerializedDashboardState) => void {
   let t: ReturnType<typeof setTimeout> | null = null;
   return (state) => {
     if (t) clearTimeout(t);
-    t = setTimeout(() => saveLabMeetingState(state), delayMs);
+    t = setTimeout(() => saveDashboardState(state), delayMs);
   };
 }
 
 export async function filterDeadSessions(
-  state: SerializedLabMeetingState,
+  state: SerializedDashboardState,
   isAlive: (sessionId: string) => Promise<boolean>
-): Promise<SerializedLabMeetingState> {
+): Promise<SerializedDashboardState> {
   const checks = await Promise.all(state.windows.map((w) => isAlive(w.sessionId)));
   const aliveWindows = state.windows.filter((_, i) => checks[i]);
   const aliveIds = new Set(aliveWindows.map((w) => w.windowId));

@@ -56,7 +56,7 @@ interface BaseChatProps {
   suppressEmptyState: boolean;
   sessionId: string;
   initialMessage?: string;
-  /** Render messages + input as a single coherent surface (Lab Meeting Mode). */
+  /** Render messages + input as a single coherent surface (Dashboard). */
   coherent?: boolean;
   /** Hide model/mode/cost/cwd footer in ChatInput. */
   hideStatusBar?: boolean;

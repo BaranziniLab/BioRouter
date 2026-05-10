@@ -44,8 +44,8 @@ import StandaloneAppView from './components/apps/StandaloneAppView';
 import { View, ViewOptions } from './utils/navigationUtils';
 
 import { useNavigation } from './hooks/useNavigation';
-import { LabMeetingProvider } from './components/LabMeeting/LabMeetingProvider';
-import { LabMeetingRoute } from './components/LabMeeting/LabMeetingRoute';
+import { DashboardProvider } from './components/Dashboard/DashboardProvider';
+import { DashboardRoute } from './components/Dashboard/DashboardRoute';
 import { errorMessage } from './utils/conversionUtils';
 import { getInitialWorkingDir } from './utils/workingDir';
 import { usePageViewTracking } from './hooks/useAnalytics';
@@ -593,7 +593,7 @@ export function AppInner() {
       <ExtensionInstallModal addExtension={addExtension} setView={setView} />
       <div className="relative w-screen h-screen overflow-hidden bg-background-muted flex flex-col">
         <div className="titlebar-drag-region" />
-        <LabMeetingProvider>
+        <DashboardProvider>
           <Routes>
             <Route path="launcher" element={<LauncherView />} />
             <Route
@@ -628,7 +628,7 @@ export function AppInner() {
               <Route path="schedules" element={<SchedulesRoute />} />
               <Route path="workflows" element={<WorkflowsRoute />} />
               <Route path="skills" element={<SkillsRoute />} />
-              <Route path="lab-meeting" element={<LabMeetingRoute />} />
+              <Route path="dashboard" element={<DashboardRoute />} />
               <Route
                 path="shared-session"
                 element={
@@ -642,7 +642,7 @@ export function AppInner() {
               <Route path="permission" element={<PermissionRoute />} />
             </Route>
           </Routes>
-        </LabMeetingProvider>
+        </DashboardProvider>
       </div>
     </>
   );

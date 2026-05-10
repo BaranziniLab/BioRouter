@@ -97,7 +97,7 @@ interface ChatInputProps {
   toolCount: number;
   append?: (message: Message) => void;
   onWorkingDirChange?: (newDir: string) => void;
-  /** If true, hide the bottom controls row (DirSwitcher, model/mode/cost). Used by Lab Meeting Mode. */
+  /** If true, hide the bottom controls row (DirSwitcher, model/mode/cost). Used by Dashboard. */
   hideStatusBar?: boolean;
 }
 

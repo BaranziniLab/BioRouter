@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { useLabMeeting } from '../../contexts/LabMeetingContext';
+import { useDashboard } from '../../contexts/DashboardContext';
 import { Plus } from '../icons/app-icons';
 import { Button } from '../ui/button';
 
@@ -27,8 +27,8 @@ function pickGridLabel(n: number, boardW: number, boardH: number): string {
   return `${bestCols}×${bestRows}`;
 }
 
-export const LabMeetingToolbar: React.FC = () => {
-  const lab = useLabMeeting();
+export const DashboardToolbar: React.FC = () => {
+  const lab = useDashboard();
   const onBoard = lab.state.windows.filter((w) => !w.isTucked).length;
   const tucked = lab.state.windows.filter((w) => w.isTucked).length;
   const [boardRatio, setBoardRatio] = useState<{ w: number; h: number }>({ w: 16, h: 9 });

@@ -1,9 +1,9 @@
 import React from 'react';
 import { X } from '../icons/app-icons';
-import { LabWindow } from '../../contexts/LabMeetingContext';
+import { DashboardWindow } from '../../contexts/DashboardContext';
 
 interface Props {
-  win: LabWindow;
+  win: DashboardWindow;
   preview: string[];
   onEvoke: () => void;
   onClose: () => void;

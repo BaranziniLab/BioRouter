@@ -1,13 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { useLabMeeting } from '../../contexts/LabMeetingContext';
+import { useDashboard } from '../../contexts/DashboardContext';
 import { computeLayout, LayoutInputWindow } from './layoutEngine';
 import { ChatWindow } from './ChatWindow';
 import { TuckSidebar } from './TuckSidebar';
 
 const DEBOUNCE_MS = 80;
 
-export const LabMeetingBoard: React.FC = () => {
-  const lab = useLabMeeting();
+export const DashboardBoard: React.FC = () => {
+  const lab = useDashboard();
   const [boardSize, setBoardSize] = useState<{ width: number; height: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
