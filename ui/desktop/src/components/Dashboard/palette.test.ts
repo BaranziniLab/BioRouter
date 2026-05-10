@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { ACCENT_PALETTE, pickAccentColor, generateName, NAME_POOL } from './palette';
+import { ACCENT_PALETTE, pickAccentColor, generateName } from './palette';
 
 describe('palette', () => {
   it('exposes 12 distinct hex colors', () => {
@@ -19,14 +19,10 @@ describe('palette', () => {
     expect(ACCENT_PALETTE).toContain(pickAccentColor(all));
   });
 
-  it('generateName returns a name from the pool when index < pool size', () => {
-    expect(NAME_POOL).toContain(generateName(0));
-    expect(generateName(0)).toBe(NAME_POOL[0]);
-    expect(generateName(NAME_POOL.length - 1)).toBe(NAME_POOL[NAME_POOL.length - 1]);
-  });
-
-  it('generateName falls back to "Chat #N" when index exceeds pool', () => {
-    expect(generateName(NAME_POOL.length)).toBe(`Chat #${NAME_POOL.length + 1}`);
-    expect(generateName(NAME_POOL.length + 5)).toBe(`Chat #${NAME_POOL.length + 6}`);
+  it('generateName returns "Session N" for any non-negative index', () => {
+    expect(generateName(0)).toBe('Session 1');
+    expect(generateName(1)).toBe('Session 2');
+    expect(generateName(7)).toBe('Session 8');
+    expect(generateName(99)).toBe('Session 100');
   });
 });

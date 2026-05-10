@@ -13,27 +13,6 @@ export const ACCENT_PALETTE: readonly string[] = [
   '#64748b', // slate
 ] as const;
 
-export const NAME_POOL: readonly string[] = [
-  'Atlas',
-  'Nova',
-  'Prism',
-  'Echo',
-  'Lyra',
-  'Orion',
-  'Sage',
-  'Vega',
-  'Wren',
-  'Zephyr',
-  'Juno',
-  'Kai',
-  'Mira',
-  'Neo',
-  'Pax',
-  'Rune',
-  'Soren',
-  'Tess',
-] as const;
-
 export function pickAccentColor(usedColors: readonly string[]): string {
   for (const color of ACCENT_PALETTE) {
     if (!usedColors.includes(color)) return color;
@@ -44,6 +23,5 @@ export function pickAccentColor(usedColors: readonly string[]): string {
 }
 
 export function generateName(index: number): string {
-  if (index < NAME_POOL.length) return NAME_POOL[index];
-  return `Chat #${index + 1}`;
+  return `Session ${index + 1}`;
 }
