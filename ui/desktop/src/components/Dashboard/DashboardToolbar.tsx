@@ -27,9 +27,9 @@ function pickGridLabel(n: number, boardW: number, boardH: number): string {
 }
 
 export const DashboardToolbar: React.FC = () => {
-  const lab = useDashboard();
-  const onBoard = lab.state.windows.filter((w) => !w.isTucked).length;
-  const tucked = lab.state.windows.filter((w) => w.isTucked).length;
+  const dashboard = useDashboard();
+  const onBoard = dashboard.state.windows.filter((w) => !w.isTucked).length;
+  const tucked = dashboard.state.windows.filter((w) => w.isTucked).length;
   const [boardRatio, setBoardRatio] = useState<{ w: number; h: number }>({ w: 16, h: 9 });
 
   useEffect(() => {
@@ -47,17 +47,17 @@ export const DashboardToolbar: React.FC = () => {
   }, [onBoard]);
 
   let mode = 'empty';
-  if (onBoard > 0 && onBoard <= lab.state.T1)
+  if (onBoard > 0 && onBoard <= dashboard.state.T1)
     mode = `${pickGridLabel(onBoard, boardRatio.w, boardRatio.h)} grid`;
-  else if (onBoard > lab.state.T1 && onBoard <= lab.state.T2) mode = 'overlap';
-  else if (onBoard > lab.state.T2) mode = 'compact';
+  else if (onBoard > dashboard.state.T1 && onBoard <= dashboard.state.T2) mode = 'overlap';
+  else if (onBoard > dashboard.state.T2) mode = 'compact';
 
   return (
     <div className="flex items-center gap-2 px-4 py-2 border-b border-border-subtle/30 bg-background-muted/40 backdrop-blur-sm">
       <Button
         size="xs"
         variant="ghost"
-        onClick={() => lab.spawnWindow()}
+        onClick={() => dashboard.spawnWindow()}
         title="Spawn (⌘⇧N)"
         className="hover:bg-background-medium transition-colors duration-150"
       >
@@ -66,7 +66,7 @@ export const DashboardToolbar: React.FC = () => {
       <Button
         size="xs"
         variant="ghost"
-        onClick={() => lab.organize()}
+        onClick={() => dashboard.organize()}
         title="Re-tile"
         className="hover:bg-background-medium transition-colors duration-150"
       >
@@ -75,7 +75,7 @@ export const DashboardToolbar: React.FC = () => {
       <Button
         size="xs"
         variant="ghost"
-        onClick={() => lab.clearAll()}
+        onClick={() => dashboard.clearAll()}
         title="Close all"
         className="hover:bg-background-medium transition-colors duration-150"
       >
@@ -86,17 +86,17 @@ export const DashboardToolbar: React.FC = () => {
         <input
           type="number"
           min={1}
-          max={lab.state.T2}
-          value={lab.state.T1}
-          onChange={(e) => lab.setT1(Number(e.target.value))}
+          max={dashboard.state.T2}
+          value={dashboard.state.T1}
+          onChange={(e) => dashboard.setT1(Number(e.target.value))}
           className="w-12 text-xs px-1 py-0.5 rounded border border-border-subtle bg-background-default"
         />
         <label className="text-xs text-text-muted ml-1">T2</label>
         <input
           type="number"
-          min={lab.state.T1}
-          value={lab.state.T2}
-          onChange={(e) => lab.setT2(Number(e.target.value))}
+          min={dashboard.state.T1}
+          value={dashboard.state.T2}
+          onChange={(e) => dashboard.setT2(Number(e.target.value))}
           className="w-12 text-xs px-1 py-0.5 rounded border border-border-subtle bg-background-default"
         />
       </div>

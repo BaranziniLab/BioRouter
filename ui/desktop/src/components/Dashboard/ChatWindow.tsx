@@ -29,7 +29,7 @@ export const ChatWindow: React.FC<Props> = ({
   onTuckByDrag,
   sidebarOpen,
 }) => {
-  const lab = useDashboard();
+  const dashboard = useDashboard();
   const [chat, setChat] = useState<ChatType>({
     sessionId: win.sessionId,
     name: win.name || DEFAULT_CHAT_TITLE,
@@ -56,7 +56,7 @@ export const ChatWindow: React.FC<Props> = ({
       void ev;
       const clampedX = Math.max(-rect.w + 80, Math.min(boardSize.width - 80, dropX));
       const clampedY = Math.max(0, Math.min(boardSize.height - 40, dropY));
-      lab.moveWindow(win.windowId, { x: clampedX, y: clampedY });
+      dashboard.moveWindow(win.windowId, { x: clampedX, y: clampedY });
     },
     onCancel: () => setDragOffset({ dx: 0, dy: 0 }),
   });
@@ -67,7 +67,7 @@ export const ChatWindow: React.FC<Props> = ({
       setResizeDelta({ dw: 0, dh: 0 });
       const newW = Math.max(minSize.w, rect.w + dx);
       const newH = Math.max(minSize.h, rect.h + dy);
-      lab.resizeWindow(win.windowId, { w: newW, h: newH });
+      dashboard.resizeWindow(win.windowId, { w: newW, h: newH });
     },
     onCancel: () => setResizeDelta({ dw: 0, dh: 0 }),
   });
@@ -93,19 +93,19 @@ export const ChatWindow: React.FC<Props> = ({
       className={`absolute top-0 left-0 rounded-2xl bg-background-default border border-border-subtle/30 overflow-hidden flex flex-col transition-shadow ${focusClasses}`}
       style={stylePos}
       onMouseDown={() => {
-        if (!isFocused) lab.focusWindow(win.windowId);
+        if (!isFocused) dashboard.focusWindow(win.windowId);
       }}
     >
       <WindowTitleBar
         name={win.name}
         badge={win.badge}
         accentColor={win.accentColor}
-        onRename={(name) => lab.renameWindow(win.windowId, name)}
-        onClose={() => lab.closeWindow(win.windowId)}
+        onRename={(name) => dashboard.renameWindow(win.windowId, name)}
+        onClose={() => dashboard.closeWindow(win.windowId)}
         onPointerDownDrag={dragStart}
       />
       <div className="flex-1 min-h-0 relative">
-        <ChatProvider chat={chat} setChat={setChat} contextKey={`lab-${win.sessionId}`}>
+        <ChatProvider chat={chat} setChat={setChat} contextKey={`dashboard-${win.sessionId}`}>
           <BaseChat
             setChat={setChat}
             sessionId={win.sessionId}

@@ -4,7 +4,7 @@ import { DashboardBoard } from './DashboardBoard';
 import { DashboardToolbar } from './DashboardToolbar';
 
 export const DashboardRoute: React.FC = () => {
-  const lab = useDashboard();
+  const dashboard = useDashboard();
   const didAutoSpawn = useRef(false);
 
   // Maximize the BrowserWindow on entry (Electron IPC).
@@ -26,11 +26,11 @@ export const DashboardRoute: React.FC = () => {
   // Auto-spawn one window if state is completely empty.
   useEffect(() => {
     if (didAutoSpawn.current) return;
-    if (lab.state.windows.length === 0) {
+    if (dashboard.state.windows.length === 0) {
       didAutoSpawn.current = true;
-      void lab.spawnWindow();
+      void dashboard.spawnWindow();
     }
-  }, [lab.state.windows.length, lab]);
+  }, [dashboard.state.windows.length, dashboard]);
 
   // Keyboard shortcuts. Cmd+N and Cmd+W are owned by the Electron menu
   // ("New Window" / OS "Close Window") and never reach the renderer first, so
@@ -43,17 +43,17 @@ export const DashboardRoute: React.FC = () => {
       if (!meta || !e.shiftKey) return;
       if (e.key === 'N' || e.key === 'n') {
         e.preventDefault();
-        void lab.spawnWindow();
+        void dashboard.spawnWindow();
       } else if (e.key === 'W' || e.key === 'w') {
-        if (lab.state.focusedWindowId) {
+        if (dashboard.state.focusedWindowId) {
           e.preventDefault();
-          lab.closeWindow(lab.state.focusedWindowId);
+          dashboard.closeWindow(dashboard.state.focusedWindowId);
         }
       }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [lab]);
+  }, [dashboard]);
 
   return (
     <div className="h-full w-full flex flex-col min-h-0 bg-background-muted">

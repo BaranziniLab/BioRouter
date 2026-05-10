@@ -4,13 +4,13 @@ import { useOptionalDashboard } from '../../contexts/DashboardContext';
 import { LayoutDashboard } from '../icons/app-icons';
 
 export const BackToDashboardPill: React.FC = () => {
-  const lab = useOptionalDashboard();
+  const dashboard = useOptionalDashboard();
   const navigate = useNavigate();
   const loc = useLocation();
-  if (!lab) return null;
+  if (!dashboard) return null;
   if (loc.pathname === '/dashboard') return null;
-  if (lab.state.windows.length === 0) return null;
-  const onBoard = lab.state.windows.filter((w) => !w.isTucked).length;
+  if (dashboard.state.windows.length === 0) return null;
+  const onBoard = dashboard.state.windows.filter((w) => !w.isTucked).length;
   return (
     <button
       type="button"

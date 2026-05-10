@@ -7,8 +7,8 @@ interface Props {
 }
 
 export const TuckSidebar: React.FC<Props> = ({ onCardDragStart }) => {
-  const lab = useDashboard();
-  const tucked = lab.state.windows.filter((w) => w.isTucked);
+  const dashboard = useDashboard();
+  const tucked = dashboard.state.windows.filter((w) => w.isTucked);
 
   if (tucked.length === 0) return null;
 
@@ -23,8 +23,8 @@ export const TuckSidebar: React.FC<Props> = ({ onCardDragStart }) => {
             key={w.windowId}
             win={w}
             preview={[]}
-            onEvoke={() => lab.evokeWindow(w.windowId)}
-            onClose={() => lab.closeWindow(w.windowId)}
+            onEvoke={() => dashboard.evokeWindow(w.windowId)}
+            onClose={() => dashboard.closeWindow(w.windowId)}
             onDragStart={onCardDragStart(w.windowId)}
           />
         ))}

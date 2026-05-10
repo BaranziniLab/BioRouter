@@ -7,7 +7,7 @@ import { TuckSidebar } from './TuckSidebar';
 const DEBOUNCE_MS = 80;
 
 export const DashboardBoard: React.FC = () => {
-  const lab = useDashboard();
+  const dashboard = useDashboard();
   const [boardSize, setBoardSize] = useState<{ width: number; height: number } | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -36,7 +36,7 @@ export const DashboardBoard: React.FC = () => {
 
   const layoutInputs: LayoutInputWindow[] = useMemo(
     () =>
-      lab.state.windows.map((w) => ({
+      dashboard.state.windows.map((w) => ({
         windowId: w.windowId,
         isManuallyPlaced: w.isManuallyPlaced,
         isTucked: w.isTucked,
@@ -44,7 +44,7 @@ export const DashboardBoard: React.FC = () => {
         size: w.size,
         lastInteraction: w.lastInteraction,
       })),
-    [lab.state.windows]
+    [dashboard.state.windows]
   );
 
   const layout = useMemo(() => {
@@ -52,23 +52,23 @@ export const DashboardBoard: React.FC = () => {
     return computeLayout(
       layoutInputs,
       boardSize,
-      lab.state.T1,
-      lab.state.T2,
-      lab.state.focusedWindowId
+      dashboard.state.T1,
+      dashboard.state.T2,
+      dashboard.state.focusedWindowId
     );
-  }, [layoutInputs, boardSize, lab.state.T1, lab.state.T2, lab.state.focusedWindowId]);
+  }, [layoutInputs, boardSize, dashboard.state.T1, dashboard.state.T2, dashboard.state.focusedWindowId]);
 
-  const onBoardWindows = lab.state.windows.filter((w) => !w.isTucked);
-  const sidebarOpen = lab.state.windows.some((w) => w.isTucked);
+  const onBoardWindows = dashboard.state.windows.filter((w) => !w.isTucked);
+  const sidebarOpen = dashboard.state.windows.some((w) => w.isTucked);
   const minCellSize = useMemo(() => {
     if (!boardSize) return { w: 280, h: 200 };
-    const cols = Math.max(1, Math.ceil(Math.sqrt(lab.state.T1)));
-    const rows = Math.max(1, Math.ceil(lab.state.T1 / cols));
+    const cols = Math.max(1, Math.ceil(Math.sqrt(dashboard.state.T1)));
+    const rows = Math.max(1, Math.ceil(dashboard.state.T1 / cols));
     return {
       w: Math.max(280, (boardSize.width / cols) * 0.6),
       h: Math.max(200, (boardSize.height / rows) * 0.6),
     };
-  }, [boardSize, lab.state.T1]);
+  }, [boardSize, dashboard.state.T1]);
 
   // Drag-from-sidebar ghost state (Task 17)
   const [ghost, setGhost] = useState<{ windowId: string; x: number; y: number } | null>(null);
@@ -92,7 +92,7 @@ export const DashboardBoard: React.FC = () => {
       const y = ev.clientY - r.top;
       const insideBoard = x >= 0 && x <= r.width && y >= 0 && y <= r.height;
       if (insideBoard) {
-        lab.evokeWindow(windowId, {
+        dashboard.evokeWindow(windowId, {
           x: Math.max(0, x - minCellSize.w / 2),
           y: Math.max(0, y - 18),
         });
@@ -118,7 +118,7 @@ export const DashboardBoard: React.FC = () => {
             <button
               type="button"
               className="px-4 py-2 rounded-xl border border-border-subtle hover:bg-background-medium"
-              onClick={() => lab.spawnWindow()}
+              onClick={() => dashboard.spawnWindow()}
             >
               Spawn a conversation
             </button>
@@ -133,12 +133,12 @@ export const DashboardBoard: React.FC = () => {
                 key={w.windowId}
                 win={w}
                 rect={rect}
-                isFocused={lab.state.focusedWindowId === w.windowId}
+                isFocused={dashboard.state.focusedWindowId === w.windowId}
                 isSolo={onBoardWindows.length === 1}
                 boardSize={boardSize}
                 minSize={minCellSize}
                 sidebarOpen={sidebarOpen}
-                onTuckByDrag={(id) => lab.tuckWindow(id)}
+                onTuckByDrag={(id) => dashboard.tuckWindow(id)}
               />
             );
           })}
