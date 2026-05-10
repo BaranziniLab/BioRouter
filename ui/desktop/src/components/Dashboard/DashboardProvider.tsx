@@ -94,6 +94,7 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         windowId: nextWindowId(),
         sessionId,
         name,
+        userSetName: false,
         badge,
         accentColor,
         position: null,
@@ -140,7 +141,18 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
   const renameWindow: DashboardApi['renameWindow'] = useCallback((windowId, name) => {
     setState((prev) => ({
       ...prev,
-      windows: prev.windows.map((w) => (w.windowId === windowId ? { ...w, name } : w)),
+      windows: prev.windows.map((w) =>
+        w.windowId === windowId ? { ...w, name, userSetName: true } : w
+      ),
+    }));
+  }, []);
+
+  const syncSessionName: DashboardApi['syncSessionName'] = useCallback((windowId, name) => {
+    setState((prev) => ({
+      ...prev,
+      windows: prev.windows.map((w) =>
+        w.windowId === windowId && !w.userSetName && w.name !== name ? { ...w, name } : w
+      ),
     }));
   }, []);
 
@@ -275,6 +287,7 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       closeWindow,
       focusWindow,
       renameWindow,
+      syncSessionName,
       moveWindow,
       resizeWindow,
       tuckWindow,
@@ -292,6 +305,7 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       closeWindow,
       focusWindow,
       renameWindow,
+      syncSessionName,
       moveWindow,
       resizeWindow,
       tuckWindow,

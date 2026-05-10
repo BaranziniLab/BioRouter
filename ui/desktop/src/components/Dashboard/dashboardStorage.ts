@@ -6,6 +6,7 @@ export interface SerializedDashboardWindow {
   windowId: string;
   sessionId: string;
   name: string;
+  userSetName: boolean;
   badge: number;
   accentColor: string;
   position: { x: number; y: number } | null;
@@ -34,7 +35,12 @@ export function loadDashboardState(): SerializedDashboardState | null {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw) as SerializedDashboardState;
-      if (parsed.version === STORAGE_VERSION) return parsed;
+      if (parsed.version === STORAGE_VERSION) {
+        parsed.windows = parsed.windows.map((w) =>
+          typeof w.userSetName === 'boolean' ? w : { ...w, userSetName: false }
+        );
+        return parsed;
+      }
       return null;
     }
     // Migration: try the legacy v1 key (biorouter.labmeeting.v1)
@@ -42,6 +48,9 @@ export function loadDashboardState(): SerializedDashboardState | null {
     if (!legacy) return null;
     const parsedLegacy = JSON.parse(legacy) as SerializedDashboardState;
     if (parsedLegacy.version !== STORAGE_VERSION) return null;
+    parsedLegacy.windows = parsedLegacy.windows.map((w) =>
+      typeof w.userSetName === 'boolean' ? w : { ...w, userSetName: false }
+    );
     saveDashboardState(parsedLegacy);
     localStorage.removeItem(LEGACY_STORAGE_KEY);
     return parsedLegacy;

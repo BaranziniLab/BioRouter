@@ -4,6 +4,7 @@ export interface DashboardWindow {
   windowId: string;
   sessionId: string;
   name: string;
+  userSetName: boolean;
   badge: number;
   accentColor: string;
   position: { x: number; y: number } | null;
@@ -33,6 +34,8 @@ export interface DashboardApi {
   closeWindow: (windowId: string) => void;
   focusWindow: (windowId: string) => void;
   renameWindow: (windowId: string, name: string) => void;
+  /** Called when biorouterd auto-names the session. Updates only if userSetName is false. */
+  syncSessionName: (windowId: string, name: string) => void;
   moveWindow: (windowId: string, position: { x: number; y: number }) => void;
   resizeWindow: (windowId: string, size: { w: number; h: number }) => void;
   tuckWindow: (windowId: string) => void;

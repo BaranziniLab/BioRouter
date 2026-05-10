@@ -62,6 +62,8 @@ interface BaseChatProps {
   coherent?: boolean;
   /** Optional: overrides the default rename behavior (which calls biorouterd updateSessionName). */
   onRenameSession?: (newName: string) => void;
+  /** Notify parent when the underlying session object changes (e.g., biorouterd renamed it). */
+  onSessionUpdate?: (session: { id: string; name: string } | null) => void;
   /** Optional accent dot color (dashboard windows pass theirs). */
   accentColor?: string;
 }
@@ -75,6 +77,7 @@ function BaseChatContent({
   initialMessage,
   coherent = true,
   onRenameSession,
+  onSessionUpdate,
   accentColor,
 }: BaseChatProps) {
   const location = useLocation();
@@ -329,6 +332,12 @@ function BaseChatContent({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.name, setChat]);
+
+  useEffect(() => {
+    if (!onSessionUpdate) return;
+    if (!session) return;
+    onSessionUpdate({ id: session.id, name: session.name });
+  }, [session?.id, session?.name, onSessionUpdate]);
 
   const handleRename = (newName: string) => {
     if (onRenameSession) {

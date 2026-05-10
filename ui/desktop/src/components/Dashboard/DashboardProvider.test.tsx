@@ -121,4 +121,28 @@ describe('DashboardProvider', () => {
     act(() => result.current.clearAll());
     expect(result.current.state.windows).toHaveLength(0);
   });
+
+  it('syncSessionName updates name when userSetName is false', async () => {
+    const { result } = renderHook(() => useDashboard(), { wrapper });
+    await act(async () => {
+      await result.current.spawnWindow();
+    });
+    const id = result.current.state.windows[0].windowId;
+    act(() => result.current.syncSessionName(id, 'Auto-named by AI'));
+    expect(result.current.state.windows[0].name).toBe('Auto-named by AI');
+    expect(result.current.state.windows[0].userSetName).toBe(false);
+  });
+
+  it('syncSessionName respects userSetName and does NOT overwrite user rename', async () => {
+    const { result } = renderHook(() => useDashboard(), { wrapper });
+    await act(async () => {
+      await result.current.spawnWindow();
+    });
+    const id = result.current.state.windows[0].windowId;
+    act(() => result.current.renameWindow(id, 'My Project'));
+    expect(result.current.state.windows[0].userSetName).toBe(true);
+    act(() => result.current.syncSessionName(id, 'Auto-named by AI'));
+    // User-set name wins
+    expect(result.current.state.windows[0].name).toBe('My Project');
+  });
 });

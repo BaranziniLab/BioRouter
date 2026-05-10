@@ -136,6 +136,9 @@ export const ChatWindow: React.FC<Props> = ({
                 body: { name: newName },
               });
             }}
+            onSessionUpdate={(s) => {
+              if (s?.name) dashboard.syncSessionName(win.windowId, s.name);
+            }}
           />
         </ChatProvider>
       </div>
