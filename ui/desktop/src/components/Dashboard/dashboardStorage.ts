@@ -1,4 +1,5 @@
 export const STORAGE_KEY = 'biorouter.dashboard.v1';
+const LEGACY_STORAGE_KEY = 'biorouter.labmeeting.v1';
 const STORAGE_VERSION = 1;
 
 export interface SerializedDashboardWindow {
@@ -31,10 +32,19 @@ export interface SerializedDashboardState {
 export function loadDashboardState(): SerializedDashboardState | null {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as SerializedDashboardState;
-    if (parsed.version !== STORAGE_VERSION) return null;
-    return parsed;
+    if (raw) {
+      const parsed = JSON.parse(raw) as SerializedDashboardState;
+      if (parsed.version === STORAGE_VERSION) return parsed;
+      return null;
+    }
+    // Migration: try the legacy v1 key (biorouter.labmeeting.v1)
+    const legacy = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (!legacy) return null;
+    const parsedLegacy = JSON.parse(legacy) as SerializedDashboardState;
+    if (parsedLegacy.version !== STORAGE_VERSION) return null;
+    saveDashboardState(parsedLegacy);
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
+    return parsedLegacy;
   } catch {
     return null;
   }
