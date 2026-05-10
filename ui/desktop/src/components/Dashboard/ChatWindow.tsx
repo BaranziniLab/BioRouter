@@ -82,16 +82,32 @@ export const ChatWindow: React.FC<Props> = ({
     [rect, dragOffset, resizeDelta]
   );
 
+  const popStyle = useMemo(() => {
+    if (!isFocused) return {};
+    const TOUCH = 4;
+    const leftTouching = rect.x <= TOUCH;
+    const rightTouching = rect.x + rect.w >= boardSize.width - TOUCH;
+    const topTouching = rect.y <= TOUCH;
+    const bottomTouching = rect.y + rect.h >= boardSize.height - TOUCH;
+    const ox = leftTouching ? 'left' : rightTouching ? 'right' : 'center';
+    const oy = topTouching ? 'top' : bottomTouching ? 'bottom' : 'center';
+    return {
+      transformOrigin: `${ox} ${oy}`,
+    };
+  }, [isFocused, rect.x, rect.y, rect.w, rect.h, boardSize.width, boardSize.height]);
+
+  const TOUCH_PX = 4;
+  const topTouching = rect.y <= TOUCH_PX;
   const focusClasses = isFocused
     ? isSolo
       ? 'shadow-[0_8px_30px_rgb(0,0,0,0.18)]'
-      : 'shadow-[0_12px_40px_rgb(0,0,0,0.22)] -translate-y-0.5 scale-[1.01]'
+      : `shadow-[0_12px_40px_rgb(0,0,0,0.22)] scale-[1.01] ${topTouching ? '' : '-translate-y-0.5'}`
     : 'shadow-[0_4px_14px_rgb(0,0,0,0.10)]';
 
   return (
     <div
       className={`absolute top-0 left-0 rounded-2xl bg-background-default border border-border-subtle/30 overflow-hidden flex flex-col transition-shadow ${focusClasses}`}
-      style={stylePos}
+      style={{ ...stylePos, ...popStyle }}
       onMouseDown={() => {
         if (!isFocused) dashboard.focusWindow(win.windowId);
       }}
