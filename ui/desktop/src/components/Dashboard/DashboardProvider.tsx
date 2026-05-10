@@ -18,7 +18,7 @@ const DEFAULT_T1 = 6;
 const DEFAULT_T2 = 8;
 
 function nextWindowId(): string {
-  return 'lw_' + Math.random().toString(36).slice(2, 10);
+  return 'dw_' + Math.random().toString(36).slice(2, 10);
 }
 
 function serialize(state: DashboardState): SerializedDashboardState {
