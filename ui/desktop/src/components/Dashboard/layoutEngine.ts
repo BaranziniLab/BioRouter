@@ -35,6 +35,32 @@ const RELAX_PASSES = 6;
 const RELAX_STEP_MAX = 20;
 export const SNAP_GRID = 4;
 
+// Stage 3 overflow-placement tuning.
+const OVERFLOW_DEDUP_X = 40; // px horizontal threshold to consider two intersection candidates "the same"
+const OVERFLOW_DEDUP_Y = 30; // px vertical threshold for the same
+const OVERFLOW_CELL_FRACTION = 0.5; // overflow cell capped at this fraction of interior
+const OVERFLOW_JITTER_STRIDE = 8; // px deterministic jitter per overflow index
+
+// Stage 5 relaxation tuning.
+const RELAX_OVERLAP_SCALE = 0.5; // push magnitude = sqrt(overlap area) * RELAX_OVERLAP_SCALE
+
+interface Rect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+function overlap(a: Rect, b: Rect): { w: number; h: number; area: number } {
+  const oxL = Math.max(a.x, b.x);
+  const oxR = Math.min(a.x + a.w, b.x + b.w);
+  const oyT = Math.max(a.y, b.y);
+  const oyB = Math.min(a.y + a.h, b.y + b.h);
+  const w = Math.max(0, oxR - oxL);
+  const h = Math.max(0, oyB - oyT);
+  return { w, h, area: w * h };
+}
+
 export function hash32(s: string): number {
   let h = 0x811c9dc5;
   for (let i = 0; i < s.length; i++) {
@@ -165,14 +191,16 @@ export function computeLayout(
       cand.sort((p, q) => p.dist - q.dist);
       const deduped: Array<{ x: number; y: number }> = [];
       for (const p of cand) {
-        const tooClose = deduped.some((q) => Math.abs(q.x - p.x) < 40 && Math.abs(q.y - p.y) < 30);
+        const tooClose = deduped.some(
+          (q) => Math.abs(q.x - p.x) < OVERFLOW_DEDUP_X && Math.abs(q.y - p.y) < OVERFLOW_DEDUP_Y
+        );
         if (!tooClose) deduped.push(p);
       }
-      const ofW = Math.min(sizedW, Math.floor(interiorW * 0.5));
-      const ofH = Math.min(sizedH, Math.floor(interiorH * 0.5));
+      const ofW = Math.min(sizedW, Math.floor(interiorW * OVERFLOW_CELL_FRACTION));
+      const ofH = Math.min(sizedH, Math.floor(interiorH * OVERFLOW_CELL_FRACTION));
       for (let i = 0; i < overflow.length; i++) {
         const base = deduped[i] ?? { x: center.x, y: center.y };
-        const jitter = i * 8;
+        const jitter = i * OVERFLOW_JITTER_STRIDE;
         const cx = base.x + jitter;
         const cy = base.y + jitter;
         const x = Math.max(EDGE_INSET, Math.min(board.width - EDGE_INSET - ofW, cx - ofW / 2));
@@ -187,13 +215,8 @@ export function computeLayout(
     const r = autoPos.get(w.windowId);
     if (!r) continue;
     for (const p of pinnedRects) {
-      const oxL = Math.max(r.x, p.x);
-      const oxR = Math.min(r.x + r.w, p.x + p.w);
-      const oyT = Math.max(r.y, p.y);
-      const oyB = Math.min(r.y + r.h, p.y + p.h);
-      const ow = oxR - oxL;
-      const oh = oyB - oyT;
-      if (ow <= 0 || oh <= 0) continue;
+      const o = overlap(r, p);
+      if (o.area === 0) continue;
       const minX = EDGE_INSET;
       const maxX = board.width - EDGE_INSET - r.w;
       const minY = EDGE_INSET;
@@ -240,14 +263,8 @@ export function computeLayout(
         const a = autoPos.get(auto[i].windowId);
         const b = autoPos.get(auto[j].windowId);
         if (!a || !b) continue;
-        const oxL = Math.max(a.x, b.x);
-        const oxR = Math.min(a.x + a.w, b.x + b.w);
-        const oyT = Math.max(a.y, b.y);
-        const oyB = Math.min(a.y + a.h, b.y + b.h);
-        const ow = oxR - oxL;
-        const oh = oyB - oyT;
-        if (ow <= 0 || oh <= 0) continue;
-        const overlapArea = ow * oh;
+        const o = overlap(a, b);
+        if (o.area === 0) continue;
         const cxA = a.x + a.w / 2;
         const cyA = a.y + a.h / 2;
         const cxB = b.x + b.w / 2;
@@ -262,7 +279,7 @@ export function computeLayout(
           vy = Math.sin(angle);
           len = 1;
         }
-        const mag = Math.min(RELAX_STEP_MAX, Math.sqrt(overlapArea) * 0.5);
+        const mag = Math.min(RELAX_STEP_MAX, Math.sqrt(o.area) * RELAX_OVERLAP_SCALE);
         const ux = vx / len;
         const uy = vy / len;
         const dA = delta.get(auto[i].windowId) ?? { dx: 0, dy: 0 };
@@ -277,15 +294,14 @@ export function computeLayout(
       // Auto vs pinned: auto absorbs the full push; pinned does not move.
       const a = autoPos.get(auto[i].windowId);
       if (!a) continue;
+      // Why Stage 5 also pushes autos out of pinned overlap:
+      // Stage 4 placed each auto at its nearest feasible exit from any pinned overlap it
+      // started with. But during Stage 5's auto-vs-auto relaxation, an auto can be pushed
+      // back into pinned territory by a neighboring auto. This inner pass keeps autos out
+      // of pinned regions even as they jostle each other. Pinned rects never move.
       for (const p of pinnedRects) {
-        const oxL = Math.max(a.x, p.x);
-        const oxR = Math.min(a.x + a.w, p.x + p.w);
-        const oyT = Math.max(a.y, p.y);
-        const oyB = Math.min(a.y + a.h, p.y + p.h);
-        const ow = oxR - oxL;
-        const oh = oyB - oyT;
-        if (ow <= 0 || oh <= 0) continue;
-        const overlapArea = ow * oh;
+        const o = overlap(a, p);
+        if (o.area === 0) continue;
         const cxA = a.x + a.w / 2;
         const cyA = a.y + a.h / 2;
         const cxP = p.x + p.w / 2;
@@ -301,7 +317,7 @@ export function computeLayout(
           len = 1;
         }
         // Apply at full magnitude (auto absorbs all push since pinned is immovable).
-        const mag = Math.min(RELAX_STEP_MAX, Math.sqrt(overlapArea));
+        const mag = Math.min(RELAX_STEP_MAX, Math.sqrt(o.area));
         const ux = vx / len;
         const uy = vy / len;
         const dA = delta.get(auto[i].windowId) ?? { dx: 0, dy: 0 };

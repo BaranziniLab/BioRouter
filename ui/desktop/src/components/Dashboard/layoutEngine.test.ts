@@ -279,6 +279,39 @@ describe('computeLayout — soft-tile pipeline (deterministic, comfort-capped)',
     }
   });
 
+  it('feasible-exit preference: pinned near board edge → auto exits to the open side', () => {
+    // Pinned rect hugs the LEFT edge. The auto rect's initial Stage 3 slot
+    // straddles the pinned, so Stage 4 must repulse it. The available exits are:
+    //   west  → clamps against EDGE_INSET wall (infeasible)
+    //   east  → plenty of room (feasible)
+    //   north → clamps against the top wall (infeasible at these y values)
+    //   south → clamps against the bottom wall (infeasible at these y values)
+    // The engine must therefore pick east. We use a single auto so the result
+    // isn't confounded by Stage 5's auto-vs-auto tug-of-war (which can drag the
+    // auto partway back over pinned territory) — the structural property under
+    // test is the Stage 4 exit choice itself.
+    const pinned = mkWindow('p', {
+      isManuallyPlaced: true,
+      position: { x: EDGE_INSET, y: 300 }, // hugging the left edge
+      size: { w: 500, h: 400 },
+    });
+    const auto = mkWindow('a');
+    const out = computeLayout([pinned, auto], wideBoard, 6, 8, null);
+    const pRect = out.get('p')!;
+    const r = out.get('a')!;
+    // No overlap with pinned
+    const oxL = Math.max(r.x, pRect.x);
+    const oxR = Math.min(r.x + r.w, pRect.x + pRect.w);
+    const oyT = Math.max(r.y, pRect.y);
+    const oyB = Math.min(r.y + r.h, pRect.y + pRect.h);
+    const ow = Math.max(0, oxR - oxL);
+    const oh = Math.max(0, oyB - oyT);
+    expect(ow * oh).toBe(0);
+    // Auto sits east of pinned (the feasible exit), not clamped at x=EDGE_INSET
+    // (which would mean Stage 4 picked the infeasible west exit and clamped).
+    expect(r.x).toBeGreaterThanOrEqual(pRect.x + pRect.w);
+  });
+
   it('edge guarantee: every rect inside [EDGE_INSET, board - EDGE_INSET]', () => {
     const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
     const out = computeLayout(
@@ -290,10 +323,10 @@ describe('computeLayout — soft-tile pipeline (deterministic, comfort-capped)',
     );
     for (const id of ids) {
       const r = out.get(id)!;
-      expect(r.x).toBeGreaterThanOrEqual(EDGE_INSET - 1);
-      expect(r.y).toBeGreaterThanOrEqual(EDGE_INSET - 1);
-      expect(r.x + r.w).toBeLessThanOrEqual(wideBoard.width - EDGE_INSET + 1);
-      expect(r.y + r.h).toBeLessThanOrEqual(wideBoard.height - EDGE_INSET + 1);
+      expect(r.x).toBeGreaterThanOrEqual(EDGE_INSET);
+      expect(r.y).toBeGreaterThanOrEqual(EDGE_INSET);
+      expect(r.x + r.w).toBeLessThanOrEqual(wideBoard.width - EDGE_INSET);
+      expect(r.y + r.h).toBeLessThanOrEqual(wideBoard.height - EDGE_INSET);
     }
   });
 });
