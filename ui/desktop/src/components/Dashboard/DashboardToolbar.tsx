@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { useDashboard } from '../../contexts/DashboardContext';
-import { Plus } from '../icons/app-icons';
 import { Button } from '../ui/button';
 
 // Mirror layoutEngine's bestGridConfig: pick the (cols, rows) configuration that
@@ -55,13 +54,31 @@ export const DashboardToolbar: React.FC = () => {
 
   return (
     <div className="flex items-center gap-2 px-4 py-2 border-b border-border-subtle/30 bg-background-muted/40 backdrop-blur-sm">
-      <Button size="xs" variant="ghost" onClick={() => lab.spawnWindow()} title="Spawn (⌘⇧N)">
-        <Plus className="w-4 h-4" /> <span className="ml-1 text-xs">Spawn</span>
+      <Button
+        size="xs"
+        variant="ghost"
+        onClick={() => lab.spawnWindow()}
+        title="Spawn (⌘⇧N)"
+        className="hover:bg-background-medium transition-colors duration-150"
+      >
+        <span className="text-xs">Spawn</span>
       </Button>
-      <Button size="xs" variant="ghost" onClick={() => lab.organize()} title="Re-tile">
+      <Button
+        size="xs"
+        variant="ghost"
+        onClick={() => lab.organize()}
+        title="Re-tile"
+        className="hover:bg-background-medium transition-colors duration-150"
+      >
         <span className="text-xs">Organize</span>
       </Button>
-      <Button size="xs" variant="ghost" onClick={() => lab.clearAll()} title="Close all">
+      <Button
+        size="xs"
+        variant="ghost"
+        onClick={() => lab.clearAll()}
+        title="Close all"
+        className="hover:bg-background-medium transition-colors duration-150"
+      >
         <span className="text-xs">Clear</span>
       </Button>
       <div className="ml-3 flex items-center gap-2">
