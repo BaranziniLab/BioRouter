@@ -333,11 +333,19 @@ function BaseChatContent({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.name, setChat]);
 
+  // Keep the latest onSessionUpdate in a ref so changes to its identity (e.g., a
+  // new arrow on every render) don't refire this effect. The effect must fire
+  // only when the session id/name actually changes — otherwise we'd loop through
+  // setState in parent, re-render this child, get a new callback identity, fire
+  // again, ad infinitum.
+  const onSessionUpdateRef = useRef(onSessionUpdate);
   useEffect(() => {
-    if (!onSessionUpdate) return;
+    onSessionUpdateRef.current = onSessionUpdate;
+  }, [onSessionUpdate]);
+  useEffect(() => {
     if (!session) return;
-    onSessionUpdate({ id: session.id, name: session.name });
-  }, [session?.id, session?.name, onSessionUpdate]);
+    onSessionUpdateRef.current?.({ id: session.id, name: session.name });
+  }, [session?.id, session?.name]);
 
   const handleRename = (newName: string) => {
     if (onRenameSession) {
