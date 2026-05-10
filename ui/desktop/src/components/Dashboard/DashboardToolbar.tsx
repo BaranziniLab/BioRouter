@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { useDashboard } from '../../contexts/DashboardContext';
-import { Button } from '../ui/button';
 
 // Mirror layoutEngine's bestGridConfig: pick the (cols, rows) configuration that
 // minimizes the deviation of cell aspect from the target 1.3:1, given the board's
@@ -55,39 +54,45 @@ export const DashboardToolbar: React.FC = () => {
   // Layout: actions (Spawn/Organize/Clear) centered horizontally so they don't
   // collide with the macOS traffic-light buttons at the upper-left when the
   // sidebar is collapsed. Thresholds + status sit on the right.
-  // The `no-drag` class is required because the Electron titlebar-drag-region is
-  // position:fixed, z-index:50, height:32px across the top of the app — without
-  // it, pointer events on these buttons go to the OS drag handler instead.
+  //
+  // Why z-index 100 + relative on the wrapper:
+  // The Electron titlebar-drag-region is `position:fixed; top:0; z-index:50;
+  // height:32px` and overlaps the entire top 32px of the app — including this
+  // toolbar. Without sitting above it in the stacking context, DOM clicks land
+  // on the drag region instead of the buttons (even with `app-region: no-drag`,
+  // because that only controls OS window-drag behavior, not DOM event routing).
+  // We also apply `.no-drag` so OS-level drag is suppressed inside the buttons.
+  const btnClass =
+    'no-drag h-7 px-3 text-[13.5px] font-normal rounded-lg border border-border-subtle ' +
+    'bg-background-default text-text-default hover:bg-background-medium ' +
+    'active:translate-y-px transition-all';
   return (
-    <div className="relative flex items-center gap-2 px-4 py-2 border-b border-border-subtle/30 bg-background-muted/40 backdrop-blur-sm">
+    <div className="relative z-[60] flex items-center gap-2 px-4 py-1.5 border-b border-border-subtle/30 bg-background-muted/40 backdrop-blur-sm">
       <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 no-drag">
-        <Button
-          size="sm"
-          variant="outline"
+        <button
+          type="button"
           onClick={() => dashboard.spawnWindow()}
           title="Spawn (⌘⇧N)"
-          className="no-drag"
+          className={btnClass}
         >
           Spawn
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
+        </button>
+        <button
+          type="button"
           onClick={() => dashboard.organize()}
           title="Re-tile"
-          className="no-drag"
+          className={btnClass}
         >
           Organize
-        </Button>
-        <Button
-          size="sm"
-          variant="outline"
+        </button>
+        <button
+          type="button"
           onClick={() => dashboard.clearAll()}
           title="Close all"
-          className="no-drag"
+          className={btnClass}
         >
           Clear
-        </Button>
+        </button>
       </div>
       <div className="ml-auto flex items-center gap-2 no-drag">
         <label className="text-xs text-text-muted">T1</label>
