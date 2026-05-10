@@ -43,6 +43,7 @@ import windowStateKeeper from 'electron-window-state';
 import {
   getUpdateAvailable,
   openUpdateSettings,
+  popUpTrayMenu,
   registerUpdateIpcHandlers,
   setTrayRef,
   setupAutoUpdater,
@@ -975,6 +976,11 @@ const createTray = () => {
     if (process.platform === 'win32' || process.platform === 'darwin') {
       tray.on('click', showWindow);
     }
+    if (process.platform === 'darwin') {
+      tray.on('right-click', () => {
+        popUpTrayMenu();
+      });
+    }
   } catch (error) {
     console.error('[Main] Tray creation failed. App will continue without system tray.', error);
     disableTray();
@@ -1257,6 +1263,11 @@ ipcMain.on('react-ready', (event) => {
 ipcMain.handle('dashboard:enter', (event) => {
   const win = BrowserWindow.fromWebContents(event.sender);
   if (win && !win.isMaximized()) win.maximize();
+});
+
+ipcMain.handle('dashboard:exit', (event) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win && win.isMaximized()) win.unmaximize();
 });
 
 ipcMain.handle('open-external', async (_event, url: string) => {

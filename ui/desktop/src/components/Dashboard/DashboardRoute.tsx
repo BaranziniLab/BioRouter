@@ -10,9 +10,17 @@ export const DashboardRoute: React.FC = () => {
   // Maximize the BrowserWindow on entry (Electron IPC).
   useEffect(() => {
     const electron = (
-      window as unknown as { electron?: { dashboardEnter?: () => Promise<void> | void } }
+      window as unknown as {
+        electron?: {
+          dashboardEnter?: () => Promise<void> | void;
+          dashboardExit?: () => Promise<void> | void;
+        };
+      }
     ).electron;
     electron?.dashboardEnter?.();
+    return () => {
+      electron?.dashboardExit?.();
+    };
   }, []);
 
   // Auto-spawn one window if state is completely empty.
