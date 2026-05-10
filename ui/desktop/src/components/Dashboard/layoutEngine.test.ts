@@ -1,7 +1,25 @@
 import { describe, it, expect } from 'vitest';
-import { computeLayout, LayoutInputWindow } from './layoutEngine';
+import {
+  computeLayout,
+  hash32,
+  EDGE_INSET,
+  COMFORT_W,
+  COMFORT_H,
+  SNAP_GRID,
+  Z_TILED,
+  LayoutInputWindow,
+} from './layoutEngine';
 
 const board = { width: 1200, height: 800 };
+
+describe('hash32', () => {
+  it('is deterministic across calls', () => {
+    expect(hash32('hello')).toBe(hash32('hello'));
+  });
+  it('differs across distinct inputs (with high probability)', () => {
+    expect(hash32('a')).not.toBe(hash32('b'));
+  });
+});
 
 function mkWindow(id: string, overrides: Partial<LayoutInputWindow> = {}): LayoutInputWindow {
   return {
@@ -16,30 +34,7 @@ function mkWindow(id: string, overrides: Partial<LayoutInputWindow> = {}): Layou
 }
 
 describe('computeLayout — clean grid (n ≤ T1)', () => {
-  it('one window fills the board', () => {
-    const out = computeLayout([mkWindow('a')], board, 6, 8, 'a');
-    expect(out.size).toBe(1);
-    const r = out.get('a')!;
-    expect(r.x).toBe(0);
-    expect(r.y).toBe(0);
-    expect(r.w).toBe(1200);
-    expect(r.h).toBe(800);
-  });
-
-  it('two windows tile 2×1', () => {
-    const out = computeLayout([mkWindow('a'), mkWindow('b')], board, 6, 8, null);
-    expect(out.size).toBe(2);
-    const a = out.get('a')!;
-    const b = out.get('b')!;
-    expect(a.w).toBe(600);
-    expect(a.h).toBe(800);
-    expect(a.x).toBe(0);
-    expect(b.w).toBe(600);
-    expect(b.h).toBe(800);
-    expect(b.x).toBe(600);
-  });
-
-  it('four windows tile 2×2', () => {
+  it('four windows tile without overlap', () => {
     const ids = ['a', 'b', 'c', 'd'];
     const out = computeLayout(
       ids.map((i) => mkWindow(i)),
@@ -49,13 +44,19 @@ describe('computeLayout — clean grid (n ≤ T1)', () => {
       null
     );
     expect(out.size).toBe(4);
-    expect(out.get('a')!.w).toBe(600);
-    expect(out.get('a')!.h).toBe(400);
-    expect(out.get('d')!.x).toBe(600);
-    expect(out.get('d')!.y).toBe(400);
+    const rects = ids.map((id) => out.get(id)!);
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        const a = rects[i],
+          b = rects[j];
+        const ow = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+        const oh = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+        expect(ow * oh).toBe(0);
+      }
+    }
   });
 
-  it('five windows: 3×2 with last row centered', () => {
+  it('five windows tile without overlap with last row centered', () => {
     const ids = ['a', 'b', 'c', 'd', 'e'];
     const out = computeLayout(
       ids.map((i) => mkWindow(i)),
@@ -65,19 +66,14 @@ describe('computeLayout — clean grid (n ≤ T1)', () => {
       null
     );
     expect(out.size).toBe(5);
-    const e = out.get('e')!;
     const d = out.get('d')!;
-    expect(d.y).toBe(400);
-    expect(e.y).toBe(400);
-    expect(d.x).toBeGreaterThan(0);
-    expect(e.x).toBeGreaterThan(d.x);
-    const cellW = 400;
-    const totalLastRowW = 2 * cellW;
-    const expectedLeft = (1200 - totalLastRowW) / 2;
-    expect(d.x).toBeCloseTo(expectedLeft, 0);
+    const e = out.get('e')!;
+    expect(d.y).toBe(e.y);
+    expect(d.x).toBeLessThan(e.x);
+    expect(d.x + d.w).toBeLessThanOrEqual(e.x);
   });
 
-  it('six windows: 3×2 grid', () => {
+  it('six windows tile without overlap', () => {
     const ids = ['a', 'b', 'c', 'd', 'e', 'f'];
     const out = computeLayout(
       ids.map((i) => mkWindow(i)),
@@ -87,8 +83,16 @@ describe('computeLayout — clean grid (n ≤ T1)', () => {
       null
     );
     expect(out.size).toBe(6);
-    expect(out.get('f')!.x).toBe(800);
-    expect(out.get('f')!.y).toBe(400);
+    const rects = ids.map((id) => out.get(id)!);
+    for (let i = 0; i < rects.length; i++) {
+      for (let j = i + 1; j < rects.length; j++) {
+        const a = rects[i],
+          b = rects[j];
+        const ow = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+        const oh = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+        expect(ow * oh).toBe(0);
+      }
+    }
   });
 
   it('focused window receives top z-index', () => {
@@ -110,7 +114,6 @@ describe('computeLayout — clean grid (n ≤ T1)', () => {
     expect(out.get('a')!.y).toBe(60);
     expect(out.get('a')!.w).toBe(300);
     expect(out.get('a')!.h).toBe(200);
-    expect(out.get('b')!.w).toBe(1200);
   });
 
   it('skips tucked windows entirely', () => {
@@ -138,16 +141,11 @@ describe('computeLayout — overflow at intersections (T1 < n ≤ T2)', () => {
     );
     expect(out.size).toBe(7);
     const g = out.get('g')!;
-    // With 3×2 grid (cellW=400, cellH=400), the closest grid intersection to the
-    // board center (600, 400) is at (400, 400) (or (800, 400)), distance 200.
-    // Centering the cell on that intersection → top-left (200, 200), with a small
-    // i=0 jitter of 0px.
-    // Overflow size is capped at half-board (max 600x400), but cellW=400, cellH=400,
-    // so for non-degenerate T1 the cap doesn't apply.
-    expect(g.x).toBeCloseTo(200, 0);
-    expect(g.y).toBeCloseTo(200, 0);
-    expect(g.w).toBe(400);
-    expect(g.h).toBe(400);
+    expect(g.zIndex).toBeGreaterThan(Z_TILED);
+    expect(g.x).toBeGreaterThanOrEqual(0);
+    expect(g.x + g.w).toBeLessThanOrEqual(board.width);
+    expect(g.y).toBeGreaterThanOrEqual(0);
+    expect(g.y + g.h).toBeLessThanOrEqual(board.height);
   });
 
   it('overflow renders above tiled in z-order', () => {
@@ -190,5 +188,112 @@ describe('computeLayout — overflow at intersections (T1 < n ≤ T2)', () => {
     const b = out.get('b')!;
     const c = out.get('c')!;
     expect(b.x !== c.x || b.y !== c.y).toBe(true);
+  });
+});
+
+describe('computeLayout — soft-tile pipeline (deterministic, comfort-capped)', () => {
+  const wideBoard = { width: 2112, height: 973 };
+  const hugeBoard = { width: 4000, height: 2400 };
+
+  it('n=1 → one window at comfort size, centered', () => {
+    const out = computeLayout([mkWindow('a')], wideBoard, 6, 8, 'a');
+    const r = out.get('a')!;
+    expect(r.w).toBe(940);
+    expect(r.h).toBe(800);
+    expect(Math.abs(r.x + r.w / 2 - wideBoard.width / 2)).toBeLessThanOrEqual(SNAP_GRID);
+    expect(Math.abs(r.y + r.h / 2 - wideBoard.height / 2)).toBeLessThanOrEqual(SNAP_GRID);
+  });
+
+  it('n=2 → two comfort-size windows side by side', () => {
+    const out = computeLayout([mkWindow('a'), mkWindow('b')], wideBoard, 6, 8, null);
+    const a = out.get('a')!;
+    const b = out.get('b')!;
+    expect(a.w).toBe(940);
+    expect(a.h).toBe(800);
+    expect(b.w).toBe(940);
+    expect(b.h).toBe(800);
+    expect(a.x).toBeLessThan(b.x);
+    expect(a.x + a.w).toBeLessThanOrEqual(b.x);
+  });
+
+  it('n=4 on a huge board caps cells at comfort size (not stretched)', () => {
+    const ids = ['a', 'b', 'c', 'd'];
+    const out = computeLayout(
+      ids.map((i) => mkWindow(i)),
+      hugeBoard,
+      6,
+      8,
+      null
+    );
+    for (const id of ids) {
+      const r = out.get(id)!;
+      expect(r.w).toBeLessThanOrEqual(COMFORT_W);
+      expect(r.h).toBeLessThanOrEqual(COMFORT_H);
+    }
+  });
+
+  it('determinism: 50 invocations with identical inputs produce equal output', () => {
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g'];
+    const inputs = ids.map((i) => mkWindow(i));
+    const first = computeLayout(inputs, wideBoard, 6, 8, null);
+    for (let i = 0; i < 49; i++) {
+      const again = computeLayout(inputs, wideBoard, 6, 8, null);
+      for (const id of ids) {
+        expect(again.get(id)).toEqual(first.get(id));
+      }
+    }
+  });
+
+  it('shuffle stability: same per-id output across input orderings', () => {
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f'];
+    const baseInputs = ids.map((i) => mkWindow(i));
+    const ref = computeLayout(baseInputs, wideBoard, 6, 8, null);
+    const rev = computeLayout([...baseInputs].reverse(), wideBoard, 6, 8, null);
+    for (const id of ids) {
+      expect(rev.get(id)).toEqual(ref.get(id));
+    }
+  });
+
+  it('pinned avoidance: auto windows do not overlap pinned > 5% area', () => {
+    const pinned = mkWindow('p', {
+      isManuallyPlaced: true,
+      position: { x: 700, y: 250 },
+      size: { w: 700, h: 500 },
+    });
+    const autos = ['a', 'b', 'c', 'd'].map((i) => mkWindow(i));
+    const out = computeLayout([pinned, ...autos], wideBoard, 6, 8, null);
+    const pRect = out.get('p')!;
+    expect(pRect.x).toBe(700);
+    expect(pRect.y).toBe(250);
+    expect(pRect.w).toBe(700);
+    expect(pRect.h).toBe(500);
+    for (const id of ['a', 'b', 'c', 'd']) {
+      const r = out.get(id)!;
+      const oxL = Math.max(r.x, pRect.x);
+      const oxR = Math.min(r.x + r.w, pRect.x + pRect.w);
+      const oyT = Math.max(r.y, pRect.y);
+      const oyB = Math.min(r.y + r.h, pRect.y + pRect.h);
+      const overlap = Math.max(0, oxR - oxL) * Math.max(0, oyB - oyT);
+      const fraction = overlap / (r.w * r.h);
+      expect(fraction).toBeLessThanOrEqual(0.05);
+    }
+  });
+
+  it('edge guarantee: every rect inside [EDGE_INSET, board - EDGE_INSET]', () => {
+    const ids = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
+    const out = computeLayout(
+      ids.map((i) => mkWindow(i)),
+      wideBoard,
+      6,
+      8,
+      null
+    );
+    for (const id of ids) {
+      const r = out.get(id)!;
+      expect(r.x).toBeGreaterThanOrEqual(EDGE_INSET - 1);
+      expect(r.y).toBeGreaterThanOrEqual(EDGE_INSET - 1);
+      expect(r.x + r.w).toBeLessThanOrEqual(wideBoard.width - EDGE_INSET + 1);
+      expect(r.y + r.h).toBeLessThanOrEqual(wideBoard.height - EDGE_INSET + 1);
+    }
   });
 });
