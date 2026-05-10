@@ -57,7 +57,11 @@ export const ChatWindow: React.FC<Props> = ({
       void ev;
       const clampedX = Math.max(-rect.w + 80, Math.min(boardSize.width - 80, dropX));
       const clampedY = Math.max(0, Math.min(boardSize.height - 40, dropY));
-      dashboard.moveWindow(win.windowId, { x: clampedX, y: clampedY });
+      dashboard.moveWindow(
+        win.windowId,
+        { x: clampedX, y: clampedY },
+        { w: rect.w, h: rect.h }
+      );
     },
     onCancel: () => setDragOffset({ dx: 0, dy: 0 }),
   });
@@ -68,7 +72,11 @@ export const ChatWindow: React.FC<Props> = ({
       setResizeDelta({ dw: 0, dh: 0 });
       const newW = Math.max(minSize.w, rect.w + dx);
       const newH = Math.max(minSize.h, rect.h + dy);
-      dashboard.resizeWindow(win.windowId, { w: newW, h: newH });
+      dashboard.resizeWindow(
+        win.windowId,
+        { w: newW, h: newH },
+        { x: rect.x, y: rect.y }
+      );
     },
     onCancel: () => setResizeDelta({ dw: 0, dh: 0 }),
   });
@@ -127,6 +135,7 @@ export const ChatWindow: React.FC<Props> = ({
             sessionId={win.sessionId}
             suppressEmptyState={false}
             coherent
+            hideSessionNamePill
             accentColor={win.accentColor}
             onRenameSession={(newName) => {
               dashboard.renameWindow(win.windowId, newName);

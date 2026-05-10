@@ -156,23 +156,39 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     }));
   }, []);
 
-  const moveWindow: DashboardApi['moveWindow'] = useCallback((windowId, position) => {
+  // When the user drags a window, preserve its currently-rendered size by passing
+  // the rect at drag start. Without this, the layout engine would fall back to
+  // comfort defaults on first drag and the window would visibly jump in size.
+  const moveWindow: DashboardApi['moveWindow'] = useCallback((windowId, position, size) => {
     setState((prev) => ({
       ...prev,
       windows: prev.windows.map((w) =>
         w.windowId === windowId
-          ? { ...w, position, isManuallyPlaced: true, lastInteraction: Date.now() }
+          ? {
+              ...w,
+              position,
+              size: size ?? w.size,
+              isManuallyPlaced: true,
+              lastInteraction: Date.now(),
+            }
           : w
       ),
     }));
   }, []);
 
-  const resizeWindow: DashboardApi['resizeWindow'] = useCallback((windowId, size) => {
+  // Mirror: on resize, preserve the currently-rendered position too.
+  const resizeWindow: DashboardApi['resizeWindow'] = useCallback((windowId, size, position) => {
     setState((prev) => ({
       ...prev,
       windows: prev.windows.map((w) =>
         w.windowId === windowId
-          ? { ...w, size, isManuallyPlaced: true, lastInteraction: Date.now() }
+          ? {
+              ...w,
+              size,
+              position: position ?? w.position,
+              isManuallyPlaced: true,
+              lastInteraction: Date.now(),
+            }
           : w
       ),
     }));

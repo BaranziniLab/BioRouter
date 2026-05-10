@@ -100,12 +100,22 @@ export function computeLayout(
     .slice()
     .sort((a, b) => (a.windowId < b.windowId ? -1 : a.windowId > b.windowId ? 1 : 0));
 
-  const pinned = visible.filter((w) => w.isManuallyPlaced && w.position && w.size);
-  const auto = visible.filter((w) => !(w.isManuallyPlaced && w.position && w.size));
+  // A window is "pinned" when the user has explicitly moved or resized it. Either
+  // position or size may be set independently (drag sets position only; resize sets
+  // size only). Fill in the missing field with comfort defaults so the engine has
+  // a complete rect to work with.
+  const pinned = visible.filter((w) => w.isManuallyPlaced && (w.position || w.size));
+  const auto = visible.filter((w) => !(w.isManuallyPlaced && (w.position || w.size)));
 
   const pinnedRects: Array<{ id: string; x: number; y: number; w: number; h: number }> = [];
   for (const w of pinned) {
-    const r = { id: w.windowId, x: w.position!.x, y: w.position!.y, w: w.size!.w, h: w.size!.h };
+    const r = {
+      id: w.windowId,
+      x: w.position?.x ?? EDGE_INSET,
+      y: w.position?.y ?? EDGE_INSET,
+      w: w.size?.w ?? COMFORT_W,
+      h: w.size?.h ?? COMFORT_H,
+    };
     pinnedRects.push(r);
     out.set(w.windowId, {
       x: r.x,

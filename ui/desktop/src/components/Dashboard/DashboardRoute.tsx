@@ -3,11 +3,18 @@ import { useDashboard } from '../../contexts/DashboardContext';
 import { DashboardBoard } from './DashboardBoard';
 import { DashboardToolbar } from './DashboardToolbar';
 
+// Module-level state for the maximize/unmaximize lifecycle. We use a mount counter
+// + a deferred-exit timer so React StrictMode's mount→unmount→mount in dev doesn't
+// flash the window (maximize → unmaximize → re-maximize). When the cleanup fires,
+// we schedule the exit for 200ms later; if the route remounts in that window, we
+// cancel the pending exit and the user never sees the unmaximize.
+let dashboardMountCount = 0;
+let pendingExit: ReturnType<typeof setTimeout> | null = null;
+
 export const DashboardRoute: React.FC = () => {
   const dashboard = useDashboard();
   const didAutoSpawn = useRef(false);
 
-  // Maximize the BrowserWindow on entry (Electron IPC).
   useEffect(() => {
     const electron = (
       window as unknown as {
@@ -17,9 +24,24 @@ export const DashboardRoute: React.FC = () => {
         };
       }
     ).electron;
-    electron?.dashboardEnter?.();
+    dashboardMountCount += 1;
+    if (pendingExit) {
+      clearTimeout(pendingExit);
+      pendingExit = null;
+    }
+    if (dashboardMountCount === 1) {
+      electron?.dashboardEnter?.();
+    }
     return () => {
-      electron?.dashboardExit?.();
+      dashboardMountCount -= 1;
+      if (dashboardMountCount === 0) {
+        pendingExit = setTimeout(() => {
+          if (dashboardMountCount === 0) {
+            electron?.dashboardExit?.();
+          }
+          pendingExit = null;
+        }, 200);
+      }
     };
   }, []);
 

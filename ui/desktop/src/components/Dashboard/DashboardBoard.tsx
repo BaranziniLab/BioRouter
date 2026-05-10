@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useDashboard } from '../../contexts/DashboardContext';
 import { computeLayout, LayoutInputWindow } from './layoutEngine';
 import { ChatWindow } from './ChatWindow';
+import { HiddenChatHolder } from './HiddenChatHolder';
 import { TuckSidebar } from './TuckSidebar';
 
 const DEBOUNCE_MS = 80;
@@ -153,6 +154,17 @@ export const DashboardBoard: React.FC = () => {
             }}
           />
         )}
+        {/* Tucked windows render here in a `display: none` container so their
+            BaseChat / useChatStream subscriptions stay live — the AI agent keeps
+            working while the user has the window tucked. React keeps the
+            components mounted; the browser just skips paint + layout. */}
+        <div aria-hidden style={{ display: 'none' }}>
+          {dashboard.state.windows
+            .filter((w) => w.isTucked)
+            .map((w) => (
+              <HiddenChatHolder key={w.windowId} win={w} />
+            ))}
+        </div>
       </div>
       <TuckSidebar onCardDragStart={onCardDragStart} />
     </div>

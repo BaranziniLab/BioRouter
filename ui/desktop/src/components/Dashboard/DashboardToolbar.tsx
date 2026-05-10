@@ -52,36 +52,44 @@ export const DashboardToolbar: React.FC = () => {
   else if (onBoard > dashboard.state.T1 && onBoard <= dashboard.state.T2) mode = 'overlap';
   else if (onBoard > dashboard.state.T2) mode = 'compact';
 
+  // Layout: actions (Spawn/Organize/Clear) centered horizontally so they don't
+  // collide with the macOS traffic-light buttons at the upper-left when the
+  // sidebar is collapsed. Thresholds + status sit on the right.
+  // The `no-drag` class is required because the Electron titlebar-drag-region is
+  // position:fixed, z-index:50, height:32px across the top of the app — without
+  // it, pointer events on these buttons go to the OS drag handler instead.
   return (
-    <div className="flex items-center gap-2 px-4 py-2 border-b border-border-subtle/30 bg-background-muted/40 backdrop-blur-sm">
-      <Button
-        size="xs"
-        variant="ghost"
-        onClick={() => dashboard.spawnWindow()}
-        title="Spawn (⌘⇧N)"
-        className="hover:bg-background-medium transition-colors duration-150"
-      >
-        <span className="text-xs">Spawn</span>
-      </Button>
-      <Button
-        size="xs"
-        variant="ghost"
-        onClick={() => dashboard.organize()}
-        title="Re-tile"
-        className="hover:bg-background-medium transition-colors duration-150"
-      >
-        <span className="text-xs">Organize</span>
-      </Button>
-      <Button
-        size="xs"
-        variant="ghost"
-        onClick={() => dashboard.clearAll()}
-        title="Close all"
-        className="hover:bg-background-medium transition-colors duration-150"
-      >
-        <span className="text-xs">Clear</span>
-      </Button>
-      <div className="ml-3 flex items-center gap-2">
+    <div className="relative flex items-center gap-2 px-4 py-2 border-b border-border-subtle/30 bg-background-muted/40 backdrop-blur-sm">
+      <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 no-drag">
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => dashboard.spawnWindow()}
+          title="Spawn (⌘⇧N)"
+          className="no-drag"
+        >
+          Spawn
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => dashboard.organize()}
+          title="Re-tile"
+          className="no-drag"
+        >
+          Organize
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => dashboard.clearAll()}
+          title="Close all"
+          className="no-drag"
+        >
+          Clear
+        </Button>
+      </div>
+      <div className="ml-auto flex items-center gap-2 no-drag">
         <label className="text-xs text-text-muted">T1</label>
         <input
           type="number"
@@ -89,7 +97,7 @@ export const DashboardToolbar: React.FC = () => {
           max={dashboard.state.T2}
           value={dashboard.state.T1}
           onChange={(e) => dashboard.setT1(Number(e.target.value))}
-          className="w-12 text-xs px-1 py-0.5 rounded border border-border-subtle bg-background-default"
+          className="no-drag w-12 text-xs px-1 py-0.5 rounded border border-border-subtle bg-background-default"
         />
         <label className="text-xs text-text-muted ml-1">T2</label>
         <input
@@ -97,11 +105,11 @@ export const DashboardToolbar: React.FC = () => {
           min={dashboard.state.T1}
           value={dashboard.state.T2}
           onChange={(e) => dashboard.setT2(Number(e.target.value))}
-          className="w-12 text-xs px-1 py-0.5 rounded border border-border-subtle bg-background-default"
+          className="no-drag w-12 text-xs px-1 py-0.5 rounded border border-border-subtle bg-background-default"
         />
-      </div>
-      <div className="ml-auto text-xs text-text-muted">
-        {mode} · {onBoard} on board · {tucked} tucked
+        <div className="ml-2 text-xs text-text-muted">
+          {mode} · {onBoard} on board · {tucked} tucked
+        </div>
       </div>
     </div>
   );

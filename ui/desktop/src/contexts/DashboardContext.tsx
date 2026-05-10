@@ -36,8 +36,19 @@ export interface DashboardApi {
   renameWindow: (windowId: string, name: string) => void;
   /** Called when biorouterd auto-names the session. Updates only if userSetName is false. */
   syncSessionName: (windowId: string, name: string) => void;
-  moveWindow: (windowId: string, position: { x: number; y: number }) => void;
-  resizeWindow: (windowId: string, size: { w: number; h: number }) => void;
+  moveWindow: (
+    windowId: string,
+    position: { x: number; y: number },
+    /** Optional: preserve the currently-rendered size so the layout engine doesn't
+     * fall back to a comfort default on first drag. */
+    size?: { w: number; h: number }
+  ) => void;
+  resizeWindow: (
+    windowId: string,
+    size: { w: number; h: number },
+    /** Optional: preserve the currently-rendered position so resize doesn't reset it. */
+    position?: { x: number; y: number }
+  ) => void;
   tuckWindow: (windowId: string) => void;
   evokeWindow: (windowId: string, dropPos?: { x: number; y: number }) => void;
   organize: () => void;

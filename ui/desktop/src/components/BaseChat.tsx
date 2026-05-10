@@ -66,6 +66,9 @@ interface BaseChatProps {
   onSessionUpdate?: (session: { id: string; name: string } | null) => void;
   /** Optional accent dot color (dashboard windows pass theirs). */
   accentColor?: string;
+  /** Hide the SessionNamePill at the top of the chat. Dashboard windows pass this
+   * because their own WindowTitleBar already shows the editable name. */
+  hideSessionNamePill?: boolean;
 }
 
 function BaseChatContent({
@@ -79,6 +82,7 @@ function BaseChatContent({
   onRenameSession,
   onSessionUpdate,
   accentColor,
+  hideSessionNamePill = false,
 }: BaseChatProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -420,13 +424,15 @@ function BaseChatContent({
               : 'flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden'
           }
         >
-          <div className="flex-shrink-0 px-4 pt-3">
-            <SessionNamePill
-              name={session?.name || 'New session'}
-              onRename={handleRename}
-              accentColor={accentColor}
-            />
-          </div>
+          {!hideSessionNamePill && (
+            <div className="flex-shrink-0 px-4 pt-3">
+              <SessionNamePill
+                name={session?.name || 'New session'}
+                onRename={handleRename}
+                accentColor={accentColor}
+              />
+            </div>
+          )}
           <ScrollArea
             ref={scrollRef}
             className={
