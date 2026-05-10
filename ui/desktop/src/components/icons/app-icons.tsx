@@ -48,6 +48,7 @@ import {
   Image as _Image,
   Info as _Info,
   Layers as _Layers,
+  LayoutDashboard as _LayoutDashboard,
   Link as _Link,
   Loader2 as _Loader2,
   LoaderCircle as _LoaderCircle,
@@ -156,6 +157,7 @@ export const History = light(_History);
 export const Home = light(_Home);
 export const Image = light(_Image);
 export const Layers = light(_Layers);
+export const LayoutDashboard = light(_LayoutDashboard);
 export const Link = light(_Link);
 export const Loader2 = light(_Loader2);
 export const LoaderCircle = light(_LoaderCircle);

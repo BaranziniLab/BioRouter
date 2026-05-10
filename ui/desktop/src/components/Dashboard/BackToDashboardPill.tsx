@@ -1,7 +1,7 @@
 import React from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useOptionalDashboard } from '../../contexts/DashboardContext';
-import { Users } from '../icons/app-icons';
+import { LayoutDashboard } from '../icons/app-icons';
 
 export const BackToDashboardPill: React.FC = () => {
   const lab = useOptionalDashboard();
@@ -18,7 +18,7 @@ export const BackToDashboardPill: React.FC = () => {
       className="fixed bottom-4 right-4 z-50 inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-background-default border border-border-subtle shadow-lg hover:bg-background-medium transition-colors text-xs"
       title="Back to Dashboard"
     >
-      <Users className="w-3.5 h-3.5" />
+      <LayoutDashboard className="w-3.5 h-3.5" />
       Back to Dashboard · {onBoard}
     </button>
   );

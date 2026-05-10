@@ -2,7 +2,7 @@ import React from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import AppSidebar from '../BioRouterSidebar/AppSidebar';
 import { View, ViewOptions } from '../../utils/navigationUtils';
-import { Plus, Users } from '../icons/app-icons';
+import { Plus, LayoutDashboard } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from '../ui/sidebar';
 import { getInitialWorkingDir } from '../../utils/workingDir';
@@ -95,7 +95,7 @@ const AppLayoutContent: React.FC = () => {
             size="xs"
             title="Open Dashboard"
           >
-            <Users className="w-4 h-4" />
+            <LayoutDashboard className="w-4 h-4" />
           </Button>
         </div>
       )}
