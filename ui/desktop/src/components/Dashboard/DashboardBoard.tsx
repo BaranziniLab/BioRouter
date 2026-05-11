@@ -51,11 +51,14 @@ export const DashboardBoard: React.FC = () => {
   // Minimum window size — the four essential elements must always be visible:
   //   1. Header (title bar w/ name + drag handle)              ~36 px
   //   2. ≥5 lines of model output / tool-call section          ~120 px
-  //   3. Intact input section: textarea + full picker row + Send
+  //   3. Intact input section: textarea + collapsed picker row + Send
   //   4. Resize corner — always rendered, never occluded
   // This is ALSO the default spawn size: every new window opens at exactly this
   // size, and dragging the resize corner below this springs it back.
-  const MIN_WINDOW_W = 720;
+  // With the collapsible `>` chevron in ChatInput, the picker row only needs
+  // to hold DirSwitcher, Attach, Extensions, Skills, toggle, and Send, so the
+  // minimum width can be much smaller than the pre-collapse size.
+  const MIN_WINDOW_W = 520;
   const MIN_WINDOW_H = 360;
   const minCellSize = useMemo(() => ({ w: MIN_WINDOW_W, h: MIN_WINDOW_H }), []);
 

@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
-import { CodeAnalysis, ScrollText, Pipeline } from './icons/app-icons';
+import { CodeAnalysis, ScrollText, Pipeline, ChevronRight, ChevronLeft } from './icons/app-icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Button } from './ui/button';
 import type { View } from '../utils/navigationUtils';
@@ -152,6 +152,10 @@ export default function ChatInput({
   const [showEditWorkflowModal, setShowEditWorkflowModal] = useState(false);
   const [isFilePickerOpen, setIsFilePickerOpen] = useState(false);
   const [sessionWorkingDir, setSessionWorkingDir] = useState<string | null>(null);
+  // Collapsible group: cost tracker, model selector, mode selector, workflow,
+  // and diagnostics live behind a `>` chevron so the picker row stays narrow.
+  // Always visible: DirSwitcher, Attach, Extensions, Skills.
+  const [pickerExpanded, setPickerExpanded] = useState(false);
 
   useEffect(() => {
     if (!sessionId) {
@@ -1337,11 +1341,12 @@ export default function ChatInput({
       )}
 
       {/* Secondary actions and controls row below input.
-          flex-nowrap + overflow-x-auto keeps the picker icons (DirSwitcher, model,
-          mode, extensions, skills, cost, diagnostics) on a single line; they
-          never fold under or get hidden. If the container is too narrow, the row
-          scrolls horizontally rather than collapsing. */}
+          Always-visible group on the left: DirSwitcher, Attach, Extensions, Skills.
+          A `>` / `<` chevron toggles a collapsible group containing Cost,
+          Model, Mode, Workflow, Diagnostics — letting the picker row stay narrow
+          enough for compact dashboard windows. Send button sits on the far right. */}
       <div className="flex flex-row flex-nowrap items-center gap-1 p-2 relative overflow-x-auto">
+        {/* Always-visible group */}
         <DirSwitcher
           className="mr-0"
           sessionId={sessionId ?? undefined}
@@ -1372,11 +1377,40 @@ export default function ChatInput({
           <TooltipContent>Attach file or directory</TooltipContent>
         </Tooltip>
         <div className="w-px h-4 bg-border-default mx-2" />
-        {/* Model selector, mode selector, alerts, summarize button */}
-        <div className="flex flex-row items-center">
-          {/* Cost Tracker */}
-          {COST_TRACKING_ENABLED && (
-            <>
+        <BottomMenuExtensionSelection sessionId={sessionId} />
+        <div className="w-px h-4 bg-border-default mx-2" />
+        <BottomMenuSkillSelection sessionId={sessionId} />
+
+        {/* Expand/collapse toggle for the secondary picker group */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              type="button"
+              onClick={() => setPickerExpanded((v) => !v)}
+              variant="ghost"
+              size="sm"
+              className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer ml-1"
+              aria-label={pickerExpanded ? 'Collapse extra controls' : 'Expand extra controls'}
+            >
+              {pickerExpanded ? (
+                <ChevronLeft className="w-4 h-4" />
+              ) : (
+                <ChevronRight className="w-4 h-4" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>
+            {pickerExpanded ? 'Hide model, mode, cost, workflow' : 'Show model, mode, cost, workflow'}
+          </TooltipContent>
+        </Tooltip>
+
+        {/* Collapsible group: cost, model, mode, workflow, diagnostics.
+            Workflow generator stays available whenever there's a session (no
+            message-count gating) so the user can always create one. */}
+        {pickerExpanded && (
+          <div className="flex flex-row items-center">
+            <div className="w-px h-4 bg-border-default mx-2" />
+            {COST_TRACKING_ENABLED && (
               <div className="flex items-center h-full ml-1 mr-1">
                 <CostTracker
                   inputTokens={accumulatedInputTokens}
@@ -1384,78 +1418,72 @@ export default function ChatInput({
                   sessionCosts={sessionCosts}
                 />
               </div>
-            </>
-          )}
-          <Tooltip>
-            <div>
-              <ModelsBottomBar
-                sessionId={sessionId}
-                dropdownRef={dropdownRef}
-                setView={setView}
-                alerts={alerts}
-              />
-            </div>
-          </Tooltip>
-          <div className="w-px h-4 bg-border-default mx-2" />
-          <BottomMenuModeSelection />
-          <div className="w-px h-4 bg-border-default mx-2" />
-          <BottomMenuExtensionSelection sessionId={sessionId} />
-          <div className="w-px h-4 bg-border-default mx-2" />
-          <BottomMenuSkillSelection sessionId={sessionId} />
-          {sessionId && messages.length > 0 && (
-            <>
-              <div className="w-px h-4 bg-border-default mx-2" />
-              <div className="flex items-center h-full">
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      onClick={() => {
-                        if (workflow) {
-                          trackEditWorkflowOpened();
-                          setShowEditWorkflowModal(true);
-                        } else {
-                          trackCreateWorkflowOpened();
-                          setShowCreateWorkflowModal(true);
-                        }
-                      }}
-                      variant="ghost"
-                      size="sm"
-                      className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer"
-                    >
-                      <Pipeline size={16} />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {workflow ? 'View/Edit Workflow' : 'Create Workflow from Session'}
-                  </TooltipContent>
-                </Tooltip>
-              </div>
-            </>
-          )}
-          {sessionId && (
+            )}
             <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  onClick={() => {
-                    trackDiagnosticsOpened();
-                    setDiagnosticsOpen(true);
-                  }}
-                  variant="ghost"
-                  size="sm"
-                  className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer transition-colors"
-                >
-                  <CodeAnalysis className="w-4 h-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Generate diagnostics bundle</TooltipContent>
+              <div>
+                <ModelsBottomBar
+                  sessionId={sessionId}
+                  dropdownRef={dropdownRef}
+                  setView={setView}
+                  alerts={alerts}
+                />
+              </div>
             </Tooltip>
-          )}
-        </div>
+            <div className="w-px h-4 bg-border-default mx-2" />
+            <BottomMenuModeSelection />
+            {sessionId && (
+              <>
+                <div className="w-px h-4 bg-border-default mx-2" />
+                <div className="flex items-center h-full">
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <Button
+                        onClick={() => {
+                          if (workflow) {
+                            trackEditWorkflowOpened();
+                            setShowEditWorkflowModal(true);
+                          } else {
+                            trackCreateWorkflowOpened();
+                            setShowCreateWorkflowModal(true);
+                          }
+                        }}
+                        variant="ghost"
+                        size="sm"
+                        className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer"
+                      >
+                        <Pipeline size={16} />
+                      </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>
+                      {workflow ? 'View/Edit Workflow' : 'Create Workflow from Session'}
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+              </>
+            )}
+            {sessionId && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    onClick={() => {
+                      trackDiagnosticsOpened();
+                      setDiagnosticsOpen(true);
+                    }}
+                    variant="ghost"
+                    size="sm"
+                    className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer transition-colors"
+                  >
+                    <CodeAnalysis className="w-4 h-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Generate diagnostics bundle</TooltipContent>
+              </Tooltip>
+            )}
+          </div>
+        )}
 
-        {/* Send / Stop button — placed at the right end of the picker row,
-            aligned with the diagnostics magnifier. This frees the textarea row
-            of its right-side space so the window can be narrower. */}
+        {/* Send / Stop button — on far right of picker row. */}
         <div className="ml-auto flex items-center pl-2 flex-shrink-0">
           {isLoading && !hasSubmittableContent ? (
             <Button
