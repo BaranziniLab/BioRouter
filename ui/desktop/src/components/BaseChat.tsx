@@ -541,6 +541,7 @@ function BaseChatContent({
             workflowAccepted={!hasNotAcceptedWorkflow}
             initialPrompt={initialPrompt}
             toolCount={toolCount || 0}
+            compactPicker={coherent}
             {...customChatInputProps}
           />
         </div>

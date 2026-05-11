@@ -21,6 +21,9 @@ interface ModelsBottomBarProps {
   dropdownRef: React.RefObject<HTMLDivElement>;
   setView: (view: View) => void;
   alerts: Alert[];
+  /** Hide the inline alert green-dot when the context window indicator is
+   * surfaced separately (e.g. in the picker popover's dedicated row). */
+  hideAlertPopover?: boolean;
 }
 
 export default function ModelsBottomBar({
@@ -28,6 +31,7 @@ export default function ModelsBottomBar({
   dropdownRef,
   setView,
   alerts,
+  hideAlertPopover = false,
 }: ModelsBottomBarProps) {
   const {
     currentModel,
@@ -154,7 +158,7 @@ export default function ModelsBottomBar({
 
   return (
     <div className="relative flex items-center" ref={dropdownRef}>
-      <BottomMenuAlertPopover alerts={alerts} />
+      {!hideAlertPopover && <BottomMenuAlertPopover alerts={alerts} />}
       <DropdownMenu>
         <DropdownMenuTrigger className="flex items-center hover:cursor-pointer max-w-[180px] md:max-w-[200px] lg:max-w-[380px] min-w-0 text-text-default/70 hover:text-text-default transition-colors">
           <div className="flex items-center truncate max-w-[130px] md:max-w-[200px] lg:max-w-[360px] min-w-0">

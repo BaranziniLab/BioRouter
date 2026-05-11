@@ -1,5 +1,14 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
-import { CodeAnalysis, ScrollText, Pipeline, ChevronRight, ChevronLeft } from './icons/app-icons';
+import {
+  CodeAnalysis,
+  ScrollText,
+  Pipeline,
+  ChevronRight,
+  ChevronLeft,
+  Activity,
+  Brain,
+  Tornado,
+} from './icons/app-icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Button } from './ui/button';
@@ -68,6 +77,115 @@ interface ModelLimit {
   context_limit: number;
 }
 
+/** Single row in the secondary-controls popover. A fixed-width icon column on
+ * the left keeps every row's content visually aligned regardless of icon
+ * variant or control width. */
+function PickerRow({
+  icon,
+  label,
+  children,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-background-medium/40">
+      <span className="flex items-center justify-center w-4 h-4 text-text-default/70 flex-shrink-0">
+        {icon}
+      </span>
+      <span className="text-[11px] text-text-default/60 w-12 flex-shrink-0">{label}</span>
+      <div className="flex-1 min-w-0 flex items-center">{children}</div>
+    </div>
+  );
+}
+
+/** Real-time context-window indicator with an inline Compact button. Replaces
+ * the green-dot hover popover that used to live inside ModelsBottomBar. */
+function ContextWindowRow({
+  totalTokens,
+  tokenLimit,
+  isTokenLimitLoaded,
+  onCompact,
+}: {
+  totalTokens: number | undefined;
+  tokenLimit: number;
+  isTokenLimitLoaded: boolean;
+  onCompact: () => void;
+}) {
+  const current = totalTokens ?? 0;
+  const total = tokenLimit || 0;
+  if (!isTokenLimitLoaded && !current) return null;
+  const ratio = total > 0 ? Math.min(1, current / total) : 0;
+  const pct = Math.round(ratio * 100);
+  const barColor =
+    ratio <= 0.5
+      ? 'bg-green-500'
+      : ratio <= 0.75
+        ? 'bg-yellow-500'
+        : ratio <= 0.9
+          ? 'bg-orange-500'
+          : 'bg-red-500';
+  const dotColor =
+    ratio <= 0.5
+      ? 'text-green-500'
+      : ratio <= 0.75
+        ? 'text-yellow-500'
+        : ratio <= 0.9
+          ? 'text-orange-500'
+          : 'text-red-500';
+  const fmt = (n: number): string => {
+    if (n >= 1_000_000) {
+      const m = n / 1_000_000;
+      return m % 1 === 0 ? `${m.toFixed(0)}M` : `${m.toFixed(1)}M`;
+    }
+    if (n >= 1000) {
+      const k = n / 1000;
+      return k % 1 === 0 ? `${k.toFixed(0)}k` : `${k.toFixed(1)}k`;
+    }
+    return n.toString();
+  };
+  return (
+    <div className="flex items-center gap-2 px-2 py-1.5 rounded">
+      <span className={`flex items-center justify-center w-4 h-4 flex-shrink-0 ${dotColor}`}>
+        <Activity className="w-4 h-4" />
+      </span>
+      <span className="text-[11px] text-text-default/60 w-12 flex-shrink-0">Context</span>
+      <div className="flex-1 min-w-0 flex flex-col gap-1">
+        <div className="h-1 rounded-full bg-background-muted overflow-hidden">
+          <div
+            className={`h-full ${barColor} transition-[width]`}
+            style={{ width: `${Math.max(2, pct)}%` }}
+          />
+        </div>
+        <div className="flex items-center justify-between text-[10px] text-text-default/60">
+          <span>
+            {fmt(current)} / {fmt(total)}
+          </span>
+          <span>{pct}%</span>
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onCompact();
+        }}
+        disabled={current === 0}
+        title={current === 0 ? 'Nothing to compact yet' : 'Compact conversation'}
+        className={`flex items-center justify-center w-7 h-7 rounded transition-colors flex-shrink-0 ${
+          current === 0
+            ? 'opacity-40 cursor-not-allowed'
+            : 'text-text-default/70 hover:text-text-default hover:bg-background-medium cursor-pointer'
+        }`}
+      >
+        <ScrollText size={14} />
+      </button>
+    </div>
+  );
+}
+
 interface ChatInputProps {
   sessionId: string | null;
   handleSubmit: (e: React.FormEvent) => void;
@@ -98,6 +216,10 @@ interface ChatInputProps {
   toolCount: number;
   append?: (message: Message) => void;
   onWorkingDirChange?: (newDir: string) => void;
+  /** When true (dashboard mode), secondary controls live behind a chevron
+   * popover. When false (chat tab), they're rendered inline so users with
+   * the room get every control at a glance. */
+  compactPicker?: boolean;
 }
 
 export default function ChatInput({
@@ -124,6 +246,7 @@ export default function ChatInput({
   toolCount,
   append: _append,
   onWorkingDirChange,
+  compactPicker = false,
 }: ChatInputProps) {
   const [_value, setValue] = useState(initialValue);
   const [displayValue, setDisplayValue] = useState(initialValue); // For immediate visual feedback
@@ -1382,28 +1505,117 @@ export default function ChatInput({
         <div className="w-px h-4 bg-border-default mx-2" />
         <BottomMenuSkillSelection sessionId={sessionId} />
 
-        {/* Vertical popover for the secondary picker group. The popover is
-            portaled and dismisses on outside click so it always sits above the
-            input row regardless of window width — Send stays visible. */}
-        <Popover open={pickerExpanded} onOpenChange={setPickerExpanded}>
-          <PopoverTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer ml-1"
-              aria-label={pickerExpanded ? 'Collapse extra controls' : 'Expand extra controls'}
+        {/* Secondary controls — context indicator + cost + model + mode +
+            workflow + diagnostics. In dashboard mode (`compactPicker`) we put
+            them behind a chevron popover so the row stays narrow. In the chat
+            tab (`!compactPicker`) we render them inline so users get every
+            control at a glance.
+
+            Either way the rows are built by the same helper below so a single
+            redesign drives both layouts. */}
+        {compactPicker ? (
+          <Popover open={pickerExpanded} onOpenChange={setPickerExpanded}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer ml-1"
+                aria-label={pickerExpanded ? 'Collapse extra controls' : 'Expand extra controls'}
+              >
+                {pickerExpanded ? (
+                  <ChevronLeft className="w-4 h-4" />
+                ) : (
+                  <ChevronRight className="w-4 h-4" />
+                )}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              side="top"
+              align="start"
+              className="flex flex-col gap-0.5 w-72 p-1.5"
             >
-              {pickerExpanded ? (
-                <ChevronLeft className="w-4 h-4" />
-              ) : (
-                <ChevronRight className="w-4 h-4" />
+              {/* Context window row — real-time tokens + Compact button. The
+                  user can check usage and compact any time. Replaces the
+                  green-dot hover popover that used to live next to the model
+                  selector. */}
+              <ContextWindowRow
+                totalTokens={totalTokens}
+                tokenLimit={tokenLimit}
+                isTokenLimitLoaded={isTokenLimitLoaded}
+                onCompact={() => {
+                  handleSubmit(
+                    new CustomEvent('submit', {
+                      detail: { value: MANUAL_COMPACT_TRIGGER },
+                    }) as unknown as React.FormEvent
+                  );
+                  setPickerExpanded(false);
+                }}
+              />
+              {COST_TRACKING_ENABLED && (
+                <PickerRow icon={<span className="text-[13px]">$</span>} label="Cost">
+                  <CostTracker
+                    inputTokens={accumulatedInputTokens}
+                    outputTokens={accumulatedOutputTokens}
+                    sessionCosts={sessionCosts}
+                  />
+                </PickerRow>
               )}
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent side="top" align="start" className="flex flex-col gap-1 w-64">
+              <PickerRow icon={<Brain className="w-4 h-4" />} label="Model">
+                <ModelsBottomBar
+                  sessionId={sessionId}
+                  dropdownRef={dropdownRef}
+                  setView={setView}
+                  alerts={alerts}
+                  hideAlertPopover
+                />
+              </PickerRow>
+              <PickerRow icon={<Tornado className="w-4 h-4" />} label="Mode">
+                <BottomMenuModeSelection />
+              </PickerRow>
+              {sessionId && (
+                <Button
+                  onClick={() => {
+                    if (workflow) {
+                      trackEditWorkflowOpened();
+                      setShowEditWorkflowModal(true);
+                    } else {
+                      trackCreateWorkflowOpened();
+                      setShowCreateWorkflowModal(true);
+                    }
+                    setPickerExpanded(false);
+                  }}
+                  variant="ghost"
+                  size="sm"
+                  className="flex items-center gap-2 text-text-default/80 hover:text-text-default text-xs cursor-pointer w-full justify-start px-2 py-1.5"
+                >
+                  <Pipeline size={16} />
+                  <span>{workflow ? 'View/Edit Workflow' : 'Create Workflow'}</span>
+                </Button>
+              )}
+              {sessionId && (
+                <Button
+                  type="button"
+                  onClick={() => {
+                    trackDiagnosticsOpened();
+                    setDiagnosticsOpen(true);
+                    setPickerExpanded(false);
+                  }}
+                  variant="ghost"
+                  size="sm"
+                  className="flex items-center gap-2 text-text-default/80 hover:text-text-default text-xs cursor-pointer w-full justify-start px-2 py-1.5"
+                >
+                  <CodeAnalysis className="w-4 h-4" />
+                  <span>Diagnostics</span>
+                </Button>
+              )}
+            </PopoverContent>
+          </Popover>
+        ) : (
+          // Chat-tab mode: inline picker row, no chevron.
+          <div className="flex flex-row items-center">
             {COST_TRACKING_ENABLED && (
-              <div className="flex items-center px-2 py-1">
+              <div className="flex items-center h-full ml-1 mr-1">
                 <CostTracker
                   inputTokens={accumulatedInputTokens}
                   outputTokens={accumulatedOutputTokens}
@@ -1411,55 +1623,70 @@ export default function ChatInput({
                 />
               </div>
             )}
-            <div className="flex items-center px-2 py-1">
-              <ModelsBottomBar
-                sessionId={sessionId}
-                dropdownRef={dropdownRef}
-                setView={setView}
-                alerts={alerts}
-              />
-            </div>
-            <div className="flex items-center px-2 py-1">
-              <BottomMenuModeSelection />
-            </div>
+            <Tooltip>
+              <div>
+                <ModelsBottomBar
+                  sessionId={sessionId}
+                  dropdownRef={dropdownRef}
+                  setView={setView}
+                  alerts={alerts}
+                />
+              </div>
+            </Tooltip>
+            <div className="w-px h-4 bg-border-default mx-2" />
+            <BottomMenuModeSelection />
             {sessionId && (
-              <Button
-                onClick={() => {
-                  if (workflow) {
-                    trackEditWorkflowOpened();
-                    setShowEditWorkflowModal(true);
-                  } else {
-                    trackCreateWorkflowOpened();
-                    setShowCreateWorkflowModal(true);
-                  }
-                  setPickerExpanded(false);
-                }}
-                variant="ghost"
-                size="sm"
-                className="flex items-center gap-2 text-text-default/80 hover:text-text-default text-xs cursor-pointer w-full justify-start px-2 py-1"
-              >
-                <Pipeline size={16} />
-                <span>{workflow ? 'View/Edit Workflow' : 'Create Workflow'}</span>
-              </Button>
+              <>
+                <div className="w-px h-4 bg-border-default mx-2" />
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      onClick={() => {
+                        if (workflow) {
+                          trackEditWorkflowOpened();
+                          setShowEditWorkflowModal(true);
+                        } else {
+                          trackCreateWorkflowOpened();
+                          setShowCreateWorkflowModal(true);
+                        }
+                      }}
+                      variant="ghost"
+                      size="sm"
+                      className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer"
+                    >
+                      <Pipeline size={16} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {workflow ? 'View/Edit Workflow' : 'Create Workflow from Session'}
+                  </TooltipContent>
+                </Tooltip>
+              </>
             )}
             {sessionId && (
-              <Button
-                type="button"
-                onClick={() => {
-                  trackDiagnosticsOpened();
-                  setDiagnosticsOpen(true);
-                  setPickerExpanded(false);
-                }}
-                variant="ghost"
-                size="sm"
-                className="flex items-center gap-2 text-text-default/80 hover:text-text-default text-xs cursor-pointer w-full justify-start px-2 py-1"
-              >
-                <CodeAnalysis className="w-4 h-4" />
-                <span>Diagnostics</span>
-              </Button>
+              <>
+                <div className="w-px h-4 bg-border-default mx-2" />
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        trackDiagnosticsOpened();
+                        setDiagnosticsOpen(true);
+                      }}
+                      variant="ghost"
+                      size="sm"
+                      className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer transition-colors"
+                    >
+                      <CodeAnalysis className="w-4 h-4" />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>Generate diagnostics bundle</TooltipContent>
+                </Tooltip>
+              </>
             )}
-          </PopoverContent>
-        </Popover>
+          </div>
+        )}
 
         {/* Send / Stop button — on far right of picker row. */}
         <div className="ml-auto flex items-center pl-2 flex-shrink-0">
