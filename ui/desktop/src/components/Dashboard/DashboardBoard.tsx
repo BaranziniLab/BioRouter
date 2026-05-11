@@ -1,209 +1,170 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useDashboard } from '../../contexts/DashboardContext';
-import { computeLayout, LayoutInputWindow } from './layoutEngine';
 import { ChatWindow } from './ChatWindow';
-import { HiddenChatHolder } from './HiddenChatHolder';
-import { TuckSidebar } from './TuckSidebar';
 
-const DEBOUNCE_MS = 80;
+// Kept in sync with DashboardProvider — minimum + default spawn size.
+const MIN_WINDOW_W = 520;
+const MIN_WINDOW_H = 440;
+
+const Z_FOCUSED = 100;
+const Z_TILED = 1;
 
 export const DashboardBoard: React.FC = () => {
   const dashboard = useDashboard();
-  const [boardSize, setBoardSize] = useState<{ width: number; height: number } | null>(null);
-  const ref = useRef<HTMLDivElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const [viewport, setViewport] = useState<{ width: number; height: number }>({
+    width: 0,
+    height: 0,
+  });
 
-  // Track board size via ResizeObserver, debounced.
+  // Track viewport size for centerOn() calls.
   useEffect(() => {
-    const el = ref.current;
+    const el = viewportRef.current;
     if (!el) return;
-    let t: ReturnType<typeof setTimeout> | null = null;
-    // Initial measure synchronously
-    const r = el.getBoundingClientRect();
-    setBoardSize({ width: r.width, height: r.height });
-    const ro = new ResizeObserver((entries) => {
-      const e = entries[0];
-      if (!e) return;
-      const w = e.contentRect.width;
-      const h = e.contentRect.height;
-      if (t) clearTimeout(t);
-      t = setTimeout(() => setBoardSize({ width: w, height: h }), DEBOUNCE_MS);
-    });
-    ro.observe(el);
-    return () => {
-      ro.disconnect();
-      if (t) clearTimeout(t);
+    const update = () => {
+      const r = el.getBoundingClientRect();
+      setViewport({ width: r.width, height: r.height });
     };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
   }, []);
 
-  const layoutInputs: LayoutInputWindow[] = useMemo(
-    () =>
-      dashboard.state.windows.map((w) => ({
-        windowId: w.windowId,
-        isManuallyPlaced: w.isManuallyPlaced,
-        isTucked: w.isTucked,
-        position: w.position,
-        size: w.size,
-        lastInteraction: w.lastInteraction,
-      })),
-    [dashboard.state.windows]
-  );
-
-  // Minimum window size — the four essential elements must always be visible:
-  //   1. Header (title bar w/ name + drag handle)              ~36 px
-  //   2. ≥5 lines of model output / tool-call section          ~120 px
-  //   3. Intact input section: textarea + collapsed picker row + Send
-  //   4. Resize corner — always rendered, never occluded
-  // This is ALSO the default spawn size: every new window opens at exactly this
-  // size, and dragging the resize corner below this springs it back.
-  // With the collapsible `>` chevron in ChatInput, the picker row only needs
-  // to hold DirSwitcher, Attach, Extensions, Skills, toggle, and Send, so the
-  // minimum width can be much smaller than the pre-collapse size.
-  const MIN_WINDOW_W = 520;
-  const MIN_WINDOW_H = 360;
-  const minCellSize = useMemo(() => ({ w: MIN_WINDOW_W, h: MIN_WINDOW_H }), []);
-
-  // Auto-compute T1 (max non-overlapping windows) and T2 (T1 + 2 allowed
-  // overlap) from the board size and the minimum window size. Replaces the
-  // user-facing T1/T2 inputs entirely — the layout adapts to the board.
-  const { autoT1, autoT2 } = useMemo(() => {
-    if (!boardSize) return { autoT1: 1, autoT2: 3 };
-    const GAP = 8;
-    const cols = Math.max(1, Math.floor((boardSize.width + GAP) / (MIN_WINDOW_W + GAP)));
-    const rows = Math.max(1, Math.floor((boardSize.height + GAP) / (MIN_WINDOW_H + GAP)));
-    const t1 = Math.max(1, cols * rows);
-    return { autoT1: t1, autoT2: t1 + 2 };
-  }, [boardSize]);
-
-  // Keep the provider's T1/T2 in sync with the auto-computed values, so the
-  // existing enforceT2 / tuck logic uses board-aware limits.
+  // Recenter on focused window whenever the focus changes (covers spawn, since
+  // spawnWindow sets focusedWindowId to the new window).
+  const lastFocusedRef = useRef<string | null>(null);
   useEffect(() => {
-    if (dashboard.state.T1 !== autoT1) dashboard.setT1(autoT1);
-    if (dashboard.state.T2 !== autoT2) dashboard.setT2(autoT2);
-  }, [autoT1, autoT2, dashboard]);
+    const id = dashboard.state.focusedWindowId;
+    if (id && id !== lastFocusedRef.current && viewport.width > 0) {
+      dashboard.centerOn(id, viewport);
+    }
+    lastFocusedRef.current = id;
+  }, [dashboard.state.focusedWindowId, dashboard, viewport]);
 
-  const layout = useMemo(() => {
-    if (!boardSize) return new Map();
-    return computeLayout(
-      layoutInputs,
-      boardSize,
-      autoT1,
-      autoT2,
-      dashboard.state.focusedWindowId,
-      // Every auto window renders at the minimum/default size — no comfort
-      // scaling. The engine packs them tight with up to 2 allowed overlaps.
-      { w: MIN_WINDOW_W, h: MIN_WINDOW_H }
-    );
-  }, [layoutInputs, boardSize, autoT1, autoT2, dashboard.state.focusedWindowId]);
+  // Organize triggers a re-center on the focused window.
+  const lastOrganizeTickRef = useRef(0);
+  useEffect(() => {
+    const tick = dashboard.state.organizeTick;
+    if (
+      tick > lastOrganizeTickRef.current &&
+      dashboard.state.focusedWindowId &&
+      viewport.width > 0
+    ) {
+      dashboard.centerOn(dashboard.state.focusedWindowId, viewport);
+    }
+    lastOrganizeTickRef.current = tick;
+  }, [dashboard.state.organizeTick, dashboard, viewport]);
 
-  const onBoardWindows = dashboard.state.windows.filter((w) => !w.isTucked);
-  const sidebarOpen = dashboard.state.windows.some((w) => w.isTucked);
-
-  // Drag-from-sidebar ghost state (Task 17)
-  const [ghost, setGhost] = useState<{ windowId: string; x: number; y: number } | null>(null);
-
-  const onCardDragStart = (windowId: string) => (e: React.PointerEvent) => {
-    e.preventDefault();
-    let suppressClick = false;
-    const handleMove = (ev: PointerEvent) => {
-      const r = ref.current?.getBoundingClientRect();
-      if (!r) return;
-      suppressClick = true;
-      setGhost({ windowId, x: ev.clientX - r.left, y: ev.clientY - r.top });
-    };
-    const handleUp = (ev: PointerEvent) => {
-      window.removeEventListener('pointermove', handleMove);
-      window.removeEventListener('pointerup', handleUp);
-      const r = ref.current?.getBoundingClientRect();
-      setGhost(null);
-      if (!r || !suppressClick) return; // pure click, let onClick handler do its job
-      const x = ev.clientX - r.left;
-      const y = ev.clientY - r.top;
-      const insideBoard = x >= 0 && x <= r.width && y >= 0 && y <= r.height;
-      if (insideBoard) {
-        dashboard.evokeWindow(windowId, {
-          x: Math.max(0, x - minCellSize.w / 2),
-          y: Math.max(0, y - 18),
-        });
-      }
-    };
-    window.addEventListener('pointermove', handleMove);
-    window.addEventListener('pointerup', handleUp);
+  // Pan via pointer drag on the viewport background.
+  const panStateRef = useRef<{ active: boolean; lastX: number; lastY: number }>({
+    active: false,
+    lastX: 0,
+    lastY: 0,
+  });
+  const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    // Only pan when the press lands on the viewport background itself, not on a window.
+    if (e.target !== e.currentTarget) return;
+    panStateRef.current = { active: true, lastX: e.clientX, lastY: e.clientY };
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!panStateRef.current.active) return;
+    const dx = e.clientX - panStateRef.current.lastX;
+    const dy = e.clientY - panStateRef.current.lastY;
+    panStateRef.current.lastX = e.clientX;
+    panStateRef.current.lastY = e.clientY;
+    dashboard.panBy(dx, dy);
+  };
+  const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    panStateRef.current.active = false;
+    try {
+      (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
+    } catch {
+      /* pointer may have already been released */
+    }
+  };
+
+  // Trackpad two-finger pan via wheel events.
+  useEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const handler = (ev: WheelEvent) => {
+      const target = ev.target as HTMLElement | null;
+      // Skip wheels that originate inside a window so chat content can scroll normally.
+      if (target && target !== el && target.closest('[data-dashboard-window]')) return;
+      ev.preventDefault();
+      dashboard.panBy(-ev.deltaX, -ev.deltaY);
+    };
+    el.addEventListener('wheel', handler, { passive: false });
+    return () => el.removeEventListener('wheel', handler);
+  }, [dashboard]);
+
+  const minSize = { w: MIN_WINDOW_W, h: MIN_WINDOW_H };
+  const { cameraOffset, windows, focusedWindowId } = dashboard.state;
 
   return (
     <div className="flex flex-1 min-h-0">
       <div
-        ref={ref}
-        className="relative flex-1 overflow-hidden"
+        ref={viewportRef}
+        className="relative flex-1 overflow-hidden cursor-grab active:cursor-grabbing"
         style={{
           backgroundImage:
             'radial-gradient(circle at 1px 1px, rgba(120,120,120,0.18) 1px, transparent 0)',
           backgroundSize: '16px 16px',
+          backgroundPosition: `${cameraOffset.x}px ${cameraOffset.y}px`,
         }}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
       >
-        {boardSize && onBoardWindows.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center text-text-muted">
+        {windows.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center text-text-muted pointer-events-none">
             <button
               type="button"
-              className="px-4 py-2 rounded-xl border border-border-subtle hover:bg-background-medium"
+              className="px-4 py-2 rounded-xl border border-border-subtle hover:bg-background-medium pointer-events-auto"
               onClick={() => dashboard.spawnWindow()}
             >
               Spawn a conversation
             </button>
           </div>
         )}
-        {boardSize &&
-          onBoardWindows.map((w) => {
-            const rect = layout.get(w.windowId);
-            if (!rect) return null;
-            return (
+        {/* World layer — translated by cameraOffset. The layer itself is
+            pointer-events:none so pointer events fall through to the viewport
+            (for pan), and each window re-enables pointer-events on its own. */}
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{ transform: `translate(${cameraOffset.x}px, ${cameraOffset.y}px)` }}
+        >
+          {windows.map((w) => (
+            <div
+              key={w.windowId}
+              data-dashboard-window
+              className="pointer-events-auto"
+              style={{ position: 'absolute', top: 0, left: 0 }}
+            >
               <ChatWindow
-                key={w.windowId}
                 win={w}
-                rect={rect}
-                isFocused={dashboard.state.focusedWindowId === w.windowId}
-                isSolo={onBoardWindows.length === 1}
-                boardSize={boardSize}
-                minSize={minCellSize}
-                sidebarOpen={sidebarOpen}
-                onTuckByDrag={(id) => dashboard.tuckWindow(id)}
+                rect={{
+                  x: w.position.x,
+                  y: w.position.y,
+                  w: w.size.w,
+                  h: w.size.h,
+                  zIndex: focusedWindowId === w.windowId ? Z_FOCUSED : Z_TILED,
+                }}
+                isFocused={focusedWindowId === w.windowId}
+                isSolo={windows.length === 1}
+                boardSize={viewport}
+                minSize={minSize}
                 onManipulateStart={() => {
-                  // Snapshot the current layout for every on-board window and
-                  // freeze them all in place. After this, drag/resize on one
-                  // window will never reflow the others.
-                  const rects: Record<string, { x: number; y: number; w: number; h: number }> = {};
-                  for (const [id, r] of layout.entries()) {
-                    rects[id] = { x: r.x, y: r.y, w: r.w, h: r.h };
-                  }
-                  dashboard.freezeAllRects(rects);
+                  // No-op in canvas mode: windows already own absolute world coords.
                 }}
               />
-            );
-          })}
-        {ghost && boardSize && (
-          <div
-            className="absolute pointer-events-none rounded-2xl border-2 border-dashed border-border-subtle bg-background-default/40 backdrop-blur-sm"
-            style={{
-              width: minCellSize.w,
-              height: minCellSize.h,
-              transform: `translate(${ghost.x - minCellSize.w / 2}px, ${ghost.y - 18}px)`,
-              zIndex: 200,
-            }}
-          />
-        )}
-        {/* Tucked windows render here in a `display: none` container so their
-            BaseChat / useChatStream subscriptions stay live — the AI agent keeps
-            working while the user has the window tucked. React keeps the
-            components mounted; the browser just skips paint + layout. */}
-        <div aria-hidden style={{ display: 'none' }}>
-          {dashboard.state.windows
-            .filter((w) => w.isTucked)
-            .map((w) => (
-              <HiddenChatHolder key={w.windowId} win={w} />
-            ))}
+            </div>
+          ))}
         </div>
       </div>
-      <TuckSidebar onCardDragStart={onCardDragStart} />
     </div>
   );
 };
