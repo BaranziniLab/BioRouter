@@ -128,31 +128,52 @@ export function organize(
   for (let pass = 0; pass < MAX_PASSES; pass++) {
     let movement = 0;
 
-    // Phase A — resolve overlapping pairs. Anchor stays pinned; non-anchor
-    // partner absorbs the full push.
+    // Phase A — resolve overlapping pairs AND gap-violations (rects that are
+    // separated but closer than `gap`). Anchor stays pinned; non-anchor
+    // partner absorbs the full push. Push direction is the axis that requires
+    // the minimum movement to reach the gap margin.
     for (let i = 0; i < result.length; i++) {
       for (let j = i + 1; j < result.length; j++) {
         const a = result[i];
         const b = result[j];
-        const ow = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
-        const oh = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
-        if (ow <= 0 || oh <= 0) continue;
-        const axis: 'x' | 'y' = ow < oh ? 'x' : 'y';
-        const push = (axis === 'x' ? ow : oh) + gap;
+        // Per-axis "penalty": positive means the pair needs to move that much
+        // along that axis to reach `gap` separation; zero or negative means
+        // they're already separated by at least `gap` on that axis.
+        const xPenL = a.x + a.w + gap - b.x; // push a left / b right
+        const xPenR = b.x + b.w + gap - a.x; // push b left / a right
+        const yPenT = a.y + a.h + gap - b.y; // push a up / b down
+        const yPenB = b.y + b.h + gap - a.y; // push b up / a down
+        // Already separated on at least one axis → nothing to do.
+        if (xPenL <= 0 || xPenR <= 0 || yPenT <= 0 || yPenB <= 0) continue;
+        // Pick the smallest penalty (minimum-move separation).
+        let best: 'xL' | 'xR' | 'yT' | 'yB' = 'xL';
+        let bestVal = xPenL;
+        if (xPenR < bestVal) { best = 'xR'; bestVal = xPenR; }
+        if (yPenT < bestVal) { best = 'yT'; bestVal = yPenT; }
+        if (yPenB < bestVal) { best = 'yB'; bestVal = yPenB; }
         const aIsAnchor = i === anchorIdx;
         const bIsAnchor = j === anchorIdx;
-        const aShare = aIsAnchor ? 0 : bIsAnchor ? push : push / 2;
-        const bShare = bIsAnchor ? 0 : aIsAnchor ? push : push / 2;
-        if (axis === 'x') {
-          const aFirst = a.x <= b.x;
-          a.x += aFirst ? -aShare : aShare;
-          b.x += aFirst ? bShare : -bShare;
-        } else {
-          const aFirst = a.y <= b.y;
-          a.y += aFirst ? -aShare : aShare;
-          b.y += aFirst ? bShare : -bShare;
+        const aShare = aIsAnchor ? 0 : bIsAnchor ? bestVal : bestVal / 2;
+        const bShare = bIsAnchor ? 0 : aIsAnchor ? bestVal : bestVal / 2;
+        switch (best) {
+          case 'xL': // a is left of b: push a further left, b further right
+            a.x -= aShare;
+            b.x += bShare;
+            break;
+          case 'xR': // b is left of a
+            a.x += aShare;
+            b.x -= bShare;
+            break;
+          case 'yT': // a is above b
+            a.y -= aShare;
+            b.y += bShare;
+            break;
+          case 'yB': // b is above a
+            a.y += aShare;
+            b.y -= bShare;
+            break;
         }
-        movement += push;
+        movement += bestVal;
       }
     }
 

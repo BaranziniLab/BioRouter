@@ -132,6 +132,27 @@ describe('organize', () => {
     }
   });
 
+  it('enforces gap margin even when rects are separated but too close', () => {
+    // Regression: previously Phase A only handled true rect overlap, so
+    // when an enlarged window pushed a neighbor into the gap zone but not
+    // into overlap with the anchor, the result had < `gap` spacing.
+    const windows: WindowRect[] = [
+      { id: 'left', x: 0, y: 0, w: 200, h: 200 },
+      { id: 'mid', x: 100, y: 0, w: 200, h: 200 }, // overlaps left by 100
+      { id: 'anchor', x: 300, y: 0, w: 200, h: 200 }, // gap=0 with mid
+    ];
+    const result = organize(windows, 'anchor', 16);
+    const left = result.find((w) => w.id === 'left')!;
+    const mid = result.find((w) => w.id === 'mid')!;
+    const anchor = result.find((w) => w.id === 'anchor')!;
+    // Anchor unmoved.
+    expect(anchor.x).toBe(300);
+    // Every adjacent pair must have >= 16 - epsilon gap.
+    const epsilon = 0.5;
+    expect(anchor.x - (mid.x + mid.w)).toBeGreaterThanOrEqual(16 - epsilon);
+    expect(mid.x - (left.x + left.w)).toBeGreaterThanOrEqual(16 - epsilon);
+  });
+
   it('leaves already-adjacent windows alone (no oscillation)', () => {
     const windows: WindowRect[] = [
       { id: 'a', x: 0, y: 0, w: 200, h: 200 },
