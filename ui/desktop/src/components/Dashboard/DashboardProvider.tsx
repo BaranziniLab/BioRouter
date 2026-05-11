@@ -77,14 +77,27 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         w: w.size.w,
         h: w.size.h,
       }));
-      // World-space camera center: viewport center maps to (-cameraOffset.x, -cameraOffset.y).
-      // We don't know viewport size here, so use (0, 0) plus inverse offset as a proxy.
+      // Prefer placement adjacent to the focused window so new chats appear
+      // right next to the active one. Without a focus, fall back to the
+      // camera-center spiral.
+      const focused = prev.focusedWindowId
+        ? prev.windows.find((w) => w.windowId === prev.focusedWindowId)
+        : null;
+      const anchor = focused
+        ? {
+            x: focused.position.x,
+            y: focused.position.y,
+            w: focused.size.w,
+            h: focused.size.h,
+          }
+        : null;
       const center = { x: -prev.cameraOffset.x, y: -prev.cameraOffset.y };
       const pos = findSpawnPosition({
         center,
         size: { w: MIN_WINDOW_W, h: MIN_WINDOW_H },
         existing,
         gap: GAP,
+        anchor,
       });
       const usedColors = prev.windows.map((w) => w.accentColor);
       const newWin: DashboardWindow = {

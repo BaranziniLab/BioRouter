@@ -211,28 +211,40 @@ export function useChatStream({
         window.dispatchEvent(new CustomEvent('message-stream-finished'));
       }
 
-      // Refresh session name after each reply for the first 3 user messages
-      // The backend regenerates the name after each of the first 3 user messages
-      // to refine it as more context becomes available
+      // Refresh session name after each reply for the first 3 user messages.
+      // The backend regenerates the name (in a fire-and-forget tokio::spawn —
+      // see agents/agent.rs:maybe_update_name) and we don't know exactly when
+      // it finishes, so poll a few times with backoff and keep the first name
+      // that doesn't match the default "New session N" placeholder.
       if (!error && sessionId) {
         const userMessageCount = messagesRef.current.filter(
           (m) => m.role === 'user'
         ).length;
-        
-        // Only refresh for the first 3 user messages
         if (userMessageCount <= 3) {
-          try {
-            const response = await getSession({
-              path: { session_id: sessionId },
-              throwOnError: true,
-            });
-            if (response.data?.name) {
-              setSession((prev) => (prev ? { ...prev, name: response.data.name } : prev));
+          const isDefaultName = (name?: string) =>
+            !name || /^New session \d+$/i.test(name);
+          const pollDelays = [800, 1200, 2000, 3000];
+          // Fire-and-forget polling so we don't block setChatState(Idle).
+          void (async () => {
+            for (const delay of pollDelays) {
+              await new Promise((r) => setTimeout(r, delay));
+              try {
+                const response = await getSession({
+                  path: { session_id: sessionId },
+                  throwOnError: true,
+                });
+                const newName = response.data?.name;
+                if (newName) {
+                  setSession((prev) =>
+                    prev && prev.name !== newName ? { ...prev, name: newName } : prev
+                  );
+                  if (!isDefaultName(newName)) break;
+                }
+              } catch (refreshError) {
+                console.warn('Failed to refresh session name:', refreshError);
+              }
             }
-          } catch (refreshError) {
-            // Silently fail - this is a nice-to-have feature
-            console.warn('Failed to refresh session name:', refreshError);
-          }
+          })();
         }
       }
 
