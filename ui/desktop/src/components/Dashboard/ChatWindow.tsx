@@ -102,25 +102,14 @@ export const ChatWindow: React.FC<Props> = ({
     [rect, dragOffset, resizeDelta, transition]
   );
 
-  const popStyle = useMemo(() => {
-    if (!isFocused) return {};
-    const TOUCH = 4;
-    const leftTouching = rect.x <= TOUCH;
-    const rightTouching = rect.x + rect.w >= boardSize.width - TOUCH;
-    const topTouching = rect.y <= TOUCH;
-    const bottomTouching = rect.y + rect.h >= boardSize.height - TOUCH;
-    const ox = leftTouching ? 'left' : rightTouching ? 'right' : 'center';
-    const oy = topTouching ? 'top' : bottomTouching ? 'bottom' : 'center';
-    return { transformOrigin: `${ox} ${oy}` };
-  }, [isFocused, rect.x, rect.y, rect.w, rect.h, boardSize.width, boardSize.height]);
-
-  const TOUCH_PX = 4;
-  const topTouching = rect.y <= TOUCH_PX;
+  // Focus indication is via shadow only — no scale/translate so the focused
+  // window always sits at exactly its grid slot (no visual size drift).
+  const popStyle = {};
+  void boardSize;
   const focusClasses = isFocused
-    ? isSolo
-      ? 'shadow-[0_8px_30px_rgb(0,0,0,0.18)]'
-      : `shadow-[0_12px_40px_rgb(0,0,0,0.22)] scale-[1.01] ${topTouching ? '' : '-translate-y-0.5'}`
+    ? 'shadow-[0_12px_40px_rgb(0,0,0,0.22)]'
     : 'shadow-[0_4px_14px_rgb(0,0,0,0.10)]';
+  void isSolo;
 
   return (
     <div
