@@ -3,23 +3,16 @@ import { useDashboard } from '../../contexts/DashboardContext';
 
 export const DashboardToolbar: React.FC = () => {
   const dashboard = useDashboard();
-  const onBoard = dashboard.state.windows.filter((w) => !w.isTucked).length;
-  const tucked = dashboard.state.windows.filter((w) => w.isTucked).length;
+  const onCanvas = dashboard.state.windows.length;
 
-  // Layout: actions (Spawn/Organize/Clear) centered horizontally so they don't
-  // collide with the macOS traffic-light buttons at the upper-left when the
-  // sidebar is collapsed. Status indicator (count) sits on the right.
-  // T1/T2 are auto-computed by DashboardBoard from the board size — no more
-  // user-facing threshold controls.
-  //
-  // The Electron titlebar-drag-region is `position:fixed; top:0; z-index:50;
-  // height:32px` and overlaps the top 32px of the app — including this toolbar.
-  // We sit at z-[60] so DOM clicks reach the buttons. The `.no-drag` class
-  // suppresses OS-level window dragging on the buttons themselves.
+  // Tab-style buttons: no border, no background ring — just text + icon hover
+  // behavior matching the sidebar Home/Chat/History buttons. Keeps the canvas
+  // visual chrome minimal.
   const btnClass =
-    'no-drag h-7 px-3 text-[13.5px] font-normal rounded-lg border border-border-subtle ' +
-    'bg-background-default text-text-default hover:bg-background-medium ' +
-    'active:translate-y-px transition-all';
+    'no-drag h-7 px-3 text-[13.5px] font-normal rounded-md ' +
+    'text-text-default/80 hover:text-text-default hover:bg-background-medium/40 ' +
+    'active:translate-y-px transition-colors';
+
   return (
     <div className="relative z-[60] flex items-center gap-2 px-4 py-1.5 border-b border-border-subtle/30 bg-background-muted/40 backdrop-blur-sm">
       <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 no-drag">
@@ -34,7 +27,7 @@ export const DashboardToolbar: React.FC = () => {
         <button
           type="button"
           onClick={() => dashboard.organize()}
-          title="Re-tile"
+          title="Resolve overlaps and center on focused window"
           className={btnClass}
         >
           Organize
@@ -49,7 +42,7 @@ export const DashboardToolbar: React.FC = () => {
         </button>
       </div>
       <div className="ml-auto flex items-center gap-2 no-drag text-xs text-text-muted">
-        {onBoard} on board · {tucked} tucked
+        {onCanvas} on canvas
       </div>
     </div>
   );

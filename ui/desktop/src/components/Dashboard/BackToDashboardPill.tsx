@@ -10,7 +10,7 @@ export const BackToDashboardPill: React.FC = () => {
   if (!dashboard) return null;
   if (loc.pathname === '/dashboard') return null;
   if (dashboard.state.windows.length === 0) return null;
-  const onBoard = dashboard.state.windows.filter((w) => !w.isTucked).length;
+  const onBoard = dashboard.state.windows.length;
   return (
     <button
       type="button"
