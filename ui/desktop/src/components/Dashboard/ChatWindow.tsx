@@ -91,15 +91,20 @@ export const ChatWindow: React.FC<Props> = ({
     !isManipulating && dashboard.state.isAnimating
       ? 'transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1), width 200ms cubic-bezier(0.2, 0.8, 0.2, 1), height 200ms cubic-bezier(0.2, 0.8, 0.2, 1)'
       : 'none';
+  // Subtle uniform-scale focus pop. Origin = center so the slot center
+  // doesn't drift, and the visual ~0.5% growth is barely perceptible but
+  // distinguishes the active window without the heavier shadow.
+  const focusScale = isFocused ? 1.005 : 1;
   const stylePos = useMemo(
     () => ({
-      transform: `translate(${rect.x + dragOffset.dx}px, ${rect.y + dragOffset.dy}px)`,
+      transform: `translate(${rect.x + dragOffset.dx}px, ${rect.y + dragOffset.dy}px) scale(${focusScale})`,
+      transformOrigin: 'center center',
       width: rect.w + resizeDelta.dw,
       height: rect.h + resizeDelta.dh,
       zIndex: rect.zIndex,
       transition,
     }),
-    [rect, dragOffset, resizeDelta, transition]
+    [rect, dragOffset, resizeDelta, transition, focusScale]
   );
 
   // Focus indication is via shadow only — no scale/translate so the focused
