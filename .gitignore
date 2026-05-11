@@ -54,3 +54,4 @@ crates/biorouter/tests/mcp_replays/*errors.txt
 
 # Nix build output
 result
+/node_modules/
