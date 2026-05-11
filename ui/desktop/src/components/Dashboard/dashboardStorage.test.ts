@@ -5,14 +5,29 @@ import {
   saveDashboardState,
   filterDeadSessions,
   type SerializedDashboardState,
+  type SerializedDashboardWindow,
 } from './dashboardStorage';
 
+const makeWindow = (over: Partial<SerializedDashboardWindow> = {}): SerializedDashboardWindow => ({
+  windowId: 'w1',
+  sessionId: 's1',
+  name: 'A',
+  userSetName: false,
+  badge: 1,
+  accentColor: '#000',
+  position: { x: 0, y: 0 },
+  size: { w: 520, h: 440 },
+  isManuallyPlaced: true,
+  lastInteraction: 0,
+  unreadActivity: false,
+  ...over,
+});
+
 const makeState = (over: Partial<SerializedDashboardState> = {}): SerializedDashboardState => ({
-  version: 1,
+  version: 2,
   windows: [],
   focusedWindowId: null,
-  T1: 6,
-  T2: 8,
+  cameraOffset: { x: 0, y: 0 },
   ...over,
 });
 
@@ -26,7 +41,7 @@ describe('dashboardStorage', () => {
   });
 
   it('round-trips state', () => {
-    const state = makeState({ T1: 4, T2: 9 });
+    const state = makeState({ cameraOffset: { x: 50, y: -30 } });
     saveDashboardState(state);
     expect(loadDashboardState()).toEqual(state);
   });
@@ -36,42 +51,11 @@ describe('dashboardStorage', () => {
     expect(loadDashboardState()).toBeNull();
   });
 
-  it('returns null when version mismatches', () => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...makeState(), version: 99 }));
-    expect(loadDashboardState()).toBeNull();
-  });
-
   it('filterDeadSessions removes windows whose sessionId is not present', async () => {
     const state = makeState({
       windows: [
-        {
-          windowId: 'w1',
-          sessionId: 's1',
-          name: 'A',
-          userSetName: false,
-          badge: 1,
-          accentColor: '#000',
-          position: null,
-          size: null,
-          isManuallyPlaced: false,
-          isTucked: false,
-          lastInteraction: 0,
-          unreadActivity: false,
-        },
-        {
-          windowId: 'w2',
-          sessionId: 's2',
-          name: 'B',
-          userSetName: false,
-          badge: 2,
-          accentColor: '#111',
-          position: null,
-          size: null,
-          isManuallyPlaced: false,
-          isTucked: false,
-          lastInteraction: 0,
-          unreadActivity: false,
-        },
+        makeWindow({ windowId: 'w1', sessionId: 's1' }),
+        makeWindow({ windowId: 'w2', sessionId: 's2', badge: 2 }),
       ],
       focusedWindowId: 'w2',
     });
@@ -81,28 +65,83 @@ describe('dashboardStorage', () => {
     expect(filtered.focusedWindowId).toBeNull();
   });
 
-  it('migrates v1 key (biorouter.labmeeting.v1) to new key on load', () => {
-    const v1State = {
+  it('migrates v1 records by dropping isTucked and defaulting cameraOffset', () => {
+    const v1 = {
+      version: 1,
+      windows: [
+        {
+          windowId: 'w1',
+          sessionId: 's1',
+          name: 'A',
+          userSetName: false,
+          badge: 1,
+          accentColor: '#abcdef',
+          position: { x: 10, y: 20 },
+          size: { w: 520, h: 440 },
+          isManuallyPlaced: true,
+          isTucked: false,
+          lastInteraction: 1,
+          unreadActivity: false,
+        },
+      ],
+      focusedWindowId: 'w1',
+      T1: 6,
+      T2: 8,
+    };
+    localStorage.setItem('biorouter.dashboard.v1', JSON.stringify(v1));
+    const loaded = loadDashboardState();
+    expect(loaded).toBeTruthy();
+    expect(loaded!.windows[0]).not.toHaveProperty('isTucked');
+    expect(loaded!.cameraOffset).toEqual({ x: 0, y: 0 });
+    expect(loaded!.version).toBe(2);
+    // v1 key should be cleared after migration.
+    expect(localStorage.getItem('biorouter.dashboard.v1')).toBeNull();
+    // v2 should be written.
+    expect(localStorage.getItem('biorouter.dashboard.v2')).not.toBeNull();
+  });
+
+  it('assigns position and size when v1 records lacked them', () => {
+    const v1 = {
+      version: 1,
+      windows: [
+        {
+          windowId: 'tucked',
+          sessionId: 's',
+          name: 'T',
+          userSetName: false,
+          badge: 1,
+          accentColor: '#abc',
+          position: null,
+          size: null,
+          isManuallyPlaced: false,
+          isTucked: true,
+          lastInteraction: 1,
+          unreadActivity: false,
+        },
+      ],
+      focusedWindowId: null,
+      T1: 6,
+      T2: 8,
+    };
+    localStorage.setItem('biorouter.dashboard.v1', JSON.stringify(v1));
+    const loaded = loadDashboardState();
+    expect(loaded!.windows.length).toBe(1);
+    expect(loaded!.windows[0].position).toEqual({ x: 0, y: 0 });
+    expect(loaded!.windows[0].size).toEqual({ w: 520, h: 440 });
+  });
+
+  it('migrates legacy labmeeting key into v2', () => {
+    const legacy = {
       version: 1,
       windows: [],
       focusedWindowId: null,
       T1: 6,
       T2: 8,
     };
-    localStorage.setItem('biorouter.labmeeting.v1', JSON.stringify(v1State));
+    localStorage.setItem('biorouter.labmeeting.v1', JSON.stringify(legacy));
     const loaded = loadDashboardState();
-    expect(loaded).toEqual(v1State);
-    expect(localStorage.getItem('biorouter.dashboard.v1')).not.toBeNull();
+    expect(loaded).toBeTruthy();
+    expect(loaded!.version).toBe(2);
     expect(localStorage.getItem('biorouter.labmeeting.v1')).toBeNull();
-  });
-
-  it('does NOT overwrite existing new key if old key also present', () => {
-    const oldState = { version: 1, windows: [], focusedWindowId: null, T1: 4, T2: 5 };
-    const newState = { version: 1, windows: [], focusedWindowId: null, T1: 7, T2: 9 };
-    localStorage.setItem('biorouter.labmeeting.v1', JSON.stringify(oldState));
-    localStorage.setItem('biorouter.dashboard.v1', JSON.stringify(newState));
-    const loaded = loadDashboardState();
-    expect(loaded?.T1).toBe(7);
-    expect(loaded?.T2).toBe(9);
   });
 });
