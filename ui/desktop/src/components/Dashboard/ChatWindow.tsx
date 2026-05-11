@@ -120,8 +120,19 @@ export const ChatWindow: React.FC<Props> = ({
     <div
       className={`absolute top-0 left-0 rounded-2xl bg-background-default border border-border-subtle/30 overflow-hidden flex flex-col transition-shadow ${focusClasses}`}
       style={{ ...stylePos, ...popStyle }}
-      onMouseDown={() => {
-        if (!isFocused) dashboard.focusWindow(win.windowId);
+      onMouseDown={(e) => {
+        if (isFocused) return;
+        // If the user clicked an interactive control (button, input, link, or
+        // anything inside a Radix Popover/Dropdown trigger), don't reframe
+        // the canvas — they're already engaged with the window and a sudden
+        // camera move would strand any popover that's about to open.
+        const target = e.target as HTMLElement;
+        const isInteractive =
+          target.closest(
+            'button, input, textarea, select, a, [role="button"], [data-radix-popper-content-wrapper], [data-slot^="dropdown-menu"]'
+          ) !== null;
+        if (isInteractive) return;
+        dashboard.focusWindow(win.windowId);
       }}
     >
       <WindowTitleBar

@@ -5,8 +5,8 @@ import {
   Pipeline,
   ChevronRight,
   ChevronLeft,
-  Activity,
 } from './icons/app-icons';
+import { ContextWindowGauge, ContextWindowIndicator } from './ContextWindowIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Button } from './ui/button';
@@ -83,92 +83,6 @@ function PickerRow({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex items-center px-2 py-1.5 rounded hover:bg-background-medium/40">
       {children}
-    </div>
-  );
-}
-
-/** Real-time context-window indicator with an inline Compact button. Replaces
- * the green-dot hover popover that used to live inside ModelsBottomBar. */
-function ContextWindowRow({
-  totalTokens,
-  tokenLimit,
-  isTokenLimitLoaded,
-  onCompact,
-}: {
-  totalTokens: number | undefined;
-  tokenLimit: number;
-  isTokenLimitLoaded: boolean;
-  onCompact: () => void;
-}) {
-  const current = totalTokens ?? 0;
-  const total = tokenLimit || 0;
-  if (!isTokenLimitLoaded && !current) return null;
-  const ratio = total > 0 ? Math.min(1, current / total) : 0;
-  const pct = Math.round(ratio * 100);
-  const barColor =
-    ratio <= 0.5
-      ? 'bg-green-500'
-      : ratio <= 0.75
-        ? 'bg-yellow-500'
-        : ratio <= 0.9
-          ? 'bg-orange-500'
-          : 'bg-red-500';
-  const dotColor =
-    ratio <= 0.5
-      ? 'text-green-500'
-      : ratio <= 0.75
-        ? 'text-yellow-500'
-        : ratio <= 0.9
-          ? 'text-orange-500'
-          : 'text-red-500';
-  const fmt = (n: number): string => {
-    if (n >= 1_000_000) {
-      const m = n / 1_000_000;
-      return m % 1 === 0 ? `${m.toFixed(0)}M` : `${m.toFixed(1)}M`;
-    }
-    if (n >= 1000) {
-      const k = n / 1000;
-      return k % 1 === 0 ? `${k.toFixed(0)}k` : `${k.toFixed(1)}k`;
-    }
-    return n.toString();
-  };
-  return (
-    <div className="flex items-center gap-2 px-2 py-1.5 rounded">
-      <span className={`flex items-center justify-center w-4 h-4 flex-shrink-0 ${dotColor}`}>
-        <Activity className="w-4 h-4" />
-      </span>
-      <span className="text-[11px] text-text-default/60 w-12 flex-shrink-0">Context</span>
-      <div className="flex-1 min-w-0 flex flex-col gap-1">
-        <div className="h-1 rounded-full bg-background-muted overflow-hidden">
-          <div
-            className={`h-full ${barColor} transition-[width]`}
-            style={{ width: `${Math.max(2, pct)}%` }}
-          />
-        </div>
-        <div className="flex items-center justify-between text-[10px] text-text-default/60">
-          <span>
-            {fmt(current)} / {fmt(total)}
-          </span>
-          <span>{pct}%</span>
-        </div>
-      </div>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.preventDefault();
-          e.stopPropagation();
-          onCompact();
-        }}
-        disabled={current === 0}
-        title={current === 0 ? 'Nothing to compact yet' : 'Compact conversation'}
-        className={`flex items-center justify-center w-7 h-7 rounded transition-colors flex-shrink-0 ${
-          current === 0
-            ? 'opacity-40 cursor-not-allowed'
-            : 'text-text-default/70 hover:text-text-default hover:bg-background-medium cursor-pointer'
-        }`}
-      >
-        <ScrollText size={14} />
-      </button>
     </div>
   );
 }
@@ -1526,7 +1440,7 @@ export default function ChatInput({
                   user can check usage and compact any time. Replaces the
                   green-dot hover popover that used to live next to the model
                   selector. */}
-              <ContextWindowRow
+              <ContextWindowGauge
                 totalTokens={totalTokens}
                 tokenLimit={tokenLimit}
                 isTokenLimitLoaded={isTokenLimitLoaded}
@@ -1601,6 +1515,21 @@ export default function ChatInput({
         ) : (
           // Chat-tab mode: inline picker row, no chevron.
           <div className="flex flex-row items-center">
+            {/* Bar-style context gauge (replaces the green-dot hover popover).
+                The trigger is a single neutral vital-sign icon; clicking it
+                opens the same gauge the dashboard picker uses. */}
+            <ContextWindowIndicator
+              totalTokens={totalTokens}
+              tokenLimit={tokenLimit}
+              isTokenLimitLoaded={isTokenLimitLoaded}
+              onCompact={() => {
+                handleSubmit(
+                  new CustomEvent('submit', {
+                    detail: { value: MANUAL_COMPACT_TRIGGER },
+                  }) as unknown as React.FormEvent
+                );
+              }}
+            />
             {COST_TRACKING_ENABLED && (
               <div className="flex items-center h-full ml-1 mr-1">
                 <CostTracker
@@ -1617,6 +1546,7 @@ export default function ChatInput({
                   dropdownRef={dropdownRef}
                   setView={setView}
                   alerts={alerts}
+                  hideAlertPopover
                 />
               </div>
             </Tooltip>
