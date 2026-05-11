@@ -11,11 +11,14 @@ import {
   SerializedDashboardState,
   debounceSave,
 } from './dashboardStorage';
+import { findSpawnPosition, organize as organizeLayout } from './canvasLayout';
 import { createSession } from '../../sessions';
 import { getInitialWorkingDir } from '../../utils/workingDir';
 
-const DEFAULT_T1 = 6;
-const DEFAULT_T2 = 8;
+// Default window size — kept in sync with DashboardBoard.MIN_WINDOW_*.
+const MIN_WINDOW_W = 520;
+const MIN_WINDOW_H = 440;
+const GAP = 16;
 
 function nextWindowId(): string {
   return 'dw_' + Math.random().toString(36).slice(2, 10);
@@ -23,11 +26,10 @@ function nextWindowId(): string {
 
 function serialize(state: DashboardState): SerializedDashboardState {
   return {
-    version: 1,
+    version: 2,
     windows: state.windows.map((w) => ({ ...w })),
     focusedWindowId: state.focusedWindowId,
-    T1: state.T1,
-    T2: state.T2,
+    cameraOffset: state.cameraOffset,
   };
 }
 
@@ -37,34 +39,17 @@ function hydrate(): DashboardState {
     return {
       windows: [],
       focusedWindowId: null,
-      T1: DEFAULT_T1,
-      T2: DEFAULT_T2,
+      cameraOffset: { x: 0, y: 0 },
+      organizeTick: 0,
       isHydrating: false,
     };
   }
   return {
     windows: raw.windows.map((w) => ({ ...w })),
     focusedWindowId: raw.focusedWindowId,
-    T1: raw.T1,
-    T2: raw.T2,
+    cameraOffset: raw.cameraOffset ?? { x: 0, y: 0 },
+    organizeTick: 0,
     isHydrating: false,
-  };
-}
-
-function enforceT2Pure(s: DashboardState): DashboardState {
-  const onBoard = s.windows.filter((w) => !w.isTucked);
-  if (onBoard.length <= s.T2) return s;
-  const focusedId = s.focusedWindowId;
-  const sortedByOldest = [...onBoard]
-    .filter((w) => w.windowId !== focusedId)
-    .sort((a, b) => a.lastInteraction - b.lastInteraction);
-  const numToTuck = onBoard.length - s.T2;
-  const toTuckIds = new Set(sortedByOldest.slice(0, numToTuck).map((w) => w.windowId));
-  return {
-    ...s,
-    windows: s.windows.map((w) =>
-      toTuckIds.has(w.windowId) ? { ...w, isTucked: true } : w
-    ),
   };
 }
 
@@ -86,34 +71,41 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     const sessionId = session.id;
     const now = Date.now();
     setState((prev) => {
+      const existing = prev.windows.map((w) => ({
+        x: w.position.x,
+        y: w.position.y,
+        w: w.size.w,
+        h: w.size.h,
+      }));
+      // World-space camera center: viewport center maps to (-cameraOffset.x, -cameraOffset.y).
+      // We don't know viewport size here, so use (0, 0) plus inverse offset as a proxy.
+      const center = { x: -prev.cameraOffset.x, y: -prev.cameraOffset.y };
+      const pos = findSpawnPosition({
+        center,
+        size: { w: MIN_WINDOW_W, h: MIN_WINDOW_H },
+        existing,
+        gap: GAP,
+      });
       const usedColors = prev.windows.map((w) => w.accentColor);
-      const accentColor = pickAccentColor(usedColors);
-      const badge = prev.windows.reduce((m, w) => Math.max(m, w.badge), 0) + 1;
-      const name = generateName(prev.windows.length);
-      // Spawn at the minimum window size. The layout engine packs as many
-      // min-size windows as the board can hold without overlap, then allows
-      // up to 2 overlap windows on top before tucking. No comfort scaling.
       const newWin: DashboardWindow = {
         windowId: nextWindowId(),
         sessionId,
-        name,
+        name: generateName(prev.windows.length),
         userSetName: false,
-        badge,
-        accentColor,
-        position: null,
-        size: null, // engine will assign MIN_WINDOW dimensions
-        isManuallyPlaced: false,
-        isTucked: false,
+        badge: prev.windows.reduce((m, w) => Math.max(m, w.badge), 0) + 1,
+        accentColor: pickAccentColor(usedColors),
+        position: pos,
+        size: { w: MIN_WINDOW_W, h: MIN_WINDOW_H },
+        isManuallyPlaced: true,
         cwd,
         lastInteraction: now,
         unreadActivity: false,
       };
-      const next: DashboardState = {
+      return {
         ...prev,
         windows: [...prev.windows, newWin],
         focusedWindowId: newWin.windowId,
       };
-      return enforceT2Pure(next);
     });
   }, []);
 
@@ -122,9 +114,7 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       const remaining = prev.windows.filter((w) => w.windowId !== windowId);
       let focusedWindowId = prev.focusedWindowId;
       if (focusedWindowId === windowId) {
-        const candidates = remaining
-          .filter((w) => !w.isTucked)
-          .sort((a, b) => b.lastInteraction - a.lastInteraction);
+        const candidates = [...remaining].sort((a, b) => b.lastInteraction - a.lastInteraction);
         focusedWindowId = candidates[0]?.windowId ?? null;
       }
       return { ...prev, windows: remaining, focusedWindowId };
@@ -159,9 +149,6 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     }));
   }, []);
 
-  // When the user drags a window, preserve its currently-rendered size by passing
-  // the rect at drag start. Without this, the layout engine would fall back to
-  // comfort defaults on first drag and the window would visibly jump in size.
   const moveWindow: DashboardApi['moveWindow'] = useCallback((windowId, position, size) => {
     setState((prev) => ({
       ...prev,
@@ -179,18 +166,13 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     }));
   }, []);
 
-  // Pin every on-board window at the given rect. Used by the board at the start
-  // of drag or resize so the manipulated window doesn't cause auto-tile churn for
-  // its neighbors — they all stay exactly where they were.
   const freezeAllRects: DashboardApi['freezeAllRects'] = useCallback((rects) => {
     setState((prev) => ({
       ...prev,
       windows: prev.windows.map((w) => {
-        if (w.isTucked) return w;
         const r = rects[w.windowId];
         if (!r) return w;
-        // Only freeze if not already pinned (don't disturb an existing user pin).
-        if (w.isManuallyPlaced && w.position && w.size) return w;
+        if (w.isManuallyPlaced) return w;
         return {
           ...w,
           isManuallyPlaced: true,
@@ -201,7 +183,6 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     }));
   }, []);
 
-  // Mirror: on resize, preserve the currently-rendered position too.
   const resizeWindow: DashboardApi['resizeWindow'] = useCallback((windowId, size, position) => {
     setState((prev) => ({
       ...prev,
@@ -219,82 +200,56 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     }));
   }, []);
 
-  const tuckWindow: DashboardApi['tuckWindow'] = useCallback((windowId) => {
+  const organize: DashboardApi['organize'] = useCallback(() => {
     setState((prev) => {
-      const win = prev.windows.find((w) => w.windowId === windowId);
-      if (!win || win.isTucked) return prev;
-      const remainingOnBoard = prev.windows.filter(
-        (w) => !w.isTucked && w.windowId !== windowId
-      );
-      let focusedWindowId = prev.focusedWindowId;
-      if (focusedWindowId === windowId) {
-        focusedWindowId =
-          remainingOnBoard.sort((a, b) => b.lastInteraction - a.lastInteraction)[0]?.windowId ??
-          null;
+      if (prev.windows.length < 2) {
+        return { ...prev, organizeTick: prev.organizeTick + 1 };
       }
+      const anchor = prev.focusedWindowId ?? prev.windows[0].windowId;
+      const rects = prev.windows.map((w) => ({
+        id: w.windowId,
+        x: w.position.x,
+        y: w.position.y,
+        w: w.size.w,
+        h: w.size.h,
+      }));
+      const out = organizeLayout(rects, anchor, GAP);
+      const byId = new Map(out.map((r) => [r.id, r]));
       return {
         ...prev,
-        windows: prev.windows.map((w) =>
-          w.windowId === windowId
-            ? { ...w, isTucked: true, isManuallyPlaced: false, position: null, size: null }
-            : w
-        ),
-        focusedWindowId,
+        windows: prev.windows.map((w) => {
+          const r = byId.get(w.windowId);
+          return r ? { ...w, position: { x: r.x, y: r.y } } : w;
+        }),
+        organizeTick: prev.organizeTick + 1,
       };
     });
-  }, []);
-
-  const evokeWindow: DashboardApi['evokeWindow'] = useCallback((windowId, dropPos) => {
-    setState((prev) => {
-      const win = prev.windows.find((w) => w.windowId === windowId);
-      if (!win) return prev;
-      const next: DashboardState = {
-        ...prev,
-        windows: prev.windows.map((w) =>
-          w.windowId === windowId
-            ? {
-                ...w,
-                isTucked: false,
-                position: dropPos ?? null,
-                isManuallyPlaced: dropPos != null,
-                unreadActivity: false,
-                lastInteraction: Date.now(),
-              }
-            : w
-        ),
-        focusedWindowId: windowId,
-      };
-      return enforceT2Pure(next);
-    });
-  }, []);
-
-  const organize: DashboardApi['organize'] = useCallback(() => {
-    setState((prev) => ({
-      ...prev,
-      windows: prev.windows.map((w) => ({
-        ...w,
-        isManuallyPlaced: false,
-        position: null,
-        size: null,
-      })),
-    }));
   }, []);
 
   const clearAll: DashboardApi['clearAll'] = useCallback(() => {
     setState((prev) => ({ ...prev, windows: [], focusedWindowId: null }));
   }, []);
 
-  const setT1: DashboardApi['setT1'] = useCallback((n) => {
-    setState((prev) => {
-      const T1 = Math.max(1, Math.floor(n));
-      return { ...prev, T1, T2: Math.max(prev.T2, T1) };
-    });
+  const panBy: DashboardApi['panBy'] = useCallback((dx, dy) => {
+    setState((prev) => ({
+      ...prev,
+      cameraOffset: { x: prev.cameraOffset.x + dx, y: prev.cameraOffset.y + dy },
+    }));
   }, []);
 
-  const setT2: DashboardApi['setT2'] = useCallback((n) => {
+  const centerOn: DashboardApi['centerOn'] = useCallback((windowId, viewport) => {
     setState((prev) => {
-      const T2 = Math.max(prev.T1, Math.floor(n));
-      return enforceT2Pure({ ...prev, T2 });
+      const w = prev.windows.find((x) => x.windowId === windowId);
+      if (!w) return prev;
+      const cx = w.position.x + w.size.w / 2;
+      const cy = w.position.y + w.size.h / 2;
+      return {
+        ...prev,
+        cameraOffset: {
+          x: viewport.width / 2 - cx,
+          y: viewport.height / 2 - cy,
+        },
+      };
     });
   }, []);
 
@@ -332,12 +287,10 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       moveWindow,
       resizeWindow,
       freezeAllRects,
-      tuckWindow,
-      evokeWindow,
       organize,
       clearAll,
-      setT1,
-      setT2,
+      panBy,
+      centerOn,
       updateWindowField,
       markActivity,
     }),
@@ -351,12 +304,10 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       moveWindow,
       resizeWindow,
       freezeAllRects,
-      tuckWindow,
-      evokeWindow,
       organize,
       clearAll,
-      setT1,
-      setT2,
+      panBy,
+      centerOn,
       updateWindowField,
       markActivity,
     ]

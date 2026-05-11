@@ -19,34 +19,53 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-describe('DashboardProvider', () => {
-  it('starts empty', () => {
+describe('DashboardProvider (canvas mode)', () => {
+  it('starts empty with cameraOffset at origin', () => {
     const { result } = renderHook(() => useDashboard(), { wrapper });
     expect(result.current.state.windows).toHaveLength(0);
-    expect(result.current.state.T1).toBe(6);
-    expect(result.current.state.T2).toBe(8);
+    expect(result.current.state.cameraOffset).toEqual({ x: 0, y: 0 });
+    expect(result.current.state.organizeTick).toBe(0);
   });
 
-  it('spawn adds a window and focuses it', async () => {
+  it('spawn adds a window with concrete position/size and focuses it', async () => {
     const { result } = renderHook(() => useDashboard(), { wrapper });
     await act(async () => {
       await result.current.spawnWindow();
     });
     expect(result.current.state.windows).toHaveLength(1);
-    expect(result.current.state.focusedWindowId).toBe(result.current.state.windows[0].windowId);
+    const w = result.current.state.windows[0];
+    expect(result.current.state.focusedWindowId).toBe(w.windowId);
+    expect(w.position).toBeDefined();
+    expect(w.size).toEqual({ w: 520, h: 440 });
   });
 
-  it('spawn beyond T2 tucks oldest non-focused', async () => {
+  it('spawning multiple windows places them non-overlappingly', async () => {
     const { result } = renderHook(() => useDashboard(), { wrapper });
-    for (let i = 0; i < 9; i++) {
+    for (let i = 0; i < 5; i++) {
       await act(async () => {
         await result.current.spawnWindow();
       });
     }
-    const tucked = result.current.state.windows.filter((w) => w.isTucked);
-    const onBoard = result.current.state.windows.filter((w) => !w.isTucked);
-    expect(onBoard.length).toBe(8);
-    expect(tucked.length).toBe(1);
+    const windows = result.current.state.windows;
+    expect(windows).toHaveLength(5);
+    // No two windows should overlap.
+    for (let i = 0; i < windows.length; i++) {
+      for (let j = i + 1; j < windows.length; j++) {
+        const a = windows[i];
+        const b = windows[j];
+        const overlapW = Math.max(
+          0,
+          Math.min(a.position.x + a.size.w, b.position.x + b.size.w) -
+            Math.max(a.position.x, b.position.x)
+        );
+        const overlapH = Math.max(
+          0,
+          Math.min(a.position.y + a.size.h, b.position.y + b.size.h) -
+            Math.max(a.position.y, b.position.y)
+        );
+        expect(overlapW === 0 || overlapH === 0).toBe(true);
+      }
+    }
   });
 
   it('closeWindow drops the window and re-focuses most recent', async () => {
@@ -63,19 +82,6 @@ describe('DashboardProvider', () => {
     expect(result.current.state.focusedWindowId).toBe(w1.windowId);
   });
 
-  it('tuckWindow removes from board, evokeWindow puts it back', async () => {
-    const { result } = renderHook(() => useDashboard(), { wrapper });
-    await act(async () => {
-      await result.current.spawnWindow();
-    });
-    const id = result.current.state.windows[0].windowId;
-    act(() => result.current.tuckWindow(id));
-    expect(result.current.state.windows[0].isTucked).toBe(true);
-    act(() => result.current.evokeWindow(id));
-    expect(result.current.state.windows[0].isTucked).toBe(false);
-    expect(result.current.state.focusedWindowId).toBe(id);
-  });
-
   it('renameWindow persists name', async () => {
     const { result } = renderHook(() => useDashboard(), { wrapper });
     await act(async () => {
@@ -86,31 +92,59 @@ describe('DashboardProvider', () => {
     expect(result.current.state.windows[0].name).toBe('Mass Spec Run');
   });
 
-  it('organize clears manual placement', async () => {
+  it('organize preserves sizes, resolves overlaps, bumps tick', async () => {
+    const { result } = renderHook(() => useDashboard(), { wrapper });
+    await act(async () => {
+      await result.current.spawnWindow();
+    });
+    await act(async () => {
+      await result.current.spawnWindow();
+    });
+    const [w1, w2] = result.current.state.windows;
+    // Force them to overlap.
+    act(() => result.current.moveWindow(w1.windowId, { x: 0, y: 0 }, { w: 520, h: 440 }));
+    act(() => result.current.moveWindow(w2.windowId, { x: 100, y: 100 }, { w: 520, h: 440 }));
+    const tickBefore = result.current.state.organizeTick;
+    act(() => result.current.organize());
+    expect(result.current.state.organizeTick).toBe(tickBefore + 1);
+    // Sizes preserved.
+    expect(result.current.state.windows[0].size).toEqual({ w: 520, h: 440 });
+    expect(result.current.state.windows[1].size).toEqual({ w: 520, h: 440 });
+    // No overlap.
+    const a = result.current.state.windows[0];
+    const b = result.current.state.windows[1];
+    const overlapW = Math.max(
+      0,
+      Math.min(a.position.x + a.size.w, b.position.x + b.size.w) -
+        Math.max(a.position.x, b.position.x)
+    );
+    const overlapH = Math.max(
+      0,
+      Math.min(a.position.y + a.size.h, b.position.y + b.size.h) -
+        Math.max(a.position.y, b.position.y)
+    );
+    expect(overlapW === 0 || overlapH === 0).toBe(true);
+  });
+
+  it('panBy increments cameraOffset', () => {
+    const { result } = renderHook(() => useDashboard(), { wrapper });
+    act(() => result.current.panBy(10, -20));
+    expect(result.current.state.cameraOffset).toEqual({ x: 10, y: -20 });
+    act(() => result.current.panBy(5, 5));
+    expect(result.current.state.cameraOffset).toEqual({ x: 15, y: -15 });
+  });
+
+  it('centerOn places the window center at viewport center', async () => {
     const { result } = renderHook(() => useDashboard(), { wrapper });
     await act(async () => {
       await result.current.spawnWindow();
     });
     const id = result.current.state.windows[0].windowId;
-    act(() => result.current.moveWindow(id, { x: 100, y: 100 }));
-    expect(result.current.state.windows[0].isManuallyPlaced).toBe(true);
-    act(() => result.current.organize());
-    expect(result.current.state.windows[0].isManuallyPlaced).toBe(false);
-    expect(result.current.state.windows[0].position).toBeNull();
-  });
-
-  it('lowering T1 then T2 below current on-board count tucks excess', async () => {
-    const { result } = renderHook(() => useDashboard(), { wrapper });
-    for (let i = 0; i < 5; i++) {
-      await act(async () => {
-        await result.current.spawnWindow();
-      });
-    }
-    expect(result.current.state.windows.filter((w) => !w.isTucked)).toHaveLength(5);
-    // T2 ≥ T1 invariant — must lower T1 first to allow T2=3
-    act(() => result.current.setT1(3));
-    act(() => result.current.setT2(3));
-    expect(result.current.state.windows.filter((w) => !w.isTucked)).toHaveLength(3);
+    // Move the window to a known position.
+    act(() => result.current.moveWindow(id, { x: 1000, y: 500 }, { w: 200, h: 100 }));
+    act(() => result.current.centerOn(id, { width: 800, height: 600 }));
+    // World center at (1100, 550). Viewport center at (400, 300). Offset = (400 - 1100, 300 - 550) = (-700, -250).
+    expect(result.current.state.cameraOffset).toEqual({ x: -700, y: -250 });
   });
 
   it('clearAll removes all windows', async () => {
@@ -142,7 +176,6 @@ describe('DashboardProvider', () => {
     act(() => result.current.renameWindow(id, 'My Project'));
     expect(result.current.state.windows[0].userSetName).toBe(true);
     act(() => result.current.syncSessionName(id, 'Auto-named by AI'));
-    // User-set name wins
     expect(result.current.state.windows[0].name).toBe('My Project');
   });
 });
