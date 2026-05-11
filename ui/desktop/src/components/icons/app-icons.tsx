@@ -53,6 +53,8 @@ import {
   Loader2 as _Loader2,
   LoaderCircle as _LoaderCircle,
   Lock as _Lock,
+  Maximize2 as _Maximize2,
+  Minimize2 as _Minimize2,
   MessageSquare as _MessageSquare,
   MessageSquareText as _MessageSquareText,
   Monitor as _Monitor,
@@ -162,6 +164,8 @@ export const Link = light(_Link);
 export const Loader2 = light(_Loader2);
 export const LoaderCircle = light(_LoaderCircle);
 export const Lock = light(_Lock);
+export const Maximize2 = light(_Maximize2);
+export const Minimize2 = light(_Minimize2);
 export const MessageSquare = light(_MessageSquare);
 export const MessageSquareText = light(_MessageSquareText);
 export const Monitor = light(_Monitor);

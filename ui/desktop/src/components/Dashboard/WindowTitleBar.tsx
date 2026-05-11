@@ -1,11 +1,13 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X } from '../icons/app-icons';
+import { X, Minimize2, Maximize2 } from '../icons/app-icons';
 
 interface Props {
   name: string;
   accentColor: string;
   onRename: (name: string) => void;
   onClose: () => void;
+  onShrink: () => void;
+  onEnlarge: () => void;
   onPointerDownDrag: (e: React.PointerEvent<HTMLDivElement>) => void;
 }
 
@@ -14,6 +16,8 @@ export const WindowTitleBar: React.FC<Props> = ({
   accentColor,
   onRename,
   onClose,
+  onShrink,
+  onEnlarge,
   onPointerDownDrag,
 }) => {
   const [editing, setEditing] = useState(false);
@@ -32,6 +36,9 @@ export const WindowTitleBar: React.FC<Props> = ({
     if (trimmed && trimmed !== name) onRename(trimmed);
     setEditing(false);
   };
+
+  const iconBtnClass =
+    'flex-shrink-0 p-1 rounded hover:bg-background-medium transition-colors';
 
   return (
     <div
@@ -69,9 +76,26 @@ export const WindowTitleBar: React.FC<Props> = ({
           {name}
         </span>
       )}
+      {/* Order: Shrink | Enlarge | Close — right-aligned. */}
       <button
         type="button"
-        className="flex-shrink-0 p-1 rounded hover:bg-background-medium transition-colors"
+        className={iconBtnClass}
+        onClick={onShrink}
+        title="Shrink to minimum size"
+      >
+        <Minimize2 className="w-3.5 h-3.5" />
+      </button>
+      <button
+        type="button"
+        className={iconBtnClass}
+        onClick={onEnlarge}
+        title="Enlarge to default chat size"
+      >
+        <Maximize2 className="w-3.5 h-3.5" />
+      </button>
+      <button
+        type="button"
+        className={iconBtnClass}
         onClick={onClose}
         title="Close conversation"
       >

@@ -9,6 +9,11 @@ import { ResizeHandle } from './ResizeHandle';
 import { usePointerDrag } from './useDashboardDrag';
 import { updateSessionName } from '../../api';
 
+// Default "comfort" size used by the Enlarge button — matches the standalone
+// chat window dimensions in main.ts.
+const ENLARGE_W = 940;
+const ENLARGE_H = 800;
+
 interface Props {
   win: DashboardWindow;
   rect: { x: number; y: number; w: number; h: number; zIndex: number };
@@ -16,9 +21,7 @@ interface Props {
   isSolo: boolean;
   boardSize: { width: number; height: number };
   minSize: { w: number; h: number };
-  onTuckByDrag?: (windowId: string) => void;
-  sidebarOpen: boolean;
-  /** Called once at the start of drag/resize to freeze every other on-board
+  /** Called once at the start of drag/resize to freeze every other on-canvas
    * window in place, so manipulating this one never reflows the others. */
   onManipulateStart?: () => void;
 }
@@ -30,8 +33,6 @@ export const ChatWindow: React.FC<Props> = ({
   isSolo,
   boardSize,
   minSize,
-  onTuckByDrag,
-  sidebarOpen,
   onManipulateStart,
 }) => {
   const dashboard = useDashboard();
@@ -54,22 +55,11 @@ export const ChatWindow: React.FC<Props> = ({
     },
     onEnd: ({ dx, dy }, ev) => {
       setDragOffset({ dx: 0, dy: 0 });
+      void ev;
+      // Canvas is infinite — no clamping to viewport.
       const dropX = rect.x + dx;
       const dropY = rect.y + dy;
-      // Drop into sidebar zone? Right strip of board.
-      const zoneWidth = sidebarOpen ? boardSize.width * 0.2 : boardSize.width * 0.12;
-      if (onTuckByDrag && dropX + rect.w / 2 > boardSize.width - zoneWidth) {
-        onTuckByDrag(win.windowId);
-        return;
-      }
-      void ev;
-      const clampedX = Math.max(-rect.w + 80, Math.min(boardSize.width - 80, dropX));
-      const clampedY = Math.max(0, Math.min(boardSize.height - 40, dropY));
-      dashboard.moveWindow(
-        win.windowId,
-        { x: clampedX, y: clampedY },
-        { w: rect.w, h: rect.h }
-      );
+      dashboard.moveWindow(win.windowId, { x: dropX, y: dropY }, { w: rect.w, h: rect.h });
     },
     onCancel: () => setDragOffset({ dx: 0, dy: 0 }),
   });
@@ -84,11 +74,7 @@ export const ChatWindow: React.FC<Props> = ({
       setResizeDelta({ dw: 0, dh: 0 });
       const newW = Math.max(minSize.w, rect.w + dx);
       const newH = Math.max(minSize.h, rect.h + dy);
-      dashboard.resizeWindow(
-        win.windowId,
-        { w: newW, h: newH },
-        { x: rect.x, y: rect.y }
-      );
+      dashboard.resizeWindow(win.windowId, { w: newW, h: newH }, { x: rect.x, y: rect.y });
     },
     onCancel: () => setResizeDelta({ dw: 0, dh: 0 }),
   });
@@ -112,9 +98,7 @@ export const ChatWindow: React.FC<Props> = ({
     const bottomTouching = rect.y + rect.h >= boardSize.height - TOUCH;
     const ox = leftTouching ? 'left' : rightTouching ? 'right' : 'center';
     const oy = topTouching ? 'top' : bottomTouching ? 'bottom' : 'center';
-    return {
-      transformOrigin: `${ox} ${oy}`,
-    };
+    return { transformOrigin: `${ox} ${oy}` };
   }, [isFocused, rect.x, rect.y, rect.w, rect.h, boardSize.width, boardSize.height]);
 
   const TOUCH_PX = 4;
@@ -138,6 +122,20 @@ export const ChatWindow: React.FC<Props> = ({
         accentColor={win.accentColor}
         onRename={(name) => dashboard.renameWindow(win.windowId, name)}
         onClose={() => dashboard.closeWindow(win.windowId)}
+        onShrink={() =>
+          dashboard.resizeWindow(
+            win.windowId,
+            { w: minSize.w, h: minSize.h },
+            { x: rect.x, y: rect.y }
+          )
+        }
+        onEnlarge={() =>
+          dashboard.resizeWindow(
+            win.windowId,
+            { w: ENLARGE_W, h: ENLARGE_H },
+            { x: rect.x, y: rect.y }
+          )
+        }
         onPointerDownDrag={dragStart}
       />
       <div className="flex-1 min-h-0 relative">
@@ -151,7 +149,7 @@ export const ChatWindow: React.FC<Props> = ({
             accentColor={win.accentColor}
             onRenameSession={(newName) => {
               dashboard.renameWindow(win.windowId, newName);
-              // also propagate to biorouterd so History reflects it
+              // Propagate to biorouterd so History reflects it.
               void updateSessionName({
                 path: { session_id: win.sessionId },
                 body: { name: newName },
