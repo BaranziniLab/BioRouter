@@ -41,6 +41,7 @@ function hydrate(): DashboardState {
       focusedWindowId: null,
       cameraOffset: { x: 0, y: 0 },
       organizeTick: 0,
+      isAnimating: false,
       isHydrating: false,
     };
   }
@@ -49,9 +50,12 @@ function hydrate(): DashboardState {
     focusedWindowId: raw.focusedWindowId,
     cameraOffset: raw.cameraOffset ?? { x: 0, y: 0 },
     organizeTick: 0,
+    isAnimating: false,
     isHydrating: false,
   };
 }
+
+const ANIMATION_DURATION_MS = 220;
 
 interface DashboardProviderProps {
   children: React.ReactNode;
@@ -60,10 +64,27 @@ interface DashboardProviderProps {
 export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }) => {
   const [state, setState] = useState<DashboardState>(() => hydrate());
   const debouncedSaveRef = useRef(debounceSave(250));
+  const animationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     debouncedSaveRef.current(serialize(state));
   }, [state]);
+
+  // Briefly set isAnimating=true so windows + camera apply CSS transitions to
+  // their next transform change. Cleared after ANIMATION_DURATION_MS.
+  const flashAnimating = useCallback(() => {
+    setState((prev) => (prev.isAnimating ? prev : { ...prev, isAnimating: true }));
+    if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
+    animationTimerRef.current = setTimeout(() => {
+      setState((prev) => (prev.isAnimating ? { ...prev, isAnimating: false } : prev));
+    }, ANIMATION_DURATION_MS);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (animationTimerRef.current) clearTimeout(animationTimerRef.current);
+    };
+  }, []);
 
   const spawnWindow: DashboardApi['spawnWindow'] = useCallback(async () => {
     const cwd = getInitialWorkingDir();
@@ -213,7 +234,9 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     }));
   }, []);
 
+  // Note: includes flashAnimating in deps because we use it inside.
   const organize: DashboardApi['organize'] = useCallback(() => {
+    flashAnimating();
     setState((prev) => {
       if (prev.windows.length < 2) {
         return { ...prev, organizeTick: prev.organizeTick + 1 };
@@ -237,7 +260,7 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         organizeTick: prev.organizeTick + 1,
       };
     });
-  }, []);
+  }, [flashAnimating]);
 
   const clearAll: DashboardApi['clearAll'] = useCallback(() => {
     setState((prev) => ({ ...prev, windows: [], focusedWindowId: null }));
@@ -251,6 +274,7 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
   }, []);
 
   const centerOn: DashboardApi['centerOn'] = useCallback((windowId, viewport) => {
+    flashAnimating();
     setState((prev) => {
       const w = prev.windows.find((x) => x.windowId === windowId);
       if (!w) return prev;
@@ -264,7 +288,7 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         },
       };
     });
-  }, []);
+  }, [flashAnimating]);
 
   const updateWindowField: DashboardApi['updateWindowField'] = useCallback(
     (windowId, field, value) => {

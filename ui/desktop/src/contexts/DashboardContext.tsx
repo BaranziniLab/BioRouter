@@ -28,6 +28,9 @@ export interface DashboardState {
   cameraOffset: { x: number; y: number };
   /** Bumped each time `organize` runs so consumers can re-center the camera. */
   organizeTick: number;
+  /** True for ~220ms after an organize / centerOn so consumers can apply a
+   * CSS transition to window + camera transforms. Cleared automatically. */
+  isAnimating: boolean;
   isHydrating: boolean;
 }
 

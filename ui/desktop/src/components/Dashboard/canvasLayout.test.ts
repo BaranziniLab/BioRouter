@@ -169,4 +169,97 @@ describe('organize', () => {
     expect(b.y).toBeCloseTo(0, 0);
     expect(gapBetween(a, b)).toBeGreaterThanOrEqual(15);
   });
+
+  it('lays out 3 equal-size windows in a single row', () => {
+    const windows: WindowRect[] = [
+      { id: 'a', x: 0, y: 0, w: 100, h: 100 },
+      { id: 'b', x: 500, y: 0, w: 100, h: 100 },
+      { id: 'c', x: 1000, y: 0, w: 100, h: 100 },
+    ];
+    const result = organize(windows, 'b', 16);
+    const a = result.find((w) => w.id === 'a')!;
+    const b = result.find((w) => w.id === 'b')!;
+    const c = result.find((w) => w.id === 'c')!;
+    // All same y (single row)
+    expect(a.y).toBe(b.y);
+    expect(b.y).toBe(c.y);
+    // a then b then c, each separated by 100 + 16 = 116.
+    expect(b.x - a.x).toBe(116);
+    expect(c.x - b.x).toBe(116);
+    // Anchor (b) is unchanged.
+    expect(b.x).toBe(500);
+  });
+
+  it('lays out 4 equal-size windows in a 2x2 grid', () => {
+    const windows: WindowRect[] = [
+      { id: 'a', x: 0, y: 0, w: 100, h: 100 },
+      { id: 'b', x: 0, y: 0, w: 100, h: 100 },
+      { id: 'c', x: 0, y: 0, w: 100, h: 100 },
+      { id: 'd', x: 0, y: 0, w: 100, h: 100 },
+    ];
+    const result = organize(windows, 'a', 16);
+    // Two distinct ys (2 rows).
+    const ys = Array.from(new Set(result.map((w) => w.y)));
+    expect(ys.length).toBe(2);
+    // Two distinct xs per row (2 cols).
+    const row0 = result.filter((w) => w.y === ys[0]);
+    expect(row0.length).toBe(2);
+  });
+
+  it('lays out 5 equal-size windows as 2 + 3 (partial row of 2 on top)', () => {
+    const windows: WindowRect[] = Array.from({ length: 5 }, (_, i) => ({
+      id: 'w' + i,
+      x: i * 200,
+      y: 0,
+      w: 100,
+      h: 100,
+    }));
+    const result = organize(windows, 'w0', 16);
+    const ys = Array.from(new Set(result.map((w) => w.y))).sort((p, q) => p - q);
+    expect(ys.length).toBe(2);
+    // 5 windows / 3 cols = 2 rows. Partial row is 5 - 3 = 2 windows on top.
+    const topRow = result.filter((w) => w.y === ys[0]);
+    const bottomRow = result.filter((w) => w.y === ys[1]);
+    expect(topRow.length).toBe(2);
+    expect(bottomRow.length).toBe(3);
+  });
+
+  it('lays out 7 equal-size windows as 1 + 3 + 3', () => {
+    const windows: WindowRect[] = Array.from({ length: 7 }, (_, i) => ({
+      id: 'w' + i,
+      x: i * 200,
+      y: 0,
+      w: 100,
+      h: 100,
+    }));
+    const result = organize(windows, 'w3', 16);
+    const ys = Array.from(new Set(result.map((w) => w.y))).sort((p, q) => p - q);
+    expect(ys.length).toBe(3);
+    const r0 = result.filter((w) => w.y === ys[0]);
+    const r1 = result.filter((w) => w.y === ys[1]);
+    const r2 = result.filter((w) => w.y === ys[2]);
+    // 7 / 3 cols → 3 rows; partial = 7 - 2*3 = 1 on top.
+    expect(r0.length).toBe(1);
+    expect(r1.length).toBe(3);
+    expect(r2.length).toBe(3);
+  });
+
+  it('packs mixed sizes into shelves without overlap', () => {
+    const windows: WindowRect[] = [
+      { id: 'big', x: 0, y: 0, w: 940, h: 800 },
+      { id: 's1', x: 0, y: 0, w: 200, h: 200 },
+      { id: 's2', x: 0, y: 0, w: 200, h: 200 },
+      { id: 's3', x: 0, y: 0, w: 200, h: 200 },
+    ];
+    const result = organize(windows, 'big', 16);
+    // No overlapping pair, all sizes preserved.
+    for (let i = 0; i < result.length; i++) {
+      for (let j = i + 1; j < result.length; j++) {
+        expect(rectsOverlap(result[i], result[j])).toBe(false);
+      }
+    }
+    const big = result.find((w) => w.id === 'big')!;
+    expect(big.w).toBe(940);
+    expect(big.h).toBe(800);
+  });
 });

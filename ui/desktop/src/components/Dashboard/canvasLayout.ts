@@ -105,12 +105,191 @@ export function findSpawnPosition({
   return { x: maxX + gap, y: baseY };
 }
 
-/** Organize: pack windows together around an anchor. Windows attract toward
- * the anchor's center, but stop when moving further would violate the `gap`
- * margin against any other window. Sizes are preserved; only positions move.
- * Existing overlaps are resolved first by pushing windows apart along their
- * shorter overlap axis, keeping the anchor pinned. */
+/** Pick a column count that produces a square-ish, landscape-leaning grid.
+ * Tuned to match user-sketched expectations:
+ *   n=1 → 1, n=2 → 2, n=3 → 3, n=4 → 2, n=5..6 → 3, n=7..9 → 3,
+ *   n=10..12 → 4, n=13..16 → 4, n>16 → ceil(sqrt(n)).
+ * (Single row for n ≤ 3 since that always reads more orderly than 2x2.) */
+function chooseCols(n: number): number {
+  if (n <= 3) return n;
+  return Math.ceil(Math.sqrt(n));
+}
+
+/** Organize: arrange windows into a tidy grid centered on the anchor.
+ * Sizes are preserved; only positions move. When every window has the same
+ * size we produce a regular row-major grid with the partial (final) row
+ * centered above the full rows for visual balance. When sizes differ we
+ * fall back to shelf packing: rows are sized by their tallest member, and
+ * each row is centered horizontally over the anchor. Either way the
+ * anchor's world position stays put — the grid is laid out around it. */
 export function organize(
+  windows: readonly WindowRect[],
+  anchorId: string,
+  gap = 16
+): WindowRect[] {
+  if (windows.length < 2) return windows.map((w) => ({ ...w }));
+
+  const result = windows.map((w) => ({ ...w }));
+  const anchorIdx = Math.max(
+    0,
+    result.findIndex((w) => w.id === anchorId)
+  );
+  const anchor = result[anchorIdx];
+
+  // Uniform-size path — produce a centered grid.
+  const sameSize = result.every((w) => w.w === anchor.w && w.h === anchor.h);
+  if (sameSize) {
+    const n = result.length;
+    const cols = Math.min(n, chooseCols(n));
+    const rows = Math.ceil(n / cols);
+    const partialCount = n - (rows - 1) * cols; // count in the first (partial) row
+    const cellW = anchor.w;
+    const cellH = anchor.h;
+    const stepX = cellW + gap;
+    const stepY = cellH + gap;
+    const totalH = rows * cellH + (rows - 1) * gap;
+
+    // Position the grid so the anchor's slot lands at the anchor's current world center.
+    const ax = anchor.x + anchor.w / 2;
+    const ay = anchor.y + anchor.h / 2;
+    // Compute the anchor's row/col so we can shift the grid to align it with
+    // the anchor's current center on BOTH axes (so the anchor doesn't move).
+    let anchorRow: number;
+    let anchorIndexInRow: number;
+    let anchorRowCount: number;
+    if (anchorIdx < partialCount) {
+      anchorRow = 0;
+      anchorIndexInRow = anchorIdx;
+      anchorRowCount = partialCount;
+    } else {
+      const offset = anchorIdx - partialCount;
+      anchorRow = 1 + Math.floor(offset / cols);
+      anchorIndexInRow = offset % cols;
+      anchorRowCount = cols;
+    }
+    // Y shift: anchor row's center should equal ay.
+    const naiveGridOriginY = -totalH / 2;
+    const naiveAnchorRowCenterY = naiveGridOriginY + anchorRow * stepY + cellH / 2;
+    const gridShiftY = ay - naiveAnchorRowCenterY;
+    // X shift: anchor's slot center within its row should equal ax.
+    const anchorRowW = anchorRowCount * cellW + (anchorRowCount - 1) * gap;
+    const naiveAnchorSlotCenterX = -anchorRowW / 2 + anchorIndexInRow * stepX + cellW / 2;
+    const gridShiftX = ax - naiveAnchorSlotCenterX;
+
+    for (let i = 0; i < n; i++) {
+      let row: number;
+      let indexInRow: number;
+      let countInRow: number;
+      if (i < partialCount) {
+        row = 0;
+        indexInRow = i;
+        countInRow = partialCount;
+      } else {
+        const offset = i - partialCount;
+        row = 1 + Math.floor(offset / cols);
+        indexInRow = offset % cols;
+        countInRow = cols;
+      }
+      const rowW = countInRow * cellW + (countInRow - 1) * gap;
+      const rowOriginX = -rowW / 2 + gridShiftX;
+      result[i].x = rowOriginX + indexInRow * stepX;
+      result[i].y = naiveGridOriginY + gridShiftY + row * stepY;
+    }
+    return result;
+  }
+
+  // Mixed-size path — shelf-pack rows centered on anchor's world center.
+  // Each row's height is determined by its tallest member; rows are
+  // accumulated in the windows' existing order to keep the anchor near its
+  // natural row. Row width budget is the width of N cells of the widest
+  // window — keeps the result roughly square.
+  return organizeShelfPack(result, anchor, gap);
+}
+
+function organizeShelfPack(
+  result: WindowRect[],
+  anchor: WindowRect,
+  gap: number
+): WindowRect[] {
+  const widestW = result.reduce((m, w) => Math.max(m, w.w), 0);
+  const tallestH = result.reduce((m, w) => Math.max(m, w.h), 0);
+  // Pick row-width budget that produces a square-ish grid given mixed sizes.
+  const n = result.length;
+  const colsHint = Math.max(1, chooseCols(n));
+  const budgetW = colsHint * widestW + (colsHint - 1) * gap;
+
+  interface Shelf {
+    windows: WindowRect[];
+    widthUsed: number;
+    rowH: number;
+  }
+  const shelves: Shelf[] = [];
+  for (const w of result) {
+    const last = shelves[shelves.length - 1];
+    const fits = last && last.widthUsed + gap + w.w <= budgetW;
+    if (fits) {
+      last!.windows.push(w);
+      last!.widthUsed += gap + w.w;
+      last!.rowH = Math.max(last!.rowH, w.h);
+    } else {
+      shelves.push({ windows: [w], widthUsed: w.w, rowH: w.h });
+    }
+  }
+
+  const ax = anchor.x + anchor.w / 2;
+  const ay = anchor.y + anchor.h / 2;
+  // Find anchor's shelf so we can place the grid such that anchor's row
+  // center is at the anchor's current world center.
+  let anchorShelf = 0;
+  let anchorIndexInShelf = 0;
+  outer: for (let i = 0; i < shelves.length; i++) {
+    const idx = shelves[i].windows.findIndex((w) => w.id === anchor.id);
+    if (idx >= 0) {
+      anchorShelf = i;
+      anchorIndexInShelf = idx;
+      break outer;
+    }
+  }
+  // Anchor's shelf vertical center
+  let yAcc = 0;
+  for (let i = 0; i < anchorShelf; i++) yAcc += shelves[i].rowH + gap;
+  const anchorShelfTop = yAcc;
+  const anchorShelfCenterY = anchorShelfTop + shelves[anchorShelf].rowH / 2;
+  const shiftY = ay - anchorShelfCenterY;
+  // Anchor's horizontal center within its shelf
+  let xAcc = 0;
+  for (let i = 0; i < anchorIndexInShelf; i++) {
+    xAcc += shelves[anchorShelf].windows[i].w + gap;
+  }
+  const anchorCenterXLocal = xAcc + anchor.w / 2;
+  // We center each shelf around anchor's center: shelfOriginX = ax - shelfW/2.
+  // For the anchor shelf, place the anchor exactly at (ax, ay) — shift shelf
+  // so anchor lines up. Other shelves just center under the anchor.
+  void tallestH;
+
+  let y = shiftY;
+  for (let si = 0; si < shelves.length; si++) {
+    const s = shelves[si];
+    const shelfW = s.widthUsed; // already widthUsed = sum widths + gaps
+    let shelfOriginX = ax - shelfW / 2;
+    if (si === anchorShelf) {
+      // Override: align anchor.center.x = ax inside this row
+      shelfOriginX = ax - anchorCenterXLocal;
+    }
+    let xCursor = shelfOriginX;
+    for (const w of s.windows) {
+      w.x = xCursor;
+      w.y = y + (s.rowH - w.h) / 2; // vertically center within row
+      xCursor += w.w + gap;
+    }
+    y += s.rowH + gap;
+  }
+  return result;
+}
+
+/** @deprecated Internal helper retained for tests that exercise the
+ * force-directed fallback. Real organize uses grid packing. */
+export function organizeForceDirected(
   windows: readonly WindowRect[],
   anchorId: string,
   gap = 16

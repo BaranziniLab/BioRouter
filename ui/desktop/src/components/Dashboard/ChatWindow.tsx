@@ -79,14 +79,27 @@ export const ChatWindow: React.FC<Props> = ({
     onCancel: () => setResizeDelta({ dw: 0, dh: 0 }),
   });
 
+  const isManipulating =
+    dragOffset.dx !== 0 ||
+    dragOffset.dy !== 0 ||
+    resizeDelta.dw !== 0 ||
+    resizeDelta.dh !== 0;
+  // Animate transform / size only when the dashboard is in an animation frame
+  // (after organize / centerOn) AND the user isn't actively dragging/resizing.
+  // Keeps drag-feel instant while making organize and focus-centering smooth.
+  const transition =
+    !isManipulating && dashboard.state.isAnimating
+      ? 'transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1), width 200ms cubic-bezier(0.2, 0.8, 0.2, 1), height 200ms cubic-bezier(0.2, 0.8, 0.2, 1)'
+      : 'none';
   const stylePos = useMemo(
     () => ({
       transform: `translate(${rect.x + dragOffset.dx}px, ${rect.y + dragOffset.dy}px)`,
       width: rect.w + resizeDelta.dw,
       height: rect.h + resizeDelta.dh,
       zIndex: rect.zIndex,
+      transition,
     }),
-    [rect, dragOffset, resizeDelta]
+    [rect, dragOffset, resizeDelta, transition]
   );
 
   const popStyle = useMemo(() => {

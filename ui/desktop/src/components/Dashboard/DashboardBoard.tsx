@@ -132,10 +132,17 @@ export const DashboardBoard: React.FC = () => {
         )}
         {/* World layer — translated by cameraOffset. The layer itself is
             pointer-events:none so pointer events fall through to the viewport
-            (for pan), and each window re-enables pointer-events on its own. */}
+            (for pan), and each window re-enables pointer-events on its own.
+            Transition is applied only during programmatic camera moves
+            (centerOn after focus or organize) — pan stays instant. */}
         <div
           className="absolute inset-0 pointer-events-none"
-          style={{ transform: `translate(${cameraOffset.x}px, ${cameraOffset.y}px)` }}
+          style={{
+            transform: `translate(${cameraOffset.x}px, ${cameraOffset.y}px)`,
+            transition: dashboard.state.isAnimating
+              ? 'transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1)'
+              : 'none',
+          }}
         >
           {windows.map((w) => (
             <div
