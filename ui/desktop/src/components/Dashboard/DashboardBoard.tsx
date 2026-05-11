@@ -61,15 +61,25 @@ export const DashboardBoard: React.FC = () => {
 
   const onBoardWindows = dashboard.state.windows.filter((w) => !w.isTucked);
   const sidebarOpen = dashboard.state.windows.some((w) => w.isTucked);
-  // Minimum window size:
-  //   - width: must fit the full ChatInput picker row (DirSwitcher + model + mode
-  //     + extensions + skills + cost + diagnostics). Empirically ~640px.
-  //   - height: enough for ≥5 lines of model output PLUS the intact input section
-  //     (title bar + ~5 lines × 24px + input row + pickers row ≈ 360-400px).
-  // The user can never drag below these — the resize handler clamps and the
-  // window springs back to the floor.
-  const MIN_WINDOW_W = 640;
-  const MIN_WINDOW_H = 400;
+  // Minimum window size — the four essential elements must always be visible:
+  //   1. Header (title bar w/ name + drag handle)              ~36 px
+  //   2. ≥5 lines of model output / tool-call section          ~5 × 24 = 120 px
+  //   3. Intact input section: textarea + Send + full pickers   ~180 px (textarea + picker row)
+  //   4. Resize corner — always rendered, never occluded
+  //
+  // Width must hold the entire ChatInput picker row (DirSwitcher + model + mode
+  // + extensions + skills + cost + diagnostics) without it wrapping. 720 px gives
+  // breathing room even when the dir path is long. The picker row also uses
+  // flex-nowrap + overflow-x-auto so it stays intact at this width.
+  //
+  // The resize handler clamps to these values: dragging below springs the
+  // window back to this floor (the visible window shrinks during drag but snaps
+  // back on release).
+  // Empirically the picker row's natural width is ~700 px at common path/model
+  // lengths; longer dir paths push it higher. 800 px gives breathing room so
+  // every picker stays visible without horizontal scroll.
+  const MIN_WINDOW_W = 800;
+  const MIN_WINDOW_H = 420;
   const minCellSize = useMemo(() => {
     if (!boardSize) return { w: MIN_WINDOW_W, h: MIN_WINDOW_H };
     return {

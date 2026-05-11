@@ -1385,8 +1385,12 @@ export default function ChatInput({
         </div>
       )}
 
-      {/* Secondary actions and controls row below input */}
-      <div className="flex flex-row items-center gap-1 p-2 relative">
+      {/* Secondary actions and controls row below input.
+          flex-nowrap + overflow-x-auto keeps the picker icons (DirSwitcher, model,
+          mode, extensions, skills, cost, diagnostics) on a single line; they
+          never fold under or get hidden. If the container is too narrow, the row
+          scrolls horizontally rather than collapsing. */}
+      <div className="flex flex-row flex-nowrap items-center gap-1 p-2 relative overflow-x-auto">
         <DirSwitcher
           className="mr-0"
           sessionId={sessionId ?? undefined}
