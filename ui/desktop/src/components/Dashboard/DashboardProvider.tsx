@@ -176,6 +176,28 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     }));
   }, []);
 
+  // Pin every on-board window at the given rect. Used by the board at the start
+  // of drag or resize so the manipulated window doesn't cause auto-tile churn for
+  // its neighbors — they all stay exactly where they were.
+  const freezeAllRects: DashboardApi['freezeAllRects'] = useCallback((rects) => {
+    setState((prev) => ({
+      ...prev,
+      windows: prev.windows.map((w) => {
+        if (w.isTucked) return w;
+        const r = rects[w.windowId];
+        if (!r) return w;
+        // Only freeze if not already pinned (don't disturb an existing user pin).
+        if (w.isManuallyPlaced && w.position && w.size) return w;
+        return {
+          ...w,
+          isManuallyPlaced: true,
+          position: { x: r.x, y: r.y },
+          size: { w: r.w, h: r.h },
+        };
+      }),
+    }));
+  }, []);
+
   // Mirror: on resize, preserve the currently-rendered position too.
   const resizeWindow: DashboardApi['resizeWindow'] = useCallback((windowId, size, position) => {
     setState((prev) => ({
@@ -306,6 +328,7 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       syncSessionName,
       moveWindow,
       resizeWindow,
+      freezeAllRects,
       tuckWindow,
       evokeWindow,
       organize,
@@ -324,6 +347,7 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       syncSessionName,
       moveWindow,
       resizeWindow,
+      freezeAllRects,
       tuckWindow,
       evokeWindow,
       organize,

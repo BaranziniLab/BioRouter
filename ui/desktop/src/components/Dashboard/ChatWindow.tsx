@@ -18,6 +18,9 @@ interface Props {
   minSize: { w: number; h: number };
   onTuckByDrag?: (windowId: string) => void;
   sidebarOpen: boolean;
+  /** Called once at the start of drag/resize to freeze every other on-board
+   * window in place, so manipulating this one never reflows the others. */
+  onManipulateStart?: () => void;
 }
 
 export const ChatWindow: React.FC<Props> = ({
@@ -29,6 +32,7 @@ export const ChatWindow: React.FC<Props> = ({
   minSize,
   onTuckByDrag,
   sidebarOpen,
+  onManipulateStart,
 }) => {
   const dashboard = useDashboard();
   const [chat, setChat] = useState<ChatType>({
@@ -43,7 +47,11 @@ export const ChatWindow: React.FC<Props> = ({
   const [resizeDelta, setResizeDelta] = useState<{ dw: number; dh: number }>({ dw: 0, dh: 0 });
 
   const dragStart = usePointerDrag({
-    onMove: ({ dx, dy }) => setDragOffset({ dx, dy }),
+    onMove: ({ dx, dy }) => {
+      if (dx === 0 && dy === 0) return;
+      onManipulateStart?.();
+      setDragOffset({ dx, dy });
+    },
     onEnd: ({ dx, dy }, ev) => {
       setDragOffset({ dx: 0, dy: 0 });
       const dropX = rect.x + dx;
@@ -67,7 +75,11 @@ export const ChatWindow: React.FC<Props> = ({
   });
 
   const resizeStart = usePointerDrag({
-    onMove: ({ dx, dy }) => setResizeDelta({ dw: dx, dh: dy }),
+    onMove: ({ dx, dy }) => {
+      if (dx === 0 && dy === 0) return;
+      onManipulateStart?.();
+      setResizeDelta({ dw: dx, dh: dy });
+    },
     onEnd: ({ dx, dy }) => {
       setResizeDelta({ dw: 0, dh: 0 });
       const newW = Math.max(minSize.w, rect.w + dx);

@@ -49,6 +49,12 @@ export interface DashboardApi {
     /** Optional: preserve the currently-rendered position so resize doesn't reset it. */
     position?: { x: number; y: number }
   ) => void;
+  /** Pin every on-board window at the given rects with isManuallyPlaced=true.
+   * Called by the board at drag/resize start so that manipulating one window
+   * never triggers an automatic re-tile of the others. */
+  freezeAllRects: (
+    rects: Record<string, { x: number; y: number; w: number; h: number }>
+  ) => void;
   tuckWindow: (windowId: string) => void;
   evokeWindow: (windowId: string, dropPos?: { x: number; y: number }) => void;
   organize: () => void;

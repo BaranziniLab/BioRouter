@@ -61,15 +61,22 @@ export const DashboardBoard: React.FC = () => {
 
   const onBoardWindows = dashboard.state.windows.filter((w) => !w.isTucked);
   const sidebarOpen = dashboard.state.windows.some((w) => w.isTucked);
+  // Minimum window size:
+  //   - width: must fit the full ChatInput picker row (DirSwitcher + model + mode
+  //     + extensions + skills + cost + diagnostics). Empirically ~640px.
+  //   - height: enough for ≥5 lines of model output PLUS the intact input section
+  //     (title bar + ~5 lines × 24px + input row + pickers row ≈ 360-400px).
+  // The user can never drag below these — the resize handler clamps and the
+  // window springs back to the floor.
+  const MIN_WINDOW_W = 640;
+  const MIN_WINDOW_H = 400;
   const minCellSize = useMemo(() => {
-    if (!boardSize) return { w: 280, h: 200 };
-    const cols = Math.max(1, Math.ceil(Math.sqrt(dashboard.state.T1)));
-    const rows = Math.max(1, Math.ceil(dashboard.state.T1 / cols));
+    if (!boardSize) return { w: MIN_WINDOW_W, h: MIN_WINDOW_H };
     return {
-      w: Math.max(280, (boardSize.width / cols) * 0.6),
-      h: Math.max(200, (boardSize.height / rows) * 0.6),
+      w: MIN_WINDOW_W,
+      h: MIN_WINDOW_H,
     };
-  }, [boardSize, dashboard.state.T1]);
+  }, [boardSize]);
 
   // Drag-from-sidebar ghost state (Task 17)
   const [ghost, setGhost] = useState<{ windowId: string; x: number; y: number } | null>(null);
@@ -140,6 +147,16 @@ export const DashboardBoard: React.FC = () => {
                 minSize={minCellSize}
                 sidebarOpen={sidebarOpen}
                 onTuckByDrag={(id) => dashboard.tuckWindow(id)}
+                onManipulateStart={() => {
+                  // Snapshot the current layout for every on-board window and
+                  // freeze them all in place. After this, drag/resize on one
+                  // window will never reflow the others.
+                  const rects: Record<string, { x: number; y: number; w: number; h: number }> = {};
+                  for (const [id, r] of layout.entries()) {
+                    rects[id] = { x: r.x, y: r.y, w: r.w, h: r.h };
+                  }
+                  dashboard.freezeAllRects(rects);
+                }}
               />
             );
           })}
