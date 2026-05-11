@@ -153,6 +153,7 @@ export const ChatWindow: React.FC<Props> = ({
             suppressEmptyState={false}
             coherent
             hideSessionNamePill
+            compactPicker
             accentColor={win.accentColor}
             onRenameSession={(newName) => {
               dashboard.renameWindow(win.windowId, newName);

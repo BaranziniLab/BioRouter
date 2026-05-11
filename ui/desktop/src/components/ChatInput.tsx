@@ -6,8 +6,6 @@ import {
   ChevronRight,
   ChevronLeft,
   Activity,
-  Brain,
-  Tornado,
 } from './icons/app-icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
@@ -77,25 +75,14 @@ interface ModelLimit {
   context_limit: number;
 }
 
-/** Single row in the secondary-controls popover. A fixed-width icon column on
- * the left keeps every row's content visually aligned regardless of icon
- * variant or control width. */
-function PickerRow({
-  icon,
-  label,
-  children,
-}: {
-  icon: React.ReactNode;
-  label: string;
-  children: React.ReactNode;
-}) {
+/** Single row in the secondary-controls popover. Children are rendered
+ * directly — the inner control's own leading icon (e.g. brain, tornado,
+ * dollar) serves as the left-aligned visual marker. Rows share the same
+ * left-padding so every icon lines up cleanly. */
+function PickerRow({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-background-medium/40">
-      <span className="flex items-center justify-center w-4 h-4 text-text-default/70 flex-shrink-0">
-        {icon}
-      </span>
-      <span className="text-[11px] text-text-default/60 w-12 flex-shrink-0">{label}</span>
-      <div className="flex-1 min-w-0 flex items-center">{children}</div>
+    <div className="flex items-center px-2 py-1.5 rounded hover:bg-background-medium/40">
+      {children}
     </div>
   );
 }
@@ -1553,7 +1540,7 @@ export default function ChatInput({
                 }}
               />
               {COST_TRACKING_ENABLED && (
-                <PickerRow icon={<span className="text-[13px]">$</span>} label="Cost">
+                <PickerRow>
                   <CostTracker
                     inputTokens={accumulatedInputTokens}
                     outputTokens={accumulatedOutputTokens}
@@ -1561,7 +1548,7 @@ export default function ChatInput({
                   />
                 </PickerRow>
               )}
-              <PickerRow icon={<Brain className="w-4 h-4" />} label="Model">
+              <PickerRow>
                 <ModelsBottomBar
                   sessionId={sessionId}
                   dropdownRef={dropdownRef}
@@ -1570,7 +1557,7 @@ export default function ChatInput({
                   hideAlertPopover
                 />
               </PickerRow>
-              <PickerRow icon={<Tornado className="w-4 h-4" />} label="Mode">
+              <PickerRow>
                 <BottomMenuModeSelection />
               </PickerRow>
               {sessionId && (

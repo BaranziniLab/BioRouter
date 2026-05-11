@@ -69,6 +69,10 @@ interface BaseChatProps {
   /** Hide the SessionNamePill at the top of the chat. Dashboard windows pass this
    * because their own WindowTitleBar already shows the editable name. */
   hideSessionNamePill?: boolean;
+  /** When true, the ChatInput's secondary picker controls (cost, model, mode,
+   * workflow, diagnostics) live behind a chevron popover. When false (chat
+   * tab default), they render inline. Dashboard windows pass true. */
+  compactPicker?: boolean;
 }
 
 function BaseChatContent({
@@ -83,6 +87,7 @@ function BaseChatContent({
   onSessionUpdate,
   accentColor,
   hideSessionNamePill = false,
+  compactPicker = false,
 }: BaseChatProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -541,7 +546,7 @@ function BaseChatContent({
             workflowAccepted={!hasNotAcceptedWorkflow}
             initialPrompt={initialPrompt}
             toolCount={toolCount || 0}
-            compactPicker={coherent}
+            compactPicker={compactPicker}
             {...customChatInputProps}
           />
         </div>
