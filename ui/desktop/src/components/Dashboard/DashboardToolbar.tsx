@@ -1,67 +1,21 @@
-import React, { useEffect, useState } from 'react';
+import React from 'react';
 import { useDashboard } from '../../contexts/DashboardContext';
-
-// Mirror layoutEngine's bestGridConfig: pick the (cols, rows) configuration that
-// minimizes the deviation of cell aspect from the target 1.3:1, given the board's
-// actual aspect ratio. This matches what the layout engine actually renders.
-function pickGridLabel(n: number, boardW: number, boardH: number): string {
-  if (n === 0) return '';
-  const TARGET_ASPECT = 1.3;
-  let bestCols = n;
-  let bestRows = 1;
-  let bestScore = Infinity;
-  for (let cols = 1; cols <= n; cols++) {
-    const rows = Math.ceil(n / cols);
-    const cellW = boardW / cols;
-    const cellH = boardH / rows;
-    const aspect = cellW / cellH;
-    const score = Math.abs(Math.log(aspect) - Math.log(TARGET_ASPECT));
-    if (score < bestScore) {
-      bestScore = score;
-      bestCols = cols;
-      bestRows = rows;
-    }
-  }
-  return `${bestCols}×${bestRows}`;
-}
 
 export const DashboardToolbar: React.FC = () => {
   const dashboard = useDashboard();
   const onBoard = dashboard.state.windows.filter((w) => !w.isTucked).length;
   const tucked = dashboard.state.windows.filter((w) => w.isTucked).length;
-  const [boardRatio, setBoardRatio] = useState<{ w: number; h: number }>({ w: 16, h: 9 });
-
-  useEffect(() => {
-    const measure = () => {
-      const board = document.querySelector('div[style*="radial-gradient"]') as HTMLElement | null;
-      if (!board) return;
-      const r = board.getBoundingClientRect();
-      if (r.width > 0 && r.height > 0) {
-        setBoardRatio({ w: r.width, h: r.height });
-      }
-    };
-    measure();
-    window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
-  }, [onBoard]);
-
-  let mode = 'empty';
-  if (onBoard > 0 && onBoard <= dashboard.state.T1)
-    mode = `${pickGridLabel(onBoard, boardRatio.w, boardRatio.h)} grid`;
-  else if (onBoard > dashboard.state.T1 && onBoard <= dashboard.state.T2) mode = 'overlap';
-  else if (onBoard > dashboard.state.T2) mode = 'compact';
 
   // Layout: actions (Spawn/Organize/Clear) centered horizontally so they don't
   // collide with the macOS traffic-light buttons at the upper-left when the
-  // sidebar is collapsed. Thresholds + status sit on the right.
+  // sidebar is collapsed. Status indicator (count) sits on the right.
+  // T1/T2 are auto-computed by DashboardBoard from the board size — no more
+  // user-facing threshold controls.
   //
-  // Why z-index 100 + relative on the wrapper:
   // The Electron titlebar-drag-region is `position:fixed; top:0; z-index:50;
-  // height:32px` and overlaps the entire top 32px of the app — including this
-  // toolbar. Without sitting above it in the stacking context, DOM clicks land
-  // on the drag region instead of the buttons (even with `app-region: no-drag`,
-  // because that only controls OS window-drag behavior, not DOM event routing).
-  // We also apply `.no-drag` so OS-level drag is suppressed inside the buttons.
+  // height:32px` and overlaps the top 32px of the app — including this toolbar.
+  // We sit at z-[60] so DOM clicks reach the buttons. The `.no-drag` class
+  // suppresses OS-level window dragging on the buttons themselves.
   const btnClass =
     'no-drag h-7 px-3 text-[13.5px] font-normal rounded-lg border border-border-subtle ' +
     'bg-background-default text-text-default hover:bg-background-medium ' +
@@ -94,27 +48,8 @@ export const DashboardToolbar: React.FC = () => {
           Clear
         </button>
       </div>
-      <div className="ml-auto flex items-center gap-2 no-drag">
-        <label className="text-xs text-text-muted">T1</label>
-        <input
-          type="number"
-          min={1}
-          max={dashboard.state.T2}
-          value={dashboard.state.T1}
-          onChange={(e) => dashboard.setT1(Number(e.target.value))}
-          className="no-drag w-12 text-xs px-1 py-0.5 rounded border border-border-subtle bg-background-default"
-        />
-        <label className="text-xs text-text-muted ml-1">T2</label>
-        <input
-          type="number"
-          min={dashboard.state.T1}
-          value={dashboard.state.T2}
-          onChange={(e) => dashboard.setT2(Number(e.target.value))}
-          className="no-drag w-12 text-xs px-1 py-0.5 rounded border border-border-subtle bg-background-default"
-        />
-        <div className="ml-2 text-xs text-text-muted">
-          {mode} · {onBoard} on board · {tucked} tucked
-        </div>
+      <div className="ml-auto flex items-center gap-2 no-drag text-xs text-text-muted">
+        {onBoard} on board · {tucked} tucked
       </div>
     </div>
   );

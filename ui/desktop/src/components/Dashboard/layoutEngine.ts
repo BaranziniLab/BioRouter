@@ -88,7 +88,11 @@ export function computeLayout(
   board: BoardSize,
   T1: number,
   T2: number,
-  focusedWindowId: string | null
+  focusedWindowId: string | null,
+  /** When provided, every auto window is rendered at exactly this size. Skips
+   * the fillFactor-based scaling — used by the Dashboard so windows always
+   * spawn at the spring-back minimum size. */
+  fixedCellSize?: { w: number; h: number }
 ): Map<string, LayoutRect> {
   void T2;
   const out = new Map<string, LayoutRect>();
@@ -133,20 +137,29 @@ export function computeLayout(
   const interiorH = Math.max(MIN_H, board.height - 2 * EDGE_INSET);
   const pinnedArea = pinnedRects.reduce((s, r) => s + r.w * r.h, 0);
   const availableArea = Math.max(MIN_W * MIN_H, interiorW * interiorH - pinnedArea);
-  const totalComfort = auto.length * COMFORT_W * COMFORT_H;
-  const fillFactor = totalComfort / availableArea;
-  let cellW = COMFORT_W;
-  let cellH = COMFORT_H;
-  if (fillFactor > FILL_FACTOR_MAX) {
-    const s = Math.sqrt(FILL_FACTOR_MAX / fillFactor);
-    cellW = Math.max(MIN_W, Math.floor(COMFORT_W * s));
-    cellH = Math.max(MIN_H, Math.floor(COMFORT_H * s));
+  let cellW: number;
+  let cellH: number;
+  if (fixedCellSize) {
+    // Caller dictates the cell size (Dashboard uses min-window size). Skip the
+    // comfort-vs-fill scaling — every auto window renders at exactly this size.
+    cellW = fixedCellSize.w;
+    cellH = fixedCellSize.h;
+  } else {
+    const totalComfort = auto.length * COMFORT_W * COMFORT_H;
+    const fillFactor = totalComfort / availableArea;
+    cellW = COMFORT_W;
+    cellH = COMFORT_H;
+    if (fillFactor > FILL_FACTOR_MAX) {
+      const s = Math.sqrt(FILL_FACTOR_MAX / fillFactor);
+      cellW = Math.max(MIN_W, Math.floor(COMFORT_W * s));
+      cellH = Math.max(MIN_H, Math.floor(COMFORT_H * s));
+    }
   }
 
   // -------- Stage 3: Initial slot placement --------
   const autoPos = new Map<string, { x: number; y: number; w: number; h: number; zCat: number }>();
 
-  if (auto.length <= 2) {
+  if (!fixedCellSize && auto.length <= 2) {
     // Comfort row — cells stay at comfort size regardless of fillFactor.
     const rowW = COMFORT_W;
     const rowH = COMFORT_H;
@@ -160,11 +173,15 @@ export function computeLayout(
   } else {
     const nTiled = Math.min(auto.length, T1);
     const { cols, rows } = bestGridConfig(nTiled, { width: interiorW, height: interiorH });
-    // Snap stride to the SNAP_GRID so post-snap cells remain edge-aligned with no drift.
-    const rawW = Math.min(cellW, Math.floor(interiorW / cols));
-    const rawH = Math.min(cellH, Math.floor(interiorH / rows));
-    const sizedW = Math.max(MIN_W, Math.floor(rawW / SNAP_GRID) * SNAP_GRID);
-    const sizedH = Math.max(MIN_H, Math.floor(rawH / SNAP_GRID) * SNAP_GRID);
+    // When fixedCellSize is provided, every cell is exactly that size (Dashboard
+    // pins windows at the spring-back minimum). Otherwise, snap the auto-cell
+    // size to SNAP_GRID so post-snap cells remain edge-aligned with no drift.
+    const sizedW = fixedCellSize
+      ? cellW
+      : Math.max(MIN_W, Math.floor(Math.min(cellW, Math.floor(interiorW / cols)) / SNAP_GRID) * SNAP_GRID);
+    const sizedH = fixedCellSize
+      ? cellH
+      : Math.max(MIN_H, Math.floor(Math.min(cellH, Math.floor(interiorH / rows)) / SNAP_GRID) * SNAP_GRID);
     const itemsInLastRow = nTiled - cols * (rows - 1);
     const blockW = cols * sizedW;
     const blockH = rows * sizedH;

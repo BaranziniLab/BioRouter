@@ -27,6 +27,7 @@ import {
 
 let updateAvailable = false;
 let trayRef: Tray | null = null;
+let trayMenu: Menu | null = null;
 let isUsingGitHubFallback = false;
 let githubUpdateInfo: {
   latestVersion?: string;
@@ -810,7 +811,21 @@ export function updateTrayMenu(hasUpdate: boolean) {
   );
 
   const contextMenu = Menu.buildFromTemplate(menuItems);
-  trayRef.setContextMenu(contextMenu);
+  trayMenu = contextMenu;
+
+  // On macOS, setContextMenu would make the menu pop on both left- and right-click.
+  // We want left-click to show the app windows and right-click to show the menu,
+  // so we keep the menu in memory and pop it up manually via popUpTrayMenu().
+  if (process.platform !== 'darwin') {
+    trayRef.setContextMenu(contextMenu);
+  }
+}
+
+// Pop up the most recently built tray menu (used for macOS right-click).
+export function popUpTrayMenu() {
+  if (trayRef && trayMenu) {
+    trayRef.popUpContextMenu(trayMenu);
+  }
 }
 
 // Export functions to manage tray reference

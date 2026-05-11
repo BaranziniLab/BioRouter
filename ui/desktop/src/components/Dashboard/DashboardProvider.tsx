@@ -90,6 +90,9 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       const accentColor = pickAccentColor(usedColors);
       const badge = prev.windows.reduce((m, w) => Math.max(m, w.badge), 0) + 1;
       const name = generateName(prev.windows.length);
+      // Spawn at the minimum window size. The layout engine packs as many
+      // min-size windows as the board can hold without overlap, then allows
+      // up to 2 overlap windows on top before tucking. No comfort scaling.
       const newWin: DashboardWindow = {
         windowId: nextWindowId(),
         sessionId,
@@ -98,7 +101,7 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         badge,
         accentColor,
         position: null,
-        size: null,
+        size: null, // engine will assign MIN_WINDOW dimensions
         isManuallyPlaced: false,
         isTucked: false,
         cwd,

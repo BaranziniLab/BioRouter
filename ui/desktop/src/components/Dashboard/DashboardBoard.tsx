@@ -48,45 +48,52 @@ export const DashboardBoard: React.FC = () => {
     [dashboard.state.windows]
   );
 
+  // Minimum window size — the four essential elements must always be visible:
+  //   1. Header (title bar w/ name + drag handle)              ~36 px
+  //   2. ≥5 lines of model output / tool-call section          ~120 px
+  //   3. Intact input section: textarea + full picker row + Send
+  //   4. Resize corner — always rendered, never occluded
+  // This is ALSO the default spawn size: every new window opens at exactly this
+  // size, and dragging the resize corner below this springs it back.
+  const MIN_WINDOW_W = 720;
+  const MIN_WINDOW_H = 360;
+  const minCellSize = useMemo(() => ({ w: MIN_WINDOW_W, h: MIN_WINDOW_H }), []);
+
+  // Auto-compute T1 (max non-overlapping windows) and T2 (T1 + 2 allowed
+  // overlap) from the board size and the minimum window size. Replaces the
+  // user-facing T1/T2 inputs entirely — the layout adapts to the board.
+  const { autoT1, autoT2 } = useMemo(() => {
+    if (!boardSize) return { autoT1: 1, autoT2: 3 };
+    const GAP = 8;
+    const cols = Math.max(1, Math.floor((boardSize.width + GAP) / (MIN_WINDOW_W + GAP)));
+    const rows = Math.max(1, Math.floor((boardSize.height + GAP) / (MIN_WINDOW_H + GAP)));
+    const t1 = Math.max(1, cols * rows);
+    return { autoT1: t1, autoT2: t1 + 2 };
+  }, [boardSize]);
+
+  // Keep the provider's T1/T2 in sync with the auto-computed values, so the
+  // existing enforceT2 / tuck logic uses board-aware limits.
+  useEffect(() => {
+    if (dashboard.state.T1 !== autoT1) dashboard.setT1(autoT1);
+    if (dashboard.state.T2 !== autoT2) dashboard.setT2(autoT2);
+  }, [autoT1, autoT2, dashboard]);
+
   const layout = useMemo(() => {
     if (!boardSize) return new Map();
     return computeLayout(
       layoutInputs,
       boardSize,
-      dashboard.state.T1,
-      dashboard.state.T2,
-      dashboard.state.focusedWindowId
+      autoT1,
+      autoT2,
+      dashboard.state.focusedWindowId,
+      // Every auto window renders at the minimum/default size — no comfort
+      // scaling. The engine packs them tight with up to 2 allowed overlaps.
+      { w: MIN_WINDOW_W, h: MIN_WINDOW_H }
     );
-  }, [layoutInputs, boardSize, dashboard.state.T1, dashboard.state.T2, dashboard.state.focusedWindowId]);
+  }, [layoutInputs, boardSize, autoT1, autoT2, dashboard.state.focusedWindowId]);
 
   const onBoardWindows = dashboard.state.windows.filter((w) => !w.isTucked);
   const sidebarOpen = dashboard.state.windows.some((w) => w.isTucked);
-  // Minimum window size — the four essential elements must always be visible:
-  //   1. Header (title bar w/ name + drag handle)              ~36 px
-  //   2. ≥5 lines of model output / tool-call section          ~5 × 24 = 120 px
-  //   3. Intact input section: textarea + Send + full pickers   ~180 px (textarea + picker row)
-  //   4. Resize corner — always rendered, never occluded
-  //
-  // Width must hold the entire ChatInput picker row (DirSwitcher + model + mode
-  // + extensions + skills + cost + diagnostics) without it wrapping. 720 px gives
-  // breathing room even when the dir path is long. The picker row also uses
-  // flex-nowrap + overflow-x-auto so it stays intact at this width.
-  //
-  // The resize handler clamps to these values: dragging below springs the
-  // window back to this floor (the visible window shrinks during drag but snaps
-  // back on release).
-  // Empirically the picker row's natural width is ~700 px at common path/model
-  // lengths; longer dir paths push it higher. 800 px gives breathing room so
-  // every picker stays visible without horizontal scroll.
-  const MIN_WINDOW_W = 800;
-  const MIN_WINDOW_H = 420;
-  const minCellSize = useMemo(() => {
-    if (!boardSize) return { w: MIN_WINDOW_W, h: MIN_WINDOW_H };
-    return {
-      w: MIN_WINDOW_W,
-      h: MIN_WINDOW_H,
-    };
-  }, [boardSize]);
 
   // Drag-from-sidebar ghost state (Task 17)
   const [ghost, setGhost] = useState<{ windowId: string; x: number; y: number } | null>(null);

@@ -1197,8 +1197,10 @@ export default function ChatInput({
           className="border-b border-border-subtle"
         />
       )}
-      {/* Input row with inline action buttons wrapped in form */}
-      <form onSubmit={onFormSubmit} className="relative flex items-end">
+      {/* Input row — textarea only. Send/Stop button moved to the right end of
+          the picker row below so the input width can shrink to the picker row's
+          natural width (no extra space stolen by the Send button on this line). */}
+      <form id="bior-chat-form" onSubmit={onFormSubmit} className="relative flex items-end">
         <div className="relative flex-1">
           <textarea
             data-testid="chat-input"
@@ -1219,59 +1221,8 @@ export default function ChatInput({
               maxHeight: `${maxHeight}px`,
               overflowY: 'auto',
             }}
-            className="w-full outline-none border-none focus:ring-0 bg-transparent px-3 pt-3 pb-1.5 pr-20 text-sm resize-none text-text-default placeholder:text-textPlaceholder"
+            className="w-full outline-none border-none focus:ring-0 bg-transparent px-3 pt-3 pb-1.5 pr-3 text-sm resize-none text-text-default placeholder:text-textPlaceholder"
           />
-        </div>
-
-        {/* Inline action buttons on the right */}
-        <div className="flex items-center gap-1 px-2 relative self-center">
-          {/* Send/Stop button */}
-          {isLoading && !hasSubmittableContent ? (
-            <Button
-              type="button"
-              onClick={onStop}
-              size="sm"
-              shape="round"
-              variant="outline"
-              className="bg-slate-600 text-white hover:bg-slate-700 border-slate-600 rounded-full px-6 py-2"
-            >
-              <Stop />
-            </Button>
-          ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span>
-                  <Button
-                    type="submit"
-                    size="sm"
-                    shape="pill"
-                    variant="outline"
-                    disabled={isSubmitButtonDisabled}
-                    className={`px-10 py-2 flex items-center gap-2 ${
-                      isSubmitButtonDisabled
-                        ? 'bg-slate-600 text-white cursor-not-allowed opacity-50 border-slate-600'
-                        : 'bg-slate-600 text-white hover:bg-slate-700 border-slate-600 hover:cursor-pointer'
-                    }`}
-                  >
-                    <Send className="w-4 h-4" />
-                    <span className="text-sm">Send</span>
-                  </Button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>
-                  {isAnyImageLoading
-                    ? 'Waiting for images to save...'
-                    : isAnyDroppedFileLoading
-                      ? 'Processing dropped files...'
-                      : chatState === ChatState.RestartingAgent
-                        ? 'Restarting session...'
-                        : 'Send'}
-                </p>
-              </TooltipContent>
-            </Tooltip>
-          )}
-
         </div>
       </form>
 
@@ -1498,6 +1449,58 @@ export default function ChatInput({
                 </Button>
               </TooltipTrigger>
               <TooltipContent>Generate diagnostics bundle</TooltipContent>
+            </Tooltip>
+          )}
+        </div>
+
+        {/* Send / Stop button — placed at the right end of the picker row,
+            aligned with the diagnostics magnifier. This frees the textarea row
+            of its right-side space so the window can be narrower. */}
+        <div className="ml-auto flex items-center pl-2 flex-shrink-0">
+          {isLoading && !hasSubmittableContent ? (
+            <Button
+              type="button"
+              onClick={onStop}
+              size="sm"
+              shape="round"
+              variant="outline"
+              className="bg-slate-600 text-white hover:bg-slate-700 border-slate-600 rounded-full px-3 py-1.5"
+            >
+              <Stop />
+            </Button>
+          ) : (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    type="submit"
+                    form="bior-chat-form"
+                    size="sm"
+                    shape="pill"
+                    variant="outline"
+                    disabled={isSubmitButtonDisabled}
+                    className={`px-3 py-1.5 flex items-center gap-1 ${
+                      isSubmitButtonDisabled
+                        ? 'bg-slate-600 text-white cursor-not-allowed opacity-50 border-slate-600'
+                        : 'bg-slate-600 text-white hover:bg-slate-700 border-slate-600 hover:cursor-pointer'
+                    }`}
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span className="text-xs">Send</span>
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>
+                  {isAnyImageLoading
+                    ? 'Waiting for images to save...'
+                    : isAnyDroppedFileLoading
+                      ? 'Processing dropped files...'
+                      : chatState === ChatState.RestartingAgent
+                        ? 'Restarting session...'
+                        : 'Send'}
+                </p>
+              </TooltipContent>
             </Tooltip>
           )}
         </div>
