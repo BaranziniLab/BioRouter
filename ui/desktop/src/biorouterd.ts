@@ -198,8 +198,16 @@ export const startBiorouterd = async (options: StartBiorouterdOptions): Promise<
   });
 
   biorouterdProcess.on('error', (err: Error) => {
+    // Do not `throw` here — this callback runs inside the EventEmitter, and
+    // a synchronous throw becomes an uncaught exception in the Node event
+    // loop, fatally aborting the Electron main process with no usable
+    // diagnostic. Record the failure so checkServerStatus can surface it
+    // through the normal startup error path instead.
     log.error(`Failed to start biorouterd on port ${port} and dir ${dir}`, err);
-    throw err;
+    // "error:" prefix matches checkServerStatus's fatal() predicate so the
+    // startup probe short-circuits with a useful error rather than waiting
+    // out the 10s status-poll timeout.
+    stderrLines.push(`error: failed to spawn biorouterd: ${err.message}`);
   });
 
   const try_kill_biorouter = () => {
