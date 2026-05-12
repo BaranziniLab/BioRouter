@@ -1604,9 +1604,12 @@ ipcMain.handle('save-data-url-to-temp', async (_event, dataUrl: string, uniqueId
       return { id: uniqueId, error: 'Invalid uniqueId format' };
     }
 
-    // Input validation for dataUrl
-    if (!dataUrl || typeof dataUrl !== 'string' || dataUrl.length > 10 * 1024 * 1024) {
-      // 10MB limit
+    // Input validation for dataUrl. The 10 MB cap (matching the renderer-side
+    // image limit ~5 MB after base64 overhead) caused main-process heap spikes
+    // when users rapidly pasted screenshots — every IPC call materializes the
+    // entire string in main via structured clone before validation. Drop to
+    // 4 MB (≈3 MB image payload), which still covers typical screenshots.
+    if (!dataUrl || typeof dataUrl !== 'string' || dataUrl.length > 4 * 1024 * 1024) {
       console.error('[Main] Invalid or too large data URL received.');
       return { id: uniqueId, error: 'Invalid or too large data URL' };
     }
@@ -1631,9 +1634,9 @@ ipcMain.handle('save-data-url-to-temp', async (_event, dataUrl: string, uniqueId
     const buffer = Buffer.from(base64Data, 'base64');
 
     // Validate image size (max 5MB)
-    if (buffer.length > 5 * 1024 * 1024) {
+    if (buffer.length > 3 * 1024 * 1024) {
       console.error('[Main] Image too large.');
-      return { id: uniqueId, error: 'Image too large (max 5MB)' };
+      return { id: uniqueId, error: 'Image too large (max 3MB)' };
     }
 
     const randomString = crypto.randomBytes(8).toString('hex');
