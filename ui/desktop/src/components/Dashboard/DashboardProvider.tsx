@@ -185,6 +185,20 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
   }, []);
 
   const syncSessionName: DashboardApi['syncSessionName'] = useCallback((windowId, name) => {
+    // Ignore server-default placeholder names ("New session 154",
+    // "Session 5", or the bare "New Session" we use locally). The backend
+    // assigns one of these the moment a session is created, before any
+    // user message; without this guard the dashboard window flashes
+    // "New Session" → "New session 154" the instant resumeAgent returns.
+    // Only sync names the LLM has actually rewritten after a message
+    // exchange.
+    if (
+      /^New Session$/i.test(name) ||
+      /^New session \d+$/i.test(name) ||
+      /^Session \d+$/i.test(name)
+    ) {
+      return;
+    }
     setState((prev) => ({
       ...prev,
       windows: prev.windows.map((w) =>
