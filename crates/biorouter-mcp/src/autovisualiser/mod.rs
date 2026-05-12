@@ -539,10 +539,13 @@ Example:
             meta: None,
         };
 
-        Ok(CallToolResult::success(vec![Content::resource(
-            resource_contents,
-        )
-        .with_audience(vec![Role::User])]))
+        // Pair the user-audience resource with an assistant-audience text so the
+        // model receives a non-empty tool result and doesn't loop retrying.
+        Ok(CallToolResult::success(vec![
+            Content::resource(resource_contents).with_audience(vec![Role::User]),
+            Content::text("Sankey diagram rendered inline for the user.")
+                .with_audience(vec![Role::Assistant]),
+        ]))
     }
 
     /// show a radar chart (spider chart) for multi-dimensional data comparison
@@ -621,10 +624,11 @@ Example:
             meta: None,
         };
 
-        Ok(CallToolResult::success(vec![Content::resource(
-            resource_contents,
-        )
-        .with_audience(vec![Role::User])]))
+        Ok(CallToolResult::success(vec![
+            Content::resource(resource_contents).with_audience(vec![Role::User]),
+            Content::text("Radar chart rendered inline for the user.")
+                .with_audience(vec![Role::Assistant]),
+        ]))
     }
 
     /// show pie or donut charts for categorical data visualization
@@ -708,10 +712,11 @@ Example multiple charts:
             meta: None,
         };
 
-        Ok(CallToolResult::success(vec![Content::resource(
-            resource_contents,
-        )
-        .with_audience(vec![Role::User])]))
+        Ok(CallToolResult::success(vec![
+            Content::resource(resource_contents).with_audience(vec![Role::User]),
+            Content::text("Donut/pie chart rendered inline for the user.")
+                .with_audience(vec![Role::Assistant]),
+        ]))
     }
 
     /// show a treemap visualization for hierarchical data
@@ -792,10 +797,11 @@ Example:
             meta: None,
         };
 
-        Ok(CallToolResult::success(vec![Content::resource(
-            resource_contents,
-        )
-        .with_audience(vec![Role::User])]))
+        Ok(CallToolResult::success(vec![
+            Content::resource(resource_contents).with_audience(vec![Role::User]),
+            Content::text("Treemap rendered inline for the user.")
+                .with_audience(vec![Role::Assistant]),
+        ]))
     }
 
     /// Show a chord diagram visualization for relationships and flows
@@ -870,10 +876,11 @@ Example:
             meta: None,
         };
 
-        Ok(CallToolResult::success(vec![Content::resource(
-            resource_contents,
-        )
-        .with_audience(vec![Role::User])]))
+        Ok(CallToolResult::success(vec![
+            Content::resource(resource_contents).with_audience(vec![Role::User]),
+            Content::text("Chord diagram rendered inline for the user.")
+                .with_audience(vec![Role::Assistant]),
+        ]))
     }
 
     /// show an interactive map visualization with location markers
@@ -979,10 +986,11 @@ Example:
             meta: None,
         };
 
-        Ok(CallToolResult::success(vec![Content::resource(
-            resource_contents,
-        )
-        .with_audience(vec![Role::User])]))
+        Ok(CallToolResult::success(vec![
+            Content::resource(resource_contents).with_audience(vec![Role::User]),
+            Content::text("Map rendered inline for the user.")
+                .with_audience(vec![Role::Assistant]),
+        ]))
     }
 
     /// show a Mermaid diagram from Mermaid syntax
@@ -1034,10 +1042,11 @@ graph TD;
             meta: None,
         };
 
-        Ok(CallToolResult::success(vec![Content::resource(
-            resource_contents,
-        )
-        .with_audience(vec![Role::User])]))
+        Ok(CallToolResult::success(vec![
+            Content::resource(resource_contents).with_audience(vec![Role::User]),
+            Content::text("Mermaid diagram rendered inline for the user.")
+                .with_audience(vec![Role::Assistant]),
+        ]))
     }
 
     /// show interactive line, scatter, or bar charts
@@ -1110,10 +1119,11 @@ Example:
             meta: None,
         };
 
-        Ok(CallToolResult::success(vec![Content::resource(
-            resource_contents,
-        )
-        .with_audience(vec![Role::User])]))
+        Ok(CallToolResult::success(vec![
+            Content::resource(resource_contents).with_audience(vec![Role::User]),
+            Content::text("Chart rendered inline for the user.")
+                .with_audience(vec![Role::Assistant]),
+        ]))
     }
 }
 
@@ -1284,7 +1294,8 @@ mod tests {
         let result = router.render_sankey(params).await;
         assert!(result.is_ok());
         let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 1);
+        // Two items: user-audience resource for the UI + assistant-audience text for the model.
+        assert_eq!(tool_result.content.len(), 2);
 
         // Check the audience is set to User
         assert!(tool_result.content[0].audience().is_some());
@@ -1292,6 +1303,13 @@ mod tests {
             tool_result.content[0].audience().unwrap(),
             &vec![Role::User]
         );
+
+        // Second item: assistant-audience confirmation text (prevents retry loops)
+        assert_eq!(
+            tool_result.content[1].audience().unwrap(),
+            &vec![Role::Assistant]
+        );
+        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
 
         // Check it's a resource with HTML content
         // Content is Annotated<RawContent>, access underlying RawContent via *
@@ -1329,7 +1347,7 @@ mod tests {
         let result = router.render_radar(params).await;
         assert!(result.is_ok());
         let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 1);
+        assert_eq!(tool_result.content.len(), 2);
 
         // Check the audience is set to User
         assert!(tool_result.content[0].audience().is_some());
@@ -1337,6 +1355,12 @@ mod tests {
             tool_result.content[0].audience().unwrap(),
             &vec![Role::User]
         );
+
+        assert_eq!(
+            tool_result.content[1].audience().unwrap(),
+            &vec![Role::Assistant]
+        );
+        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
 
         // Check it's a resource with HTML content
         // Content is Annotated<RawContent>, access underlying RawContent via *
@@ -1380,7 +1404,7 @@ mod tests {
         let result = router.render_donut(params).await;
         assert!(result.is_ok());
         let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 1);
+        assert_eq!(tool_result.content.len(), 2);
 
         // Check the audience is set to User
         assert!(tool_result.content[0].audience().is_some());
@@ -1388,6 +1412,12 @@ mod tests {
             tool_result.content[0].audience().unwrap(),
             &vec![Role::User]
         );
+
+        assert_eq!(
+            tool_result.content[1].audience().unwrap(),
+            &vec![Role::Assistant]
+        );
+        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
     }
 
     #[tokio::test]
@@ -1418,7 +1448,7 @@ mod tests {
         let result = router.render_treemap(params).await;
         assert!(result.is_ok());
         let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 1);
+        assert_eq!(tool_result.content.len(), 2);
 
         // Check the audience is set to User
         assert!(tool_result.content[0].audience().is_some());
@@ -1426,6 +1456,12 @@ mod tests {
             tool_result.content[0].audience().unwrap(),
             &vec![Role::User]
         );
+
+        assert_eq!(
+            tool_result.content[1].audience().unwrap(),
+            &vec![Role::Assistant]
+        );
+        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
     }
 
     #[tokio::test]
@@ -1445,7 +1481,7 @@ mod tests {
         let result = router.render_chord(params).await;
         assert!(result.is_ok());
         let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 1);
+        assert_eq!(tool_result.content.len(), 2);
 
         // Check the audience is set to User
         assert!(tool_result.content[0].audience().is_some());
@@ -1453,6 +1489,12 @@ mod tests {
             tool_result.content[0].audience().unwrap(),
             &vec![Role::User]
         );
+
+        assert_eq!(
+            tool_result.content[1].audience().unwrap(),
+            &vec![Role::Assistant]
+        );
+        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
     }
 
     #[tokio::test]
@@ -1484,7 +1526,7 @@ mod tests {
         let result = router.render_map(params).await;
         assert!(result.is_ok());
         let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 1);
+        assert_eq!(tool_result.content.len(), 2);
 
         // Check the audience is set to User
         assert!(tool_result.content[0].audience().is_some());
@@ -1492,6 +1534,12 @@ mod tests {
             tool_result.content[0].audience().unwrap(),
             &vec![Role::User]
         );
+
+        assert_eq!(
+            tool_result.content[1].audience().unwrap(),
+            &vec![Role::Assistant]
+        );
+        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
     }
 
     #[tokio::test]
@@ -1526,7 +1574,7 @@ mod tests {
         }
         assert!(result.is_ok());
         let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 1);
+        assert_eq!(tool_result.content.len(), 2);
 
         // Check the audience is set to User
         assert!(tool_result.content[0].audience().is_some());
@@ -1534,6 +1582,12 @@ mod tests {
             tool_result.content[0].audience().unwrap(),
             &vec![Role::User]
         );
+
+        assert_eq!(
+            tool_result.content[1].audience().unwrap(),
+            &vec![Role::Assistant]
+        );
+        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
     }
 
     #[tokio::test]
@@ -1554,7 +1608,7 @@ mod tests {
         }
         assert!(result.is_ok());
         let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 1);
+        assert_eq!(tool_result.content.len(), 2);
 
         // Check the audience is set to User
         assert!(tool_result.content[0].audience().is_some());
@@ -1562,5 +1616,11 @@ mod tests {
             tool_result.content[0].audience().unwrap(),
             &vec![Role::User]
         );
+
+        assert_eq!(
+            tool_result.content[1].audience().unwrap(),
+            &vec![Role::Assistant]
+        );
+        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
     }
 }
