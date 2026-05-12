@@ -105,23 +105,22 @@ export function findSpawnPosition({
   return { x: maxX + gap, y: baseY };
 }
 
-/** Pick a column count that produces a square-ish, landscape-leaning grid.
- * Tuned to match user-sketched expectations:
- *   n=1 → 1, n=2 → 2, n=3 → 3, n=4 → 2, n=5..6 → 3, n=7..9 → 3,
- *   n=10..12 → 4, n=13..16 → 4, n>16 → ceil(sqrt(n)).
- * (Single row for n ≤ 3 since that always reads more orderly than 2x2.) */
-function chooseCols(n: number): number {
-  if (n <= 3) return n;
-  return Math.ceil(Math.sqrt(n));
-}
-
-/** Organize: arrange windows into a tidy grid centered on the anchor.
- * Sizes are preserved; only positions move. When every window has the same
- * size we produce a regular row-major grid with the partial (final) row
- * centered above the full rows for visual balance. When sizes differ we
- * fall back to shelf packing: rows are sized by their tallest member, and
- * each row is centered horizontally over the anchor. Either way the
- * anchor's world position stays put — the grid is laid out around it. */
+/** Organize: tight greedy shelf-pack that respects the user's relative
+ * positioning of windows.
+ *
+ * Anchor stays exactly where it is in world space (so the camera, when it
+ * re-centers on the anchor, lands the active window at viewport center).
+ * Every other window snaps to the closest valid slot adjacent to an
+ * already-placed window — where "closest" is measured against the window's
+ * PRE-organize center, not the anchor's center. That preserves user intent:
+ * if you dragged window A to the left of B before clicking Organize, A
+ * will be packed into a slot on the left side and B on the right, instead
+ * of both being clustered by some arbitrary canonical order. Adjacent
+ * slots include cardinal edges (top/bottom/left/right of a placed window,
+ * with three vertical/horizontal alignments each) and the four diagonals,
+ * so any spatial arrangement reachable by gap-aligned snapping is on the
+ * candidate list. Windows are processed closest-to-anchor first so they
+ * grab the prime adjacent slots before more distant ones are placed. */
 export function organize(
   windows: readonly WindowRect[],
   anchorId: string,
@@ -136,153 +135,161 @@ export function organize(
   );
   const anchor = result[anchorIdx];
 
-  // Uniform-size path — produce a centered grid.
-  const sameSize = result.every((w) => w.w === anchor.w && w.h === anchor.h);
-  if (sameSize) {
-    const n = result.length;
-    const cols = Math.min(n, chooseCols(n));
-    const rows = Math.ceil(n / cols);
-    const partialCount = n - (rows - 1) * cols; // count in the first (partial) row
-    const cellW = anchor.w;
-    const cellH = anchor.h;
-    const stepX = cellW + gap;
-    const stepY = cellH + gap;
-    const totalH = rows * cellH + (rows - 1) * gap;
-
-    // Position the grid so the anchor's slot lands at the anchor's current world center.
-    const ax = anchor.x + anchor.w / 2;
-    const ay = anchor.y + anchor.h / 2;
-    // Compute the anchor's row/col so we can shift the grid to align it with
-    // the anchor's current center on BOTH axes (so the anchor doesn't move).
-    let anchorRow: number;
-    let anchorIndexInRow: number;
-    let anchorRowCount: number;
-    if (anchorIdx < partialCount) {
-      anchorRow = 0;
-      anchorIndexInRow = anchorIdx;
-      anchorRowCount = partialCount;
-    } else {
-      const offset = anchorIdx - partialCount;
-      anchorRow = 1 + Math.floor(offset / cols);
-      anchorIndexInRow = offset % cols;
-      anchorRowCount = cols;
-    }
-    // Y shift: anchor row's center should equal ay.
-    const naiveGridOriginY = -totalH / 2;
-    const naiveAnchorRowCenterY = naiveGridOriginY + anchorRow * stepY + cellH / 2;
-    const gridShiftY = ay - naiveAnchorRowCenterY;
-    // X shift: anchor's slot center within its row should equal ax.
-    const anchorRowW = anchorRowCount * cellW + (anchorRowCount - 1) * gap;
-    const naiveAnchorSlotCenterX = -anchorRowW / 2 + anchorIndexInRow * stepX + cellW / 2;
-    const gridShiftX = ax - naiveAnchorSlotCenterX;
-
-    for (let i = 0; i < n; i++) {
-      let row: number;
-      let indexInRow: number;
-      let countInRow: number;
-      if (i < partialCount) {
-        row = 0;
-        indexInRow = i;
-        countInRow = partialCount;
-      } else {
-        const offset = i - partialCount;
-        row = 1 + Math.floor(offset / cols);
-        indexInRow = offset % cols;
-        countInRow = cols;
-      }
-      const rowW = countInRow * cellW + (countInRow - 1) * gap;
-      const rowOriginX = -rowW / 2 + gridShiftX;
-      result[i].x = rowOriginX + indexInRow * stepX;
-      result[i].y = naiveGridOriginY + gridShiftY + row * stepY;
-    }
-    return result;
-  }
-
-  // Mixed-size path — shelf-pack rows centered on anchor's world center.
-  // Each row's height is determined by its tallest member; rows are
-  // accumulated in the windows' existing order to keep the anchor near its
-  // natural row. Row width budget is the width of N cells of the widest
-  // window — keeps the result roughly square.
-  return organizeShelfPack(result, anchor, gap);
-}
-
-function organizeShelfPack(
-  result: WindowRect[],
-  anchor: WindowRect,
-  gap: number
-): WindowRect[] {
-  const widestW = result.reduce((m, w) => Math.max(m, w.w), 0);
-  const tallestH = result.reduce((m, w) => Math.max(m, w.h), 0);
-  // Pick row-width budget that produces a square-ish grid given mixed sizes.
-  const n = result.length;
-  const colsHint = Math.max(1, chooseCols(n));
-  const budgetW = colsHint * widestW + (colsHint - 1) * gap;
-
-  interface Shelf {
-    windows: WindowRect[];
-    widthUsed: number;
-    rowH: number;
-  }
-  const shelves: Shelf[] = [];
+  // Snapshot pre-organize centers — used both to order placement
+  // (closer-to-anchor first) and to score candidate slots so each window
+  // lands as close as possible to its current spot.
+  const preCx = new Map<string, number>();
+  const preCy = new Map<string, number>();
   for (const w of result) {
-    const last = shelves[shelves.length - 1];
-    const fits = last && last.widthUsed + gap + w.w <= budgetW;
-    if (fits) {
-      last!.windows.push(w);
-      last!.widthUsed += gap + w.w;
-      last!.rowH = Math.max(last!.rowH, w.h);
-    } else {
-      shelves.push({ windows: [w], widthUsed: w.w, rowH: w.h });
-    }
+    preCx.set(w.id, w.x + w.w / 2);
+    preCy.set(w.id, w.y + w.h / 2);
   }
-
   const ax = anchor.x + anchor.w / 2;
   const ay = anchor.y + anchor.h / 2;
-  // Find anchor's shelf so we can place the grid such that anchor's row
-  // center is at the anchor's current world center.
-  let anchorShelf = 0;
-  let anchorIndexInShelf = 0;
-  outer: for (let i = 0; i < shelves.length; i++) {
-    const idx = shelves[i].windows.findIndex((w) => w.id === anchor.id);
-    if (idx >= 0) {
-      anchorShelf = i;
-      anchorIndexInShelf = idx;
-      break outer;
-    }
-  }
-  // Anchor's shelf vertical center
-  let yAcc = 0;
-  for (let i = 0; i < anchorShelf; i++) yAcc += shelves[i].rowH + gap;
-  const anchorShelfTop = yAcc;
-  const anchorShelfCenterY = anchorShelfTop + shelves[anchorShelf].rowH / 2;
-  const shiftY = ay - anchorShelfCenterY;
-  // Anchor's horizontal center within its shelf
-  let xAcc = 0;
-  for (let i = 0; i < anchorIndexInShelf; i++) {
-    xAcc += shelves[anchorShelf].windows[i].w + gap;
-  }
-  const anchorCenterXLocal = xAcc + anchor.w / 2;
-  // We center each shelf around anchor's center: shelfOriginX = ax - shelfW/2.
-  // For the anchor shelf, place the anchor exactly at (ax, ay) — shift shelf
-  // so anchor lines up. Other shelves just center under the anchor.
-  void tallestH;
 
-  let y = shiftY;
-  for (let si = 0; si < shelves.length; si++) {
-    const s = shelves[si];
-    const shelfW = s.widthUsed; // already widthUsed = sum widths + gaps
-    let shelfOriginX = ax - shelfW / 2;
-    if (si === anchorShelf) {
-      // Override: align anchor.center.x = ax inside this row
-      shelfOriginX = ax - anchorCenterXLocal;
+  const overlaps = (a: Rect, b: Rect): boolean => {
+    const ow = Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x);
+    const oh = Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y);
+    return ow > 0 && oh > 0;
+  };
+
+  const placed: WindowRect[] = [anchor];
+  const fits = (x: number, y: number, w: number, h: number): boolean => {
+    const rect = { x, y, w, h };
+    return !placed.some((p) => overlaps(rect, p));
+  };
+
+  // A slot "touches" a placed rect when one axis is at exactly `gap`
+  // separation and the other axis overlaps — i.e. they share a full
+  // gap-aligned edge. Counting touches across all placed windows lets us
+  // prefer slots that snap into concave corners (touching 2 or more
+  // neighbors) over slots that hang off the cluster's outer edge — which
+  // is what makes a 2x2 input stay 2x2 instead of degrading to an L-shape.
+  const touches = (slot: Rect, p: Rect): boolean => {
+    const eps = 0.5;
+    const xOverlap = Math.min(slot.x + slot.w, p.x + p.w) - Math.max(slot.x, p.x);
+    const yOverlap = Math.min(slot.y + slot.h, p.y + p.h) - Math.max(slot.y, p.y);
+    if (xOverlap > 0) {
+      if (Math.abs(slot.y - (p.y + p.h) - gap) < eps) return true;
+      if (Math.abs(p.y - (slot.y + slot.h) - gap) < eps) return true;
     }
-    let xCursor = shelfOriginX;
-    for (const w of s.windows) {
-      w.x = xCursor;
-      w.y = y + (s.rowH - w.h) / 2; // vertically center within row
-      xCursor += w.w + gap;
+    if (yOverlap > 0) {
+      if (Math.abs(slot.x - (p.x + p.w) - gap) < eps) return true;
+      if (Math.abs(p.x - (slot.x + slot.w) - gap) < eps) return true;
     }
-    y += s.rowH + gap;
+    return false;
+  };
+
+  // Order: closer to anchor first. Ties resolved by original index (stable).
+  const ordered = result
+    .map((w, i) => ({ w, i }))
+    .filter(({ i }) => i !== anchorIdx)
+    .map(({ w, i }) => ({
+      w,
+      i,
+      d: Math.hypot((preCx.get(w.id) ?? 0) - ax, (preCy.get(w.id) ?? 0) - ay),
+    }))
+    .sort((a, b) => a.d - b.d || a.i - b.i);
+
+  for (const { w } of ordered) {
+    const origCx = preCx.get(w.id) ?? 0;
+    const origCy = preCy.get(w.id) ?? 0;
+    interface Candidate {
+      x: number;
+      y: number;
+      dist: number;
+      shared: number;
+    }
+    const candidates: Candidate[] = [];
+    for (const p of placed) {
+      // 12 cardinal alignments (4 sides × 3 alignments) + 4 diagonals = 16
+      // candidate slots per placed window. Every slot leaves `gap` between
+      // the new window and the placed one along the separating axis.
+      const tries: Array<{ x: number; y: number }> = [
+        // Right of p — top-aligned, bottom-aligned, center-aligned.
+        { x: p.x + p.w + gap, y: p.y },
+        { x: p.x + p.w + gap, y: p.y + p.h - w.h },
+        { x: p.x + p.w + gap, y: p.y + p.h / 2 - w.h / 2 },
+        // Left of p.
+        { x: p.x - w.w - gap, y: p.y },
+        { x: p.x - w.w - gap, y: p.y + p.h - w.h },
+        { x: p.x - w.w - gap, y: p.y + p.h / 2 - w.h / 2 },
+        // Below p — left-aligned, right-aligned, center-aligned.
+        { x: p.x, y: p.y + p.h + gap },
+        { x: p.x + p.w - w.w, y: p.y + p.h + gap },
+        { x: p.x + p.w / 2 - w.w / 2, y: p.y + p.h + gap },
+        // Above p.
+        { x: p.x, y: p.y - w.h - gap },
+        { x: p.x + p.w - w.w, y: p.y - w.h - gap },
+        { x: p.x + p.w / 2 - w.w / 2, y: p.y - w.h - gap },
+        // Diagonal corners.
+        { x: p.x + p.w + gap, y: p.y + p.h + gap },
+        { x: p.x - w.w - gap, y: p.y + p.h + gap },
+        { x: p.x + p.w + gap, y: p.y - w.h - gap },
+        { x: p.x - w.w - gap, y: p.y - w.h - gap },
+      ];
+      for (const t of tries) {
+        if (!fits(t.x, t.y, w.w, w.h)) continue;
+        const cx = t.x + w.w / 2;
+        const cy = t.y + w.h / 2;
+        const dist = Math.hypot(cx - origCx, cy - origCy);
+        const slot: Rect = { x: t.x, y: t.y, w: w.w, h: w.h };
+        const shared = placed.reduce((n, q) => n + (touches(slot, q) ? 1 : 0), 0);
+        candidates.push({ x: t.x, y: t.y, dist, shared });
+      }
+    }
+    if (candidates.length === 0) {
+      // Adjacent slots are all blocked — spiral outward from the window's
+      // own pre-organize center to find any non-overlapping spot. This is
+      // an extreme fallback; with cardinal+diagonal coverage above it
+      // basically never fires for plausible window counts.
+      const stepX = w.w + gap;
+      const stepY = w.h + gap;
+      const baseX = origCx - w.w / 2;
+      const baseY = origCy - w.h / 2;
+      let chosen: { x: number; y: number } | null = null;
+      if (fits(baseX, baseY, w.w, w.h)) {
+        chosen = { x: baseX, y: baseY };
+      } else {
+        spiral: for (let r = 1; r <= 30; r++) {
+          for (let dy = -r; dy <= r; dy++) {
+            for (let dx = -r; dx <= r; dx++) {
+              if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+              const x = baseX + dx * stepX;
+              const y = baseY + dy * stepY;
+              if (fits(x, y, w.w, w.h)) {
+                chosen = { x, y };
+                break spiral;
+              }
+            }
+          }
+        }
+      }
+      if (chosen) {
+        w.x = chosen.x;
+        w.y = chosen.y;
+      } else {
+        // Truly nowhere — drop it to the right of the bounding box.
+        const maxX = placed.reduce((m, p) => Math.max(m, p.x + p.w), anchor.x);
+        w.x = maxX + gap;
+        w.y = ay - w.h / 2;
+      }
+    } else {
+      // Combined score = dist − shared × (max(w,h) + gap). The bonus per
+      // shared edge is one window-step; that's small enough that a window
+      // won't be pulled across the cluster to grab an extra neighbor, but
+      // large enough to flip an "L extension" candidate (shared 1, close
+      // to original) over a "concave corner" candidate (shared 2, one
+      // window-step further) — turning L-shapes into proper 2x2 grids
+      // when the user's positions are consistent with one.
+      const sharedBonus = Math.max(w.w, w.h) + gap;
+      const score = (c: { dist: number; shared: number }) =>
+        c.dist - c.shared * sharedBonus;
+      candidates.sort((a, b) => score(a) - score(b));
+      w.x = candidates[0].x;
+      w.y = candidates[0].y;
+    }
+    placed.push(w);
   }
   return result;
 }

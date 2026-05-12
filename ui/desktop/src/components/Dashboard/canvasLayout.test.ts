@@ -190,23 +190,39 @@ describe('organize', () => {
     expect(b.x).toBe(500);
   });
 
-  it('lays out 4 equal-size windows in a 2x2 grid', () => {
+  it('preserves a 2x2 arrangement and snaps each window to the grid', () => {
+    // Windows arranged in a rough 2x2 — top-left, top-right, bottom-left,
+    // bottom-right. Anchor is top-left. After organize, the relative
+    // positions are preserved and each pair is at gap=16 distance.
     const windows: WindowRect[] = [
-      { id: 'a', x: 0, y: 0, w: 100, h: 100 },
-      { id: 'b', x: 0, y: 0, w: 100, h: 100 },
-      { id: 'c', x: 0, y: 0, w: 100, h: 100 },
-      { id: 'd', x: 0, y: 0, w: 100, h: 100 },
+      { id: 'tl', x: 0, y: 0, w: 100, h: 100 },
+      { id: 'tr', x: 300, y: 0, w: 100, h: 100 },
+      { id: 'bl', x: 0, y: 300, w: 100, h: 100 },
+      { id: 'br', x: 300, y: 300, w: 100, h: 100 },
     ];
-    const result = organize(windows, 'a', 16);
-    // Two distinct ys (2 rows).
-    const ys = Array.from(new Set(result.map((w) => w.y)));
-    expect(ys.length).toBe(2);
-    // Two distinct xs per row (2 cols).
-    const row0 = result.filter((w) => w.y === ys[0]);
-    expect(row0.length).toBe(2);
+    const result = organize(windows, 'tl', 16);
+    const tl = result.find((w) => w.id === 'tl')!;
+    const tr = result.find((w) => w.id === 'tr')!;
+    const bl = result.find((w) => w.id === 'bl')!;
+    const br = result.find((w) => w.id === 'br')!;
+    // tl unmoved.
+    expect(tl.x).toBe(0);
+    expect(tl.y).toBe(0);
+    // tr is to the right of tl on the same row.
+    expect(tr.y).toBe(tl.y);
+    expect(tr.x - (tl.x + tl.w)).toBe(16);
+    // bl is below tl on the same column.
+    expect(bl.x).toBe(tl.x);
+    expect(bl.y - (tl.y + tl.h)).toBe(16);
+    // br is in the diagonal corner.
+    expect(br.x).toBe(tr.x);
+    expect(br.y).toBe(bl.y);
   });
 
-  it('lays out 5 equal-size windows as 2 + 3 (partial row of 2 on top)', () => {
+  it('preserves a single-row arrangement and snaps to gap-aligned spacing', () => {
+    // 5 windows roughly in a row — organize should keep them in a row,
+    // not collapse them into a tidy 2x3 grid. Respecting the user's
+    // implied arrangement is the contract.
     const windows: WindowRect[] = Array.from({ length: 5 }, (_, i) => ({
       id: 'w' + i,
       x: i * 200,
@@ -215,33 +231,58 @@ describe('organize', () => {
       h: 100,
     }));
     const result = organize(windows, 'w0', 16);
-    const ys = Array.from(new Set(result.map((w) => w.y))).sort((p, q) => p - q);
-    expect(ys.length).toBe(2);
-    // 5 windows / 3 cols = 2 rows. Partial row is 5 - 3 = 2 windows on top.
-    const topRow = result.filter((w) => w.y === ys[0]);
-    const bottomRow = result.filter((w) => w.y === ys[1]);
-    expect(topRow.length).toBe(2);
-    expect(bottomRow.length).toBe(3);
+    // All same y — single row preserved.
+    const ys = Array.from(new Set(result.map((w) => w.y)));
+    expect(ys.length).toBe(1);
+    // Each adjacent pair is exactly (100 + 16) = 116 px apart on x.
+    const sorted = [...result].sort((a, b) => a.x - b.x);
+    for (let i = 1; i < sorted.length; i++) {
+      expect(sorted[i].x - sorted[i - 1].x).toBe(116);
+    }
+    // Anchor (w0) unmoved.
+    expect(sorted[0].id).toBe('w0');
+    expect(sorted[0].x).toBe(0);
   });
 
-  it('lays out 7 equal-size windows as 1 + 3 + 3', () => {
-    const windows: WindowRect[] = Array.from({ length: 7 }, (_, i) => ({
+  it('respects relative ordering after a manual swap', () => {
+    // User had a, b, c left-to-right; then dragged a and c to swap. After
+    // organize, the new arrangement (c, b, a left-to-right) must be the
+    // one preserved — not the original input order.
+    const windows: WindowRect[] = [
+      { id: 'a', x: 1000, y: 0, w: 100, h: 100 }, // moved to right
+      { id: 'b', x: 500, y: 0, w: 100, h: 100 }, // anchor, middle
+      { id: 'c', x: 0, y: 0, w: 100, h: 100 }, // moved to left
+    ];
+    const result = organize(windows, 'b', 16);
+    const a = result.find((w) => w.id === 'a')!;
+    const b = result.find((w) => w.id === 'b')!;
+    const c = result.find((w) => w.id === 'c')!;
+    // c left of b left of a — user's swapped ordering preserved.
+    expect(c.x).toBeLessThan(b.x);
+    expect(b.x).toBeLessThan(a.x);
+    // Same y (single row), gap=16 between each adjacent pair.
+    expect(a.y).toBe(b.y);
+    expect(b.y).toBe(c.y);
+    expect(a.x - (b.x + b.w)).toBe(16);
+    expect(b.x - (c.x + c.w)).toBe(16);
+  });
+
+  it('packs vertically when the user arranged windows in a column', () => {
+    // 4 windows in a vertical column — organize keeps them in a column.
+    const windows: WindowRect[] = Array.from({ length: 4 }, (_, i) => ({
       id: 'w' + i,
-      x: i * 200,
-      y: 0,
+      x: 0,
+      y: i * 300,
       w: 100,
       h: 100,
     }));
-    const result = organize(windows, 'w3', 16);
-    const ys = Array.from(new Set(result.map((w) => w.y))).sort((p, q) => p - q);
-    expect(ys.length).toBe(3);
-    const r0 = result.filter((w) => w.y === ys[0]);
-    const r1 = result.filter((w) => w.y === ys[1]);
-    const r2 = result.filter((w) => w.y === ys[2]);
-    // 7 / 3 cols → 3 rows; partial = 7 - 2*3 = 1 on top.
-    expect(r0.length).toBe(1);
-    expect(r1.length).toBe(3);
-    expect(r2.length).toBe(3);
+    const result = organize(windows, 'w1', 16);
+    const xs = Array.from(new Set(result.map((w) => w.x)));
+    expect(xs.length).toBe(1);
+    const sorted = [...result].sort((a, b) => a.y - b.y);
+    for (let i = 1; i < sorted.length; i++) {
+      expect(sorted[i].y - sorted[i - 1].y).toBe(116);
+    }
   });
 
   it('packs mixed sizes into shelves without overlap', () => {
