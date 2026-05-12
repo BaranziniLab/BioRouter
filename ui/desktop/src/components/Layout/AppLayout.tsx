@@ -7,7 +7,6 @@ import { Button } from '../ui/button';
 import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from '../ui/sidebar';
 import { getInitialWorkingDir } from '../../utils/workingDir';
 import DependencySetupModal from '../DependencySetupModal';
-import { BackToDashboardPill } from '../Dashboard/BackToDashboardPill';
 
 const AppLayoutContent: React.FC = () => {
   const navigate = useNavigate();
@@ -89,11 +88,19 @@ const AppLayoutContent: React.FC = () => {
             <Plus className="w-4 h-4" />
           </Button>
           <Button
-            onClick={() => navigate('/dashboard')}
-            className="no-drag hover:!bg-background-medium"
+            onClick={() =>
+              navigate(location.pathname === '/dashboard' ? '/' : '/dashboard')
+            }
+            className={`no-drag hover:!bg-background-medium ${
+              location.pathname === '/dashboard' ? 'bg-background-medium' : ''
+            }`}
             variant="ghost"
             size="xs"
-            title="Open Dashboard"
+            title={
+              location.pathname === '/dashboard'
+                ? 'Exit Dashboard'
+                : 'Open Dashboard'
+            }
           >
             <LayoutDashboard className="w-4 h-4" />
           </Button>
@@ -109,7 +116,6 @@ const AppLayoutContent: React.FC = () => {
       <SidebarInset>
         <Outlet />
       </SidebarInset>
-      <BackToDashboardPill />
     </div>
   );
 };

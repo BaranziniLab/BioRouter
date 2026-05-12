@@ -116,11 +116,11 @@ export function SessionInsights() {
       </div>
       <div className="flex items-start gap-8 px-8 pb-8">
         <div>
-          <Skeleton className="h-8 w-16 mb-1.5" />
+          <Skeleton className="h-5 w-12 mb-1.5" />
           <span className="text-[11px] text-text-muted uppercase tracking-wider">Sessions</span>
         </div>
         <div>
-          <Skeleton className="h-8 w-24 mb-1.5" />
+          <Skeleton className="h-5 w-20 mb-1.5" />
           <span className="text-[11px] text-text-muted uppercase tracking-wider">Tokens</span>
         </div>
       </div>
@@ -148,7 +148,7 @@ export function SessionInsights() {
   }
 
   return (
-    <div className="bg-background-muted flex flex-col h-full" style={{ fontFamily: 'Arial, sans-serif' }}>
+    <div className="bg-background-muted flex flex-col h-full">
       {/* Hero — text directly on canvas */}
       <div className="px-8 pt-16 pb-6">
         <p className="text-xs font-medium text-text-muted tracking-widest mb-3">UCSF Biorouter</p>
@@ -165,13 +165,13 @@ export function SessionInsights() {
         ) : (
           <>
             <div className="page-transition">
-              <p className="text-3xl font-normal leading-none mb-1.5">
+              <p className="text-xl font-medium leading-none mb-1.5">
                 {Math.max(insights?.totalSessions ?? 0, 0)}
               </p>
               <span className="text-[11px] text-text-muted uppercase tracking-wider">Sessions</span>
             </div>
             <div className="page-transition">
-              <p className="text-3xl font-normal leading-none mb-1.5">
+              <p className="text-xl font-medium leading-none mb-1.5">
                 {formatTokens(insights?.totalTokens)}
               </p>
               <span className="text-[11px] text-text-muted uppercase tracking-wider">Tokens</span>

@@ -1405,6 +1405,13 @@ export default function ChatInput({
         <BottomMenuExtensionSelection sessionId={sessionId} />
         <div className="w-px h-4 bg-border-default mx-2" />
         <BottomMenuSkillSelection sessionId={sessionId} />
+        {/* Group separator between the always-visible action group
+            (DirSwitcher / Attach / Extensions / Skills) and the
+            secondary picker controls (Cost / Context / Model / Mode).
+            Renders in both compact (dashboard chevron) and inline
+            (chat-tab) layouts so the visual rhythm matches the other
+            mx-2 dividers in the row. */}
+        <div className="w-px h-4 bg-border-default mx-2" />
 
         {/* Secondary controls — context indicator + cost + model + mode +
             workflow + diagnostics. In dashboard mode (`compactPicker`) we put
@@ -1436,10 +1443,18 @@ export default function ChatInput({
               align="start"
               className="flex flex-col gap-0.5 w-72 p-1.5"
             >
-              {/* Context window row — real-time tokens + Compact button. The
-                  user can check usage and compact any time. Replaces the
-                  green-dot hover popover that used to live next to the model
-                  selector. */}
+              {/* Order: pricing first, then context (paired immediately with
+                  the model selector so they read as one group), then the
+                  conversation-style/mode selector last. */}
+              {COST_TRACKING_ENABLED && (
+                <PickerRow>
+                  <CostTracker
+                    inputTokens={accumulatedInputTokens}
+                    outputTokens={accumulatedOutputTokens}
+                    sessionCosts={sessionCosts}
+                  />
+                </PickerRow>
+              )}
               <ContextWindowGauge
                 totalTokens={totalTokens}
                 tokenLimit={tokenLimit}
@@ -1453,15 +1468,6 @@ export default function ChatInput({
                   setPickerExpanded(false);
                 }}
               />
-              {COST_TRACKING_ENABLED && (
-                <PickerRow>
-                  <CostTracker
-                    inputTokens={accumulatedInputTokens}
-                    outputTokens={accumulatedOutputTokens}
-                    sessionCosts={sessionCosts}
-                  />
-                </PickerRow>
-              )}
               <PickerRow>
                 <ModelsBottomBar
                   sessionId={sessionId}
@@ -1514,10 +1520,19 @@ export default function ChatInput({
           </Popover>
         ) : (
           // Chat-tab mode: inline picker row, no chevron.
+          // Order: pricing → context → model selection (context sits
+          // immediately to the left of the model picker so they read as a
+          // single group) → conversation style / mode.
           <div className="flex flex-row items-center">
-            {/* Bar-style context gauge (replaces the green-dot hover popover).
-                The trigger is a single neutral vital-sign icon; clicking it
-                opens the same gauge the dashboard picker uses. */}
+            {COST_TRACKING_ENABLED && (
+              <div className="flex items-center h-full mr-1">
+                <CostTracker
+                  inputTokens={accumulatedInputTokens}
+                  outputTokens={accumulatedOutputTokens}
+                  sessionCosts={sessionCosts}
+                />
+              </div>
+            )}
             <ContextWindowIndicator
               totalTokens={totalTokens}
               tokenLimit={tokenLimit}
@@ -1530,15 +1545,6 @@ export default function ChatInput({
                 );
               }}
             />
-            {COST_TRACKING_ENABLED && (
-              <div className="flex items-center h-full ml-1 mr-1">
-                <CostTracker
-                  inputTokens={accumulatedInputTokens}
-                  outputTokens={accumulatedOutputTokens}
-                  sessionCosts={sessionCosts}
-                />
-              </div>
-            )}
             <Tooltip>
               <div>
                 <ModelsBottomBar

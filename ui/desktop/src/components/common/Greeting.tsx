@@ -6,8 +6,12 @@ interface GreetingProps {
   forceRefresh?: boolean;
 }
 
+// Matches the section-title styling used by Workflows / Skills / History /
+// Scheduler tabs: `text-2xl font-semibold tracking-tight`, with no
+// custom font-family override. The animation classes are preserved so the
+// fade-in still plays when a new greeting mounts.
 export function Greeting({
-  className = 'mt-1 text-3xl font-normal leading-snug animate-in fade-in duration-300 [font-family:Arial,sans-serif]',
+  className = 'mt-1 text-2xl font-semibold tracking-tight animate-in fade-in duration-300',
   forceRefresh = false,
 }: GreetingProps) {
   const prefixes = ['Hello!'];

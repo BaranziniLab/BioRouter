@@ -430,9 +430,18 @@ function BaseChatContent({
           }
         >
           {!hideSessionNamePill && (
-            <div className="flex-shrink-0 px-4 pt-3">
+            // Wrapper sits above the fixed `.titlebar-drag-region` (z-50,
+            // top 32px) so the pill can receive clicks despite overlapping
+            // the OS title-bar drag zone. It explicitly opts INTO drag, so
+            // the wrapper area outside the pill itself still drags the
+            // window — only the pill's own (inline-flex) bounding box is
+            // marked no-drag (done inside SessionNamePill).
+            <div
+              className="flex-shrink-0 px-4 pt-3 relative z-[60]"
+              style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+            >
               <SessionNamePill
-                name={session?.name || 'New session'}
+                name={session?.name || 'New Session'}
                 onRename={handleRename}
                 accentColor={accentColor}
               />

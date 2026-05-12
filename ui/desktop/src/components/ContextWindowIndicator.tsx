@@ -46,7 +46,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
             style={{ width: `${Math.max(2, pct)}%` }}
           />
         </div>
-        <div className="flex items-center justify-between text-[10px] text-text-default/60">
+        <div className="flex items-center justify-between text-sm text-text-muted">
           <span>
             {fmt(current)} / {fmt(total)}
           </span>
