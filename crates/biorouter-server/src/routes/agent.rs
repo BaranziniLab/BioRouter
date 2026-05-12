@@ -34,7 +34,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, warn};
@@ -209,8 +208,12 @@ async fn start_agent(
         }
     }
 
-    let counter = state.session_counter.fetch_add(1, Ordering::SeqCst) + 1;
-    let name = format!("New session {}", counter);
+    // Always create new sessions with the same human-friendly placeholder.
+    // The numbered variant ("New session 154") leaked process-internal counter
+    // state into the UI and made it hard for the frontend to recognize a name
+    // as still being the default. Whether this session has been named is now
+    // tracked exclusively via `user_set_name` plus a name-vs-default check.
+    let name = "New Session".to_string();
 
     let manager = state.session_manager();
 
