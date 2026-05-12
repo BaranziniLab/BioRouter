@@ -8,9 +8,14 @@ import {
 import { generateName, pickAccentColor } from './palette';
 import {
   loadDashboardState,
+  saveDashboardState,
   SerializedDashboardState,
   debounceSave,
 } from './dashboardStorage';
+import {
+  isDefaultSessionName,
+  subscribeSessionNameChanges,
+} from '../../utils/sessionNameSync';
 import { findSpawnPosition, organize as organizeLayout } from './canvasLayout';
 import { createSession } from '../../sessions';
 import { getInitialWorkingDir } from '../../utils/workingDir';
@@ -74,6 +79,52 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
   useEffect(() => {
     debouncedSaveRef.current(serialize(state));
   }, [state]);
+
+  // Keep a live ref to the current state so the unmount-flush below can
+  // grab whatever was queued by the debounced save (which won't have fired
+  // if the user navigates away within 250ms of the last edit).
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+  useEffect(() => {
+    return () => {
+      // Synchronous flush — covers the route-change-faster-than-debounce
+      // case that made renames "snap back" after navigating away and back.
+      try {
+        saveDashboardState(serialize(stateRef.current));
+      } catch {
+        // Ignore; the debounced save handles quota errors silently too.
+      }
+    };
+  }, []);
+
+  // Receive name changes from BaseChat's pill, dashboard sibling windows,
+  // useChatStream's LLM-auto-rename poller, and any other open Electron
+  // BrowserWindow. Drives the dashboard window title bar without polling.
+  useEffect(() => {
+    return subscribeSessionNameChanges((change) => {
+      setState((prev) => {
+        let mutated = false;
+        const windows = prev.windows.map((w) => {
+          if (w.sessionId !== change.sessionId) return w;
+          if (change.userSetName) {
+            if (w.name === change.name && w.userSetName) return w;
+            mutated = true;
+            return { ...w, name: change.name, userSetName: true };
+          }
+          // Non-user broadcast: don't overwrite a local user rename, and
+          // don't accept a default placeholder over a real name.
+          if (w.userSetName) return w;
+          if (isDefaultSessionName(change.name)) return w;
+          if (w.name === change.name) return w;
+          mutated = true;
+          return { ...w, name: change.name };
+        });
+        return mutated ? { ...prev, windows } : prev;
+      });
+    });
+  }, []);
 
   // Briefly set isAnimating=true so windows + camera apply CSS transitions to
   // their next transform change. Cleared after ANIMATION_DURATION_MS.
@@ -184,28 +235,36 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     }));
   }, []);
 
-  const syncSessionName: DashboardApi['syncSessionName'] = useCallback((windowId, name) => {
-    // Ignore server-default placeholder names ("New session 154",
-    // "Session 5", or the bare "New Session" we use locally). The backend
-    // assigns one of these the moment a session is created, before any
-    // user message; without this guard the dashboard window flashes
-    // "New Session" → "New session 154" the instant resumeAgent returns.
-    // Only sync names the LLM has actually rewritten after a message
-    // exchange.
-    if (
-      /^New Session$/i.test(name) ||
-      /^New session \d+$/i.test(name) ||
-      /^Session \d+$/i.test(name)
-    ) {
-      return;
-    }
-    setState((prev) => ({
-      ...prev,
-      windows: prev.windows.map((w) =>
-        w.windowId === windowId && !w.userSetName && w.name !== name ? { ...w, name } : w
-      ),
-    }));
-  }, []);
+  // `syncSessionName` is invoked from BaseChat's session-update effect
+  // whenever the backend hands the renderer a name. The dashboard window
+  // accepts the name when EITHER the backend marks it user-authored
+  // (`userSetName`) OR it's a non-default LLM-generated name. We never let
+  // a backend default ("New Session" / legacy numbered variants) overwrite
+  // a non-default local name — that was the cause of the snap-back bug.
+  const syncSessionName: DashboardApi['syncSessionName'] = useCallback(
+    (windowId, name, opts) => {
+      const isUserSet = opts?.userSetName ?? false;
+      setState((prev) => ({
+        ...prev,
+        windows: prev.windows.map((w) => {
+          if (w.windowId !== windowId) return w;
+          // Always accept user-authored renames from the backend
+          // (e.g. another window renamed the same session).
+          if (isUserSet) {
+            if (w.name === name && w.userSetName) return w;
+            return { ...w, name, userSetName: true };
+          }
+          // Don't let backend's default placeholder overwrite an
+          // LLM-rename we already accepted or a user rename here.
+          if (w.userSetName) return w;
+          if (isDefaultSessionName(name)) return w;
+          if (w.name === name) return w;
+          return { ...w, name };
+        }),
+      }));
+    },
+    []
+  );
 
   const moveWindow: DashboardApi['moveWindow'] = useCallback((windowId, position, size) => {
     setState((prev) => ({

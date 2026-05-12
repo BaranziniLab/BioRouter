@@ -7,7 +7,9 @@ import { useDashboard } from '../../contexts/DashboardContext';
 import { WindowTitleBar } from './WindowTitleBar';
 import { ResizeHandle } from './ResizeHandle';
 import { usePointerDrag } from './useDashboardDrag';
-import { updateSessionName } from '../../api';
+import { announceSessionName, renameSession } from '../../utils/sessionNameSync';
+import { toastError } from '../../toasts';
+import { errorMessage } from '../../utils/conversionUtils';
 
 // Default "comfort" size used by the Enlarge button — matches the standalone
 // chat window dimensions in main.ts.
@@ -173,15 +175,40 @@ export const ChatWindow: React.FC<Props> = ({
             compactPicker
             accentColor={win.accentColor}
             onRenameSession={(newName) => {
+              // Optimistic local update so the title bar reads the new
+              // name immediately, before the network round-trip.
               dashboard.renameWindow(win.windowId, newName);
-              // Propagate to biorouterd so History reflects it.
-              void updateSessionName({
-                path: { session_id: win.sessionId },
-                body: { name: newName },
+              announceSessionName({
+                sessionId: win.sessionId,
+                name: newName,
+                userSetName: true,
+                origin: 'user',
+              });
+              // Persist to biorouterd + broadcast to siblings (history list,
+              // any open chat tab pointing at the same session).
+              void renameSession(win.sessionId, newName, 'user').catch((err) => {
+                // Roll back the dashboard window to the previous name.
+                if (win.name) {
+                  dashboard.renameWindow(win.windowId, win.name);
+                  announceSessionName({
+                    sessionId: win.sessionId,
+                    name: win.name,
+                    userSetName: win.userSetName,
+                    origin: 'sync',
+                  });
+                }
+                toastError({
+                  title: 'Failed to rename session',
+                  msg: errorMessage(err),
+                });
               });
             }}
             onSessionUpdate={(s) => {
-              if (s?.name) dashboard.syncSessionName(win.windowId, s.name);
+              if (s?.name) {
+                dashboard.syncSessionName(win.windowId, s.name, {
+                  userSetName: s.userSetName,
+                });
+              }
             }}
           />
         </ChatProvider>

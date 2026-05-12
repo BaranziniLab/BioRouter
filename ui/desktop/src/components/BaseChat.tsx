@@ -40,7 +40,9 @@ import { createSession } from '../sessions';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
 import { SessionNamePill } from './Dashboard/SessionNamePill';
-import { updateSessionName } from '../api';
+import { announceSessionName, renameSession } from '../utils/sessionNameSync';
+import { toastError } from '../toasts';
+import { errorMessage } from '../utils/conversionUtils';
 
 // Context for sharing current model info
 const CurrentModelContext = createContext<{ model: string; mode: string } | null>(null);
@@ -63,7 +65,9 @@ interface BaseChatProps {
   /** Optional: overrides the default rename behavior (which calls biorouterd updateSessionName). */
   onRenameSession?: (newName: string) => void;
   /** Notify parent when the underlying session object changes (e.g., biorouterd renamed it). */
-  onSessionUpdate?: (session: { id: string; name: string } | null) => void;
+  onSessionUpdate?: (
+    session: { id: string; name: string; userSetName: boolean } | null
+  ) => void;
   /** Optional accent dot color (dashboard windows pass theirs). */
   accentColor?: string;
   /** Hide the SessionNamePill at the top of the chat. Dashboard windows pass this
@@ -353,19 +357,47 @@ function BaseChatContent({
   }, [onSessionUpdate]);
   useEffect(() => {
     if (!session) return;
-    onSessionUpdateRef.current?.({ id: session.id, name: session.name });
-  }, [session?.id, session?.name]);
+    onSessionUpdateRef.current?.({
+      id: session.id,
+      name: session.name,
+      userSetName: session.user_set_name ?? false,
+    });
+  }, [session?.id, session?.name, session?.user_set_name]);
 
-  const handleRename = (newName: string) => {
+  const handleRename = async (newName: string) => {
     if (onRenameSession) {
       onRenameSession(newName);
       return;
     }
     if (!sessionId) return;
-    void updateSessionName({
-      path: { session_id: sessionId },
-      body: { name: newName },
+    // Optimistic announce so the pill, the chat-context display, history, and
+    // any other open window snap to the new name immediately. `renameSession`
+    // will re-announce on API success (idempotent — no-op if name matches).
+    const previous = session;
+    announceSessionName({
+      sessionId,
+      name: newName,
+      userSetName: true,
+      origin: 'user',
     });
+    try {
+      await renameSession(sessionId, newName, 'user');
+    } catch (err) {
+      // Roll back to whatever the session held before the click. Using
+      // `sync` as the origin so listeners treat it as authoritative.
+      if (previous?.name) {
+        announceSessionName({
+          sessionId,
+          name: previous.name,
+          userSetName: previous.user_set_name ?? false,
+          origin: 'sync',
+        });
+      }
+      toastError({
+        title: 'Failed to rename session',
+        msg: errorMessage(err),
+      });
+    }
   };
 
   // Only use initialMessage for the prompt if it hasn't been submitted yet

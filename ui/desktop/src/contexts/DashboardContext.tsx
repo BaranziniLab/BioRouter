@@ -40,8 +40,19 @@ export interface DashboardApi {
   closeWindow: (windowId: string) => void;
   focusWindow: (windowId: string) => void;
   renameWindow: (windowId: string, name: string) => void;
-  /** Called when biorouterd auto-names the session. Updates only if userSetName is false. */
-  syncSessionName: (windowId: string, name: string) => void;
+  /** Apply a session name observed from the backend (LLM auto-rename or a
+   * sibling window's rename). Pass `opts.userSetName: true` when the
+   * backend marks it user-authored — the window then accepts and locks it
+   * even if it matches a default placeholder.
+   *
+   * Without `opts.userSetName`, the window only accepts the name if it
+   * isn't a default placeholder and the window hasn't been renamed
+   * locally (`userSetName=false` on the window). */
+  syncSessionName: (
+    windowId: string,
+    name: string,
+    opts?: { userSetName?: boolean }
+  ) => void;
   moveWindow: (
     windowId: string,
     position: { x: number; y: number },

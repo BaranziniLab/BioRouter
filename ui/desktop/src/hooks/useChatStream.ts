@@ -11,10 +11,17 @@ import {
   Session,
   TokenState,
   updateFromSession,
-  updateSessionName,
   updateSessionUserWorkflowValues,
   listApps,
 } from '../api';
+import {
+  announceSessionName,
+  cacheGet,
+  cacheSet,
+  isDefaultSessionName,
+  renameSession,
+  subscribeSessionNameChanges,
+} from '../utils/sessionNameSync';
 
 import {
   createUserMessage,
@@ -26,33 +33,8 @@ import {
 import { errorMessage } from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
 
-// LRU-bounded session cache. Without a cap this Map retained every session
-// the user ever opened — including its full conversation history — for the
-// lifetime of the renderer. The dashboard branch makes this much worse:
-// every ChatWindow mounts its own useChatStream, so heavy users accumulate
-// dozens of full conversations in memory. Map preserves insertion order, so
-// re-inserting on access is a sufficient LRU touch.
-const RESULTS_CACHE_MAX = 10;
-const resultsCache = new Map<string, { messages: Message[]; session: Session }>();
-
-function cacheGet(key: string): { messages: Message[]; session: Session } | undefined {
-  const v = resultsCache.get(key);
-  if (v) {
-    resultsCache.delete(key);
-    resultsCache.set(key, v);
-  }
-  return v;
-}
-
-function cacheSet(key: string, value: { messages: Message[]; session: Session }): void {
-  if (resultsCache.has(key)) resultsCache.delete(key);
-  resultsCache.set(key, value);
-  while (resultsCache.size > RESULTS_CACHE_MAX) {
-    const oldest = resultsCache.keys().next().value;
-    if (oldest === undefined) break;
-    resultsCache.delete(oldest);
-  }
-}
+// Cache lives in utils/sessionNameSync.ts so that renames from any
+// component update every reader's view consistently.
 
 // Coalesces concurrent listSessions calls within a short window. The
 // dashboard mounts N ChatWindows in parallel; each polls listSessions up to
@@ -268,6 +250,24 @@ export function useChatStream({
     }
   }, [sessionId, session, messages]);
 
+  // Pick up rename events from sibling windows / routes (BaseChat pill,
+  // dashboard window titlebar, LLM auto-rename). Without this, e.g. a
+  // dashboard window renames the session and the history list, still
+  // mounted in another route, keeps showing the stale name until refresh.
+  useEffect(() => {
+    if (!sessionId) return;
+    return subscribeSessionNameChanges((change) => {
+      if (change.sessionId !== sessionId) return;
+      setSession((prev) => {
+        if (!prev) return prev;
+        if (prev.name === change.name && prev.user_set_name === change.userSetName) {
+          return prev;
+        }
+        return { ...prev, name: change.name, user_set_name: change.userSetName };
+      });
+    });
+  }, [sessionId]);
+
   const updateMessages = useCallback((newMessages: Message[]) => {
     setMessages(newMessages);
     messagesRef.current = newMessages;
@@ -302,22 +302,16 @@ export function useChatStream({
       // Refresh session name after each reply for the first 3 user messages.
       // The backend regenerates the name (in a fire-and-forget tokio::spawn —
       // see agents/agent.rs:maybe_update_name) and we don't know exactly when
-      // it finishes, so poll a few times with backoff and keep the first name
-      // that doesn't match the default placeholder.
+      // it finishes, so poll a few times with backoff. Two early-exits:
+      // (1) backend tells us the user already renamed (`user_set_name=true`)
+      //     → stop polling, don't disturb the user's name.
+      // (2) name is non-default → persist any disambiguation and announce.
       if (!error && sessionId) {
         const userMessageCount = messagesRef.current.filter(
           (m) => m.role === 'user'
         ).length;
         if (userMessageCount <= 3) {
-          // Matches both legacy ("New session 137", "Session 5") and current
-          // ("New Session") placeholders so we keep polling past them.
-          const isDefaultName = (name?: string) =>
-            !name ||
-            /^New Session$/i.test(name) ||
-            /^New session \d+$/i.test(name) ||
-            /^Session \d+$/i.test(name);
           const pollDelays = [800, 1200, 2000, 3000];
-          // Fire-and-forget polling so we don't block setChatState(Idle).
           void (async () => {
             for (const delay of pollDelays) {
               await new Promise((r) => setTimeout(r, delay));
@@ -326,30 +320,38 @@ export function useChatStream({
                   path: { session_id: sessionId },
                   throwOnError: true,
                 });
-                const proposedName = response.data?.name;
-                if (proposedName && !isDefaultName(proposedName)) {
-                  // Backend assigned an LLM-generated name. Disambiguate
-                  // against existing session names — if the same name is
-                  // already used by another session in history, append
-                  // " 2", " 3", … until unique. Persist the disambiguated
-                  // name via updateSessionName so history shows it too.
+                const data = response.data;
+                if (!data) continue;
+                const proposedName = data.name;
+                if (data.user_set_name) {
+                  // User already renamed via the UI — stop racing them.
+                  break;
+                }
+                if (proposedName && !isDefaultSessionName(proposedName)) {
+                  // Backend's LLM-generated name. Disambiguate against
+                  // history, persist if changed, broadcast to siblings.
                   const uniqueName = await disambiguateSessionName(
                     proposedName,
                     sessionId
                   );
                   if (uniqueName !== proposedName) {
                     try {
-                      await updateSessionName({
-                        path: { session_id: sessionId },
-                        body: { name: uniqueName },
-                        throwOnError: true,
-                      });
+                      await renameSession(sessionId, uniqueName, 'llm');
                     } catch (renameError) {
                       console.warn(
                         'Failed to persist disambiguated session name:',
                         renameError
                       );
+                      // Fall through with the un-disambiguated name; better
+                      // than dropping the LLM rename altogether.
                     }
+                  } else {
+                    announceSessionName({
+                      sessionId,
+                      name: uniqueName,
+                      userSetName: false,
+                      origin: 'llm',
+                    });
                   }
                   setSession((prev) =>
                     prev && prev.name !== uniqueName
@@ -357,15 +359,6 @@ export function useChatStream({
                       : prev
                   );
                   break;
-                }
-                if (proposedName) {
-                  // Still a placeholder — at least sync the local state so
-                  // any UI bound to session.name stays consistent.
-                  setSession((prev) =>
-                    prev && prev.name !== proposedName
-                      ? { ...prev, name: proposedName }
-                      : prev
-                  );
                 }
               } catch (refreshError) {
                 console.warn('Failed to refresh session name:', refreshError);
