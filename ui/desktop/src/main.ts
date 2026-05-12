@@ -157,6 +157,27 @@ async function configureProxy() {
 
 if (started) app.quit();
 
+// Global safety net: turn uncaught exceptions / unhandled rejections in the
+// main process into logged diagnostics instead of bare brk #0 aborts. The
+// default Node behavior tears the process down with no readable cause line
+// in the crash report, which is what every recent BioRouter crash report
+// has looked like. Logging here doesn't *prevent* the crash, but it
+// guarantees the next .ips will have actionable context.
+process.on('uncaughtException', (err, origin) => {
+  try {
+    log.error(`[Main] uncaughtException (${origin}):`, err);
+  } catch {
+    /* logger itself may be torn down — swallow */
+  }
+});
+process.on('unhandledRejection', (reason) => {
+  try {
+    log.error('[Main] unhandledRejection:', reason);
+  } catch {
+    /* logger itself may be torn down — swallow */
+  }
+});
+
 if (process.env.ENABLE_PLAYWRIGHT) {
   const cdpPort = process.env.PLAYWRIGHT_CDP_PORT ?? '9222';
   console.log(`[Main] Enabling Playwright remote debugging on port ${cdpPort}`);
