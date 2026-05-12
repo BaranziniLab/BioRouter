@@ -140,20 +140,26 @@ export const ChatWindow: React.FC<Props> = ({
         accentColor={win.accentColor}
         onRename={(name) => dashboard.renameWindow(win.windowId, name)}
         onClose={() => dashboard.closeWindow(win.windowId)}
-        onShrink={() =>
+        onShrink={() => {
+          // Resizing is an explicit user interaction with this window — claim
+          // focus too so subsequent organize/centerOn treats this as the
+          // active window (matches user's mental model that the window
+          // they're manipulating is "active").
+          if (!isFocused) dashboard.focusWindow(win.windowId);
           dashboard.resizeWindow(
             win.windowId,
             { w: minSize.w, h: minSize.h },
             { x: rect.x, y: rect.y }
-          )
-        }
-        onEnlarge={() =>
+          );
+        }}
+        onEnlarge={() => {
+          if (!isFocused) dashboard.focusWindow(win.windowId);
           dashboard.resizeWindow(
             win.windowId,
             { w: ENLARGE_W, h: ENLARGE_H },
             { x: rect.x, y: rect.y }
-          )
-        }
+          );
+        }}
         onPointerDownDrag={dragStart}
       />
       <div className="flex-1 min-h-0 relative">

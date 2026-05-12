@@ -27,7 +27,13 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
   };
 
   return (
-    <div className={`inline-flex items-center gap-2 px-2 py-1 rounded-md ${className ?? ''}`}>
+    // `no-drag` (CSS class -> -webkit-app-region: no-drag) on the pill's
+    // own bounding box so the inline-flex content doesn't inherit the
+    // drag behavior of the wrapping container — without this the click
+    // would be captured by the OS title-bar drag handler.
+    <div
+      className={`inline-flex items-center gap-2 px-2 py-1 rounded-md no-drag ${className ?? ''}`}
+    >
       {accentColor && (
         <span
           className="inline-block w-2 h-2 rounded-full flex-shrink-0"
@@ -50,13 +56,14 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
           className="bg-transparent text-sm font-medium outline-none border-b border-border-subtle min-w-[120px]"
         />
       ) : (
-        <span
-          className="text-sm font-medium cursor-text"
-          onDoubleClick={() => setEditing(true)}
-          title="Double-click to rename"
+        <button
+          type="button"
+          className="text-sm font-medium cursor-text hover:bg-background-medium/40 rounded px-1 -mx-1 transition-colors text-left"
+          onClick={() => setEditing(true)}
+          title="Click to rename"
         >
           {name}
-        </span>
+        </button>
       )}
     </div>
   );

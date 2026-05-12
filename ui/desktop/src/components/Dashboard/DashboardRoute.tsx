@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect } from 'react';
 import { useDashboard } from '../../contexts/DashboardContext';
 import { DashboardBoard } from './DashboardBoard';
 import { DashboardToolbar } from './DashboardToolbar';
@@ -13,7 +13,6 @@ let pendingExit: ReturnType<typeof setTimeout> | null = null;
 
 export const DashboardRoute: React.FC = () => {
   const dashboard = useDashboard();
-  const didAutoSpawn = useRef(false);
 
   useEffect(() => {
     const electron = (
@@ -45,14 +44,12 @@ export const DashboardRoute: React.FC = () => {
     };
   }, []);
 
-  // Auto-spawn one window if state is completely empty.
-  useEffect(() => {
-    if (didAutoSpawn.current) return;
-    if (dashboard.state.windows.length === 0) {
-      didAutoSpawn.current = true;
-      void dashboard.spawnWindow();
-    }
-  }, [dashboard.state.windows.length, dashboard]);
+  // No auto-spawn on mount: previously this fired when windows.length === 0,
+  // which (because the guarding ref lived on the route component) re-fired
+  // after Clear + navigate-away + navigate-back, undoing the user's explicit
+  // Clear action. The empty-canvas state shows a "Spawn a conversation" CTA
+  // (see DashboardBoard) — that's the explicit user-initiated path to create
+  // the first window.
 
   // Keyboard shortcuts. Cmd+N and Cmd+W are owned by the Electron menu
   // ("New Window" / OS "Close Window") and never reach the renderer first, so

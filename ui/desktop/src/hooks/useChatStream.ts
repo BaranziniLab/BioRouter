@@ -3,6 +3,7 @@ import { ChatState } from '../types/chatState';
 
 import {
   getSession,
+  listSessions,
   Message,
   MessageEvent,
   reply,
@@ -10,6 +11,7 @@ import {
   Session,
   TokenState,
   updateFromSession,
+  updateSessionName,
   updateSessionUserWorkflowValues,
   listApps,
 } from '../api';
@@ -50,6 +52,66 @@ function cacheSet(key: string, value: { messages: Message[]; session: Session })
     if (oldest === undefined) break;
     resultsCache.delete(oldest);
   }
+}
+
+// Coalesces concurrent listSessions calls within a short window. The
+// dashboard mounts N ChatWindows in parallel; each polls listSessions up to
+// 4 times after the user's first ~3 replies — without coalescing that's 4N
+// round-trips against biorouterd in a few seconds. Sharing the in-flight
+// Promise (and caching its result briefly) collapses those to one request
+// per burst.
+const SESSION_LIST_CACHE_TTL_MS = 5000;
+let sessionListInflight: Promise<{ id: string; name?: string | null }[]> | null = null;
+let sessionListInflightAt = 0;
+
+async function fetchAllSessions(): Promise<{ id: string; name?: string | null }[]> {
+  const now = Date.now();
+  if (sessionListInflight && now - sessionListInflightAt < SESSION_LIST_CACHE_TTL_MS) {
+    return sessionListInflight;
+  }
+  sessionListInflightAt = now;
+  sessionListInflight = (async () => {
+    const response = await listSessions({ throwOnError: true });
+    return (response.data?.sessions ?? []) as { id: string; name?: string | null }[];
+  })();
+  sessionListInflight.catch(() => {
+    // Drop the cached promise on failure so the next caller retries.
+    sessionListInflight = null;
+  });
+  return sessionListInflight;
+}
+
+/** If `proposed` collides with any *other* session's name in history, return
+ * the first available "<proposed> N" variant (N ≥ 2). Otherwise return
+ * `proposed` unchanged. The current session is excluded from the collision
+ * set so a session that already had the name doesn't get renamed away.
+ *
+ * Failure mode: if the sessions list can't be fetched, return the proposed
+ * name as-is. Better to occasionally allow a duplicate than to drop the
+ * LLM-assigned name on the floor. */
+async function disambiguateSessionName(
+  proposed: string,
+  currentSessionId: string
+): Promise<string> {
+  let existingNames: Set<string>;
+  try {
+    const sessions = await fetchAllSessions();
+    existingNames = new Set(
+      sessions
+        .filter((s) => s.id !== currentSessionId)
+        .map((s) => s.name)
+        .filter((n): n is string => typeof n === 'string')
+    );
+  } catch (e) {
+    console.warn('disambiguateSessionName: failed to list sessions:', e);
+    return proposed;
+  }
+  if (!existingNames.has(proposed)) return proposed;
+  for (let n = 2; n < 1000; n++) {
+    const candidate = `${proposed} ${n}`;
+    if (!existingNames.has(candidate)) return candidate;
+  }
+  return proposed;
 }
 
 interface UseChatStreamProps {
@@ -241,14 +303,19 @@ export function useChatStream({
       // The backend regenerates the name (in a fire-and-forget tokio::spawn —
       // see agents/agent.rs:maybe_update_name) and we don't know exactly when
       // it finishes, so poll a few times with backoff and keep the first name
-      // that doesn't match the default "New session N" placeholder.
+      // that doesn't match the default placeholder.
       if (!error && sessionId) {
         const userMessageCount = messagesRef.current.filter(
           (m) => m.role === 'user'
         ).length;
         if (userMessageCount <= 3) {
+          // Matches both legacy ("New session 137", "Session 5") and current
+          // ("New Session") placeholders so we keep polling past them.
           const isDefaultName = (name?: string) =>
-            !name || /^New session \d+$/i.test(name);
+            !name ||
+            /^New Session$/i.test(name) ||
+            /^New session \d+$/i.test(name) ||
+            /^Session \d+$/i.test(name);
           const pollDelays = [800, 1200, 2000, 3000];
           // Fire-and-forget polling so we don't block setChatState(Idle).
           void (async () => {
@@ -259,12 +326,46 @@ export function useChatStream({
                   path: { session_id: sessionId },
                   throwOnError: true,
                 });
-                const newName = response.data?.name;
-                if (newName) {
-                  setSession((prev) =>
-                    prev && prev.name !== newName ? { ...prev, name: newName } : prev
+                const proposedName = response.data?.name;
+                if (proposedName && !isDefaultName(proposedName)) {
+                  // Backend assigned an LLM-generated name. Disambiguate
+                  // against existing session names — if the same name is
+                  // already used by another session in history, append
+                  // " 2", " 3", … until unique. Persist the disambiguated
+                  // name via updateSessionName so history shows it too.
+                  const uniqueName = await disambiguateSessionName(
+                    proposedName,
+                    sessionId
                   );
-                  if (!isDefaultName(newName)) break;
+                  if (uniqueName !== proposedName) {
+                    try {
+                      await updateSessionName({
+                        path: { session_id: sessionId },
+                        body: { name: uniqueName },
+                        throwOnError: true,
+                      });
+                    } catch (renameError) {
+                      console.warn(
+                        'Failed to persist disambiguated session name:',
+                        renameError
+                      );
+                    }
+                  }
+                  setSession((prev) =>
+                    prev && prev.name !== uniqueName
+                      ? { ...prev, name: uniqueName }
+                      : prev
+                  );
+                  break;
+                }
+                if (proposedName) {
+                  // Still a placeholder — at least sync the local state so
+                  // any UI bound to session.name stays consistent.
+                  setSession((prev) =>
+                    prev && prev.name !== proposedName
+                      ? { ...prev, name: proposedName }
+                      : prev
+                  );
                 }
               } catch (refreshError) {
                 console.warn('Failed to refresh session name:', refreshError);

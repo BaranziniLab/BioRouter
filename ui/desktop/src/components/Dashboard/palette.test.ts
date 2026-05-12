@@ -19,10 +19,12 @@ describe('palette', () => {
     expect(ACCENT_PALETTE).toContain(pickAccentColor(all));
   });
 
-  it('generateName returns "Session N" for any non-negative index', () => {
-    expect(generateName(0)).toBe('Session 1');
-    expect(generateName(1)).toBe('Session 2');
-    expect(generateName(7)).toBe('Session 8');
-    expect(generateName(99)).toBe('Session 100');
+  it('generateName returns the plain "New Session" placeholder', () => {
+    // Numbered names are now applied by the LLM after the first message
+    // exchange (with collision disambiguation in useChatStream). The local
+    // default is intentionally identical for every spawn.
+    expect(generateName(0)).toBe('New Session');
+    expect(generateName(1)).toBe('New Session');
+    expect(generateName(99)).toBe('New Session');
   });
 });

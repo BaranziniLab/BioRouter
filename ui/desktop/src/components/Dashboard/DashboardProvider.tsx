@@ -65,6 +65,11 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
   const [state, setState] = useState<DashboardState>(() => hydrate());
   const debouncedSaveRef = useRef(debounceSave(250));
   const animationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Generation counter incremented on every clearAll. Each in-flight spawn
+  // snapshots the current generation before awaiting createSession; if the
+  // generation has advanced by the time the await resolves, the spawn aborts
+  // instead of appending a phantom window to the just-cleared canvas.
+  const spawnGenerationRef = useRef(0);
 
   useEffect(() => {
     debouncedSaveRef.current(serialize(state));
@@ -87,8 +92,13 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
   }, []);
 
   const spawnWindow: DashboardApi['spawnWindow'] = useCallback(async () => {
+    const generation = spawnGenerationRef.current;
     const cwd = getInitialWorkingDir();
     const session = await createSession(cwd);
+    // If clearAll bumped the generation while we were awaiting, the user has
+    // since hit Clear — drop the about-to-be-added window on the floor so the
+    // empty canvas stays empty as the user expects.
+    if (generation !== spawnGenerationRef.current) return;
     const sessionId = session.id;
     const now = Date.now();
     setState((prev) => {
@@ -263,14 +273,26 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
   }, [flashAnimating]);
 
   const clearAll: DashboardApi['clearAll'] = useCallback(() => {
+    // Invalidate any in-flight spawns (createSession promises that haven't
+    // resolved yet) so they don't append a phantom window after the user
+    // explicitly cleared the canvas.
+    spawnGenerationRef.current += 1;
     setState((prev) => ({ ...prev, windows: [], focusedWindowId: null }));
   }, []);
 
   const panBy: DashboardApi['panBy'] = useCallback((dx, dy) => {
-    setState((prev) => ({
-      ...prev,
-      cameraOffset: { x: prev.cameraOffset.x + dx, y: prev.cameraOffset.y + dy },
-    }));
+    setState((prev) => {
+      // Ignore pan/wheel deltas while a centering animation is in flight,
+      // otherwise a user dragging mid-spawn (or mid-organize) would have
+      // their pan delta accumulate on top of the just-set cameraOffset,
+      // leaving the camera offset from the intended center by however far
+      // they happened to drag during the 220ms animation window.
+      if (prev.isAnimating) return prev;
+      return {
+        ...prev,
+        cameraOffset: { x: prev.cameraOffset.x + dx, y: prev.cameraOffset.y + dy },
+      };
+    });
   }, []);
 
   const centerOn: DashboardApi['centerOn'] = useCallback((windowId, viewport) => {

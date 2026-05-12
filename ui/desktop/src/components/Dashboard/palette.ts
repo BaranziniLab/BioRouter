@@ -22,6 +22,13 @@ export function pickAccentColor(usedColors: readonly string[]): string {
   return ACCENT_PALETTE[ringIndex];
 }
 
-export function generateName(index: number): string {
-  return `Session ${index + 1}`;
+// Default name for a freshly-spawned conversation. The LLM rewrites this
+// after the first message exchange (see useChatStream's session-name polling),
+// at which point disambiguation logic appends " 2", " 3" etc. if the
+// LLM-assigned name collides with an existing session in history.
+//
+// The `index` parameter is unused but kept so callers don't have to change.
+export function generateName(_index: number): string {
+  void _index;
+  return 'New Session';
 }

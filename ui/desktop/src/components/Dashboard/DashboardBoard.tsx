@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useDashboard } from '../../contexts/DashboardContext';
 import { ChatWindow } from './ChatWindow';
 
@@ -12,49 +12,104 @@ const Z_TILED = 1;
 export const DashboardBoard: React.FC = () => {
   const dashboard = useDashboard();
   const viewportRef = useRef<HTMLDivElement>(null);
+  const worldRef = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState<{ width: number; height: number }>({
     width: 0,
     height: 0,
   });
 
-  // Track viewport size for centerOn() calls.
+  // Tracking ref for the camera re-centering effect below. Declared up here
+  // so the synchronous mount useLayoutEffect can also seed it. Tracks the
+  // viewport size used for the last centering pass, so we can re-center
+  // when the viewport itself changes shape — this happens on entry to the
+  // dashboard, because `dashboardEnter()` asynchronously maximizes the
+  // Electron window AFTER our initial mount, growing the viewport from the
+  // chat-window size to the full-screen size. Without re-centering on that
+  // resize, the camera stays calibrated for the old (small) viewport and
+  // the focused window ends up off-screen in the new (large) one.
+  const lastCenteringRef = useRef<{
+    id: string | null;
+    tick: number;
+    vw: number;
+    vh: number;
+  }>({ id: null, tick: 0, vw: 0, vh: 0 });
+
+  // Synchronous mount-time pass: measure the viewport AND center on the
+  // hydrated focused window before the first paint. Without this, the
+  // dashboard renders one frame at the persisted cameraOffset (wherever the
+  // user was panned when they last left the canvas) before the regular
+  // centering effect fires — visible as a flash of "random position" on
+  // every navigation into the dashboard. Runs only on mount.
+  useLayoutEffect(() => {
+    const el = viewportRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return;
+    setViewport({ width: r.width, height: r.height });
+    const id = dashboard.state.focusedWindowId;
+    if (id) {
+      dashboard.centerOn(id, { width: r.width, height: r.height });
+      lastCenteringRef.current = {
+        id,
+        tick: dashboard.state.organizeTick,
+        vw: r.width,
+        vh: r.height,
+      };
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Track viewport size for centerOn() calls. ResizeObserver only — initial
+  // measurement is handled by the useLayoutEffect above.
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
-    const update = () => {
+    const ro = new ResizeObserver(() => {
       const r = el.getBoundingClientRect();
       setViewport({ width: r.width, height: r.height });
-    };
-    update();
-    const ro = new ResizeObserver(update);
+    });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
 
-  // Recenter on focused window whenever the focus changes (covers spawn, since
-  // spawnWindow sets focusedWindowId to the new window).
-  const lastFocusedRef = useRef<string | null>(null);
+  // Camera re-centering — single effect handling BOTH focus changes (spawn,
+  // click-to-focus, enlarge/shrink) AND organize ticks. Two separate effects
+  // raced when state changed multiple times in quick succession: each effect
+  // updated its own tracking ref unconditionally at the end of its run, so a
+  // transient state (viewport not yet measured, focusedWindowId momentarily
+  // null between renders, or focus changing before the other effect fired)
+  // could leave a ref equal to the current id while centerOn was skipped —
+  // and from then on no re-center would ever fire because the ref already
+  // "matched" the current focus. Combining them, and only advancing the
+  // tracking refs AFTER centerOn actually fires, removes that whole class
+  // of stuck states.
   useEffect(() => {
+    if (viewport.width === 0 || viewport.height === 0) return;
     const id = dashboard.state.focusedWindowId;
-    if (id && id !== lastFocusedRef.current && viewport.width > 0) {
-      dashboard.centerOn(id, viewport);
-    }
-    lastFocusedRef.current = id;
-  }, [dashboard.state.focusedWindowId, dashboard, viewport]);
-
-  // Organize triggers a re-center on the focused window.
-  const lastOrganizeTickRef = useRef(0);
-  useEffect(() => {
     const tick = dashboard.state.organizeTick;
-    if (
-      tick > lastOrganizeTickRef.current &&
-      dashboard.state.focusedWindowId &&
-      viewport.width > 0
-    ) {
-      dashboard.centerOn(dashboard.state.focusedWindowId, viewport);
+    const last = lastCenteringRef.current;
+    if (!id) {
+      lastCenteringRef.current = { id: null, tick, vw: viewport.width, vh: viewport.height };
+      return;
     }
-    lastOrganizeTickRef.current = tick;
-  }, [dashboard.state.organizeTick, dashboard, viewport]);
+    const focusChanged = id !== last.id;
+    const organized = tick !== last.tick;
+    const viewportChanged = last.vw !== viewport.width || last.vh !== viewport.height;
+    if (focusChanged || organized || viewportChanged) {
+      dashboard.centerOn(id, viewport);
+      lastCenteringRef.current = {
+        id,
+        tick,
+        vw: viewport.width,
+        vh: viewport.height,
+      };
+    }
+  }, [
+    dashboard.state.focusedWindowId,
+    dashboard.state.organizeTick,
+    dashboard,
+    viewport,
+  ]);
 
   // Pan via pointer drag on the viewport background.
   const panStateRef = useRef<{ active: boolean; lastX: number; lastY: number }>({
@@ -84,6 +139,25 @@ export const DashboardBoard: React.FC = () => {
       /* pointer may have already been released */
     }
   };
+
+  // Force the Electron/Chrome compositor to commit the latest cameraOffset
+  // transform by briefly clearing and restoring the transform. Without this,
+  // the rapid stream of setCameraOffset that fires during the Electron-side
+  // window resize on dashboardEnter leaves the world layer's GPU layer in
+  // a stale state: getComputedStyle returns the latest matrix but the
+  // visual paint (and getBoundingClientRect) reflects an earlier value.
+  // Toggling the transform string forces the compositor to commit. Done
+  // inside requestAnimationFrame so the clear+restore happens off the
+  // initial paint and the user never sees the cleared state.
+  useEffect(() => {
+    const el = worldRef.current;
+    if (!el) return;
+    const t = el.style.transform;
+    el.style.transform = 'none';
+    void el.offsetHeight;
+    el.style.transform = t;
+    void el.offsetHeight;
+  }, [dashboard.state.cameraOffset]);
 
   // Trackpad two-finger pan via wheel events.
   useEffect(() => {
@@ -123,7 +197,11 @@ export const DashboardBoard: React.FC = () => {
           <div className="absolute inset-0 flex items-center justify-center text-text-muted pointer-events-none">
             <button
               type="button"
-              className="px-4 py-2 rounded-xl border border-border-subtle hover:bg-background-medium pointer-events-auto"
+              // Borderless empty-state CTA — matches the sidebar item
+              // typography (text-[13.5px], px-3 py-2, hover:bg-background-medium)
+              // so it reads as a quiet inline action rather than a heavy
+              // bordered button.
+              className="px-3 py-2 rounded-lg text-[13.5px] hover:bg-background-medium hover:text-text-default transition-colors duration-150 pointer-events-auto cursor-pointer"
               onClick={() => dashboard.spawnWindow()}
             >
               Spawn a conversation
@@ -136,9 +214,24 @@ export const DashboardBoard: React.FC = () => {
             Transition is applied only during programmatic camera moves
             (centerOn after focus or organize) — pan stays instant. */}
         <div
+          ref={worldRef}
           className="absolute inset-0 pointer-events-none"
           style={{
-            transform: `translate(${cameraOffset.x}px, ${cameraOffset.y}px)`,
+            transform: `translate3d(${cameraOffset.x}px, ${cameraOffset.y}px, 0)`,
+            // Pin transform origin and promote to its own compositor layer.
+            // Without these, the rapid stream of cameraOffset updates that
+            // happens as Electron animates the window to dashboard size
+            // (ResizeObserver → setViewport → centerOn → setCameraOffset,
+            // potentially 10+ times in a few hundred ms) would sometimes
+            // commit the inline transform value without committing the
+            // corresponding visual paint — leaving the windows positioned
+            // 1–2 viewport-widths off-center. `will-change: transform`
+            // keeps the layer GPU-promoted so every transform change
+            // paints; `transformOrigin: 0 0` removes the default
+            // center-origin recomputation that can introduce drift at
+            // large translate values.
+            transformOrigin: '0 0',
+            willChange: 'transform',
             transition: dashboard.state.isAnimating
               ? 'transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1)'
               : 'none',
