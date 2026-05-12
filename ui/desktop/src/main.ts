@@ -1852,8 +1852,8 @@ ipcMain.handle('check-ollama', async () => {
 });
 
 ipcMain.handle('read-file', async (_event, filePath) => {
+  const expandedPath = expandTilde(filePath);
   try {
-    const expandedPath = expandTilde(filePath);
     const resolvedPath = path.resolve(expandedPath);
     const allowedRoots = [
       os.homedir(),
@@ -1866,40 +1866,15 @@ ipcMain.handle('read-file', async (_event, filePath) => {
     if (!isAllowed) {
       throw new Error(`Access denied: path '${resolvedPath}' is outside allowed directories`);
     }
-    if (process.platform === 'win32') {
-      const buffer = await fs.readFile(expandedPath);
-      return { file: buffer.toString('utf8'), filePath: expandedPath, error: null, found: true };
-    }
-    // Non-Windows: keep previous behavior via cat for parity
-    return await new Promise((resolve) => {
-      const cat = spawn('cat', [expandedPath]);
-      let output = '';
-      let errorOutput = '';
-
-      cat.stdout.on('data', (data) => {
-        output += data.toString();
-      });
-
-      cat.stderr.on('data', (data) => {
-        errorOutput += data.toString();
-      });
-
-      cat.on('close', (code) => {
-        if (code !== 0) {
-          resolve({ file: '', filePath: expandedPath, error: errorOutput || null, found: false });
-          return;
-        }
-        resolve({ file: output, filePath: expandedPath, error: null, found: true });
-      });
-
-      cat.on('error', (error) => {
-        console.error('Error reading file:', error);
-        resolve({ file: '', filePath: expandedPath, error, found: false });
-      });
-    });
+    // Single fs.readFile path for all platforms. The previous `spawn('cat')`
+    // fallback added an extra process per call (FD + PID pressure) for no
+    // benefit — fs.readFile is faster and doesn't depend on `cat` being on
+    // PATH inside the Electron environment.
+    const buffer = await fs.readFile(expandedPath);
+    return { file: buffer.toString('utf8'), filePath: expandedPath, error: null, found: true };
   } catch (error) {
     console.error('Error reading file:', error);
-    return { file: '', filePath: expandTilde(filePath), error, found: false };
+    return { file: '', filePath: expandedPath, error, found: false };
   }
 });
 
