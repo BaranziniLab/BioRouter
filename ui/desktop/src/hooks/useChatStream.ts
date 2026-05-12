@@ -406,6 +406,11 @@ export function useChatStream({
           },
           throwOnError: true,
           signal: abortControllerRef.current.signal,
+          // Without a cap the SSE client retries forever (3s → 30s
+          // exponential backoff), holding a Request/Response pair across
+          // each attempt. A killed/restarted biorouterd otherwise leaves
+          // every open ChatWindow leaking connections indefinitely.
+          sseMaxRetryAttempts: 5,
         });
 
         await streamFromResponse(
@@ -454,6 +459,7 @@ export function useChatStream({
           },
           throwOnError: true,
           signal: abortControllerRef.current.signal,
+          sseMaxRetryAttempts: 5,
         });
 
         await streamFromResponse(
