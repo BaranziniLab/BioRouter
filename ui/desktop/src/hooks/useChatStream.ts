@@ -24,7 +24,33 @@ import {
 import { errorMessage } from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
 
+// LRU-bounded session cache. Without a cap this Map retained every session
+// the user ever opened — including its full conversation history — for the
+// lifetime of the renderer. The dashboard branch makes this much worse:
+// every ChatWindow mounts its own useChatStream, so heavy users accumulate
+// dozens of full conversations in memory. Map preserves insertion order, so
+// re-inserting on access is a sufficient LRU touch.
+const RESULTS_CACHE_MAX = 10;
 const resultsCache = new Map<string, { messages: Message[]; session: Session }>();
+
+function cacheGet(key: string): { messages: Message[]; session: Session } | undefined {
+  const v = resultsCache.get(key);
+  if (v) {
+    resultsCache.delete(key);
+    resultsCache.set(key, v);
+  }
+  return v;
+}
+
+function cacheSet(key: string, value: { messages: Message[]; session: Session }): void {
+  if (resultsCache.has(key)) resultsCache.delete(key);
+  resultsCache.set(key, value);
+  while (resultsCache.size > RESULTS_CACHE_MAX) {
+    const oldest = resultsCache.keys().next().value;
+    if (oldest === undefined) break;
+    resultsCache.delete(oldest);
+  }
+}
 
 interface UseChatStreamProps {
   sessionId: string;
@@ -176,7 +202,7 @@ export function useChatStream({
 
   useEffect(() => {
     if (session) {
-      resultsCache.set(sessionId, { session, messages });
+      cacheSet(sessionId, { session, messages });
     }
   }, [sessionId, session, messages]);
 
@@ -258,7 +284,7 @@ export function useChatStream({
   useEffect(() => {
     if (!sessionId) return;
 
-    const cached = resultsCache.get(sessionId);
+    const cached = cacheGet(sessionId);
     if (cached) {
       setSession(cached.session);
       updateMessages(cached.messages);
@@ -555,7 +581,7 @@ export function useChatStream({
     [sessionId, handleSubmit, updateMessages]
   );
 
-  const cached = resultsCache.get(sessionId);
+  const cached = cacheGet(sessionId);
   const maybe_cached_messages = session ? messages : cached?.messages || [];
   const maybe_cached_session = session ?? cached?.session;
 
