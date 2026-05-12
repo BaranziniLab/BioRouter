@@ -1297,7 +1297,10 @@ ipcMain.handle('open-external', async (_event, url: string) => {
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       throw new Error(`Blocked: unsafe URL protocol '${parsed.protocol}'`);
     }
-    await shell.openExternal(url);
+    // Pass the normalized URL — shell.openExternal and the WHATWG URL parser
+    // can disagree on edge-case inputs (embedded auth, backslashes, etc.),
+    // and using the parsed.href guarantees shell sees what we validated.
+    await shell.openExternal(parsed.href);
   } catch (err) {
     console.error('open-external blocked:', err);
   }
