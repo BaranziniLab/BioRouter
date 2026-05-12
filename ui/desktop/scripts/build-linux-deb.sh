@@ -29,6 +29,11 @@ for f in "$BIN_DIR"/*.exe "$BIN_DIR"/*.dll "$BIN_DIR"/*.cmd; do
         echo "  Removed Windows file: $(basename "$f")"
     fi
 done
+# Remove bundled MinGit (Windows-only Git distribution dropped by download-mingit.js)
+if [ -d "$BIN_DIR/git" ]; then
+    rm -rf "$BIN_DIR/git"
+    echo "  Removed MinGit directory: git/"
+fi
 
 # Copy Linux x64 Rust binaries
 if [ ! -f "$LINUX_RELEASE/biorouter" ] || [ ! -f "$LINUX_RELEASE/biorouterd" ]; then
