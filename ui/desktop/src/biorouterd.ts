@@ -113,6 +113,11 @@ export const startBiorouterd = async (options: StartBiorouterdOptions): Promise<
   const resolvedBiorouterdPath = path.resolve(biorouterdPath);
 
   const port = await findAvailablePort();
+  // Bounded ring of the most recent stderr lines. Without a cap this array
+  // grows for the lifetime of the Electron main process — a long-running
+  // chatty biorouterd can retain hundreds of MB of strings and trip a fatal
+  // V8 CHECK on the main thread during optimizing compile / GC compaction.
+  const STDERR_RING_MAX = 500;
   const stderrLines: string[] = [];
 
   log.info(`Starting biorouterd from: ${resolvedBiorouterdPath} on port ${port} in dir ${dir}`);
@@ -182,6 +187,9 @@ export const startBiorouterd = async (options: StartBiorouterdOptions): Promise<
     lines.forEach((line) => {
       log.error(`biorouterd stderr for port ${port} and dir ${dir}: ${line}`);
       stderrLines.push(line);
+      if (stderrLines.length > STDERR_RING_MAX) {
+        stderrLines.splice(0, stderrLines.length - STDERR_RING_MAX);
+      }
     });
   });
 
