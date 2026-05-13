@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use super::base::{ConfigKey, Provider, ProviderMetadata, ProviderUsage};
 use super::errors::ProviderError;
 use super::retry::{ProviderRetry, RetryConfig};
@@ -8,11 +6,10 @@ use crate::model::ModelConfig;
 use crate::providers::utils::RequestLog;
 use anyhow::Result;
 use async_trait::async_trait;
-use aws_sdk_bedrockruntime::config::ProvideCredentials;
+use aws_sdk_bedrockruntime::config::{Credentials, ProvideCredentials};
 use aws_sdk_bedrockruntime::operation::converse::ConverseError;
 use aws_sdk_bedrockruntime::{types as bedrock, Client};
 use rmcp::model::Tool;
-use serde_json::Value;
 
 use super::formats::bedrock::{
     from_bedrock_message, from_bedrock_usage, to_bedrock_message, to_bedrock_tool_config,
@@ -27,6 +24,11 @@ pub const VERSA_BEDROCK_KNOWN_MODELS: &[&str] = &[
     "us.anthropic.claude-opus-4-5-20251101-v1:0",
     "us.anthropic.claude-opus-4-1-20250805-v1:0",
 ];
+
+// UCSF MuleSoft Bedrock proxy. UCSF-issued access keys are signed against this
+// endpoint instead of public AWS, so this must be set for Versa Bedrock to work.
+pub const VERSA_BEDROCK_DEFAULT_ENDPOINT: &str = "https://unified-api.ucsf.edu/general/awsai";
+pub const VERSA_BEDROCK_DEFAULT_REGION: &str = "us-west-2";
 
 pub const VERSA_BEDROCK_DEFAULT_MAX_RETRIES: usize = 6;
 pub const VERSA_BEDROCK_DEFAULT_INITIAL_RETRY_INTERVAL_MS: u64 = 2000;
@@ -48,60 +50,83 @@ impl VersaBedrockProvider {
     pub async fn from_env(model: ModelConfig) -> Result<Self> {
         let config = crate::config::Config::global();
 
-        // Re-export all AWS_ prefixed config values as env vars (same pattern as bedrock.rs).
-        let set_aws_env_vars = |res: Result<HashMap<String, Value>, _>| {
-            if let Ok(map) = res {
-                map.into_iter()
-                    .filter(|(key, _)| key.starts_with("AWS_"))
-                    .filter_map(|(key, value)| value.as_str().map(|s| (key, s.to_string())))
-                    .for_each(|(key, s)| std::env::set_var(key, s));
-            }
-        };
-        set_aws_env_vars(config.all_values());
-        set_aws_env_vars(config.all_secrets());
-
-        // Map provider-namespaced keys to standard AWS env vars so the SDK picks them up.
-        // Using VERSA_BEDROCK_* names avoids colliding with the commercial aws_bedrock provider.
-        if let Ok(v) = config.get_secret::<String>("VERSA_BEDROCK_ACCESS_KEY_ID") {
-            if !v.is_empty() {
-                std::env::set_var("AWS_ACCESS_KEY_ID", &v);
-            }
-        }
-        if let Ok(v) = config.get_secret::<String>("VERSA_BEDROCK_SECRET_ACCESS_KEY") {
-            if !v.is_empty() {
-                std::env::set_var("AWS_SECRET_ACCESS_KEY", &v);
-            }
+        // Required UCSF-issued credentials. Stored as secrets in BioRouter config.
+        let access_key_id: String = config
+            .get_secret::<String>("VERSA_BEDROCK_ACCESS_KEY_ID")
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "VERSA_BEDROCK_ACCESS_KEY_ID is not configured. \
+                     Add it under Versa API Bedrock in Settings."
+                )
+            })?;
+        let secret_access_key: String = config
+            .get_secret::<String>("VERSA_BEDROCK_SECRET_ACCESS_KEY")
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "VERSA_BEDROCK_SECRET_ACCESS_KEY is not configured. \
+                     Add it under Versa API Bedrock in Settings."
+                )
+            })?;
+        if access_key_id.trim().is_empty() || secret_access_key.trim().is_empty() {
+            return Err(anyhow::anyhow!(
+                "Versa Bedrock access key id / secret access key is empty"
+            ));
         }
 
-        // Normalize AWS_ENDPOINT_URL_BEDROCK → AWS_ENDPOINT_URL_BEDROCK_RUNTIME.
-        if std::env::var("AWS_ENDPOINT_URL_BEDROCK_RUNTIME").is_err() {
-            if let Ok(url) = std::env::var("AWS_ENDPOINT_URL_BEDROCK") {
-                std::env::set_var("AWS_ENDPOINT_URL_BEDROCK_RUNTIME", url);
-            }
-        }
+        // Endpoint: configurable, but always falls back to the UCSF MuleSoft proxy
+        // so a fresh install with just the key + secret works out of the box.
+        let endpoint_url: String = config
+            .get_param::<String>("AWS_ENDPOINT_URL_BEDROCK")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                std::env::var("AWS_ENDPOINT_URL_BEDROCK")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .or_else(|| {
+                std::env::var("AWS_ENDPOINT_URL_BEDROCK_RUNTIME")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .unwrap_or_else(|| VERSA_BEDROCK_DEFAULT_ENDPOINT.to_string());
 
-        let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
+        let region: String = config
+            .get_param::<String>("AWS_REGION")
+            .ok()
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| {
+                std::env::var("AWS_REGION")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .unwrap_or_else(|| VERSA_BEDROCK_DEFAULT_REGION.to_string());
 
-        if let Ok(profile_name) = config.get_param::<String>("AWS_PROFILE") {
-            if !profile_name.is_empty() {
-                loader = loader.profile_name(&profile_name);
-            }
-        }
+        // Build credentials explicitly. This bypasses the AWS default credential
+        // chain (profile files, IMDS, env vars), so users who only set the
+        // access key + secret in BioRouter — and have nothing in ~/.aws — still
+        // get a working setup.
+        let credentials = Credentials::new(
+            access_key_id,
+            secret_access_key,
+            None,
+            None,
+            "VersaBedrock",
+        );
 
-        if let Ok(region) = config.get_param::<String>("AWS_REGION") {
-            if !region.is_empty() {
-                loader = loader.region(aws_config::Region::new(region));
-            }
-        }
-
-        let sdk_config = loader.load().await;
+        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .credentials_provider(credentials)
+            .region(aws_config::Region::new(region))
+            .endpoint_url(endpoint_url)
+            .load()
+            .await;
 
         sdk_config
             .credentials_provider()
             .ok_or_else(|| anyhow::anyhow!("No AWS credentials provider configured"))?
             .provide_credentials()
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to load AWS credentials: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to load Versa Bedrock credentials: {}", e))?;
 
         let client = Client::new(&sdk_config);
         let retry_config = Self::load_retry_config(config);
@@ -202,15 +227,25 @@ impl Provider for VersaBedrockProvider {
         ProviderMetadata::new(
             "versa_bedrock",
             "Versa API Bedrock",
-            "UCSF Anthropic models via Amazon Bedrock. Access key + secret only — region is pre-configured.",
+            "UCSF Anthropic models via Amazon Bedrock. Access key + secret only — endpoint and region are pre-configured.",
             VERSA_BEDROCK_DEFAULT_MODEL,
             VERSA_BEDROCK_KNOWN_MODELS.to_vec(),
             VERSA_BEDROCK_DOC_LINK,
             vec![
                 ConfigKey::new("VERSA_BEDROCK_ACCESS_KEY_ID", true, true, None),
                 ConfigKey::new("VERSA_BEDROCK_SECRET_ACCESS_KEY", true, true, None),
-                ConfigKey::new("AWS_PROFILE", false, false, Some("default")),
-                ConfigKey::new("AWS_REGION", false, false, Some("us-west-2")),
+                ConfigKey::new(
+                    "AWS_ENDPOINT_URL_BEDROCK",
+                    false,
+                    false,
+                    Some(VERSA_BEDROCK_DEFAULT_ENDPOINT),
+                ),
+                ConfigKey::new(
+                    "AWS_REGION",
+                    false,
+                    false,
+                    Some(VERSA_BEDROCK_DEFAULT_REGION),
+                ),
             ],
         )
     }

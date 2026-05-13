@@ -36,7 +36,7 @@ const PROVIDER_KEY_DEFAULTS: Record<string, Record<string, string>> = {
     AZURE_OPENAI_API_VERSION: '2024-10-21',
   },
   versa_bedrock: {
-    AWS_PROFILE: 'default',
+    AWS_ENDPOINT_URL_BEDROCK: 'https://unified-api.ucsf.edu/general/awsai',
     AWS_REGION: 'us-west-2',
   },
 };
