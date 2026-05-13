@@ -102,7 +102,7 @@ function buildAugmentedPath(): string {
 }
 
 const AUGMENTED_PATH = buildAugmentedPath();
-const SPAWN_ENV = { ...process.env, PATH: AUGMENTED_PATH };
+export const SPAWN_ENV = { ...process.env, PATH: AUGMENTED_PATH };
 
 // ─── Linux distro detection ───────────────────────────────────────────────────
 

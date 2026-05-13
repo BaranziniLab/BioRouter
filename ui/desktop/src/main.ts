@@ -51,7 +51,7 @@ import {
 } from './utils/autoUpdater';
 import { UPDATES_ENABLED } from './updates';
 import './utils/workflowHash';
-import { registerDependencyIpcHandlers, setupDependencyChecker, triggerDependencyCheck } from './utils/dependencyChecker';
+import { registerDependencyIpcHandlers, setupDependencyChecker, triggerDependencyCheck, SPAWN_ENV } from './utils/dependencyChecker';
 import { runExtensionUpdateCheck, scheduleExtensionUpdateCheck } from './utils/extensionUpdater';
 import { Client, createClient, createConfig } from './api/client';
 import { BioRouterApp } from './api';
@@ -2095,10 +2095,16 @@ ipcMain.handle(
         cwd: installDir,
         encoding: 'utf8',
         timeout: 120_000,
+        env: SPAWN_ENV,
       });
 
       if (uvResult.status !== 0) {
-        throw new Error(`uv sync failed:\n${uvResult.stderr || uvResult.stdout}`);
+        const detail =
+          uvResult.error?.message ||
+          uvResult.stderr ||
+          uvResult.stdout ||
+          `exited with status ${uvResult.status}`;
+        throw new Error(`uv sync failed: ${detail}`);
       }
 
       return { success: true, installDir };

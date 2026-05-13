@@ -18,6 +18,7 @@ import { BrowserWindow } from 'electron';
 import { compareVersions } from 'compare-versions';
 import AdmZip from 'adm-zip';
 import log from './logger';
+import { SPAWN_ENV } from './dependencyChecker';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -231,11 +232,16 @@ async function applyUpdate(info: ExtensionUpdateInfo, send: (e: ExtensionUpdateE
       cwd: info.installDir,
       encoding: 'utf8',
       timeout: 120_000,
-      env: { ...process.env, PATH: buildUvPath() },
+      env: SPAWN_ENV,
     });
 
     if (uvResult.status !== 0) {
-      throw new Error(`uv sync failed: ${uvResult.stderr || uvResult.stdout}`);
+      const detail =
+        uvResult.error?.message ||
+        uvResult.stderr ||
+        uvResult.stdout ||
+        `exited with status ${uvResult.status}`;
+      throw new Error(`uv sync failed: ${detail}`);
     }
 
     send({ type: 'update-done', ext: info.name, displayName: info.displayName, to: info.latestVersion });
@@ -248,16 +254,6 @@ async function applyUpdate(info: ExtensionUpdateInfo, send: (e: ExtensionUpdateE
     // Cleanup temp dir
     try { await fs.rm(tmpDir, { recursive: true, force: true }); } catch {}
   }
-}
-
-/** Build a PATH that includes common uv install locations. */
-function buildUvPath(): string {
-  const home = os.homedir();
-  const extra = process.platform === 'win32'
-    ? [path.join(process.env.LOCALAPPDATA || '', 'uv', 'bin'), path.join(home, '.cargo', 'bin')]
-    : [path.join(home, '.cargo', 'bin'), path.join(home, '.local', 'bin'), '/usr/local/bin'];
-  const sep = process.platform === 'win32' ? ';' : ':';
-  return [...extra, process.env.PATH || ''].join(sep);
 }
 
 // ─── Public entry point ───────────────────────────────────────────────────────
