@@ -133,7 +133,7 @@ impl Provider for AzureProvider {
         ProviderMetadata::new(
             "azure_openai",
             "Azure OpenAI",
-            "Models through Azure OpenAI Service (uses Azure credential chain by default). Start from this profile to access UCSF-hosted ChatGPT models",
+            "Models through Azure OpenAI Service (uses Azure credential chain by default).",
             "gpt-4o",
             AZURE_OPENAI_KNOWN_MODELS.to_vec(),
             AZURE_DOC_URL,
