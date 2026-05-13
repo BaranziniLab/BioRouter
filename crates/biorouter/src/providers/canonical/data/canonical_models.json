@@ -186,6 +186,25 @@
     }
   },
   {
+    "id": "anthropic/claude-opus-4.7-fast",
+    "name": "Anthropic: Claude Opus 4.7 (Fast)",
+    "context_length": 1000000,
+    "max_completion_tokens": 128000,
+    "input_modalities": [
+      "file",
+      "image",
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 0.00003,
+      "completion": 0.00015
+    }
+  },
+  {
     "id": "anthropic/claude-sonnet-4",
     "name": "Anthropic: Claude Sonnet 4",
     "context_length": 1000000,
@@ -2506,23 +2525,6 @@
     }
   },
   {
-    "id": "qwen/qwen-max",
-    "name": "Qwen: Qwen-Max ",
-    "context_length": 32768,
-    "max_completion_tokens": 8192,
-    "input_modalities": [
-      "text"
-    ],
-    "output_modalities": [
-      "text"
-    ],
-    "supports_tools": true,
-    "pricing": {
-      "prompt": 1.04e-6,
-      "completion": 4.16e-6
-    }
-  },
-  {
     "id": "qwen/qwen-plus",
     "name": "Qwen: Qwen-Plus",
     "context_length": 1000000,
@@ -2554,59 +2556,6 @@
     "pricing": {
       "prompt": 2.6e-7,
       "completion": 7.8e-7
-    }
-  },
-  {
-    "id": "qwen/qwen-turbo",
-    "name": "Qwen: Qwen-Turbo",
-    "context_length": 131072,
-    "max_completion_tokens": 8192,
-    "input_modalities": [
-      "text"
-    ],
-    "output_modalities": [
-      "text"
-    ],
-    "supports_tools": true,
-    "pricing": {
-      "prompt": 3.25e-8,
-      "completion": 1.3e-7
-    }
-  },
-  {
-    "id": "qwen/qwen-vl-max",
-    "name": "Qwen: Qwen VL Max",
-    "context_length": 131072,
-    "max_completion_tokens": 32768,
-    "input_modalities": [
-      "image",
-      "text"
-    ],
-    "output_modalities": [
-      "text"
-    ],
-    "supports_tools": true,
-    "pricing": {
-      "prompt": 5.2e-7,
-      "completion": 2.08e-6
-    }
-  },
-  {
-    "id": "qwen/qwen-vl-plus",
-    "name": "Qwen: Qwen VL Plus",
-    "context_length": 131072,
-    "max_completion_tokens": 8192,
-    "input_modalities": [
-      "image",
-      "text"
-    ],
-    "output_modalities": [
-      "text"
-    ],
-    "supports_tools": false,
-    "pricing": {
-      "prompt": 1.365e-7,
-      "completion": 4.095e-7
     }
   },
   {
