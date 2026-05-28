@@ -31,7 +31,7 @@ use crate::providers::base::MessageStream;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
-pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-5.2";
+pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-5.5";
 pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-4.1-mini";
 // Verified working against OpenAI API (April 2026).
 // Models marked [responses] route to /v1/responses instead of /v1/chat/completions.
@@ -255,6 +255,7 @@ impl Provider for OpenAiProvider {
                 ConfigKey::new("OPENAI_TIMEOUT", false, false, Some("600")),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

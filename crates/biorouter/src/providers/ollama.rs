@@ -26,11 +26,11 @@ pub const OLLAMA_HOST: &str = "localhost";
 pub const OLLAMA_TIMEOUT: u64 = 600;
 pub const OLLAMA_DEFAULT_PORT: u16 = 11434;
 pub const OLLAMA_DEFAULT_MODEL: &str = "qwen3";
-pub const OLLAMA_KNOWN_MODELS: &[&str] = &[
-    OLLAMA_DEFAULT_MODEL,
-    "qwen3-coder:30b",
-    "qwen3-coder:480b-cloud",
-];
+// Empty: with no curated list, the frontend falls back to the live `api/tags`
+// endpoint via `fetch_supported_models` and lists the models the user has
+// actually installed locally. Users can still write in any model name via the
+// "Enter a model not listed..." option (allows_unlisted_models = true below).
+pub const OLLAMA_KNOWN_MODELS: &[&str] = &[];
 pub const OLLAMA_DOC_URL: &str = "https://ollama.com/library";
 
 #[derive(serde::Serialize)]
@@ -157,6 +157,7 @@ impl Provider for OllamaProvider {
                 ),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

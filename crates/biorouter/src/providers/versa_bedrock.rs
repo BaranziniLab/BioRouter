@@ -17,12 +17,28 @@ use super::formats::bedrock::{
 
 pub const VERSA_BEDROCK_DOC_LINK: &str =
     "https://baranzinilab.github.io/biorouter-landing/docs.html";
-pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-sonnet-4-6";
+pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-6-v1";
+// Ordered newest → oldest. The UI auto-selects the first entry as the default
+// model when switching providers. Model IDs follow the AWS Bedrock format
+// documented at
+// https://platform.claude.com/docs/en/about-claude/models, prefixed with the
+// `us.` cross-region inference profile required by the UCSF MuleSoft proxy.
+//
+// Only models that UCSF's Bedrock account is entitled to invoke are listed —
+// every entry below has been verified end-to-end via the Versa proxy. Opus 4.7
+// and 4.8 are intentionally omitted because UCSF returns AccessDeniedException
+// for them; users can still type a newer ID via the "Enter a model not
+// listed..." option once UCSF enables it.
 pub const VERSA_BEDROCK_KNOWN_MODELS: &[&str] = &[
+    // Claude 4.6
+    "us.anthropic.claude-opus-4-6-v1",
     "us.anthropic.claude-sonnet-4-6",
-    "us.anthropic.claude-sonnet-4-20250514-v1:0",
+    // Claude 4.5
     "us.anthropic.claude-opus-4-5-20251101-v1:0",
-    "us.anthropic.claude-opus-4-1-20250805-v1:0",
+    // Haiku 4.5
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+    // Sonnet 4 (legacy — still entitled)
+    "us.anthropic.claude-sonnet-4-20250514-v1:0",
 ];
 
 // UCSF MuleSoft Bedrock proxy. UCSF-issued access keys are signed against this
@@ -248,6 +264,7 @@ impl Provider for VersaBedrockProvider {
                 ),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

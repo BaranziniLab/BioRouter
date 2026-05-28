@@ -21,41 +21,17 @@ import { getPredefinedModelsFromEnv, shouldShowPredefinedModels } from '../prede
 import { ProviderType } from '../../../../api';
 import { trackModelChanged } from '../../../../utils/analytics';
 
-const PREFERRED_MODEL_PATTERNS = [
-  /claude-sonnet-4/i,
-  /claude-4/i,
-  /gpt-4o(?!-mini)/i,
-  /claude-3-5-sonnet/i,
-  /claude-3\.5-sonnet/i,
-  /gpt-4-turbo/i,
-  /gpt-4(?!-|o)/i,
-  /claude-3-opus/i,
-  /claude-3-sonnet/i,
-  /gemini-pro/i,
-  /llama-3/i,
-  /gpt-4o-mini/i,
-  /claude-3-haiku/i,
-  /gemini/i,
-];
-
-function findPreferredModel(
+// Return the first concrete model from the provider's list. The list is
+// authored in priority order in the Rust provider definition (typically newest
+// / preferred model first), so picking [0] gives the right default per provider
+// without falling back to cross-provider name heuristics.
+function findFirstAvailableModel(
   models: { value: string; label: string; provider: string }[]
 ): string | null {
-  if (models.length === 0) return null;
-
   const validModels = models.filter(
     (m) => m.value !== 'custom' && m.value !== '__loading__' && !m.value.startsWith('__')
   );
-
   if (validModels.length === 0) return null;
-
-  for (const pattern of PREFERRED_MODEL_PATTERNS) {
-    const match = validModels.find((m) => pattern.test(m.value));
-    if (match) {
-      return match.value;
-    }
-  }
-
   return validModels[0].value;
 }
 
@@ -83,7 +59,15 @@ export const SwitchModelModal = ({
   const [provider, setProvider] = useState<string | null>(
     initialProvider || currentProvider || null
   );
-  const [model, setModel] = useState<string>(currentModel || '');
+  // Only carry over the currently-running model when the provider being
+  // configured matches the current chat provider. When switching providers
+  // (e.g. opening the dialog with initialProvider=openai while running
+  // anthropic), start empty so the auto-select effect picks the first model
+  // for the selected provider instead of showing a model from the wrong one.
+  const initialProviderResolved = initialProvider || currentProvider || null;
+  const carryOverCurrentModel =
+    !!currentModel && !!currentProvider && currentProvider === initialProviderResolved;
+  const [model, setModel] = useState<string>(carryOverCurrentModel ? currentModel : '');
   const [isCustomModel, setIsCustomModel] = useState(false);
   const [validationErrors, setValidationErrors] = useState({
     provider: '',
@@ -271,9 +255,9 @@ export const SwitchModelModal = ({
       .flatMap((group) => group.options);
 
     if (providerModels.length > 0) {
-      const preferredModel = findPreferredModel(providerModels);
-      if (preferredModel) {
-        setModel(preferredModel);
+      const firstModel = findFirstAvailableModel(providerModels);
+      if (firstModel) {
+        setModel(firstModel);
       }
     }
   }, [provider, modelOptions, loadingModels, model, isCustomModel, userClearedModel]);

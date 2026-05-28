@@ -22,16 +22,20 @@ use crate::providers::retry::ProviderRetry;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
-pub const ANTHROPIC_DEFAULT_MODEL: &str = "claude-sonnet-4-6";
+pub const ANTHROPIC_DEFAULT_MODEL: &str = "claude-opus-4-8";
 const ANTHROPIC_DEFAULT_FAST_MODEL: &str = "claude-haiku-4-5";
-// Verified working against Anthropic API (April 2026).
+// Verified against Anthropic docs (May 2026). The list is ordered newest →
+// oldest; the UI auto-selects the first entry as the default model when
+// switching providers, so keep the latest opus at the top.
 const ANTHROPIC_KNOWN_MODELS: &[&str] = &[
-    // Claude 4.7 models (latest)
+    // Claude 4.8 (latest, "NextOpus")
+    "claude-opus-4-8",
+    // Claude 4.7
     "claude-opus-4-7",
-    // Claude 4.6 models
+    // Claude 4.6
     "claude-opus-4-6",
     "claude-sonnet-4-6",
-    // Claude 4.5 models
+    // Claude 4.5
     "claude-opus-4-5",
     "claude-opus-4-5-20251101",
     "claude-sonnet-4-5",
@@ -183,6 +187,7 @@ impl Provider for AnthropicProvider {
                 ),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {
