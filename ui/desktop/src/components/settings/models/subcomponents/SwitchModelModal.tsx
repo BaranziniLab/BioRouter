@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { Brain, ExternalLink } from '../../../icons/app-icons';
 
 import {
@@ -168,10 +168,21 @@ export const SwitchModelModal = ({
       })();
     }
 
-    // Load providers for manual model selection
+    // Load providers for manual model selection.
+    //
+    // getProviders(false) reuses the cached list when ConfigContext already
+    // has it; getProviders(true) forces a refetch and then calls
+    // setProvidersList, which mutates the ConfigContext state that the
+    // useCallback closes over — that bumps the getProviders reference, which
+    // re-fires THIS effect (getProviders is a dep), which calls
+    // getProviders(true) again. The result is a render loop that re-fires
+    // setModelOptions / setLoadingModels several times per second and makes
+    // react-select flicker its ClearIndicator (the X) as it churns. The
+    // cached list is fine here — the user can reopen the modal to pick up
+    // newly-configured providers.
     (async () => {
       try {
-        const providersResponse = await getProviders(true);
+        const providersResponse = await getProviders(false);
         const activeProviders = providersResponse.filter((provider) => provider.is_configured);
         // Create provider options and add "Use other provider" option
         setProviderOptions([
@@ -242,9 +253,26 @@ export const SwitchModelModal = ({
     })();
   }, [getProviders, getProviderModels, usePredefinedModels, read]);
 
-  const filteredModelOptions = provider
-    ? modelOptions.filter((group) => group.options[0]?.provider === provider)
-    : [];
+  // Memoize so passing the same selection through to react-select doesn't
+  // create a new array reference on every render — fresh references make
+  // react-select treat its options list as "changed" and re-render the
+  // ClearIndicator (the X button), which the user sees as a flicker while
+  // interacting with the model dropdown.
+  const filteredModelOptions = useMemo(
+    () =>
+      provider ? modelOptions.filter((group) => group.options[0]?.provider === provider) : [],
+    [provider, modelOptions]
+  );
+
+  // Same reason — a stable value object keeps the ClearIndicator stable.
+  const modelSelectValue = useMemo(
+    () => (model ? { value: model, label: model } : null),
+    [model]
+  );
+  const providerSelectValue = useMemo(
+    () => providerOptions.find((option) => option.value === provider) || null,
+    [providerOptions, provider]
+  );
 
   useEffect(() => {
     // Don't auto-select if user explicitly cleared the model
@@ -293,8 +321,14 @@ export const SwitchModelModal = ({
     const trimmedInput = inputValue.trim();
 
     if (trimmedInput === '') {
-      // Reset to original model options when input is cleared
-      setModelOptions([...originalModelOptions]); // Create new array to ensure state update
+      // Only reset if the list is actually filtered. react-select fires
+      // onInputChange('') when the menu opens, when a value is selected, and on
+      // every blur — repeatedly calling setModelOptions with a fresh array
+      // there causes the parent to re-render and react-select to flicker its
+      // ClearIndicator (X button).
+      if (modelOptions !== originalModelOptions) {
+        setModelOptions(originalModelOptions);
+      }
       return;
     }
 
@@ -415,7 +449,7 @@ export const SwitchModelModal = ({
               <div>
                 <Select
                   options={providerOptions}
-                  value={providerOptions.find((option) => option.value === provider) || null}
+                  value={providerSelectValue}
                   onChange={(newValue: unknown) => {
                     const option = newValue as { value: string; label: string } | null;
                     if (option?.value === 'configure_providers') {
@@ -442,16 +476,10 @@ export const SwitchModelModal = ({
                   {!isCustomModel ? (
                     <div>
                       <Select
-                        options={
-                          loadingModels
-                            ? []
-                            : filteredModelOptions.length > 0
-                              ? filteredModelOptions
-                              : []
-                        }
+                        options={loadingModels ? [] : filteredModelOptions}
                         onChange={handleModelChange}
                         onInputChange={handleInputChange}
-                        value={model ? { value: model, label: model } : null}
+                        value={modelSelectValue}
                         placeholder={
                           loadingModels ? 'Loading models…' : 'Select a model, type to search'
                         }
