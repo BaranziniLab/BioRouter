@@ -25,6 +25,10 @@ const MIN_WINDOW_W = 520;
 const MIN_WINDOW_H = 440;
 const GAP = 16;
 
+// Folded-card geometry. Used by ChatWindow to render compact cards in place.
+export const CARD_W = 240;
+export const CARD_H = 72;
+
 function nextWindowId(): string {
   return 'dw_' + Math.random().toString(36).slice(2, 10);
 }
@@ -32,7 +36,12 @@ function nextWindowId(): string {
 function serialize(state: DashboardState): SerializedDashboardState {
   return {
     version: 2,
-    windows: state.windows.map((w) => ({ ...w })),
+    windows: state.windows.map((w) => {
+      // isBusy is transient; never persisted.
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { isBusy: _isBusy, ...rest } = w;
+      return { ...rest };
+    }),
     focusedWindowId: state.focusedWindowId,
     cameraOffset: state.cameraOffset,
   };
@@ -51,7 +60,11 @@ function hydrate(): DashboardState {
     };
   }
   return {
-    windows: raw.windows.map((w) => ({ ...w })),
+    windows: raw.windows.map((w) => ({
+      ...w,
+      folded: w.folded ?? false,
+      isBusy: false,
+    })),
     focusedWindowId: raw.focusedWindowId,
     cameraOffset: raw.cameraOffset ?? { x: 0, y: 0 },
     organizeTick: 0,
@@ -142,15 +155,24 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     };
   }, []);
 
-  const spawnWindow: DashboardApi['spawnWindow'] = useCallback(async () => {
+  const spawnWindow: DashboardApi['spawnWindow'] = useCallback(async (options) => {
     const generation = spawnGenerationRef.current;
-    const cwd = getInitialWorkingDir();
-    const session = await createSession(cwd);
-    // If clearAll bumped the generation while we were awaiting, the user has
-    // since hit Clear — drop the about-to-be-added window on the floor so the
-    // empty canvas stays empty as the user expects.
-    if (generation !== spawnGenerationRef.current) return;
-    const sessionId = session.id;
+    const cwd = options?.cwd?.trim() ? options.cwd : getInitialWorkingDir();
+    // Resume-from-history skips createSession — the session already exists
+    // and BaseChat will load it from its sessionId. The workflow path goes
+    // through createSession so biorouterd attaches the workflow to the new
+    // session up front, matching the new-Electron-window flow.
+    let sessionId: string;
+    if (options?.resumeSessionId) {
+      sessionId = options.resumeSessionId;
+    } else {
+      const session = await createSession(
+        cwd,
+        options?.workflowId ? { workflowId: options.workflowId } : undefined
+      );
+      if (generation !== spawnGenerationRef.current) return;
+      sessionId = session.id;
+    }
     const now = Date.now();
     setState((prev) => {
       const existing = prev.windows.map((w) => ({
@@ -182,11 +204,15 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         anchor,
       });
       const usedColors = prev.windows.map((w) => w.accentColor);
+      const overrideName = options?.name?.trim();
       const newWin: DashboardWindow = {
         windowId: nextWindowId(),
         sessionId,
-        name: generateName(prev.windows.length),
-        userSetName: false,
+        name: overrideName || generateName(prev.windows.length),
+        // An override name is a "real" name from the workflow/history — mark
+        // it user-set so the LLM auto-rename poller and backend default
+        // placeholders don't overwrite it.
+        userSetName: Boolean(overrideName),
         badge: prev.windows.reduce((m, w) => Math.max(m, w.badge), 0) + 1,
         accentColor: pickAccentColor(usedColors),
         position: pos,
@@ -195,6 +221,8 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         cwd,
         lastInteraction: now,
         unreadActivity: false,
+        folded: false,
+        isBusy: false,
       };
       return {
         ...prev,
@@ -375,11 +403,15 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       if (!w) return prev;
       const cx = w.position.x + w.size.w / 2;
       const cy = w.position.y + w.size.h / 2;
+      // Snap to integer device pixels. The world layer renders with
+      // translate3d() + will-change: transform, so fractional offsets here
+      // composite the GPU layer at sub-pixel positions and read as blurred
+      // text on Retina displays.
       return {
         ...prev,
         cameraOffset: {
-          x: viewport.width / 2 - cx,
-          y: viewport.height / 2 - cy,
+          x: Math.round(viewport.width / 2 - cx),
+          y: Math.round(viewport.height / 2 - cy),
         },
       };
     });
@@ -408,6 +440,44 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     }));
   }, []);
 
+  const foldWindow: DashboardApi['foldWindow'] = useCallback((windowId, folded) => {
+    setState((prev) => ({
+      ...prev,
+      windows: prev.windows.map((w) =>
+        w.windowId === windowId && w.folded !== folded ? { ...w, folded } : w
+      ),
+    }));
+  }, []);
+
+  const foldAll: DashboardApi['foldAll'] = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      windows: prev.windows.map((w) => (w.folded ? w : { ...w, folded: true })),
+    }));
+  }, []);
+
+  const unfoldAll: DashboardApi['unfoldAll'] = useCallback(() => {
+    setState((prev) => ({
+      ...prev,
+      windows: prev.windows.map((w) => (!w.folded ? w : { ...w, folded: false })),
+    }));
+  }, []);
+
+  const setWindowBusy: DashboardApi['setWindowBusy'] = useCallback((windowId, busy) => {
+    setState((prev) => {
+      let mutated = false;
+      const windows = prev.windows.map((w) => {
+        if (w.windowId !== windowId || w.isBusy === busy) return w;
+        mutated = true;
+        return { ...w, isBusy: busy };
+      });
+      return mutated ? { ...prev, windows } : prev;
+    });
+  }, []);
+
+  const allFolded =
+    state.windows.length > 0 && state.windows.every((w) => w.folded);
+
   const api: DashboardApi = useMemo(
     () => ({
       state,
@@ -425,6 +495,11 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       centerOn,
       updateWindowField,
       markActivity,
+      foldWindow,
+      foldAll,
+      unfoldAll,
+      setWindowBusy,
+      allFolded,
     }),
     [
       state,
@@ -442,6 +517,11 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       centerOn,
       updateWindowField,
       markActivity,
+      foldWindow,
+      foldAll,
+      unfoldAll,
+      setWindowBusy,
+      allFolded,
     ]
   );
 
