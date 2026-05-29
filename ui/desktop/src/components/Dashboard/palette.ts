@@ -1,16 +1,16 @@
 export const ACCENT_PALETTE: readonly string[] = [
-  '#14b8a6', // teal
-  '#6366f1', // indigo
-  '#f59e0b', // amber
-  '#f43f5e', // rose
-  '#84cc16', // lime
-  '#0ea5e9', // sky
-  '#8b5cf6', // violet
-  '#fb7185', // coral
-  '#10b981', // mint
-  '#eab308', // gold
-  '#d946ef', // magenta
-  '#64748b', // slate
+  '#7fae9f', // sage
+  '#8b8fc4', // dusk
+  '#c4a47a', // wheat
+  '#c49096', // clay-rose
+  '#a8b884', // olive
+  '#8ab0c4', // dust-blue
+  '#a89ac4', // lilac
+  '#c49a96', // shell
+  '#8fb8a3', // seafoam
+  '#bdb084', // sand
+  '#b894b4', // mauve
+  '#8a96a3', // smoke
 ] as const;
 
 export function pickAccentColor(usedColors: readonly string[]): string {

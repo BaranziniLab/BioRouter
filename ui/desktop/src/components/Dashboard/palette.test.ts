@@ -2,10 +2,22 @@ import { describe, it, expect } from 'vitest';
 import { ACCENT_PALETTE, pickAccentColor, generateName } from './palette';
 
 describe('palette', () => {
-  it('exposes 12 distinct hex colors', () => {
-    expect(ACCENT_PALETTE).toHaveLength(12);
-    const set = new Set(ACCENT_PALETTE);
-    expect(set.size).toBe(12);
+  it('exposes 12 distinct muted hex colors', () => {
+    expect(ACCENT_PALETTE).toEqual([
+      '#7fae9f', // sage
+      '#8b8fc4', // dusk
+      '#c4a47a', // wheat
+      '#c49096', // clay-rose
+      '#a8b884', // olive
+      '#8ab0c4', // dust-blue
+      '#a89ac4', // lilac
+      '#c49a96', // shell
+      '#8fb8a3', // seafoam
+      '#bdb084', // sand
+      '#b894b4', // mauve
+      '#8a96a3', // smoke
+    ]);
+    expect(new Set(ACCENT_PALETTE).size).toBe(12);
     for (const c of ACCENT_PALETTE) {
       expect(c).toMatch(/^#[0-9a-fA-F]{6}$/);
     }
