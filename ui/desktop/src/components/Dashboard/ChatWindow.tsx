@@ -10,6 +10,8 @@ import { usePointerDrag } from './useDashboardDrag';
 import { announceSessionName, renameSession } from '../../utils/sessionNameSync';
 import { toastError } from '../../toasts';
 import { errorMessage } from '../../utils/conversionUtils';
+import { FoldedCard } from './FoldedCard';
+import { CARD_W, CARD_H } from './DashboardProvider';
 
 // Default "comfort" size used by the Enlarge button — matches the standalone
 // chat window dimensions in main.ts.
@@ -93,20 +95,23 @@ export const ChatWindow: React.FC<Props> = ({
     !isManipulating && dashboard.state.isAnimating
       ? 'transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1), width 200ms cubic-bezier(0.2, 0.8, 0.2, 1), height 200ms cubic-bezier(0.2, 0.8, 0.2, 1)'
       : 'none';
-  // Subtle uniform-scale focus pop. Origin = center so the slot center
-  // doesn't drift, and the visual ~0.5% growth is barely perceptible but
-  // distinguishes the active window without the heavier shadow.
-  const focusScale = isFocused ? 1.005 : 1;
+  // Snap translate values to integer device pixels. Non-integer translate on a
+  // GPU-promoted layer (the world layer uses translate3d + will-change) makes
+  // Chromium composite text at sub-pixel offsets, which strips subpixel
+  // antialiasing and reads as blur on Retina displays.
+  const tx = Math.round(rect.x + dragOffset.dx);
+  const ty = Math.round(rect.y + dragOffset.dy);
+  const effectiveW = win.folded ? CARD_W : rect.w;
+  const effectiveH = win.folded ? CARD_H : rect.h;
   const stylePos = useMemo(
     () => ({
-      transform: `translate(${rect.x + dragOffset.dx}px, ${rect.y + dragOffset.dy}px) scale(${focusScale})`,
-      transformOrigin: 'center center',
-      width: rect.w + resizeDelta.dw,
-      height: rect.h + resizeDelta.dh,
+      transform: `translate(${tx}px, ${ty}px)`,
+      width: effectiveW + (win.folded ? 0 : resizeDelta.dw),
+      height: effectiveH + (win.folded ? 0 : resizeDelta.dh),
       zIndex: rect.zIndex,
       transition,
     }),
-    [rect, dragOffset, resizeDelta, transition, focusScale]
+    [tx, ty, effectiveW, effectiveH, rect.zIndex, resizeDelta, transition, win.folded]
   );
 
   // Focus indication is via shadow only — no scale/translate so the focused
@@ -120,14 +125,10 @@ export const ChatWindow: React.FC<Props> = ({
 
   return (
     <div
-      className={`absolute top-0 left-0 rounded-2xl bg-background-default border border-border-subtle/30 overflow-hidden flex flex-col transition-shadow ${focusClasses}`}
+      className={`absolute top-0 left-0 rounded-2xl bg-background-default border border-border-subtle/30 overflow-hidden transition-shadow ${focusClasses}`}
       style={{ ...stylePos, ...popStyle }}
       onMouseDown={(e) => {
         if (isFocused) return;
-        // If the user clicked an interactive control (button, input, link, or
-        // anything inside a Radix Popover/Dropdown trigger), don't reframe
-        // the canvas — they're already engaged with the window and a sudden
-        // camera move would strand any popover that's about to open.
         const target = e.target as HTMLElement;
         const isInteractive =
           target.closest(
@@ -137,83 +138,118 @@ export const ChatWindow: React.FC<Props> = ({
         dashboard.focusWindow(win.windowId);
       }}
     >
-      <WindowTitleBar
-        name={win.name}
-        accentColor={win.accentColor}
-        onRename={(name) => dashboard.renameWindow(win.windowId, name)}
-        onClose={() => dashboard.closeWindow(win.windowId)}
-        onShrink={() => {
-          // Resizing is an explicit user interaction with this window — claim
-          // focus too so subsequent organize/centerOn treats this as the
-          // active window (matches user's mental model that the window
-          // they're manipulating is "active").
-          if (!isFocused) dashboard.focusWindow(win.windowId);
-          dashboard.resizeWindow(
-            win.windowId,
-            { w: minSize.w, h: minSize.h },
-            { x: rect.x, y: rect.y }
-          );
-        }}
-        onEnlarge={() => {
-          if (!isFocused) dashboard.focusWindow(win.windowId);
-          dashboard.resizeWindow(
-            win.windowId,
-            { w: ENLARGE_W, h: ENLARGE_H },
-            { x: rect.x, y: rect.y }
-          );
-        }}
-        onPointerDownDrag={dragStart}
-      />
-      <div className="flex-1 min-h-0 relative">
-        <ChatProvider chat={chat} setChat={setChat} contextKey={`dashboard-${win.sessionId}`}>
-          <BaseChat
-            setChat={setChat}
-            sessionId={win.sessionId}
-            suppressEmptyState={false}
-            coherent
-            hideSessionNamePill
-            compactPicker
-            accentColor={win.accentColor}
-            onRenameSession={(newName) => {
-              // Optimistic local update so the title bar reads the new
-              // name immediately, before the network round-trip.
-              dashboard.renameWindow(win.windowId, newName);
-              announceSessionName({
-                sessionId: win.sessionId,
-                name: newName,
-                userSetName: true,
-                origin: 'user',
-              });
-              // Persist to biorouterd + broadcast to siblings (history list,
-              // any open chat tab pointing at the same session).
-              void renameSession(win.sessionId, newName, 'user').catch((err) => {
-                // Roll back the dashboard window to the previous name.
-                if (win.name) {
-                  dashboard.renameWindow(win.windowId, win.name);
-                  announceSessionName({
-                    sessionId: win.sessionId,
-                    name: win.name,
-                    userSetName: win.userSetName,
-                    origin: 'sync',
+      {/* Full window chrome — hidden while folded so BaseChat stays mounted. */}
+      <div
+        className="absolute inset-0 flex flex-col"
+        style={{ display: win.folded ? 'none' : 'flex' }}
+      >
+        <WindowTitleBar
+          name={win.name}
+          accentColor={win.accentColor}
+          onRename={(name) => dashboard.renameWindow(win.windowId, name)}
+          onClose={() => dashboard.closeWindow(win.windowId)}
+          onShrink={() => {
+            if (!isFocused) dashboard.focusWindow(win.windowId);
+            dashboard.resizeWindow(
+              win.windowId,
+              { w: minSize.w, h: minSize.h },
+              { x: rect.x, y: rect.y }
+            );
+          }}
+          onEnlarge={() => {
+            if (!isFocused) dashboard.focusWindow(win.windowId);
+            dashboard.resizeWindow(
+              win.windowId,
+              { w: ENLARGE_W, h: ENLARGE_H },
+              { x: rect.x, y: rect.y }
+            );
+          }}
+          onFold={() => dashboard.foldWindow(win.windowId, true)}
+          onPointerDownDrag={dragStart}
+        />
+        <div className="flex-1 min-h-0 relative">
+          <ChatProvider chat={chat} setChat={setChat} contextKey={`dashboard-${win.sessionId}`}>
+            <BaseChat
+              setChat={setChat}
+              sessionId={win.sessionId}
+              suppressEmptyState={false}
+              coherent
+              hideSessionNamePill
+              compactPicker
+              showPopularTopics={false}
+              accentColor={win.accentColor}
+              onBusyChange={(busy) => dashboard.setWindowBusy(win.windowId, busy)}
+              onRenameSession={(newName) => {
+                dashboard.renameWindow(win.windowId, newName);
+                announceSessionName({
+                  sessionId: win.sessionId,
+                  name: newName,
+                  userSetName: true,
+                  origin: 'user',
+                });
+                void renameSession(win.sessionId, newName, 'user').catch((err) => {
+                  if (win.name) {
+                    dashboard.renameWindow(win.windowId, win.name);
+                    announceSessionName({
+                      sessionId: win.sessionId,
+                      name: win.name,
+                      userSetName: win.userSetName,
+                      origin: 'sync',
+                    });
+                  }
+                  toastError({
+                    title: 'Failed to rename session',
+                    msg: errorMessage(err),
+                  });
+                });
+              }}
+              onSessionUpdate={(s) => {
+                if (s?.name) {
+                  dashboard.syncSessionName(win.windowId, s.name, {
+                    userSetName: s.userSetName,
                   });
                 }
-                toastError({
-                  title: 'Failed to rename session',
-                  msg: errorMessage(err),
-                });
-              });
-            }}
-            onSessionUpdate={(s) => {
-              if (s?.name) {
-                dashboard.syncSessionName(win.windowId, s.name, {
-                  userSetName: s.userSetName,
-                });
-              }
-            }}
-          />
-        </ChatProvider>
+              }}
+            />
+          </ChatProvider>
+        </div>
+        <ResizeHandle onPointerDown={resizeStart} />
       </div>
-      <ResizeHandle onPointerDown={resizeStart} />
+      {/* Folded card — layered on top when folded. */}
+      {win.folded && (
+        <div className="absolute inset-0">
+          <FoldedCard
+            name={win.name}
+            cwd={win.cwd}
+            accentColor={win.accentColor}
+            isBusy={win.isBusy}
+            onUnfold={() => {
+              if (!isFocused) dashboard.focusWindow(win.windowId);
+              dashboard.foldWindow(win.windowId, false);
+            }}
+            onShrink={() => {
+              if (!isFocused) dashboard.focusWindow(win.windowId);
+              dashboard.foldWindow(win.windowId, false);
+              dashboard.resizeWindow(
+                win.windowId,
+                { w: minSize.w, h: minSize.h },
+                { x: rect.x, y: rect.y }
+              );
+            }}
+            onEnlarge={() => {
+              if (!isFocused) dashboard.focusWindow(win.windowId);
+              dashboard.foldWindow(win.windowId, false);
+              dashboard.resizeWindow(
+                win.windowId,
+                { w: ENLARGE_W, h: ENLARGE_H },
+                { x: rect.x, y: rect.y }
+              );
+            }}
+            onClose={() => dashboard.closeWindow(win.windowId)}
+            onPointerDownDrag={dragStart}
+          />
+        </div>
+      )}
     </div>
   );
 };
