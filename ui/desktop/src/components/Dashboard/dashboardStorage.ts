@@ -26,6 +26,8 @@ export interface SerializedDashboardWindow {
   costAccumulated?: number;
   lastInteraction: number;
   unreadActivity: boolean;
+  /** Whether the window is currently rendered as a compact card. */
+  folded?: boolean;
 }
 
 export interface SerializedDashboardState {
@@ -87,6 +89,7 @@ function migrateV1ToV2(v1: LegacyV1State): SerializedDashboardState {
       costAccumulated: w.costAccumulated,
       lastInteraction: w.lastInteraction,
       unreadActivity: w.unreadActivity,
+      folded: false,
     };
   });
   return {
