@@ -18,6 +18,10 @@ export interface DashboardWindow {
   costAccumulated?: number;
   lastInteraction: number;
   unreadActivity: boolean;
+  /** When true, render as a compact FoldedCard instead of the full chat. */
+  folded: boolean;
+  /** Transient: true while the inner chat is streaming or running a tool. Not persisted. */
+  isBusy: boolean;
 }
 
 export interface DashboardState {
@@ -34,9 +38,24 @@ export interface DashboardState {
   isHydrating: boolean;
 }
 
+export interface SpawnWindowOptions {
+  /** Resume an existing session instead of creating a new one. The dashboard
+   * window will display the session's history; no new session is created. */
+  resumeSessionId?: string;
+  /** Create the new session with a workflow attached. Ignored when
+   * `resumeSessionId` is set. */
+  workflowId?: string;
+  /** Working directory for the new session. Defaults to the app's initial
+   * working dir. When resuming, this is informational only. */
+  cwd?: string;
+  /** Override the auto-generated window display name (e.g. workflow title or
+   * resumed-session name). */
+  name?: string;
+}
+
 export interface DashboardApi {
   state: DashboardState;
-  spawnWindow: () => Promise<void>;
+  spawnWindow: (options?: SpawnWindowOptions) => Promise<void>;
   closeWindow: (windowId: string) => void;
   focusWindow: (windowId: string) => void;
   renameWindow: (windowId: string, name: string) => void;
@@ -83,6 +102,16 @@ export interface DashboardApi {
     value: DashboardWindow[K]
   ) => void;
   markActivity: (windowId: string) => void;
+  /** Toggle a single window between folded and unfolded. */
+  foldWindow: (windowId: string, folded: boolean) => void;
+  /** Set every on-canvas window's `folded` to true. */
+  foldAll: () => void;
+  /** Set every on-canvas window's `folded` to false. */
+  unfoldAll: () => void;
+  /** Mark a window's chat as actively streaming/running. Driven by BaseChat. */
+  setWindowBusy: (windowId: string, busy: boolean) => void;
+  /** Derived: every on-canvas window has folded=true. False when windows is empty. */
+  allFolded: boolean;
 }
 
 export const DashboardContext = createContext<DashboardApi | null>(null);
