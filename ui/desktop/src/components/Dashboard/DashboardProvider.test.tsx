@@ -178,4 +178,86 @@ describe('DashboardProvider (canvas mode)', () => {
     act(() => result.current.syncSessionName(id, 'Auto-named by AI'));
     expect(result.current.state.windows[0].name).toBe('My Project');
   });
+
+  describe('fold mode', () => {
+    it('foldWindow flips a single window', async () => {
+      const { result } = renderHook(() => useDashboard(), { wrapper });
+      await act(async () => {
+        await result.current.spawnWindow();
+      });
+      const id = result.current.state.windows[0].windowId;
+      expect(result.current.state.windows[0].folded).toBe(false);
+      act(() => result.current.foldWindow(id, true));
+      expect(result.current.state.windows[0].folded).toBe(true);
+      act(() => result.current.foldWindow(id, false));
+      expect(result.current.state.windows[0].folded).toBe(false);
+    });
+
+    it('foldAll folds every window; unfoldAll unfolds every window', async () => {
+      const { result } = renderHook(() => useDashboard(), { wrapper });
+      await act(async () => {
+        await result.current.spawnWindow();
+        await result.current.spawnWindow();
+        await result.current.spawnWindow();
+      });
+      act(() => result.current.foldAll());
+      expect(result.current.state.windows.every((w) => w.folded)).toBe(true);
+      act(() => result.current.unfoldAll());
+      expect(result.current.state.windows.every((w) => !w.folded)).toBe(true);
+    });
+
+    it('allFolded reflects derived state', async () => {
+      const { result } = renderHook(() => useDashboard(), { wrapper });
+      expect(result.current.allFolded).toBe(false); // empty
+      await act(async () => {
+        await result.current.spawnWindow();
+        await result.current.spawnWindow();
+      });
+      expect(result.current.allFolded).toBe(false);
+      act(() => result.current.foldAll());
+      expect(result.current.allFolded).toBe(true);
+      const firstId = result.current.state.windows[0].windowId;
+      act(() => result.current.foldWindow(firstId, false));
+      expect(result.current.allFolded).toBe(false);
+    });
+
+    it('setWindowBusy updates only the matching window', async () => {
+      const { result } = renderHook(() => useDashboard(), { wrapper });
+      await act(async () => {
+        await result.current.spawnWindow();
+        await result.current.spawnWindow();
+      });
+      const [a, b] = result.current.state.windows.map((w) => w.windowId);
+      act(() => result.current.setWindowBusy(a, true));
+      const winA = result.current.state.windows.find((w) => w.windowId === a)!;
+      const winB = result.current.state.windows.find((w) => w.windowId === b)!;
+      expect(winA.isBusy).toBe(true);
+      expect(winB.isBusy).toBe(false);
+    });
+
+    it('isBusy is not persisted across hydrate', async () => {
+      const { result, unmount } = renderHook(() => useDashboard(), { wrapper });
+      await act(async () => {
+        await result.current.spawnWindow();
+      });
+      const id = result.current.state.windows[0].windowId;
+      act(() => result.current.setWindowBusy(id, true));
+      expect(result.current.state.windows[0].isBusy).toBe(true);
+      unmount(); // flushes save synchronously via the unmount-cleanup effect
+      const { result: result2 } = renderHook(() => useDashboard(), { wrapper });
+      expect(result2.current.state.windows[0].isBusy).toBe(false);
+    });
+
+    it('folded is persisted across hydrate', async () => {
+      const { result, unmount } = renderHook(() => useDashboard(), { wrapper });
+      await act(async () => {
+        await result.current.spawnWindow();
+      });
+      const id = result.current.state.windows[0].windowId;
+      act(() => result.current.foldWindow(id, true));
+      unmount();
+      const { result: result2 } = renderHook(() => useDashboard(), { wrapper });
+      expect(result2.current.state.windows[0].folded).toBe(true);
+    });
+  });
 });
