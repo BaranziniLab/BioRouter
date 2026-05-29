@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { X, Minimize2, Maximize2 } from '../icons/app-icons';
+import { X, Minimize2, Maximize2, Minus } from '../icons/app-icons';
 
 interface Props {
   name: string;
@@ -8,6 +8,7 @@ interface Props {
   onClose: () => void;
   onShrink: () => void;
   onEnlarge: () => void;
+  onFold: () => void;
   onPointerDownDrag: (e: React.PointerEvent<HTMLDivElement>) => void;
 }
 
@@ -18,6 +19,7 @@ export const WindowTitleBar: React.FC<Props> = ({
   onClose,
   onShrink,
   onEnlarge,
+  onFold,
   onPointerDownDrag,
 }) => {
   const [editing, setEditing] = useState(false);
@@ -76,7 +78,15 @@ export const WindowTitleBar: React.FC<Props> = ({
           {name}
         </span>
       )}
-      {/* Order: Shrink | Enlarge | Close — right-aligned. */}
+      {/* Order: Fold | Shrink | Enlarge | Close — right-aligned. */}
+      <button
+        type="button"
+        className={iconBtnClass}
+        onClick={onFold}
+        title="Fold to card"
+      >
+        <Minus className="w-3.5 h-3.5" />
+      </button>
       <button
         type="button"
         className={iconBtnClass}
