@@ -77,6 +77,10 @@ interface BaseChatProps {
    * workflow, diagnostics) live behind a chevron popover. When false (chat
    * tab default), they render inline. Dashboard windows pass true. */
   compactPicker?: boolean;
+  /** Fires when the inner chat transitions between idle and any non-idle state
+   * (streaming, thinking, tool-running, etc.). Used by DashboardContext to
+   * drive the per-window busy indicator on folded cards. */
+  onBusyChange?: (busy: boolean) => void;
 }
 
 function BaseChatContent({
@@ -92,6 +96,8 @@ function BaseChatContent({
   accentColor,
   hideSessionNamePill = false,
   compactPicker = false,
+  showPopularTopics: showPopularTopicsProp = true,
+  onBusyChange,
 }: BaseChatProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -141,6 +147,15 @@ function BaseChatContent({
     sessionId,
     onStreamFinish,
   });
+
+  // Pipe chatState transitions to the parent (dashboard window). Busy = any
+  // non-idle state (Thinking, Streaming, WaitingForUserInput, Compacting, etc.).
+  // ChatState.LoadingConversation counts as busy too — the session is still
+  // resolving and the user should see that as activity.
+  useEffect(() => {
+    if (!onBusyChange) return;
+    onBusyChange(chatState !== ChatState.Idle);
+  }, [chatState, onBusyChange]);
 
   // Generate command history from user messages (most recent first)
   const commandHistory = useMemo(() => {
@@ -320,7 +335,10 @@ function BaseChatContent({
   };
 
   const showPopularTopics =
-    messages.length === 0 && !initialMessage && chatState === ChatState.Idle;
+    showPopularTopicsProp &&
+    messages.length === 0 &&
+    !initialMessage &&
+    chatState === ChatState.Idle;
 
   const chat: ChatType = {
     messages,
@@ -494,7 +512,7 @@ function BaseChatContent({
             paddingY={0}
           >
             {workflow?.title && (
-              <div className="sticky top-0 z-10 bg-background-default px-0 -mx-6 mb-6 pt-6">
+              <div className="sticky top-0 z-10 bg-background-default px-0 -mx-6 mb-4 pt-2">
                 <WorkflowHeader title={workflow.title} />
               </div>
             )}
