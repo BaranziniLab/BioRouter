@@ -57,6 +57,7 @@ import {
   Minimize2 as _Minimize2,
   MessageSquare as _MessageSquare,
   MessageSquareText as _MessageSquareText,
+  Minus as _Minus,
   Monitor as _Monitor,
   Moon as _Moon,
   Music as _Music,
@@ -168,6 +169,7 @@ export const Maximize2 = light(_Maximize2);
 export const Minimize2 = light(_Minimize2);
 export const MessageSquare = light(_MessageSquare);
 export const MessageSquareText = light(_MessageSquareText);
+export const Minus = light(_Minus);
 export const Monitor = light(_Monitor);
 export const Moon = light(_Moon);
 export const Music = light(_Music);
