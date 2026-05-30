@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import BaseChat from '../BaseChat';
 import { ChatProvider, DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
 import { ChatType } from '../../types/chat';
@@ -50,6 +50,21 @@ export const ChatWindow: React.FC<Props> = ({
 
   const [dragOffset, setDragOffset] = useState<{ dx: number; dy: number }>({ dx: 0, dy: 0 });
   const [resizeDelta, setResizeDelta] = useState<{ dw: number; dh: number }>({ dw: 0, dh: 0 });
+
+  // Bump each time the window transitions from folded → unfolded so BaseChat
+  // can re-focus the input and scroll to bottom. BaseChat stays mounted while
+  // folded (display:none on the chrome wrapper) so mount-time autofocus never
+  // re-fires — without this, the user has to click the input after unfolding
+  // and the conversation can sit at a stale scroll position that clips the
+  // input row.
+  const [focusTrigger, setFocusTrigger] = useState(0);
+  const prevFoldedRef = useRef(win.folded);
+  useEffect(() => {
+    if (prevFoldedRef.current && !win.folded) {
+      setFocusTrigger((c) => c + 1);
+    }
+    prevFoldedRef.current = win.folded;
+  }, [win.folded]);
 
   const dragStart = usePointerDrag({
     onMove: ({ dx, dy }) => {
@@ -179,6 +194,7 @@ export const ChatWindow: React.FC<Props> = ({
               showPopularTopics={false}
               accentColor={win.accentColor}
               onBusyChange={(busy) => dashboard.setWindowBusy(win.windowId, busy)}
+              focusTrigger={focusTrigger}
               onLatestMessage={(text) => dashboard.setWindowPreview(win.windowId, text)}
               onRenameSession={(newName) => {
                 dashboard.renameWindow(win.windowId, newName);

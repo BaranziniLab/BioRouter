@@ -330,6 +330,21 @@ export default function ChatInput({
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const timeoutRefsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
+  // Listen for parent-initiated focus requests (e.g. dashboard ChatWindow
+  // dispatches 'focus-chat-input' when a folded card is unfolded). The mount
+  // autoFocus on textarea doesn't re-fire on visibility change, so we need
+  // an explicit poke. Match by sessionId so a stray broadcast doesn't focus
+  // every chat input on the page.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ sessionId?: string | null }>).detail;
+      if (detail?.sessionId && detail.sessionId !== sessionId) return;
+      textAreaRef.current?.focus();
+    };
+    window.addEventListener('focus-chat-input', handler);
+    return () => window.removeEventListener('focus-chat-input', handler);
+  }, [sessionId]);
+
   // Use shared file drop hook for ChatInput
   const {
     droppedFiles: localDroppedFiles,

@@ -85,6 +85,11 @@ interface BaseChatProps {
    * mid-stream). Receives a tail-truncated string for hover previews on
    * dashboard folded cards. Null when there's no assistant message yet. */
   onLatestMessage?: (text: string | null) => void;
+  /** Monotonically increments when the parent wants the chat input refocused
+   * and the conversation scrolled back to the bottom. Used by dashboard
+   * ChatWindow on unfold, because BaseChat stays mounted while folded so
+   * mount-time autofocus / auto-scroll never re-fire on visibility change. */
+  focusTrigger?: number;
 }
 
 function BaseChatContent({
@@ -103,6 +108,7 @@ function BaseChatContent({
   showPopularTopics: showPopularTopicsProp = true,
   onBusyChange,
   onLatestMessage,
+  focusTrigger,
 }: BaseChatProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -314,6 +320,24 @@ function BaseChatContent({
     window.addEventListener('scroll-chat-to-bottom', handleGlobalScrollRequest);
     return () => window.removeEventListener('scroll-chat-to-bottom', handleGlobalScrollRequest);
   }, []);
+
+  // When the parent bumps focusTrigger (e.g. dashboard card unfolded), wait
+  // one animation frame for the display:none→display:flex transition to
+  // settle, then scroll the chat to bottom and ask ChatInput to refocus.
+  // BaseChat stays mounted while folded, so its mount-time autofocus and
+  // auto-scroll-to-bottom never re-fire — without this hook the input would
+  // stay unfocused and the conversation would stay at its pre-fold scroll
+  // position (often leaving the input row visually cut off).
+  useEffect(() => {
+    if (!focusTrigger) return;
+    const raf = requestAnimationFrame(() => {
+      scrollRef.current?.scrollToBottom?.();
+      window.dispatchEvent(
+        new CustomEvent('focus-chat-input', { detail: { sessionId } })
+      );
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [focusTrigger, sessionId]);
 
   useEffect(() => {
     const handleMakeAgent = () => {
