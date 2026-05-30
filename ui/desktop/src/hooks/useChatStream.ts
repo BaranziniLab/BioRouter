@@ -192,6 +192,11 @@ async function streamFromResponse(
           return;
         }
         case 'Finish': {
+          // The server attaches the authoritative end-of-stream token_state.
+          // Without applying it, manual `/compact` (whose only post-compaction
+          // event is HistoryReplaced -> UpdateConversation -> Finish) leaves
+          // the UI gauge stuck at the pre-compact value.
+          updateTokenState(event.token_state);
           onFinish();
           return;
         }
@@ -203,6 +208,7 @@ async function streamFromResponse(
           // Longterm fix is to only send the agent the new messages, not the entire conversation.
           currentMessages = event.conversation;
           updateMessages(event.conversation);
+          updateTokenState(event.token_state);
           break;
         }
         case 'Notification': {

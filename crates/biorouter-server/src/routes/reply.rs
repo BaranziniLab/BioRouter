@@ -142,6 +142,7 @@ pub enum MessageEvent {
     },
     UpdateConversation {
         conversation: Conversation,
+        token_state: TokenState,
     },
     Ping,
 }
@@ -350,7 +351,8 @@ pub async fn reply(
                         }
                         Ok(Some(Ok(AgentEvent::HistoryReplaced(new_messages)))) => {
                             all_messages = new_messages.clone();
-                            stream_event(MessageEvent::UpdateConversation {conversation: new_messages}, &tx, &cancel_token).await;
+                            let token_state = get_token_state(state.session_manager(), &session_id).await;
+                            stream_event(MessageEvent::UpdateConversation {conversation: new_messages, token_state}, &tx, &cancel_token).await;
 
                         }
                         Ok(Some(Ok(AgentEvent::ModelChange { model, mode }))) => {

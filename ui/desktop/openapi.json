@@ -4449,11 +4449,15 @@
             "type": "object",
             "required": [
               "conversation",
+              "token_state",
               "type"
             ],
             "properties": {
               "conversation": {
                 "$ref": "#/components/schemas/Conversation"
+              },
+              "token_state": {
+                "$ref": "#/components/schemas/TokenState"
               },
               "type": {
                 "type": "string",
@@ -5455,9 +5459,29 @@
         "type": "object",
         "required": [
           "totalSessions",
-          "totalTokens"
+          "totalTokens",
+          "sessionsLast7Days",
+          "sessionsLast30Days",
+          "tokensLast7Days",
+          "tokensLast30Days"
         ],
         "properties": {
+          "sessionsLast30Days": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sessionsLast7Days": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "tokensLast30Days": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "tokensLast7Days": {
+            "type": "integer",
+            "format": "int64"
+          },
           "totalSessions": {
             "type": "integer",
             "minimum": 0

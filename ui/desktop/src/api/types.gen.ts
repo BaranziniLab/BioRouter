@@ -518,6 +518,7 @@ export type MessageEvent = {
     type: 'Notification';
 } | {
     conversation: Conversation;
+    token_state: TokenState;
     type: 'UpdateConversation';
 } | {
     type: 'Ping';
@@ -890,6 +891,10 @@ export type SessionExtensionsResponse = {
 };
 
 export type SessionInsights = {
+    sessionsLast30Days: number;
+    sessionsLast7Days: number;
+    tokensLast30Days: number;
+    tokensLast7Days: number;
     totalSessions: number;
     totalTokens: number;
 };

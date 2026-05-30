@@ -868,9 +868,7 @@ impl Agent {
             }
         }
 
-        let command_result = self
-            .execute_command(&message_text, &session_config.id)
-            .await;
+        let command_result = self.execute_command(&message_text, &session_config).await;
 
         match command_result {
             Err(e) => {

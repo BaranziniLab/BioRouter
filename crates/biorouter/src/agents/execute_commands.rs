@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
 
+use crate::agents::types::SessionConfig;
 use crate::context_mgmt::compact_messages;
 use crate::conversation::message::{Message, SystemNotificationType};
 use crate::workflow::build_workflow::build_workflow_from_template_with_positional_params;
@@ -43,8 +44,9 @@ impl Agent {
     pub async fn execute_command(
         &self,
         message_text: &str,
-        session_id: &str,
+        session_config: &SessionConfig,
     ) -> Result<Option<Message>> {
+        let session_id = session_config.id.as_str();
         let mut trimmed = message_text.trim().to_string();
 
         if COMPACT_TRIGGERS.contains(&trimmed.as_str()) {
@@ -70,7 +72,7 @@ impl Agent {
         match command {
             "prompts" => self.handle_prompts_command(&params, session_id).await,
             "prompt" => self.handle_prompt_command(&params, session_id).await,
-            "compact" => self.handle_compact_command(session_id).await,
+            "compact" => self.handle_compact_command(session_config).await,
             "clear" => self.handle_clear_command(session_id).await,
             _ => {
                 self.handle_workflow_command(command, params_str, session_id)
@@ -79,14 +81,18 @@ impl Agent {
         }
     }
 
-    async fn handle_compact_command(&self, session_id: &str) -> Result<Option<Message>> {
+    async fn handle_compact_command(
+        &self,
+        session_config: &SessionConfig,
+    ) -> Result<Option<Message>> {
+        let session_id = session_config.id.as_str();
         let manager = self.config.session_manager.clone();
         let session = manager.get_session(session_id, true).await?;
         let conversation = session
             .conversation
             .ok_or_else(|| anyhow!("Session has no conversation"))?;
 
-        let (compacted_conversation, _usage) = compact_messages(
+        let (compacted_conversation, summarization_usage) = compact_messages(
             self.provider().await?.as_ref(),
             &conversation,
             true, // is_manual_compact
@@ -95,6 +101,12 @@ impl Agent {
 
         manager
             .replace_conversation(session_id, &compacted_conversation)
+            .await?;
+
+        // Without this, session.total_tokens stays at the pre-compact value:
+        // the UI gauge keeps reading the old number, and the next reply's
+        // check_if_compaction_needed re-triggers a full LLM summarization.
+        self.update_session_metrics(session_config, &summarization_usage, true)
             .await?;
 
         Ok(Some(Message::assistant().with_system_notification(
