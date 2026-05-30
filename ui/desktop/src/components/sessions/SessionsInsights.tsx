@@ -36,6 +36,10 @@ export function SessionInsights() {
         setInsights({
           totalSessions: 0,
           totalTokens: 0,
+          sessionsLast7Days: 0,
+          sessionsLast30Days: 0,
+          tokensLast7Days: 0,
+          tokensLast30Days: 0,
         });
       } finally {
         setIsLoading(false);
@@ -59,10 +63,11 @@ export function SessionInsights() {
           setIsLoading(false);
           return {
             totalSessions: 0,
-            mostActiveDirs: [],
-            avgSessionDuration: 0,
             totalTokens: 0,
-            recentActivity: [],
+            sessionsLast7Days: 0,
+            sessionsLast30Days: 0,
+            tokensLast7Days: 0,
+            tokensLast30Days: 0,
           };
         }
         setIsLoading(false);
@@ -109,20 +114,31 @@ export function SessionInsights() {
     );
   };
 
+  const formatCount = (count: number | undefined): string => {
+    return Math.max(count ?? 0, 0).toLocaleString();
+  };
+
   const renderSkeleton = () => (
     <div className="bg-background-muted flex flex-col h-full">
       <div className="px-8 pt-16 pb-4">
         <Greeting />
       </div>
-      <div className="flex items-start gap-8 px-8 pb-8">
-        <div>
-          <Skeleton className="h-5 w-12 mb-1.5" />
-          <span className="text-[11px] text-text-muted uppercase tracking-wider">Sessions</span>
-        </div>
-        <div>
-          <Skeleton className="h-5 w-20 mb-1.5" />
-          <span className="text-[11px] text-text-muted uppercase tracking-wider">Tokens</span>
-        </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8 px-8 pb-8">
+        {(['Sessions', 'Tokens'] as const).map((group) => (
+          <div key={group}>
+            <p className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-3">
+              {group}
+            </p>
+            <div className="flex items-end gap-8">
+              {[0, 1, 2].map((i) => (
+                <div key={i}>
+                  <Skeleton className="h-6 w-14 mb-1.5" />
+                  <Skeleton className="h-3 w-16" />
+                </div>
+              ))}
+            </div>
+          </div>
+        ))}
       </div>
       <div className="px-8 pb-8">
         <div className="flex justify-between items-center pb-3 border-b border-border-subtle">
@@ -155,28 +171,70 @@ export function SessionInsights() {
         <Greeting />
       </div>
 
-      {/* Inline stats row */}
-      <div className="flex items-start gap-8 px-8 pb-8">
+      {/* Grouped stats — Sessions / Tokens, each with Total · Past 30d · Past 7d */}
+      <div className="px-8 pb-8">
         {error ? (
           <div className="flex items-center gap-2 text-xs text-orange-600 dark:text-orange-400">
             <div className="w-2 h-2 bg-orange-400 rounded-full flex-shrink-0" />
             Failed to load insights
           </div>
         ) : (
-          <>
-            <div className="page-transition">
-              <p className="text-xl font-medium leading-none mb-1.5">
-                {Math.max(insights?.totalSessions ?? 0, 0)}
-              </p>
-              <span className="text-[11px] text-text-muted uppercase tracking-wider">Sessions</span>
-            </div>
-            <div className="page-transition">
-              <p className="text-xl font-medium leading-none mb-1.5">
-                {formatTokens(insights?.totalTokens)}
-              </p>
-              <span className="text-[11px] text-text-muted uppercase tracking-wider">Tokens</span>
-            </div>
-          </>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8 page-transition">
+            {([
+              {
+                heading: 'Sessions',
+                items: [
+                  { value: formatCount(insights?.totalSessions), label: 'Total' },
+                  {
+                    value: formatCount(insights?.sessionsLast30Days),
+                    label: 'Past 30 days',
+                  },
+                  {
+                    value: formatCount(insights?.sessionsLast7Days),
+                    label: 'Past 7 days',
+                  },
+                ],
+              },
+              {
+                heading: 'Tokens',
+                items: [
+                  { value: formatTokens(insights?.totalTokens), label: 'Total' },
+                  {
+                    value: formatTokens(insights?.tokensLast30Days),
+                    label: 'Past 30 days',
+                  },
+                  {
+                    value: formatTokens(insights?.tokensLast7Days),
+                    label: 'Past 7 days',
+                  },
+                ],
+              },
+            ] as const).map((group) => (
+              <div key={group.heading}>
+                <p className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-3">
+                  {group.heading}
+                </p>
+                <div className="flex items-end gap-8">
+                  {group.items.map((item, idx) => (
+                    <div key={item.label}>
+                      <p
+                        className={
+                          idx === 0
+                            ? 'text-2xl font-medium leading-none mb-1.5 tabular-nums'
+                            : 'text-lg font-medium leading-none mb-1.5 text-text-muted tabular-nums'
+                        }
+                      >
+                        {item.value}
+                      </p>
+                      <span className="text-[11px] text-text-muted uppercase tracking-wider whitespace-nowrap">
+                        {item.label}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
         )}
       </div>
 

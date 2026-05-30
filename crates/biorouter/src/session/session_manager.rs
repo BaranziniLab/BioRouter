@@ -118,6 +118,10 @@ pub struct SessionUpdateBuilder<'a> {
 pub struct SessionInsights {
     pub total_sessions: usize,
     pub total_tokens: i64,
+    pub sessions_last_7_days: usize,
+    pub sessions_last_30_days: usize,
+    pub tokens_last_7_days: i64,
+    pub tokens_last_30_days: i64,
 }
 
 impl<'a> SessionUpdateBuilder<'a> {
@@ -1237,10 +1241,20 @@ impl SessionStorage {
 
     async fn get_insights(&self) -> Result<SessionInsights> {
         let pool = self.pool().await?;
-        let row = sqlx::query_as::<_, (i64, Option<i64>)>(
+        // Single aggregate over sessions: totals plus 7d/30d windows.
+        // Window uses updated_at (already indexed) so an active session
+        // counts toward the recent window even if it was started earlier.
+        let row = sqlx::query_as::<_, (i64, Option<i64>, i64, i64, Option<i64>, Option<i64>)>(
             r#"
-            SELECT COUNT(*) as total_sessions,
-                   COALESCE(SUM(COALESCE(accumulated_total_tokens, total_tokens, 0)), 0) as total_tokens
+            SELECT
+              COUNT(*) AS total_sessions,
+              COALESCE(SUM(COALESCE(accumulated_total_tokens, total_tokens, 0)), 0) AS total_tokens,
+              SUM(CASE WHEN updated_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END) AS sessions_7d,
+              SUM(CASE WHEN updated_at >= datetime('now', '-30 days') THEN 1 ELSE 0 END) AS sessions_30d,
+              COALESCE(SUM(CASE WHEN updated_at >= datetime('now', '-7 days')
+                THEN COALESCE(accumulated_total_tokens, total_tokens, 0) ELSE 0 END), 0) AS tokens_7d,
+              COALESCE(SUM(CASE WHEN updated_at >= datetime('now', '-30 days')
+                THEN COALESCE(accumulated_total_tokens, total_tokens, 0) ELSE 0 END), 0) AS tokens_30d
             FROM sessions
             "#,
         )
@@ -1250,6 +1264,10 @@ impl SessionStorage {
         Ok(SessionInsights {
             total_sessions: row.0 as usize,
             total_tokens: row.1.unwrap_or(0),
+            sessions_last_7_days: row.2.max(0) as usize,
+            sessions_last_30_days: row.3.max(0) as usize,
+            tokens_last_7_days: row.4.unwrap_or(0),
+            tokens_last_30_days: row.5.unwrap_or(0),
         })
     }
 
