@@ -1038,16 +1038,9 @@ impl Agent {
 
         let provider = self.provider().await?;
         let session_manager = self.config.session_manager.clone();
-        let session_id = session_config.id.clone();
-        let manager_for_spawn = session_manager.clone();
-        tokio::spawn(async move {
-            if let Err(e) = manager_for_spawn
-                .maybe_update_name(&session_id, provider)
-                .await
-            {
-                warn!("Failed to generate session description: {}", e);
-            }
-        });
+        let session_id_for_rename = session_config.id.clone();
+        let session_manager_for_rename = session_manager.clone();
+        let provider_for_rename = provider.clone();
 
         let working_dir = session.working_dir.clone();
         Ok(Box::pin(async_stream::try_stream! {
@@ -1450,6 +1443,22 @@ impl Agent {
 
                 tokio::task::yield_now().await;
             }
+
+            // Run LLM-driven session rename AFTER the reply stream has produced
+            // at least one assistant turn. Doing this at reply() entry (the
+            // previous behavior) saw only `[user_msg]` for tool-heavy first
+            // turns, since assistant text hadn't been emitted yet — so
+            // generate_session_name had nothing to work with and the window
+            // title stayed "New Session". Deferring guarantees the
+            // conversation contains the assistant response.
+            tokio::spawn(async move {
+                if let Err(e) = session_manager_for_rename
+                    .maybe_update_name(&session_id_for_rename, provider_for_rename)
+                    .await
+                {
+                    warn!("Failed to generate session description: {}", e);
+                }
+            });
         }))
     }
 
