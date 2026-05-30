@@ -300,9 +300,20 @@ impl Provider for SageMakerTgiProvider {
             ProviderError::RequestFailed(format!("Failed to create request: {}", e))
         })?;
 
+        let debug_payload = serde_json::json!({
+            "system": system,
+            "messages": messages,
+            "tools": tools,
+            "tgi_request": request_payload,
+        });
+        let mut log = RequestLog::start(&self.model, &debug_payload)?;
+
         let response = self
             .with_retry(|| self.invoke_endpoint(request_payload.clone()))
-            .await?;
+            .await
+            .inspect_err(|e| {
+                let _ = log.error(e);
+            })?;
 
         let message = self.parse_tgi_response(response)?;
 
@@ -313,13 +324,6 @@ impl Provider for SageMakerTgiProvider {
             Some(0),
         );
 
-        // Add debug trace
-        let debug_payload = serde_json::json!({
-            "system": system,
-            "messages": messages,
-            "tools": tools
-        });
-        let mut log = RequestLog::start(&self.model, &debug_payload)?;
         log.write(
             &serde_json::to_value(&message).unwrap_or_default(),
             Some(&usage),

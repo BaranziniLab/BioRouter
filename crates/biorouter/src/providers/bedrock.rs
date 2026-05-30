@@ -250,9 +250,19 @@ impl Provider for BedrockProvider {
     ) -> Result<(Message, ProviderUsage), ProviderError> {
         let model_name = model_config.model_name.clone();
 
+        let debug_payload = serde_json::json!({
+            "system": system,
+            "messages": messages,
+            "tools": tools
+        });
+        let mut log = RequestLog::start(&self.model, &debug_payload)?;
+
         let (bedrock_message, bedrock_usage) = self
             .with_retry(|| self.converse(system, messages, tools))
-            .await?;
+            .await
+            .inspect_err(|e| {
+                let _ = log.error(e);
+            })?;
 
         let usage = bedrock_usage
             .as_ref()
@@ -261,13 +271,6 @@ impl Provider for BedrockProvider {
 
         let message = from_bedrock_message(&bedrock_message)?;
 
-        // Add debug trace with input context
-        let debug_payload = serde_json::json!({
-            "system": system,
-            "messages": messages,
-            "tools": tools
-        });
-        let mut log = RequestLog::start(&self.model, &debug_payload)?;
         log.write(
             &serde_json::to_value(&message).unwrap_or_default(),
             Some(&usage),

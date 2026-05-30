@@ -186,17 +186,20 @@ impl Provider for LiteLLMProvider {
             payload = update_request_for_cache_control(&payload);
         }
 
+        let mut log = RequestLog::start(model_config, &payload)?;
         let response = self
             .with_retry(|| async {
                 let payload_clone = payload.clone();
                 self.post(&payload_clone).await
             })
-            .await?;
+            .await
+            .inspect_err(|e| {
+                let _ = log.error(e);
+            })?;
 
         let message = super::formats::openai::response_to_message(&response)?;
         let usage = super::formats::openai::get_usage(&response);
         let response_model = get_model(&response);
-        let mut log = RequestLog::start(model_config, &payload)?;
         log.write(&response, Some(&usage))?;
         Ok((message, ProviderUsage::new(response_model, usage)))
     }

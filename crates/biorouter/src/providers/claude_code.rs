@@ -427,11 +427,6 @@ impl Provider for ClaudeCodeProvider {
             return self.generate_simple_session_description(messages);
         }
 
-        let json_lines = self.execute_command(system, messages, tools).await?;
-
-        let (message, usage) = self.parse_claude_response(&json_lines)?;
-
-        // Create a dummy payload for debug tracing
         let payload = json!({
             "command": self.command,
             "model": model_config.model_name,
@@ -439,6 +434,15 @@ impl Provider for ClaudeCodeProvider {
             "messages": messages.len()
         });
         let mut log = RequestLog::start(model_config, &payload)?;
+
+        let json_lines = self
+            .execute_command(system, messages, tools)
+            .await
+            .inspect_err(|e| {
+                let _ = log.error(e);
+            })?;
+
+        let (message, usage) = self.parse_claude_response(&json_lines)?;
 
         let response = json!({
             "lines": json_lines.len(),

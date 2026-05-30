@@ -173,12 +173,16 @@ impl Provider for AzureProvider {
             &ImageFormat::OpenAi,
             false,
         )?;
+        let mut log = RequestLog::start(model_config, &payload)?;
         let response = self
             .with_retry(|| async {
                 let payload_clone = payload.clone();
                 self.post(&payload_clone).await
             })
-            .await?;
+            .await
+            .inspect_err(|e| {
+                let _ = log.error(e);
+            })?;
 
         let message = response_to_message(&response)?;
         let usage = response.get("usage").map(get_usage).unwrap_or_else(|| {
@@ -186,7 +190,6 @@ impl Provider for AzureProvider {
             Usage::default()
         });
         let response_model = get_model(&response);
-        let mut log = RequestLog::start(model_config, &payload)?;
         log.write(&response, Some(&usage))?;
         Ok((message, ProviderUsage::new(response_model, usage)))
     }

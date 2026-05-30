@@ -362,24 +362,28 @@ impl Provider for CursorAgentProvider {
             return self.generate_simple_session_description(messages);
         }
 
-        let lines = self.execute_command(system, messages, tools).await?;
-
-        let (message, usage) = self.parse_cursor_agent_response(&lines)?;
-
-        // Create a dummy payload for debug tracing
         let payload = json!({
             "command": self.command,
             "model": model_config.model_name,
             "system": system,
             "messages": messages.len()
         });
+        let mut log = RequestLog::start(&self.model, &payload)?;
+
+        let lines = self
+            .execute_command(system, messages, tools)
+            .await
+            .inspect_err(|e| {
+                let _ = log.error(e);
+            })?;
+
+        let (message, usage) = self.parse_cursor_agent_response(&lines)?;
 
         let response = json!({
             "lines": lines.len(),
             "usage": usage
         });
 
-        let mut log = RequestLog::start(&self.model, &payload)?;
         log.write(&response, Some(&usage))?;
 
         Ok((
