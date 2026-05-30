@@ -18,7 +18,10 @@ import {
 } from '../../utils/sessionNameSync';
 import { findSpawnPosition, organize as organizeLayout } from './canvasLayout';
 import { createSession } from '../../sessions';
+import { deleteSession } from '../../api';
 import { getInitialWorkingDir } from '../../utils/workingDir';
+import { toastError } from '../../toasts';
+import { errorMessage } from '../../utils/conversionUtils';
 
 // Default window size — kept in sync with DashboardBoard.MIN_WINDOW_*.
 const MIN_WINDOW_W = 520;
@@ -173,12 +176,24 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     if (options?.resumeSessionId) {
       sessionId = options.resumeSessionId;
     } else {
-      const session = await createSession(
-        cwd,
-        options?.workflowId ? { workflowId: options.workflowId } : undefined
-      );
-      if (generation !== spawnGenerationRef.current) return;
-      sessionId = session.id;
+      // Surface backend failures (timeout, crashed agent holding LRU lock,
+      // 5xx, etc.) instead of silently swallowing the rejected promise —
+      // previously the user clicked Spawn and saw nothing happen.
+      try {
+        const session = await createSession(
+          cwd,
+          options?.workflowId ? { workflowId: options.workflowId } : undefined
+        );
+        if (generation !== spawnGenerationRef.current) return;
+        sessionId = session.id;
+      } catch (err) {
+        if (generation !== spawnGenerationRef.current) return;
+        toastError({
+          title: 'Failed to spawn window',
+          msg: errorMessage(err),
+        });
+        return;
+      }
     }
     const now = Date.now();
     setState((prev) => {
@@ -242,6 +257,19 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
   }, []);
 
   const closeWindow: DashboardApi['closeWindow'] = useCallback((windowId) => {
+    // Tell biorouterd to delete the session too, so the AgentManager LRU
+    // doesn't accumulate zombie agents from closed windows — a crashed
+    // zombie can hold its LRU write-lock and block future createSession
+    // calls, manifesting as "Spawn does nothing" after Clear.
+    const target = stateRef.current.windows.find((w) => w.windowId === windowId);
+    if (target?.sessionId) {
+      void deleteSession({
+        path: { session_id: target.sessionId },
+        throwOnError: false,
+      }).catch(() => {
+        // Best-effort: the window leaves the UI either way.
+      });
+    }
     setState((prev) => {
       const remaining = prev.windows.filter((w) => w.windowId !== windowId);
       let focusedWindowId = prev.focusedWindowId;
@@ -390,6 +418,17 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     // resolved yet) so they don't append a phantom window after the user
     // explicitly cleared the canvas.
     spawnGenerationRef.current += 1;
+    // Tell biorouterd to delete each session too — without this, the
+    // AgentManager LRU keeps holding the closed agents (including any
+    // crashed ones whose background tasks still hold their LRU write-lock),
+    // which can block subsequent createSession calls and make later Spawn
+    // clicks appear to do nothing.
+    const sessionIds = stateRef.current.windows.map((w) => w.sessionId);
+    for (const sid of sessionIds) {
+      void deleteSession({ path: { session_id: sid }, throwOnError: false }).catch(() => {
+        // Best-effort cleanup.
+      });
+    }
     setState((prev) => ({ ...prev, windows: [], focusedWindowId: null }));
   }, []);
 
