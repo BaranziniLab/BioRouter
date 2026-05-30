@@ -81,6 +81,10 @@ interface BaseChatProps {
    * (streaming, thinking, tool-running, etc.). Used by DashboardContext to
    * drive the per-window busy indicator on folded cards. */
   onBusyChange?: (busy: boolean) => void;
+  /** Fires whenever the last assistant message text changes (including
+   * mid-stream). Receives a tail-truncated string for hover previews on
+   * dashboard folded cards. Null when there's no assistant message yet. */
+  onLatestMessage?: (text: string | null) => void;
 }
 
 function BaseChatContent({
@@ -98,6 +102,7 @@ function BaseChatContent({
   compactPicker = false,
   showPopularTopics: showPopularTopicsProp = true,
   onBusyChange,
+  onLatestMessage,
 }: BaseChatProps) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -156,6 +161,28 @@ function BaseChatContent({
     if (!onBusyChange) return;
     onBusyChange(chatState !== ChatState.Idle);
   }, [chatState, onBusyChange]);
+
+  // Propagate a tail of the most recent assistant message to the parent so
+  // dashboard folded cards can show a hover preview. Updates on every message
+  // mutation — including mid-stream — so the user can watch the AI work
+  // through the popup without expanding the card.
+  useEffect(() => {
+    if (!onLatestMessage) return;
+    const lastAssistant = [...messages].reverse().find((m) => m.role === 'assistant');
+    if (!lastAssistant) {
+      onLatestMessage(null);
+      return;
+    }
+    const text = getTextContent(lastAssistant).trim();
+    if (!text) {
+      onLatestMessage(null);
+      return;
+    }
+    // Keep the tail short — the popup is ~6 lines of small text.
+    const TAIL = 220;
+    const tail = text.length > TAIL ? '…' + text.slice(-TAIL) : text;
+    onLatestMessage(tail);
+  }, [messages, onLatestMessage]);
 
   // Generate command history from user messages (most recent first)
   const commandHistory = useMemo(() => {

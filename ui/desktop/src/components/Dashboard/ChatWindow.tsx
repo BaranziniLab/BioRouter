@@ -179,6 +179,7 @@ export const ChatWindow: React.FC<Props> = ({
               showPopularTopics={false}
               accentColor={win.accentColor}
               onBusyChange={(busy) => dashboard.setWindowBusy(win.windowId, busy)}
+              onLatestMessage={(text) => dashboard.setWindowPreview(win.windowId, text)}
               onRenameSession={(newName) => {
                 dashboard.renameWindow(win.windowId, newName);
                 announceSessionName({
@@ -223,6 +224,7 @@ export const ChatWindow: React.FC<Props> = ({
             cwd={win.cwd}
             accentColor={win.accentColor}
             isBusy={win.isBusy}
+            previewTail={win.previewTail}
             onUnfold={() => {
               if (!isFocused) dashboard.focusWindow(win.windowId);
               dashboard.foldWindow(win.windowId, false);

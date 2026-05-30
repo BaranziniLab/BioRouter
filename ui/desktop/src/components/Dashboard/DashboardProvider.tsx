@@ -26,8 +26,11 @@ const MIN_WINDOW_H = 440;
 const GAP = 16;
 
 // Folded-card geometry. Used by ChatWindow to render compact cards in place.
-export const CARD_W = 240;
-export const CARD_H = 72;
+// Slightly wider + taller than the original 240×72 so the title (row 2) and
+// the working-directory line (row 3) each get a full line without truncating
+// or visually clipping at the leading.
+export const CARD_W = 280;
+export const CARD_H = 96;
 
 function nextWindowId(): string {
   return 'dw_' + Math.random().toString(36).slice(2, 10);
@@ -37,13 +40,15 @@ function serialize(state: DashboardState): SerializedDashboardState {
   return {
     version: 2,
     windows: state.windows.map((w) => {
-      // isBusy is transient; never persisted.
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
-      const { isBusy: _isBusy, ...rest } = w;
+      // isBusy / previewTail are transient; never persisted.
+      const { isBusy: _isBusy, previewTail: _previewTail, ...rest } = w;
+      void _isBusy;
+      void _previewTail;
       return { ...rest };
     }),
     focusedWindowId: state.focusedWindowId,
     cameraOffset: state.cameraOffset,
+    foldMode: state.foldMode,
   };
 }
 
@@ -57,6 +62,7 @@ function hydrate(): DashboardState {
       organizeTick: 0,
       isAnimating: false,
       isHydrating: false,
+      foldMode: false,
     };
   }
   return {
@@ -70,6 +76,7 @@ function hydrate(): DashboardState {
     organizeTick: 0,
     isAnimating: false,
     isHydrating: false,
+    foldMode: raw.foldMode ?? false,
   };
 }
 
@@ -221,7 +228,9 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         cwd,
         lastInteraction: now,
         unreadActivity: false,
-        folded: false,
+        // In fold mode every new window starts folded — the user clicks the
+        // card to expand it. Outside fold mode the old behavior holds.
+        folded: prev.foldMode,
         isBusy: false,
       };
       return {
@@ -353,12 +362,15 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         return { ...prev, organizeTick: prev.organizeTick + 1 };
       }
       const anchor = prev.focusedWindowId ?? prev.windows[0].windowId;
+      // Folded windows are rendered at CARD_W × CARD_H regardless of their
+      // stored size — pass those dimensions to the layout engine so it can
+      // pack folded cards tightly instead of leaving full-window gaps.
       const rects = prev.windows.map((w) => ({
         id: w.windowId,
         x: w.position.x,
         y: w.position.y,
-        w: w.size.w,
-        h: w.size.h,
+        w: w.folded ? CARD_W : w.size.w,
+        h: w.folded ? CARD_H : w.size.h,
       }));
       const out = organizeLayout(rects, anchor, GAP);
       const byId = new Map(out.map((r) => [r.id, r]));
@@ -441,27 +453,79 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
   }, []);
 
   const foldWindow: DashboardApi['foldWindow'] = useCallback((windowId, folded) => {
-    setState((prev) => ({
-      ...prev,
-      windows: prev.windows.map((w) =>
-        w.windowId === windowId && w.folded !== folded ? { ...w, folded } : w
-      ),
-    }));
-  }, []);
+    flashAnimating();
+    setState((prev) => {
+      // In fold mode, unfolding a window auto-folds every other window — keeps
+      // the canvas to a single visible chat at a time.
+      const autoFoldSiblings = prev.foldMode && !folded;
+      let mutated = false;
+      const windows = prev.windows.map((w) => {
+        if (w.windowId === windowId) {
+          if (w.folded === folded) return w;
+          mutated = true;
+          return { ...w, folded };
+        }
+        if (autoFoldSiblings && !w.folded) {
+          mutated = true;
+          return { ...w, folded: true };
+        }
+        return w;
+      });
+      if (!mutated) return prev;
+      return {
+        ...prev,
+        windows,
+        // Make the just-unfolded window the focused one so centerOn brings it
+        // into view. Folding doesn't change focus.
+        focusedWindowId: !folded ? windowId : prev.focusedWindowId,
+      };
+    });
+  }, [flashAnimating]);
 
   const foldAll: DashboardApi['foldAll'] = useCallback(() => {
+    flashAnimating();
     setState((prev) => ({
       ...prev,
       windows: prev.windows.map((w) => (w.folded ? w : { ...w, folded: true })),
     }));
-  }, []);
+  }, [flashAnimating]);
 
   const unfoldAll: DashboardApi['unfoldAll'] = useCallback(() => {
+    flashAnimating();
     setState((prev) => ({
       ...prev,
       windows: prev.windows.map((w) => (!w.folded ? w : { ...w, folded: false })),
     }));
-  }, []);
+  }, [flashAnimating]);
+
+  const setFoldMode: DashboardApi['setFoldMode'] = useCallback((on) => {
+    flashAnimating();
+    setState((prev) => {
+      if (prev.foldMode === on) return prev;
+      // Entering fold mode folds everything; leaving unfolds everything.
+      const windows = prev.windows.map((w) =>
+        w.folded === on ? w : { ...w, folded: on }
+      );
+      return { ...prev, foldMode: on, windows };
+    });
+  }, [flashAnimating]);
+
+  const setWindowPreview: DashboardApi['setWindowPreview'] = useCallback(
+    (windowId, text) => {
+      setState((prev) => {
+        let mutated = false;
+        const windows = prev.windows.map((w) => {
+          if (w.windowId !== windowId) return w;
+          const next = text ?? undefined;
+          if (w.previewTail === next) return w;
+          mutated = true;
+          return { ...w, previewTail: next };
+        });
+        return mutated ? { ...prev, windows } : prev;
+      });
+    },
+    []
+  );
 
   const setWindowBusy: DashboardApi['setWindowBusy'] = useCallback((windowId, busy) => {
     setState((prev) => {
@@ -499,6 +563,8 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       foldAll,
       unfoldAll,
       setWindowBusy,
+      setWindowPreview,
+      setFoldMode,
       allFolded,
     }),
     [
@@ -521,6 +587,8 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       foldAll,
       unfoldAll,
       setWindowBusy,
+      setWindowPreview,
+      setFoldMode,
       allFolded,
     ]
   );

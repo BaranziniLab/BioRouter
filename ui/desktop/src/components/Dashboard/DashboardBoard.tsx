@@ -112,15 +112,32 @@ export const DashboardBoard: React.FC = () => {
   ]);
 
   // Pan via pointer drag on the viewport background.
-  const panStateRef = useRef<{ active: boolean; lastX: number; lastY: number }>({
+  const panStateRef = useRef<{
+    active: boolean;
+    lastX: number;
+    lastY: number;
+    startX: number;
+    startY: number;
+    movedPx: number;
+  }>({
     active: false,
     lastX: 0,
     lastY: 0,
+    startX: 0,
+    startY: 0,
+    movedPx: 0,
   });
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     // Only pan when the press lands on the viewport background itself, not on a window.
     if (e.target !== e.currentTarget) return;
-    panStateRef.current = { active: true, lastX: e.clientX, lastY: e.clientY };
+    panStateRef.current = {
+      active: true,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      startX: e.clientX,
+      startY: e.clientY,
+      movedPx: 0,
+    };
     (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
   };
   const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -129,14 +146,27 @@ export const DashboardBoard: React.FC = () => {
     const dy = e.clientY - panStateRef.current.lastY;
     panStateRef.current.lastX = e.clientX;
     panStateRef.current.lastY = e.clientY;
+    panStateRef.current.movedPx += Math.hypot(dx, dy);
     dashboard.panBy(dx, dy);
   };
   const onPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const wasActive = panStateRef.current.active;
+    const moved = panStateRef.current.movedPx;
     panStateRef.current.active = false;
     try {
       (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
     } catch {
       /* pointer may have already been released */
+    }
+    // Background click (press + release on the canvas with no real drag)
+    // while in fold mode: refold any window that's currently open. Threshold
+    // of 4px matches the FoldedCard's click-vs-drag tolerance so accidental
+    // micro-moves don't dismiss an open chat.
+    if (wasActive && moved < 4 && dashboard.state.foldMode) {
+      const open = dashboard.state.windows.filter((w) => !w.folded);
+      if (open.length > 0) {
+        for (const w of open) dashboard.foldWindow(w.windowId, true);
+      }
     }
   };
 
@@ -176,6 +206,12 @@ export const DashboardBoard: React.FC = () => {
 
   const minSize = { w: MIN_WINDOW_W, h: MIN_WINDOW_H };
   const { cameraOffset, windows, focusedWindowId } = dashboard.state;
+  // State holds sub-pixel cameraOffset so trackpad wheel deltas accumulate
+  // smoothly, but rendering uses integer device pixels — fractional
+  // translate3d values on the GPU-promoted world layer composite text at
+  // sub-pixel offsets and read as blur on Retina displays.
+  const camX = Math.round(cameraOffset.x);
+  const camY = Math.round(cameraOffset.y);
 
   return (
     <div className="flex flex-1 min-h-0">
@@ -186,7 +222,7 @@ export const DashboardBoard: React.FC = () => {
           backgroundImage:
             'radial-gradient(circle at 1px 1px, rgba(120,120,120,0.18) 1px, transparent 0)',
           backgroundSize: '16px 16px',
-          backgroundPosition: `${cameraOffset.x}px ${cameraOffset.y}px`,
+          backgroundPosition: `${camX}px ${camY}px`,
         }}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
@@ -217,7 +253,7 @@ export const DashboardBoard: React.FC = () => {
           ref={worldRef}
           className="absolute inset-0 pointer-events-none"
           style={{
-            transform: `translate3d(${cameraOffset.x}px, ${cameraOffset.y}px, 0)`,
+            transform: `translate3d(${camX}px, ${camY}px, 0)`,
             // Pin transform origin and promote to its own compositor layer.
             // Without these, the rapid stream of cameraOffset updates that
             // happens as Electron animates the window to dashboard size

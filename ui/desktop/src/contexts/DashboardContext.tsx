@@ -22,6 +22,9 @@ export interface DashboardWindow {
   folded: boolean;
   /** Transient: true while the inner chat is streaming or running a tool. Not persisted. */
   isBusy: boolean;
+  /** Transient: short tail of the last assistant message text (or current streaming
+   * fragment). Shown in the hover preview over the folded card. Not persisted. */
+  previewTail?: string;
 }
 
 export interface DashboardState {
@@ -36,6 +39,10 @@ export interface DashboardState {
    * CSS transition to window + camera transforms. Cleared automatically. */
   isAnimating: boolean;
   isHydrating: boolean;
+  /** Global "fold mode": when true, new windows spawn folded, at most one
+   * card is unfolded at a time, and clicking the canvas refolds whatever
+   * window is currently expanded. Persists across reloads. */
+  foldMode: boolean;
 }
 
 export interface SpawnWindowOptions {
@@ -110,6 +117,11 @@ export interface DashboardApi {
   unfoldAll: () => void;
   /** Mark a window's chat as actively streaming/running. Driven by BaseChat. */
   setWindowBusy: (windowId: string, busy: boolean) => void;
+  /** Update the transient preview text shown in a folded card's hover popup. */
+  setWindowPreview: (windowId: string, text: string | null) => void;
+  /** Enter or leave global fold mode. Entering folds every window; leaving
+   * unfolds every window. */
+  setFoldMode: (on: boolean) => void;
   /** Derived: every on-canvas window has folded=true. False when windows is empty. */
   allFolded: boolean;
 }

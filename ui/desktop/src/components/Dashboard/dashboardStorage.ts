@@ -35,6 +35,8 @@ export interface SerializedDashboardState {
   windows: SerializedDashboardWindow[];
   focusedWindowId: string | null;
   cameraOffset: { x: number; y: number };
+  /** Optional in storage so old payloads still load; provider defaults to false. */
+  foldMode?: boolean;
 }
 
 // Legacy v1 shape, used only by the migration path.
