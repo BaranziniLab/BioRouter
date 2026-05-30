@@ -1481,40 +1481,43 @@ export default function ChatInput({
                 <BottomMenuModeSelection />
               </PickerRow>
               {sessionId && (
-                <Button
-                  onClick={() => {
-                    if (workflow) {
-                      trackEditWorkflowOpened();
-                      setShowEditWorkflowModal(true);
-                    } else {
-                      trackCreateWorkflowOpened();
-                      setShowCreateWorkflowModal(true);
-                    }
-                    setPickerExpanded(false);
-                  }}
-                  variant="ghost"
-                  size="sm"
-                  className="flex items-center gap-2 text-text-default/80 hover:text-text-default text-xs cursor-pointer w-full justify-start px-2 py-1.5"
-                >
-                  <Pipeline size={16} />
-                  <span>{workflow ? 'View/Edit Workflow' : 'Create Workflow'}</span>
-                </Button>
+                <PickerRow>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (workflow) {
+                        trackEditWorkflowOpened();
+                        setShowEditWorkflowModal(true);
+                      } else {
+                        trackCreateWorkflowOpened();
+                        setShowCreateWorkflowModal(true);
+                      }
+                      setPickerExpanded(false);
+                    }}
+                    className="flex items-center w-full text-left text-text-default/70 hover:text-text-default text-xs cursor-pointer"
+                  >
+                    <Pipeline className="mr-1 h-4 w-4 flex-shrink-0" />
+                    <span className="truncate">
+                      {workflow ? 'View/Edit Workflow' : 'Create Workflow'}
+                    </span>
+                  </button>
+                </PickerRow>
               )}
               {sessionId && (
-                <Button
-                  type="button"
-                  onClick={() => {
-                    trackDiagnosticsOpened();
-                    setDiagnosticsOpen(true);
-                    setPickerExpanded(false);
-                  }}
-                  variant="ghost"
-                  size="sm"
-                  className="flex items-center gap-2 text-text-default/80 hover:text-text-default text-xs cursor-pointer w-full justify-start px-2 py-1.5"
-                >
-                  <CodeAnalysis className="w-4 h-4" />
-                  <span>Diagnostics</span>
-                </Button>
+                <PickerRow>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      trackDiagnosticsOpened();
+                      setDiagnosticsOpen(true);
+                      setPickerExpanded(false);
+                    }}
+                    className="flex items-center w-full text-left text-text-default/70 hover:text-text-default text-xs cursor-pointer"
+                  >
+                    <CodeAnalysis className="mr-1 h-4 w-4 flex-shrink-0" />
+                    <span className="truncate">Diagnostics</span>
+                  </button>
+                </PickerRow>
               )}
             </PopoverContent>
           </Popover>

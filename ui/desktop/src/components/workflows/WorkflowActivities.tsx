@@ -1,5 +1,4 @@
 import { Card } from '../ui/card';
-import BioRouterLogo from '../BioRouterLogo';
 import MarkdownContent from '../MarkdownContent';
 import { substituteParameters } from '../../utils/providerUtils';
 
@@ -31,11 +30,6 @@ export default function WorkflowActivities({
   if (activities && activities.length > 0) {
     return (
       <div className="flex flex-col px-6">
-        {/* Animated biorouter icon */}
-        <div className="flex justify-start mb-6">
-          <BioRouterLogo size="default" hover={true} />
-        </div>
-
         {messagePill && (
           <div className="mb-4 p-3 rounded-lg border animate-[fadein_500ms_ease-in_forwards]">
             <MarkdownContent

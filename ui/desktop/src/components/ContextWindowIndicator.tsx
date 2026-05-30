@@ -1,6 +1,8 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Activity, ScrollText } from './icons/app-icons';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
+import { readConfig, upsertConfig } from '../api';
 
 interface ContextWindowGaugeProps {
   totalTokens: number | undefined;
@@ -9,11 +11,22 @@ interface ContextWindowGaugeProps {
   onCompact: () => void;
 }
 
+const AUTO_COMPACT_THRESHOLD_KEY = 'BIOROUTER_AUTO_COMPACT_THRESHOLD';
+const AUTO_COMPACT_MIN_PCT = 20;
+const AUTO_COMPACT_MAX_PCT = 90;
+const AUTO_COMPACT_DEFAULT_PCT = 80;
+
+function clampThresholdPct(v: number): number {
+  if (!Number.isFinite(v)) return AUTO_COMPACT_DEFAULT_PCT;
+  return Math.max(AUTO_COMPACT_MIN_PCT, Math.min(AUTO_COMPACT_MAX_PCT, Math.round(v)));
+}
+
 /** Inline bar-style context gauge. Used both as a row inside the picker
  * popover (dashboard mode) and as the popover body of the standalone
  * indicator (chat-tab mode). Icon stays neutral so it matches the rest of
  * the picker icons; the bar alone goes green → yellow → orange → red as
- * usage climbs. */
+ * usage climbs. The bar also carries a draggable threshold marker — the
+ * point at which BioRouter auto-compacts — clamped to 20–90%. */
 export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   totalTokens,
   tokenLimit,
@@ -22,17 +35,152 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
 }) => {
   const current = totalTokens ?? 0;
   const total = tokenLimit || 0;
+  const [thresholdPct, setThresholdPct] = useState<number>(AUTO_COMPACT_DEFAULT_PCT);
+  const barRef = useRef<HTMLDivElement | null>(null);
+  const draggingRef = useRef(false);
+  const pendingPctRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    readConfig({ body: { key: AUTO_COMPACT_THRESHOLD_KEY, is_secret: false } })
+      .then((res) => {
+        if (cancelled) return;
+        const v = res.data as unknown;
+        if (typeof v === 'number' && v > 0 && v < 1) {
+          setThresholdPct(clampThresholdPct(v * 100));
+        }
+      })
+      .catch(() => {
+        /* fall back to default */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Flush any in-flight pending change if the gauge unmounts mid-drag
+  // (e.g. popover closes when the user releases the mouse outside of it).
+  useEffect(() => {
+    return () => {
+      if (pendingPctRef.current !== null) {
+        const v = pendingPctRef.current;
+        pendingPctRef.current = null;
+        upsertConfig({
+          body: {
+            key: AUTO_COMPACT_THRESHOLD_KEY,
+            value: v / 100,
+            is_secret: false,
+          },
+        }).catch((err) => {
+          console.warn('Failed to save auto-compact threshold on unmount:', err);
+        });
+      }
+    };
+  }, []);
+
+  const persistThreshold = (pctValue: number) => {
+    pendingPctRef.current = null;
+    upsertConfig({
+      body: {
+        key: AUTO_COMPACT_THRESHOLD_KEY,
+        value: pctValue / 100,
+        is_secret: false,
+      },
+    }).catch((err) => {
+      console.warn('Failed to save auto-compact threshold:', err);
+    });
+  };
+
+  // Live updates during drag don't hit the API — we only persist on release
+  // so a single drag costs one POST, not dozens.
+  const updateThresholdLive = (raw: number) => {
+    const next = clampThresholdPct(raw);
+    setThresholdPct(next);
+    pendingPctRef.current = next;
+  };
+
+  const handleSliderChange = (raw: number) => {
+    const next = clampThresholdPct(raw);
+    setThresholdPct(next);
+    persistThreshold(next);
+  };
+
+  const computePctFromClientX = useCallback((clientX: number): number => {
+    const bar = barRef.current;
+    if (!bar) return AUTO_COMPACT_DEFAULT_PCT;
+    const rect = bar.getBoundingClientRect();
+    if (rect.width <= 0) return AUTO_COMPACT_DEFAULT_PCT;
+    const ratio = (clientX - rect.left) / rect.width;
+    return clampThresholdPct(ratio * 100);
+  }, []);
+
+  const handleDragMove = useCallback(
+    (e: MouseEvent) => {
+      if (!draggingRef.current) return;
+      updateThresholdLive(computePctFromClientX(e.clientX));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [computePctFromClientX]
+  );
+
+  const handleDragEnd = useCallback(() => {
+    draggingRef.current = false;
+    window.removeEventListener('mousemove', handleDragMove);
+    window.removeEventListener('mouseup', handleDragEnd);
+    if (pendingPctRef.current !== null) {
+      persistThreshold(pendingPctRef.current);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [handleDragMove]);
+
+  const handleDragStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      draggingRef.current = true;
+      // Snap to where the user clicked; persist on release.
+      updateThresholdLive(computePctFromClientX(e.clientX));
+      window.addEventListener('mousemove', handleDragMove);
+      window.addEventListener('mouseup', handleDragEnd);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [computePctFromClientX, handleDragMove, handleDragEnd]
+  );
+
+  const handleKeyAdjust = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      handleSliderChange(thresholdPct - (e.shiftKey ? 10 : 1));
+    } else if (e.key === 'ArrowRight' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      handleSliderChange(thresholdPct + (e.shiftKey ? 10 : 1));
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      handleSliderChange(AUTO_COMPACT_MIN_PCT);
+    } else if (e.key === 'End') {
+      e.preventDefault();
+      handleSliderChange(AUTO_COMPACT_MAX_PCT);
+    }
+  };
+
+  useEffect(() => {
+    return () => {
+      window.removeEventListener('mousemove', handleDragMove);
+      window.removeEventListener('mouseup', handleDragEnd);
+    };
+  }, [handleDragMove, handleDragEnd]);
+
   if (!isTokenLimitLoaded && !current) return null;
   const ratio = total > 0 ? Math.min(1, current / total) : 0;
   const pct = Math.round(ratio * 100);
-  const barColor =
-    ratio <= 0.5
+  const overThreshold = pct >= thresholdPct;
+  const barColor = overThreshold
+    ? 'bg-red-500'
+    : ratio <= 0.5
       ? 'bg-green-500'
       : ratio <= 0.75
         ? 'bg-yellow-500'
-        : ratio <= 0.9
-          ? 'bg-orange-500'
-          : 'bg-red-500';
+        : 'bg-orange-500';
   return (
     <div className="flex items-center gap-2 px-2 py-1.5 rounded">
       <span className="flex items-center justify-center w-4 h-4 flex-shrink-0 text-text-default/70">
@@ -40,11 +188,47 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
       </span>
       <span className="text-[11px] text-text-default/60 w-12 flex-shrink-0">Context</span>
       <div className="flex-1 min-w-0 flex flex-col gap-1">
-        <div className="h-1 rounded-full bg-background-muted overflow-hidden">
+        {/* The bar holds the usage fill *and* a draggable downward triangle
+            marking the auto-compact threshold. The bar is the drag target;
+            mousedown anywhere on the bar (or the triangle) jumps the
+            threshold to the cursor and starts a drag. */}
+        <div className="relative pt-2.5">
           <div
-            className={`h-full ${barColor} transition-[width]`}
-            style={{ width: `${Math.max(2, pct)}%` }}
-          />
+            ref={barRef}
+            className="relative h-1 rounded-full bg-background-muted overflow-visible cursor-pointer"
+            onMouseDown={handleDragStart}
+          >
+            <div
+              className={`h-full rounded-full ${barColor} transition-[width]`}
+              style={{ width: `${Math.max(2, pct)}%` }}
+            />
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div
+                  role="slider"
+                  aria-label="Auto-compact threshold"
+                  aria-valuemin={AUTO_COMPACT_MIN_PCT}
+                  aria-valuemax={AUTO_COMPACT_MAX_PCT}
+                  aria-valuenow={thresholdPct}
+                  tabIndex={0}
+                  onKeyDown={handleKeyAdjust}
+                  onMouseDown={handleDragStart}
+                  className="absolute -top-2 w-0 h-0 cursor-ew-resize focus:outline-none"
+                  style={{
+                    left: `${thresholdPct}%`,
+                    transform: 'translateX(-50%)',
+                    borderLeft: '5px solid transparent',
+                    borderRight: '5px solid transparent',
+                    borderTop: '6px solid currentColor',
+                    color: 'var(--color-text-default, currentColor)',
+                  }}
+                />
+              </TooltipTrigger>
+              <TooltipContent side="top" className="text-[11px]">
+                Drag to adjust auto-compact threshold ({thresholdPct}%)
+              </TooltipContent>
+            </Tooltip>
+          </div>
         </div>
         <div className="flex items-center justify-between text-sm text-text-muted">
           <span>

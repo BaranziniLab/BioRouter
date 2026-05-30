@@ -46,15 +46,13 @@ const BackButton: React.FC<BackButtonProps> = ({
         }
       };
 
-      window.electron.on('mouse-back-button-clicked', handleMouseBack);
+      const disposeMouseBack = window.electron.on('mouse-back-button-clicked', handleMouseBack);
 
       // Also listen for mouseup events directly, for better OS compatibility.
       document.addEventListener('mouseup', mouseBackHandler);
 
       return () => {
-        if (window.electron) {
-          window.electron.off('mouse-back-button-clicked', handleMouseBack);
-        }
+        disposeMouseBack();
         document.removeEventListener('mouseup', mouseBackHandler);
       };
     }

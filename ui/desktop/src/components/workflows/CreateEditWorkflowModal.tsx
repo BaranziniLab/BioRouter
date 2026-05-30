@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import { useForm } from '@tanstack/react-form';
 import { Workflow, generateDeepLink, Parameter } from '../../workflow';
 import { Check, ExternalLink, Play, Save, X } from '../icons/app-icons';
@@ -346,10 +347,31 @@ export default function CreateEditWorkflowModal({
     }
   };
 
+  // ESC-to-close: ensures the modal stays dismissible even when its host
+  // chat window is too small to show the in-modal Close button (matters
+  // most in dashboard mode where chat windows can be shrunk down).
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
-  return (
-    <div className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50">
+  // Portal to document.body so the modal escapes any ancestor that
+  // establishes a containing block for `fixed` (the dashboard world
+  // layer uses translate3d + will-change, which would otherwise clip
+  // the overlay to the small chat window).
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose(false);
+      }}
+    >
       <div className="bg-background-default border border-border-subtle rounded-lg w-[90vw] max-w-4xl h-[90vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-5 border-b border-border-subtle flex-shrink-0">
@@ -462,6 +484,7 @@ export default function CreateEditWorkflowModal({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

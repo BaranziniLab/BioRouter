@@ -271,11 +271,7 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
       await handleExtensionRequest(link);
     };
 
-    window.electron.on('add-extension', handleAddExtension);
-
-    return () => {
-      window.electron.off('add-extension', handleAddExtension);
-    };
+    return window.electron.on('add-extension', handleAddExtension);
   }, [handleExtensionRequest]);
 
   const getModalConfig = (): ExtensionModalConfig | null => {

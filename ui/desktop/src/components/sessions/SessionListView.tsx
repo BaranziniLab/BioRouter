@@ -11,7 +11,17 @@ import {
   Upload,
   ExternalLink,
   Puzzle,
+  LayoutDashboard,
 } from '../icons/app-icons';
+import { useNavigate } from 'react-router-dom';
+import { useDashboard } from '../../contexts/DashboardContext';
+import { toastError } from '../../toasts';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 import { Button } from '../ui/button';
 import { ScrollArea } from '../ui/scroll-area';
 import { formatMessageTimestamp } from '../../utils/timeUtils';
@@ -196,6 +206,8 @@ interface SessionListViewProps {
 
 const SessionListView: React.FC<SessionListViewProps> = React.memo(
   ({ onSelectSession, selectedSessionId }) => {
+    const navigate = useNavigate();
+    const dashboard = useDashboard();
     const [sessions, setSessions] = useState<Session[]>([]);
     const [filteredSessions, setFilteredSessions] = useState<Session[]>([]);
     const [dateGroups, setDateGroups] = useState<DateGroup[]>([]);
@@ -501,18 +513,40 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       );
     }, []);
 
+    const handleOpenInDashboard = useCallback(
+      async (session: Session, e: React.MouseEvent) => {
+        e.stopPropagation();
+        try {
+          await dashboard.spawnWindow({
+            resumeSessionId: session.id,
+            cwd: session.working_dir,
+            name: session.name,
+          });
+          navigate('/dashboard');
+        } catch (err) {
+          toastError({
+            title: 'Failed to add session to dashboard',
+            msg: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+      [dashboard, navigate]
+    );
+
     const SessionItem = React.memo(function SessionItem({
       session,
       onEditClick,
       onDeleteClick,
       onExportClick,
       onOpenInNewWindow,
+      onOpenInDashboard,
     }: {
       session: Session;
       onEditClick: (session: Session) => void;
       onDeleteClick: (session: Session) => void;
       onExportClick: (session: Session, e: React.MouseEvent) => void;
       onOpenInNewWindow: (session: Session, e: React.MouseEvent) => void;
+      onOpenInDashboard: (session: Session, e: React.MouseEvent) => void;
     }) {
       const handleEditClick = useCallback(
         (e: React.MouseEvent) => {
@@ -546,6 +580,13 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           onOpenInNewWindow(session, e);
         },
         [onOpenInNewWindow, session]
+      );
+
+      const handleOpenInDashboardClick = useCallback(
+        (e: React.MouseEvent) => {
+          onOpenInDashboard(session, e);
+        },
+        [onOpenInDashboard, session]
       );
 
       // Get extension names for this session
@@ -612,13 +653,27 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
               )}
             </div>
             <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-              <button
-                onClick={handleOpenInNewWindowClick}
-                className="p-1.5 rounded hover:bg-background-medium transition-colors"
-                title="Open in new window"
-              >
-                <ExternalLink className="w-3 h-3 text-text-muted" />
-              </button>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    onClick={(e) => e.stopPropagation()}
+                    className="p-1.5 rounded hover:bg-background-medium transition-colors"
+                    title="Launch session"
+                  >
+                    <ExternalLink className="w-3 h-3 text-text-muted" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                  <DropdownMenuItem onClick={(e) => handleOpenInNewWindowClick(e)}>
+                    <ExternalLink className="w-4 h-4" />
+                    Open in new window
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={(e) => handleOpenInDashboardClick(e)}>
+                    <LayoutDashboard className="w-4 h-4" />
+                    Add to dashboard
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
               <button
                 onClick={handleEditClick}
                 className="p-1.5 rounded hover:bg-background-medium transition-colors"
@@ -720,6 +775,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                     onDeleteClick={handleDeleteSession}
                     onExportClick={handleExportSession}
                     onOpenInNewWindow={handleOpenInNewWindow}
+                    onOpenInDashboard={handleOpenInDashboard}
                   />
                 ))}
               </div>

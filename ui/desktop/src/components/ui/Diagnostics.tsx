@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { AlertTriangle, Download, Github } from '../icons/app-icons';
 import { Button } from './button';
 import { toastError } from '../../toasts';
@@ -127,10 +128,28 @@ Add any other context about the problem here.
     }
   };
 
+  // ESC-to-close keeps this dismissible even when the host chat window
+  // is too small to surface the Cancel button.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
-  return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+  // Portal to body so `fixed` is anchored to the viewport even when the
+  // modal is rendered inside the dashboard's transformed world layer.
+  return createPortal(
+    <div
+      className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
       <div className="bg-background-default border border-border-subtle rounded-lg p-6 max-w-md mx-4">
         <div className="flex items-start gap-3 mb-4">
           <AlertTriangle className="text-orange-500 flex-shrink-0 mt-1" size={20} />
@@ -186,6 +205,7 @@ Add any other context about the problem here.
           </Button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 };

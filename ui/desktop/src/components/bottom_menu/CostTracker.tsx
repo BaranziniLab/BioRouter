@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
+import { DollarSign } from 'lucide-react';
 import { useModelAndProvider } from '../ModelAndProviderContext';
-import { CoinIcon } from '../icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { fetchModelPricing } from '../../utils/pricing';
 import { PricingData } from '../../api';
@@ -120,12 +120,9 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
   // If still loading, show a placeholder
   if (isLoading) {
     return (
-      <>
-        <div className="flex items-center justify-center h-full text-text-muted translate-y-[1px]">
-          <span className="text-xs font-mono">...</span>
-        </div>
-        <div className="w-px h-4 bg-border-default mx-2" />
-      </>
+      <div className="flex items-center justify-center h-full text-text-muted translate-y-[1px]">
+        <span className="text-xs font-mono">...</span>
+      </div>
     );
   }
 
@@ -138,20 +135,17 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
     const freeProviders = ['ollama', 'local', 'localhost'];
     if (freeProviders.includes(currentProvider.toLowerCase())) {
       return (
-        <>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="flex items-center justify-center h-full text-text-default/70 hover:text-text-default transition-colors cursor-default translate-y-[1px]">
-                <CoinIcon className="mr-1" size={16} />
-                <span className="text-xs font-mono">0.0000</span>
-              </div>
-            </TooltipTrigger>
-            <TooltipContent>
-              {`Local model (${inputTokens.toLocaleString()} input, ${outputTokens.toLocaleString()} output tokens)`}
-            </TooltipContent>
-          </Tooltip>
-          <div className="w-px h-4 bg-border-default mx-2" />
-        </>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <div className="flex items-center justify-center h-full text-text-default/70 hover:text-text-default transition-colors cursor-default translate-y-[1px]">
+              <DollarSign className="mr-0.5 h-4 w-4" strokeWidth={2.25} />
+              <span className="text-xs font-mono">0.0000</span>
+            </div>
+          </TooltipTrigger>
+          <TooltipContent>
+            {`Local model (${inputTokens.toLocaleString()} input, ${outputTokens.toLocaleString()} output tokens)`}
+          </TooltipContent>
+        </Tooltip>
       );
     }
 
@@ -164,18 +158,15 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
     };
 
     return (
-      <>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <div className="flex items-center justify-center h-full transition-colors cursor-default translate-y-[1px] text-text-default/70 hover:text-text-default">
-              <CoinIcon className="mr-1" size={16} />
-              <span className="text-xs font-mono">0.0000</span>
-            </div>
-          </TooltipTrigger>
-          <TooltipContent>{getUnavailableTooltip()}</TooltipContent>
-        </Tooltip>
-        <div className="w-px h-4 bg-border-default mx-2" />
-      </>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="flex items-center justify-center h-full transition-colors cursor-default translate-y-[1px] text-text-default/70 hover:text-text-default">
+            <DollarSign className="mr-0.5 h-4 w-4" strokeWidth={2.25} />
+            <span className="text-xs font-mono">0.0000</span>
+          </div>
+        </TooltipTrigger>
+        <TooltipContent>{getUnavailableTooltip()}</TooltipContent>
+      </Tooltip>
     );
   }
 
@@ -217,17 +208,14 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
   };
 
   return (
-    <>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <div className="flex items-center justify-center h-full transition-colors cursor-default translate-y-[1px] text-text-default/70 hover:text-text-default">
-            <CoinIcon className="mr-1" size={16} />
-            <span className="text-xs font-mono">{formatCost(totalCost)}</span>
-          </div>
-        </TooltipTrigger>
-        <TooltipContent>{getTooltipContent()}</TooltipContent>
-      </Tooltip>
-      <div className="w-px h-4 bg-border-default mx-2" />
-    </>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="flex items-center justify-center h-full transition-colors cursor-default translate-y-[1px] text-text-default/70 hover:text-text-default">
+          <DollarSign className="mr-0.5 h-4 w-4" strokeWidth={2.25} />
+          <span className="text-xs font-mono">{formatCost(totalCost)}</span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent>{getTooltipContent()}</TooltipContent>
+    </Tooltip>
   );
 }

@@ -346,17 +346,13 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
 
   // Listen for Find menu commands
   useEffect(() => {
-    window.electron.on('find-command', handleFindCommand);
-    window.electron.on('find-next', handleFindNext);
-    window.electron.on('find-previous', handleFindPrevious);
-    window.electron.on('use-selection-find', handleUseSelectionFind);
-
-    return () => {
-      window.electron.off('find-command', handleFindCommand);
-      window.electron.off('find-next', handleFindNext);
-      window.electron.off('find-previous', handleFindPrevious);
-      window.electron.off('use-selection-find', handleUseSelectionFind);
-    };
+    const disposers = [
+      window.electron.on('find-command', handleFindCommand),
+      window.electron.on('find-next', handleFindNext),
+      window.electron.on('find-previous', handleFindPrevious),
+      window.electron.on('use-selection-find', handleUseSelectionFind),
+    ];
+    return () => disposers.forEach((d) => d());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty dependency array - handlers are stable due to useCallback and useRef
 

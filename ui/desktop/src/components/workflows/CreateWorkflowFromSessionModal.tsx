@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { useForm } from '@tanstack/react-form';
 import { Workflow } from '../../workflow';
 import { X, Save, Play, Loader2 } from '../icons/app-icons';
@@ -240,12 +241,29 @@ export default function CreateWorkflowFromSessionModal({
     }
   };
 
+  // ESC-to-close — survives tiny chat windows in dashboard mode where the
+  // in-modal close button can be off-screen.
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
-  return (
+  // Portal to document.body so the fixed overlay anchors to the viewport
+  // instead of the dashboard's transformed world layer (translate3d on
+  // an ancestor turns `fixed` into a constrained containing block).
+  return createPortal(
     <div
       className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50 p-4"
       data-testid="create-workflow-modal"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
     >
       <div className="bg-background-default border border-border-subtle rounded-lg w-full max-w-4xl h-full max-h-[90vh] flex flex-col shadow-xl">
         {/* Header */}
@@ -348,6 +366,7 @@ export default function CreateWorkflowFromSessionModal({
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
