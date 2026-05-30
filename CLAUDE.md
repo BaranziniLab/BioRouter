@@ -61,6 +61,19 @@ just make-ui-windows    # Package for Windows (requires Docker)
 just generate-openapi   # Regenerate OpenAPI spec from server routes
 ```
 
+### Releasing (cross-platform)
+
+- **Version bump**: edit 5 files — `Cargo.toml`, `ui/desktop/package.json`, `ui/desktop/package-lock.json` (2 occurrences), `ui/desktop/openapi.json`. Then `cargo check` to refresh `Cargo.lock`.
+- **macOS sign + notarize**: set `APPLE_ID` and `APPLE_APP_SPECIFIC_PASSWORD` on the `npm run bundle:default` / `bundle:intel` invocation. Signing identity is the UCSF Developer ID Application (team `F3YYBXAFJ8`).
+- **Build platforms one at a time** — every bundle writes to `ui/desktop/src/bin/` and clobbers the others. After any non-mac build, run `just release-binary` (or `just copy-binary`) to restore the local arm64 binary.
+- **After Linux/Windows Docker builds**, the on-disk `ui/desktop/node_modules` is Linux-flavored — macOS bundle then fails with `@rollup/rollup-darwin-arm64` missing. Fix: `cd ui/desktop && rm -rf node_modules && npm install`.
+- **`macos-alias` `NODE_MODULE_VERSION` mismatch** during forge `make`: `cd ui/desktop && npm rebuild macos-alias`.
+- **Unmount any stale `/Volumes/BioRouter*` mounts before the dmg step** — leftover mounts cause `cp: Operation not permitted` and abort `electron-forge maker-dmg`.
+- **Do not hand-roll the dmg via `hdiutil create`** — it skips the `Applications` symlink and the background-image layout that `electron-forge maker-dmg` adds. If `bundle:default` fails at the dmg step, fix the underlying cause (usually a stale `/Volumes` mount) and re-run, don't `hdiutil` over it.
+- **Release assets — exactly 5**: `BioRouter-{ver}-arm64.dmg`, `BioRouter-{ver}-x64.dmg`, `biorouter_{ver}_amd64.deb`, `BioRouter-{ver}-1.x86_64.rpm`, `BioRouter-win32-x64-{ver}.zip`. Don't also upload the unversioned `BioRouter.zip` / `BioRouter_intel_mac.zip` from `out/<platform>/` — they're build intermediates, not release artifacts.
+- **Publish**: `gh release create v{ver} --notes-file docs/release-notes/v{ver}.md <5 assets>`. Verify macOS with `xcrun stapler validate <app>` and `codesign -dv <app>` before publishing.
+- **Release notes** live at `docs/release-notes/v{ver}.md`, one file per version.
+
 ## Architecture
 
 ### Rust Workspace (`crates/`)
