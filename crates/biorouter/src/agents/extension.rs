@@ -55,7 +55,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
         );
 
         map.insert(
-            chatrecall_extension::EXTENSION_NAME,
+            "chatrecall",
             PlatformExtensionDef {
                 name: chatrecall_extension::EXTENSION_NAME,
                 description:

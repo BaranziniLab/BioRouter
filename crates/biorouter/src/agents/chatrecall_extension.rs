@@ -11,7 +11,7 @@ use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-pub static EXTENSION_NAME: &str = "chatrecall";
+pub static EXTENSION_NAME: &str = "Chat Recall";
 
 /// Parameters for the chatrecall tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -55,7 +55,7 @@ impl ChatRecallClient {
             },
             server_info: Implementation {
                 name: EXTENSION_NAME.to_string(),
-                title: Some("Chat Recall".to_string()),
+                title: Some(EXTENSION_NAME.to_string()),
                 version: "1.0.0".to_string(),
                 icons: None,
                 website_url: None,
