@@ -14,7 +14,7 @@ import {
 
 import { activateExtensionDefault, deleteExtension, toggleExtensionDefault } from './index';
 import { toastService } from '../../../toasts';
-import { ExtensionConfig } from '../../../api/types.gen';
+import type { ExtensionConfig } from '../../../api/types.gen';
 import { BrxtInstallModal } from '../../BrxtInstallModal';
 
 interface ExtensionSectionProps {
@@ -138,7 +138,22 @@ export default function ExtensionsSection({
     // Close the modal immediately
     handleModalClose();
 
-    const extensionConfig = createExtensionConfig(formData);
+    let extensionConfig: ExtensionConfig;
+    if (selectedExtension.type === 'builtin') {
+      // Built-in extensions only expose timeout for editing — preserve every other field.
+      extensionConfig = {
+        type: 'builtin',
+        name: selectedExtension.name,
+        description: selectedExtension.description,
+        display_name: selectedExtension.display_name,
+        bundled: selectedExtension.bundled,
+        available_tools: selectedExtension.available_tools,
+        timeout: formData.timeout,
+      };
+    } else {
+      extensionConfig = createExtensionConfig(formData);
+    }
+
     const originalName = selectedExtension.name;
 
     try {

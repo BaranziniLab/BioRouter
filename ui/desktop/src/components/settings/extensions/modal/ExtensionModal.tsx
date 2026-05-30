@@ -45,8 +45,14 @@ export default function ExtensionModal({
   const [hasPendingHeaders, setHasPendingHeaders] = useState(false);
   const [pendingHeader, setPendingHeader] = useState<{ key: string; value: string } | null>(null);
 
+  const isBuiltin = formData.type === 'builtin';
+
   // Function to check if form has been modified
   const hasFormChanges = (): boolean => {
+    if (isBuiltin) {
+      return formData.timeout !== initialData.timeout;
+    }
+
     // Check if command/endpoint has changed
     const commandChanged =
       (formData.type === 'stdio' && formData.cmd !== initialData.cmd) ||
@@ -212,6 +218,7 @@ export default function ExtensionModal({
 
   const isConfigValid = () => {
     return (
+      isBuiltin ||
       (formData.type === 'stdio' && !!formData.cmd && formData.cmd.trim() !== '') ||
       (formData.type === 'sse' && !!formData.endpoint && formData.endpoint.trim() !== '') ||
       (formData.type === 'streamable_http' &&
@@ -344,36 +351,65 @@ export default function ExtensionModal({
               )}
 
               {/* Form Fields */}
-              {/* Name and Type */}
-              <ExtensionInfoFields
-                name={formData.name}
-                type={formData.type}
-                description={formData.description}
-                onChange={(key, value) => setFormData({ ...formData, [key]: value })}
-                submitAttempted={submitAttempted}
-              />
+              {isBuiltin ? (
+                <>
+                  <div className="space-y-2">
+                    <div>
+                      <label className="text-sm font-medium text-text-default">Name</label>
+                      <p className="text-sm text-text-muted mt-1">{formData.name}</p>
+                    </div>
+                    {formData.description && (
+                      <div>
+                        <label className="text-sm font-medium text-text-default">
+                          Description
+                        </label>
+                        <p className="text-sm text-text-muted mt-1">{formData.description}</p>
+                      </div>
+                    )}
+                  </div>
 
-              <hr className="border-t border-border-subtle" />
+                  <hr className="border-t border-border-subtle" />
 
-              {/* Command */}
-              <div>
-                <ExtensionConfigFields
-                  type={formData.type}
-                  full_cmd={formData.cmd || ''}
-                  endpoint={formData.endpoint || ''}
-                  onChange={(key, value) => setFormData({ ...formData, [key]: value })}
-                  submitAttempted={submitAttempted}
-                  isValid={isConfigValid()}
-                />
-                <div className="mb-4" />
-                <ExtensionTimeoutField
-                  timeout={formData.timeout || 300}
-                  onChange={(key, value) => setFormData({ ...formData, [key]: value })}
-                  submitAttempted={submitAttempted}
-                />
-              </div>
+                  <ExtensionTimeoutField
+                    timeout={formData.timeout || 300}
+                    onChange={(key, value) => setFormData({ ...formData, [key]: value })}
+                    submitAttempted={submitAttempted}
+                  />
+                </>
+              ) : (
+                <>
+                  {/* Name and Type */}
+                  <ExtensionInfoFields
+                    name={formData.name}
+                    type={formData.type}
+                    description={formData.description}
+                    onChange={(key, value) => setFormData({ ...formData, [key]: value })}
+                    submitAttempted={submitAttempted}
+                  />
 
-              {formData.type === 'stdio' && (
+                  <hr className="border-t border-border-subtle" />
+
+                  {/* Command */}
+                  <div>
+                    <ExtensionConfigFields
+                      type={formData.type}
+                      full_cmd={formData.cmd || ''}
+                      endpoint={formData.endpoint || ''}
+                      onChange={(key, value) => setFormData({ ...formData, [key]: value })}
+                      submitAttempted={submitAttempted}
+                      isValid={isConfigValid()}
+                    />
+                    <div className="mb-4" />
+                    <ExtensionTimeoutField
+                      timeout={formData.timeout || 300}
+                      onChange={(key, value) => setFormData({ ...formData, [key]: value })}
+                      submitAttempted={submitAttempted}
+                    />
+                  </div>
+                </>
+              )}
+
+              {!isBuiltin && formData.type === 'stdio' && (
                 <>
                   <hr className="border-t border-border-subtle" />
 
@@ -390,7 +426,7 @@ export default function ExtensionModal({
                 </>
               )}
 
-              {formData.type === 'streamable_http' && (
+              {!isBuiltin && formData.type === 'streamable_http' && (
                 <>
                   {/* Divider */}
                   <hr className="border-t border-border-subtle" />
@@ -431,7 +467,7 @@ export default function ExtensionModal({
               </>
             ) : (
               <>
-                {modalType === 'edit' && onDelete && (
+                {modalType === 'edit' && onDelete && !isBuiltin && (
                   <Button
                     onClick={() => setShowDeleteConfirmation(true)}
                     variant="outline"

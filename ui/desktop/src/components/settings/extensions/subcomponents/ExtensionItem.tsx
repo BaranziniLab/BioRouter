@@ -44,7 +44,9 @@ export default function ExtensionItem({
   const { description, command } = getSubtitle(extension);
 
   const editable =
-    !(extension.type === 'builtin' || ('bundled' in extension && extension.bundled)) && !isStatic;
+    !isStatic &&
+    (extension.type === 'builtin' ||
+      !('bundled' in extension && extension.bundled));
 
   return (
     <div
