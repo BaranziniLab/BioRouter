@@ -78,8 +78,7 @@ export default function DependencySetupModal() {
       }
     };
 
-    window.electron.on('dependency-event', handler);
-    return () => { window.electron.off('dependency-event', handler); };
+    return window.electron.on('dependency-event', handler);
   }, []);
 
   // Auto-dismiss when all are installed

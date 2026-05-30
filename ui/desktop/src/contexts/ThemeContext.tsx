@@ -108,10 +108,7 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
       setResolvedTheme(resolveTheme(newPreference));
     };
 
-    window.electron.on('theme-changed', handleThemeChanged);
-    return () => {
-      window.electron.off('theme-changed', handleThemeChanged);
-    };
+    return window.electron.on('theme-changed', handleThemeChanged);
   }, []);
 
   // Apply theme to document whenever resolvedTheme changes

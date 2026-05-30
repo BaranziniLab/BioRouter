@@ -15,6 +15,7 @@ import { ExtensionInstallModal } from './components/ExtensionInstallModal';
 import { ToastContainer } from 'react-toastify';
 import AnnouncementModal from './components/AnnouncementModal';
 import TelemetryOptOutModal from './components/TelemetryOptOutModal';
+import UpdateAvailableModal from './components/UpdateAvailableModal';
 import ProviderGuard from './components/ProviderGuard';
 import { createSession } from './sessions';
 
@@ -419,10 +420,7 @@ export function AppInner() {
         setIsLoadingSharedSession(false);
       }
     };
-    window.electron.on('open-shared-session', handleOpenSharedSession);
-    return () => {
-      window.electron.off('open-shared-session', handleOpenSharedSession);
-    };
+    return window.electron.on('open-shared-session', handleOpenSharedSession);
   }, [navigate]);
 
   useEffect(() => {
@@ -495,10 +493,7 @@ export function AppInner() {
       console.error('Encountered a fatal error:', errorMessage);
       setFatalError(errorMessage);
     };
-    window.electron.on('fatal-error', handleFatalError);
-    return () => {
-      window.electron.off('fatal-error', handleFatalError);
-    };
+    return window.electron.on('fatal-error', handleFatalError);
   }, []);
 
   useEffect(() => {
@@ -507,8 +502,7 @@ export function AppInner() {
       if (typeof filePath !== 'string') return;
       navigate('/extensions', { state: { brxtFilePath: filePath } });
     };
-    window.electron.on('open-brxt-file', handleOpenBrxtFile);
-    return () => window.electron.off('open-brxt-file', handleOpenBrxtFile);
+    return window.electron.on('open-brxt-file', handleOpenBrxtFile);
   }, [navigate]);
 
   useEffect(() => {
@@ -526,8 +520,7 @@ export function AppInner() {
       }
     };
 
-    window.electron.on('set-view', handleSetView);
-    return () => window.electron.off('set-view', handleSetView);
+    return window.electron.on('set-view', handleSetView);
   }, [navigate]);
 
   useEffect(() => {
@@ -537,10 +530,7 @@ export function AppInner() {
         inputField.focus();
       }
     };
-    window.electron.on('focus-input', handleFocusInput);
-    return () => {
-      window.electron.off('focus-input', handleFocusInput);
-    };
+    return window.electron.on('focus-input', handleFocusInput);
   }, []);
 
   // Handle initial message from launcher
@@ -562,10 +552,7 @@ export function AppInner() {
         }
       }
     };
-    window.electron.on('set-initial-message', handleSetInitialMessage);
-    return () => {
-      window.electron.off('set-initial-message', handleSetInitialMessage);
-    };
+    return window.electron.on('set-initial-message', handleSetInitialMessage);
   }, [navigate]);
 
   if (fatalError) {
@@ -657,6 +644,7 @@ export default function App() {
         </HashRouter>
         <AnnouncementModal />
         <TelemetryOptOutModal controlled={false} />
+        <UpdateAvailableModal />
       </ModelAndProviderProvider>
     </ThemeProvider>
   );

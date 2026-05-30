@@ -2,6 +2,18 @@ import Electron, { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { Workflow } from './workflow';
 import { BioRouterApp } from './api';
 
+// One-time warning for callers still using the legacy `off()` API. Each
+// channel only warns once to avoid log spam under React StrictMode.
+const offDeprecationWarned = new Set<string>();
+function warnOffDeprecated(channel: string): void {
+  if (offDeprecationWarned.has(channel)) return;
+  offDeprecationWarned.add(channel);
+  console.warn(
+    `[preload] window.electron.off('${channel}', ...) is a no-op. ` +
+      "Use the disposer returned by on(): `const dispose = electron.on(...); return dispose;`."
+  );
+}
+
 interface NotificationData {
   title: string;
   body: string;
@@ -106,12 +118,18 @@ type ElectronAPI = {
   setSpellcheck: (enable: boolean) => Promise<boolean>;
   getSpellcheckState: () => Promise<boolean>;
   openNotificationsSettings: () => Promise<boolean>;
-  onMouseBackButtonClicked: (callback: () => void) => void;
+  onMouseBackButtonClicked: (callback: () => void) => () => void;
   offMouseBackButtonClicked: (callback: () => void) => void;
+  /** Subscribe to a main-process IPC event. Returns a disposer; call it to
+   * remove the listener. Do not use `off()` — contextBridge proxies the
+   * callback differently on each crossing, so `off(channel, sameCallback)`
+   * can't find the registered wrapper and silently leaks the listener. */
   on: (
     channel: string,
     callback: (event: Electron.IpcRendererEvent, ...args: unknown[]) => void
-  ) => void;
+  ) => () => void;
+  /** Deprecated. Use the disposer returned by `on()` instead. Calling this
+   * is a no-op (kept for source compatibility); the listener will leak. */
   off: (
     channel: string,
     callback: (event: Electron.IpcRendererEvent, ...args: unknown[]) => void
@@ -246,25 +264,28 @@ const electronAPI: ElectronAPI = {
   getSpellcheckState: () => ipcRenderer.invoke('get-spellcheck-state'),
   openNotificationsSettings: () => ipcRenderer.invoke('open-notifications-settings'),
   onMouseBackButtonClicked: (callback: () => void) => {
-    // Wrapper that ignores the event parameter.
-    const wrappedCallback = (_event: Electron.IpcRendererEvent) => callback();
-    ipcRenderer.on('mouse-back-button-clicked', wrappedCallback);
-    return wrappedCallback;
+    const wrapper = (_event: Electron.IpcRendererEvent) => callback();
+    ipcRenderer.on('mouse-back-button-clicked', wrapper);
+    return () => ipcRenderer.removeListener('mouse-back-button-clicked', wrapper);
   },
-  offMouseBackButtonClicked: (callback: () => void) => {
-    ipcRenderer.removeListener('mouse-back-button-clicked', callback);
+  offMouseBackButtonClicked: () => {
+    warnOffDeprecated('mouse-back-button-clicked');
   },
   on: (
     channel: string,
     callback: (event: Electron.IpcRendererEvent, ...args: unknown[]) => void
   ) => {
-    ipcRenderer.on(channel, callback);
+    // Wrap in a preload-scope function so removeListener can match by
+    // identity. Without this, contextBridge would hand `off()` a different
+    // proxy than `on()` registered, and removal would silently no-op —
+    // listeners would accumulate on every component remount.
+    const wrapper = (event: Electron.IpcRendererEvent, ...args: unknown[]) =>
+      callback(event, ...args);
+    ipcRenderer.on(channel, wrapper);
+    return () => ipcRenderer.removeListener(channel, wrapper);
   },
-  off: (
-    channel: string,
-    callback: (event: Electron.IpcRendererEvent, ...args: unknown[]) => void
-  ) => {
-    ipcRenderer.off(channel, callback);
+  off: (channel: string) => {
+    warnOffDeprecated(channel);
   },
   emit: (channel: string, ...args: unknown[]) => {
     ipcRenderer.emit(channel, ...args);
