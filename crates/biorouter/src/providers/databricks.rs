@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::time::Duration;
 
 use super::api_client::{ApiClient, AuthMethod, AuthProvider};
-use super::base::{ConfigKey, MessageStream, Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::base::{ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage};
 use super::embedding::EmbeddingCapable;
 use super::errors::ProviderError;
 use super::formats::databricks::{create_request, response_to_message};
@@ -239,12 +239,30 @@ impl DatabricksProvider {
 #[async_trait]
 impl Provider for DatabricksProvider {
     fn metadata() -> ProviderMetadata {
-        ProviderMetadata::new(
+        // Only Databricks-served Claude variants are vision-capable.
+        // Llama-3 instruct and DBRX are text-only.
+        const DATABRICKS_VISION_MODELS: &[&str] = &[
+            "databricks-claude-sonnet-4-5",
+            "databricks-claude-3-7-sonnet",
+        ];
+        let models: Vec<ModelInfo> = DATABRICKS_KNOWN_MODELS
+            .iter()
+            .map(|&name| {
+                let info = ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit());
+                if DATABRICKS_VISION_MODELS.contains(&name) {
+                    info.with_vision()
+                } else {
+                    info
+                }
+            })
+            .collect();
+
+        ProviderMetadata::with_models(
             "databricks",
             "Databricks",
             "Models on Databricks AI Gateway",
             DATABRICKS_DEFAULT_MODEL,
-            DATABRICKS_KNOWN_MODELS.to_vec(),
+            models,
             DATABRICKS_DOC_URL,
             vec![
                 ConfigKey::new("DATABRICKS_HOST", true, false, None),

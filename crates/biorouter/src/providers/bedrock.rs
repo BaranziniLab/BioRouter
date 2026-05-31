@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use super::base::{ConfigKey, Provider, ProviderMetadata, ProviderUsage};
+use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage};
 use super::errors::ProviderError;
 use super::retry::{ProviderRetry, RetryConfig};
 use crate::conversation::message::Message;
@@ -211,12 +211,21 @@ impl BedrockProvider {
 #[async_trait]
 impl Provider for BedrockProvider {
     fn metadata() -> ProviderMetadata {
-        ProviderMetadata::new(
+        // All listed Bedrock models are Claude variants (Sonnet 4.x, Opus 4.x), all vision-capable.
+        let models: Vec<ModelInfo> = BEDROCK_KNOWN_MODELS
+            .iter()
+            .map(|&name| {
+                ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit())
+                    .with_vision()
+            })
+            .collect();
+
+        ProviderMetadata::with_models(
             "aws_bedrock",
             "Amazon Bedrock",
             "Run models through Amazon Bedrock.",
             BEDROCK_DEFAULT_MODEL,
-            BEDROCK_KNOWN_MODELS.to_vec(),
+            models,
             BEDROCK_DOC_LINK,
             vec![
                 ConfigKey::new("AWS_PROFILE", true, false, Some("default")),
