@@ -234,9 +234,28 @@ impl OpenAiProvider {
 #[async_trait]
 impl Provider for OpenAiProvider {
     fn metadata() -> ProviderMetadata {
+        // Per OpenAI's published model docs, all GPT-4o, GPT-4.1, GPT-5.x, and
+        // most o-series models accept image inputs. Excluded: gpt-5.1-codex
+        // (codex variant, text-focused) and o3-mini (text-only per OpenAI docs).
+        const OPEN_AI_VISION_MODELS: &[&str] = &[
+            "gpt-5.5", "gpt-5.5-pro",
+            "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano",
+            "gpt-5", "gpt-5-2025-08-07", "gpt-5-mini", "gpt-5-nano",
+            "gpt-5.1", "gpt-5.2",
+            "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
+            "gpt-4o", "gpt-4o-mini",
+            "o1", "o3", "o4-mini",
+        ];
         let models = OPEN_AI_KNOWN_MODELS
             .iter()
-            .map(|(name, limit)| ModelInfo::new(*name, *limit))
+            .map(|(name, limit)| {
+                let info = ModelInfo::new(*name, *limit);
+                if OPEN_AI_VISION_MODELS.contains(name) {
+                    info.with_vision()
+                } else {
+                    info
+                }
+            })
             .collect();
         ProviderMetadata::with_models(
             "openai",
