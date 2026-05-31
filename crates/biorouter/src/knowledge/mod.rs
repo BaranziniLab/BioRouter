@@ -1,11 +1,3 @@
-pub mod convert;
-pub mod credibility;
-pub mod git;
-pub mod graph;
-pub mod manifest;
-pub mod paths;
-pub mod raw;
-pub mod registry;
-pub mod service;
-pub mod store;
-pub mod types;
+// Knowledge module lives in biorouter-mcp so both crates can use it
+// without a circular dependency (biorouter depends on biorouter-mcp).
+pub use biorouter_mcp::knowledge::*;
