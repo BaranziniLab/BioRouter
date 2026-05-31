@@ -254,7 +254,7 @@ impl GitRepo {
         let msg = render_message(
             ChangeKind::Restore,
             summary,
-            Some(&format!("→ {}", &sha[..7])),
+            Some(&format!("→ {}", sha.get(..7).unwrap_or(sha))),
         );
         let new_oid = self
             .inner

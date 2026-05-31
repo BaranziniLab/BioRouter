@@ -17,8 +17,8 @@ pub fn html_to_markdown(html: &str) -> Result<HtmlConversion> {
 fn extract_title(html: &str) -> Option<String> {
     let lower = html.to_lowercase();
     let start = lower.find("<title>")? + "<title>".len();
-    let end = lower[start..].find("</title>")? + start;
-    Some(html[start..end].trim().to_string())
+    let end = lower.get(start..)?.find("</title>")? + start;
+    Some(html.get(start..end)?.trim().to_string())
 }
 
 #[cfg(test)]

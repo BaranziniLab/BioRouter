@@ -18,7 +18,7 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
         let node_id = path_to_node_id(&p.path);
         id_for_path.insert(p.path.clone(), node_id.clone());
         label_to_id.insert(
-            slug(&page_basename(&p.path)).to_lowercase(),
+            slug(page_basename(&p.path)).to_lowercase(),
             node_id.clone(),
         );
         let kind = page_kind_of(p);

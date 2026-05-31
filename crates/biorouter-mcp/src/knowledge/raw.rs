@@ -81,10 +81,11 @@ pub fn new_source_id(title: &str) -> String {
         .take(40)
         .collect::<String>();
     let id = uuid::Uuid::new_v4();
+    let id_str = id.to_string();
     if slug.is_empty() {
-        format!("src-{}", &id.to_string()[..8])
+        format!("src-{}", id_str.get(..8).unwrap_or(&id_str))
     } else {
-        format!("{slug}-{}", &id.to_string()[..6])
+        format!("{slug}-{}", id_str.get(..6).unwrap_or(&id_str))
     }
 }
 

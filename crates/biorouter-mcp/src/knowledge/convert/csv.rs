@@ -11,7 +11,7 @@ pub fn csv_to_markdown(bytes: &[u8]) -> Result<String> {
     let mut rows: Vec<Vec<String>> = Vec::new();
     for rec in rdr.records() {
         let rec = rec?;
-        rows.push(rec.iter().map(|s| escape_pipe(s)).collect());
+        rows.push(rec.iter().map(escape_pipe).collect());
     }
     let mut out = String::new();
     out.push('|');

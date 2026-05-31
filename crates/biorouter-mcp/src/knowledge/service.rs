@@ -198,7 +198,10 @@ impl KnowledgeService {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         let repo = GitRepo::open(&kb_root)?;
-        let summary = format!("restore to {}", &commit_sha[..7.min(commit_sha.len())]);
+        let summary = format!(
+            "restore to {}",
+            commit_sha.get(..7).unwrap_or(commit_sha)
+        );
         let sha = repo.restore_to(commit_sha, &summary)?;
         self.rebuild_graph_cache(kb_id)?;
         Ok(sha)

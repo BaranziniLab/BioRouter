@@ -119,10 +119,10 @@ fn resolve_page_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf
 pub fn split_frontmatter(s: &str) -> (serde_yaml::Value, String) {
     if let Some(rest) = s.strip_prefix("---\n") {
         if let Some(end) = rest.find("\n---\n") {
-            let fm = &rest[..end];
-            let body = &rest[end + 5..];
-            if let Ok(v) = serde_yaml::from_str(fm) {
-                return (v, body.to_string());
+            if let (Some(fm), Some(body)) = (rest.get(..end), rest.get(end + 5..)) {
+                if let Ok(v) = serde_yaml::from_str(fm) {
+                    return (v, body.to_string());
+                }
             }
         }
     }

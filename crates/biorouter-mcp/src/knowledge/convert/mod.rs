@@ -103,7 +103,7 @@ pub async fn convert(input: &SourceInput) -> Result<Converted> {
 }
 
 fn filename_from_url(url: &str) -> String {
-    url.split('/').last().unwrap_or("source").to_string()
+    url.split('/').next_back().unwrap_or("source").to_string()
 }
 
 fn guess_mime(filename: &str) -> String {
