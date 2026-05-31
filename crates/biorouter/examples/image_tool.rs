@@ -34,6 +34,7 @@ async fn main() -> Result<()> {
                 "000",
                 Ok(CallToolRequestParams {
                     task: None,
+                    meta: None,
                     name: "view_image".into(),
                     arguments: Some(object!({"path": "./test_image.png"})),
                 }),

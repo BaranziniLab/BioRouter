@@ -318,6 +318,7 @@ impl ProviderTester {
             "test_id",
             Ok(CallToolRequestParams {
                 task: None,
+                meta: None,
                 name: "get_screenshot".into(),
                 arguments: Some(object!({})),
             }),

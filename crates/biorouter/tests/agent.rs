@@ -361,6 +361,7 @@ mod tests {
             ) -> Result<(Message, ProviderUsage), ProviderError> {
                 let tool_call = CallToolRequestParams {
                     task: None,
+                    meta: None,
                     name: "test_tool".into(),
                     arguments: Some(object!({"param": "value"})),
                 };
