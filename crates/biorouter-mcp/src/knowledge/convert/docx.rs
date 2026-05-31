@@ -7,9 +7,16 @@ pub fn docx_to_markdown(bytes: &[u8]) -> Result<String> {
     for child in docx.document.children {
         if let DocumentChild::Paragraph(p) = child {
             let text = paragraph_text(&p);
-            if text.trim().is_empty() { continue; }
+            if text.trim().is_empty() {
+                continue;
+            }
             // Style heuristic: paragraph style "Heading1" / "Heading2" → markdown headers.
-            let style = p.property.style.as_ref().map(|s| s.val.as_str()).unwrap_or("");
+            let style = p
+                .property
+                .style
+                .as_ref()
+                .map(|s| s.val.as_str())
+                .unwrap_or("");
             let prefix = match style {
                 s if s.eq_ignore_ascii_case("Heading1") => "# ",
                 s if s.eq_ignore_ascii_case("Heading2") => "## ",
@@ -50,19 +57,17 @@ mod tests {
                     .style("Heading1")
                     .add_run(Run::new().add_text("Title")),
             )
-            .add_paragraph(
-                Paragraph::new().add_run(Run::new().add_text("First body paragraph.")),
-            )
+            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("First body paragraph.")))
             .add_paragraph(
                 Paragraph::new()
                     .style("Heading2")
                     .add_run(Run::new().add_text("Subhead")),
             )
-            .add_paragraph(
-                Paragraph::new().add_run(Run::new().add_text("More body.")),
-            );
+            .add_paragraph(Paragraph::new().add_run(Run::new().add_text("More body.")));
         let mut buf: Vec<u8> = Vec::new();
-        docx.build().pack(&mut std::io::Cursor::new(&mut buf)).unwrap();
+        docx.build()
+            .pack(&mut std::io::Cursor::new(&mut buf))
+            .unwrap();
         buf
     }
 

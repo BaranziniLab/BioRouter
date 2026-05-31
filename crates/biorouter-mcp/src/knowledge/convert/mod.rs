@@ -9,9 +9,16 @@ use anyhow::Result;
 
 #[derive(Debug, Clone)]
 pub enum SourceInput {
-    File { bytes: Vec<u8>, filename: String, mime: Option<String> },
+    File {
+        bytes: Vec<u8>,
+        filename: String,
+        mime: Option<String>,
+    },
     Url(String),
-    Text { text: String, title: Option<String> },
+    Text {
+        text: String,
+        title: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -39,7 +46,11 @@ pub async fn convert(input: &SourceInput) -> Result<Converted> {
             };
             Box::pin(convert(&file)).await
         }
-        SourceInput::File { bytes, filename, mime } => {
+        SourceInput::File {
+            bytes,
+            filename,
+            mime,
+        } => {
             let effective_mime = mime.clone().unwrap_or_else(|| guess_mime(filename));
             match effective_mime.as_str() {
                 "text/html" | "application/xhtml+xml" => {
@@ -63,20 +74,28 @@ pub async fn convert(input: &SourceInput) -> Result<Converted> {
                 }
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
                     let md = docx::docx_to_markdown(bytes)?;
-                    Ok(Converted { markdown: md, title: None, mime: effective_mime, needs_llm_fallback: false })
-                }
-                "text/csv" => {
-                    let md = csv::csv_to_markdown(bytes)?;
-                    Ok(Converted { markdown: md, title: None, mime: effective_mime, needs_llm_fallback: false })
-                }
-                "text/markdown" | "text/plain" => {
                     Ok(Converted {
-                        markdown: String::from_utf8_lossy(bytes).into_owned(),
+                        markdown: md,
                         title: None,
                         mime: effective_mime,
                         needs_llm_fallback: false,
                     })
                 }
+                "text/csv" => {
+                    let md = csv::csv_to_markdown(bytes)?;
+                    Ok(Converted {
+                        markdown: md,
+                        title: None,
+                        mime: effective_mime,
+                        needs_llm_fallback: false,
+                    })
+                }
+                "text/markdown" | "text/plain" => Ok(Converted {
+                    markdown: String::from_utf8_lossy(bytes).into_owned(),
+                    title: None,
+                    mime: effective_mime,
+                    needs_llm_fallback: false,
+                }),
                 other => anyhow::bail!("unsupported mime: {other}"),
             }
         }
@@ -89,12 +108,19 @@ fn filename_from_url(url: &str) -> String {
 
 fn guess_mime(filename: &str) -> String {
     let lower = filename.to_lowercase();
-    if lower.ends_with(".pdf") { "application/pdf".into() }
-    else if lower.ends_with(".docx") { "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into() }
-    else if lower.ends_with(".csv") { "text/csv".into() }
-    else if lower.ends_with(".md") { "text/markdown".into() }
-    else if lower.ends_with(".html") || lower.ends_with(".htm") { "text/html".into() }
-    else { "text/plain".into() }
+    if lower.ends_with(".pdf") {
+        "application/pdf".into()
+    } else if lower.ends_with(".docx") {
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into()
+    } else if lower.ends_with(".csv") {
+        "text/csv".into()
+    } else if lower.ends_with(".md") {
+        "text/markdown".into()
+    } else if lower.ends_with(".html") || lower.ends_with(".htm") {
+        "text/html".into()
+    } else {
+        "text/plain".into()
+    }
 }
 
 #[cfg(test)]
@@ -108,7 +134,9 @@ mod tests {
             bytes: html.as_bytes().to_vec(),
             filename: "x.html".into(),
             mime: Some("text/html".into()),
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         assert!(c.markdown.contains("# H"));
         assert_eq!(c.title.as_deref(), Some("T"));
     }
@@ -118,7 +146,9 @@ mod tests {
         let c = convert(&SourceInput::Text {
             text: "hello".into(),
             title: Some("Note".into()),
-        }).await.unwrap();
+        })
+        .await
+        .unwrap();
         assert_eq!(c.markdown, "hello");
         assert_eq!(c.title.as_deref(), Some("Note"));
     }

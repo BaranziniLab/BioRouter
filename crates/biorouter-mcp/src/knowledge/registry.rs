@@ -19,8 +19,7 @@ pub fn load(root: &Path) -> Result<Vec<RegistryEntry>> {
     if !p.exists() {
         return Ok(Vec::new());
     }
-    let s = std::fs::read_to_string(&p)
-        .with_context(|| format!("reading {}", p.display()))?;
+    let s = std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
     let doc: RegistryDoc = serde_yaml::from_str(&s)?;
     Ok(doc.bases)
 }
@@ -46,7 +45,9 @@ pub fn unregister(root: &Path, id: &str) -> Result<()> {
 
 fn save(root: &Path, bases: &[RegistryEntry]) -> Result<()> {
     std::fs::create_dir_all(root)?;
-    let doc = RegistryDoc { bases: bases.to_vec() };
+    let doc = RegistryDoc {
+        bases: bases.to_vec(),
+    };
     let yaml = serde_yaml::to_string(&doc)?;
     let tmp = registry_path(root).with_extension("yaml.tmp");
     std::fs::write(&tmp, yaml)?;
@@ -67,7 +68,10 @@ mod tests {
     #[test]
     fn register_then_load() {
         let dir = tempfile::tempdir().unwrap();
-        let e = RegistryEntry { id: "ms".into(), path: dir.path().join("ms") };
+        let e = RegistryEntry {
+            id: "ms".into(),
+            path: dir.path().join("ms"),
+        };
         register(dir.path(), e.clone()).unwrap();
         assert_eq!(load(dir.path()).unwrap(), vec![e]);
     }
@@ -75,7 +79,10 @@ mod tests {
     #[test]
     fn register_rejects_duplicate() {
         let dir = tempfile::tempdir().unwrap();
-        let e = RegistryEntry { id: "ms".into(), path: dir.path().join("ms") };
+        let e = RegistryEntry {
+            id: "ms".into(),
+            path: dir.path().join("ms"),
+        };
         register(dir.path(), e.clone()).unwrap();
         let err = register(dir.path(), e).unwrap_err();
         assert!(err.to_string().contains("already registered"));
@@ -84,7 +91,10 @@ mod tests {
     #[test]
     fn unregister_removes_entry() {
         let dir = tempfile::tempdir().unwrap();
-        let e = RegistryEntry { id: "ms".into(), path: dir.path().join("ms") };
+        let e = RegistryEntry {
+            id: "ms".into(),
+            path: dir.path().join("ms"),
+        };
         register(dir.path(), e).unwrap();
         unregister(dir.path(), "ms").unwrap();
         assert_eq!(load(dir.path()).unwrap(), vec![]);

@@ -1,10 +1,8 @@
-use anyhow::Result;
 use crate::knowledge::{convert::SourceInput, service::KnowledgeService};
+use anyhow::Result;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{
-        CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo,
-    },
+    model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo},
     schemars::JsonSchema,
     tool, tool_handler, tool_router, ErrorData, ServerHandler,
 };
@@ -60,7 +58,9 @@ pub struct AddRawSourceParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RawSourceInput {
-    Url { url: String },
+    Url {
+        url: String,
+    },
     Text {
         text: String,
         #[serde(default)]
@@ -105,7 +105,10 @@ impl KnowledgeServer {
         })
     }
 
-    #[tool(name = "kb_list_bases", description = "List all knowledge bases on this machine.")]
+    #[tool(
+        name = "kb_list_bases",
+        description = "List all knowledge bases on this machine."
+    )]
     pub async fn kb_list_bases(&self) -> Result<CallToolResult, ErrorData> {
         let bases = self.service.list_bases().map_err(into_err)?;
         ok_json(&bases)
@@ -139,15 +142,17 @@ impl KnowledgeServer {
         ok_json(&pages)
     }
 
-    #[tool(name = "kb_read_page", description = "Read a single wiki page by path.")]
+    #[tool(
+        name = "kb_read_page",
+        description = "Read a single wiki page by path."
+    )]
     pub async fn kb_read_page(
         &self,
         p: Parameters<ReadPageParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
-        let page =
-            crate::knowledge::store::read_page(&kb_root, &p.path).map_err(into_err)?;
+        let page = crate::knowledge::store::read_page(&kb_root, &p.path).map_err(into_err)?;
         ok_json(&page)
     }
 

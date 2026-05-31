@@ -10,8 +10,7 @@ pub fn manifest_path(kb_root: &Path) -> std::path::PathBuf {
 
 pub fn load(kb_root: &Path) -> Result<Manifest> {
     let p = manifest_path(kb_root);
-    let s = std::fs::read_to_string(&p)
-        .with_context(|| format!("reading {}", p.display()))?;
+    let s = std::fs::read_to_string(&p).with_context(|| format!("reading {}", p.display()))?;
     Ok(serde_yaml::from_str(&s)?)
 }
 

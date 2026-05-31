@@ -8,7 +8,10 @@ pub struct HtmlConversion {
 pub fn html_to_markdown(html: &str) -> Result<HtmlConversion> {
     let md = htmd::convert(html).map_err(|e| anyhow::anyhow!("htmd: {e}"))?;
     let title = extract_title(html);
-    Ok(HtmlConversion { markdown: md, title })
+    Ok(HtmlConversion {
+        markdown: md,
+        title,
+    })
 }
 
 fn extract_title(html: &str) -> Option<String> {

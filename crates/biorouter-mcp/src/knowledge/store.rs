@@ -19,7 +19,9 @@ pub struct PageContent {
 
 pub fn list_pages(kb_root: &Path, prefix: Option<&str>) -> Result<Vec<PageRef>> {
     let wiki = kb_root.join("wiki");
-    if !wiki.exists() { return Ok(Vec::new()); }
+    if !wiki.exists() {
+        return Ok(Vec::new());
+    }
     let mut out = Vec::new();
     walk_md(&wiki, &wiki, prefix, &mut out)?;
     out.sort_by(|a, b| a.path.cmp(&b.path));
@@ -36,15 +38,27 @@ fn walk_md(base: &Path, dir: &Path, prefix: Option<&str>, out: &mut Vec<PageRef>
             let rel = p.strip_prefix(base).unwrap().to_string_lossy().to_string();
             let logical = format!("wiki/{rel}");
             if let Some(pre) = prefix {
-                if !logical.starts_with(pre) { continue; }
+                if !logical.starts_with(pre) {
+                    continue;
+                }
             }
             let body = std::fs::read_to_string(&p)?;
             let (fm, _) = split_frontmatter(&body);
-            let title = fm.get("title").and_then(|v| v.as_str())
+            let title = fm
+                .get("title")
+                .and_then(|v| v.as_str())
                 .unwrap_or_else(|| p.file_stem().unwrap().to_str().unwrap())
                 .to_string();
-            let kind = fm.get("kind").and_then(|v| v.as_str()).unwrap_or("note").to_string();
-            out.push(PageRef { path: logical, title, kind });
+            let kind = fm
+                .get("kind")
+                .and_then(|v| v.as_str())
+                .unwrap_or("note")
+                .to_string();
+            out.push(PageRef {
+                path: logical,
+                title,
+                kind,
+            });
         }
     }
     Ok(())
@@ -52,10 +66,14 @@ fn walk_md(base: &Path, dir: &Path, prefix: Option<&str>, out: &mut Vec<PageRef>
 
 pub fn read_page(kb_root: &Path, path: &str) -> Result<PageContent> {
     let abs = resolve_page_path(kb_root, path)?;
-    let raw = std::fs::read_to_string(&abs)
-        .with_context(|| format!("reading {}", abs.display()))?;
+    let raw =
+        std::fs::read_to_string(&abs).with_context(|| format!("reading {}", abs.display()))?;
     let (fm, body) = split_frontmatter(&raw);
-    Ok(PageContent { path: path.to_string(), content: body, frontmatter: fm })
+    Ok(PageContent {
+        path: path.to_string(),
+        content: body,
+        frontmatter: fm,
+    })
 }
 
 pub fn write_page(
@@ -85,10 +103,16 @@ pub fn write_page(
 }
 
 fn resolve_page_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf> {
-    if !logical.starts_with("wiki/") && logical != "index.md" && logical != "schema.md" && logical != "log.md" {
+    if !logical.starts_with("wiki/")
+        && logical != "index.md"
+        && logical != "schema.md"
+        && logical != "log.md"
+    {
         anyhow::bail!("page path must start with wiki/ or be index.md/schema.md/log.md");
     }
-    if logical.contains("..") { anyhow::bail!("path traversal not allowed"); }
+    if logical.contains("..") {
+        anyhow::bail!("path traversal not allowed");
+    }
     Ok(kb_root.join(logical))
 }
 

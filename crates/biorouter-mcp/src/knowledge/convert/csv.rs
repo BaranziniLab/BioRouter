@@ -1,9 +1,13 @@
 use anyhow::Result;
 
 pub fn csv_to_markdown(bytes: &[u8]) -> Result<String> {
-    let mut rdr = csv::ReaderBuilder::new().has_headers(true).from_reader(bytes);
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(bytes);
     let headers: Vec<String> = rdr.headers()?.iter().map(|s| s.to_string()).collect();
-    if headers.is_empty() { return Ok(String::new()); }
+    if headers.is_empty() {
+        return Ok(String::new());
+    }
     let mut rows: Vec<Vec<String>> = Vec::new();
     for rec in rdr.records() {
         let rec = rec?;
@@ -11,10 +15,14 @@ pub fn csv_to_markdown(bytes: &[u8]) -> Result<String> {
     }
     let mut out = String::new();
     out.push('|');
-    for h in &headers { out.push_str(&format!(" {} |", escape_pipe(h))); }
+    for h in &headers {
+        out.push_str(&format!(" {} |", escape_pipe(h)));
+    }
     out.push('\n');
     out.push('|');
-    for _ in &headers { out.push_str(" --- |"); }
+    for _ in &headers {
+        out.push_str(" --- |");
+    }
     out.push('\n');
     for r in rows {
         out.push('|');
@@ -27,7 +35,9 @@ pub fn csv_to_markdown(bytes: &[u8]) -> Result<String> {
     Ok(out)
 }
 
-fn escape_pipe(s: &str) -> String { s.replace('|', "\\|") }
+fn escape_pipe(s: &str) -> String {
+    s.replace('|', "\\|")
+}
 
 #[cfg(test)]
 mod tests {

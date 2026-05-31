@@ -27,7 +27,9 @@ impl KnowledgeService {
         Ok(Self::new(paths::knowledge_root()?))
     }
 
-    pub fn root(&self) -> &Path { &self.root }
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
 
     pub fn create_base(&self, id: &str, name: &str, color: Option<&str>) -> Result<Manifest> {
         paths::validate_kb_id(id)?;
@@ -67,7 +69,10 @@ impl KnowledgeService {
 
         registry::register(
             &self.root,
-            RegistryEntry { id: id.to_string(), path: kb_root },
+            RegistryEntry {
+                id: id.to_string(),
+                path: kb_root,
+            },
         )?;
         self.rebuild_graph_cache(id)?;
         Ok(m)
@@ -102,15 +107,18 @@ impl KnowledgeService {
         let credibility = credibility::classify(&input).await?;
 
         let title = converted.title.clone().unwrap_or_else(|| match &input {
-            convert::SourceInput::Text { title, .. } => title.clone().unwrap_or_else(|| "Untitled note".into()),
+            convert::SourceInput::Text { title, .. } => {
+                title.clone().unwrap_or_else(|| "Untitled note".into())
+            }
             convert::SourceInput::Url(u) => u.clone(),
             convert::SourceInput::File { filename, .. } => filename.clone(),
         });
 
         let source_id = raw::new_source_id(&title);
         let (original_bytes, original_filename, url) = match &input {
-            convert::SourceInput::File { bytes, filename, .. } =>
-                (Some(bytes.clone()), Some(filename.clone()), None),
+            convert::SourceInput::File {
+                bytes, filename, ..
+            } => (Some(bytes.clone()), Some(filename.clone()), None),
             convert::SourceInput::Url(u) => (None, None, Some(u.clone())),
             convert::SourceInput::Text { .. } => (None, None, None),
         };
@@ -145,7 +153,11 @@ impl KnowledgeService {
         if let Some(_branch) = txn_branch {
             repo.commit_on_txn_in_progress(&summary)?;
         } else {
-            repo.commit_all(crate::knowledge::types::ChangeKind::Ingest, &summary, Some(delta))?;
+            repo.commit_all(
+                crate::knowledge::types::ChangeKind::Ingest,
+                &summary,
+                Some(delta),
+            )?;
         }
         self.rebuild_graph_cache(kb_id)?;
         Ok(written)
@@ -171,7 +183,11 @@ impl KnowledgeService {
 }
 
 impl KnowledgeService {
-    pub fn list_history(&self, kb_id: &str, limit: usize) -> anyhow::Result<Vec<crate::knowledge::types::HistoryEntry>> {
+    pub fn list_history(
+        &self,
+        kb_id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<crate::knowledge::types::HistoryEntry>> {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         let repo = GitRepo::open(&kb_root)?;
@@ -188,7 +204,12 @@ impl KnowledgeService {
         Ok(sha)
     }
 
-    pub fn preview_state(&self, kb_id: &str, commit_sha: &str, path: &str) -> anyhow::Result<Option<String>> {
+    pub fn preview_state(
+        &self,
+        kb_id: &str,
+        commit_sha: &str,
+        path: &str,
+    ) -> anyhow::Result<Option<String>> {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         let repo = GitRepo::open(&kb_root)?;
@@ -260,10 +281,17 @@ mod tests {
         svc.create_base("k", "K", None).unwrap();
         let kb = svc.root().join("k");
 
-        let res = svc.add_raw_source("k", SourceInput::Text {
-            text: "Lab note: HRV trend up after week of zone-2.".into(),
-            title: Some("HRV note".into()),
-        }, None).await.unwrap();
+        let res = svc
+            .add_raw_source(
+                "k",
+                SourceInput::Text {
+                    text: "Lab note: HRV trend up after week of zone-2.".into(),
+                    title: Some("HRV note".into()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
 
         assert!(kb.join(format!("raw/{}/source.md", res.source_id)).exists());
         assert!(kb.join(format!("raw/{}/meta.yaml", res.source_id)).exists());
@@ -283,13 +311,21 @@ mod tests {
         let (_dir, svc) = svc();
         svc.create_base("k", "K", None).unwrap();
         let html = b"<html><head><title>Test</title></head><body><h1>H</h1></body></html>";
-        let res = svc.add_raw_source("k", SourceInput::File {
-            bytes: html.to_vec(),
-            filename: "x.html".into(),
-            mime: Some("text/html".into()),
-        }, None).await.unwrap();
+        let res = svc
+            .add_raw_source(
+                "k",
+                SourceInput::File {
+                    bytes: html.to_vec(),
+                    filename: "x.html".into(),
+                    mime: Some("text/html".into()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
         let kb = svc.root().join("k");
-        let md = std::fs::read_to_string(kb.join(format!("raw/{}/source.md", res.source_id))).unwrap();
+        let md =
+            std::fs::read_to_string(kb.join(format!("raw/{}/source.md", res.source_id))).unwrap();
         assert!(md.contains("# H"));
     }
 
@@ -299,9 +335,16 @@ mod tests {
         svc.create_base("k", "K", None).unwrap();
         let g_empty = svc.get_graph("k").unwrap();
         assert!(g_empty.nodes.is_empty());
-        svc.add_raw_source("k", convert::SourceInput::Text {
-            text: "note".into(), title: Some("N".into())
-        }, None).await.unwrap();
+        svc.add_raw_source(
+            "k",
+            convert::SourceInput::Text {
+                text: "note".into(),
+                title: Some("N".into()),
+            },
+            None,
+        )
+        .await
+        .unwrap();
         let kb = svc.root().join("k");
         // Source pages aren't written by add_raw_source — only raw/. So the graph
         // remains empty until a macro creates wiki/sources/<id>.md (Plan 2).
@@ -314,22 +357,39 @@ mod tests {
     async fn list_history_and_restore_roundtrip() {
         let (_dir, svc) = svc();
         svc.create_base("k", "K", None).unwrap();
-        svc.add_raw_source("k", convert::SourceInput::Text {
-            text: "first".into(), title: Some("a".into())
-        }, None).await.unwrap();
+        svc.add_raw_source(
+            "k",
+            convert::SourceInput::Text {
+                text: "first".into(),
+                title: Some("a".into()),
+            },
+            None,
+        )
+        .await
+        .unwrap();
         let history_after_one = svc.list_history("k", 10).unwrap();
         assert_eq!(history_after_one.len(), 2);
         let target = history_after_one.last().unwrap().commit_sha.clone();
 
-        svc.add_raw_source("k", convert::SourceInput::Text {
-            text: "second".into(), title: Some("b".into())
-        }, None).await.unwrap();
+        svc.add_raw_source(
+            "k",
+            convert::SourceInput::Text {
+                text: "second".into(),
+                title: Some("b".into()),
+            },
+            None,
+        )
+        .await
+        .unwrap();
         let history_after_two = svc.list_history("k", 10).unwrap();
         assert_eq!(history_after_two.len(), 3);
 
         svc.restore_state("k", &target).unwrap();
         let history_after_restore = svc.list_history("k", 10).unwrap();
         assert_eq!(history_after_restore.len(), 4);
-        assert_eq!(history_after_restore[0].kind, crate::knowledge::types::ChangeKind::Restore);
+        assert_eq!(
+            history_after_restore[0].kind,
+            crate::knowledge::types::ChangeKind::Restore
+        );
     }
 }

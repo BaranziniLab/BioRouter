@@ -6,21 +6,20 @@ pub struct PdfConversion {
 }
 
 pub fn pdf_to_markdown(bytes: &[u8]) -> Result<PdfConversion> {
-    let text = pdf_extract::extract_text_from_mem(bytes)
-        .context("pdf-extract failed")?;
+    let text = pdf_extract::extract_text_from_mem(bytes).context("pdf-extract failed")?;
     let cleaned = normalize_text(&text);
     let needs_llm_fallback = cleaned.trim().len() < 32;
-    Ok(PdfConversion { markdown: cleaned, needs_llm_fallback })
+    Ok(PdfConversion {
+        markdown: cleaned,
+        needs_llm_fallback,
+    })
 }
 
 fn normalize_text(s: &str) -> String {
     // Collapse runs of whitespace, keep paragraph boundaries (double newlines).
     let mut out = String::new();
     for para in s.split("\n\n") {
-        let joined: String = para
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let joined: String = para.split_whitespace().collect::<Vec<_>>().join(" ");
         if !joined.is_empty() {
             out.push_str(&joined);
             out.push_str("\n\n");

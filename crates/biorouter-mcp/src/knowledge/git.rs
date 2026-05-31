@@ -21,10 +21,17 @@ impl GitRepo {
     }
 
     pub fn open(path: &Path) -> Result<Self> {
-        Ok(Self { inner: git2::Repository::open(path)? })
+        Ok(Self {
+            inner: git2::Repository::open(path)?,
+        })
     }
 
-    pub fn commit_all(&self, kind: ChangeKind, summary: &str, delta: Option<&str>) -> Result<String> {
+    pub fn commit_all(
+        &self,
+        kind: ChangeKind,
+        summary: &str,
+        delta: Option<&str>,
+    ) -> Result<String> {
         let mut index = self.inner.index()?;
         index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
         index.write()?;
@@ -34,14 +41,9 @@ impl GitRepo {
         let parent = self.inner.head().ok().and_then(|h| h.peel_to_commit().ok());
         let parents: Vec<&git2::Commit> = parent.as_ref().map(|c| vec![c]).unwrap_or_default();
         let msg = render_message(kind, summary, delta);
-        let oid = self.inner.commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            &msg,
-            &tree,
-            &parents,
-        )?;
+        let oid = self
+            .inner
+            .commit(Some("HEAD"), &sig, &sig, &msg, &tree, &parents)?;
         Ok(oid.to_string())
     }
 
@@ -92,8 +94,14 @@ fn parse_message(msg: &str) -> Parsed {
     let mut lines = msg.lines();
     let header = lines.next().unwrap_or("");
     let (kind, summary) = parse_header(header);
-    let delta = msg.lines().find_map(|l| l.strip_prefix("delta: ").map(str::to_string));
-    Parsed { kind, summary, delta }
+    let delta = msg
+        .lines()
+        .find_map(|l| l.strip_prefix("delta: ").map(str::to_string));
+    Parsed {
+        kind,
+        summary,
+        delta,
+    }
 }
 
 fn parse_header(header: &str) -> (ChangeKind, String) {
@@ -144,17 +152,30 @@ impl GitRepo {
         let tree = self.inner.find_tree(tree_oid)?;
         let sig = self.inner.signature()?;
         let parent = self.inner.head()?.peel_to_commit()?;
-        let oid = self.inner.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])?;
+        let oid = self
+            .inner
+            .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])?;
         Ok(oid.to_string())
     }
 
-    pub fn commit_txn(&self, txn: &Txn, kind: ChangeKind, summary: &str, delta: Option<&str>) -> Result<String> {
+    pub fn commit_txn(
+        &self,
+        txn: &Txn,
+        kind: ChangeKind,
+        summary: &str,
+        delta: Option<&str>,
+    ) -> Result<String> {
         // Squash-merge txn branch onto main as one commit.
-        let main = self.inner.find_branch("main", git2::BranchType::Local)
+        let main = self
+            .inner
+            .find_branch("main", git2::BranchType::Local)
             .or_else(|_| self.inner.find_branch("master", git2::BranchType::Local))?;
         let main_name = main.name()?.unwrap_or("main").to_string();
-        let txn_commit = self.inner.find_branch(&txn.branch, git2::BranchType::Local)?
-            .get().peel_to_commit()?;
+        let txn_commit = self
+            .inner
+            .find_branch(&txn.branch, git2::BranchType::Local)?
+            .get()
+            .peel_to_commit()?;
         let txn_tree = txn_commit.tree()?;
         let main_commit = main.get().peel_to_commit()?;
 
@@ -162,24 +183,35 @@ impl GitRepo {
         let msg = render_message(kind, summary, delta);
         let new_oid = self.inner.commit(
             Some(&format!("refs/heads/{main_name}")),
-            &sig, &sig, &msg, &txn_tree, &[&main_commit],
+            &sig,
+            &sig,
+            &msg,
+            &txn_tree,
+            &[&main_commit],
         )?;
 
         // Move HEAD back to main and check out the new tree.
         self.inner.set_head(&format!("refs/heads/{main_name}"))?;
-        self.inner.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
+        self.inner
+            .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
         // Delete txn branch.
-        self.inner.find_branch(&txn.branch, git2::BranchType::Local)?.delete()?;
+        self.inner
+            .find_branch(&txn.branch, git2::BranchType::Local)?
+            .delete()?;
         Ok(new_oid.to_string())
     }
 
     pub fn abort_txn(&self, txn: &Txn) -> Result<()> {
-        let main = self.inner.find_branch("main", git2::BranchType::Local)
+        let main = self
+            .inner
+            .find_branch("main", git2::BranchType::Local)
             .or_else(|_| self.inner.find_branch("master", git2::BranchType::Local))?;
         let main_name = main.name()?.unwrap_or("main").to_string();
         self.inner.set_head(&format!("refs/heads/{main_name}"))?;
-        self.inner.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
-        self.inner.find_branch(&txn.branch, git2::BranchType::Local)?
+        self.inner
+            .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
+        self.inner
+            .find_branch(&txn.branch, git2::BranchType::Local)?
             .delete()?;
         Ok(())
     }
@@ -187,7 +219,13 @@ impl GitRepo {
 
 fn slugify(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .trim_matches('-')
         .to_string()
@@ -213,12 +251,17 @@ impl GitRepo {
         let target_tree = target.tree()?;
         let head = self.inner.head()?.peel_to_commit()?;
         let sig = self.inner.signature()?;
-        let msg = render_message(ChangeKind::Restore, summary, Some(&format!("→ {}", &sha[..7])));
-        let new_oid = self.inner.commit(
-            Some("HEAD"), &sig, &sig, &msg, &target_tree, &[&head],
-        )?;
+        let msg = render_message(
+            ChangeKind::Restore,
+            summary,
+            Some(&format!("→ {}", &sha[..7])),
+        );
+        let new_oid = self
+            .inner
+            .commit(Some("HEAD"), &sig, &sig, &msg, &target_tree, &[&head])?;
         // Check out the new commit so working tree matches.
-        self.inner.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
+        self.inner
+            .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
         Ok(new_oid.to_string())
     }
 }
@@ -234,7 +277,9 @@ impl GitRepo {
         let tree = self.inner.find_tree(tree_oid)?;
         let sig = self.inner.signature()?;
         let parent = self.inner.head()?.peel_to_commit()?;
-        let oid = self.inner.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])?;
+        let oid = self
+            .inner
+            .commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])?;
         Ok(oid.to_string())
     }
 }
@@ -299,7 +344,11 @@ mod tests {
         assert_eq!(log[0].commit_sha, final_sha);
         assert_eq!(log[0].summary, "Paper X");
         assert_eq!(log[0].kind, ChangeKind::Ingest);
-        assert_eq!(log.len(), 2, "seed + squashed-ingest only — no intermediate commits");
+        assert_eq!(
+            log.len(),
+            2,
+            "seed + squashed-ingest only — no intermediate commits"
+        );
     }
 
     #[test]
@@ -317,7 +366,10 @@ mod tests {
 
         let post = repo.log(10).unwrap();
         assert_eq!(pre, post);
-        assert!(!dir.path().join("doom.md").exists(), "working tree restored");
+        assert!(
+            !dir.path().join("doom.md").exists(),
+            "working tree restored"
+        );
     }
 
     #[test]

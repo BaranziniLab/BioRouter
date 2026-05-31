@@ -17,7 +17,10 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
     for p in &pages {
         let node_id = path_to_node_id(&p.path);
         id_for_path.insert(p.path.clone(), node_id.clone());
-        label_to_id.insert(slug(&page_basename(&p.path)).to_lowercase(), node_id.clone());
+        label_to_id.insert(
+            slug(&page_basename(&p.path)).to_lowercase(),
+            node_id.clone(),
+        );
         let kind = page_kind_of(p);
         nodes.push(GraphNode {
             id: node_id,
@@ -49,7 +52,11 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
             let key = slug(&target_label.to_lowercase());
             if let Some(to) = label_to_id.get(&key) {
                 if to != &from {
-                    edges.push(GraphEdge { from: from.clone(), to: to.clone(), relation: None });
+                    edges.push(GraphEdge {
+                        from: from.clone(),
+                        to: to.clone(),
+                        relation: None,
+                    });
                 }
             }
         }
@@ -59,7 +66,9 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
 }
 
 pub fn write_cache(kb_root: &Path, graph: &Graph) -> Result<()> {
-    let path = kb_root.join(".biorouter-knowledge").join("graph-cache.json");
+    let path = kb_root
+        .join(".biorouter-knowledge")
+        .join("graph-cache.json");
     std::fs::create_dir_all(path.parent().unwrap())?;
     let tmp = path.with_extension("json.tmp");
     std::fs::write(&tmp, serde_json::to_string_pretty(graph)?)?;
@@ -68,8 +77,12 @@ pub fn write_cache(kb_root: &Path, graph: &Graph) -> Result<()> {
 }
 
 pub fn read_cache(kb_root: &Path) -> Result<Option<Graph>> {
-    let path = kb_root.join(".biorouter-knowledge").join("graph-cache.json");
-    if !path.exists() { return Ok(None); }
+    let path = kb_root
+        .join(".biorouter-knowledge")
+        .join("graph-cache.json");
+    if !path.exists() {
+        return Ok(None);
+    }
     let s = std::fs::read_to_string(&path)?;
     Ok(Some(serde_json::from_str(&s)?))
 }
@@ -83,12 +96,22 @@ fn path_to_node_id(logical: &str) -> String {
 }
 
 fn page_basename(logical: &str) -> &str {
-    logical.rsplit('/').next().unwrap_or(logical).trim_end_matches(".md")
+    logical
+        .rsplit('/')
+        .next()
+        .unwrap_or(logical)
+        .trim_end_matches(".md")
 }
 
 fn slug(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .trim_matches('-')
         .to_string()
@@ -120,12 +143,22 @@ mod tests {
         let svc = KnowledgeService::new(dir.path().to_path_buf());
         svc.create_base("k", "K", None).unwrap();
         let kb = dir.path().join("k");
-        write_page(&kb, "wiki/entities/hrv.md",
+        write_page(
+            &kb,
+            "wiki/entities/hrv.md",
             "---\ntitle: HRV\nkind: entity\n---\nLinks to [[zone-2 base]].",
-            "add hrv", None).unwrap();
-        write_page(&kb, "wiki/concepts/zone-2 base.md",
+            "add hrv",
+            None,
+        )
+        .unwrap();
+        write_page(
+            &kb,
+            "wiki/concepts/zone-2 base.md",
             "---\ntitle: Zone-2 base\nkind: concept\n---\nLinks to [[hrv]].",
-            "add z2", None).unwrap();
+            "add z2",
+            None,
+        )
+        .unwrap();
         (dir, kb)
     }
 

@@ -18,7 +18,10 @@ pub async fn classify(input: &SourceInput) -> Result<Credibility> {
     Ok(Credibility {
         tier,
         confidence: 0.4,
-        publisher: None, venue: None, doi: None, retracted: false,
+        publisher: None,
+        venue: None,
+        doi: None,
+        retracted: false,
         reasoning: reason.to_string(),
         classifier_version: 1,
     })
@@ -30,13 +33,20 @@ mod tests {
 
     #[tokio::test]
     async fn url_defaults_to_web() {
-        let c = classify(&SourceInput::Url("https://x.com/y".into())).await.unwrap();
+        let c = classify(&SourceInput::Url("https://x.com/y".into()))
+            .await
+            .unwrap();
         assert_eq!(c.tier, CredibilityTier::Web);
     }
 
     #[tokio::test]
     async fn text_defaults_to_personal() {
-        let c = classify(&SourceInput::Text { text: "note".into(), title: None }).await.unwrap();
+        let c = classify(&SourceInput::Text {
+            text: "note".into(),
+            title: None,
+        })
+        .await
+        .unwrap();
         assert_eq!(c.tier, CredibilityTier::Personal);
     }
 }

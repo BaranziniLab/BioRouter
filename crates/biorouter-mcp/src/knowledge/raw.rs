@@ -5,7 +5,7 @@ use std::path::Path;
 
 pub struct RawWrite {
     pub source_id: String,
-    pub source_md_path: String,   // wiki-relative for ergonomics (raw/<id>/source.md)
+    pub source_md_path: String, // wiki-relative for ergonomics (raw/<id>/source.md)
     pub meta_path: String,
 }
 
@@ -19,7 +19,10 @@ pub fn write_raw(
     let raw_dir = kb_root.join("raw").join(&meta.id);
     std::fs::create_dir_all(&raw_dir)?;
     if let (Some(bytes), Some(name)) = (original_bytes, original_filename) {
-        let ext = Path::new(name).extension().and_then(|e| e.to_str()).unwrap_or("bin");
+        let ext = Path::new(name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("bin");
         std::fs::write(raw_dir.join(format!("original.{ext}")), bytes)?;
     }
     std::fs::write(raw_dir.join("source.md"), derived_md)?;
@@ -40,7 +43,9 @@ pub fn read_meta(kb_root: &Path, source_id: &str) -> Result<SourceMeta> {
 
 pub fn list_sources(kb_root: &Path) -> Result<Vec<SourceMeta>> {
     let dir = kb_root.join("raw");
-    if !dir.exists() { return Ok(Vec::new()); }
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
     let mut out = Vec::new();
     for entry in std::fs::read_dir(&dir)? {
         let entry = entry?;
@@ -63,7 +68,13 @@ pub fn hash_bytes(bytes: &[u8]) -> String {
 pub fn new_source_id(title: &str) -> String {
     let slug = title
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect::<String>()
         .trim_matches('-')
         .chars()
@@ -80,7 +91,10 @@ pub fn new_source_id(title: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::knowledge::{service::KnowledgeService, types::{Credibility, CredibilityTier}};
+    use crate::knowledge::{
+        service::KnowledgeService,
+        types::{Credibility, CredibilityTier},
+    };
     use chrono::Utc;
 
     fn fresh() -> (tempfile::TempDir, std::path::PathBuf) {
@@ -103,8 +117,12 @@ mod tests {
             credibility: Credibility {
                 tier: CredibilityTier::Web,
                 confidence: 0.5,
-                publisher: None, venue: None, doi: None, retracted: false,
-                reasoning: "test".into(), classifier_version: 1,
+                publisher: None,
+                venue: None,
+                doi: None,
+                retracted: false,
+                reasoning: "test".into(),
+                classifier_version: 1,
             },
         }
     }
@@ -113,7 +131,14 @@ mod tests {
     fn write_then_read_meta() {
         let (_d, kb) = fresh();
         let m = sample_meta("paper-x");
-        let w = write_raw(&kb, Some(b"<html>x</html>"), Some("x.html"), "# X\n", m.clone()).unwrap();
+        let w = write_raw(
+            &kb,
+            Some(b"<html>x</html>"),
+            Some("x.html"),
+            "# X\n",
+            m.clone(),
+        )
+        .unwrap();
         assert_eq!(w.source_id, "paper-x");
         assert!(kb.join("raw/paper-x/source.md").exists());
         assert!(kb.join("raw/paper-x/original.html").exists());
@@ -128,7 +153,11 @@ mod tests {
         for id in ["a-1", "b-2"] {
             write_raw(&kb, None, None, "md", sample_meta(id)).unwrap();
         }
-        let mut ids: Vec<_> = list_sources(&kb).unwrap().into_iter().map(|m| m.id).collect();
+        let mut ids: Vec<_> = list_sources(&kb)
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect();
         ids.sort();
         assert_eq!(ids, vec!["a-1", "b-2"]);
     }

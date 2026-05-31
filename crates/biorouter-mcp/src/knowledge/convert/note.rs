@@ -4,7 +4,9 @@ pub fn extract_urls(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for m in re.find_iter(text) {
         let u = m.as_str().to_string();
-        if !out.contains(&u) { out.push(u); }
+        if !out.contains(&u) {
+            out.push(u);
+        }
     }
     out
 }

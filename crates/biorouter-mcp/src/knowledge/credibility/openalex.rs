@@ -15,22 +15,38 @@ pub async fn classify(doi: &str) -> Result<Option<Credibility>> {
     classify_with(&client, API_BASE, doi).await
 }
 
-pub async fn classify_with(client: &reqwest::Client, base: &str, doi: &str) -> Result<Option<Credibility>> {
+pub async fn classify_with(
+    client: &reqwest::Client,
+    base: &str,
+    doi: &str,
+) -> Result<Option<Credibility>> {
     let url = format!("{base}/works/doi:{doi}");
     let resp = client.get(&url).send().await?;
-    if !resp.status().is_success() { return Ok(None); }
+    if !resp.status().is_success() {
+        return Ok(None);
+    }
     let w: Work = resp.json().await?;
-    let publisher = w.host_venue.as_ref().and_then(|v| v.publisher.clone()).unwrap_or_default();
+    let publisher = w
+        .host_venue
+        .as_ref()
+        .and_then(|v| v.publisher.clone())
+        .unwrap_or_default();
     let venue = w.host_venue.as_ref().and_then(|v| v.display_name.clone());
     let retracted = w.is_retracted.unwrap_or(false);
     let tier = match w.r#type.as_deref() {
-        Some("journal-article") if is_peer_reviewed_publisher(&publisher) => CredibilityTier::PeerReviewed,
+        Some("journal-article") if is_peer_reviewed_publisher(&publisher) => {
+            CredibilityTier::PeerReviewed
+        }
         Some("journal-article") => CredibilityTier::Web,
         Some("posted-content") | Some("preprint") => CredibilityTier::Preprint,
         Some("book") | Some("book-chapter") | Some("monograph") => CredibilityTier::Book,
         _ => return Ok(None),
     };
-    let confidence = if matches!(tier, CredibilityTier::PeerReviewed | CredibilityTier::Book) { 0.93 } else { 0.83 };
+    let confidence = if matches!(tier, CredibilityTier::PeerReviewed | CredibilityTier::Book) {
+        0.93
+    } else {
+        0.83
+    };
     Ok(Some(Credibility {
         tier,
         confidence,
@@ -64,20 +80,28 @@ struct HostVenue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::{matchers::{method, path_regex}, Mock, MockServer, ResponseTemplate};
+    use wiremock::{
+        matchers::{method, path_regex},
+        Mock, MockServer, ResponseTemplate,
+    };
 
     #[tokio::test]
     async fn classifies_journal_article() {
         let server = MockServer::start().await;
-        Mock::given(method("GET")).and(path_regex(r"^/works/doi:.*"))
+        Mock::given(method("GET"))
+            .and(path_regex(r"^/works/doi:.*"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "type": "journal-article",
                 "is_retracted": false,
                 "host_venue": { "display_name": "Cell", "publisher": "Elsevier" }
             })))
-            .mount(&server).await;
+            .mount(&server)
+            .await;
         let client = reqwest::Client::new();
-        let c = classify_with(&client, &server.uri(), "10.1016/x").await.unwrap().unwrap();
+        let c = classify_with(&client, &server.uri(), "10.1016/x")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(c.tier, CredibilityTier::PeerReviewed);
         assert_eq!(c.venue.as_deref(), Some("Cell"));
     }
@@ -85,8 +109,14 @@ mod tests {
     #[tokio::test]
     async fn returns_none_on_404() {
         let server = MockServer::start().await;
-        Mock::given(method("GET")).respond_with(ResponseTemplate::new(404)).mount(&server).await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
         let client = reqwest::Client::new();
-        assert!(classify_with(&client, &server.uri(), "10.x/y").await.unwrap().is_none());
+        assert!(classify_with(&client, &server.uri(), "10.x/y")
+            .await
+            .unwrap()
+            .is_none());
     }
 }
