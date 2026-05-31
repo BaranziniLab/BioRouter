@@ -69,6 +69,7 @@ impl KnowledgeService {
             &self.root,
             RegistryEntry { id: id.to_string(), path: kb_root },
         )?;
+        self.rebuild_graph_cache(id)?;
         Ok(m)
     }
 
@@ -146,7 +147,26 @@ impl KnowledgeService {
         } else {
             repo.commit_all(crate::knowledge::types::ChangeKind::Ingest, &summary, Some(delta))?;
         }
+        self.rebuild_graph_cache(kb_id)?;
         Ok(written)
+    }
+}
+
+impl KnowledgeService {
+    fn rebuild_graph_cache(&self, kb_id: &str) -> anyhow::Result<()> {
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        let g = crate::knowledge::graph::derive(&kb_root)?;
+        crate::knowledge::graph::write_cache(&kb_root, &g)?;
+        Ok(())
+    }
+
+    pub fn get_graph(&self, kb_id: &str) -> anyhow::Result<crate::knowledge::types::Graph> {
+        paths::validate_kb_id(kb_id)?;
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        if let Some(g) = crate::knowledge::graph::read_cache(&kb_root)? {
+            return Ok(g);
+        }
+        crate::knowledge::graph::derive(&kb_root)
     }
 }
 
@@ -245,5 +265,22 @@ mod tests {
         let kb = svc.root().join("k");
         let md = std::fs::read_to_string(kb.join(format!("raw/{}/source.md", res.source_id))).unwrap();
         assert!(md.contains("# H"));
+    }
+
+    #[tokio::test]
+    async fn get_graph_returns_cached_after_create_and_add() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let g_empty = svc.get_graph("k").unwrap();
+        assert!(g_empty.nodes.is_empty());
+        svc.add_raw_source("k", convert::SourceInput::Text {
+            text: "note".into(), title: Some("N".into())
+        }, None).await.unwrap();
+        let kb = svc.root().join("k");
+        // Source pages aren't written by add_raw_source — only raw/. So the graph
+        // remains empty until a macro creates wiki/sources/<id>.md (Plan 2).
+        let g = svc.get_graph("k").unwrap();
+        assert_eq!(g.nodes.len(), 0, "no wiki pages yet");
+        assert!(kb.join(".biorouter-knowledge/graph-cache.json").exists());
     }
 }
