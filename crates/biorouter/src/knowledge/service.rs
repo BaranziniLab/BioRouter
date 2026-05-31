@@ -170,6 +170,32 @@ impl KnowledgeService {
     }
 }
 
+impl KnowledgeService {
+    pub fn list_history(&self, kb_id: &str, limit: usize) -> anyhow::Result<Vec<crate::knowledge::types::HistoryEntry>> {
+        paths::validate_kb_id(kb_id)?;
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        let repo = GitRepo::open(&kb_root)?;
+        repo.log(limit)
+    }
+
+    pub fn restore_state(&self, kb_id: &str, commit_sha: &str) -> anyhow::Result<String> {
+        paths::validate_kb_id(kb_id)?;
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        let repo = GitRepo::open(&kb_root)?;
+        let summary = format!("restore to {}", &commit_sha[..7.min(commit_sha.len())]);
+        let sha = repo.restore_to(commit_sha, &summary)?;
+        self.rebuild_graph_cache(kb_id)?;
+        Ok(sha)
+    }
+
+    pub fn preview_state(&self, kb_id: &str, commit_sha: &str, path: &str) -> anyhow::Result<Option<String>> {
+        paths::validate_kb_id(kb_id)?;
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        let repo = GitRepo::open(&kb_root)?;
+        repo.read_file_at(commit_sha, path)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -282,5 +308,28 @@ mod tests {
         let g = svc.get_graph("k").unwrap();
         assert_eq!(g.nodes.len(), 0, "no wiki pages yet");
         assert!(kb.join(".biorouter-knowledge/graph-cache.json").exists());
+    }
+
+    #[tokio::test]
+    async fn list_history_and_restore_roundtrip() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        svc.add_raw_source("k", convert::SourceInput::Text {
+            text: "first".into(), title: Some("a".into())
+        }, None).await.unwrap();
+        let history_after_one = svc.list_history("k", 10).unwrap();
+        assert_eq!(history_after_one.len(), 2);
+        let target = history_after_one.last().unwrap().commit_sha.clone();
+
+        svc.add_raw_source("k", convert::SourceInput::Text {
+            text: "second".into(), title: Some("b".into())
+        }, None).await.unwrap();
+        let history_after_two = svc.list_history("k", 10).unwrap();
+        assert_eq!(history_after_two.len(), 3);
+
+        svc.restore_state("k", &target).unwrap();
+        let history_after_restore = svc.list_history("k", 10).unwrap();
+        assert_eq!(history_after_restore.len(), 4);
+        assert_eq!(history_after_restore[0].kind, crate::knowledge::types::ChangeKind::Restore);
     }
 }
