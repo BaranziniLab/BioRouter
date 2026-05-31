@@ -50,6 +50,9 @@ pub struct ModelInfo {
     pub currency: Option<String>,
     /// Whether this model supports cache control
     pub supports_cache_control: Option<bool>,
+    /// Whether this model accepts image inputs (multimodal vision)
+    #[serde(default)]
+    pub supports_vision: Option<bool>,
 }
 
 impl ModelInfo {
@@ -62,6 +65,7 @@ impl ModelInfo {
             output_token_cost: None,
             currency: None,
             supports_cache_control: None,
+            supports_vision: None,
         }
     }
 
@@ -79,7 +83,14 @@ impl ModelInfo {
             output_token_cost: Some(output_cost),
             currency: Some("$".to_string()),
             supports_cache_control: None,
+            supports_vision: None,
         }
+    }
+
+    /// Mark this model as supporting image inputs (multimodal vision).
+    pub fn with_vision(mut self) -> Self {
+        self.supports_vision = Some(true);
+        self
     }
 }
 
@@ -137,6 +148,7 @@ impl ProviderMetadata {
                     output_token_cost: None,
                     currency: None,
                     supports_cache_control: None,
+                    supports_vision: None,
                 })
                 .collect(),
             model_doc_link: model_doc_link.to_string(),
@@ -699,6 +711,7 @@ mod tests {
             output_token_cost: None,
             currency: None,
             supports_cache_control: None,
+            supports_vision: None,
         };
         assert_eq!(info.context_limit, 1000);
 
@@ -710,6 +723,7 @@ mod tests {
             output_token_cost: None,
             currency: None,
             supports_cache_control: None,
+            supports_vision: None,
         };
         assert_eq!(info, info2);
 
@@ -721,6 +735,7 @@ mod tests {
             output_token_cost: None,
             currency: None,
             supports_cache_control: None,
+            supports_vision: None,
         };
         assert_ne!(info, info3);
     }
@@ -733,5 +748,17 @@ mod tests {
         assert_eq!(info.input_token_cost, Some(0.0000025));
         assert_eq!(info.output_token_cost, Some(0.00001));
         assert_eq!(info.currency, Some("$".to_string()));
+    }
+
+    #[test]
+    fn test_with_vision_sets_flag() {
+        let info = ModelInfo::new("claude-3-5-sonnet", 200_000).with_vision();
+        assert_eq!(info.supports_vision, Some(true));
+    }
+
+    #[test]
+    fn test_default_vision_is_none() {
+        let info = ModelInfo::new("text-only-model", 8_000);
+        assert_eq!(info.supports_vision, None);
     }
 }
