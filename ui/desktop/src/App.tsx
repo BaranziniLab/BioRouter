@@ -22,6 +22,7 @@ import { createSession } from './sessions';
 import { ChatType } from './types/chat';
 import Hub from './components/Hub';
 import Pair, { PairRouteState } from './components/Pair';
+import type { UserAttachment } from './types/message';
 import SettingsView, { SettingsViewOptions } from './components/settings/SettingsView';
 import SessionsView from './components/sessions/SessionsView';
 import SharedSessionView from './components/sessions/SharedSessionView';
@@ -81,6 +82,9 @@ const PairRouteWrapper = ({
   const [capturedInitialMessage, setCapturedInitialMessage] = useState<string | undefined>(
     undefined
   );
+  const [capturedInitialAttachments, setCapturedInitialAttachments] = useState<
+    UserAttachment[] | undefined
+  >(undefined);
 
   const resumeSessionId = searchParams.get('resumeSessionId') ?? undefined;
   const workflowId = searchParams.get('workflowId') ?? undefined;
@@ -92,6 +96,7 @@ const PairRouteWrapper = ({
 
   // Use route state if available, otherwise use captured state
   const initialMessage = routeState.initialMessage || capturedInitialMessage;
+  const initialAttachments = routeState.initialAttachments || capturedInitialAttachments;
 
   // Capture initialMessage when it comes from route state
   useEffect(() => {
@@ -99,12 +104,16 @@ const PairRouteWrapper = ({
       '[PairRouteWrapper] capture effect:',
       JSON.stringify({
         routeStateInitialMessage: routeState.initialMessage,
+        routeStateInitialAttachmentsCount: routeState.initialAttachments?.length,
       })
     );
     if (routeState.initialMessage) {
       setCapturedInitialMessage(routeState.initialMessage);
     }
-  }, [routeState.initialMessage]);
+    if (routeState.initialAttachments) {
+      setCapturedInitialAttachments(routeState.initialAttachments);
+    }
+  }, [routeState.initialMessage, routeState.initialAttachments]);
 
   // Create session if we have an initialMessage, workflowId, or workflowDeeplink but no sessionId
   useEffect(() => {
@@ -124,7 +133,7 @@ const PairRouteWrapper = ({
           });
           navigate(`/pair?resumeSessionId=${newSession.id}`, {
             replace: true,
-            state: { resumeSessionId: newSession.id, initialMessage },
+            state: { resumeSessionId: newSession.id, initialMessage, initialAttachments },
           });
         } catch (error) {
           console.error('Failed to create session:', error);
@@ -153,10 +162,10 @@ const PairRouteWrapper = ({
     if (sessionId && sessionId !== resumeSessionId) {
       navigate(`/pair?resumeSessionId=${sessionId}`, {
         replace: true,
-        state: { resumeSessionId: sessionIdFromState, initialMessage },
+        state: { resumeSessionId: sessionIdFromState, initialMessage, initialAttachments },
       });
     }
-  }, [sessionId, resumeSessionId, navigate, sessionIdFromState, initialMessage]);
+  }, [sessionId, resumeSessionId, navigate, sessionIdFromState, initialMessage, initialAttachments]);
 
   // Clear captured initialMessage when session changes (to prevent re-sending on navigation)
   useEffect(() => {
@@ -175,6 +184,7 @@ const PairRouteWrapper = ({
       setChat={setChat}
       sessionId={sessionId ?? ''}
       initialMessage={initialMessage}
+      initialAttachments={initialAttachments}
     />
   );
 };

@@ -484,9 +484,20 @@ export function useChatStream({
         window.dispatchEvent(new CustomEvent('session-created'));
       }
 
-      const newMessage = hasNewMessage
-        ? await createUserMessage(userMessage, attachments)
-        : messagesRef.current[messagesRef.current.length - 1];
+      let newMessage;
+      if (hasNewMessage) {
+        try {
+          newMessage = await createUserMessage(userMessage, attachments);
+        } catch (error) {
+          // createUserMessage rejects when an attached image can't be read
+          // (e.g. the temp file vanished). Surface the failure instead of
+          // letting the rejection silently disappear.
+          onFinish('Submit error: ' + errorMessage(error));
+          return;
+        }
+      } else {
+        newMessage = messagesRef.current[messagesRef.current.length - 1];
+      }
       const currentMessages = hasNewMessage
         ? [...messagesRef.current, newMessage]
         : [...messagesRef.current];

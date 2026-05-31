@@ -71,17 +71,45 @@ export const useFileDrop = () => {
 
         droppedFileObjects.push(droppedFile);
 
-        // For images, generate a preview (only if successfully processed)
+        // For images, generate a preview AND persist a temp copy so the send
+        // path can read the bytes through the same temp-dir IPC the paste flow
+        // uses. The OS-supplied source path is rejected by the IPC's path
+        // validation (and may be absent altogether for synthetic File objects),
+        // so we cannot rely on it for the model-bound base64 read.
         if (droppedFile.isImage && !droppedFile.error) {
           const reader = new FileReader();
           activeReadersRef.current.add(reader);
 
-          reader.onload = (event) => {
+          reader.onload = async (event) => {
             const dataUrl = event.target?.result as string;
-            setDroppedFiles((prev) =>
-              prev.map((f) => (f.id === droppedFile.id ? { ...f, dataUrl, isLoading: false } : f))
-            );
-            activeReadersRef.current.delete(reader);
+            try {
+              const saved = await window.electron.saveDataUrlToTemp(dataUrl, droppedFile.id);
+              if (saved.error || !saved.filePath) {
+                throw new Error(saved.error ?? 'saveDataUrlToTemp returned no path');
+              }
+              setDroppedFiles((prev) =>
+                prev.map((f) =>
+                  f.id === droppedFile.id
+                    ? { ...f, dataUrl, path: saved.filePath as string, isLoading: false }
+                    : f
+                )
+              );
+            } catch (err) {
+              setDroppedFiles((prev) =>
+                prev.map((f) =>
+                  f.id === droppedFile.id
+                    ? {
+                        ...f,
+                        dataUrl,
+                        isLoading: false,
+                        error: `Failed to stage image: ${err instanceof Error ? err.message : String(err)}`,
+                      }
+                    : f
+                )
+              );
+            } finally {
+              activeReadersRef.current.delete(reader);
+            }
           };
 
           reader.onerror = () => {

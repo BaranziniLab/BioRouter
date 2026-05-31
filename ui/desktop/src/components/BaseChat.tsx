@@ -17,6 +17,7 @@ import ChatInput from './ChatInput';
 import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
 import { useFileDrop } from '../hooks/useFileDrop';
 import { Message } from '../api';
+import type { UserAttachment } from '../types/message';
 import { ChatState } from '../types/chatState';
 import { ChatType } from '../types/chat';
 import { useIsMobile } from '../hooks/use-mobile';
@@ -60,6 +61,7 @@ interface BaseChatProps {
   suppressEmptyState: boolean;
   sessionId: string;
   initialMessage?: string;
+  initialAttachments?: UserAttachment[];
   /** Render messages + input as a single coherent surface (default true). */
   coherent?: boolean;
   /** Optional: overrides the default rename behavior (which calls biorouterd updateSessionName). */
@@ -99,6 +101,7 @@ function BaseChatContent({
   customMainLayoutProps = {},
   sessionId,
   initialMessage,
+  initialAttachments,
   coherent = true,
   onRenameSession,
   onSessionUpdate,
@@ -214,11 +217,11 @@ function BaseChatContent({
 
     if (initialMessage) {
       hasAutoSubmittedRef.current = true;
-      handleSubmit(initialMessage);
-      // Clear initialMessage from navigation state to prevent re-sending on refresh
+      handleSubmit(initialMessage, initialAttachments);
+      // Clear initialMessage + attachments from navigation state to prevent re-sending on refresh
       navigate(location.pathname + location.search, {
         replace: true,
-        state: { ...location.state, initialMessage: undefined },
+        state: { ...location.state, initialMessage: undefined, initialAttachments: undefined },
       });
     } else if (shouldStartAgent) {
       hasAutoSubmittedRef.current = true;
@@ -240,7 +243,11 @@ function BaseChatContent({
         });
         navigate(`/pair?resumeSessionId=${newSession.id}`, {
           replace: true,
-          state: { resumeSessionId: newSession.id, initialMessage: textValue },
+          state: {
+            resumeSessionId: newSession.id,
+            initialMessage: textValue,
+            initialAttachments: attachments,
+          },
         });
       } catch {
         setIsCreatingSession(false);
