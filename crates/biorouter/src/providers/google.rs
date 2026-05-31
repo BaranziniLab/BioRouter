@@ -8,7 +8,7 @@ use super::utils::{
 use crate::conversation::message::Message;
 
 use crate::model::ModelConfig;
-use crate::providers::base::{ConfigKey, Provider, ProviderMetadata, ProviderUsage};
+use crate::providers::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage};
 use crate::providers::formats::google::{
     create_request, get_usage, response_to_message, response_to_streaming_message,
 };
@@ -112,12 +112,21 @@ impl GoogleProvider {
 #[async_trait]
 impl Provider for GoogleProvider {
     fn metadata() -> ProviderMetadata {
-        ProviderMetadata::new(
+        // All current Gemini models (1.5+, 2.0, 2.5, 3) are multimodal.
+        let models: Vec<ModelInfo> = GOOGLE_KNOWN_MODELS
+            .iter()
+            .map(|&name| {
+                ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit())
+                    .with_vision()
+            })
+            .collect();
+
+        ProviderMetadata::with_models(
             "google",
             "Google Gemini",
             "Gemini models from Google AI",
             GOOGLE_DEFAULT_MODEL,
-            GOOGLE_KNOWN_MODELS.to_vec(),
+            models,
             GOOGLE_DOC_URL,
             vec![
                 ConfigKey::new("GOOGLE_API_KEY", true, true, None),
