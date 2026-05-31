@@ -21,6 +21,7 @@ const SWITCH_MODEL_SUCCESS_MSG = 'Successfully switched models';
 interface ModelAndProviderContextType {
   currentModel: string | null;
   currentProvider: string | null;
+  currentModelSupportsVision: boolean;
   changeModel: (sessionId: string | null, model: Model) => Promise<void>;
   getCurrentModelAndProvider: () => Promise<{ model: string; provider: string }>;
   getFallbackModelAndProvider: () => Promise<{ model: string; provider: string }>;
@@ -39,6 +40,7 @@ const ModelAndProviderContext = createContext<ModelAndProviderContextType | unde
 export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> = ({ children }) => {
   const [currentModel, setCurrentModel] = useState<string | null>(null);
   const [currentProvider, setCurrentProvider] = useState<string | null>(null);
+  const [currentModelSupportsVision, setCurrentModelSupportsVision] = useState<boolean>(false);
   const { read, getProviders } = useConfig();
 
   const changeModel = useCallback(async (sessionId: string | null, model: Model) => {
@@ -175,6 +177,31 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     }
   }, [getCurrentModelAndProvider]);
 
+  // Derive vision support whenever the active model/provider changes
+  useEffect(() => {
+    let cancelled = false;
+    if (!currentModel || !currentProvider) {
+      setCurrentModelSupportsVision(false);
+      return;
+    }
+    (async () => {
+      try {
+        const metadata = await getProviderMetadata(currentProvider, getProviders);
+        const info = metadata.known_models.find((m) => m.name === currentModel);
+        if (!cancelled) {
+          setCurrentModelSupportsVision(info?.supports_vision === true);
+        }
+      } catch {
+        if (!cancelled) {
+          setCurrentModelSupportsVision(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentModel, currentProvider, getProviders]);
+
   // Load initial model and provider on mount
   useEffect(() => {
     refreshCurrentModelAndProvider();
@@ -184,6 +211,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     () => ({
       currentModel,
       currentProvider,
+      currentModelSupportsVision,
       changeModel,
       getCurrentModelAndProvider,
       getFallbackModelAndProvider,
@@ -195,6 +223,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     [
       currentModel,
       currentProvider,
+      currentModelSupportsVision,
       changeModel,
       getCurrentModelAndProvider,
       getFallbackModelAndProvider,
