@@ -84,7 +84,7 @@ just generate-openapi   # Regenerate OpenAPI spec from server routes
 | `biorouter` | — | Core agent library: main agent loop, LLM providers, MCP extension manager, session/conversation state, recipe execution, scheduling |
 | `biorouter-server` | `biorouterd` | Axum REST API + WebSocket server; routes in `src/routes/`; OpenAPI spec generated via utoipa |
 | `biorouter-cli` | `biorouter` | Interactive CLI; subcommands in `src/commands/` |
-| `biorouter-mcp` | — | Built-in MCP servers (Developer, Computer Controller, Memory, Auto Visualiser, Tutorial) |
+| `biorouter-mcp` | — | Built-in MCP servers (Developer, Computer Controller, Memory, Auto Visualiser, Tutorial, Knowledge) |
 | `biorouter-acp` | — | Agent Communication Protocol for multi-agent orchestration |
 | `biorouter-bench` | — | Benchmarking harness |
 | `biorouter-test` | — | Integration tests |
@@ -99,6 +99,11 @@ just generate-openapi   # Regenerate OpenAPI spec from server routes
 - **`context_mgmt/`** — Token counting (tiktoken-rs) and context window pruning
 - **`security/`** — Permission modes, `.biorouterignore` handling
 - **`scheduler.rs`** — Cron-based job scheduling (tokio-cron-scheduler)
+- **`knowledge/`** — Personal knowledge base: storage, git history, file
+  conversion (HTML/PDF/DOCX/CSV), credibility classification
+  (Crossref/OpenAlex), and graph derivation. The shared service backs
+  both the `knowledge` MCP extension and (in later plans) HTTP routes.
+  (Module lives in `biorouter-mcp`; re-exported as `biorouter::knowledge`.)
 
 ### Frontend (`ui/desktop/src/`)
 
