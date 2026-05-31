@@ -1,7 +1,8 @@
 use crate::knowledge::{
+    convert, credibility,
     git::GitRepo,
-    manifest, paths, registry,
-    types::{Manifest, RegistryEntry},
+    manifest, paths, raw, registry,
+    types::{Manifest, RegistryEntry, SourceMeta},
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -83,9 +84,77 @@ impl KnowledgeService {
     }
 }
 
+impl KnowledgeService {
+    pub async fn add_raw_source(
+        &self,
+        kb_id: &str,
+        input: convert::SourceInput,
+        txn_branch: Option<&str>,
+    ) -> Result<raw::RawWrite> {
+        paths::validate_kb_id(kb_id)?;
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        if !kb_root.exists() {
+            anyhow::bail!("kb '{kb_id}' does not exist");
+        }
+
+        let converted = convert::convert(&input).await?;
+        let credibility = credibility::classify(&input).await?;
+
+        let title = converted.title.clone().unwrap_or_else(|| match &input {
+            convert::SourceInput::Text { title, .. } => title.clone().unwrap_or_else(|| "Untitled note".into()),
+            convert::SourceInput::Url(u) => u.clone(),
+            convert::SourceInput::File { filename, .. } => filename.clone(),
+        });
+
+        let source_id = raw::new_source_id(&title);
+        let (original_bytes, original_filename, url) = match &input {
+            convert::SourceInput::File { bytes, filename, .. } =>
+                (Some(bytes.clone()), Some(filename.clone()), None),
+            convert::SourceInput::Url(u) => (None, None, Some(u.clone())),
+            convert::SourceInput::Text { .. } => (None, None, None),
+        };
+
+        let hash = match &original_bytes {
+            Some(b) => raw::hash_bytes(b),
+            None => raw::hash_bytes(converted.markdown.as_bytes()),
+        };
+
+        let meta = SourceMeta {
+            id: source_id.clone(),
+            title,
+            url,
+            ingested_at: Utc::now(),
+            sha256: hash,
+            mime: converted.mime.clone(),
+            original_filename,
+            credibility,
+        };
+
+        let written = raw::write_raw(
+            &kb_root,
+            original_bytes.as_deref(),
+            meta.original_filename.clone().as_deref(),
+            &converted.markdown,
+            meta,
+        )?;
+
+        let repo = GitRepo::open(&kb_root)?;
+        let summary = format!("ingested {source_id}");
+        let delta = "+1 source";
+        if let Some(_branch) = txn_branch {
+            repo.commit_on_txn_in_progress(&summary)?;
+        } else {
+            repo.commit_all(crate::knowledge::types::ChangeKind::Ingest, &summary, Some(delta))?;
+        }
+        Ok(written)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::knowledge::convert::SourceInput;
+    use crate::knowledge::types::{ChangeKind, CredibilityTier};
 
     fn svc() -> (tempfile::TempDir, KnowledgeService) {
         let dir = tempfile::tempdir().unwrap();
@@ -137,5 +206,44 @@ mod tests {
         let (_dir, svc) = svc();
         let err = svc.create_base("BAD", "x", None).unwrap_err();
         assert!(err.to_string().contains("a-z, 0-9"), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn add_raw_source_from_text() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let kb = svc.root().join("k");
+
+        let res = svc.add_raw_source("k", SourceInput::Text {
+            text: "Lab note: HRV trend up after week of zone-2.".into(),
+            title: Some("HRV note".into()),
+        }, None).await.unwrap();
+
+        assert!(kb.join(format!("raw/{}/source.md", res.source_id)).exists());
+        assert!(kb.join(format!("raw/{}/meta.yaml", res.source_id)).exists());
+        let meta = raw::read_meta(&kb, &res.source_id).unwrap();
+        assert_eq!(meta.title, "HRV note");
+        assert_eq!(meta.credibility.tier, CredibilityTier::Personal);
+
+        // A commit was made.
+        let repo = GitRepo::open(&kb).unwrap();
+        let log = repo.log(10).unwrap();
+        assert_eq!(log.len(), 2, "create + add_raw_source");
+        assert_eq!(log[0].kind, ChangeKind::Ingest);
+    }
+
+    #[tokio::test]
+    async fn add_raw_source_from_html_file() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let html = b"<html><head><title>Test</title></head><body><h1>H</h1></body></html>";
+        let res = svc.add_raw_source("k", SourceInput::File {
+            bytes: html.to_vec(),
+            filename: "x.html".into(),
+            mime: Some("text/html".into()),
+        }, None).await.unwrap();
+        let kb = svc.root().join("k");
+        let md = std::fs::read_to_string(kb.join(format!("raw/{}/source.md", res.source_id))).unwrap();
+        assert!(md.contains("# H"));
     }
 }
