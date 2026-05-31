@@ -165,9 +165,11 @@ impl AnthropicProvider {
 #[async_trait]
 impl Provider for AnthropicProvider {
     fn metadata() -> ProviderMetadata {
+        // All current Claude models (3.x and 4.x) are vision-capable.
+        // If a text-only Claude ships, switch this to a per-model match.
         let models: Vec<ModelInfo> = ANTHROPIC_KNOWN_MODELS
             .iter()
-            .map(|&model_name| ModelInfo::new(model_name, 200_000))
+            .map(|&model_name| ModelInfo::new(model_name, 200_000).with_vision())
             .collect();
 
         ProviderMetadata::with_models(
