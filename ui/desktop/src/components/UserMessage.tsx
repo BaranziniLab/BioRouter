@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ImagePreview from './ImagePreview';
+import { InlineImage } from './InlineImage';
 import { extractImagePaths, removeImagePathsFromText } from '../utils/imageUtils';
 import { getTextContent } from '../types/message';
 import { Message } from '../api';
@@ -26,6 +27,12 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
 
   // Extract image paths from the message
   const imagePaths = extractImagePaths(textContent);
+
+  // Extract structured ImageContent blocks (new sessions only; pre-v-next sessions have no image blocks)
+  const imageContentBlocks = useMemo(
+    () => message.content.filter((c) => c.type === 'image'),
+    [message.content]
+  );
 
   // Remove image paths and injected context blocks from display text
   const displayText = useMemo(
@@ -224,6 +231,22 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                     {imagePaths.map((imagePath, index) => (
                       <ImagePreview key={index} src={imagePath} alt={`Pasted image ${index + 1}`} />
                     ))}
+                  </div>
+                )}
+
+                {/* Render structured ImageContent blocks (new sessions) */}
+                {imageContentBlocks.length > 0 && (
+                  <div className="flex flex-wrap gap-2 mt-2">
+                    {imageContentBlocks.map((block, idx) =>
+                      block.type === 'image' ? (
+                        <InlineImage
+                          key={idx}
+                          kind="data"
+                          data={block.data}
+                          mimeType={block.mimeType}
+                        />
+                      ) : null
+                    )}
                   </div>
                 )}
 

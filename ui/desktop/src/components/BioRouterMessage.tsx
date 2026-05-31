@@ -1,5 +1,6 @@
 import { useMemo, useRef } from 'react';
 import ImagePreview from './ImagePreview';
+import { InlineImage } from './InlineImage';
 import { extractImagePaths, removeImagePathsFromText } from '../utils/imageUtils';
 import { formatMessageTimestamp } from '../utils/timeUtils';
 import MarkdownContent from './MarkdownContent';
@@ -72,6 +73,12 @@ export default function BioRouterMessage({
   const displayText =
     imagePaths.length > 0 ? removeImagePathsFromText(visibleText, imagePaths) : visibleText;
 
+  // Extract structured ImageContent blocks (new sessions only; pre-v-next sessions have no image blocks)
+  const imageContentBlocks = useMemo(
+    () => message.content.filter((c) => c.type === 'image'),
+    [message.content]
+  );
+
   const timestamp = useMemo(() => formatMessageTimestamp(message.created), [message.created]);
   const toolRequests = getToolRequests(message);
   const messageIndex = messages.findIndex((msg) => msg.id === message.id);
@@ -129,6 +136,22 @@ export default function BioRouterMessage({
                 {imagePaths.map((imagePath, index) => (
                   <ImagePreview key={index} src={imagePath} />
                 ))}
+              </div>
+            )}
+
+            {/* Render structured ImageContent blocks (new sessions) */}
+            {imageContentBlocks.length > 0 && (
+              <div className="flex flex-wrap gap-2 mt-4">
+                {imageContentBlocks.map((block, idx) =>
+                  block.type === 'image' ? (
+                    <InlineImage
+                      key={idx}
+                      kind="data"
+                      data={block.data}
+                      mimeType={block.mimeType}
+                    />
+                  ) : null
+                )}
               </div>
             )}
 
