@@ -1813,6 +1813,85 @@ ipcMain.on('delete-temp-file', async (_event, filePath: string) => {
   }
 });
 
+// IPC handler to read a temporary image file and return raw base64 + mimeType
+ipcMain.handle('read-temp-image-as-base64', async (_event, filePath: string) => {
+  console.log(`[Main] Received read-temp-image-as-base64 for path: ${filePath}`);
+
+  // Input validation
+  if (!filePath || typeof filePath !== 'string') {
+    throw new Error('Invalid file path provided');
+  }
+
+  // Ensure the path is within the designated temp directory
+  const resolvedPath = path.resolve(filePath);
+  const resolvedTempDir = path.resolve(biorouterTempDir);
+
+  if (!resolvedPath.startsWith(resolvedTempDir + path.sep)) {
+    console.warn(`[Main] Attempted to access file outside designated temp directory: ${filePath}`);
+    throw new Error('File path is outside the designated temp directory');
+  }
+
+  // Check if it's a regular file first, before trying realpath
+  const stats = await fs.lstat(filePath);
+  if (!stats.isFile()) {
+    console.warn(`[Main] Not a regular file, refusing to read: ${filePath}`);
+    throw new Error('Path is not a regular file');
+  }
+
+  // Get the real paths for both the temp directory and the file to handle symlinks properly
+  let actualPath = filePath;
+
+  try {
+    const realTempDir = await fs.realpath(biorouterTempDir);
+    const realPath = await fs.realpath(filePath);
+
+    // Double-check that the real path is still within our real temp directory
+    if (!realPath.startsWith(realTempDir + path.sep)) {
+      console.warn(
+        `[Main] Real path is outside designated temp directory: ${realPath} not in ${realTempDir}`
+      );
+      throw new Error('File path resolves outside the designated temp directory');
+    }
+    actualPath = realPath;
+  } catch (realpathError) {
+    // If realpath itself threw our own error, re-throw it
+    if (
+      realpathError instanceof Error &&
+      realpathError.message.startsWith('File path resolves outside')
+    ) {
+      throw realpathError;
+    }
+    // Otherwise realpath syscall failed; fall back to original path validation
+    console.log(
+      `[Main] realpath failed for ${filePath}, using original path validation:`,
+      realpathError instanceof Error ? realpathError.message : String(realpathError)
+    );
+  }
+
+  const fileExtension = path.extname(actualPath).toLowerCase().substring(1);
+
+  // Determine MIME type from extension
+  const mimeTypeMap: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+  };
+
+  const mimeType = mimeTypeMap[fileExtension];
+  if (!mimeType) {
+    console.warn(`[Main] Unsupported file extension for base64 read: ${fileExtension}`);
+    throw new Error(`Unsupported image type: ${fileExtension}`);
+  }
+
+  const fileBuffer = await fs.readFile(actualPath);
+  const data = fileBuffer.toString('base64');
+
+  console.log(`[Main] Read temp image as base64: ${filePath}`);
+  return { data, mimeType };
+});
+
 ipcMain.handle('check-ollama', async () => {
   try {
     return new Promise((resolve) => {

@@ -147,6 +147,8 @@ type ElectronAPI = {
   openExternal: (url: string) => Promise<void>;
   // Function to serve temp images
   getTempImage: (filePath: string) => Promise<string | null>;
+  // Function to read temp image as raw base64 + mimeType for API use
+  readTempImageAsBase64: (filePath: string) => Promise<{ data: string; mimeType: string }>;
   // Update-related functions
   getVersion: () => string;
   checkForUpdates: () => Promise<{ updateInfo: unknown; error: string | null }>;
@@ -304,6 +306,9 @@ const electronAPI: ElectronAPI = {
   },
   getTempImage: (filePath: string): Promise<string | null> => {
     return ipcRenderer.invoke('get-temp-image', filePath);
+  },
+  readTempImageAsBase64: (filePath: string): Promise<{ data: string; mimeType: string }> => {
+    return ipcRenderer.invoke('read-temp-image-as-base64', filePath);
   },
   getVersion: (): string => {
     return config.BIOROUTER_VERSION || ipcRenderer.sendSync('get-app-version') || '';
