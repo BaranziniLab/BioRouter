@@ -7,12 +7,34 @@ export type NotificationEvent = Extract<MessageEvent, { type: 'Notification' }>;
 // Compaction response message - must match backend constant
 const COMPACTION_THINKING_TEXT = 'biorouter is compacting the conversation...';
 
-export function createUserMessage(text: string): Message {
+export type UserAttachment = { path: string; kind: 'image' };
+
+export async function createUserMessage(
+  text: string,
+  attachments: UserAttachment[] = []
+): Promise<Message> {
+  const imageBlocks = await Promise.all(
+    attachments
+      .filter((a) => a.kind === 'image')
+      .map(async (a) => {
+        const { data, mimeType } = await window.electron.readTempImageAsBase64(a.path);
+        return { type: 'image' as const, data, mimeType };
+      })
+  );
+
+  const content: Message['content'] = [];
+  if (text.trim().length > 0) {
+    content.push({ type: 'text', text });
+  }
+  for (const block of imageBlocks) {
+    content.push(block);
+  }
+
   return {
     id: generateMessageId(),
     role: 'user',
     created: Math.floor(Date.now() / 1000),
-    content: [{ type: 'text', text }],
+    content,
     metadata: { userVisible: true, agentVisible: true },
   };
 }
