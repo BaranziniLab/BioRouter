@@ -20,6 +20,7 @@ pub mod tutorial;
 pub use autovisualiser::AutoVisualiserRouter;
 pub use computercontroller::ComputerControllerServer;
 pub use developer::rmcp_developer::DeveloperServer;
+pub use knowledge::KnowledgeServer;
 pub use memory::MemoryServer;
 pub use tutorial::TutorialServer;
 
@@ -69,5 +70,21 @@ pub static BUILTIN_EXTENSIONS: Lazy<HashMap<&'static str, BuiltinDef>> = Lazy::n
         builtin!(computercontroller, ComputerControllerServer),
         builtin!(memory, MemoryServer),
         builtin!(tutorial, TutorialServer),
+        (
+            "knowledge",
+            BuiltinDef {
+                name: "knowledge",
+                spawn_server: {
+                    fn spawn(r: tokio::io::DuplexStream, w: tokio::io::DuplexStream) {
+                        spawn_and_serve(
+                            "knowledge",
+                            KnowledgeServer::new().expect("init knowledge server"),
+                            (r, w),
+                        );
+                    }
+                    spawn
+                },
+            },
+        ),
     ])
 });
