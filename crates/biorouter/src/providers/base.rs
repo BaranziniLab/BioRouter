@@ -761,4 +761,54 @@ mod tests {
         let info = ModelInfo::new("text-only-model", 8_000);
         assert_eq!(info.supports_vision, None);
     }
+
+    #[test]
+    fn known_vision_models_have_supports_vision_true() {
+        use crate::providers::anthropic::AnthropicProvider;
+        use crate::providers::google::GoogleProvider;
+        use crate::providers::openai::OpenAiProvider;
+
+        let cases: Vec<(ProviderMetadata, &str, &str)> = vec![
+            (
+                AnthropicProvider::metadata(),
+                "claude-sonnet-4-6",
+                "Anthropic Claude Sonnet 4.6",
+            ),
+            (OpenAiProvider::metadata(), "gpt-4o", "OpenAI GPT-4o"),
+            (
+                GoogleProvider::metadata(),
+                "gemini-2.5-pro",
+                "Google Gemini 2.5 Pro",
+            ),
+        ];
+
+        for (metadata, model_name, label) in cases {
+            let info = metadata
+                .known_models
+                .iter()
+                .find(|m| m.name == model_name)
+                .unwrap_or_else(|| {
+                    panic!("model {model_name} not in known_models for {label}")
+                });
+            assert_eq!(
+                info.supports_vision,
+                Some(true),
+                "{label} should declare supports_vision: true"
+            );
+        }
+    }
+
+    #[test]
+    fn text_only_provider_does_not_claim_vision() {
+        use crate::providers::ollama::OllamaProvider;
+        let metadata = OllamaProvider::metadata();
+        for info in &metadata.known_models {
+            assert_ne!(
+                info.supports_vision,
+                Some(true),
+                "Ollama default-listed model {} should not claim vision (user overrides in config)",
+                info.name
+            );
+        }
+    }
 }
