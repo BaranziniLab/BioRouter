@@ -249,8 +249,8 @@ fn add_conversation_history(input_items: &mut Vec<Value>, messages: &[Message]) 
 
         let mut content_items = Vec::new();
         for content in &message.content {
-            if let MessageContent::Text(text) = content {
-                if !text.text.is_empty() {
+            match content {
+                MessageContent::Text(text) if !text.text.is_empty() => {
                     let content_type = if message.role == Role::Assistant {
                         "output_text"
                     } else {
@@ -261,6 +261,18 @@ fn add_conversation_history(input_items: &mut Vec<Value>, messages: &[Message]) 
                         "text": text.text
                     }));
                 }
+                MessageContent::Image(image) if message.role == Role::User => {
+                    // Responses API user-message image format: data URL inline.
+                    // Assistant messages don't carry image inputs.
+                    content_items.push(json!({
+                        "type": "input_image",
+                        "image_url": format!(
+                            "data:{};base64,{}",
+                            image.mime_type, image.data
+                        ),
+                    }));
+                }
+                _ => {}
             }
         }
 
