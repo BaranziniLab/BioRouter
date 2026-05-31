@@ -193,6 +193,36 @@ fn slugify(s: &str) -> String {
         .to_string()
 }
 
+impl GitRepo {
+    pub fn read_file_at(&self, sha: &str, path: &str) -> Result<Option<String>> {
+        let oid = git2::Oid::from_str(sha)?;
+        let commit = self.inner.find_commit(oid)?;
+        let tree = commit.tree()?;
+        let entry = match tree.get_path(Path::new(path)) {
+            Ok(e) => e,
+            Err(_) => return Ok(None),
+        };
+        let obj = entry.to_object(&self.inner)?;
+        let blob = obj.as_blob().ok_or_else(|| anyhow::anyhow!("not a blob"))?;
+        Ok(Some(String::from_utf8_lossy(blob.content()).to_string()))
+    }
+
+    pub fn restore_to(&self, sha: &str, summary: &str) -> Result<String> {
+        let oid = git2::Oid::from_str(sha)?;
+        let target = self.inner.find_commit(oid)?;
+        let target_tree = target.tree()?;
+        let head = self.inner.head()?.peel_to_commit()?;
+        let sig = self.inner.signature()?;
+        let msg = render_message(ChangeKind::Restore, summary, Some(&format!("→ {}", &sha[..7])));
+        let new_oid = self.inner.commit(
+            Some("HEAD"), &sig, &sig, &msg, &target_tree, &[&head],
+        )?;
+        // Check out the new commit so working tree matches.
+        self.inner.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
+        Ok(new_oid.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,5 +302,36 @@ mod tests {
         let post = repo.log(10).unwrap();
         assert_eq!(pre, post);
         assert!(!dir.path().join("doom.md").exists(), "working tree restored");
+    }
+
+    #[test]
+    fn preview_state_returns_file_at_commit() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = GitRepo::init(dir.path()).unwrap();
+        std::fs::write(dir.path().join("a.md"), "v1").unwrap();
+        let sha1 = repo.commit_all(ChangeKind::Manual, "v1", None).unwrap();
+        std::fs::write(dir.path().join("a.md"), "v2").unwrap();
+        repo.commit_all(ChangeKind::Manual, "v2", None).unwrap();
+        let v1 = repo.read_file_at(&sha1, "a.md").unwrap();
+        assert_eq!(v1.as_deref(), Some("v1"));
+    }
+
+    #[test]
+    fn restore_state_creates_new_commit_with_old_tree() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = GitRepo::init(dir.path()).unwrap();
+        std::fs::write(dir.path().join("a.md"), "v1").unwrap();
+        let sha1 = repo.commit_all(ChangeKind::Manual, "v1", None).unwrap();
+        std::fs::write(dir.path().join("a.md"), "v2").unwrap();
+        repo.commit_all(ChangeKind::Manual, "v2", None).unwrap();
+        let new_sha = repo.restore_to(&sha1, "restore to v1").unwrap();
+        // Working tree should now contain v1.
+        let body = std::fs::read_to_string(dir.path().join("a.md")).unwrap();
+        assert_eq!(body, "v1");
+        // History still grows forward.
+        let log = repo.log(10).unwrap();
+        assert_eq!(log[0].commit_sha, new_sha);
+        assert_eq!(log[0].kind, ChangeKind::Restore);
+        assert_eq!(log.len(), 3);
     }
 }
