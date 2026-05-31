@@ -136,6 +136,7 @@ mod tests {
                         task: None,
                         name: "search".into(),
                         arguments: None,
+                        meta: None,
                     }),
                 ),
             Message::user().with_tool_response(
@@ -155,6 +156,7 @@ mod tests {
                         task: None,
                         name: "search".into(),
                         arguments: None,
+                        meta: None,
                     }),
                 ),
             Message::user().with_tool_response(
