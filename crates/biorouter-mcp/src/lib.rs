@@ -9,10 +9,10 @@ pub static APP_STRATEGY: Lazy<AppStrategyArgs> = Lazy::new(|| AppStrategyArgs {
     app_name: "biorouter".to_string(),
 });
 
-pub mod knowledge;
 pub mod autovisualiser;
 pub mod computercontroller;
 pub mod developer;
+pub mod knowledge;
 pub mod mcp_server_runner;
 mod memory;
 pub mod tutorial;
