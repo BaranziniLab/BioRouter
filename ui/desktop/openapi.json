@@ -4586,6 +4586,11 @@
             "type": "boolean",
             "description": "Whether this model supports cache control",
             "nullable": true
+          },
+          "supports_vision": {
+            "type": "boolean",
+            "description": "Whether this model accepts image inputs (multimodal vision)",
+            "nullable": true
           }
         }
       },

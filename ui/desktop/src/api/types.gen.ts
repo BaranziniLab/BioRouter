@@ -582,6 +582,10 @@ export type ModelInfo = {
      * Whether this model supports cache control
      */
     supports_cache_control?: boolean | null;
+    /**
+     * Whether this model accepts image inputs (multimodal vision)
+     */
+    supports_vision?: boolean | null;
 };
 
 export type ParseWorkflowRequest = {
