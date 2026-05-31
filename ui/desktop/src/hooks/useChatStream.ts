@@ -29,6 +29,7 @@ import {
   getCompactingMessage,
   getThinkingMessage,
   NotificationEvent,
+  UserAttachment,
 } from '../types/message';
 import { errorMessage } from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
@@ -107,7 +108,7 @@ interface UseChatStreamReturn {
   messages: Message[];
   chatState: ChatState;
   setChatState: (state: ChatState) => void;
-  handleSubmit: (userMessage: string) => Promise<void>;
+  handleSubmit: (userMessage: string, attachments?: UserAttachment[]) => Promise<void>;
   submitElicitationResponse: (
     elicitationId: string,
     userData: Record<string, unknown>
@@ -462,7 +463,7 @@ export function useChatStream({
   }, [sessionId, updateMessages, onSessionLoaded]);
 
   const handleSubmit = useCallback(
-    async (userMessage: string) => {
+    async (userMessage: string, attachments: UserAttachment[] = []) => {
       // Guard: Don't submit if session hasn't been loaded yet
       if (!session || chatState === ChatState.LoadingConversation) {
         return;
@@ -484,7 +485,7 @@ export function useChatStream({
       }
 
       const newMessage = hasNewMessage
-        ? await createUserMessage(userMessage)
+        ? await createUserMessage(userMessage, attachments)
         : messagesRef.current[messagesRef.current.length - 1];
       const currentMessages = hasNewMessage
         ? [...messagesRef.current, newMessage]

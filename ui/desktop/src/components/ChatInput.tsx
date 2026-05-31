@@ -44,6 +44,7 @@ import {
   trackEditWorkflowOpened,
 } from '../utils/analytics';
 import { getNavigationShortcutText } from '../utils/keyboardShortcuts';
+import type { UserAttachment } from '../types/message';
 
 interface QueuedMessage {
   id: string;
@@ -951,32 +952,44 @@ export default function ChatInput({
 
   const performSubmit = useCallback(
     (text?: string) => {
-      const validPastedImageFilesPaths = pastedImages
-        .filter((img) => img.filePath && !img.error && !img.isLoading)
-        .map((img) => img.filePath as string);
-      // Get paths from all dropped files (both parent and local)
-      const droppedFilePaths = allDroppedFiles
-        .filter((file) => !file.error && !file.isLoading)
-        .map((file) => file.path);
+      const validPastedImages = pastedImages.filter(
+        (img) => img.filePath && !img.error && !img.isLoading
+      );
+      const validDroppedImages = allDroppedFiles.filter(
+        (file) => file.isImage && !file.error && !file.isLoading
+      );
+      const validDroppedFiles = allDroppedFiles.filter(
+        (file) => !file.isImage && !file.error && !file.isLoading
+      );
+
+      // Build structured image attachments (sent as content blocks, not path tokens)
+      const imageAttachments: UserAttachment[] = [
+        ...validPastedImages.map((img) => ({ path: img.filePath as string, kind: 'image' as const })),
+        ...validDroppedImages.map((file) => ({ path: file.path, kind: 'image' as const })),
+      ];
+
+      // Non-image dropped files still go into the text as paths (file content is not base64-embedded)
+      const nonImageFilePaths = validDroppedFiles.map((file) => file.path);
 
       let textToSend = text ?? displayValue.trim();
 
-      // Combine pasted images and dropped files
-      const allFilePaths = [...validPastedImageFilesPaths, ...droppedFilePaths];
-      if (allFilePaths.length > 0) {
-        const pathsString = allFilePaths.join(' ');
+      // Append non-image file paths to the text prompt
+      if (nonImageFilePaths.length > 0) {
+        const pathsString = nonImageFilePaths.join(' ');
         textToSend = textToSend ? `${textToSend} ${pathsString}` : pathsString;
       }
 
-      if (textToSend) {
+      if (textToSend || imageAttachments.length > 0) {
         if (displayValue.trim()) {
           LocalMessageStorage.addMessage(displayValue);
-        } else if (allFilePaths.length > 0) {
-          LocalMessageStorage.addMessage(allFilePaths.join(' '));
+        } else if (nonImageFilePaths.length > 0) {
+          LocalMessageStorage.addMessage(nonImageFilePaths.join(' '));
         }
 
         handleSubmit(
-          new CustomEvent('submit', { detail: { value: textToSend } }) as unknown as React.FormEvent
+          new CustomEvent('submit', {
+            detail: { value: textToSend, attachments: imageAttachments },
+          }) as unknown as React.FormEvent
         );
 
         // Auto-resume queue after sending a NON-interruption message (if it was paused due to interruption)
@@ -1147,11 +1160,18 @@ export default function ChatInput({
   const isAnyImageLoading = pastedImages.some((img) => img.isLoading);
   const isAnyDroppedFileLoading = allDroppedFiles.some((file) => file.isLoading);
 
+  const hasImageAttachments =
+    pastedImages.some((img) => img.filePath && !img.error && !img.isLoading) ||
+    allDroppedFiles.some((file) => file.isImage && !file.error && !file.isLoading);
+
+  const visionMismatch = !currentModelSupportsVision && hasImageAttachments;
+
   const isSubmitButtonDisabled =
     !hasSubmittableContent ||
     isAnyImageLoading ||
     isAnyDroppedFileLoading ||
-    chatState === ChatState.RestartingAgent;
+    chatState === ChatState.RestartingAgent ||
+    visionMismatch;
 
   // Queue management functions - no storage persistence, only in-memory
   const handleRemoveQueuedMessage = (messageId: string) => {
@@ -1248,6 +1268,14 @@ export default function ChatInput({
           isPaused={queuePausedRef.current}
           className="border-b border-border-subtle"
         />
+      )}
+      {/* Vision-mismatch banner: shown when the user has images attached but the
+          current model does not support vision. Blocks Send until resolved. */}
+      {visionMismatch && (
+        <div className="px-3 py-2 mb-2 rounded-md bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-100 text-sm">
+          Current model can&apos;t see images. Switch to a vision-capable model
+          or remove attachments to send.
+        </div>
       )}
       {/* Input row — textarea only. Send/Stop button moved to the right end of
           the picker row below so the input width can shrink to the picker row's

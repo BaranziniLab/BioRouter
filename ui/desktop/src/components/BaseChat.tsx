@@ -229,6 +229,7 @@ function BaseChatContent({
   const handleFormSubmit = async (e: React.FormEvent) => {
     const customEvent = e as unknown as CustomEvent;
     const textValue = customEvent.detail?.value || '';
+    const attachments = customEvent.detail?.attachments ?? [];
 
     // If no session exists, create one and navigate with the initial message
     if (!session && !sessionId && textValue.trim() && !isCreatingSession) {
@@ -250,7 +251,7 @@ function BaseChatContent({
     if (workflow && textValue.trim()) {
       setHasStartedUsingWorkflow(true);
     }
-    handleSubmit(textValue);
+    handleSubmit(textValue, attachments);
   };
 
   const { sessionCosts } = useCostTracking({
