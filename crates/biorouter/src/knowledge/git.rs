@@ -9,9 +9,10 @@ pub struct GitRepo {
 
 impl GitRepo {
     pub fn init(path: &Path) -> Result<Self> {
-        let inner = git2::Repository::init(path)
+        let mut opts = git2::RepositoryInitOptions::new();
+        opts.initial_head("main");
+        let inner = git2::Repository::init_opts(path, &opts)
             .with_context(|| format!("git init {}", path.display()))?;
-        // Configure a deterministic identity so tests are reproducible.
         let mut cfg = inner.config()?;
         cfg.set_str("user.name", "BioRouter Knowledge")?;
         cfg.set_str("user.email", "knowledge@biorouter.local")?;
@@ -120,6 +121,78 @@ fn parse_header(header: &str) -> (ChangeKind, String) {
     (kind, summary)
 }
 
+pub struct Txn {
+    pub branch: String,
+}
+
+impl GitRepo {
+    pub fn begin_txn(&self, label: &str) -> Result<Txn> {
+        let id = uuid::Uuid::new_v4();
+        let branch = format!("txn/{label}-{id}", label = slugify(label));
+        let head = self.inner.head()?.peel_to_commit()?;
+        self.inner.branch(&branch, &head, false)?;
+        self.inner.set_head(&format!("refs/heads/{branch}"))?;
+        Ok(Txn { branch })
+    }
+
+    pub fn commit_on_txn(&self, _txn: &Txn, message: &str) -> Result<String> {
+        // Same as commit_all but caller already on the txn branch.
+        let mut index = self.inner.index()?;
+        index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
+        index.write()?;
+        let tree_oid = index.write_tree()?;
+        let tree = self.inner.find_tree(tree_oid)?;
+        let sig = self.inner.signature()?;
+        let parent = self.inner.head()?.peel_to_commit()?;
+        let oid = self.inner.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])?;
+        Ok(oid.to_string())
+    }
+
+    pub fn commit_txn(&self, txn: &Txn, kind: ChangeKind, summary: &str, delta: Option<&str>) -> Result<String> {
+        // Squash-merge txn branch onto main as one commit.
+        let main = self.inner.find_branch("main", git2::BranchType::Local)
+            .or_else(|_| self.inner.find_branch("master", git2::BranchType::Local))?;
+        let main_name = main.name()?.unwrap_or("main").to_string();
+        let txn_commit = self.inner.find_branch(&txn.branch, git2::BranchType::Local)?
+            .get().peel_to_commit()?;
+        let txn_tree = txn_commit.tree()?;
+        let main_commit = main.get().peel_to_commit()?;
+
+        let sig = self.inner.signature()?;
+        let msg = render_message(kind, summary, delta);
+        let new_oid = self.inner.commit(
+            Some(&format!("refs/heads/{main_name}")),
+            &sig, &sig, &msg, &txn_tree, &[&main_commit],
+        )?;
+
+        // Move HEAD back to main and check out the new tree.
+        self.inner.set_head(&format!("refs/heads/{main_name}"))?;
+        self.inner.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
+        // Delete txn branch.
+        self.inner.find_branch(&txn.branch, git2::BranchType::Local)?.delete()?;
+        Ok(new_oid.to_string())
+    }
+
+    pub fn abort_txn(&self, txn: &Txn) -> Result<()> {
+        let main = self.inner.find_branch("main", git2::BranchType::Local)
+            .or_else(|_| self.inner.find_branch("master", git2::BranchType::Local))?;
+        let main_name = main.name()?.unwrap_or("main").to_string();
+        self.inner.set_head(&format!("refs/heads/{main_name}"))?;
+        self.inner.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
+        self.inner.find_branch(&txn.branch, git2::BranchType::Local)?
+            .delete()?;
+        Ok(())
+    }
+}
+
+fn slugify(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -158,5 +231,46 @@ mod tests {
         let log = repo.log(10).unwrap();
         assert_eq!(log[0].summary, "two");
         assert_eq!(log[1].summary, "one");
+    }
+
+    #[test]
+    fn txn_lifecycle_squash_merges_into_main() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = GitRepo::init(dir.path()).unwrap();
+        std::fs::write(dir.path().join("seed.md"), "seed").unwrap();
+        repo.commit_all(ChangeKind::Manual, "seed", None).unwrap();
+
+        let txn = repo.begin_txn("ingest paper X").unwrap();
+        std::fs::write(dir.path().join("p1.md"), "1").unwrap();
+        repo.commit_on_txn(&txn, "step 1").unwrap();
+        std::fs::write(dir.path().join("p2.md"), "2").unwrap();
+        repo.commit_on_txn(&txn, "step 2").unwrap();
+        let final_sha = repo
+            .commit_txn(&txn, ChangeKind::Ingest, "Paper X", Some("+2 pages"))
+            .unwrap();
+
+        let log = repo.log(10).unwrap();
+        assert_eq!(log[0].commit_sha, final_sha);
+        assert_eq!(log[0].summary, "Paper X");
+        assert_eq!(log[0].kind, ChangeKind::Ingest);
+        assert_eq!(log.len(), 2, "seed + squashed-ingest only — no intermediate commits");
+    }
+
+    #[test]
+    fn txn_abort_leaves_main_untouched() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = GitRepo::init(dir.path()).unwrap();
+        std::fs::write(dir.path().join("seed.md"), "seed").unwrap();
+        repo.commit_all(ChangeKind::Manual, "seed", None).unwrap();
+        let pre = repo.log(10).unwrap();
+
+        let txn = repo.begin_txn("doomed").unwrap();
+        std::fs::write(dir.path().join("doom.md"), "x").unwrap();
+        repo.commit_on_txn(&txn, "bad").unwrap();
+        repo.abort_txn(&txn).unwrap();
+
+        let post = repo.log(10).unwrap();
+        assert_eq!(pre, post);
+        assert!(!dir.path().join("doom.md").exists(), "working tree restored");
     }
 }
