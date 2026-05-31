@@ -223,6 +223,22 @@ impl GitRepo {
     }
 }
 
+impl GitRepo {
+    /// Commit on the currently-checked-out branch. Used by store::write_page
+    /// when a txn is active and the caller has already switched HEAD.
+    pub fn commit_on_txn_in_progress(&self, message: &str) -> Result<String> {
+        let mut index = self.inner.index()?;
+        index.add_all(["*"].iter(), git2::IndexAddOption::DEFAULT, None)?;
+        index.write()?;
+        let tree_oid = index.write_tree()?;
+        let tree = self.inner.find_tree(tree_oid)?;
+        let sig = self.inner.signature()?;
+        let parent = self.inner.head()?.peel_to_commit()?;
+        let oid = self.inner.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent])?;
+        Ok(oid.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
