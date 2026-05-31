@@ -244,7 +244,7 @@ export const useWorkflowManager = (chat: ChatType, workflow?: Workflow | null) =
     window.electron.closeWindow();
   };
 
-  const handleAutoExecution = (
+  const handleAutoExecution = async (
     append: (message: Message) => void,
     isLoading: boolean,
     onAutoExecute?: () => void
@@ -262,7 +262,7 @@ export const useWorkflowManager = (chat: ChatType, workflow?: Workflow | null) =
         ? substituteParameters(finalWorkflow.prompt, workflowParameterValues)
         : finalWorkflow.prompt;
 
-      const userMessage = createUserMessage(finalPrompt);
+      const userMessage = await createUserMessage(finalPrompt);
       append(userMessage);
       onAutoExecute?.();
     }

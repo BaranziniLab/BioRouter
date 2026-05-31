@@ -484,7 +484,7 @@ export function useChatStream({
       }
 
       const newMessage = hasNewMessage
-        ? createUserMessage(userMessage)
+        ? await createUserMessage(userMessage)
         : messagesRef.current[messagesRef.current.length - 1];
       const currentMessages = hasNewMessage
         ? [...messagesRef.current, newMessage]
