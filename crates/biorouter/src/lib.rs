@@ -1,3 +1,4 @@
+pub mod knowledge;
 pub mod action_required_manager;
 pub mod agents;
 pub mod config;
