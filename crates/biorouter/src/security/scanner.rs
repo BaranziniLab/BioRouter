@@ -342,6 +342,7 @@ mod tests {
             arguments: Some(object!({
                 "command": "rm -rf /tmp/malicious"
             })),
+            meta: None,
         };
 
         let result = scanner

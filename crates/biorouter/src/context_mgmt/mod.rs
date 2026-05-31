@@ -515,6 +515,7 @@ mod tests {
                     task: None,
                     name: "read_file".into(),
                     arguments: None,
+                    meta: None,
                 }),
             ),
             Message::user().with_tool_response(
@@ -554,6 +555,7 @@ mod tests {
                     task: None,
                     name: "read_file".into(),
                     arguments: None,
+                    meta: None,
                 }),
             ));
             messages.push(Message::user().with_tool_response(

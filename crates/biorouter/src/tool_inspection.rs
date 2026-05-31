@@ -281,6 +281,7 @@ mod tests {
                 task: None,
                 name: "test_tool".into(),
                 arguments: Some(object!({})),
+                meta: None,
             }),
             metadata: None,
             tool_meta: None,

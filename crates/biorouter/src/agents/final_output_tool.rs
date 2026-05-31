@@ -238,6 +238,7 @@ mod tests {
             arguments: Some(object!({
                 "message": "Hello"  // Missing required "count" field
             })),
+            meta: None,
         };
 
         let result = tool.execute_tool_call(tool_call).await;
@@ -265,6 +266,7 @@ mod tests {
                 },
                 "tags": ["developer", "rust"]
             })),
+            meta: None,
         };
 
         let result = tool.execute_tool_call(tool_call).await;

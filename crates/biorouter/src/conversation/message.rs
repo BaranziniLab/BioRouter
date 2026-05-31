@@ -901,6 +901,7 @@ mod tests {
                     task: None,
                     name: "test_tool".into(),
                     arguments: Some(object!({"param": "value"})),
+                    meta: None,
                 }),
             );
 
@@ -1160,6 +1161,7 @@ mod tests {
             task: None,
             name: "test_tool".into(),
             arguments: Some(object!({})),
+            meta: None,
         });
 
         let message = Message::assistant().with_tool_request("req1", tool_call);

@@ -1648,6 +1648,7 @@ mod tests {
             task: None,
             name: "test_client__tool".to_string().into(),
             arguments: Some(object!({})),
+            meta: None,
         };
 
         let result = extension_manager
@@ -1659,6 +1660,7 @@ mod tests {
             task: None,
             name: "test_client__test__tool".to_string().into(),
             arguments: Some(object!({})),
+            meta: None,
         };
 
         let result = extension_manager
@@ -1671,6 +1673,7 @@ mod tests {
             task: None,
             name: "__cli__ent____tool".to_string().into(),
             arguments: Some(object!({})),
+            meta: None,
         };
 
         let result = extension_manager
@@ -1683,6 +1686,7 @@ mod tests {
             task: None,
             name: "client___tool".to_string().into(),
             arguments: Some(object!({})),
+            meta: None,
         };
 
         let result = extension_manager
@@ -1694,6 +1698,7 @@ mod tests {
             task: None,
             name: "client___test__tool".to_string().into(),
             arguments: Some(object!({})),
+            meta: None,
         };
 
         let result = extension_manager
@@ -1706,6 +1711,7 @@ mod tests {
             task: None,
             name: "client___tools".to_string().into(),
             arguments: Some(object!({})),
+            meta: None,
         };
 
         let result = extension_manager
@@ -1732,6 +1738,7 @@ mod tests {
             task: None,
             name: "_client__tools".to_string().into(),
             arguments: Some(object!({})),
+            meta: None,
         };
 
         let result = extension_manager
@@ -1827,6 +1834,7 @@ mod tests {
             task: None,
             name: "test_extension__tool".to_string().into(),
             arguments: Some(object!({})),
+            meta: None,
         };
 
         let result = extension_manager
@@ -1851,6 +1859,7 @@ mod tests {
             task: None,
             name: "test_extension__available_tool".to_string().into(),
             arguments: Some(object!({})),
+            meta: None,
         };
 
         let result = extension_manager
