@@ -211,6 +211,14 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                         }
                         parts.push(json!(part));
                     }
+                    MessageContent::Image(image) => {
+                        parts.push(json!({
+                            "inline_data": {
+                                "mime_type": image.mime_type,
+                                "data": image.data,
+                            }
+                        }));
+                    }
 
                     _ => {}
                 }
@@ -1508,5 +1516,26 @@ data: [DONE]"#;
 
         // Only "Complete" should be captured, stream should stop at [DONE]
         assert_eq!(text_parts, vec!["Complete"]);
+    }
+
+    #[test]
+    fn format_messages_emits_inline_data_for_user_image() {
+        let msg = Message::user()
+            .with_image("BASE64DATA".to_string(), "image/png".to_string());
+        let formatted = format_messages(&[msg]);
+        let json_str = serde_json::to_string(&formatted).unwrap();
+
+        assert!(
+            json_str.contains("\"inline_data\""),
+            "expected inline_data in {json_str}"
+        );
+        assert!(
+            json_str.contains("\"image/png\""),
+            "expected mime_type in {json_str}"
+        );
+        assert!(
+            json_str.contains("\"BASE64DATA\""),
+            "expected base64 body in {json_str}"
+        );
     }
 }
