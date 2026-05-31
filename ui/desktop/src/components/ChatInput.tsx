@@ -169,7 +169,7 @@ export default function ChatInput({
     null
   ) as React.RefObject<HTMLDivElement>;
   const { getProviders, read } = useConfig();
-  const { getCurrentModelAndProvider, currentModel, currentProvider } = useModelAndProvider();
+  const { getCurrentModelAndProvider, currentModel, currentProvider, currentModelSupportsVision } = useModelAndProvider();
   const [tokenLimit, setTokenLimit] = useState<number>(TOKEN_LIMIT_DEFAULT);
   const [isTokenLimitLoaded, setIsTokenLimitLoaded] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -353,11 +353,15 @@ export default function ChatInput({
     handleDragOver: handleLocalDragOver,
   } = useFileDrop();
 
-  // Merge local dropped files with parent dropped files
-  const allDroppedFiles = useMemo(
-    () => [...droppedFiles, ...localDroppedFiles],
-    [droppedFiles, localDroppedFiles]
-  );
+  // Merge local dropped files with parent dropped files.
+  // When the active model does not support vision, strip any image-typed
+  // entries so they never reach the send path.
+  const allDroppedFiles = useMemo(() => {
+    const filteredLocal = currentModelSupportsVision
+      ? localDroppedFiles
+      : localDroppedFiles.filter((f) => !f.type?.startsWith('image/'));
+    return [...droppedFiles, ...filteredLocal];
+  }, [droppedFiles, localDroppedFiles, currentModelSupportsVision]);
 
   const handleRemoveDroppedFile = (idToRemove: string) => {
     // Remove from local dropped files
@@ -658,6 +662,10 @@ export default function ChatInput({
     const imageFiles = files.filter((file) => file.type.startsWith('image/'));
 
     if (imageFiles.length === 0) return;
+
+    // If the active model does not support vision, ignore image pastes and
+    // let the browser handle any plain-text content in the clipboard.
+    if (!currentModelSupportsVision) return;
 
     // Check if adding these images would exceed the limit
     if (pastedImages.length + imageFiles.length > MAX_IMAGES_PER_MESSAGE) {
@@ -1401,22 +1409,26 @@ export default function ChatInput({
           onRestartEnd={() => setChatState?.(ChatState.Idle)}
         />
         <div className="w-px h-4 bg-border-default mx-2" />
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              onClick={handleFileSelect}
-              disabled={isFilePickerOpen}
-              variant="ghost"
-              size="sm"
-              className={`flex items-center justify-center text-text-default/70 hover:text-text-default text-xs transition-colors ${isFilePickerOpen ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-            >
-              <Attach className="w-4 h-4" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Attach file or directory</TooltipContent>
-        </Tooltip>
-        <div className="w-px h-4 bg-border-default mx-2" />
+        {currentModelSupportsVision && (
+          <>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  onClick={handleFileSelect}
+                  disabled={isFilePickerOpen}
+                  variant="ghost"
+                  size="sm"
+                  className={`flex items-center justify-center text-text-default/70 hover:text-text-default text-xs transition-colors ${isFilePickerOpen ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                >
+                  <Attach className="w-4 h-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>Attach file or directory</TooltipContent>
+            </Tooltip>
+            <div className="w-px h-4 bg-border-default mx-2" />
+          </>
+        )}
         <BottomMenuExtensionSelection sessionId={sessionId} />
         <div className="w-px h-4 bg-border-default mx-2" />
         <BottomMenuSkillSelection sessionId={sessionId} />
