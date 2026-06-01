@@ -61,6 +61,7 @@ libc = "0.2"
 mpatch = "=0.2.0"
 tokio-util = "0.7.16"
 # knowledge module deps
+zip = { version = "0.6", features = ["deflate"] }
 git2 = { version = "0.19", default-features = false, features = ["vendored-libgit2"] }
 sha2 = "0.10"
 serde_yaml = "0.9.34"

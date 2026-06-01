@@ -96,6 +96,33 @@ impl KnowledgeService {
         Ok(m)
     }
 
+    pub fn export_brkb(&self, kb_id: &str) -> Result<Vec<u8>> {
+        paths::validate_kb_id(kb_id)?;
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        if !kb_root.exists() {
+            anyhow::bail!("kb '{kb_id}' not found");
+        }
+        let mut buf = std::io::Cursor::new(Vec::new());
+        crate::knowledge::brkb::export(&kb_root, &mut buf)?;
+        Ok(buf.into_inner())
+    }
+
+    pub fn import_brkb(&self, zip_bytes: &[u8]) -> Result<String> {
+        std::fs::create_dir_all(&self.root)?;
+        let cursor = std::io::Cursor::new(zip_bytes);
+        let new_id = crate::knowledge::brkb::import(cursor, &self.root)?;
+        // Register in the top-level manifest.
+        let path = paths::kb_root(&self.root, &new_id);
+        crate::knowledge::registry::register(
+            &self.root,
+            crate::knowledge::types::RegistryEntry {
+                id: new_id.clone(),
+                path,
+            },
+        )?;
+        Ok(new_id)
+    }
+
     pub fn list_bases(&self) -> Result<Vec<Manifest>> {
         let entries = registry::load(&self.root)?;
         let mut out = Vec::new();
