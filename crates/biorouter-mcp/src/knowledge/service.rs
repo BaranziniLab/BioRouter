@@ -6,7 +6,10 @@ use crate::knowledge::{
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
+use dashmap::DashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 const DEFAULT_SCHEMA: &str = include_str!("schema_default.md");
 const DEFAULT_INDEX: &str = "# Index\n\n_no pages yet_\n";
@@ -16,11 +19,15 @@ const GITIGNORE: &str = "raw/*/original.*\n.biorouter-knowledge/.crossref-cache/
 #[derive(Clone)]
 pub struct KnowledgeService {
     root: PathBuf,
+    locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl KnowledgeService {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            locks: Arc::new(DashMap::new()),
+        }
     }
 
     pub fn new_default() -> Result<Self> {
@@ -29,6 +36,17 @@ impl KnowledgeService {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Acquire an exclusive lock for `kb_id`. Held until the returned guard is dropped.
+    /// Used by macros to serialize concurrent writers against the same KB.
+    pub async fn lock_kb(&self, kb_id: &str) -> OwnedMutexGuard<()> {
+        let m = self
+            .locks
+            .entry(kb_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        m.lock_owned().await
     }
 
     pub fn create_base(&self, id: &str, name: &str, color: Option<&str>) -> Result<Manifest> {
@@ -351,6 +369,28 @@ mod tests {
         let g = svc.get_graph("k").unwrap();
         assert_eq!(g.nodes.len(), 0, "no knowledge pages yet");
         assert!(kb.join(".biorouter-knowledge/graph-cache.json").exists());
+    }
+
+    #[tokio::test]
+    async fn lock_kb_serializes_writers() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let svc1 = svc.clone();
+        let svc2 = svc.clone();
+        let h1 = tokio::spawn(async move {
+            let _g = svc1.lock_kb("k").await;
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            std::time::Instant::now()
+        });
+        // Brief delay so h1 acquires the lock first.
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let h2 = tokio::spawn(async move {
+            let _g = svc2.lock_kb("k").await;
+            std::time::Instant::now()
+        });
+        let t1 = h1.await.unwrap();
+        let t2 = h2.await.unwrap();
+        assert!(t2 >= t1, "h2 must observe lock acquisition after h1 released");
     }
 
     #[tokio::test]
