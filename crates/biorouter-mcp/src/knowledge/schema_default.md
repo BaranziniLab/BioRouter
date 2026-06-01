@@ -32,6 +32,28 @@ contradiction: false   # set true to render as a flag node
 
 Body is prose markdown with `[[knowledge-link]]` cross-references.
 
+### Cross-reference rules (the graph depends on these)
+
+The knowledge graph is derived **purely** from `[[link]]` patterns in page
+bodies. If you do not emit links, the graph will have nodes but no edges.
+
+When you write or update any knowledge page:
+
+1. Every mention of another entity or concept that has (or should have) its
+   own page **must** be wrapped in `[[double brackets]]`. Match the target
+   page's title exactly (case-insensitive); the deriver slugifies both sides.
+   Good: `[[EPAS1]] interacts with [[HIF2A]] under [[hypoxia]].`
+   Bad:  `EPAS1 interacts with HIF2A under hypoxia.`
+2. Every source page **must** include a `## Related pages` section listing
+   every entity/concept it touches, one `- [[Name]]` bullet per line.
+3. Every entity/concept page **must** include a `## Sources` section with
+   one `- [[source-id]]` bullet per supporting source.
+4. Prefer linking over re-stating. If a fact lives on another page, write
+   `See [[Page Name]]` instead of restating it.
+
+The lint workflow (`kb_lint`) reports pages with no inbound links as orphans
+— fix them by adding inbound `[[links]]` from related pages.
+
 ## Ingest workflow
 
 When `kb_ingest_source` is called:
