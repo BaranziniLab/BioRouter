@@ -227,7 +227,10 @@ fn snippet_of(body: &str, query: &str, max_len: usize) -> String {
 
         body.get(start..end).unwrap_or("").replace('\n', " ")
     } else {
-        body.chars().take(max_len).collect::<String>().replace('\n', " ")
+        body.chars()
+            .take(max_len)
+            .collect::<String>()
+            .replace('\n', " ")
     };
 
     if snippet.len() > max_len {
@@ -267,11 +270,28 @@ mod tests {
     #[test]
     fn list_pages_sorted_and_filtered() {
         let (_dir, kb) = fresh();
-        write_page(&kb, "knowledge/entities/b.md", "---\ntitle: B\n---\n", "b", None).unwrap();
-        write_page(&kb, "knowledge/concepts/a.md", "---\ntitle: A\n---\n", "a", None).unwrap();
+        write_page(
+            &kb,
+            "knowledge/entities/b.md",
+            "---\ntitle: B\n---\n",
+            "b",
+            None,
+        )
+        .unwrap();
+        write_page(
+            &kb,
+            "knowledge/concepts/a.md",
+            "---\ntitle: A\n---\n",
+            "a",
+            None,
+        )
+        .unwrap();
         let all = list_pages(&kb, None).unwrap();
         let paths: Vec<_> = all.iter().map(|p| p.path.as_str()).collect();
-        assert_eq!(paths, vec!["knowledge/concepts/a.md", "knowledge/entities/b.md"]);
+        assert_eq!(
+            paths,
+            vec!["knowledge/concepts/a.md", "knowledge/entities/b.md"]
+        );
         let only_entities = list_pages(&kb, Some("knowledge/entities/")).unwrap();
         assert_eq!(only_entities.len(), 1);
     }

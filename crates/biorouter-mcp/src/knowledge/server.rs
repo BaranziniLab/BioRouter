@@ -338,7 +338,10 @@ impl KnowledgeServer {
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         let kb_id = self.kb_id_or_active(p.kb_id).await?;
-        let h = self.service.list_history(&kb_id, p.limit).map_err(into_err)?;
+        let h = self
+            .service
+            .list_history(&kb_id, p.limit)
+            .map_err(into_err)?;
         ok_json(&h)
     }
 
@@ -369,10 +372,8 @@ impl KnowledgeServer {
         p: Parameters<BeginTxnParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_root =
-            crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
-        let repo =
-            crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
+        let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
+        let repo = crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
         let txn = repo.begin_txn(&p.label).map_err(into_err)?;
         ok_json(&serde_json::json!({ "txn": txn.branch }))
     }
@@ -386,10 +387,8 @@ impl KnowledgeServer {
         p: Parameters<CommitTxnParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_root =
-            crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
-        let repo =
-            crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
+        let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
+        let repo = crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
         let txn = crate::knowledge::git::Txn { branch: p.txn };
         let sha = repo
             .commit_txn(&txn, p.kind, &p.summary, p.delta.as_deref())
@@ -406,10 +405,8 @@ impl KnowledgeServer {
         p: Parameters<AbortTxnParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_root =
-            crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
-        let repo =
-            crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
+        let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
+        let repo = crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
         let txn = crate::knowledge::git::Txn { branch: p.txn };
         repo.abort_txn(&txn).map_err(into_err)?;
         ok_json(&serde_json::json!({ "ok": true }))
@@ -440,16 +437,10 @@ impl KnowledgeServer {
         p: Parameters<AppendLogParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_root =
-            crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
-        let sha = crate::knowledge::log::append(
-            &kb_root,
-            p.kind,
-            &p.summary,
-            p.delta.as_deref(),
-            None,
-        )
-        .map_err(into_err)?;
+        let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
+        let sha =
+            crate::knowledge::log::append(&kb_root, p.kind, &p.summary, p.delta.as_deref(), None)
+                .map_err(into_err)?;
         ok_json(&serde_json::json!({ "ok": true, "commit_sha": sha }))
     }
 
@@ -463,8 +454,7 @@ impl KnowledgeServer {
         &self,
         p: Parameters<SetActiveParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        crate::knowledge::paths::validate_kb_id(&p.0.kb_id)
-            .map_err(|e| into_err(e.into()))?;
+        crate::knowledge::paths::validate_kb_id(&p.0.kb_id).map_err(|e| into_err(e.into()))?;
         self.active.set(&p.0.kb_id).await;
         ok_json(&serde_json::json!({ "ok": true, "active_kb": p.0.kb_id }))
     }

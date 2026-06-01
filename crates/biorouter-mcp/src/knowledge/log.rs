@@ -60,7 +60,14 @@ mod tests {
     #[test]
     fn append_writes_to_log_md() {
         let (_d, kb) = fresh();
-        append(&kb, ChangeKind::Ingest, "first source", Some("+1 source"), None).unwrap();
+        append(
+            &kb,
+            ChangeKind::Ingest,
+            "first source",
+            Some("+1 source"),
+            None,
+        )
+        .unwrap();
         let body = std::fs::read_to_string(kb.join("log.md")).unwrap();
         assert!(body.contains("ingest | first source"));
         assert!(body.contains("+1 source"));

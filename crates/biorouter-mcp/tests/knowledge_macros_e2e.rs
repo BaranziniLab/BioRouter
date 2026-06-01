@@ -124,7 +124,10 @@ async fn macros_e2e_ingest_query_lint() {
     .await
     .unwrap();
 
-    assert!(!r1.commit_sha.is_empty(), "ingest must produce a commit SHA");
+    assert!(
+        !r1.commit_sha.is_empty(),
+        "ingest must produce a commit SHA"
+    );
     assert!(r1.steps >= 1, "ingest must use at least one sub-agent step");
 
     // Verify the source page landed on main.
@@ -199,10 +202,7 @@ async fn macros_e2e_ingest_query_lint() {
     // Structural sanity: the source page hrv-zone2.md has no inbound links
     // from other pages so it should appear as an orphan.
     assert!(
-        report
-            .orphans
-            .iter()
-            .any(|o| o.contains("hrv-zone2")),
+        report.orphans.iter().any(|o| o.contains("hrv-zone2")),
         "hrv-zone2.md has no inbound links → should be an orphan; orphans={:?}",
         report.orphans
     );

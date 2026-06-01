@@ -62,10 +62,7 @@ const MAX_TOKENS: u64 = 20_000;
 fn make_schema(required: &[&str], optional: &[&str]) -> Arc<JsonObject> {
     let mut props = serde_json::Map::new();
     for name in required.iter().chain(optional.iter()) {
-        props.insert(
-            name.to_string(),
-            serde_json::json!({ "type": "string" }),
-        );
+        props.insert(name.to_string(), serde_json::json!({ "type": "string" }));
     }
     let req_names: Vec<Value> = required
         .iter()
@@ -151,8 +148,7 @@ impl ToolDispatch for AgenticToolDispatch {
                     .ok_or_else(|| anyhow::anyhow!("fetch_url: missing 'url'"))?;
                 let resp = self.client.get(url).send().await?;
                 let bytes = resp.bytes().await?;
-                let text =
-                    String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).to_string();
+                let text = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).to_string();
                 Ok(strip_html_tags(&text))
             }
 
@@ -387,16 +383,14 @@ fn source_description(input: &SourceInput) -> String {
         SourceInput::Text { text, title } => {
             let t = title.as_deref().unwrap_or("(no title)");
             let snippet = truncate(text, 300);
-            format!(
-                "Classify the credibility of this pasted text.\nTitle: {t}\nSnippet: {snippet}"
-            )
+            format!("Classify the credibility of this pasted text.\nTitle: {t}\nSnippet: {snippet}")
         }
-        SourceInput::File { filename, bytes, .. } => {
+        SourceInput::File {
+            filename, bytes, ..
+        } => {
             let head = String::from_utf8_lossy(&bytes[..bytes.len().min(1024)]).to_string();
             let snippet = truncate(&head, 300);
-            format!(
-                "Classify the credibility of a file named '{filename}'.\nFirst 1 KB: {snippet}"
-            )
+            format!("Classify the credibility of a file named '{filename}'.\nFirst 1 KB: {snippet}")
         }
     }
 }
@@ -542,8 +536,9 @@ mod tests {
     #[tokio::test]
     async fn respects_step_budget() {
         // Supply 20 tool-call replies; budget is MAX_STEPS=5, so it stops early.
-        let replies: Vec<LlmReply> =
-            (0..20).map(|_| tool_call_reply("crossref_search")).collect();
+        let replies: Vec<LlmReply> = (0..20)
+            .map(|_| tool_call_reply("crossref_search"))
+            .collect();
         let completer = MockCompleter::new(replies);
         let input = SourceInput::Url("https://example.com/paper".into());
         let c = classify(&input, Box::new(completer)).await.unwrap();
@@ -563,8 +558,7 @@ mod tests {
 
     #[test]
     fn parse_returns_none_for_invalid_tier() {
-        let text =
-            r#"{"tier":"unknown_tier","confidence":0.5,"reasoning":"x","retracted":false}"#;
+        let text = r#"{"tier":"unknown_tier","confidence":0.5,"reasoning":"x","retracted":false}"#;
         assert!(parse_credibility_json(text).is_none());
     }
 
@@ -596,8 +590,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let dispatch =
-            AgenticToolDispatch::with_bases(&server.uri(), "https://api.openalex.org");
+        let dispatch = AgenticToolDispatch::with_bases(&server.uri(), "https://api.openalex.org");
         let result = dispatch
             .call(
                 "crossref_search",

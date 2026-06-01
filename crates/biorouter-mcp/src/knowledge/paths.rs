@@ -88,7 +88,10 @@ mod tests {
     fn path_helpers_compose() {
         let root = Path::new("/tmp/kb");
         assert_eq!(kb_root(root, "x"), Path::new("/tmp/kb/x"));
-        assert_eq!(kb_knowledge_dir(root, "x"), Path::new("/tmp/kb/x/knowledge"));
+        assert_eq!(
+            kb_knowledge_dir(root, "x"),
+            Path::new("/tmp/kb/x/knowledge")
+        );
         assert_eq!(kb_raw_dir(root, "x"), Path::new("/tmp/kb/x/raw"));
         assert_eq!(
             kb_internal_dir(root, "x"),

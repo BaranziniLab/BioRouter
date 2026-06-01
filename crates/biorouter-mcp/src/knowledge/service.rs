@@ -390,7 +390,10 @@ mod tests {
         });
         let t1 = h1.await.unwrap();
         let t2 = h2.await.unwrap();
-        assert!(t2 >= t1, "h2 must observe lock acquisition after h1 released");
+        assert!(
+            t2 >= t1,
+            "h2 must observe lock acquisition after h1 released"
+        );
     }
 
     #[tokio::test]

@@ -161,7 +161,12 @@ impl SubAgent {
                 // Non-blocking poll: fires if notify_one() was called.
                 // We use a manual flag via try_recv-style polling.
                 if cancel_was_signalled(c) {
-                    return Ok(make_result(events, DoneReason::Cancelled, "cancelled", steps));
+                    return Ok(make_result(
+                        events,
+                        DoneReason::Cancelled,
+                        "cancelled",
+                        steps,
+                    ));
                 }
             }
 

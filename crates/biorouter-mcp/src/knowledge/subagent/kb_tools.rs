@@ -6,14 +6,8 @@
 //! branch (with txn).
 
 use crate::knowledge::{
-    convert::SourceInput,
-    log as kb_log,
-    paths,
-    raw,
-    service::KnowledgeService,
-    store,
-    subagent::loop_::ToolDispatch,
-    types::ChangeKind,
+    convert::SourceInput, log as kb_log, paths, raw, service::KnowledgeService, store,
+    subagent::loop_::ToolDispatch, types::ChangeKind,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -84,10 +78,7 @@ impl ToolDispatch for KbToolDispatch {
                 let q = args["query"]
                     .as_str()
                     .ok_or_else(|| anyhow!("kb_search: missing 'query'"))?;
-                let limit = args
-                    .get("limit")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(5) as usize;
+                let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
                 let hits = store::search(&kb_root, q, limit)?;
                 Ok(serde_json::to_string(&hits)?)
             }
@@ -97,7 +88,10 @@ impl ToolDispatch for KbToolDispatch {
                 let summary = args["summary"]
                     .as_str()
                     .ok_or_else(|| anyhow!("kb_append_log: missing 'summary'"))?;
-                let kind_str = args.get("kind").and_then(|v| v.as_str()).unwrap_or("manual");
+                let kind_str = args
+                    .get("kind")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("manual");
                 let kind = parse_change_kind(kind_str)?;
                 let delta = args.get("delta").and_then(|v| v.as_str());
                 kb_log::append(&kb_root, kind, summary, delta, txn_opt)?;
@@ -111,7 +105,8 @@ impl ToolDispatch for KbToolDispatch {
                 Ok(serde_json::json!({
                     "source_id": result.source_id,
                     "source_md_path": result.source_md_path,
-                }).to_string())
+                })
+                .to_string())
             }
 
             // ------------------------------------------------------------------
@@ -151,10 +146,7 @@ fn parse_change_kind(s: &str) -> Result<ChangeKind> {
 /// { "type": "file",  "bytes_b64": "…", "filename": "…", "mime": "optional" }
 /// ```
 fn source_input_from_args(args: &Value) -> Result<SourceInput> {
-    let kind = args
-        .get("type")
-        .and_then(|v| v.as_str())
-        .unwrap_or("text");
+    let kind = args.get("type").and_then(|v| v.as_str()).unwrap_or("text");
     match kind {
         "text" => {
             let text = args["text"]
@@ -184,7 +176,11 @@ fn source_input_from_args(args: &Value) -> Result<SourceInput> {
                 .ok_or_else(|| anyhow!("kb_add_raw_source: missing 'filename'"))?
                 .to_string();
             let mime = args.get("mime").and_then(|v| v.as_str()).map(String::from);
-            Ok(SourceInput::File { bytes, filename, mime })
+            Ok(SourceInput::File {
+                bytes,
+                filename,
+                mime,
+            })
         }
         other => anyhow::bail!("kb_add_raw_source: unknown source type '{other}'"),
     }
@@ -197,17 +193,17 @@ fn source_input_from_args(args: &Value) -> Result<SourceInput> {
 /// Build the JSON input schema for a tool (minimal: object with given
 /// required + optional properties).
 fn make_schema(
-    required: &[(&str, &str)],       // (name, type)
-    optional: &[(&str, &str)],       // (name, type)
+    required: &[(&str, &str)], // (name, type)
+    optional: &[(&str, &str)], // (name, type)
 ) -> Arc<JsonObject> {
     let mut props = serde_json::Map::new();
     for (n, t) in required.iter().chain(optional.iter()) {
-        props.insert(
-            n.to_string(),
-            serde_json::json!({ "type": t }),
-        );
+        props.insert(n.to_string(), serde_json::json!({ "type": t }));
     }
-    let req_names: Vec<Value> = required.iter().map(|(n, _)| Value::String(n.to_string())).collect();
+    let req_names: Vec<Value> = required
+        .iter()
+        .map(|(n, _)| Value::String(n.to_string()))
+        .collect();
     let mut schema = serde_json::Map::new();
     schema.insert("type".into(), Value::String("object".into()));
     schema.insert("properties".into(), Value::Object(props));
@@ -244,19 +240,25 @@ pub fn tool_specs() -> Vec<Tool> {
         Tool::new(
             Cow::Borrowed("kb_append_log"),
             Cow::Borrowed("Append an entry to the KB change log."),
-            make_schema(&[("summary", "string")], &[("kind", "string"), ("delta", "string")]),
+            make_schema(
+                &[("summary", "string")],
+                &[("kind", "string"), ("delta", "string")],
+            ),
         ),
         Tool::new(
             Cow::Borrowed("kb_add_raw_source"),
             Cow::Borrowed("Ingest a new raw source (text/url/file) into the KB."),
-            make_schema(&[("type", "string")], &[
-                ("text", "string"),
-                ("title", "string"),
-                ("url", "string"),
-                ("bytes_b64", "string"),
-                ("filename", "string"),
-                ("mime", "string"),
-            ]),
+            make_schema(
+                &[("type", "string")],
+                &[
+                    ("text", "string"),
+                    ("title", "string"),
+                    ("url", "string"),
+                    ("bytes_b64", "string"),
+                    ("filename", "string"),
+                    ("mime", "string"),
+                ],
+            ),
         ),
         Tool::new(
             Cow::Borrowed("kb_classify_source"),
