@@ -72,6 +72,8 @@ uuid = { version = "1.0", features = ["v4"] }
 pdf-writer = "0.15"
 bm25 = "2.3"
 dashmap = "6"
+futures = { workspace = true }
+async-trait = "0.1"
 
 [dev-dependencies]
 sysinfo = "0.32.1"

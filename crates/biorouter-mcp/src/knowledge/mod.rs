@@ -10,6 +10,7 @@ pub mod registry;
 pub mod server;
 pub mod service;
 pub mod store;
+pub mod subagent;
 pub mod types;
 
 pub use server::KnowledgeServer;
