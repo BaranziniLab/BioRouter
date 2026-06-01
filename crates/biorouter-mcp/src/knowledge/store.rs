@@ -1,5 +1,6 @@
 use crate::knowledge::{git::GitRepo, types::ChangeKind};
 use anyhow::{Context, Result};
+use bm25::{Language, SearchEngineBuilder};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
@@ -129,6 +130,99 @@ pub fn split_frontmatter(s: &str) -> (serde_yaml::Value, String) {
     (serde_yaml::Value::Null, s.to_string())
 }
 
+// ── BM25 search ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SearchHit {
+    pub path: String,
+    pub score: f32,
+    pub snippet: String,
+}
+
+pub fn search(kb_root: &Path, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+    let mut docs: Vec<(String, String)> = Vec::new(); // (logical_path, body)
+    let knowledge_dir = kb_root.join("knowledge");
+    if knowledge_dir.exists() {
+        collect_docs_under(&knowledge_dir, &knowledge_dir, "knowledge", &mut docs)?;
+    }
+    let raw_dir = kb_root.join("raw");
+    if raw_dir.exists() {
+        for entry in std::fs::read_dir(&raw_dir)? {
+            let entry = entry?;
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let id = entry.file_name().to_string_lossy().to_string();
+            let source_md = entry.path().join("source.md");
+            if source_md.exists() {
+                let body = std::fs::read_to_string(&source_md)?;
+                docs.push((format!("raw/{id}/source.md"), body));
+            }
+        }
+    }
+    if docs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Build a corpus with u32 indices; SearchEngineBuilder::with_corpus auto-generates IDs.
+    let bodies: Vec<String> = docs.iter().map(|(_, b)| b.clone()).collect();
+    let engine = SearchEngineBuilder::<u32>::with_corpus(Language::English, bodies).build();
+    let results = engine.search(query, limit);
+    let hits: Vec<SearchHit> = results
+        .into_iter()
+        .map(|sr| {
+            let idx = sr.document.id as usize;
+            let (path, body) = &docs[idx];
+            SearchHit {
+                path: path.clone(),
+                score: sr.score,
+                snippet: snippet_of(body, query, 200),
+            }
+        })
+        .collect();
+    Ok(hits)
+}
+
+fn collect_docs_under(
+    base: &Path,
+    dir: &Path,
+    prefix: &str,
+    out: &mut Vec<(String, String)>,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let p = entry.path();
+        if p.is_dir() {
+            collect_docs_under(base, &p, prefix, out)?;
+        } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
+            let rel = p.strip_prefix(base).unwrap().to_string_lossy().to_string();
+            let logical = format!("{prefix}/{rel}");
+            let body = std::fs::read_to_string(&p)?;
+            out.push((logical, body));
+        }
+    }
+    Ok(())
+}
+
+fn snippet_of(body: &str, query: &str, max_len: usize) -> String {
+    let needle = query.to_ascii_lowercase();
+    let hay = body.to_ascii_lowercase();
+    if let Some(pos) = hay.find(&needle) {
+        let start = pos.saturating_sub(60);
+        let end = (pos + needle.len() + 140).min(body.len());
+        let mut snippet = body[start..end].replace('\n', " ");
+        if snippet.len() > max_len {
+            snippet.truncate(max_len);
+        }
+        snippet
+    } else {
+        body.chars()
+            .take(max_len)
+            .collect::<String>()
+            .replace('\n', " ")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,5 +270,44 @@ mod tests {
         let (_dir, kb) = fresh();
         let err = write_page(&kb, "raw/x.md", "x", "x", None).unwrap_err();
         assert!(err.to_string().contains("knowledge/"));
+    }
+
+    #[test]
+    fn search_returns_relevant_hits() {
+        let (_dir, kb) = fresh();
+        write_page(
+            &kb,
+            "knowledge/entities/hrv.md",
+            "---\ntitle: HRV\nkind: entity\n---\n\nHeart rate variability is a key marker.",
+            "a",
+            None,
+        )
+        .unwrap();
+        write_page(
+            &kb,
+            "knowledge/concepts/sleep.md",
+            "---\ntitle: Sleep\nkind: concept\n---\n\nSleep quality affects HRV directly.",
+            "b",
+            None,
+        )
+        .unwrap();
+        let hits = search(&kb, "heart rate variability", 5).unwrap();
+        assert!(!hits.is_empty());
+        assert!(hits.iter().any(|h| h.path.ends_with("hrv.md")));
+    }
+
+    #[test]
+    fn search_returns_empty_when_no_match() {
+        let (_dir, kb) = fresh();
+        write_page(
+            &kb,
+            "knowledge/entities/x.md",
+            "---\ntitle: X\n---\nbody",
+            "a",
+            None,
+        )
+        .unwrap();
+        let hits = search(&kb, "zzznonexistent", 5).unwrap();
+        assert!(hits.is_empty());
     }
 }
