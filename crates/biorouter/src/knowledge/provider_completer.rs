@@ -153,6 +153,7 @@ mod tests {
     use crate::providers::errors::ProviderError;
     use rmcp::model::Tool;
     use std::sync::Arc;
+    use tokio::sync::Mutex;
 
     /// A minimal mock Provider that returns a single canned Message.
     struct MockProvider {
@@ -180,6 +181,52 @@ mod tests {
             _tools: &[Tool],
         ) -> Result<(Message, ProviderUsage), ProviderError> {
             let usage = ProviderUsage::new("mock".into(), Usage::new(None, None, None));
+            Ok((self.response.clone(), usage))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("claude-3-5-sonnet-20241022")
+        }
+    }
+
+    /// A mock Provider that records every `messages` slice it receives so tests
+    /// can inspect what was actually sent to the provider.
+    struct RecordingMockProvider {
+        response: Message,
+        received: Mutex<Vec<Vec<Message>>>,
+    }
+
+    impl RecordingMockProvider {
+        fn new(response: Message) -> Self {
+            Self {
+                response,
+                received: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Provider for RecordingMockProvider {
+        fn metadata() -> ProviderMetadata
+        where
+            Self: Sized,
+        {
+            unimplemented!()
+        }
+
+        fn get_name(&self) -> &str {
+            "recording-mock"
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.received.lock().await.push(messages.to_vec());
+            let usage = ProviderUsage::new("recording-mock".into(), Usage::new(None, None, None));
             Ok((self.response.clone(), usage))
         }
 
@@ -250,5 +297,88 @@ mod tests {
         let reply = completer.complete("sys", &msgs, &[]).await.unwrap();
         assert_eq!(reply.text, "done");
         assert!(reply.tool_calls.is_empty());
+    }
+
+    /// Verify that the `tool_use_id` from the assistant's `tool_use` block is
+    /// preserved on the `tool_result` user message that the provider receives.
+    ///
+    /// Bedrock (and Anthropic) require strict pairing: every `tool_use` in an
+    /// assistant message must be matched by a `tool_result` with the same id in
+    /// the immediately following user message.  If the id is lost or replaced the
+    /// provider will reject the request with a `ValidationException`.
+    #[tokio::test]
+    async fn tool_result_round_trip_preserves_tool_use_id() {
+        let tool_use_id = "abc123";
+
+        // Recording mock: captures the messages it receives, replies with plain text.
+        let response = Message::assistant().with_text("finished");
+        let recording = Arc::new(RecordingMockProvider::new(response));
+        let completer = ProviderCompleter::new(recording.clone());
+
+        // Build a three-message conversation:
+        //   [0] user prompt
+        //   [1] assistant reply that issued one tool call with id=tool_use_id
+        //   [2] tool result that references the same id
+        let msgs = vec![
+            LlmMessage::User("hello".into()),
+            LlmMessage::Assistant(LlmReply {
+                text: String::new(),
+                tool_calls: vec![LlmToolCall {
+                    id: tool_use_id.into(),
+                    name: "kb_read_page".into(),
+                    args: serde_json::json!({ "path": "raw/src/source.md" }),
+                }],
+            }),
+            LlmMessage::ToolResult {
+                request_id: tool_use_id.into(),
+                name: "kb_read_page".into(),
+                content: "page content here".into(),
+            },
+        ];
+
+        let _ = completer.complete("sys", &msgs, &[]).await.unwrap();
+
+        // Inspect what the provider saw.
+        let calls = recording.received.lock().await;
+        assert_eq!(calls.len(), 1, "provider should have been called exactly once");
+        let provider_msgs = &calls[0];
+
+        // message[1] must be an assistant message containing a ToolRequest with the
+        // expected id.
+        let assistant_msg = &provider_msgs[1];
+        let tool_req_id = assistant_msg
+            .content
+            .iter()
+            .find_map(|c| {
+                if let MessageContent::ToolRequest(req) = c {
+                    Some(req.id.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("assistant message must contain a ToolRequest block");
+        assert_eq!(
+            tool_req_id, tool_use_id,
+            "ToolRequest id must match the original tool_use_id"
+        );
+
+        // message[2] must be a user message containing a ToolResponse whose id
+        // matches the tool_use_id — that's what Bedrock checks.
+        let tool_result_msg = &provider_msgs[2];
+        let tool_resp_id = tool_result_msg
+            .content
+            .iter()
+            .find_map(|c| {
+                if let MessageContent::ToolResponse(resp) = c {
+                    Some(resp.id.clone())
+                } else {
+                    None
+                }
+            })
+            .expect("tool-result user message must contain a ToolResponse block");
+        assert_eq!(
+            tool_resp_id, tool_use_id,
+            "ToolResponse id must equal the tool_use_id so Bedrock can pair them"
+        );
     }
 }
