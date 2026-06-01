@@ -2,6 +2,7 @@ use axum::http::StatusCode;
 use biorouter::execution::manager::AgentManager;
 use biorouter::scheduler_trait::SchedulerTrait;
 use biorouter::session::SessionManager;
+use biorouter_mcp::knowledge::service::KnowledgeService;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -22,12 +23,14 @@ pub struct AppState {
     workflow_session_tracker: Arc<Mutex<HashSet<String>>>,
     pub tunnel_manager: Arc<TunnelManager>,
     pub extension_loading_tasks: ExtensionLoadingTasks,
+    pub knowledge_service: Arc<KnowledgeService>,
 }
 
 impl AppState {
     pub async fn new() -> anyhow::Result<Arc<AppState>> {
         let agent_manager = AgentManager::instance().await?;
         let tunnel_manager = Arc::new(TunnelManager::new());
+        let knowledge_service = Arc::new(KnowledgeService::new_default()?);
 
         Ok(Arc::new(Self {
             agent_manager,
@@ -35,6 +38,7 @@ impl AppState {
             workflow_session_tracker: Arc::new(Mutex::new(HashSet::new())),
             tunnel_manager,
             extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
+            knowledge_service,
         }))
     }
 
