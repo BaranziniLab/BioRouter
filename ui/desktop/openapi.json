@@ -4932,6 +4932,10 @@
           },
           "path": {
             "type": "string"
+          },
+          "retracted": {
+            "type": "boolean",
+            "description": "True if this is a source node whose `raw/<id>/meta.yaml` marks it retracted."
           }
         }
       },

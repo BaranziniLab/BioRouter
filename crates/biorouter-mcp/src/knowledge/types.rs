@@ -91,6 +91,9 @@ pub struct GraphNode {
     pub kind: PageKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credibility_tier: Option<CredibilityTier>,
+    /// True if this is a source node whose `raw/<id>/meta.yaml` marks it retracted.
+    #[serde(default)]
+    pub retracted: bool,
     pub path: String,
 }
 

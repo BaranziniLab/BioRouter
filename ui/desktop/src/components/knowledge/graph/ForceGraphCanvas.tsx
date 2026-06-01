@@ -128,6 +128,21 @@ export function ForceGraphCanvas({
             ctx.strokeStyle = '#1f1f1f';
             ctx.stroke();
           }
+          if ((n as { retracted?: boolean }).retracted) {
+            // Small red "!" badge top-right of the node.
+            const bx = n.x + r * 0.7;
+            const by = n.y - r * 0.7;
+            const br = Math.max(3, r * 0.45);
+            ctx.beginPath();
+            ctx.arc(bx, by, br, 0, Math.PI * 2);
+            ctx.fillStyle = retractedColor;
+            ctx.fill();
+            ctx.fillStyle = '#fff';
+            ctx.font = `700 ${br * 1.2}px ui-sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('!', bx, by + 0.5);
+          }
           // Label
           const fs = (isHub ? LABEL_FONT_PX_HUB : LABEL_FONT_PX) / globalScale;
           ctx.font = `${isHub ? '600' : '400'} ${fs}px ui-sans-serif, system-ui, -apple-system`;
@@ -168,6 +183,3 @@ export function ForceGraphCanvas({
   );
 }
 
-// Visualise retractedColor in dev to keep it tree-shaken-out warnings quiet
-// when no retracted sources exist in the graph yet.
-void retractedColor;

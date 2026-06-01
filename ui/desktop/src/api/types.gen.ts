@@ -430,6 +430,10 @@ export type GraphNode = {
     kind: PageKind;
     label: string;
     path: string;
+    /**
+     * True if this is a source node whose `raw/<id>/meta.yaml` marks it retracted.
+     */
+    retracted?: boolean;
 };
 
 export type HistoryEntry = {

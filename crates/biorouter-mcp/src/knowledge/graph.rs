@@ -24,6 +24,7 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
             label: p.title.clone(),
             kind,
             credibility_tier: None,
+            retracted: false,
             path: p.path.clone(),
         });
     }
@@ -34,6 +35,7 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
         if let Some(node_id) = id_for_path.get(&logical) {
             if let Some(n) = nodes.iter_mut().find(|n| &n.id == node_id) {
                 n.credibility_tier = Some(src.credibility.tier);
+                n.retracted = src.credibility.retracted;
             }
         }
     }
@@ -177,5 +179,72 @@ mod tests {
         write_cache(&kb, &g).unwrap();
         let back = read_cache(&kb).unwrap().unwrap();
         assert_eq!(back, g);
+    }
+
+    #[test]
+    fn source_retracted_flag_propagates_to_graph_node() {
+        use crate::knowledge::raw::write_raw;
+        use crate::knowledge::types::{Credibility, CredibilityTier, SourceMeta};
+
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base("k", "K", None).unwrap();
+        let kb = dir.path().join("k");
+
+        // Helper: build a SourceMeta with a given retraction flag.
+        let make_meta = |id: &str, retracted: bool| SourceMeta {
+            id: id.into(),
+            title: format!("Title {id}"),
+            url: Some("https://example.org/x".into()),
+            ingested_at: chrono::Utc::now(),
+            sha256: "abc".into(),
+            mime: "text/html".into(),
+            original_filename: Some("x.html".into()),
+            credibility: Credibility {
+                tier: CredibilityTier::PeerReviewed,
+                confidence: 0.9,
+                publisher: None,
+                venue: None,
+                doi: None,
+                retracted,
+                reasoning: "test".into(),
+                classifier_version: 1,
+            },
+        };
+
+        // Two sources: one retracted, one not.
+        write_raw(&kb, None, None, "# r\n", make_meta("retracted-paper", true)).unwrap();
+        write_raw(&kb, None, None, "# ok\n", make_meta("ok-paper", false)).unwrap();
+        // Source pages so the graph has corresponding nodes.
+        write_page(
+            &kb,
+            "knowledge/sources/retracted-paper.md",
+            "---\ntitle: Retracted Paper\nkind: source\n---\nbody",
+            "add r",
+            None,
+        )
+        .unwrap();
+        write_page(
+            &kb,
+            "knowledge/sources/ok-paper.md",
+            "---\ntitle: OK Paper\nkind: source\n---\nbody",
+            "add ok",
+            None,
+        )
+        .unwrap();
+
+        let g = derive(&kb).unwrap();
+        let retracted_node = g
+            .nodes
+            .iter()
+            .find(|n| n.id == "sources:retracted-paper")
+            .expect("retracted source node");
+        let ok_node = g
+            .nodes
+            .iter()
+            .find(|n| n.id == "sources:ok-paper")
+            .expect("ok source node");
+        assert!(retracted_node.retracted, "retracted flag should propagate");
+        assert!(!ok_node.retracted, "non-retracted source stays false");
     }
 }
