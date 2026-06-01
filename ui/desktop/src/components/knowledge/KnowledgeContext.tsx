@@ -8,7 +8,7 @@ import {
   useRef,
   useState,
 } from 'react';
-import { listBases } from '../../api';
+import { listBases, getActive, setActive } from '../../api';
 import type { Manifest } from '../../api/types.gen';
 
 const STORAGE_KEY_ACTIVE_KB = 'knowledge_active_kb';
@@ -40,6 +40,11 @@ export function KnowledgeProvider({ children }: { children: ReactNode }) {
     setActiveKbIdState(id);
     if (id) localStorage.setItem(STORAGE_KEY_ACTIVE_KB, id);
     else localStorage.removeItem(STORAGE_KEY_ACTIVE_KB);
+    // Fire-and-forget server sync. Failures are non-fatal (chat won't see
+    // the pick until next reconnect, but the local UI keeps working).
+    void setActive({ body: { kb_id: id }, throwOnError: false }).catch((err) => {
+      console.warn('setActive (server sync) failed:', err);
+    });
   }, []);
 
   const refresh = useCallback(async () => {
@@ -72,6 +77,24 @@ export function KnowledgeProvider({ children }: { children: ReactNode }) {
       setActiveKbId(null);
     }
   }, [activeKbId, bases, setActiveKbId]);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const res = await getActive({ throwOnError: true });
+        const server = res.data?.active_kb ?? null;
+        if (server) {
+          // Server wins; sync localStorage to it.
+          setActiveKbIdState(server);
+          localStorage.setItem(STORAGE_KEY_ACTIVE_KB, server);
+        }
+      } catch (err) {
+        console.warn('getActive (server hydrate) failed:', err);
+      }
+    })();
+    // Run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const activeKb = useMemo(
     () => bases.find((b) => b.id === activeKbId) ?? null,
