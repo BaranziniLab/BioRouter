@@ -93,7 +93,6 @@ export function KnowledgeProvider({ children }: { children: ReactNode }) {
       }
     })();
     // Run once on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const activeKb = useMemo(
