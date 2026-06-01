@@ -1,6 +1,19 @@
 import { useCallback, useRef, useState } from 'react';
 import { client } from '../../../api/client.gen';
 
+async function getSecretKey(): Promise<string> {
+  // Match the renderer.tsx pattern — read directly from the Electron preload bridge.
+  const w = window as unknown as { electron?: { getSecretKey?: () => Promise<string> } };
+  if (w.electron?.getSecretKey) {
+    try {
+      return await w.electron.getSecretKey();
+    } catch {
+      return '';
+    }
+  }
+  return '';
+}
+
 export type SubAgentEvent =
   | { kind: 'step'; index: number; assistant_text: string }
   | { kind: 'tool_call'; name: string; args: unknown }
@@ -44,16 +57,18 @@ export function useIngestStream() {
       const baseUrl = (cfg.baseUrl as string | undefined) ?? '';
       const url = baseUrl.replace(/\/$/, '') + path;
 
-      // Mirror the auth headers that the SDK client uses
-      const cfgHeaders = cfg.headers as Record<string, string> | undefined;
-      const xSecretKey = cfgHeaders?.['X-Secret-Key'] ?? '';
+      // Read the secret key directly from the Electron preload bridge,
+      // matching how renderer.tsx sets up the API client. The cast
+      // `cfg.headers as Record<string,string>` is unreliable because
+      // HeadersInit can be a Headers instance or a [string,string][] array.
+      const xSecretKey = await getSecretKey();
 
       try {
         const res = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            ...(xSecretKey ? { 'X-Secret-Key': xSecretKey } : {}),
+            'X-Secret-Key': xSecretKey,
           },
           body: JSON.stringify(body),
           signal: controller.signal,
