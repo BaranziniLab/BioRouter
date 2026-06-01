@@ -262,11 +262,83 @@ impl KnowledgeService {
     }
 }
 
+impl KnowledgeService {
+    /// Re-run credibility classification for an existing raw source using the stored URL or
+    /// the derived markdown text (for File/Text sources) and persist the result to `meta.yaml`.
+    pub async fn reclassify_source(
+        &self,
+        kb_id: &str,
+        source_id: &str,
+    ) -> anyhow::Result<crate::knowledge::types::Credibility> {
+        paths::validate_kb_id(kb_id)?;
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        let mut meta = raw::read_meta(&kb_root, source_id)?;
+
+        // Reconstruct a SourceInput from what was stored.  URL-based sources keep the url;
+        // everything else falls back to the derived markdown (source.md).
+        let input = if let Some(url) = meta.url.clone() {
+            convert::SourceInput::Url(url)
+        } else {
+            let body = std::fs::read_to_string(
+                kb_root.join("raw").join(source_id).join("source.md"),
+            )?;
+            convert::SourceInput::Text {
+                text: body,
+                title: Some(meta.title.clone()),
+            }
+        };
+
+        let new_cred = credibility::classify(&input, None).await?;
+        meta.credibility = new_cred.clone();
+        let yaml = serde_yaml::to_string(&meta)?;
+        std::fs::write(
+            kb_root.join("raw").join(source_id).join("meta.yaml"),
+            yaml,
+        )?;
+
+        let repo = GitRepo::open(&kb_root)?;
+        repo.commit_all(
+            crate::knowledge::types::ChangeKind::Manual,
+            &format!("reclassify {source_id}"),
+            None,
+        )?;
+        self.rebuild_graph_cache(kb_id)?;
+        Ok(new_cred)
+    }
+
+    /// Write a manually-specified `Credibility` override to `meta.yaml` and commit.
+    /// Returns the credibility that was stored (same as input).
+    pub fn override_credibility(
+        &self,
+        kb_id: &str,
+        source_id: &str,
+        cred: crate::knowledge::types::Credibility,
+    ) -> anyhow::Result<crate::knowledge::types::Credibility> {
+        paths::validate_kb_id(kb_id)?;
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        let mut meta = raw::read_meta(&kb_root, source_id)?;
+        meta.credibility = cred.clone();
+        let yaml = serde_yaml::to_string(&meta)?;
+        std::fs::write(
+            kb_root.join("raw").join(source_id).join("meta.yaml"),
+            yaml,
+        )?;
+        let repo = GitRepo::open(&kb_root)?;
+        repo.commit_all(
+            crate::knowledge::types::ChangeKind::Manual,
+            &format!("override credibility for {source_id}"),
+            None,
+        )?;
+        self.rebuild_graph_cache(kb_id)?;
+        Ok(cred)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::knowledge::convert::SourceInput;
-    use crate::knowledge::types::{ChangeKind, CredibilityTier};
+    use crate::knowledge::types::{ChangeKind, Credibility, CredibilityTier};
 
     fn svc() -> (tempfile::TempDir, KnowledgeService) {
         let dir = tempfile::tempdir().unwrap();
@@ -421,6 +493,90 @@ mod tests {
             t2 >= t1,
             "h2 must observe lock acquisition after h1 released"
         );
+    }
+
+    #[tokio::test]
+    async fn reclassify_source_updates_meta() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+
+        // Add a text source (no URL → falls back to Personal tier).
+        let written = svc
+            .add_raw_source(
+                "k",
+                SourceInput::Text {
+                    text: "lab note".into(),
+                    title: Some("note".into()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        // Reclassify — same text, should still come back Personal.
+        let cred = svc
+            .reclassify_source("k", &written.source_id)
+            .await
+            .unwrap();
+        assert_eq!(cred.tier, CredibilityTier::Personal);
+
+        // Verify meta.yaml was updated.
+        let kb = svc.root().join("k");
+        let meta = raw::read_meta(&kb, &written.source_id).unwrap();
+        assert_eq!(meta.credibility.tier, CredibilityTier::Personal);
+
+        // A new commit was made.
+        let repo = crate::knowledge::git::GitRepo::open(&kb).unwrap();
+        let log = repo.log(10).unwrap();
+        // create + add_raw + reclassify = 3 commits
+        assert!(log.len() >= 3);
+    }
+
+    #[tokio::test]
+    async fn override_credibility_writes_and_commits() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+
+        let written = svc
+            .add_raw_source(
+                "k",
+                SourceInput::Text {
+                    text: "draft".into(),
+                    title: Some("draft".into()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let override_cred = Credibility {
+            tier: CredibilityTier::PeerReviewed,
+            confidence: 0.99,
+            publisher: Some("Nature".into()),
+            venue: Some("Nature 2024".into()),
+            doi: Some("10.1000/xyz".into()),
+            retracted: false,
+            reasoning: "Manual override: confirmed peer-reviewed publication.".into(),
+            classifier_version: 1,
+        };
+
+        let returned = svc
+            .override_credibility("k", &written.source_id, override_cred.clone())
+            .unwrap();
+        assert_eq!(returned.tier, CredibilityTier::PeerReviewed);
+        assert_eq!(returned.doi.as_deref(), Some("10.1000/xyz"));
+
+        // Verify meta.yaml persisted the override.
+        let kb = svc.root().join("k");
+        let meta = raw::read_meta(&kb, &written.source_id).unwrap();
+        assert_eq!(meta.credibility.tier, CredibilityTier::PeerReviewed);
+        assert_eq!(meta.credibility.doi.as_deref(), Some("10.1000/xyz"));
+
+        // A commit was made with the override.
+        let repo = crate::knowledge::git::GitRepo::open(&kb).unwrap();
+        let log = repo.log(10).unwrap();
+        assert!(log[0].summary.contains("override credibility"));
+        assert_eq!(log[0].kind, ChangeKind::Manual);
     }
 
     #[tokio::test]
