@@ -15,7 +15,7 @@ use biorouter_mcp::knowledge::{
     service::KnowledgeService,
     store,
     subagent::{events::SubAgentEvent, loop_::SubAgentBounds},
-    types::{Credibility, Graph, HistoryEntry, Manifest, ModelRef},
+    types::{Credibility, Graph, HistoryEntry, Manifest, ModelRef, RegistryEntry},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -217,10 +217,22 @@ pub async fn delete_base(
     if !kb_root.exists() {
         return Err((StatusCode::NOT_FOUND, format!("kb '{id}' not found")));
     }
-    std::fs::remove_dir_all(&kb_root)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Unregister first (the cheap, error-prone step). If this fails the directory
+    // still exists and a subsequent retry will work correctly.
     registry::unregister(svc.root(), &id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    // Remove the directory. On failure, attempt to re-register so the registry
+    // stays consistent with the filesystem.
+    if let Err(e) = std::fs::remove_dir_all(&kb_root) {
+        let _ = registry::register(
+            svc.root(),
+            RegistryEntry {
+                id: id.clone(),
+                path: kb_root.clone(),
+            },
+        );
+        return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -395,19 +407,14 @@ async fn build_completer(
     Ok(Box::new(ProviderCompleter::new(provider)))
 }
 
-/// Spawn the SSE forwarder: reads `SubAgentEvent`s from `event_rx` and sends
-/// serialized SSE frames to `sse_tx`.
-fn spawn_event_forwarder(
-    mut event_rx: tokio::sync::mpsc::UnboundedReceiver<SubAgentEvent>,
-    sse_tx: mpsc::Sender<String>,
-) {
-    tokio::spawn(async move {
-        while let Some(ev) = event_rx.recv().await {
-            if let Ok(j) = serde_json::to_string(&ev) {
-                let _ = sse_tx.send(format!("data: {j}\n\n")).await;
-            }
-        }
-    });
+/// Build a well-formed SSE error frame. Uses `serde_json` for proper escaping so
+/// that backslashes in Windows paths and newlines in multi-line `anyhow` chains do
+/// not break JSON or SSE line framing.
+fn sse_error_frame(message: &str) -> String {
+    let payload = serde_json::json!({ "message": message });
+    let json = serde_json::to_string(&payload)
+        .unwrap_or_else(|_| String::from("{\"message\":\"<unserializable error>\"}"));
+    format!("event: error\ndata: {json}\n\n")
 }
 
 #[utoipa::path(
@@ -429,10 +436,11 @@ pub async fn ingest(
     let completer = build_completer(&body.model).await?;
 
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
-    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
+    let (result_tx, mut result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
 
-    spawn_event_forwarder(event_rx, sse_tx.clone());
-
+    // Macro task: run ingest, then report result through a dedicated channel.
+    // Dropping `event_tx` signals the forwarder that no more events are coming.
     tokio::spawn(async move {
         let args = ingest_macro::IngestArgs {
             kb_id: id,
@@ -442,15 +450,33 @@ pub async fn ingest(
             bounds: SubAgentBounds::default(),
             event_sink: Some(event_tx),
         };
-        match ingest_macro::ingest(&svc, args).await {
-            Ok(result) => {
-                let json = serde_json::to_value(&result).unwrap_or_default();
-                let _ = sse_tx.send(format!("event: done\ndata: {json}\n\n")).await;
+        let outcome = match ingest_macro::ingest(&svc, args).await {
+            Ok(r) => Ok(serde_json::to_value(&r).unwrap_or_default()),
+            Err(e) => Err(e.to_string()),
+        };
+        let _ = result_tx.send(outcome).await;
+    });
+
+    // Forwarder task: owns `sse_tx`. Drains all SubAgent events first (guaranteed
+    // ordering), then emits the terminal done/error frame from the macro result.
+    // This eliminates the race where `done` could arrive before the last data events.
+    tokio::spawn(async move {
+        while let Some(ev) = event_rx.recv().await {
+            if let Ok(j) = serde_json::to_string(&ev) {
+                let _ = sse_tx.send(format!("data: {j}\n\n")).await;
             }
-            Err(e) => {
-                let msg = e.to_string().replace('"', "\\\"");
+        }
+        match result_rx.recv().await {
+            Some(Ok(result_json)) => {
+                let data = serde_json::to_string(&result_json).unwrap_or_default();
+                let _ = sse_tx.send(format!("event: done\ndata: {data}\n\n")).await;
+            }
+            Some(Err(msg)) => {
+                let _ = sse_tx.send(sse_error_frame(&msg)).await;
+            }
+            None => {
                 let _ = sse_tx
-                    .send(format!("event: error\ndata: {{\"message\":\"{msg}\"}}\n\n"))
+                    .send(sse_error_frame("macro task ended without result"))
                     .await;
             }
         }
@@ -476,9 +502,8 @@ pub async fn query_kb(
     let completer = build_completer(&body.model).await?;
 
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
-    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
-
-    spawn_event_forwarder(event_rx, sse_tx.clone());
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
+    let (result_tx, mut result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
 
     tokio::spawn(async move {
         let args = query_macro::QueryArgs {
@@ -489,15 +514,30 @@ pub async fn query_kb(
             bounds: SubAgentBounds::default(),
             event_sink: Some(event_tx),
         };
-        match query_macro::query(&svc, args).await {
-            Ok(result) => {
-                let json = serde_json::to_value(&result).unwrap_or_default();
-                let _ = sse_tx.send(format!("event: done\ndata: {json}\n\n")).await;
+        let outcome = match query_macro::query(&svc, args).await {
+            Ok(r) => Ok(serde_json::to_value(&r).unwrap_or_default()),
+            Err(e) => Err(e.to_string()),
+        };
+        let _ = result_tx.send(outcome).await;
+    });
+
+    tokio::spawn(async move {
+        while let Some(ev) = event_rx.recv().await {
+            if let Ok(j) = serde_json::to_string(&ev) {
+                let _ = sse_tx.send(format!("data: {j}\n\n")).await;
             }
-            Err(e) => {
-                let msg = e.to_string().replace('"', "\\\"");
+        }
+        match result_rx.recv().await {
+            Some(Ok(result_json)) => {
+                let data = serde_json::to_string(&result_json).unwrap_or_default();
+                let _ = sse_tx.send(format!("event: done\ndata: {data}\n\n")).await;
+            }
+            Some(Err(msg)) => {
+                let _ = sse_tx.send(sse_error_frame(&msg)).await;
+            }
+            None => {
                 let _ = sse_tx
-                    .send(format!("event: error\ndata: {{\"message\":\"{msg}\"}}\n\n"))
+                    .send(sse_error_frame("macro task ended without result"))
                     .await;
             }
         }
@@ -530,9 +570,8 @@ pub async fn lint(
         };
 
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
-    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
-
-    spawn_event_forwarder(event_rx, sse_tx.clone());
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
+    let (result_tx, mut result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
 
     tokio::spawn(async move {
         let args = lint_macro::LintArgs {
@@ -542,15 +581,30 @@ pub async fn lint(
             bounds: SubAgentBounds::default(),
             event_sink: Some(event_tx),
         };
-        match lint_macro::lint(&svc, args).await {
-            Ok(result) => {
-                let json = serde_json::to_value(&result).unwrap_or_default();
-                let _ = sse_tx.send(format!("event: done\ndata: {json}\n\n")).await;
+        let outcome = match lint_macro::lint(&svc, args).await {
+            Ok(r) => Ok(serde_json::to_value(&r).unwrap_or_default()),
+            Err(e) => Err(e.to_string()),
+        };
+        let _ = result_tx.send(outcome).await;
+    });
+
+    tokio::spawn(async move {
+        while let Some(ev) = event_rx.recv().await {
+            if let Ok(j) = serde_json::to_string(&ev) {
+                let _ = sse_tx.send(format!("data: {j}\n\n")).await;
             }
-            Err(e) => {
-                let msg = e.to_string().replace('"', "\\\"");
+        }
+        match result_rx.recv().await {
+            Some(Ok(result_json)) => {
+                let data = serde_json::to_string(&result_json).unwrap_or_default();
+                let _ = sse_tx.send(format!("event: done\ndata: {data}\n\n")).await;
+            }
+            Some(Err(msg)) => {
+                let _ = sse_tx.send(sse_error_frame(&msg)).await;
+            }
+            None => {
                 let _ = sse_tx
-                    .send(format!("event: error\ndata: {{\"message\":\"{msg}\"}}\n\n"))
+                    .send(sse_error_frame("macro task ended without result"))
                     .await;
             }
         }
@@ -690,6 +744,10 @@ pub async fn export_brkb(
     State(svc): State<Arc<KnowledgeService>>,
     Path(id): Path<String>,
 ) -> Result<Response, (StatusCode, String)> {
+    let kb_root = paths::kb_root(svc.root(), &id);
+    if !kb_root.exists() {
+        return Err((StatusCode::NOT_FOUND, format!("kb '{id}' not found")));
+    }
     let bytes = svc
         .export_brkb(&id)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
@@ -768,6 +826,13 @@ pub async fn reclassify(
     State(svc): State<Arc<KnowledgeService>>,
     Path((id, sid)): Path<(String, String)>,
 ) -> Result<Json<CredibilityResponse>, (StatusCode, String)> {
+    let source_path = paths::kb_root(svc.root(), &id).join("raw").join(&sid);
+    if !source_path.exists() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("source '{sid}' not found in kb '{id}'"),
+        ));
+    }
     let credibility = svc
         .reclassify_source(&id, &sid)
         .await
@@ -793,6 +858,13 @@ pub async fn override_credibility(
     Path((id, sid)): Path<(String, String)>,
     Json(cred): Json<Credibility>,
 ) -> Result<Json<CredibilityResponse>, (StatusCode, String)> {
+    let source_path = paths::kb_root(svc.root(), &id).join("raw").join(&sid);
+    if !source_path.exists() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            format!("source '{sid}' not found in kb '{id}'"),
+        ));
+    }
     let credibility = svc
         .override_credibility(&id, &sid, cred)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
