@@ -1,4 +1,4 @@
-use crate::knowledge::{convert::SourceInput, service::KnowledgeService};
+use crate::knowledge::{convert::SourceInput, service::KnowledgeService, types::ChangeKind};
 use anyhow::Result;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -7,12 +7,33 @@ use rmcp::{
     tool, tool_handler, tool_router, ErrorData, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+/// Process-local active-KB state (one per KnowledgeServer instance).
+/// Session-scoped binding is deferred to Plan 3.
+#[derive(Clone, Default)]
+pub struct ActiveKbState {
+    inner: Arc<tokio::sync::Mutex<Option<String>>>,
+}
+
+impl ActiveKbState {
+    pub async fn set(&self, kb_id: &str) {
+        *self.inner.lock().await = Some(kb_id.to_string());
+    }
+    pub async fn get(&self) -> Option<String> {
+        self.inner.lock().await.clone()
+    }
+    pub async fn clear(&self) {
+        *self.inner.lock().await = None;
+    }
+}
 
 #[derive(Clone)]
 pub struct KnowledgeServer {
     tool_router: ToolRouter<Self>,
     service: KnowledgeService,
     instructions: String,
+    active: ActiveKbState,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -95,6 +116,85 @@ pub struct RestoreParams {
     pub commit_sha: String,
 }
 
+// ── Task 4: Transaction tools ─────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct BeginTxnParams {
+    pub kb_id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CommitTxnParams {
+    pub kb_id: String,
+    pub txn: String,
+    pub summary: String,
+    pub kind: ChangeKind,
+    #[serde(default)]
+    pub delta: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AbortTxnParams {
+    pub kb_id: String,
+    pub txn: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SearchParams {
+    pub kb_id: Option<String>,
+    pub query: String,
+    #[serde(default = "default_search_limit")]
+    pub limit: usize,
+}
+
+fn default_search_limit() -> usize {
+    5
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AppendLogParams {
+    pub kb_id: String,
+    pub kind: ChangeKind,
+    pub summary: String,
+    #[serde(default)]
+    pub delta: Option<String>,
+}
+
+// ── Task 5: Active-KB tools ───────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetActiveParams {
+    pub kb_id: String,
+}
+
+// ── Task 5: Optional-kb_id variants of read-only params ─────────────────────
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListPagesOptParams {
+    pub kb_id: Option<String>,
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReadPageOptParams {
+    pub kb_id: Option<String>,
+    pub path: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct KbIdOptParams {
+    pub kb_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct HistoryOptParams {
+    pub kb_id: Option<String>,
+    #[serde(default = "default_limit")]
+    pub limit: usize,
+}
+
 #[tool_router(router = tool_router)]
 impl KnowledgeServer {
     pub fn new() -> Result<Self> {
@@ -102,6 +202,20 @@ impl KnowledgeServer {
             tool_router: Self::tool_router(),
             service: KnowledgeService::new_default()?,
             instructions: include_str!("instructions.md").to_string(),
+            active: ActiveKbState::default(),
+        })
+    }
+
+    /// Resolve `supplied` kb_id or fall back to the process-local active KB.
+    async fn kb_id_or_active(&self, supplied: Option<String>) -> Result<String, ErrorData> {
+        if let Some(id) = supplied {
+            return Ok(id);
+        }
+        self.active.get().await.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "kb_id not supplied and no active knowledge base is set. Call kb_set_active first.",
+                None,
+            )
         })
     }
 
@@ -129,14 +243,15 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_list_pages",
-        description = "List knowledge pages in a knowledge base."
+        description = "List knowledge pages in a knowledge base. Omit kb_id to use the active KB."
     )]
     pub async fn kb_list_pages(
         &self,
-        p: Parameters<ListPagesParams>,
+        p: Parameters<ListPagesOptParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
+        let kb_id = self.kb_id_or_active(p.kb_id).await?;
+        let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
         let pages = crate::knowledge::store::list_pages(&kb_root, p.path_prefix.as_deref())
             .map_err(into_err)?;
         ok_json(&pages)
@@ -144,14 +259,15 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_read_page",
-        description = "Read a single knowledge page by path."
+        description = "Read a single knowledge page by path. Omit kb_id to use the active KB."
     )]
     pub async fn kb_read_page(
         &self,
-        p: Parameters<ReadPageParams>,
+        p: Parameters<ReadPageOptParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
+        let kb_id = self.kb_id_or_active(p.kb_id).await?;
+        let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
         let page = crate::knowledge::store::read_page(&kb_root, &p.path).map_err(into_err)?;
         ok_json(&page)
     }
@@ -200,30 +316,29 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_get_graph",
-        description = "Return the cached node+edge graph for a knowledge base."
+        description = "Return the cached node+edge graph for a knowledge base. Omit kb_id to use the active KB."
     )]
     pub async fn kb_get_graph(
         &self,
-        p: Parameters<KbIdParams>,
+        p: Parameters<KbIdOptParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let g = self.service.get_graph(&p.kb_id).map_err(into_err)?;
+        let kb_id = self.kb_id_or_active(p.kb_id).await?;
+        let g = self.service.get_graph(&kb_id).map_err(into_err)?;
         ok_json(&g)
     }
 
     #[tool(
         name = "kb_list_history",
-        description = "List recent change-log entries from the git history."
+        description = "List recent change-log entries from the git history. Omit kb_id to use the active KB."
     )]
     pub async fn kb_list_history(
         &self,
-        p: Parameters<HistoryParams>,
+        p: Parameters<HistoryOptParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let h = self
-            .service
-            .list_history(&p.kb_id, p.limit)
-            .map_err(into_err)?;
+        let kb_id = self.kb_id_or_active(p.kb_id).await?;
+        let h = self.service.list_history(&kb_id, p.limit).map_err(into_err)?;
         ok_json(&h)
     }
 
@@ -241,6 +356,126 @@ impl KnowledgeServer {
             .restore_state(&p.kb_id, &p.commit_sha)
             .map_err(into_err)?;
         ok_json(&serde_json::json!({ "ok": true, "new_commit_sha": sha }))
+    }
+
+    // ── Task 4: Transaction MCP tools ─────────────────────────────────────────
+
+    #[tool(
+        name = "kb_begin_txn",
+        description = "Open a transactional working branch on a knowledge base. Returns the txn handle (branch name) for use with subsequent mutating primitives."
+    )]
+    pub async fn kb_begin_txn(
+        &self,
+        p: Parameters<BeginTxnParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = p.0;
+        let kb_root =
+            crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
+        let repo =
+            crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
+        let txn = repo.begin_txn(&p.label).map_err(into_err)?;
+        ok_json(&serde_json::json!({ "txn": txn.branch }))
+    }
+
+    #[tool(
+        name = "kb_commit_txn",
+        description = "Squash-merge a transaction branch onto the main history with the given kind/summary/delta."
+    )]
+    pub async fn kb_commit_txn(
+        &self,
+        p: Parameters<CommitTxnParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = p.0;
+        let kb_root =
+            crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
+        let repo =
+            crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
+        let txn = crate::knowledge::git::Txn { branch: p.txn };
+        let sha = repo
+            .commit_txn(&txn, p.kind, &p.summary, p.delta.as_deref())
+            .map_err(into_err)?;
+        ok_json(&serde_json::json!({ "commit_sha": sha }))
+    }
+
+    #[tool(
+        name = "kb_abort_txn",
+        description = "Discard a transaction branch and restore the working tree to main."
+    )]
+    pub async fn kb_abort_txn(
+        &self,
+        p: Parameters<AbortTxnParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = p.0;
+        let kb_root =
+            crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
+        let repo =
+            crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
+        let txn = crate::knowledge::git::Txn { branch: p.txn };
+        repo.abort_txn(&txn).map_err(into_err)?;
+        ok_json(&serde_json::json!({ "ok": true }))
+    }
+
+    #[tool(
+        name = "kb_search",
+        description = "BM25 full-text search over knowledge pages and raw source documents. Omit kb_id to use the active KB."
+    )]
+    pub async fn kb_search(
+        &self,
+        p: Parameters<SearchParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = p.0;
+        let kb_id = self.kb_id_or_active(p.kb_id).await?;
+        let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
+        let hits =
+            crate::knowledge::store::search(&kb_root, &p.query, p.limit).map_err(into_err)?;
+        ok_json(&hits)
+    }
+
+    #[tool(
+        name = "kb_append_log",
+        description = "Append a structured entry to the KB change log and commit it."
+    )]
+    pub async fn kb_append_log(
+        &self,
+        p: Parameters<AppendLogParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = p.0;
+        let kb_root =
+            crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
+        let sha = crate::knowledge::log::append(
+            &kb_root,
+            p.kind,
+            &p.summary,
+            p.delta.as_deref(),
+            None,
+        )
+        .map_err(into_err)?;
+        ok_json(&serde_json::json!({ "ok": true, "commit_sha": sha }))
+    }
+
+    // ── Task 5: Active-KB MCP tools ───────────────────────────────────────────
+
+    #[tool(
+        name = "kb_set_active",
+        description = "Set the active knowledge base for this session. Subsequent kb_* tool calls that omit kb_id will default to this one."
+    )]
+    pub async fn kb_set_active(
+        &self,
+        p: Parameters<SetActiveParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        crate::knowledge::paths::validate_kb_id(&p.0.kb_id)
+            .map_err(|e| into_err(e.into()))?;
+        self.active.set(&p.0.kb_id).await;
+        ok_json(&serde_json::json!({ "ok": true, "active_kb": p.0.kb_id }))
+    }
+
+    #[tool(
+        name = "kb_get_active",
+        description = "Return the currently active knowledge base id (if any)."
+    )]
+    pub async fn kb_get_active(&self) -> Result<CallToolResult, ErrorData> {
+        let v = self.active.get().await;
+        ok_json(&serde_json::json!({ "active_kb": v }))
     }
 }
 
