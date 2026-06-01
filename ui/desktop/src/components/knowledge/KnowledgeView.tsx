@@ -1,9 +1,11 @@
+// ui/desktop/src/components/knowledge/KnowledgeView.tsx
 import { useEffect, useState } from 'react';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { KnowledgeProvider } from './KnowledgeContext';
 import { KBSelectorTrigger } from './KBSelector/KBSelectorTrigger';
 import { IngestPanel } from './IngestPanel/IngestPanel';
-import { RightSidePlaceholder } from './RightSidePlaceholder';
+import { KnowledgeGraphPanel } from './graph/KnowledgeGraphPanel';
+import { ChangeLogDrawer } from './changelog/ChangeLogDrawer';
 
 export default function KnowledgeView() {
   return (
@@ -14,9 +16,9 @@ export default function KnowledgeView() {
 }
 
 function KnowledgeViewInner() {
-  // Lift palette open-state here so Cmd-K (global shortcut) can open it while
-  // KnowledgeView is mounted without requiring a custom event bus.
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [changeLogOpen, setChangeLogOpen] = useState(false);
+  const [previewSha, setPreviewSha] = useState<string | null>(null);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -48,9 +50,22 @@ function KnowledgeViewInner() {
             <IngestPanel />
           </div>
           <div className="min-h-0">
-            <RightSidePlaceholder />
+            <KnowledgeGraphPanel
+              onOpenChangeLog={() => setChangeLogOpen(true)}
+              previewSha={previewSha}
+              onClearPreview={() => setPreviewSha(null)}
+            />
           </div>
         </div>
+        <ChangeLogDrawer
+          open={changeLogOpen}
+          onOpenChange={setChangeLogOpen}
+          onPreview={(sha) => {
+            setPreviewSha(sha);
+            setChangeLogOpen(false);
+          }}
+          onRestored={() => setChangeLogOpen(false)}
+        />
       </div>
     </MainPanelLayout>
   );

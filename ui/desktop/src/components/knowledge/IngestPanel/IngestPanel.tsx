@@ -20,7 +20,7 @@ function genId(): string {
 }
 
 export function IngestPanel() {
-  const { activeKbId } = useKnowledge();
+  const { activeKbId, triggerGraphRefresh } = useKnowledge();
   const { currentModel, currentProvider } = useModelAndProvider();
   const { items, add, remove, update, clear } = useStagedSources();
   const stream = useIngestStream();
@@ -96,6 +96,7 @@ export function IngestPanel() {
             });
           } else {
             update(item.id, { status: 'done' });
+            triggerGraphRefresh();
           }
         } catch (err) {
           update(item.id, {
