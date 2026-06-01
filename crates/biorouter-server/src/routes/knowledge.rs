@@ -12,7 +12,7 @@ use biorouter_mcp::knowledge::{
     convert,
     macros::{ingest as ingest_macro, lint as lint_macro, query as query_macro},
     paths, registry,
-    service::KnowledgeService,
+    service::{KnowledgeService, ReadPageError},
     store,
     subagent::{events::SubAgentEvent, loop_::SubAgentBounds},
     types::{Credibility, Graph, HistoryEntry, Manifest, ModelRef, RegistryEntry},
@@ -30,7 +30,7 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
         .route("/bases/import", post(import_brkb))
         .route("/bases/{id}", get(get_base).delete(delete_base))
         .route("/bases/{id}/graph", get(get_graph))
-        .route("/bases/{id}/page", get(read_page_query))
+        .route("/bases/{id}/page", get(get_page_body))
         .route("/bases/{id}/pages", get(list_pages))
         .route(
             "/bases/{id}/pages/{*page_path}",
@@ -364,38 +364,26 @@ pub struct ReadPageResponse {
     get, path = "/knowledge/bases/{id}/page",
     params(
         ("id" = String, Path, description = "Knowledge base ID"),
-        ("path" = String, Query, description = "Path within the KB (knowledge/* or raw/*/source.md)"),
+        ("path" = String, Query, description = "Page path under the KB root \
+         (knowledge/*.md, raw/*/source.md, or index.md/schema.md/log.md)"),
     ),
     responses(
         (status = 200, description = "Page content", body = ReadPageResponse),
-        (status = 400, description = "Invalid path"),
+        (status = 400, description = "Invalid kb id or path"),
         (status = 404, description = "Page not found"),
     )
 )]
-pub async fn read_page_query(
+pub async fn get_page_body(
     State(svc): State<Arc<KnowledgeService>>,
     Path(id): Path<String>,
     Query(q): Query<ReadPageQuery>,
 ) -> Result<Json<ReadPageResponse>, (StatusCode, String)> {
     match svc.read_page(&id, &q.path) {
         Ok(content) => Ok(Json(ReadPageResponse { content })),
-        Err(e) => {
-            let msg = e.to_string();
-            // resolve_readable_path uses "path traversal not allowed" and
-            // "page path must start with knowledge/ or raw/..." for invalid
-            // paths; both are client errors → 400.
-            let status = if msg.contains("traversal")
-                || msg.contains("must start with")
-                || msg.contains("invalid kb id")
-            {
-                StatusCode::BAD_REQUEST
-            } else if msg.contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-            Err((status, msg))
-        }
+        Err(ReadPageError::InvalidKbId(m)) => Err((StatusCode::BAD_REQUEST, m)),
+        Err(ReadPageError::InvalidPath(m)) => Err((StatusCode::BAD_REQUEST, m)),
+        Err(ReadPageError::NotFound(m)) => Err((StatusCode::NOT_FOUND, m)),
+        Err(e @ ReadPageError::Io(_)) => Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string())),
     }
 }
 
@@ -509,7 +497,7 @@ pub async fn check_model(
                     ok: false,
                     error: Some(format!("provider build failed: {msg}")),
                 }),
-            ))
+            ));
         }
     };
     match svc.check_model(completer).await {

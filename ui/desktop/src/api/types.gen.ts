@@ -2672,7 +2672,7 @@ export type LintResponses = {
     200: unknown;
 };
 
-export type ReadPageQueryData = {
+export type GetPageBodyData = {
     body?: never;
     path: {
         /**
@@ -2682,16 +2682,16 @@ export type ReadPageQueryData = {
     };
     query: {
         /**
-         * Path within the KB (knowledge* or raw*source.md)
+         * Page path under the KB root (knowledge*.md, raw*source.md, or index.md/schema.md/log.md)
          */
         path: string;
     };
     url: '/knowledge/bases/{id}/page';
 };
 
-export type ReadPageQueryErrors = {
+export type GetPageBodyErrors = {
     /**
-     * Invalid path
+     * Invalid kb id or path
      */
     400: unknown;
     /**
@@ -2700,14 +2700,14 @@ export type ReadPageQueryErrors = {
     404: unknown;
 };
 
-export type ReadPageQueryResponses = {
+export type GetPageBodyResponses = {
     /**
      * Page content
      */
     200: ReadPageResponse;
 };
 
-export type ReadPageQueryResponse = ReadPageQueryResponses[keyof ReadPageQueryResponses];
+export type GetPageBodyResponse = GetPageBodyResponses[keyof GetPageBodyResponses];
 
 export type ListPagesData = {
     body?: never;

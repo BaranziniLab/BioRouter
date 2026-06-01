@@ -209,20 +209,19 @@ impl KnowledgeService {
     }
 }
 
-impl KnowledgeService {
-    /// Read the raw markdown body of a page (knowledge/*.md or raw/*/source.md).
-    /// Path is interpreted relative to the KB root. Path traversal is rejected
-    /// and only readable paths (knowledge/, raw/, index.md, schema.md, log.md)
-    /// are allowed.
-    pub fn read_page(&self, kb_id: &str, rel_path: &str) -> anyhow::Result<String> {
-        paths::validate_kb_id(kb_id)?;
-        let kb_root = paths::kb_root(&self.root, kb_id);
-        let abs = crate::knowledge::store::resolve_readable_path(&kb_root, rel_path)?;
-        if !abs.exists() {
-            anyhow::bail!("page not found: {rel_path}");
-        }
-        Ok(std::fs::read_to_string(&abs)?)
-    }
+/// Typed error returned by [`KnowledgeService::read_page`] so HTTP handlers can
+/// map each variant onto the right status code (400 / 404 / 500) without
+/// substring-matching the `Display` text.
+#[derive(thiserror::Error, Debug)]
+pub enum ReadPageError {
+    #[error("invalid kb id: {0}")]
+    InvalidKbId(String),
+    #[error("invalid path: {0}")]
+    InvalidPath(String),
+    #[error("page not found: {0}")]
+    NotFound(String),
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
 }
 
 impl KnowledgeService {
@@ -240,6 +239,23 @@ impl KnowledgeService {
             return Ok(g);
         }
         crate::knowledge::graph::derive(&kb_root)
+    }
+
+    /// Read the raw markdown body of a page (knowledge/*.md, raw/*/source.md,
+    /// or top-level index.md/schema.md/log.md).
+    ///
+    /// Returns a typed [`ReadPageError`] so HTTP handlers can map each variant
+    /// onto the right status code (400 / 404 / 500) without inspecting the
+    /// `Display` text. Path traversal and out-of-scope paths are rejected.
+    pub fn read_page(&self, kb_id: &str, rel_path: &str) -> Result<String, ReadPageError> {
+        paths::validate_kb_id(kb_id).map_err(|e| ReadPageError::InvalidKbId(e.to_string()))?;
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        let abs = crate::knowledge::store::resolve_readable_path(&kb_root, rel_path)
+            .map_err(|e| ReadPageError::InvalidPath(e.to_string()))?;
+        if !abs.exists() {
+            return Err(ReadPageError::NotFound(rel_path.to_string()));
+        }
+        Ok(std::fs::read_to_string(&abs)?)
     }
 }
 

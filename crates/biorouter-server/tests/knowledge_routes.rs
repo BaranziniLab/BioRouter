@@ -878,8 +878,11 @@ async fn read_page_returns_markdown_body() {
         .unwrap();
     assert_eq!(res.status(), 404, "missing page should return 404");
 
-    // Path traversal → 400 (rejected by resolve_readable_path).
+    // Path traversal → 400. `../../etc/passwd` is rejected by the
+    // `starts_with("knowledge/")` / `starts_with("raw/")` allowlist *before*
+    // the `..` check ever fires.
     let res = app
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/bases/rp/page?path=../../etc/passwd")
@@ -888,7 +891,108 @@ async fn read_page_returns_markdown_body() {
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), 400, "path traversal should return 400 not 500");
+    assert_eq!(
+        res.status(),
+        400,
+        "path traversal should return 400 not 500"
+    );
+
+    // Real traversal: passes the prefix allowlist (`starts_with("knowledge/")`)
+    // but contains `..` — must be rejected by the dedicated traversal check.
+    // This exercises a different code path than the test above.
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/bases/rp/page?path=knowledge/../../etc/passwd")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        400,
+        "real path-traversal attempt should return 400 not 500"
+    );
+}
+
+#[tokio::test]
+async fn read_page_returns_raw_source_md() {
+    let (_d, root, app) = build_test_router_with_root();
+
+    // Create the KB.
+    let create_body =
+        serde_json::to_vec(&serde_json::json!({"id": "rs", "name": "Raw Source"})).unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    // Seed a raw/<src-id>/source.md file directly on disk so we don't have to
+    // round-trip through the converter.
+    let raw_dir = root.join("rs").join("raw").join("test");
+    std::fs::create_dir_all(&raw_dir).unwrap();
+    std::fs::write(raw_dir.join("source.md"), "# raw\n\nraw source body\n").unwrap();
+
+    // Happy path: GET /bases/rs/page?path=raw/test/source.md
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/bases/rs/page?path=raw/test/source.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "GET /bases/rs/page?path=raw/.../source.md should return 200"
+    );
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        v["content"].as_str().unwrap().contains("raw source body"),
+        "response content should contain raw source body, got: {v}"
+    );
+}
+
+#[tokio::test]
+async fn read_page_rejects_invalid_kb_id_with_400() {
+    // Regression test for the dead-branch bug: the handler previously checked
+    // for "invalid kb id" in the error string, but `validate_kb_id` emits
+    // "kb-id may only contain a-z, 0-9, and '-'" (etc.). The mismatch meant an
+    // invalid kb-id slipped through to 500. With the typed-error refactor this
+    // must now route to 400.
+    let (_d, app) = build_test_router();
+
+    // "INVALID--KB" violates both the lowercase rule and the `--` rule. We do
+    // not need to create the KB; validation fires before any filesystem touch.
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/bases/INVALID--KB/page?path=knowledge/x.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        400,
+        "invalid kb-id must return 400, not 500 (regression test)"
+    );
 }
 
 #[tokio::test]
