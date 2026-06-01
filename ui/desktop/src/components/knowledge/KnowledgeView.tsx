@@ -1,6 +1,15 @@
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
+import { KnowledgeProvider } from './KnowledgeContext';
 
 export default function KnowledgeView() {
+  return (
+    <KnowledgeProvider>
+      <KnowledgeViewInner />
+    </KnowledgeProvider>
+  );
+}
+
+function KnowledgeViewInner() {
   return (
     <MainPanelLayout>
       <div className="flex flex-col min-w-0 flex-1 overflow-y-auto relative" data-search-scroll-area>
