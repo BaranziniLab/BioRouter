@@ -2,6 +2,7 @@ import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { KnowledgeProvider } from './KnowledgeContext';
 import { KBSelectorTrigger } from './KBSelector/KBSelectorTrigger';
 import { IngestPanel } from './IngestPanel/IngestPanel';
+import { RightSidePlaceholder } from './RightSidePlaceholder';
 
 export default function KnowledgeView() {
   return (
@@ -30,8 +31,8 @@ function KnowledgeViewInner() {
             </div>
             <IngestPanel />
           </div>
-          <div className="p-6">
-            <p className="text-sm text-text-muted">Graph view comes in Plan 5.</p>
+          <div className="min-h-0">
+            <RightSidePlaceholder />
           </div>
         </div>
       </div>
