@@ -16,6 +16,34 @@ const DEFAULT_INDEX: &str = "# Index\n\n_no pages yet_\n";
 const DEFAULT_LOG: &str = "# Log\n\n";
 const GITIGNORE: &str = "raw/*/original.*\n.biorouter-knowledge/.crossref-cache/\n";
 
+/// Cross-reference rules block appended to legacy `schema.md` files that
+/// pre-date the Plan 5 Task 2 schema hardening. Kept in sync with the
+/// equivalent block in `schema_default.md`. The unique substring
+/// `"Cross-reference rules"` is used as the migration fingerprint.
+const SCHEMA_CROSSREF_RULES: &str = r#"
+### Cross-reference rules (the graph depends on these)
+
+The knowledge graph is derived **purely** from `[[link]]` patterns in page
+bodies. If you do not emit links, the graph will have nodes but no edges.
+
+When you write or update any knowledge page:
+
+1. Every mention of another entity or concept that has (or should have) its
+   own page **must** be wrapped in `[[double brackets]]`. Match the target
+   page's title exactly (case-insensitive); the deriver slugifies both sides.
+   Good: `[[EPAS1]] interacts with [[HIF2A]] under [[hypoxia]].`
+   Bad:  `EPAS1 interacts with HIF2A under hypoxia.`
+2. Every source page **must** include a `## Related pages` section listing
+   every entity/concept it touches, one `- [[Name]]` bullet per line.
+3. Every entity/concept page **must** include a `## Sources` section with
+   one `- [[source-id]]` bullet per supporting source.
+4. Prefer linking over re-stating. If a fact lives on another page, write
+   `See [[Page Name]]` instead of restating it.
+
+The lint workflow (`kb_lint`) reports pages with no inbound links as orphans
+— fix them by adding inbound `[[links]]` from related pages.
+"#;
+
 #[derive(Clone)]
 pub struct KnowledgeService {
     root: PathBuf,
@@ -225,11 +253,53 @@ pub enum ReadPageError {
 }
 
 impl KnowledgeService {
-    fn rebuild_graph_cache(&self, kb_id: &str) -> anyhow::Result<()> {
+    /// Re-derive the knowledge graph from the on-disk pages and overwrite the
+    /// cached `graph-cache.json`. Public so macros (and bug-fix migrations
+    /// like the wiki-link deriver fix) can refresh stale caches without
+    /// hand-crafting a commit.
+    pub fn rebuild_graph_cache(&self, kb_id: &str) -> anyhow::Result<()> {
         let kb_root = paths::kb_root(&self.root, kb_id);
         let g = crate::knowledge::graph::derive(&kb_root)?;
         crate::knowledge::graph::write_cache(&kb_root, &g)?;
         Ok(())
+    }
+
+    /// One-shot, idempotent upgrade for KBs created before the schema gained
+    /// explicit cross-reference rules (Plan 5 Task 2). If `schema.md` does
+    /// not already mention `"Cross-reference rules"`, the rules block is
+    /// appended in place and committed. User customisations elsewhere in
+    /// the file are preserved.
+    ///
+    /// Returns `Ok(true)` if the schema was rewritten, `Ok(false)` if it was
+    /// already up-to-date or the KB has no `schema.md`.
+    pub fn migrate_schema_if_needed(&self, kb_id: &str) -> Result<bool> {
+        paths::validate_kb_id(kb_id)?;
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        let schema_path = kb_root.join("schema.md");
+        if !schema_path.exists() {
+            return Ok(false);
+        }
+        let current = std::fs::read_to_string(&schema_path).context("read schema.md")?;
+        if current.contains("Cross-reference rules") {
+            return Ok(false);
+        }
+        // Ensure a blank line separates whatever the user had from the new
+        // section, even if their file did not end with a newline.
+        let mut next = current;
+        if !next.ends_with('\n') {
+            next.push('\n');
+        }
+        next.push_str(SCHEMA_CROSSREF_RULES);
+        std::fs::write(&schema_path, next).context("write schema.md")?;
+
+        let repo = GitRepo::open(&kb_root)?;
+        repo.commit_all(
+            crate::knowledge::types::ChangeKind::Manual,
+            "migrate schema: add cross-reference rules",
+            None,
+        )
+        .context("commit schema migration")?;
+        Ok(true)
     }
 
     pub fn get_graph(&self, kb_id: &str) -> anyhow::Result<crate::knowledge::types::Graph> {
@@ -784,5 +854,81 @@ mod tests {
         let err = svc.set_active_persisted(Some("INVALID--KB"));
         assert!(err.is_err());
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // migrate_schema_if_needed tests
+    // -----------------------------------------------------------------------
+
+    /// Legacy schema fingerprint: minimal pre-Plan-5-Task-2 schema (no
+    /// "Cross-reference rules" section).
+    const LEGACY_SCHEMA: &str =
+        "# Knowledge Base — Maintenance Schema\n\n## Layout\n\n- wiki/sources/...\n";
+
+    #[test]
+    fn migrate_schema_appends_cross_reference_rules_when_missing() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let kb = svc.root().join("k");
+
+        // Overwrite with the legacy schema and commit so we have a clean
+        // baseline to migrate from.
+        std::fs::write(kb.join("schema.md"), LEGACY_SCHEMA).unwrap();
+        let repo = GitRepo::open(&kb).unwrap();
+        repo.commit_all(ChangeKind::Manual, "seed legacy schema", None)
+            .unwrap();
+        let before = repo.log(10).unwrap().len();
+
+        let migrated = svc.migrate_schema_if_needed("k").unwrap();
+        assert!(migrated, "first call should migrate");
+
+        let new_schema = std::fs::read_to_string(kb.join("schema.md")).unwrap();
+        assert!(new_schema.contains("Cross-reference rules"));
+        // Original content is preserved.
+        assert!(new_schema.contains("wiki/sources/..."));
+
+        let after = repo.log(10).unwrap().len();
+        assert_eq!(after, before + 1, "exactly one migration commit added");
+        assert!(repo.log(1).unwrap()[0].summary.contains("migrate schema"));
+    }
+
+    #[test]
+    fn migrate_schema_is_noop_when_already_present() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let kb = svc.root().join("k");
+
+        // create_base already writes the current DEFAULT_SCHEMA, which
+        // contains the cross-reference rules section.
+        let original = std::fs::read_to_string(kb.join("schema.md")).unwrap();
+        assert!(original.contains("Cross-reference rules"));
+        let repo = GitRepo::open(&kb).unwrap();
+        let before = repo.log(10).unwrap().len();
+
+        let migrated = svc.migrate_schema_if_needed("k").unwrap();
+        assert!(!migrated, "already-migrated KB should be a no-op");
+
+        let after_schema = std::fs::read_to_string(kb.join("schema.md")).unwrap();
+        assert_eq!(after_schema, original, "schema bytes unchanged");
+        let after = repo.log(10).unwrap().len();
+        assert_eq!(after, before, "no new commit");
+    }
+
+    #[test]
+    fn migrate_schema_is_idempotent_across_calls() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let kb = svc.root().join("k");
+        std::fs::write(kb.join("schema.md"), LEGACY_SCHEMA).unwrap();
+        let repo = GitRepo::open(&kb).unwrap();
+        repo.commit_all(ChangeKind::Manual, "seed legacy schema", None)
+            .unwrap();
+
+        // First call migrates.
+        assert!(svc.migrate_schema_if_needed("k").unwrap());
+        // Second call is a no-op.
+        assert!(!svc.migrate_schema_if_needed("k").unwrap());
+        // Third call too.
+        assert!(!svc.migrate_schema_if_needed("k").unwrap());
     }
 }

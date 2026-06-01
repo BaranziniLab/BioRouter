@@ -219,6 +219,13 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
     let _lock = svc.lock_kb(&args.kb_id).await;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
+    // Idempotently upgrade legacy schema.md files that pre-date the
+    // cross-reference rules section. No-op for already-migrated KBs.
+    let _ = svc.migrate_schema_if_needed(&args.kb_id);
+    // Refresh the graph cache so any stale 0-edge cache produced by the
+    // pre-fix wiki-link deriver is replaced with a freshly derived one.
+    let _ = svc.rebuild_graph_cache(&args.kb_id);
+
     let report = scan(&kb_root)?;
 
     if !args.autofix {
