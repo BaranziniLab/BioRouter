@@ -32,13 +32,13 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         placeholder="Optional title…"
-        className="w-full px-3 py-2 text-xs border-b border-border-subtle bg-transparent outline-none"
+        className="w-full px-3 py-2 text-xs border-b border-border-subtle bg-transparent outline-none text-text-default placeholder:text-textPlaceholder"
       />
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="Paste notes, snippets, or a chunk of prose. URLs will be extracted and offered for ingestion."
-        className="w-full min-h-[100px] px-3 py-2 text-xs bg-transparent outline-none resize-y"
+        className="w-full min-h-[100px] px-3 py-2 text-xs bg-transparent outline-none resize-y text-text-default placeholder:text-textPlaceholder"
       />
       {detectedUrls.length > 0 && (
         <div className="border-t border-border-subtle px-3 py-2 flex flex-wrap gap-1.5">
