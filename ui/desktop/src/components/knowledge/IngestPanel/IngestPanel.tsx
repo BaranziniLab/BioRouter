@@ -87,10 +87,15 @@ export function IngestPanel() {
       }
     } finally {
       setDigesting(false);
+      // Auto-clear successfully ingested items; keep errors visible for user action.
+      for (const item of items) {
+        if (item.status === 'done') remove(item.id);
+      }
     }
   }
 
-  const canDigest = items.length > 0 && !!activeKbId && !digesting;
+  const ingestable = items.filter((s) => s.kind !== 'file');
+  const canDigest = ingestable.length > 0 && !!activeKbId && !digesting;
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -105,6 +110,12 @@ export function IngestPanel() {
             setShowPasteBox(false);
           }}
         />
+      )}
+
+      {items.some((s) => s.kind === 'file') && (
+        <div className="mb-2 px-3 py-2 rounded-lg border border-amber-300 bg-amber-50 text-xs text-amber-700 dark:border-amber-600 dark:bg-amber-950/30 dark:text-amber-400">
+          File uploads not yet supported — only URL and pasted text sources will be digested.
+        </div>
       )}
 
       <StagedList items={items} onRemove={remove} onClear={clear} />

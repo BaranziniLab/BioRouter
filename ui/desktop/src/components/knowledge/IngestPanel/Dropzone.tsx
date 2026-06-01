@@ -9,10 +9,13 @@ interface Props {
 export function Dropzone({ onFiles, onPasteTextRequested }: Props) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Counter-based drag tracking prevents flicker when cursor moves over child elements.
+  const dragCounterRef = useRef(0);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
+      dragCounterRef.current = 0;
       setDragging(false);
       const files = Array.from(e.dataTransfer.files);
       if (files.length > 0) onFiles(files);
@@ -24,15 +27,17 @@ export function Dropzone({ onFiles, onPasteTextRequested }: Props) {
     <div
       onDragEnter={(e) => {
         e.preventDefault();
+        dragCounterRef.current++;
         setDragging(true);
       }}
       onDragOver={(e) => {
         e.preventDefault();
-        setDragging(true);
+        // Don't touch dragging state — counter handles it.
       }}
       onDragLeave={(e) => {
         e.preventDefault();
-        setDragging(false);
+        dragCounterRef.current--;
+        if (dragCounterRef.current === 0) setDragging(false);
       }}
       onDrop={onDrop}
       className={`relative border-2 border-dashed rounded-xl p-6 text-center transition-colors ${
@@ -45,6 +50,7 @@ export function Dropzone({ onFiles, onPasteTextRequested }: Props) {
         ref={inputRef}
         type="file"
         multiple
+        accept=".pdf,.md,.html,.htm,.docx,.csv,.txt,.brkb"
         className="hidden"
         onChange={(e) => {
           const files = e.target.files ? Array.from(e.target.files) : [];

@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { KnowledgeProvider } from './KnowledgeContext';
 import { KBSelectorTrigger } from './KBSelector/KBSelectorTrigger';
@@ -13,6 +14,21 @@ export default function KnowledgeView() {
 }
 
 function KnowledgeViewInner() {
+  // Lift palette open-state here so Cmd-K (global shortcut) can open it while
+  // KnowledgeView is mounted without requiring a custom event bus.
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if (e.key === 'k' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    }
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, []);
+
   return (
     <MainPanelLayout>
       <div className="flex flex-col min-w-0 flex-1 overflow-y-auto relative" data-search-scroll-area>
@@ -27,7 +43,7 @@ function KnowledgeViewInner() {
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-[360px_1fr] min-h-0">
           <div className="border-r border-border-subtle overflow-y-auto">
             <div className="p-6">
-              <KBSelectorTrigger />
+              <KBSelectorTrigger open={paletteOpen} onOpenChange={setPaletteOpen} />
             </div>
             <IngestPanel />
           </div>

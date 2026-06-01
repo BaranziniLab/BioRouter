@@ -22,6 +22,8 @@ export function KnowledgeProvider({ children }: { children: ReactNode }) {
     localStorage.getItem(STORAGE_KEY_ACTIVE_KB)
   );
 
+  // TODO Plan 6: Also sync to server-side active-KB state via a new
+  // POST /knowledge/active endpoint (currently kb_set_active is MCP-only).
   const setActiveKbId = useCallback((id: string | null) => {
     setActiveKbIdState(id);
     if (id) localStorage.setItem(STORAGE_KEY_ACTIVE_KB, id);

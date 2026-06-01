@@ -3,9 +3,23 @@ import { ChevronDown } from 'lucide-react';
 import { useKnowledge } from '../KnowledgeContext';
 import { KBSelectorPalette } from './KBSelectorPalette';
 
-export function KBSelectorTrigger() {
+interface Props {
+  /** Controlled open state. When provided, the trigger acts as a controlled component. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
   const { activeKb } = useKnowledge();
-  const [open, setOpen] = useState(false);
+  const [openInternal, setOpenInternal] = useState(false);
+
+  // Support both controlled (open+onOpenChange) and uncontrolled usage.
+  const isControlled = openProp !== undefined;
+  const open = isControlled ? openProp : openInternal;
+  const setOpen = isControlled
+    ? (v: boolean) => onOpenChange?.(v)
+    : setOpenInternal;
+
   return (
     <>
       <button
