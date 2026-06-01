@@ -76,6 +76,15 @@ export type ChatRequest = {
     workflow_version?: string | null;
 };
 
+export type CheckModelBody = {
+    model: ModelRef;
+};
+
+export type CheckModelResponse = {
+    error?: string | null;
+    ok: boolean;
+};
+
 export type CheckProviderRequest = {
     provider: string;
 };
@@ -2929,6 +2938,31 @@ export type ReclassifyResponses = {
 };
 
 export type ReclassifyResponse = ReclassifyResponses[keyof ReclassifyResponses];
+
+export type CheckModelData = {
+    body: CheckModelBody;
+    path?: never;
+    query?: never;
+    url: '/knowledge/check-model';
+};
+
+export type CheckModelErrors = {
+    /**
+     * Model is unreachable / invalid
+     */
+    502: CheckModelResponse;
+};
+
+export type CheckModelError = CheckModelErrors[keyof CheckModelErrors];
+
+export type CheckModelResponses = {
+    /**
+     * Model responded OK
+     */
+    200: CheckModelResponse;
+};
+
+export type CheckModelResponse2 = CheckModelResponses[keyof CheckModelResponses];
 
 export type McpUiProxyData = {
     body?: never;

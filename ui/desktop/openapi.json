@@ -2044,6 +2044,46 @@
         }
       }
     },
+    "/knowledge/check-model": {
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "check_model",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckModelBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Model responded OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckModelResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Model is unreachable / invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckModelResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/mcp-ui-proxy": {
       "get": {
         "tags": [
@@ -3719,6 +3759,32 @@
           "workflow_version": {
             "type": "string",
             "nullable": true
+          }
+        }
+      },
+      "CheckModelBody": {
+        "type": "object",
+        "required": [
+          "model"
+        ],
+        "properties": {
+          "model": {
+            "$ref": "#/components/schemas/ModelRef"
+          }
+        }
+      },
+      "CheckModelResponse": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "nullable": true
+          },
+          "ok": {
+            "type": "boolean"
           }
         }
       },
