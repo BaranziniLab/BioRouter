@@ -23,6 +23,8 @@ pub struct AppState {
     workflow_session_tracker: Arc<Mutex<HashSet<String>>>,
     pub tunnel_manager: Arc<TunnelManager>,
     pub extension_loading_tasks: ExtensionLoadingTasks,
+    // Used by knowledge route handlers (Task 5+).
+    #[allow(dead_code)]
     pub knowledge_service: Arc<KnowledgeService>,
 }
 
