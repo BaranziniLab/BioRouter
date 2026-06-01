@@ -101,9 +101,18 @@ just generate-openapi   # Regenerate OpenAPI spec from server routes
 - **`scheduler.rs`** — Cron-based job scheduling (tokio-cron-scheduler)
 - **`knowledge/`** — Personal knowledge base: storage, git history, file
   conversion (HTML/PDF/DOCX/CSV), credibility classification
-  (Crossref/OpenAlex), and graph derivation. The shared service backs
-  both the `knowledge` MCP extension and (in later plans) HTTP routes.
-  (Module lives in `biorouter-mcp`; re-exported as `biorouter::knowledge`.)
+  (Crossref/OpenAlex), graph derivation, **macros (ingest / query / lint)
+  backed by a bounded sub-agent loop**, BM25 search, per-KB concurrency
+  mutex, and an active-KB state for session-scoped tool defaulting. The
+  shared service backs the `knowledge` MCP extension and (in Plan 3) HTTP
+  routes. (Module lives in `biorouter-mcp`; re-exported as
+  `biorouter::knowledge`.)
+
+  Note: the macros (`ingest`, `query`, `lint`) and the agentic credibility
+  fallback take a `Box<dyn Completer>` argument rather than a `Provider`
+  directly, to avoid a circular dependency on `biorouter`. The Plan-3 HTTP
+  routes will wrap a real `biorouter::providers::Provider` in a
+  `ProviderCompleter` adapter.
 
 ### Frontend (`ui/desktop/src/`)
 
