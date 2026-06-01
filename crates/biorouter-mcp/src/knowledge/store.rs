@@ -205,22 +205,40 @@ fn collect_docs_under(
 }
 
 fn snippet_of(body: &str, query: &str, max_len: usize) -> String {
-    let needle = query.to_ascii_lowercase();
+    // Collect char-boundary offsets so we can slice safely.
     let hay = body.to_ascii_lowercase();
-    if let Some(pos) = hay.find(&needle) {
-        let start = pos.saturating_sub(60);
-        let end = (pos + needle.len() + 140).min(body.len());
-        let mut snippet = body[start..end].replace('\n', " ");
-        if snippet.len() > max_len {
-            snippet.truncate(max_len);
-        }
-        snippet
+    let needle = query.to_ascii_lowercase();
+
+    let mut snippet = if let Some(match_byte) = hay.find(needle.as_str()) {
+        // snap start/end to char boundaries by using `get` with clamped offsets.
+        let desired_start = match_byte.saturating_sub(60);
+        let desired_end = (match_byte + needle.len() + 140).min(body.len());
+
+        // Walk forward from desired_start until we hit a char boundary.
+        let start = (desired_start..=match_byte)
+            .find(|&i| body.is_char_boundary(i))
+            .unwrap_or(match_byte);
+        // Walk backward from desired_end until we hit a char boundary.
+        let end = (match_byte..=desired_end)
+            .rev()
+            .find(|&i| body.is_char_boundary(i))
+            .unwrap_or(match_byte);
+        let end = end.max(start);
+
+        body.get(start..end).unwrap_or("").replace('\n', " ")
     } else {
-        body.chars()
-            .take(max_len)
-            .collect::<String>()
-            .replace('\n', " ")
+        body.chars().take(max_len).collect::<String>().replace('\n', " ")
+    };
+
+    if snippet.len() > max_len {
+        // Truncate at a char boundary.
+        let trunc = (0..=max_len)
+            .rev()
+            .find(|&i| snippet.is_char_boundary(i))
+            .unwrap_or(0);
+        snippet.truncate(trunc);
     }
+    snippet
 }
 
 #[cfg(test)]
