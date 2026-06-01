@@ -363,7 +363,11 @@ mod tests {
 
         // Inspect what the provider saw.
         let calls = recording.received.lock().await;
-        assert_eq!(calls.len(), 1, "provider should have been called exactly once");
+        assert_eq!(
+            calls.len(),
+            1,
+            "provider should have been called exactly once"
+        );
         let provider_msgs = &calls[0];
 
         // message[1] must be an assistant message containing a ToolRequest with the

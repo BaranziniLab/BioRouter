@@ -168,7 +168,15 @@ mod tests {
         })
         .await
         .unwrap();
-        assert!(c.markdown.contains("Hello"), "markdown missing 'Hello': {}", c.markdown);
-        assert!(c.markdown.contains("world"), "markdown missing 'world': {}", c.markdown);
+        assert!(
+            c.markdown.contains("Hello"),
+            "markdown missing 'Hello': {}",
+            c.markdown
+        );
+        assert!(
+            c.markdown.contains("world"),
+            "markdown missing 'world': {}",
+            c.markdown
+        );
     }
 }

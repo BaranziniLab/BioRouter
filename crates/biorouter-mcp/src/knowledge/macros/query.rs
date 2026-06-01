@@ -79,7 +79,12 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
 
     let cancel_ref = args.cancel.as_deref();
     let agent_result = agent
-        .run(&args.question, &dispatch, cancel_ref, args.event_sink.as_ref())
+        .run(
+            &args.question,
+            &dispatch,
+            cancel_ref,
+            args.event_sink.as_ref(),
+        )
         .await;
 
     match agent_result {

@@ -1090,7 +1090,11 @@ async fn active_kb_roundtrip() {
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), 200, "POST /active with valid id should be 200");
+    assert_eq!(
+        res.status(),
+        200,
+        "POST /active with valid id should be 200"
+    );
 
     // Read it back.
     let res = app

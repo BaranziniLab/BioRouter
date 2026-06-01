@@ -526,7 +526,12 @@ mod tests {
         // not two separate ToolResult entries.
         let tool_result_msgs: Vec<&LlmMessage> = msgs_after_first_turn
             .iter()
-            .filter(|m| matches!(m, LlmMessage::ToolResults(_) | LlmMessage::ToolResult { .. }))
+            .filter(|m| {
+                matches!(
+                    m,
+                    LlmMessage::ToolResults(_) | LlmMessage::ToolResult { .. }
+                )
+            })
             .collect();
 
         assert_eq!(
