@@ -45,6 +45,12 @@ pub fn kb_root(root: &Path, id: &str) -> PathBuf {
     root.join(id)
 }
 
+/// Returns `<knowledge-root>/.active-kb` — the file that persists the
+/// currently-active KB id across MCP-server processes.
+pub fn active_kb_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join(".active-kb")
+}
+
 pub fn kb_knowledge_dir(root: &Path, id: &str) -> PathBuf {
     kb_root(root, id).join("knowledge")
 }

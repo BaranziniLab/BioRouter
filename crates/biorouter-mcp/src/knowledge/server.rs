@@ -26,6 +26,17 @@ impl ActiveKbState {
     pub async fn clear(&self) {
         *self.inner.lock().await = None;
     }
+
+    /// Bootstrap the in-memory state from `<knowledge-root>/.active-kb` so a
+    /// freshly spawned MCP-server process picks up whatever KB the user had
+    /// selected previously. Errors are intentionally swallowed — a missing or
+    /// unreadable file simply yields an unset active KB.
+    pub fn from_persisted(service: &KnowledgeService) -> Self {
+        let initial = service.get_active_persisted().ok().flatten();
+        Self {
+            inner: Arc::new(tokio::sync::Mutex::new(initial)),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -198,11 +209,13 @@ pub struct HistoryOptParams {
 #[tool_router(router = tool_router)]
 impl KnowledgeServer {
     pub fn new() -> Result<Self> {
+        let service = KnowledgeService::new_default()?;
+        let active = ActiveKbState::from_persisted(&service);
         Ok(Self {
             tool_router: Self::tool_router(),
-            service: KnowledgeService::new_default()?,
+            service,
             instructions: include_str!("instructions.md").to_string(),
-            active: ActiveKbState::default(),
+            active,
         })
     }
 
@@ -456,6 +469,9 @@ impl KnowledgeServer {
     ) -> Result<CallToolResult, ErrorData> {
         crate::knowledge::paths::validate_kb_id(&p.0.kb_id).map_err(|e| into_err(e.into()))?;
         self.active.set(&p.0.kb_id).await;
+        self.service
+            .set_active_persisted(Some(&p.0.kb_id))
+            .map_err(into_err)?;
         ok_json(&serde_json::json!({ "ok": true, "active_kb": p.0.kb_id }))
     }
 

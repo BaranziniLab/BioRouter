@@ -257,6 +257,44 @@ impl KnowledgeService {
         }
         Ok(std::fs::read_to_string(&abs)?)
     }
+
+    /// Read the persisted active-KB id (set via the UI or `kb_set_active`).
+    /// Returns `Ok(None)` if no file exists or the file is empty.
+    pub fn get_active_persisted(&self) -> anyhow::Result<Option<String>> {
+        let path = crate::knowledge::paths::active_kb_path(self.root());
+        if !path.exists() {
+            return Ok(None);
+        }
+        let s = std::fs::read_to_string(&path)?;
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(trimmed.to_string()))
+        }
+    }
+
+    /// Persist the active-KB id. Pass `None` to clear.
+    pub fn set_active_persisted(&self, id: Option<&str>) -> anyhow::Result<()> {
+        let path = crate::knowledge::paths::active_kb_path(self.root());
+        if let Some(p) = path.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        match id {
+            Some(id) => {
+                crate::knowledge::paths::validate_kb_id(id)?;
+                let tmp = path.with_extension("tmp");
+                std::fs::write(&tmp, id.as_bytes())?;
+                std::fs::rename(tmp, &path)?;
+            }
+            None => {
+                if path.exists() {
+                    std::fs::remove_file(&path)?;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl KnowledgeService {
@@ -723,5 +761,28 @@ mod tests {
             history_after_restore[0].kind,
             crate::knowledge::types::ChangeKind::Restore
         );
+    }
+
+    #[test]
+    fn active_kb_persists_to_disk() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        assert!(svc.get_active_persisted()?.is_none());
+
+        svc.set_active_persisted(Some("my-kb"))?;
+        assert_eq!(svc.get_active_persisted()?.as_deref(), Some("my-kb"));
+
+        // Setting again overwrites.
+        svc.set_active_persisted(Some("other-kb"))?;
+        assert_eq!(svc.get_active_persisted()?.as_deref(), Some("other-kb"));
+
+        // Clearing removes the file.
+        svc.set_active_persisted(None)?;
+        assert!(svc.get_active_persisted()?.is_none());
+
+        // Invalid IDs are rejected.
+        let err = svc.set_active_persisted(Some("INVALID--KB"));
+        assert!(err.is_err());
+        Ok(())
     }
 }
