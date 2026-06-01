@@ -23,10 +23,11 @@ export function KBSelectorPalette({ onClose }: Props) {
   const filtered: Manifest[] = bases.filter((b) =>
     b.name.toLowerCase().includes(query.toLowerCase())
   );
-  const showCreate = query.length > 0 && !filtered.some((b) => b.id === slugify(query));
+  const slug = slugify(query);
+  const showCreate = query.length > 0 && slug.length > 0 && !filtered.some((b) => b.id === slug);
   const items: PaletteItem[] = [
     ...filtered,
-    ...(showCreate ? [{ create: true as const, slug: slugify(query), name: query }] : []),
+    ...(showCreate ? [{ create: true as const, slug, name: query }] : []),
   ];
 
   useEffect(() => { setCursor(0); }, [query]);
@@ -35,13 +36,21 @@ export function KBSelectorPalette({ onClose }: Props) {
     const it = items[i];
     if (!it) return;
     if ('create' in it) {
+      // Guard against empty slugs (can happen if the user types only special characters).
+      if (!it.slug) {
+        console.warn('KBSelectorPalette: slugify produced an empty string for query:', query);
+        return;
+      }
       void (async () => {
         try {
           const res = await createBase({ throwOnError: true, body: { id: it.slug, name: it.name } });
           await refresh();
           if (res.data?.id) setActiveKbId(res.data.id);
         } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
           console.error('createBase failed', err);
+          // Surface the error to the user rather than closing silently.
+          window.alert(`Failed to create knowledge base: ${msg}`);
         } finally {
           onClose();
         }
