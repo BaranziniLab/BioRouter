@@ -18,6 +18,7 @@ import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
 import { useFileDrop } from '../hooks/useFileDrop';
 import { Message } from '../api';
 import type { UserAttachment } from '../types/message';
+import { getProviderMetadata } from './settings/models/modelInterface';
 import { ChatState } from '../types/chatState';
 import { ChatType } from '../types/chat';
 import { useIsMobile } from '../hooks/use-mobile';
@@ -117,7 +118,13 @@ function BaseChatContent({
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const scrollRef = useRef<ScrollAreaHandle>(null);
-  const { extensionsList } = useConfig();
+  const { extensionsList, getProviders } = useConfig();
+  // Per-session vision capability. The global ModelAndProviderContext tracks
+  // the user's default model, but each chat session (especially in dashboard
+  // mode) can be bound to a different provider/model. Look up vision support
+  // against the session's own provider/model so attach gating reflects what
+  // the session will actually use.
+  const [sessionSupportsVision, setSessionSupportsVision] = React.useState<boolean | null>(null);
 
   const disableAnimation = location.state?.disableAnimation || false;
   const [hasStartedUsingWorkflow, setHasStartedUsingWorkflow] = React.useState(false);
@@ -228,6 +235,31 @@ function BaseChatContent({
       handleSubmit('');
     }
   }, [session, initialMessage, searchParams, handleSubmit, navigate, location]);
+
+  // Resolve session-scoped vision capability whenever the session's bound
+  // provider or model changes. Falls back to null (== use global context) if
+  // either piece isn't loaded yet.
+  React.useEffect(() => {
+    const sessionProvider = session?.provider_name;
+    const sessionModel = session?.model_config?.model_name;
+    if (!sessionProvider || !sessionModel) {
+      setSessionSupportsVision(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const metadata = await getProviderMetadata(sessionProvider, getProviders);
+        const info = metadata.known_models.find((m) => m.name === sessionModel);
+        if (!cancelled) setSessionSupportsVision(info?.supports_vision === true);
+      } catch {
+        if (!cancelled) setSessionSupportsVision(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [session?.provider_name, session?.model_config?.model_name, getProviders]);
 
   const handleFormSubmit = async (e: React.FormEvent) => {
     const customEvent = e as unknown as CustomEvent;
@@ -665,6 +697,7 @@ function BaseChatContent({
             initialPrompt={initialPrompt}
             toolCount={toolCount || 0}
             compactPicker={compactPicker}
+            supportsVisionOverride={sessionSupportsVision ?? undefined}
             {...customChatInputProps}
           />
         </div>

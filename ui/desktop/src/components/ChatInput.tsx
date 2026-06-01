@@ -122,6 +122,12 @@ interface ChatInputProps {
    * popover. When false (chat tab), they're rendered inline so users with
    * the room get every control at a glance. */
   compactPicker?: boolean;
+  /** Optional override for vision capability. When the chat is bound to a
+   * specific session whose model differs from the user's global default
+   * (notably dashboard windows), the override reflects the session's actual
+   * model. Falls back to the global ModelAndProviderContext flag when
+   * undefined. */
+  supportsVisionOverride?: boolean;
 }
 
 export default function ChatInput({
@@ -149,6 +155,7 @@ export default function ChatInput({
   append: _append,
   onWorkingDirChange,
   compactPicker = false,
+  supportsVisionOverride,
 }: ChatInputProps) {
   const [_value, setValue] = useState(initialValue);
   const [displayValue, setDisplayValue] = useState(initialValue); // For immediate visual feedback
@@ -170,7 +177,17 @@ export default function ChatInput({
     null
   ) as React.RefObject<HTMLDivElement>;
   const { getProviders, read } = useConfig();
-  const { getCurrentModelAndProvider, currentModel, currentProvider, currentModelSupportsVision } = useModelAndProvider();
+  const {
+    getCurrentModelAndProvider,
+    currentModel,
+    currentProvider,
+    currentModelSupportsVision: globalSupportsVision,
+  } = useModelAndProvider();
+  // Prefer the session-scoped flag when provided. This matters in dashboard
+  // mode (where each window may be bound to a different model than the user's
+  // global default) and after per-session model switches.
+  const currentModelSupportsVision =
+    supportsVisionOverride !== undefined ? supportsVisionOverride : globalSupportsVision;
   const [tokenLimit, setTokenLimit] = useState<number>(TOKEN_LIMIT_DEFAULT);
   const [isTokenLimitLoaded, setIsTokenLimitLoaded] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -356,12 +373,17 @@ export default function ChatInput({
 
   // Merge local dropped files with parent dropped files.
   // When the active model does not support vision, strip any image-typed
-  // entries so they never reach the send path.
+  // entries from BOTH sources so they never reach the send path. The parent
+  // BaseChat installs its own useFileDrop on the message-scroll area, so we
+  // need to filter that channel too — it's not just our own ChatInput drop
+  // zone that needs gating.
   const allDroppedFiles = useMemo(() => {
-    const filteredLocal = currentModelSupportsVision
-      ? localDroppedFiles
-      : localDroppedFiles.filter((f) => !f.type?.startsWith('image/'));
-    return [...droppedFiles, ...filteredLocal];
+    if (currentModelSupportsVision) {
+      return [...droppedFiles, ...localDroppedFiles];
+    }
+    const stripImages = (arr: DroppedFile[]) =>
+      arr.filter((f) => !f.type?.startsWith('image/'));
+    return [...stripImages(droppedFiles), ...stripImages(localDroppedFiles)];
   }, [droppedFiles, localDroppedFiles, currentModelSupportsVision]);
 
   const handleRemoveDroppedFile = (idToRemove: string) => {
@@ -1272,9 +1294,26 @@ export default function ChatInput({
       {/* Vision-mismatch banner: shown when the user has images attached but the
           current model does not support vision. Blocks Send until resolved. */}
       {visionMismatch && (
-        <div className="px-3 py-2 mb-2 rounded-md bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-100 text-sm">
-          Current model can&apos;t see images. Switch to a vision-capable model
-          or remove attachments to send.
+        <div className="flex items-start gap-2 px-3 py-2 mb-2 bg-background-medium/60 border border-border-subtle rounded-lg text-xs text-text-muted">
+          <svg
+            className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 opacity-60"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.5}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+            <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+            <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+            <line x1="2" y1="2" x2="22" y2="22" />
+          </svg>
+          <span className="leading-snug">
+            The active model can&apos;t read images. Switch to a vision-capable
+            model, or remove attached images to send.
+          </span>
         </div>
       )}
       {/* Input row — textarea only. Send/Stop button moved to the right end of
