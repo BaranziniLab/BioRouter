@@ -14,7 +14,7 @@ workspace = true
 biorouter = { path = "../biorouter" }
 biorouter-mcp = { path = "../biorouter-mcp", features = ["utoipa"] }
 rmcp = { workspace = true }
-axum = { version = "0.8.1", features = ["ws", "macros"] }
+axum = { version = "0.8.1", features = ["ws", "macros", "multipart"] }
 tokio = { workspace = true }
 chrono = "0.4"
 tower-http = { version = "0.5", features = ["cors"] }

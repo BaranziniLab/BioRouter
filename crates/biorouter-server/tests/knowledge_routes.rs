@@ -398,3 +398,290 @@ async fn history_write_restore_roundtrip() {
         "page should not exist after restoring to initial commit"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Task 8: POST /bases/:id/raw
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn add_raw_source_text() {
+    let (_d, app) = build_test_router();
+
+    // Create a KB.
+    let create_body =
+        serde_json::to_vec(&serde_json::json!({"id": "raw", "name": "Raw Test"})).unwrap();
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // POST a text source.
+    let body = serde_json::to_vec(&serde_json::json!({
+        "text": "hello world lab note",
+        "title": "Note"
+    }))
+    .unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases/raw/raw")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "POST /bases/raw/raw should return 200");
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        v.get("source_id").is_some(),
+        "response should have source_id"
+    );
+    assert!(
+        v.get("source_md_path").is_some(),
+        "response should have source_md_path"
+    );
+}
+
+#[tokio::test]
+async fn add_raw_source_rejects_empty_body() {
+    let (_d, app) = build_test_router();
+
+    // Create a KB.
+    let create_body =
+        serde_json::to_vec(&serde_json::json!({"id": "rj", "name": "Reject"})).unwrap();
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // POST an empty JSON object — no url, no text, no file.
+    let body = serde_json::to_vec(&serde_json::json!({})).unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases/rj/raw")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400, "empty body should return 400");
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Task 10: GET /bases/:id/export + POST /bases/import
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn export_then_import_roundtrip() {
+    let (_d, app) = build_test_router();
+
+    // 1. Create a KB.
+    let create_body =
+        serde_json::to_vec(&serde_json::json!({"id": "ex", "name": "Export"})).unwrap();
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // 2. Add a small text source so the archive has content.
+    let source_body = serde_json::to_vec(&serde_json::json!({
+        "text": "content for export",
+        "title": "Test"
+    }))
+    .unwrap();
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases/ex/raw")
+                .header("content-type", "application/json")
+                .body(Body::from(source_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // 3. Export the KB.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/bases/ex/export")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "GET /bases/ex/export should return 200");
+    assert_eq!(
+        res.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/octet-stream"),
+        "export should return octet-stream"
+    );
+    let brkb_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert!(brkb_bytes.len() > 100, "exported archive should have content");
+
+    // 4. Import via multipart — build a minimal multipart body by hand.
+    // Boundary and body structure per RFC 2046.
+    let boundary = "TESTBOUNDARY";
+    let mut multipart_body: Vec<u8> = Vec::new();
+    multipart_body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"ex.brkb\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    multipart_body.extend_from_slice(&brkb_bytes);
+    multipart_body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases/import")
+                .header(
+                    "content-type",
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .body(Body::from(multipart_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "POST /bases/import should return 200");
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let new_id = v.get("id").and_then(|v| v.as_str()).unwrap();
+    // The original id was "ex" and it already exists, so the import should assign "ex-2".
+    assert_eq!(new_id, "ex-2", "import into existing root should suffix with -2");
+
+    // 5. The imported KB should show up in list_bases (we should now have 2 bases).
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/bases")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let bases: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let count = bases.as_array().unwrap().len();
+    assert_eq!(count, 2, "should have 2 knowledge bases after import (original + imported)");
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Task 11: reclassify + override_credibility routes
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn reclassify_route_returns_credibility() {
+    let (_d, app) = build_test_router();
+
+    // Create KB.
+    let create_body =
+        serde_json::to_vec(&serde_json::json!({"id": "rc", "name": "Reclassify"})).unwrap();
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    // Add a text source.
+    let source_body = serde_json::to_vec(&serde_json::json!({
+        "text": "personal research note",
+        "title": "Note"
+    }))
+    .unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases/rc/raw")
+                .header("content-type", "application/json")
+                .body(Body::from(source_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let source: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let source_id = source.get("source_id").and_then(|v| v.as_str()).unwrap();
+
+    // Reclassify.
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/bases/rc/sources/{source_id}/reclassify"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "reclassify should return 200"
+    );
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        v.get("credibility").is_some(),
+        "response should have credibility"
+    );
+    assert!(
+        v["credibility"].get("tier").is_some(),
+        "credibility should have tier"
+    );
+}

@@ -1,14 +1,16 @@
 use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
+    body::Body,
+    extract::{FromRequest, Multipart, Path, Query, Request, State},
+    http::{header, HeaderMap, StatusCode},
+    response::Response,
     routing::{get, post, put},
     Json, Router,
 };
 use biorouter_mcp::knowledge::{
-    paths, registry,
+    convert, paths, registry,
     service::KnowledgeService,
     store,
-    types::{Graph, HistoryEntry, Manifest},
+    types::{Credibility, Graph, HistoryEntry, Manifest},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -100,6 +102,19 @@ pub struct RestoreBody {
 #[derive(Serialize, ToSchema)]
 pub struct RestoreResponse {
     pub new_commit_sha: String,
+}
+
+// Task 8 DTOs
+#[derive(Serialize, ToSchema)]
+pub struct RawSourceResponse {
+    pub source_id: String,
+    pub source_md_path: String,
+}
+
+// Task 11 DTOs
+#[derive(Serialize, ToSchema)]
+pub struct CredibilityResponse {
+    pub credibility: Credibility,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -328,12 +343,8 @@ pub async fn restore_state(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Stubs for Tasks 8-11 (return 501 Not Implemented)
+// Stubs for Tasks 9 (SSE macros) — return 501 Not Implemented
 // ──────────────────────────────────────────────────────────────────────────────
-
-pub async fn add_raw_source() -> StatusCode {
-    StatusCode::NOT_IMPLEMENTED
-}
 
 pub async fn ingest() -> StatusCode {
     StatusCode::NOT_IMPLEMENTED
@@ -347,18 +358,226 @@ pub async fn lint() -> StatusCode {
     StatusCode::NOT_IMPLEMENTED
 }
 
-pub async fn export_brkb() -> StatusCode {
-    StatusCode::NOT_IMPLEMENTED
+// ──────────────────────────────────────────────────────────────────────────────
+// Task 8: POST /bases/:id/raw  (multipart file | JSON {url} | JSON {text,title})
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[utoipa::path(
+    post, path = "/knowledge/bases/{id}/raw",
+    params(("id" = String, Path, description = "Knowledge base ID")),
+    request_body(
+        content = inline(serde_json::Value),
+        description = "One of: multipart/form-data with 'file' field, \
+                       JSON {url}, or JSON {text, title?}",
+    ),
+    responses(
+        (status = 200, description = "Source ingested", body = RawSourceResponse),
+        (status = 400, description = "Bad request"),
+        (status = 500, description = "Internal error"),
+    )
+)]
+pub async fn add_raw_source(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    req: Request,
+) -> Result<Json<RawSourceResponse>, (StatusCode, String)> {
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let input = if content_type.starts_with("multipart/form-data") {
+        // Parse multipart — consume the whole request.
+        let mut mp = Multipart::from_request(req, &())
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        let mut bytes_opt: Option<Vec<u8>> = None;
+        let mut filename: Option<String> = None;
+        while let Some(field) = mp
+            .next_field()
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+        {
+            if field.name() == Some("file") {
+                filename = field.file_name().map(|s| s.to_string());
+                bytes_opt = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+                        .to_vec(),
+                );
+            }
+        }
+        let bytes = bytes_opt
+            .ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
+        let fname = filename.unwrap_or_else(|| "upload.bin".to_string());
+        convert::SourceInput::File {
+            bytes,
+            filename: fname,
+            mime: None,
+        }
+    } else {
+        // JSON body — read raw bytes then parse.
+        let body_bytes = axum::body::to_bytes(req.into_body(), 16 * 1024 * 1024)
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes)
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
+            convert::SourceInput::Url(url.to_string())
+        } else if let Some(text) = json.get("text").and_then(|v| v.as_str()) {
+            let title = json
+                .get("title")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            convert::SourceInput::Text {
+                text: text.to_string(),
+                title,
+            }
+        } else {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "expected file (multipart), {url}, or {text}".to_string(),
+            ));
+        }
+    };
+
+    let res = svc
+        .add_raw_source(&id, input, None)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(RawSourceResponse {
+        source_id: res.source_id,
+        source_md_path: res.source_md_path,
+    }))
 }
 
-pub async fn import_brkb() -> StatusCode {
-    StatusCode::NOT_IMPLEMENTED
+// ──────────────────────────────────────────────────────────────────────────────
+// Task 10: GET /bases/:id/export + POST /bases/import
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[utoipa::path(
+    get, path = "/knowledge/bases/{id}/export",
+    params(("id" = String, Path, description = "Knowledge base ID")),
+    responses(
+        (status = 200, description = "Binary .brkb archive", content_type = "application/octet-stream"),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error"),
+    )
+)]
+pub async fn export_brkb(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+) -> Result<Response, (StatusCode, String)> {
+    let bytes = svc
+        .export_brkb(&id)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    let disposition = format!("attachment; filename=\"{id}.brkb\"");
+    let response = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(header::CONTENT_DISPOSITION, disposition)
+        .body(Body::from(bytes))
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(response)
 }
 
-pub async fn reclassify() -> StatusCode {
-    StatusCode::NOT_IMPLEMENTED
+#[utoipa::path(
+    post, path = "/knowledge/bases/import",
+    request_body(
+        content = inline(serde_json::Value),
+        description = "multipart/form-data with a 'file' field containing the .brkb archive",
+    ),
+    responses(
+        (status = 200, description = "Imported knowledge base ID"),
+        (status = 400, description = "Bad request"),
+        (status = 500, description = "Internal error"),
+    )
+)]
+pub async fn import_brkb(
+    State(svc): State<Arc<KnowledgeService>>,
+    mut multipart: Multipart,
+) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let mut file_bytes: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    {
+        if field.name() == Some("file") {
+            file_bytes = Some(
+                field
+                    .bytes()
+                    .await
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+                    .to_vec(),
+            );
+        }
+    }
+
+    let bytes = file_bytes
+        .ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
+
+    let new_id = svc
+        .import_brkb(&bytes)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(serde_json::json!({ "id": new_id })))
 }
 
-pub async fn override_credibility() -> StatusCode {
-    StatusCode::NOT_IMPLEMENTED
+// ──────────────────────────────────────────────────────────────────────────────
+// Task 11: POST /bases/:id/sources/:sid/reclassify
+//          PUT  /bases/:id/sources/:sid/credibility
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[utoipa::path(
+    post, path = "/knowledge/bases/{id}/sources/{sid}/reclassify",
+    params(
+        ("id" = String, Path, description = "Knowledge base ID"),
+        ("sid" = String, Path, description = "Source ID"),
+    ),
+    responses(
+        (status = 200, description = "Reclassified credibility", body = CredibilityResponse),
+        (status = 404, description = "Source not found"),
+        (status = 500, description = "Internal error"),
+    )
+)]
+pub async fn reclassify(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path((id, sid)): Path<(String, String)>,
+) -> Result<Json<CredibilityResponse>, (StatusCode, String)> {
+    let credibility = svc
+        .reclassify_source(&id, &sid)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(CredibilityResponse { credibility }))
+}
+
+#[utoipa::path(
+    put, path = "/knowledge/bases/{id}/sources/{sid}/credibility",
+    request_body = Credibility,
+    params(
+        ("id" = String, Path, description = "Knowledge base ID"),
+        ("sid" = String, Path, description = "Source ID"),
+    ),
+    responses(
+        (status = 200, description = "Credibility overridden", body = CredibilityResponse),
+        (status = 404, description = "Source not found"),
+        (status = 500, description = "Internal error"),
+    )
+)]
+pub async fn override_credibility(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path((id, sid)): Path<(String, String)>,
+    Json(cred): Json<Credibility>,
+) -> Result<Json<CredibilityResponse>, (StatusCode, String)> {
+    let credibility = svc
+        .override_credibility(&id, &sid, cred)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(CredibilityResponse { credibility }))
 }
