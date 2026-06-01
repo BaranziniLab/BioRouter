@@ -279,9 +279,8 @@ impl KnowledgeService {
         let input = if let Some(url) = meta.url.clone() {
             convert::SourceInput::Url(url)
         } else {
-            let body = std::fs::read_to_string(
-                kb_root.join("raw").join(source_id).join("source.md"),
-            )?;
+            let body =
+                std::fs::read_to_string(kb_root.join("raw").join(source_id).join("source.md"))?;
             convert::SourceInput::Text {
                 text: body,
                 title: Some(meta.title.clone()),
@@ -291,10 +290,7 @@ impl KnowledgeService {
         let new_cred = credibility::classify(&input, None).await?;
         meta.credibility = new_cred.clone();
         let yaml = serde_yaml::to_string(&meta)?;
-        std::fs::write(
-            kb_root.join("raw").join(source_id).join("meta.yaml"),
-            yaml,
-        )?;
+        std::fs::write(kb_root.join("raw").join(source_id).join("meta.yaml"), yaml)?;
 
         let repo = GitRepo::open(&kb_root)?;
         repo.commit_all(
@@ -319,10 +315,7 @@ impl KnowledgeService {
         let mut meta = raw::read_meta(&kb_root, source_id)?;
         meta.credibility = cred.clone();
         let yaml = serde_yaml::to_string(&meta)?;
-        std::fs::write(
-            kb_root.join("raw").join(source_id).join("meta.yaml"),
-            yaml,
-        )?;
+        std::fs::write(kb_root.join("raw").join(source_id).join("meta.yaml"), yaml)?;
         let repo = GitRepo::open(&kb_root)?;
         repo.commit_all(
             crate::knowledge::types::ChangeKind::Manual,

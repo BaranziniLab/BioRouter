@@ -73,7 +73,9 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
         bounds: args.bounds,
     };
 
-    let agent_result = agent.run(&args.question, &dispatch, None, args.event_sink.as_ref()).await;
+    let agent_result = agent
+        .run(&args.question, &dispatch, None, args.event_sink.as_ref())
+        .await;
 
     match agent_result {
         Ok(r)

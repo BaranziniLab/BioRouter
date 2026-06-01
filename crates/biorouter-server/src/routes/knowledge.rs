@@ -31,7 +31,10 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
         .route("/bases/{id}", get(get_base).delete(delete_base))
         .route("/bases/{id}/graph", get(get_graph))
         .route("/bases/{id}/pages", get(list_pages))
-        .route("/bases/{id}/pages/{*page_path}", get(read_page).put(write_page))
+        .route(
+            "/bases/{id}/pages/{*page_path}",
+            get(read_page).put(write_page),
+        )
         .route("/bases/{id}/history", get(list_history))
         .route("/bases/{id}/preview", post(preview_state))
         .route("/bases/{id}/restore", post(restore_state))
@@ -40,10 +43,7 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
         .route("/bases/{id}/query", post(query_kb))
         .route("/bases/{id}/lint", post(lint))
         .route("/bases/{id}/export", get(export_brkb))
-        .route(
-            "/bases/{id}/sources/{sid}/reclassify",
-            post(reclassify),
-        )
+        .route("/bases/{id}/sources/{sid}/reclassify", post(reclassify))
         .route(
             "/bases/{id}/sources/{sid}/credibility",
             put(override_credibility),
@@ -304,8 +304,14 @@ pub async fn write_page(
     Json(body): Json<WritePageBody>,
 ) -> Result<Json<CommitResponse>, (StatusCode, String)> {
     let kb_root = paths::kb_root(svc.root(), &id);
-    let sha_opt = store::write_page(&kb_root, &page_path, &body.content, &body.commit_message, None)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let sha_opt = store::write_page(
+        &kb_root,
+        &page_path,
+        &body.content,
+        &body.commit_message,
+        None,
+    )
+    .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let commit_sha = sha_opt.unwrap_or_default();
     Ok(Json(CommitResponse { commit_sha }))
 }
@@ -381,8 +387,8 @@ pub async fn restore_state(
 async fn build_completer(
     model: &ModelRef,
 ) -> Result<Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>, (StatusCode, String)> {
-    let model_config = ModelConfig::new(&model.model)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let model_config =
+        ModelConfig::new(&model.model).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let provider = biorouter::providers::create(&model.provider, model_config)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
@@ -418,8 +424,8 @@ pub async fn ingest(
     Path(id): Path<String>,
     Json(body): Json<IngestBody>,
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
-    let source = parse_source_input(&body.source)
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let source =
+        parse_source_input(&body.source).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let completer = build_completer(&body.model).await?;
 
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
@@ -622,8 +628,8 @@ pub async fn add_raw_source(
                 );
             }
         }
-        let bytes = bytes_opt
-            .ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
+        let bytes =
+            bytes_opt.ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
         let fname = filename.unwrap_or_else(|| "upload.bin".to_string());
         convert::SourceInput::File {
             bytes,
@@ -732,8 +738,7 @@ pub async fn import_brkb(
         }
     }
 
-    let bytes = file_bytes
-        .ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
+    let bytes = file_bytes.ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
 
     let new_id = svc
         .import_brkb(&bytes)

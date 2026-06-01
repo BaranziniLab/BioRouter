@@ -412,10 +412,7 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel::<SubAgentEvent>();
 
         // Two-step run: one tool call, then a text-only reply → NoMoreToolCalls.
-        let completer = MockCompleter::new(vec![
-            tool_call_reply("kb_search"),
-            text_reply("done"),
-        ]);
+        let completer = MockCompleter::new(vec![tool_call_reply("kb_search"), text_reply("done")]);
         let agent = make_agent(completer, 10);
 
         let _ = agent
@@ -430,6 +427,9 @@ mod tests {
         while rx.recv().await.is_some() {
             count += 1;
         }
-        assert!(count > 0, "event sink must have received at least one event");
+        assert!(
+            count > 0,
+            "event sink must have received at least one event"
+        );
     }
 }

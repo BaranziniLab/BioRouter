@@ -105,8 +105,10 @@ fn llm_to_provider_message(m: &LlmMessage) -> Message {
         } => {
             // Wrap the result string as a text Content inside a CallToolResult.
             let call_result = CallToolResult::success(vec![Content::text(content.clone())]);
-            Message::user()
-                .with_content(MessageContent::tool_response(request_id.clone(), Ok(call_result)))
+            Message::user().with_content(MessageContent::tool_response(
+                request_id.clone(),
+                Ok(call_result),
+            ))
         }
     }
 }

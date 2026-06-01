@@ -76,7 +76,9 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
         raw.source_id
     );
 
-    let agent_result = agent.run(&user, &dispatch, None, args.event_sink.as_ref()).await;
+    let agent_result = agent
+        .run(&user, &dispatch, None, args.event_sink.as_ref())
+        .await;
 
     match agent_result {
         Ok(r)

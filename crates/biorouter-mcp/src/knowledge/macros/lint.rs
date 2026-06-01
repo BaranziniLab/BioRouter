@@ -256,7 +256,9 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
         bounds: args.bounds,
     };
 
-    let agent_result = agent.run(&user, &dispatch, None, args.event_sink.as_ref()).await;
+    let agent_result = agent
+        .run(&user, &dispatch, None, args.event_sink.as_ref())
+        .await;
 
     match agent_result {
         Ok(r)

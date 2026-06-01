@@ -104,15 +104,16 @@ just generate-openapi   # Regenerate OpenAPI spec from server routes
   (Crossref/OpenAlex), graph derivation, **macros (ingest / query / lint)
   backed by a bounded sub-agent loop**, BM25 search, per-KB concurrency
   mutex, and an active-KB state for session-scoped tool defaulting. The
-  shared service backs the `knowledge` MCP extension and (in Plan 3) HTTP
-  routes. (Module lives in `biorouter-mcp`; re-exported as
+  shared service backs the `knowledge` MCP extension and HTTP routes under
+  `/knowledge/*` via `biorouter-server` (with SSE-streamed macros and
+  `.brkb` export/import). (Module lives in `biorouter-mcp`; re-exported as
   `biorouter::knowledge`.)
 
   Note: the macros (`ingest`, `query`, `lint`) and the agentic credibility
   fallback take a `Box<dyn Completer>` argument rather than a `Provider`
-  directly, to avoid a circular dependency on `biorouter`. The Plan-3 HTTP
-  routes will wrap a real `biorouter::providers::Provider` in a
-  `ProviderCompleter` adapter.
+  directly, to avoid a circular dependency on `biorouter`. The HTTP routes
+  wrap a real `biorouter::providers::Provider` in a `ProviderCompleter`
+  adapter (`crates/biorouter/src/knowledge/provider_completer.rs`).
 
 ### Frontend (`ui/desktop/src/`)
 

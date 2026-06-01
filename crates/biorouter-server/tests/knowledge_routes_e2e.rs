@@ -86,7 +86,11 @@ async fn e2e_create_raw_history_graph_export_import() {
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), 200, "step 3: add raw source should return 200");
+    assert_eq!(
+        res.status(),
+        200,
+        "step 3: add raw source should return 200"
+    );
     let raw_resp = json_body(res).await;
     assert!(
         raw_resp["source_id"].is_string(),
@@ -128,8 +132,14 @@ async fn e2e_create_raw_history_graph_export_import() {
         .unwrap();
     assert_eq!(res.status(), 200, "step 5: graph should return 200");
     let graph = json_body(res).await;
-    assert!(graph.get("nodes").is_some(), "step 5: graph must have nodes");
-    assert!(graph.get("edges").is_some(), "step 5: graph must have edges");
+    assert!(
+        graph.get("nodes").is_some(),
+        "step 5: graph must have nodes"
+    );
+    assert!(
+        graph.get("edges").is_some(),
+        "step 5: graph must have edges"
+    );
 
     // ── 6. Write a manual page so we have more content to round-trip ──────────
     let res = app
@@ -171,10 +181,7 @@ async fn e2e_create_raw_history_graph_export_import() {
     assert_eq!(res.status(), 200, "step 7: read page should return 200");
     let page = json_body(res).await;
     assert!(
-        page["content"]
-            .as_str()
-            .unwrap_or("")
-            .contains("Zone-2"),
+        page["content"].as_str().unwrap_or("").contains("Zone-2"),
         "step 7: page content should contain written text"
     );
 
@@ -234,9 +241,14 @@ async fn e2e_create_raw_history_graph_export_import() {
         .unwrap();
     assert_eq!(res.status(), 200, "step 9: import should return 200");
     let import_resp = json_body(res).await;
-    let new_id = import_resp["id"].as_str().expect("step 9: response must have id");
+    let new_id = import_resp["id"]
+        .as_str()
+        .expect("step 9: response must have id");
     // "e2e" already exists, so import should produce "e2e-2"
-    assert_eq!(new_id, "e2e-2", "step 9: import into existing root should suffix -2");
+    assert_eq!(
+        new_id, "e2e-2",
+        "step 9: import into existing root should suffix -2"
+    );
 
     // ── 10. list_bases should now show 2 bases ────────────────────────────────
     let res = app
