@@ -36,6 +36,9 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   const current = totalTokens ?? 0;
   const total = tokenLimit || 0;
   const [thresholdPct, setThresholdPct] = useState<number>(AUTO_COMPACT_DEFAULT_PCT);
+  // Controlled tooltip so Radix's default focus-trigger doesn't pop the
+  // hint open when the popover auto-focuses the slider on mount.
+  const [tooltipOpen, setTooltipOpen] = useState(false);
   const barRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
   const pendingPctRef = useRef<number | null>(null);
@@ -202,8 +205,11 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
               className={`h-full rounded-full ${barColor} transition-[width]`}
               style={{ width: `${Math.max(2, pct)}%` }}
             />
-            <Tooltip>
+            <Tooltip open={tooltipOpen}>
               <TooltipTrigger asChild>
+                {/* Hit area is larger than the 10×6 visible triangle so the
+                    hover tooltip doesn't flicker when the cursor grazes the
+                    triangle edges. The visible glyph is the inner element. */}
                 <div
                   role="slider"
                   aria-label="Auto-compact threshold"
@@ -213,16 +219,32 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
                   tabIndex={0}
                   onKeyDown={handleKeyAdjust}
                   onMouseDown={handleDragStart}
-                  className="absolute -top-2 w-0 h-0 cursor-ew-resize focus:outline-none"
+                  onMouseEnter={() => setTooltipOpen(true)}
+                  onMouseLeave={() => {
+                    if (!draggingRef.current) setTooltipOpen(false);
+                  }}
+                  className="absolute flex items-end justify-center cursor-ew-resize focus:outline-none"
                   style={{
                     left: `${thresholdPct}%`,
+                    top: '-12px',
+                    width: '22px',
+                    height: '18px',
                     transform: 'translateX(-50%)',
-                    borderLeft: '5px solid transparent',
-                    borderRight: '5px solid transparent',
-                    borderTop: '6px solid currentColor',
-                    color: 'var(--color-text-default, currentColor)',
                   }}
-                />
+                >
+                  <span
+                    aria-hidden="true"
+                    style={{
+                      width: 0,
+                      height: 0,
+                      borderLeft: '5px solid transparent',
+                      borderRight: '5px solid transparent',
+                      borderTop: '6px solid currentColor',
+                      color: 'var(--color-text-default, currentColor)',
+                      pointerEvents: 'none',
+                    }}
+                  />
+                </div>
               </TooltipTrigger>
               <TooltipContent side="top" className="text-[11px]">
                 Drag to adjust auto-compact threshold ({thresholdPct}%)

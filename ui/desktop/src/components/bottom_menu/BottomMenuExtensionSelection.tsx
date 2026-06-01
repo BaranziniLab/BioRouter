@@ -26,6 +26,7 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [pendingSort, setPendingSort] = useState(false);
   const [togglingExtension, setTogglingExtension] = useState<string | null>(null);
+  const [bulkInFlight, setBulkInFlight] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const sortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { extensionsList: allExtensions } = useConfig();
@@ -206,6 +207,100 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
     return extensionsList.filter((ext) => ext.enabled).length;
   }, [extensionsList]);
 
+  const visibleEnabledCount = useMemo(
+    () => sortedExtensions.filter((ext) => ext.enabled).length,
+    [sortedExtensions]
+  );
+
+  const handleBulkToggle = useCallback(async () => {
+    if (bulkInFlight || togglingExtension !== null || sortedExtensions.length === 0) {
+      return;
+    }
+
+    const targetEnabled = visibleEnabledCount === 0;
+    const targets = sortedExtensions.filter((ext) => ext.enabled !== targetEnabled);
+    if (targets.length === 0) {
+      return;
+    }
+
+    setBulkInFlight(true);
+    setIsTransitioning(true);
+
+    if (isHubView) {
+      targets.forEach((ext) => setExtensionOverride(ext.name, targetEnabled));
+      setPendingSort(true);
+
+      if (sortTimeoutRef.current) {
+        clearTimeout(sortTimeoutRef.current);
+      }
+      sortTimeoutRef.current = setTimeout(() => {
+        setHubUpdateTrigger((prev) => prev + 1);
+        setPendingSort(false);
+        setIsTransitioning(false);
+        setBulkInFlight(false);
+      }, 800);
+
+      toastService.success({
+        title: 'Extensions Updated',
+        msg: `${targets.length} extension${targets.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} in new chats`,
+      });
+      return;
+    }
+
+    if (!sessionId) {
+      setIsTransitioning(false);
+      setBulkInFlight(false);
+      toastService.error({
+        title: 'Extension Toggle Error',
+        msg: 'No active session found. Please start a chat session first.',
+        traceback: 'No session ID available',
+      });
+      return;
+    }
+
+    try {
+      await Promise.all(
+        targets.map((ext) =>
+          targetEnabled
+            ? addToAgent(ext, sessionId, true)
+            : removeFromAgent(ext.name, sessionId, true)
+        )
+      );
+
+      setPendingSort(true);
+      if (sortTimeoutRef.current) {
+        clearTimeout(sortTimeoutRef.current);
+      }
+      sortTimeoutRef.current = setTimeout(async () => {
+        const response = await getSessionExtensions({
+          path: { session_id: sessionId },
+        });
+        if (response.data?.extensions) {
+          setSessionExtensions(response.data.extensions);
+        }
+        setPendingSort(false);
+        setIsTransitioning(false);
+        setBulkInFlight(false);
+      }, 800);
+
+      toastService.success({
+        title: 'Extensions Updated',
+        msg: `${targets.length} extension${targets.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} for this chat session`,
+      });
+    } catch {
+      setIsTransitioning(false);
+      setPendingSort(false);
+      setBulkInFlight(false);
+    }
+  }, [
+    bulkInFlight,
+    togglingExtension,
+    sortedExtensions,
+    visibleEnabledCount,
+    isHubView,
+    sessionId,
+  ]);
+
   return (
     <DropdownMenu
       open={isOpen}
@@ -219,6 +314,7 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
           setIsTransitioning(false);
           setPendingSort(false);
           setTogglingExtension(null);
+          setBulkInFlight(false);
         }
       }}
     >
@@ -248,9 +344,18 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
             className="h-8 text-sm"
             autoFocus
           />
-          <p className="text-xs text-text-default/60 mt-1.5">
-            {isHubView ? 'Extensions for new chats' : 'Extensions for this chat session'}
-          </p>
+          {sortedExtensions.length > 0 && (
+            <button
+              type="button"
+              onClick={handleBulkToggle}
+              disabled={bulkInFlight || togglingExtension !== null}
+              className="mt-1.5 text-xs text-text-default/70 hover:text-text-default underline-offset-2 hover:underline disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            >
+              {visibleEnabledCount === 0
+                ? `Enable all (${sortedExtensions.length})`
+                : `Disable all (${visibleEnabledCount})`}
+            </button>
+          )}
         </div>
         <div
           className={`max-h-[400px] overflow-y-auto transition-opacity duration-300 ${
@@ -264,13 +369,14 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
           ) : (
             sortedExtensions.map((ext) => {
               const isToggling = togglingExtension === ext.name;
+              const rowDisabled = isToggling || bulkInFlight;
               return (
                 <div
                   key={ext.name}
                   className={`flex items-center justify-between px-2 py-2 hover:bg-background-medium transition-all duration-300 ${
-                    isToggling ? 'cursor-wait opacity-70' : 'cursor-pointer'
+                    rowDisabled ? 'cursor-wait opacity-70' : 'cursor-pointer'
                   }`}
-                  onClick={() => !isToggling && handleToggle(ext)}
+                  onClick={() => !rowDisabled && handleToggle(ext)}
                   title={ext.description || ext.name}
                 >
                   <div className="text-sm font-medium text-text-default">
@@ -281,7 +387,7 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
                       checked={ext.enabled}
                       onCheckedChange={() => handleToggle(ext)}
                       variant="mono"
-                      disabled={isToggling}
+                      disabled={rowDisabled}
                     />
                   </div>
                 </div>

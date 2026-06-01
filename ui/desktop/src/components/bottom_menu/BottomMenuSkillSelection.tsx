@@ -30,6 +30,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [pendingSort, setPendingSort] = useState(false);
   const [togglingKey, setTogglingKey] = useState<string | null>(null);
+  const [bulkInFlight, setBulkInFlight] = useState(false);
   const [sessionOverrides, setSessionOverrides] = useState<Map<string, boolean>>(new Map());
   const sortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isHubView = !sessionId;
@@ -139,8 +140,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
     return entries.filter((e) => {
       if (e.kind === 'single') {
         return (
-          e.skill.name.toLowerCase().includes(q) ||
-          e.skill.description.toLowerCase().includes(q)
+          e.skill.name.toLowerCase().includes(q) || e.skill.description.toLowerCase().includes(q)
         );
       }
       return (
@@ -161,10 +161,62 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
     });
   }, [filteredEntries]);
 
-  const activeCount = useMemo(
-    () => entries.filter((e) => e.enabled).length,
-    [entries]
+  const activeCount = useMemo(() => entries.filter((e) => e.enabled).length, [entries]);
+
+  const visibleEnabledCount = useMemo(
+    () => sortedEntries.filter((e) => e.enabled).length,
+    [sortedEntries]
   );
+
+  const handleBulkToggle = useCallback(async () => {
+    if (bulkInFlight || togglingKey !== null || sortedEntries.length === 0) {
+      return;
+    }
+
+    const targetEnabled = visibleEnabledCount === 0;
+    const targets = sortedEntries.filter((e) => e.enabled !== targetEnabled);
+    if (targets.length === 0) {
+      return;
+    }
+
+    setBulkInFlight(true);
+    setIsTransitioning(true);
+
+    const keys = targets.map((e) => (e.kind === 'single' ? e.skill.name : e.bundle.bundleName));
+
+    const scheduleSort = () => {
+      setPendingSort(true);
+      if (sortTimeoutRef.current) clearTimeout(sortTimeoutRef.current);
+      sortTimeoutRef.current = setTimeout(() => {
+        setHubUpdateTrigger((prev) => prev + 1);
+        setPendingSort(false);
+        setIsTransitioning(false);
+        setBulkInFlight(false);
+      }, 800);
+    };
+
+    if (isHubView) {
+      keys.forEach((k) => setSkillOverride(k, targetEnabled));
+      await saveSkillOverrides();
+      scheduleSort();
+      toastService.success({
+        title: 'Skills Updated',
+        msg: `${keys.length} skill${keys.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} in new chats`,
+      });
+      return;
+    }
+
+    setSessionOverrides((prev) => {
+      const next = new Map(prev);
+      keys.forEach((k) => next.set(k, targetEnabled));
+      return next;
+    });
+    scheduleSort();
+    toastService.success({
+      title: 'Skills Updated',
+      msg: `${keys.length} skill${keys.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} for this session`,
+    });
+  }, [bulkInFlight, togglingKey, sortedEntries, visibleEnabledCount, isHubView]);
 
   return (
     <DropdownMenu
@@ -177,6 +229,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
           setIsTransitioning(false);
           setPendingSort(false);
           setTogglingKey(null);
+          setBulkInFlight(false);
         }
       }}
     >
@@ -204,9 +257,18 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
             className="h-8 text-sm"
             autoFocus
           />
-          <p className="text-xs text-text-default/60 mt-1.5">
-            {isHubView ? 'Skills for new chats' : 'Skills for this chat session'}
-          </p>
+          {sortedEntries.length > 0 && (
+            <button
+              type="button"
+              onClick={handleBulkToggle}
+              disabled={bulkInFlight || togglingKey !== null}
+              className="mt-1.5 text-xs text-text-default/70 hover:text-text-default underline-offset-2 hover:underline disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            >
+              {visibleEnabledCount === 0
+                ? `Enable all (${sortedEntries.length})`
+                : `Disable all (${visibleEnabledCount})`}
+            </button>
+          )}
         </div>
         <div
           className={`max-h-[400px] overflow-y-auto transition-opacity duration-300 ${
@@ -222,13 +284,14 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
               if (entry.kind === 'single') {
                 const { skill, enabled } = entry;
                 const isToggling = togglingKey === skill.name;
+                const rowDisabled = isToggling || bulkInFlight;
                 return (
                   <div
                     key={skill.folderPath}
                     className={`flex items-center justify-between px-2 py-2 hover:bg-background-medium transition-all duration-300 ${
-                      isToggling ? 'cursor-wait opacity-70' : 'cursor-pointer'
+                      rowDisabled ? 'cursor-wait opacity-70' : 'cursor-pointer'
                     }`}
-                    onClick={() => !isToggling && handleToggle(skill.name, skill.name)}
+                    onClick={() => !rowDisabled && handleToggle(skill.name, skill.name)}
                     title={skill.description || skill.name}
                   >
                     <div className="text-sm font-medium text-text-default">{skill.name}</div>
@@ -237,7 +300,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
                         checked={enabled}
                         onCheckedChange={() => handleToggle(skill.name, skill.name)}
                         variant="mono"
-                        disabled={isToggling}
+                        disabled={rowDisabled}
                       />
                     </div>
                   </div>
@@ -247,35 +310,30 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
               // Bundle entry
               const { bundle, enabled } = entry;
               const isToggling = togglingKey === bundle.bundleName;
+              const rowDisabled = isToggling || bulkInFlight;
               const subNames = bundle.skills.map((s) => s.name).join(', ');
               return (
                 <div
                   key={bundle.folderPath}
                   className={`flex items-start justify-between px-2 py-2 hover:bg-background-medium transition-all duration-300 ${
-                    isToggling ? 'cursor-wait opacity-70' : 'cursor-pointer'
+                    rowDisabled ? 'cursor-wait opacity-70' : 'cursor-pointer'
                   }`}
-                  onClick={() =>
-                    !isToggling && handleToggle(bundle.bundleName, bundle.bundleName)
-                  }
+                  onClick={() => !rowDisabled && handleToggle(bundle.bundleName, bundle.bundleName)}
                   title={`Bundle: ${subNames}`}
                 >
                   <div className="flex-1 min-w-0 pr-2">
                     <div className="text-sm font-medium text-text-default">
                       {bundle.bundleName}
-                      <span className="ml-1 text-[10px] text-text-subtle font-normal">
-                        bundle
-                      </span>
+                      <span className="ml-1 text-[10px] text-text-subtle font-normal">bundle</span>
                     </div>
                     <div className="text-[10px] text-text-subtle truncate">{subNames}</div>
                   </div>
                   <div onClick={(e) => e.stopPropagation()} className="flex-shrink-0 mt-0.5">
                     <Switch
                       checked={enabled}
-                      onCheckedChange={() =>
-                        handleToggle(bundle.bundleName, bundle.bundleName)
-                      }
+                      onCheckedChange={() => handleToggle(bundle.bundleName, bundle.bundleName)}
                       variant="mono"
-                      disabled={isToggling}
+                      disabled={rowDisabled}
                     />
                   </div>
                 </div>
