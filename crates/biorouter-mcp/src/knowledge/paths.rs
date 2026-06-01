@@ -45,8 +45,8 @@ pub fn kb_root(root: &Path, id: &str) -> PathBuf {
     root.join(id)
 }
 
-pub fn kb_wiki_dir(root: &Path, id: &str) -> PathBuf {
-    kb_root(root, id).join("wiki")
+pub fn kb_knowledge_dir(root: &Path, id: &str) -> PathBuf {
+    kb_root(root, id).join("knowledge")
 }
 
 pub fn kb_raw_dir(root: &Path, id: &str) -> PathBuf {
@@ -88,7 +88,7 @@ mod tests {
     fn path_helpers_compose() {
         let root = Path::new("/tmp/kb");
         assert_eq!(kb_root(root, "x"), Path::new("/tmp/kb/x"));
-        assert_eq!(kb_wiki_dir(root, "x"), Path::new("/tmp/kb/x/wiki"));
+        assert_eq!(kb_knowledge_dir(root, "x"), Path::new("/tmp/kb/x/knowledge"));
         assert_eq!(kb_raw_dir(root, "x"), Path::new("/tmp/kb/x/raw"));
         assert_eq!(
             kb_internal_dir(root, "x"),

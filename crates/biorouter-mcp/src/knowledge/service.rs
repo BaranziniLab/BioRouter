@@ -37,10 +37,10 @@ impl KnowledgeService {
         if kb_root.exists() {
             anyhow::bail!("kb '{id}' already exists at {}", kb_root.display());
         }
-        std::fs::create_dir_all(paths::kb_wiki_dir(&self.root, id).join("entities"))?;
-        std::fs::create_dir_all(paths::kb_wiki_dir(&self.root, id).join("concepts"))?;
-        std::fs::create_dir_all(paths::kb_wiki_dir(&self.root, id).join("sources"))?;
-        std::fs::create_dir_all(paths::kb_wiki_dir(&self.root, id).join("notes"))?;
+        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("entities"))?;
+        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("concepts"))?;
+        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("sources"))?;
+        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("notes"))?;
         std::fs::create_dir_all(paths::kb_raw_dir(&self.root, id))?;
         std::fs::create_dir_all(paths::kb_internal_dir(&self.root, id))?;
 
@@ -239,10 +239,10 @@ mod tests {
         assert!(kb.join("index.md").exists());
         assert!(kb.join("log.md").exists());
         assert!(kb.join(".gitignore").exists());
-        assert!(kb.join("wiki/entities").exists());
-        assert!(kb.join("wiki/concepts").exists());
-        assert!(kb.join("wiki/sources").exists());
-        assert!(kb.join("wiki/notes").exists());
+        assert!(kb.join("knowledge/entities").exists());
+        assert!(kb.join("knowledge/concepts").exists());
+        assert!(kb.join("knowledge/sources").exists());
+        assert!(kb.join("knowledge/notes").exists());
         assert!(kb.join("raw").exists());
         assert!(kb.join(".biorouter-knowledge").exists());
         assert!(kb.join(".git").exists());
@@ -347,9 +347,9 @@ mod tests {
         .unwrap();
         let kb = svc.root().join("k");
         // Source pages aren't written by add_raw_source — only raw/. So the graph
-        // remains empty until a macro creates wiki/sources/<id>.md (Plan 2).
+        // remains empty until a macro creates knowledge/sources/<id>.md (Plan 2).
         let g = svc.get_graph("k").unwrap();
-        assert_eq!(g.nodes.len(), 0, "no wiki pages yet");
+        assert_eq!(g.nodes.len(), 0, "no knowledge pages yet");
         assert!(kb.join(".biorouter-knowledge/graph-cache.json").exists());
     }
 

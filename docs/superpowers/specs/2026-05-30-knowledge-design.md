@@ -7,14 +7,14 @@
 
 A new top-level feature called **Knowledge** that lets a user maintain one or
 more personal, customizable knowledge bases inside BioRouter. The pattern
-follows Andrej Karpathy's "LLM Wiki" idea: instead of re-deriving knowledge
+follows Andrej Karpathy's incremental LLM knowledge-building idea: instead of re-deriving knowledge
 from raw documents on every query, an LLM incrementally builds and maintains
-a persistent, interlinked markdown wiki between the user and the raw sources.
+a persistent, interlinked markdown knowledge folder between the user and the raw sources.
 
 Knowledge is delivered as
 
 1. a new built-in MCP extension (`biorouter-mcp/src/knowledge/`) that exposes
-   primitive and macro tools for ingesting, querying, and linting wikis;
+   primitive and macro tools for ingesting, querying, and linting knowledge bases;
 2. a new top-level UI route in the desktop app, slotted between Skills and
    Settings in the sidebar, that surfaces the source-ingestion panel, the
    knowledge graph, and the change-log drawer;
@@ -27,23 +27,23 @@ knowledge base directly from a conversation.
 
 ## Goals
 
-- Knowledge accumulates: every source improves the wiki, not just an index.
-- The wiki is fully LLM-maintained; the user curates sources and asks questions.
+- Knowledge accumulates: every source improves the knowledge base, not just an index.
+- The knowledge folder is fully LLM-maintained; the user curates sources and asks questions.
 - Sources are credibility-aware (peer-reviewed paper, preprint, book,
   gray literature, web, personal) so the graph naturally reflects what is
   well-supported vs anecdotal.
 - The user can roll back any edit via a git-backed change log.
-- Knowledge bases are portable: one zipped `.brkb` file moves the wiki,
+- Knowledge bases are portable: one zipped `.brkb` file moves the knowledge folder,
   raw sources, and full history between machines and users.
 - A knowledge base looks and feels like a first-class BioRouter surface,
   not a side panel.
 
 ## Non-goals
 
-- Real-time collaborative editing of a single wiki by multiple humans.
+- Real-time collaborative editing of a single knowledge base by multiple humans.
 - Hosting a remote knowledge base service. Everything runs locally.
 - Replacing the Memory extension. Memory is short-form key/value;
-  Knowledge is long-form structured wiki.
+  Knowledge is long-form structured knowledge folder.
 - Building a search engine optimized for thousands of KBs. We target the
   Karpathy-scale regime (a handful of bases, each up to ~hundreds of pages).
 
@@ -53,10 +53,10 @@ Three layers, mirroring the Karpathy gist:
 
 1. **Raw sources** — immutable user documents (PDFs, HTML, DOCX, CSV,
    pasted text). Stored under `<kb-root>/raw/`.
-2. **The wiki** — LLM-authored markdown pages in `<kb-root>/wiki/`,
-   interlinked via `[[wiki-link]]` style references.
+2. **The knowledge folder** — LLM-authored markdown pages in `<kb-root>/knowledge/`,
+   interlinked via `[[knowledge-link]]` style references.
 3. **The schema** — `<kb-root>/schema.md`, the per-KB Claude/Codex/AGENTS-style
-   instruction doc that tells the LLM how to maintain *this particular* wiki.
+   instruction doc that tells the LLM how to maintain *this particular* knowledge folder.
 
 The Knowledge extension provides the operational layer that reads, writes,
 and maintains these files. The desktop UI is a front-end into the same
@@ -113,7 +113,7 @@ One KB = one directory = one git repo. Stored at
 │       ├── original.<ext>   # untouched user file
 │       ├── source.md        # derived markdown
 │       └── meta.yaml        # url, title, ingested_at, credibility, sha256
-├── wiki/
+├── knowledge/
 │   ├── entities/   <name>.md
 │   ├── concepts/   <name>.md
 │   ├── sources/    <source-id>.md     # one page per source
@@ -270,7 +270,7 @@ not exposed for general chat use to keep the surface simple.
 | `kb_list_pages` | `{kb_id?, path_prefix?}` | `[{path, title, kind, tags}]` |
 | `kb_read_page` | `{kb_id?, path}` | `{content, frontmatter, last_modified, commit_sha}` |
 | `kb_write_page` | `{kb_id?, path, content, commit_message, txn?}` | `{commit_sha?}` (sha returned only when no `txn`) |
-| `kb_search` | `{kb_id?, query, limit?}` | `[{path, score, snippet}]` (BM25 over wiki/ + raw source.md) |
+| `kb_search` | `{kb_id?, query, limit?}` | `[{path, score, snippet}]` (BM25 over knowledge/ + raw source.md) |
 | `kb_append_log` | `{kb_id?, kind, summary, delta?, txn?}` | `{commit_sha?}` |
 | `kb_add_raw_source` | `{kb_id?, source, txn?}` (`{file}` / `{url}` / `{text, title?}`) | `{source_id, source_md_path, credibility, commit_sha?}` |
 | `kb_classify_source` | `{kb_id?, source_id}` | `Credibility` |
@@ -287,7 +287,7 @@ not exposed for general chat use to keep the surface simple.
 | Tool | Params | Behavior |
 |---|---|---|
 | `kb_ingest_source` | `{kb_id?, source, model?, focus?}` | Add to raw/, classify, drive a sub-agent that writes source page + updates entity/concept pages + adds cross-links + flags contradictions + appends log + commits as one logical change. |
-| `kb_query` | `{kb_id?, question, model?, format?, file_as_page?}` | Search + synthesize answer with citations. If `file_as_page=true`, write to `wiki/notes/` and commit. |
+| `kb_query` | `{kb_id?, question, model?, format?, file_as_page?}` | Search + synthesize answer with citations. If `file_as_page=true`, write to `knowledge/notes/` and commit. |
 | `kb_lint` | `{kb_id?, model?, autofix?, scope?}` | Find orphans, contradictions, stale claims, missing pages. With `autofix`, sub-agent fixes; otherwise returns report. `scope` accepts `all` or `since:<commit>`. |
 
 ### KB management (UI-only, not LLM-callable)
@@ -345,17 +345,17 @@ re-derive if conversion improves.
 
 ## Graph derivation
 
-`graph.rs` parses the wiki tree to build the in-memory graph:
+`graph.rs` parses the knowledge tree to build the in-memory graph:
 
 - **Nodes:**
-  - `source` — one per `raw/<id>/`. Color = credibility tier. Page = `wiki/sources/<id>.md`.
-  - `entity` — pages under `wiki/entities/`. Color = `--t-green`.
-  - `concept` — pages under `wiki/concepts/`. Color = `--t-violet`.
-  - `hub` — pages at the wiki root. Color = `--accent`.
-  - `note` — pages under `wiki/notes/`. Color = `--ink-2`.
+  - `source` — one per `raw/<id>/`. Color = credibility tier. Page = `knowledge/sources/<id>.md`.
+  - `entity` — pages under `knowledge/entities/`. Color = `--t-green`.
+  - `concept` — pages under `knowledge/concepts/`. Color = `--t-violet`.
+  - `hub` — pages at the knowledge root. Color = `--accent`.
+  - `note` — pages under `knowledge/notes/`. Color = `--ink-2`.
   - `flag` — synthesized for any page with frontmatter `contradiction: true`.
     Color = `--t-amber`.
-- **Edges:** parsed from `[[wiki-link]]` references in page bodies.
+- **Edges:** parsed from `[[knowledge-link]]` references in page bodies.
   Direction = embed-from → embed-to. Style derives from the source-node's
   credibility tier (when the source is on either end of the edge).
 
@@ -399,7 +399,7 @@ A `.brkb` file is a zip with the following root:
 ├── index.md
 ├── log.md
 ├── raw/ …
-├── wiki/ …
+├── knowledge/ …
 ├── .biorouter-knowledge/ …
 ├── .gitignore
 └── .git/
@@ -559,14 +559,14 @@ not bleed into other surfaces.
 - `store.rs` — temp-dir based; create KB, write pages, read back, verify
   commit messages.
 - `git.rs` — create/commit/list_history/preview/restore against a temp repo.
-- `graph.rs` — fixture wiki → snapshot the derived nodes+edges JSON.
+- `graph.rs` — fixture knowledge tree → snapshot the derived nodes+edges JSON.
 - `brkb.rs` — pack → unpack → structural equality including `.git`.
 
 ### Integration tests (`crates/biorouter-test/`)
 
 - `knowledge_ingest_integration.rs` — end-to-end with mocked LLM (VCR
   cassette via the existing `BIOROUTER_RECORD_MCP` pattern). Ingest a
-  fixture article, verify raw/, wiki pages, log entry, single commit.
+  fixture article, verify raw/, knowledge pages, log entry, single commit.
 - `knowledge_query_integration.rs` — pre-built KB, run `kb_query`, assert
   citation accuracy.
 - `knowledge_lint_integration.rs` — fixture with planted contradictions,

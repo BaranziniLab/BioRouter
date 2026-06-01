@@ -6,7 +6,7 @@ use crate::knowledge::{
 use anyhow::Result;
 use std::path::Path;
 
-const WIKI_LINK_RE: &str = r"\[\[([^\]]+)\]\]";
+const KNOWLEDGE_LINK_RE: &str = r"\[\[([^\]]+)\]\]";
 
 pub fn derive(kb_root: &Path) -> Result<Graph> {
     let pages = store::list_pages(kb_root, None)?;
@@ -30,7 +30,7 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
 
     // Source nodes inherit credibility from raw/<id>/meta.yaml.
     for src in raw::list_sources(kb_root)? {
-        let logical = format!("wiki/sources/{}.md", src.id);
+        let logical = format!("knowledge/sources/{}.md", src.id);
         if let Some(node_id) = id_for_path.get(&logical) {
             if let Some(n) = nodes.iter_mut().find(|n| &n.id == node_id) {
                 n.credibility_tier = Some(src.credibility.tier);
@@ -39,7 +39,7 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
     }
 
     let mut edges = Vec::new();
-    let re = regex::Regex::new(WIKI_LINK_RE).unwrap();
+    let re = regex::Regex::new(KNOWLEDGE_LINK_RE).unwrap();
     for p in &pages {
         let abs = kb_root.join(&p.path);
         let body = std::fs::read_to_string(&abs)?;
@@ -86,7 +86,7 @@ pub fn read_cache(kb_root: &Path) -> Result<Option<Graph>> {
 
 fn path_to_node_id(logical: &str) -> String {
     logical
-        .strip_prefix("wiki/")
+        .strip_prefix("knowledge/")
         .unwrap_or(logical)
         .trim_end_matches(".md")
         .replace('/', ":")
@@ -121,10 +121,10 @@ fn page_kind_of(p: &PageRef) -> PageKind {
         ("concept", _) => PageKind::Concept,
         ("hub", _) => PageKind::Hub,
         ("flag", _) => PageKind::Flag,
-        (_, path) if path.starts_with("wiki/sources/") => PageKind::Source,
-        (_, path) if path.starts_with("wiki/entities/") => PageKind::Entity,
-        (_, path) if path.starts_with("wiki/concepts/") => PageKind::Concept,
-        (_, path) if path.starts_with("wiki/notes/") => PageKind::Note,
+        (_, path) if path.starts_with("knowledge/sources/") => PageKind::Source,
+        (_, path) if path.starts_with("knowledge/entities/") => PageKind::Entity,
+        (_, path) if path.starts_with("knowledge/concepts/") => PageKind::Concept,
+        (_, path) if path.starts_with("knowledge/notes/") => PageKind::Note,
         _ => PageKind::Hub,
     }
 }
@@ -142,7 +142,7 @@ mod tests {
         let kb = dir.path().join("k");
         write_page(
             &kb,
-            "wiki/entities/hrv.md",
+            "knowledge/entities/hrv.md",
             "---\ntitle: HRV\nkind: entity\n---\nLinks to [[zone-2 base]].",
             "add hrv",
             None,
@@ -150,7 +150,7 @@ mod tests {
         .unwrap();
         write_page(
             &kb,
-            "wiki/concepts/zone-2 base.md",
+            "knowledge/concepts/zone-2 base.md",
             "---\ntitle: Zone-2 base\nkind: concept\n---\nLinks to [[hrv]].",
             "add z2",
             None,

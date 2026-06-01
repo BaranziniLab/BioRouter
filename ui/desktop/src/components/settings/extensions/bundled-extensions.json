@@ -57,7 +57,7 @@
     "id": "knowledge",
     "name": "knowledge",
     "display_name": "Knowledge",
-    "description": "Personal, LLM-maintained knowledge bases backed by markdown wikis + git history.",
+    "description": "Personal, LLM-maintained knowledge bases backed by markdown knowledge folders + git history.",
     "enabled": false,
     "type": "builtin",
     "env_keys": [],

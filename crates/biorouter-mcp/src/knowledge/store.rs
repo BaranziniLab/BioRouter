@@ -18,12 +18,12 @@ pub struct PageContent {
 }
 
 pub fn list_pages(kb_root: &Path, prefix: Option<&str>) -> Result<Vec<PageRef>> {
-    let wiki = kb_root.join("wiki");
-    if !wiki.exists() {
+    let knowledge_dir = kb_root.join("knowledge");
+    if !knowledge_dir.exists() {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    walk_md(&wiki, &wiki, prefix, &mut out)?;
+    walk_md(&knowledge_dir, &knowledge_dir, prefix, &mut out)?;
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }
@@ -36,7 +36,7 @@ fn walk_md(base: &Path, dir: &Path, prefix: Option<&str>, out: &mut Vec<PageRef>
             walk_md(base, &p, prefix, out)?;
         } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
             let rel = p.strip_prefix(base).unwrap().to_string_lossy().to_string();
-            let logical = format!("wiki/{rel}");
+            let logical = format!("knowledge/{rel}");
             if let Some(pre) = prefix {
                 if !logical.starts_with(pre) {
                     continue;
@@ -103,12 +103,12 @@ pub fn write_page(
 }
 
 fn resolve_page_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf> {
-    if !logical.starts_with("wiki/")
+    if !logical.starts_with("knowledge/")
         && logical != "index.md"
         && logical != "schema.md"
         && logical != "log.md"
     {
-        anyhow::bail!("page path must start with wiki/ or be index.md/schema.md/log.md");
+        anyhow::bail!("page path must start with knowledge/ or be index.md/schema.md/log.md");
     }
     if logical.contains("..") {
         anyhow::bail!("path traversal not allowed");
@@ -146,8 +146,8 @@ mod tests {
     fn write_then_read_roundtrip() {
         let (_dir, kb) = fresh();
         let body = "---\ntitle: HRV\nkind: entity\n---\n\nBody text.";
-        write_page(&kb, "wiki/entities/hrv.md", body, "add HRV", None).unwrap();
-        let p = read_page(&kb, "wiki/entities/hrv.md").unwrap();
+        write_page(&kb, "knowledge/entities/hrv.md", body, "add HRV", None).unwrap();
+        let p = read_page(&kb, "knowledge/entities/hrv.md").unwrap();
         assert_eq!(p.frontmatter["title"], serde_yaml::Value::from("HRV"));
         assert_eq!(p.content.trim(), "Body text.");
     }
@@ -155,26 +155,26 @@ mod tests {
     #[test]
     fn list_pages_sorted_and_filtered() {
         let (_dir, kb) = fresh();
-        write_page(&kb, "wiki/entities/b.md", "---\ntitle: B\n---\n", "b", None).unwrap();
-        write_page(&kb, "wiki/concepts/a.md", "---\ntitle: A\n---\n", "a", None).unwrap();
+        write_page(&kb, "knowledge/entities/b.md", "---\ntitle: B\n---\n", "b", None).unwrap();
+        write_page(&kb, "knowledge/concepts/a.md", "---\ntitle: A\n---\n", "a", None).unwrap();
         let all = list_pages(&kb, None).unwrap();
         let paths: Vec<_> = all.iter().map(|p| p.path.as_str()).collect();
-        assert_eq!(paths, vec!["wiki/concepts/a.md", "wiki/entities/b.md"]);
-        let only_entities = list_pages(&kb, Some("wiki/entities/")).unwrap();
+        assert_eq!(paths, vec!["knowledge/concepts/a.md", "knowledge/entities/b.md"]);
+        let only_entities = list_pages(&kb, Some("knowledge/entities/")).unwrap();
         assert_eq!(only_entities.len(), 1);
     }
 
     #[test]
     fn rejects_path_traversal() {
         let (_dir, kb) = fresh();
-        let err = write_page(&kb, "wiki/../escape.md", "x", "x", None).unwrap_err();
+        let err = write_page(&kb, "knowledge/../escape.md", "x", "x", None).unwrap_err();
         assert!(err.to_string().contains("traversal"));
     }
 
     #[test]
-    fn rejects_paths_outside_wiki() {
+    fn rejects_paths_outside_knowledge() {
         let (_dir, kb) = fresh();
         let err = write_page(&kb, "raw/x.md", "x", "x", None).unwrap_err();
-        assert!(err.to_string().contains("wiki/"));
+        assert!(err.to_string().contains("knowledge/"));
     }
 }

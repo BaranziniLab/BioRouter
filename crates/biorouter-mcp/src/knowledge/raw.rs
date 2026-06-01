@@ -5,7 +5,7 @@ use std::path::Path;
 
 pub struct RawWrite {
     pub source_id: String,
-    pub source_md_path: String, // wiki-relative for ergonomics (raw/<id>/source.md)
+    pub source_md_path: String, // kb-relative path (raw/<id>/source.md)
     pub meta_path: String,
 }
 

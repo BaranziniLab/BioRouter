@@ -49,5 +49,5 @@ async fn e2e_create_add_query_restore() {
 
     // 6. Graph cache is up to date.
     let g = svc.get_graph("ms").unwrap();
-    assert!(g.nodes.is_empty()); // No wiki pages yet (macros not in this plan)
+    assert!(g.nodes.is_empty()); // No knowledge pages yet (macros not in this plan)
 }

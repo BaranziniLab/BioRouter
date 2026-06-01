@@ -129,7 +129,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_list_pages",
-        description = "List wiki pages in a knowledge base."
+        description = "List knowledge pages in a knowledge base."
     )]
     pub async fn kb_list_pages(
         &self,
@@ -144,7 +144,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_read_page",
-        description = "Read a single wiki page by path."
+        description = "Read a single knowledge page by path."
     )]
     pub async fn kb_read_page(
         &self,
@@ -158,7 +158,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_write_page",
-        description = "Create or overwrite a wiki page and commit."
+        description = "Create or overwrite a knowledge page and commit."
     )]
     pub async fn kb_write_page(
         &self,
@@ -229,7 +229,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_restore_state",
-        description = "Restore the wiki to a previous commit by creating a new commit on top of HEAD."
+        description = "Restore the knowledge folder to a previous commit by creating a new commit on top of HEAD."
     )]
     pub async fn kb_restore_state(
         &self,
