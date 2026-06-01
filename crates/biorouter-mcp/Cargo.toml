@@ -41,7 +41,7 @@ lopdf = "0.36.0"
 docx-rs = "0.4.7"
 image = "0.24.9"
 umya-spreadsheet = "2.2.3"
-utoipa = { version = "4.1", optional = true }
+utoipa = { version = "4.1", features = ["chrono"], optional = true }
 which = {workspace = true}
 lru = "0.16"
 tree-sitter = "0.21"

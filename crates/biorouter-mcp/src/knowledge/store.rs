@@ -4,6 +4,7 @@ use bm25::{Language, SearchEngineBuilder};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PageRef {
     pub path: String,
@@ -11,10 +12,13 @@ pub struct PageRef {
     pub kind: String,
 }
 
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PageContent {
     pub path: String,
     pub content: String,
+    /// Raw YAML frontmatter from the page file.
+    #[cfg_attr(feature = "utoipa", schema(value_type = Object))]
     pub frontmatter: serde_yaml::Value,
 }
 

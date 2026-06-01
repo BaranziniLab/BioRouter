@@ -12,7 +12,7 @@ workspace = true
 
 [dependencies]
 biorouter = { path = "../biorouter" }
-biorouter-mcp = { path = "../biorouter-mcp" }
+biorouter-mcp = { path = "../biorouter-mcp", features = ["utoipa"] }
 rmcp = { workspace = true }
 axum = { version = "0.8.1", features = ["ws", "macros"] }
 tokio = { workspace = true }
