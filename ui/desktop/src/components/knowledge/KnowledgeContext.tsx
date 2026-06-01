@@ -1,4 +1,13 @@
-import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import {
+  createContext,
+  ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { listBases } from '../../api';
 import type { Manifest } from '../../api/types.gen';
 
@@ -11,6 +20,10 @@ interface KnowledgeContextType {
   activeKbId: string | null;
   setActiveKbId: (id: string | null) => void;
   refresh: () => Promise<void>;
+  /// Registered by KnowledgeGraphPanel so IngestPanel can request a re-fetch
+  /// after each successful ingest. No-op if no graph is mounted.
+  registerGraphRefresh: (fn: (() => Promise<void>) | null) => void;
+  triggerGraphRefresh: () => void;
 }
 
 const KnowledgeContext = createContext<KnowledgeContextType | null>(null);
@@ -21,9 +34,8 @@ export function KnowledgeProvider({ children }: { children: ReactNode }) {
   const [activeKbId, setActiveKbIdState] = useState<string | null>(() =>
     localStorage.getItem(STORAGE_KEY_ACTIVE_KB)
   );
+  const graphRefreshRef = useRef<(() => Promise<void>) | null>(null);
 
-  // TODO Plan 6: Also sync to server-side active-KB state via a new
-  // POST /knowledge/active endpoint (currently kb_set_active is MCP-only).
   const setActiveKbId = useCallback((id: string | null) => {
     setActiveKbIdState(id);
     if (id) localStorage.setItem(STORAGE_KEY_ACTIVE_KB, id);
@@ -43,9 +55,18 @@ export function KnowledgeProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  const registerGraphRefresh = useCallback((fn: (() => Promise<void>) | null) => {
+    graphRefreshRef.current = fn;
+  }, []);
 
-  // If activeKbId points to a base that no longer exists, clear it.
+  const triggerGraphRefresh = useCallback(() => {
+    void graphRefreshRef.current?.();
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
   useEffect(() => {
     if (activeKbId && bases.length > 0 && !bases.some((b) => b.id === activeKbId)) {
       setActiveKbId(null);
@@ -57,7 +78,17 @@ export function KnowledgeProvider({ children }: { children: ReactNode }) {
     [bases, activeKbId]
   );
 
-  const value: KnowledgeContextType = { bases, loading, activeKb, activeKbId, setActiveKbId, refresh };
+  const value: KnowledgeContextType = {
+    bases,
+    loading,
+    activeKb,
+    activeKbId,
+    setActiveKbId,
+    refresh,
+    registerGraphRefresh,
+    triggerGraphRefresh,
+  };
+
   return <KnowledgeContext.Provider value={value}>{children}</KnowledgeContext.Provider>;
 }
 
