@@ -3,6 +3,7 @@ pub mod agent;
 pub mod audio;
 pub mod config_management;
 pub mod errors;
+pub mod knowledge;
 pub mod mcp_app_proxy;
 pub mod mcp_ui_proxy;
 pub mod workflow;
@@ -37,4 +38,8 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(tunnel::routes(state.clone()))
         .merge(mcp_ui_proxy::routes(secret_key.clone()))
         .merge(mcp_app_proxy::routes(secret_key))
+        .nest(
+            "/knowledge",
+            knowledge::router(state.knowledge_service.clone()),
+        )
 }
