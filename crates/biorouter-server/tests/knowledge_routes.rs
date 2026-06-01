@@ -15,6 +15,17 @@ fn build_test_router() -> (tempfile::TempDir, Router) {
     (dir, router)
 }
 
+/// Build a router and also return the underlying KB root directory so tests
+/// can seed files directly on disk (needed for routes that read from `raw/`
+/// where there is no write API).
+fn build_test_router_with_root() -> (tempfile::TempDir, std::path::PathBuf, Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    let svc = Arc::new(KnowledgeService::new(root.clone()));
+    let router = biorouter_server::routes::knowledge::router(svc);
+    (dir, root, router)
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Task 5: read-only routes
 // ──────────────────────────────────────────────────────────────────────────────
@@ -798,6 +809,87 @@ async fn lint_rejects_invalid_model_with_400_when_autofix() {
 // ──────────────────────────────────────────────────────────────────────────────
 // check_model route
 // ──────────────────────────────────────────────────────────────────────────────
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Plan 5 Task 1: GET /bases/:id/page?path=... — markdown body for NodePreview
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn read_page_returns_markdown_body() {
+    let (_d, root, app) = build_test_router_with_root();
+
+    // Create the KB.
+    let create_body =
+        serde_json::to_vec(&serde_json::json!({"id": "rp", "name": "Read Page"})).unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    // Seed a knowledge/ page directly on disk.
+    let knowledge_dir = root.join("rp").join("knowledge").join("notes");
+    std::fs::create_dir_all(&knowledge_dir).unwrap();
+    std::fs::write(
+        knowledge_dir.join("hello.md"),
+        "---\ntitle: Hello\nkind: note\n---\n\nbody text\n",
+    )
+    .unwrap();
+
+    // Happy path: GET /bases/rp/page?path=knowledge/notes/hello.md
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/bases/rp/page?path=knowledge/notes/hello.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "GET /bases/rp/page should return 200");
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        v["content"].as_str().unwrap().contains("body text"),
+        "response content should contain page body, got: {v}"
+    );
+
+    // Missing page → 404.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/bases/rp/page?path=knowledge/notes/nope.md")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404, "missing page should return 404");
+
+    // Path traversal → 400 (rejected by resolve_readable_path).
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/bases/rp/page?path=../../etc/passwd")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400, "path traversal should return 400 not 500");
+}
 
 #[tokio::test]
 async fn check_model_returns_502_for_unknown_provider() {

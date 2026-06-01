@@ -848,6 +848,14 @@ export type RawTextContent = {
     text: string;
 };
 
+export type ReadPageQuery = {
+    path: string;
+};
+
+export type ReadPageResponse = {
+    content: string;
+};
+
 export type ReadResourceRequest = {
     extension_name: string;
     session_id: string;
@@ -2663,6 +2671,43 @@ export type LintResponses = {
      */
     200: unknown;
 };
+
+export type ReadPageQueryData = {
+    body?: never;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query: {
+        /**
+         * Path within the KB (knowledge* or raw*source.md)
+         */
+        path: string;
+    };
+    url: '/knowledge/bases/{id}/page';
+};
+
+export type ReadPageQueryErrors = {
+    /**
+     * Invalid path
+     */
+    400: unknown;
+    /**
+     * Page not found
+     */
+    404: unknown;
+};
+
+export type ReadPageQueryResponses = {
+    /**
+     * Page content
+     */
+    200: ReadPageResponse;
+};
+
+export type ReadPageQueryResponse = ReadPageQueryResponses[keyof ReadPageQueryResponses];
 
 export type ListPagesData = {
     body?: never;

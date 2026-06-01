@@ -210,6 +210,22 @@ impl KnowledgeService {
 }
 
 impl KnowledgeService {
+    /// Read the raw markdown body of a page (knowledge/*.md or raw/*/source.md).
+    /// Path is interpreted relative to the KB root. Path traversal is rejected
+    /// and only readable paths (knowledge/, raw/, index.md, schema.md, log.md)
+    /// are allowed.
+    pub fn read_page(&self, kb_id: &str, rel_path: &str) -> anyhow::Result<String> {
+        paths::validate_kb_id(kb_id)?;
+        let kb_root = paths::kb_root(&self.root, kb_id);
+        let abs = crate::knowledge::store::resolve_readable_path(&kb_root, rel_path)?;
+        if !abs.exists() {
+            anyhow::bail!("page not found: {rel_path}");
+        }
+        Ok(std::fs::read_to_string(&abs)?)
+    }
+}
+
+impl KnowledgeService {
     fn rebuild_graph_cache(&self, kb_id: &str) -> anyhow::Result<()> {
         let kb_root = paths::kb_root(&self.root, kb_id);
         let g = crate::knowledge::graph::derive(&kb_root)?;

@@ -412,6 +412,7 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::knowledge::get_graph,
         super::routes::knowledge::list_pages,
         super::routes::knowledge::read_page,
+        super::routes::knowledge::read_page_query,
         super::routes::knowledge::write_page,
         super::routes::knowledge::list_history,
         super::routes::knowledge::preview_state,
@@ -595,6 +596,8 @@ derive_utoipa!(Icon as IconSchema);
         // knowledge route DTOs
         super::routes::knowledge::CreateBaseBody,
         super::routes::knowledge::ListPagesQuery,
+        super::routes::knowledge::ReadPageQuery,
+        super::routes::knowledge::ReadPageResponse,
         super::routes::knowledge::WritePageBody,
         super::routes::knowledge::CommitResponse,
         super::routes::knowledge::HistoryQuery,

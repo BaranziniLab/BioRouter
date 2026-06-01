@@ -108,7 +108,7 @@ pub fn write_page(
 }
 
 /// Path is readable: `knowledge/`, `raw/`, or top-level `index.md` / `schema.md` / `log.md`.
-fn resolve_readable_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf> {
+pub(crate) fn resolve_readable_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf> {
     let ok = logical.starts_with("knowledge/")
         || logical.starts_with("raw/")
         || matches!(logical, "index.md" | "schema.md" | "log.md");

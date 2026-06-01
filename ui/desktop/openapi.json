@@ -1650,6 +1650,52 @@
         }
       }
     },
+    "/knowledge/bases/{id}/page": {
+      "get": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "read_page_query",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Path within the KB (knowledge/* or raw/*/source.md)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page content",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadPageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid path"
+          },
+          "404": {
+            "description": "Page not found"
+          }
+        }
+      }
+    },
     "/knowledge/bases/{id}/pages": {
       "get": {
         "tags": [
@@ -6086,6 +6132,28 @@
             "additionalProperties": true
           },
           "text": {
+            "type": "string"
+          }
+        }
+      },
+      "ReadPageQuery": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "ReadPageResponse": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
             "type": "string"
           }
         }

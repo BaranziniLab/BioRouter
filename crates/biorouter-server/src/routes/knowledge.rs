@@ -30,6 +30,7 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
         .route("/bases/import", post(import_brkb))
         .route("/bases/{id}", get(get_base).delete(delete_base))
         .route("/bases/{id}/graph", get(get_graph))
+        .route("/bases/{id}/page", get(read_page_query))
         .route("/bases/{id}/pages", get(list_pages))
         .route(
             "/bases/{id}/pages/{*page_path}",
@@ -340,6 +341,62 @@ pub async fn write_page(
     .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let commit_sha = sha_opt.unwrap_or_default();
     Ok(Json(CommitResponse { commit_sha }))
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Plan 5 Task 1: GET /bases/:id/page?path=... — raw markdown body for the
+// frontend NodePreview card. Distinct from `GET /bases/:id/pages/{*path}`
+// (which returns parsed PageContent with frontmatter split out); this route
+// returns the file verbatim so the renderer can show the original markdown.
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, ToSchema)]
+pub struct ReadPageQuery {
+    pub path: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ReadPageResponse {
+    pub content: String,
+}
+
+#[utoipa::path(
+    get, path = "/knowledge/bases/{id}/page",
+    params(
+        ("id" = String, Path, description = "Knowledge base ID"),
+        ("path" = String, Query, description = "Path within the KB (knowledge/* or raw/*/source.md)"),
+    ),
+    responses(
+        (status = 200, description = "Page content", body = ReadPageResponse),
+        (status = 400, description = "Invalid path"),
+        (status = 404, description = "Page not found"),
+    )
+)]
+pub async fn read_page_query(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+    Query(q): Query<ReadPageQuery>,
+) -> Result<Json<ReadPageResponse>, (StatusCode, String)> {
+    match svc.read_page(&id, &q.path) {
+        Ok(content) => Ok(Json(ReadPageResponse { content })),
+        Err(e) => {
+            let msg = e.to_string();
+            // resolve_readable_path uses "path traversal not allowed" and
+            // "page path must start with knowledge/ or raw/..." for invalid
+            // paths; both are client errors → 400.
+            let status = if msg.contains("traversal")
+                || msg.contains("must start with")
+                || msg.contains("invalid kb id")
+            {
+                StatusCode::BAD_REQUEST
+            } else if msg.contains("not found") {
+                StatusCode::NOT_FOUND
+            } else {
+                StatusCode::INTERNAL_SERVER_ERROR
+            };
+            Err((status, msg))
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
