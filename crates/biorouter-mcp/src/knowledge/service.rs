@@ -327,6 +327,30 @@ impl KnowledgeService {
     }
 }
 
+impl KnowledgeService {
+    /// Perform a trivial LLM completion to verify the provider is reachable.
+    ///
+    /// Sends a single "Reply with OK" message to the model.  Any network error,
+    /// authentication failure, or invalid model name surfaces as `Err`.
+    pub async fn check_model(
+        &self,
+        completer: Box<dyn crate::knowledge::subagent::loop_::Completer>,
+    ) -> anyhow::Result<()> {
+        let messages = vec![crate::knowledge::subagent::loop_::LlmMessage::User(
+            "Reply with exactly OK and nothing else.".to_string(),
+        )];
+        completer
+            .complete(
+                "You are a connectivity test. Respond with OK.",
+                &messages,
+                &[], // no tools
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("LLM check failed: {e}"))?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -570,6 +594,63 @@ mod tests {
         let log = repo.log(10).unwrap();
         assert!(log[0].summary.contains("override credibility"));
         assert_eq!(log[0].kind, ChangeKind::Manual);
+    }
+
+    // -----------------------------------------------------------------------
+    // check_model tests
+    // -----------------------------------------------------------------------
+
+    use crate::knowledge::subagent::loop_::{Completer, LlmMessage, LlmReply};
+    use async_trait::async_trait;
+    use rmcp::model::Tool;
+
+    struct OkCompleter;
+
+    #[async_trait]
+    impl Completer for OkCompleter {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[LlmMessage],
+            _tools: &[Tool],
+        ) -> anyhow::Result<LlmReply> {
+            Ok(LlmReply {
+                text: "OK".to_string(),
+                tool_calls: vec![],
+            })
+        }
+    }
+
+    struct ErrCompleter;
+
+    #[async_trait]
+    impl Completer for ErrCompleter {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[LlmMessage],
+            _tools: &[Tool],
+        ) -> anyhow::Result<LlmReply> {
+            anyhow::bail!("provider unreachable")
+        }
+    }
+
+    #[tokio::test]
+    async fn check_model_ok_with_mock_completer() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.check_model(Box::new(OkCompleter)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn check_model_propagates_completer_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        let err = svc.check_model(Box::new(ErrCompleter)).await.unwrap_err();
+        assert!(
+            err.to_string().contains("provider unreachable"),
+            "error should mention underlying cause, got: {err}"
+        );
     }
 
     #[tokio::test]
