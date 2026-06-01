@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ModelRef } from '../../../api/types.gen';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
+import { Button } from '../../ui/button';
 import { DispatchProgress } from '../DispatchProgress';
 import { useKnowledge } from '../KnowledgeContext';
 import { useIngestStream } from '../hooks/useIngestStream';
@@ -123,13 +124,14 @@ export function IngestPanel() {
 
       <div className="flex items-center justify-between gap-2 pt-1">
         <IngestModelPicker value={model} onChange={setModel} />
-        <button
+        <Button
+          variant="default"
+          size="sm"
           disabled={!canDigest}
           onClick={() => void onDigest()}
-          className="px-4 py-1.5 rounded-lg bg-text-default text-background-surface text-xs font-semibold disabled:opacity-40 hover:opacity-90 transition-opacity"
         >
           {digesting ? 'Digesting…' : 'Digest'}
-        </button>
+        </Button>
       </div>
 
       {!activeKbId && (
