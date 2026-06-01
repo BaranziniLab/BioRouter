@@ -5,8 +5,7 @@
 
 use crate::knowledge::{
     git::GitRepo,
-    paths,
-    raw,
+    paths, raw,
     service::KnowledgeService,
     store::split_frontmatter,
     subagent::{
@@ -29,7 +28,7 @@ use std::{
 // LintReport
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct LintReport {
     /// Pages with no inbound `[[wiki-link]]` references from any other page.
     pub orphans: Vec<String>,
@@ -91,9 +90,7 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
     // Hub pages = any page directly under knowledge/ (not in a subdirectory).
     let orphans: Vec<String> = inbound
         .iter()
-        .filter(|(path, sources)| {
-            sources.is_empty() && !is_hub_page(path)
-        })
+        .filter(|(path, sources)| sources.is_empty() && !is_hub_page(path))
         .map(|(path, _)| path.clone())
         .collect();
 
@@ -134,9 +131,7 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
     //      don't have a page under knowledge/ ----
     let mut missing_concept_pages: Vec<String> = Vec::new();
     for target in &wiki_targets_in_sources {
-        if resolve_wiki_link(&pages, target).is_none()
-            && !missing_concept_pages.contains(target)
-        {
+        if resolve_wiki_link(&pages, target).is_none() && !missing_concept_pages.contains(target) {
             missing_concept_pages.push(target.clone());
         }
     }
@@ -151,11 +146,7 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
 
 // ---- helpers ----------------------------------------------------------------
 
-fn collect_pages(
-    base: &Path,
-    dir: &Path,
-    out: &mut HashMap<String, String>,
-) -> Result<()> {
+fn collect_pages(base: &Path, dir: &Path, out: &mut HashMap<String, String>) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let p = entry.path();
@@ -184,15 +175,18 @@ fn resolve_wiki_link(pages: &HashMap<String, String>, target: &str) -> Option<St
     let target_lower = target.to_ascii_lowercase();
     // Replace spaces with hyphens as a normalisation step.
     let target_slug = target_lower.replace(' ', "-");
-    pages.keys().find(|path| {
-        // Extract the file stem from the logical path.
-        let stem = Path::new(path)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        stem == target_lower || stem == target_slug
-    }).cloned()
+    pages
+        .keys()
+        .find(|path| {
+            // Extract the file stem from the logical path.
+            let stem = Path::new(path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            stem == target_lower || stem == target_slug
+        })
+        .cloned()
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +200,7 @@ pub struct LintArgs {
     pub bounds: SubAgentBounds,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LintResult {
     pub report: LintReport,
     pub commit_sha: Option<String>,
@@ -233,8 +228,7 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
     let repo = GitRepo::open(&kb_root)?;
     let txn = repo.begin_txn("lint")?;
 
-    let schema =
-        std::fs::read_to_string(kb_root.join("schema.md")).context("read schema.md")?;
+    let schema = std::fs::read_to_string(kb_root.join("schema.md")).context("read schema.md")?;
     let report_json = serde_json::to_string_pretty(&serde_json::json!({
         "orphans": report.orphans,
         "contradictions": report.contradictions,
@@ -304,10 +298,7 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::knowledge::{
-        service::KnowledgeService,
-        store::write_page,
-    };
+    use crate::knowledge::{service::KnowledgeService, store::write_page};
 
     fn fresh_svc() -> (tempfile::TempDir, KnowledgeService) {
         let dir = tempfile::tempdir().unwrap();
@@ -417,7 +408,10 @@ mod tests {
 
         let report = scan(&kb).unwrap();
         assert!(
-            report.missing_concept_pages.iter().any(|m| m.eq_ignore_ascii_case("Z")),
+            report
+                .missing_concept_pages
+                .iter()
+                .any(|m| m.eq_ignore_ascii_case("Z")),
             "missing_concept_pages should contain 'Z'; got {:?}",
             report.missing_concept_pages
         );

@@ -28,7 +28,7 @@ pub struct IngestArgs {
     pub bounds: SubAgentBounds,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IngestResult {
     pub source_id: String,
     pub commit_sha: String,
@@ -52,8 +52,7 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
     let txn = repo.begin_txn(&format!("ingest-{}", raw.source_id))?;
 
     // Build the system prompt: schema.md + INGEST_PROCEDURE.
-    let schema =
-        std::fs::read_to_string(kb_root.join("schema.md")).context("read schema.md")?;
+    let schema = std::fs::read_to_string(kb_root.join("schema.md")).context("read schema.md")?;
     let system = format!("{schema}\n\n---\n{INGEST_PROCEDURE}");
 
     let dispatch = KbToolDispatch {
@@ -251,12 +250,7 @@ mod tests {
 
         // Always return a tool call so the loop never ends.
         let replies: Vec<LlmReply> = (0..20)
-            .map(|_| {
-                tool_call_reply(
-                    "kb_list_pages",
-                    serde_json::json!({}),
-                )
-            })
+            .map(|_| tool_call_reply("kb_list_pages", serde_json::json!({})))
             .collect();
         let completer = MockCompleter::new(replies);
 
@@ -281,7 +275,9 @@ mod tests {
         assert!(err.is_err(), "should fail when step budget exceeded");
         let msg = err.unwrap_err().to_string();
         assert!(
-            msg.to_lowercase().contains("step") || msg.to_lowercase().contains("budget") || msg.to_lowercase().contains("aborted"),
+            msg.to_lowercase().contains("step")
+                || msg.to_lowercase().contains("budget")
+                || msg.to_lowercase().contains("aborted"),
             "error should mention budget or abort, got: {msg}"
         );
 
@@ -292,7 +288,10 @@ mod tests {
         let log = svc.list_history("k", 10).unwrap();
         let has_macro_ingest_commit = log.iter().any(|e| {
             e.kind == ChangeKind::Ingest
-                && e.delta.as_deref().map(|d| d.contains("steps")).unwrap_or(false)
+                && e.delta
+                    .as_deref()
+                    .map(|d| d.contains("steps"))
+                    .unwrap_or(false)
         });
         assert!(
             !has_macro_ingest_commit,
