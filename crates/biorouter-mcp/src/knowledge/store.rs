@@ -126,8 +126,8 @@ pub(crate) fn resolve_readable_path(kb_root: &Path, logical: &str) -> Result<std
 /// Path is writable: `knowledge/` pages plus `index.md`, `schema.md`, and `log.md`.
 /// `raw/` is read-only — the raw source tree is immutable by design.
 fn resolve_writable_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf> {
-    let ok = logical.starts_with("knowledge/")
-        || matches!(logical, "index.md" | "schema.md" | "log.md");
+    let ok =
+        logical.starts_with("knowledge/") || matches!(logical, "index.md" | "schema.md" | "log.md");
     if !ok {
         anyhow::bail!(
             "write path must start with knowledge/ or be index.md/schema.md/log.md; \

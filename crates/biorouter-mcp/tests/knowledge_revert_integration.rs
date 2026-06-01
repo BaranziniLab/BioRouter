@@ -10,12 +10,7 @@
 //! acts as a regression guard for the file-presence + history-kind contract
 //! that higher-level routes rely on.
 
-use biorouter_mcp::knowledge::{
-    git::GitRepo,
-    paths,
-    service::KnowledgeService,
-    types::ChangeKind,
-};
+use biorouter_mcp::knowledge::{git::GitRepo, paths, service::KnowledgeService, types::ChangeKind};
 
 #[test]
 fn restore_state_reverts_a_page_creation() {
@@ -52,7 +47,10 @@ fn restore_state_reverts_a_page_creation() {
     assert!(!restore_sha.is_empty(), "restore returned an empty sha");
 
     // ---- file-presence assertions ----------------------------------------
-    assert!(page_a.exists(), "page A should still be present after restore");
+    assert!(
+        page_a.exists(),
+        "page A should still be present after restore"
+    );
     assert!(
         !page_b.exists(),
         "page B should be gone after restoring to a commit that predates it"
