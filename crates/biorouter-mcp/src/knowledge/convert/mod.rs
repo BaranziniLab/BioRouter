@@ -54,8 +54,8 @@ pub async fn convert(input: &SourceInput) -> Result<Converted> {
             let effective_mime = mime.clone().unwrap_or_else(|| guess_mime(filename));
             match effective_mime.as_str() {
                 "text/html" | "application/xhtml+xml" => {
-                    let s = std::str::from_utf8(bytes)?;
-                    let c = html::html_to_markdown(s)?;
+                    let s = String::from_utf8_lossy(bytes);
+                    let c = html::html_to_markdown(&s)?;
                     Ok(Converted {
                         markdown: c.markdown,
                         title: c.title,
@@ -151,5 +151,24 @@ mod tests {
         .unwrap();
         assert_eq!(c.markdown, "hello");
         assert_eq!(c.title.as_deref(), Some("Note"));
+    }
+
+    #[tokio::test]
+    async fn convert_html_with_invalid_utf8_bytes_succeeds_via_lossy_decode() {
+        // 0xFF is not a valid UTF-8 byte. With std::str::from_utf8 this would error;
+        // with String::from_utf8_lossy the bad byte gets replaced with U+FFFD and
+        // conversion continues normally.
+        let mut bytes = b"<html><body><p>Hello".to_vec();
+        bytes.push(0xFF);
+        bytes.extend_from_slice(b" world</p></body></html>");
+        let c = convert(&SourceInput::File {
+            bytes,
+            filename: "x.html".into(),
+            mime: Some("text/html".into()),
+        })
+        .await
+        .unwrap();
+        assert!(c.markdown.contains("Hello"), "markdown missing 'Hello': {}", c.markdown);
+        assert!(c.markdown.contains("world"), "markdown missing 'world': {}", c.markdown);
     }
 }
