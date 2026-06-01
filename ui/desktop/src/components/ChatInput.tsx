@@ -21,6 +21,7 @@ import ModelsBottomBar from './settings/models/bottom_bar/ModelsBottomBar';
 import { BottomMenuModeSelection } from './bottom_menu/BottomMenuModeSelection';
 import { BottomMenuExtensionSelection } from './bottom_menu/BottomMenuExtensionSelection';
 import { BottomMenuSkillSelection } from './bottom_menu/BottomMenuSkillSelection';
+import { BottomMenuKnowledgeSelection } from './bottom_menu/BottomMenuKnowledgeSelection';
 import { AlertType, useAlerts } from './alerts';
 import { useConfig } from './ConfigContext';
 import { useModelAndProvider } from './ModelAndProviderContext';
@@ -1405,6 +1406,8 @@ export default function ChatInput({
         <BottomMenuExtensionSelection sessionId={sessionId} />
         <div className="w-px h-4 bg-border-default mx-2" />
         <BottomMenuSkillSelection sessionId={sessionId} />
+        <div className="w-px h-4 bg-border-default mx-2" />
+        <BottomMenuKnowledgeSelection />
         {/* Group separator between the always-visible action group
             (DirSwitcher / Attach / Extensions / Skills) and the
             secondary picker controls (Cost / Context / Model / Mode).

@@ -1,18 +1,13 @@
 // ui/desktop/src/components/knowledge/KnowledgeView.tsx
 import { useEffect, useState } from 'react';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
-import { KnowledgeProvider } from './KnowledgeContext';
 import { KBSelectorTrigger } from './KBSelector/KBSelectorTrigger';
 import { IngestPanel } from './IngestPanel/IngestPanel';
 import { KnowledgeGraphPanel } from './graph/KnowledgeGraphPanel';
 import { ChangeLogDrawer } from './changelog/ChangeLogDrawer';
 
 export default function KnowledgeView() {
-  return (
-    <KnowledgeProvider>
-      <KnowledgeViewInner />
-    </KnowledgeProvider>
-  );
+  return <KnowledgeViewInner />;
 }
 
 function KnowledgeViewInner() {
