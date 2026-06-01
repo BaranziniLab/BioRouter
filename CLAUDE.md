@@ -129,6 +129,21 @@ just generate-openapi   # Regenerate OpenAPI spec from server routes
   list), and live SSE-streamed digestion progress via `useIngestStream`.
   Graph view + change-log drawer come in Plan 5.
 
+### Knowledge feature
+
+The Knowledge feature (built across Plans 1-6 in `docs/superpowers/plans/2026-05-30..2026-06-01-knowledge-*`) provides personal, LLM-maintained knowledge bases backed by markdown trees + git history.
+
+- **Backend module:** `crates/biorouter-mcp/src/knowledge/` (types, store, git, graph, credibility, convert/, macros/, subagent/loop_, MCP server).
+- **HTTP routes:** `crates/biorouter-server/src/routes/knowledge.rs` covers `/knowledge/bases`, `/ingest` (SSE), `/graph`, `/history`, `/preview`, `/restore`, `/page`, `/active`, `/export`, `/import`.
+- **Frontend:** `ui/desktop/src/components/knowledge/` (view shell, KB selector, ingest panel, force-graph + change-log drawer). The chat-side KB chip lives at `ui/desktop/src/components/bottom_menu/BottomMenuKnowledgeSelection.tsx`.
+- **Storage layout:** `~/.config/biorouter/knowledge/<kb-id>/` with `raw/`, `knowledge/`, `index.md`, `log.md`, `schema.md`, and a hidden `.git/`. The active-KB id is persisted at `~/.config/biorouter/knowledge/.active-kb`.
+- **Sub-agent loop:** `crates/biorouter-mcp/src/knowledge/subagent/loop_.rs` drives ingest / query / lint macros. Mutating tools accept an optional `txn` so a macro's tool calls commit as one logical change.
+
+When working on the Knowledge feature:
+- Run `cargo test -p biorouter-mcp --lib knowledge::` (~122 tests) and `cargo test -p biorouter-server --test knowledge_routes` (~19 tests) for backend changes.
+- After touching `routes/knowledge.rs`, regenerate the TS client with `just generate-openapi && cd ui/desktop && npm run generate-api`.
+- Graph derivation lives in `graph.rs` and depends on the sub-agent emitting `[[knowledge-link]]` markers in page bodies; the default `schema_default.md` reinforces this. If a graph has nodes but no edges, the underlying pages likely lack `[[…]]` cross-references.
+
 ### Communication Flow
 
 ```
