@@ -6,7 +6,7 @@ use crate::knowledge::{
     paths,
     service::KnowledgeService,
     subagent::{
-        events::SubAgentEvent,
+        events::{DoneReason, SubAgentEvent},
         kb_tools::{tool_specs, KbToolDispatch},
         loop_::{Completer, SubAgent, SubAgentBounds},
         procedures::QUERY_PROCEDURE,
@@ -28,6 +28,7 @@ pub struct QueryArgs {
     pub bounds: SubAgentBounds,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct QueryResult {
     pub answer: String,
     pub cited_pages: Vec<String>,
@@ -47,8 +48,7 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
     };
 
     // Build the system prompt: schema.md + QUERY_PROCEDURE + optional read-only reminder.
-    let schema =
-        std::fs::read_to_string(kb_root.join("schema.md")).context("read schema.md")?;
+    let schema = std::fs::read_to_string(kb_root.join("schema.md")).context("read schema.md")?;
     let mut system = format!("{schema}\n\n---\n{QUERY_PROCEDURE}");
     if !args.file_as_page {
         system.push_str(
@@ -69,27 +69,61 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
         bounds: args.bounds,
     };
 
-    let r = agent.run(&args.question, &dispatch, None).await?;
+    let agent_result = agent.run(&args.question, &dispatch, None).await;
 
-    // Commit the txn if we were filing the answer as a page.
-    let commit_sha = if let Some(branch) = txn_branch {
-        let repo = GitRepo::open(&kb_root)?;
-        let txn = Txn { branch };
-        Some(repo.commit_txn(
-            &txn,
-            ChangeKind::Query,
-            "query filed",
-            Some(&format!("+1 note · {} steps", r.steps_used)),
-        )?)
-    } else {
-        None
-    };
+    match agent_result {
+        Ok(r)
+            if matches!(
+                r.reason,
+                DoneReason::CompleteSentinel | DoneReason::NoMoreToolCalls
+            ) =>
+        {
+            // Commit the txn if we were filing the answer as a page.
+            let commit_sha = if let Some(branch) = txn_branch {
+                let repo = GitRepo::open(&kb_root)?;
+                let txn = Txn { branch };
+                Some(repo.commit_txn(
+                    &txn,
+                    ChangeKind::Query,
+                    "query filed",
+                    Some(&format!("+1 note · {} steps", r.steps_used)),
+                )?)
+            } else {
+                None
+            };
 
-    Ok(QueryResult {
-        answer: r.final_text,
-        cited_pages: extract_wiki_links(&r.events),
-        commit_sha,
-    })
+            Ok(QueryResult {
+                answer: r.final_text,
+                cited_pages: extract_wiki_links(&r.events),
+                commit_sha,
+            })
+        }
+        Ok(r) => {
+            // Bad DoneReason: abort the txn branch if one was opened.
+            if let Some(branch) = &txn_branch {
+                let repo = GitRepo::open(&kb_root)?;
+                let txn = Txn {
+                    branch: branch.clone(),
+                };
+                let _ = repo.abort_txn(&txn);
+            }
+            anyhow::bail!(
+                "query sub-agent aborted: reason={:?}, final={}",
+                r.reason,
+                r.final_text
+            )
+        }
+        Err(e) => {
+            if let Some(branch) = &txn_branch {
+                let repo = GitRepo::open(&kb_root)?;
+                let txn = Txn {
+                    branch: branch.clone(),
+                };
+                let _ = repo.abort_txn(&txn);
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Extract `[[Page Name]]` wiki-link references from all Step events in order,
@@ -120,6 +154,7 @@ mod tests {
     use crate::knowledge::{
         service::KnowledgeService,
         subagent::loop_::{LlmMessage, LlmReply, LlmToolCall},
+        types::ChangeKind,
     };
     use async_trait::async_trait;
     use rmcp::model::Tool;
@@ -200,10 +235,7 @@ mod tests {
         // step 0: tool call to kb_search
         // step 1: final text reply with a wiki-link citation
         let completer = MockCompleter::new(vec![
-            tool_call_reply(
-                "kb_search",
-                serde_json::json!({ "query": "HRV" }),
-            ),
+            tool_call_reply("kb_search", serde_json::json!({ "query": "HRV" })),
             text_reply_with_citation("Heart rate variability [[HRV]] is improved by zone-2."),
         ]);
 
@@ -225,7 +257,10 @@ mod tests {
             "cited_pages should contain 'HRV', got: {:?}",
             result.cited_pages
         );
-        assert!(result.commit_sha.is_none(), "read-only query must not commit");
+        assert!(
+            result.commit_sha.is_none(),
+            "read-only query must not commit"
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -280,6 +315,53 @@ mod tests {
             result.cited_pages.contains(&"HRV".to_string()),
             "citations should be extracted: {:?}",
             result.cited_pages
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // Test 3: step budget exceeded with file_as_page=true → txn aborted
+    // -------------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn query_aborts_txn_on_step_budget() {
+        let (_dir, svc) = fresh_svc();
+
+        // Always return a kb_search tool call so the loop never terminates naturally.
+        let replies: Vec<LlmReply> = (0..20)
+            .map(|_| tool_call_reply("kb_search", serde_json::json!({ "query": "HRV" })))
+            .collect();
+        let completer = MockCompleter::new(replies);
+
+        let err = query(
+            &svc,
+            QueryArgs {
+                kb_id: "k".into(),
+                question: "What is HRV?".into(),
+                completer: Box::new(completer),
+                file_as_page: true,
+                bounds: SubAgentBounds {
+                    max_steps: 2,
+                    ..Default::default()
+                },
+            },
+        )
+        .await;
+
+        assert!(err.is_err(), "query should fail when step budget exceeded");
+
+        // The KB git history must NOT contain a query-kind commit with 'steps' in
+        // the delta — that would only appear if commit_txn was called.
+        let log = svc.list_history("k", 10).unwrap();
+        let has_query_commit = log.iter().any(|e| {
+            e.kind == ChangeKind::Query
+                && e.delta
+                    .as_deref()
+                    .map(|d| d.contains("steps"))
+                    .unwrap_or(false)
+        });
+        assert!(
+            !has_query_commit,
+            "no query commit should exist after step-budget abort; log: {log:?}"
         );
     }
 }
