@@ -70,7 +70,7 @@ fn walk_md(base: &Path, dir: &Path, prefix: Option<&str>, out: &mut Vec<PageRef>
 }
 
 pub fn read_page(kb_root: &Path, path: &str) -> Result<PageContent> {
-    let abs = resolve_page_path(kb_root, path)?;
+    let abs = resolve_readable_path(kb_root, path)?;
     let raw =
         std::fs::read_to_string(&abs).with_context(|| format!("reading {}", abs.display()))?;
     let (fm, body) = split_frontmatter(&raw);
@@ -88,7 +88,7 @@ pub fn write_page(
     commit_message: &str,
     txn_branch: Option<&str>,
 ) -> Result<Option<String>> {
-    let abs = resolve_page_path(kb_root, path)?;
+    let abs = resolve_writable_path(kb_root, path)?;
     if let Some(parent) = abs.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -107,13 +107,32 @@ pub fn write_page(
     }
 }
 
-fn resolve_page_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf> {
-    if !logical.starts_with("knowledge/")
-        && logical != "index.md"
-        && logical != "schema.md"
-        && logical != "log.md"
-    {
-        anyhow::bail!("page path must start with knowledge/ or be index.md/schema.md/log.md");
+/// Path is readable: `knowledge/`, `raw/`, or top-level `index.md` / `schema.md` / `log.md`.
+fn resolve_readable_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf> {
+    let ok = logical.starts_with("knowledge/")
+        || logical.starts_with("raw/")
+        || matches!(logical, "index.md" | "schema.md" | "log.md");
+    if !ok {
+        anyhow::bail!(
+            "page path must start with knowledge/ or raw/ or be index.md/schema.md/log.md"
+        );
+    }
+    if logical.contains("..") {
+        anyhow::bail!("path traversal not allowed");
+    }
+    Ok(kb_root.join(logical))
+}
+
+/// Path is writable: `knowledge/` pages plus `index.md`, `schema.md`, and `log.md`.
+/// `raw/` is read-only — the raw source tree is immutable by design.
+fn resolve_writable_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf> {
+    let ok = logical.starts_with("knowledge/")
+        || matches!(logical, "index.md" | "schema.md" | "log.md");
+    if !ok {
+        anyhow::bail!(
+            "write path must start with knowledge/ or be index.md/schema.md/log.md; \
+             raw/ paths are read-only"
+        );
     }
     if logical.contains("..") {
         anyhow::bail!("path traversal not allowed");
@@ -310,8 +329,46 @@ mod tests {
     #[test]
     fn rejects_paths_outside_knowledge() {
         let (_dir, kb) = fresh();
+        // write_page must still reject raw/ paths (raw/ tree is read-only)
         let err = write_page(&kb, "raw/x.md", "x", "x", None).unwrap_err();
-        assert!(err.to_string().contains("knowledge/"));
+        assert!(
+            err.to_string().contains("knowledge/") || err.to_string().contains("write path"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn read_page_allows_raw_source_md() {
+        let (_d, kb) = fresh();
+        std::fs::create_dir_all(kb.join("raw/x")).unwrap();
+        std::fs::write(kb.join("raw/x/source.md"), "---\ntitle: X\n---\nbody").unwrap();
+        let p = read_page(&kb, "raw/x/source.md").unwrap();
+        assert!(p.content.contains("body"));
+    }
+
+    #[test]
+    fn read_page_allows_raw_meta_yaml() {
+        let (_d, kb) = fresh();
+        std::fs::create_dir_all(kb.join("raw/x")).unwrap();
+        std::fs::write(kb.join("raw/x/meta.yaml"), "id: x\ntitle: X\n").unwrap();
+        let p = read_page(&kb, "raw/x/meta.yaml").unwrap();
+        // The full file content is available (either as frontmatter or as raw body)
+        assert!(
+            p.content.contains("title: X") || p.frontmatter.is_mapping(),
+            "expected YAML content in page; got: {:?} / {:?}",
+            p.content,
+            p.frontmatter
+        );
+    }
+
+    #[test]
+    fn write_page_still_rejects_raw_paths() {
+        let (_d, kb) = fresh();
+        let err = write_page(&kb, "raw/x/source.md", "x", "x", None).unwrap_err();
+        assert!(
+            err.to_string().contains("knowledge/") || err.to_string().contains("write path"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
