@@ -414,7 +414,7 @@ pub async fn classify(input: &SourceInput, completer: Box<dyn Completer>) -> Res
     let dispatch = AgenticToolDispatch::new();
     let user_msg = source_description(input);
 
-    let result = agent.run(&user_msg, &dispatch, None).await?;
+    let result = agent.run(&user_msg, &dispatch, None, None).await?;
 
     match parse_credibility_json(&result.final_text) {
         Some(c) => Ok(c),

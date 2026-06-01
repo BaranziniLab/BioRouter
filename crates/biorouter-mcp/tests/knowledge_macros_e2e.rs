@@ -119,6 +119,7 @@ async fn macros_e2e_ingest_query_lint() {
             completer: Box::new(ingest_completer),
             focus: None,
             bounds: SubAgentBounds::default(),
+            event_sink: None,
         },
     )
     .await
@@ -156,6 +157,7 @@ async fn macros_e2e_ingest_query_lint() {
             completer: Box::new(query_completer),
             file_as_page: false,
             bounds: SubAgentBounds::default(),
+            event_sink: None,
         },
     )
     .await

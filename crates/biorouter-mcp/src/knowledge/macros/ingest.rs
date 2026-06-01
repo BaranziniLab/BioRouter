@@ -26,6 +26,10 @@ pub struct IngestArgs {
     pub completer: Box<dyn Completer>,
     pub focus: Option<String>,
     pub bounds: SubAgentBounds,
+    /// Optional channel for live event streaming. When provided, every
+    /// `SubAgentEvent` is sent here as soon as it is produced (not just at
+    /// the end of the run). Set to `None` if streaming is not needed.
+    pub event_sink: Option<tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -72,7 +76,7 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
         raw.source_id
     );
 
-    let agent_result = agent.run(&user, &dispatch, None).await;
+    let agent_result = agent.run(&user, &dispatch, None, args.event_sink.as_ref()).await;
 
     match agent_result {
         Ok(r)
@@ -217,6 +221,7 @@ mod tests {
                 completer: Box::new(completer),
                 focus: None,
                 bounds: SubAgentBounds::default(),
+                event_sink: None,
             },
         )
         .await
@@ -268,6 +273,7 @@ mod tests {
                     max_steps: 3,
                     ..Default::default()
                 },
+                event_sink: None,
             },
         )
         .await;
@@ -336,6 +342,7 @@ mod tests {
                 completer: Box::new(completer),
                 focus: None,
                 bounds: SubAgentBounds::default(),
+                event_sink: None,
             },
         )
         .await;

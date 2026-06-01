@@ -133,6 +133,7 @@ impl SubAgent {
         user_message: &str,
         dispatch: &dyn ToolDispatch,
         cancel: Option<&tokio::sync::Notify>,
+        event_sink: Option<&tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
     ) -> Result<SubAgentResult> {
         let mut events: Vec<SubAgentEvent> = Vec::new();
         let mut messages: Vec<LlmMessage> = vec![LlmMessage::User(user_message.to_string())];
@@ -176,10 +177,14 @@ impl SubAgent {
                 .complete(&self.system_prompt, &messages, &self.tools)
                 .await?;
 
-            events.push(SubAgentEvent::Step {
+            let step_ev = SubAgentEvent::Step {
                 index: steps,
                 assistant_text: reply.text.clone(),
-            });
+            };
+            if let Some(tx) = event_sink {
+                let _ = tx.send(step_ev.clone());
+            }
+            events.push(step_ev);
 
             if reply.tool_calls.is_empty() {
                 return Ok(make_result(
@@ -205,26 +210,39 @@ impl SubAgent {
 
             // Dispatch each tool call and accumulate tool-result messages
             for call in &reply.tool_calls {
-                events.push(SubAgentEvent::ToolCall {
+                let call_ev = SubAgentEvent::ToolCall {
                     name: call.name.clone(),
                     args: call.args.clone(),
-                });
+                };
+                if let Some(tx) = event_sink {
+                    let _ = tx.send(call_ev.clone());
+                }
+                events.push(call_ev);
+
                 let result_content = match dispatch.call(&call.name, call.args.clone()).await {
                     Ok(s) => {
-                        events.push(SubAgentEvent::ToolResult {
+                        let result_ev = SubAgentEvent::ToolResult {
                             name: call.name.clone(),
                             ok: true,
                             summary: s.chars().take(120).collect(),
-                        });
+                        };
+                        if let Some(tx) = event_sink {
+                            let _ = tx.send(result_ev.clone());
+                        }
+                        events.push(result_ev);
                         s
                     }
                     Err(e) => {
                         let msg = e.to_string();
-                        events.push(SubAgentEvent::ToolResult {
+                        let result_ev = SubAgentEvent::ToolResult {
                             name: call.name.clone(),
                             ok: false,
                             summary: msg.clone(),
-                        });
+                        };
+                        if let Some(tx) = event_sink {
+                            let _ = tx.send(result_ev.clone());
+                        }
+                        events.push(result_ev);
                         format!("error: {msg}")
                     }
                 };
@@ -350,7 +368,7 @@ mod tests {
             text_reply("all done"),       // step 1: no tool calls → done
         ]);
         let agent = make_agent(completer, 10);
-        let result = agent.run("hello", &EchoDispatch, None).await.unwrap();
+        let result = agent.run("hello", &EchoDispatch, None, None).await.unwrap();
         assert_eq!(result.reason, DoneReason::NoMoreToolCalls);
         // steps_used reflects the loop counter at the time of Done, which
         // is 1 (incremented after the first tool-dispatch round)
@@ -365,7 +383,7 @@ mod tests {
         let replies: Vec<LlmReply> = (0..35).map(|_| tool_call_reply("kb_search")).collect();
         let completer = MockCompleter::new(replies);
         let agent = make_agent(completer, 5);
-        let result = agent.run("hello", &EchoDispatch, None).await.unwrap();
+        let result = agent.run("hello", &EchoDispatch, None, None).await.unwrap();
         assert_eq!(result.reason, DoneReason::StepBudgetReached);
         assert!(result.steps_used <= 5);
     }
@@ -380,9 +398,38 @@ mod tests {
         let completer = MockCompleter::new(vec![text_reply("never reached")]);
         let agent = make_agent(completer, 30);
         let result = agent
-            .run("hello", &EchoDispatch, Some(&notify))
+            .run("hello", &EchoDispatch, Some(&notify), None)
             .await
             .unwrap();
         assert_eq!(result.reason, DoneReason::Cancelled);
+    }
+
+    /// Test 4: with an event_sink, events arrive in the channel as the loop runs.
+    #[tokio::test]
+    async fn run_emits_events_to_sink_live() {
+        use tokio::sync::mpsc;
+
+        let (tx, mut rx) = mpsc::unbounded_channel::<SubAgentEvent>();
+
+        // Two-step run: one tool call, then a text-only reply → NoMoreToolCalls.
+        let completer = MockCompleter::new(vec![
+            tool_call_reply("kb_search"),
+            text_reply("done"),
+        ]);
+        let agent = make_agent(completer, 10);
+
+        let _ = agent
+            .run("test", &EchoDispatch, None, Some(&tx))
+            .await
+            .unwrap();
+
+        // Close the sender so rx drains to exhaustion.
+        drop(tx);
+
+        let mut count = 0usize;
+        while rx.recv().await.is_some() {
+            count += 1;
+        }
+        assert!(count > 0, "event sink must have received at least one event");
     }
 }

@@ -198,6 +198,10 @@ pub struct LintArgs {
     pub completer: Option<Box<dyn Completer>>,
     pub autofix: bool,
     pub bounds: SubAgentBounds,
+    /// Optional channel for live event streaming. When provided, every
+    /// `SubAgentEvent` is sent here as soon as it is produced (not just at
+    /// the end of the run). Set to `None` if streaming is not needed.
+    pub event_sink: Option<tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -252,7 +256,7 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
         bounds: args.bounds,
     };
 
-    let agent_result = agent.run(&user, &dispatch, None).await;
+    let agent_result = agent.run(&user, &dispatch, None, args.event_sink.as_ref()).await;
 
     match agent_result {
         Ok(r)
@@ -442,6 +446,7 @@ mod tests {
                 completer: None,
                 autofix: false,
                 bounds: SubAgentBounds::default(),
+                event_sink: None,
             },
         )
         .await

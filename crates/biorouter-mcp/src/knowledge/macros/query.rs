@@ -26,6 +26,10 @@ pub struct QueryArgs {
     pub completer: Box<dyn Completer>,
     pub file_as_page: bool,
     pub bounds: SubAgentBounds,
+    /// Optional channel for live event streaming. When provided, every
+    /// `SubAgentEvent` is sent here as soon as it is produced (not just at
+    /// the end of the run). Set to `None` if streaming is not needed.
+    pub event_sink: Option<tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -69,7 +73,7 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
         bounds: args.bounds,
     };
 
-    let agent_result = agent.run(&args.question, &dispatch, None).await;
+    let agent_result = agent.run(&args.question, &dispatch, None, args.event_sink.as_ref()).await;
 
     match agent_result {
         Ok(r)
@@ -247,6 +251,7 @@ mod tests {
                 completer: Box::new(completer),
                 file_as_page: false,
                 bounds: SubAgentBounds::default(),
+                event_sink: None,
             },
         )
         .await
@@ -293,6 +298,7 @@ mod tests {
                 completer: Box::new(completer),
                 file_as_page: true,
                 bounds: SubAgentBounds::default(),
+                event_sink: None,
             },
         )
         .await
@@ -343,6 +349,7 @@ mod tests {
                     max_steps: 2,
                     ..Default::default()
                 },
+                event_sink: None,
             },
         )
         .await;
