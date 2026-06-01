@@ -48,6 +48,7 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
             "/bases/{id}/sources/{sid}/credibility",
             put(override_credibility),
         )
+        .route("/check-model", post(check_model))
         .with_state(svc)
 }
 
@@ -121,6 +122,19 @@ pub struct RawSourceResponse {
 #[derive(Serialize, ToSchema)]
 pub struct CredibilityResponse {
     pub credibility: Credibility,
+}
+
+// check-model DTOs
+#[derive(Deserialize, ToSchema)]
+pub struct CheckModelBody {
+    pub model: ModelRef,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct CheckModelResponse {
+    pub ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 // Task 9 DTOs
@@ -418,6 +432,45 @@ fn sse_error_frame(message: &str) -> String {
 }
 
 #[utoipa::path(
+    post, path = "/knowledge/check-model",
+    request_body = CheckModelBody,
+    responses(
+        (status = 200, description = "Model responded OK", body = CheckModelResponse),
+        (status = 502, description = "Model is unreachable / invalid", body = CheckModelResponse),
+    )
+)]
+pub async fn check_model(
+    State(svc): State<Arc<KnowledgeService>>,
+    Json(body): Json<CheckModelBody>,
+) -> Result<Json<CheckModelResponse>, (StatusCode, Json<CheckModelResponse>)> {
+    let completer = match build_completer(&body.model).await {
+        Ok(c) => c,
+        Err((_status, msg)) => {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                Json(CheckModelResponse {
+                    ok: false,
+                    error: Some(format!("provider build failed: {msg}")),
+                }),
+            ))
+        }
+    };
+    match svc.check_model(completer).await {
+        Ok(()) => Ok(Json(CheckModelResponse {
+            ok: true,
+            error: None,
+        })),
+        Err(e) => Err((
+            StatusCode::BAD_GATEWAY,
+            Json(CheckModelResponse {
+                ok: false,
+                error: Some(e.to_string()),
+            }),
+        )),
+    }
+}
+
+#[utoipa::path(
     post, path = "/knowledge/bases/{id}/ingest",
     request_body = IngestBody,
     params(("id" = String, Path, description = "Knowledge base ID")),
@@ -435,12 +488,15 @@ pub async fn ingest(
         parse_source_input(&body.source).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let completer = build_completer(&body.model).await?;
 
+    let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
     let (result_tx, mut result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
 
     // Macro task: run ingest, then report result through a dedicated channel.
     // Dropping `event_tx` signals the forwarder that no more events are coming.
+    let cancel_for_macro = cancel.clone();
     tokio::spawn(async move {
         let args = ingest_macro::IngestArgs {
             kb_id: id,
@@ -449,6 +505,7 @@ pub async fn ingest(
             focus: body.focus,
             bounds: SubAgentBounds::default(),
             event_sink: Some(event_tx),
+            cancel: Some(cancel_for_macro),
         };
         let outcome = match ingest_macro::ingest(&svc, args).await {
             Ok(r) => Ok(serde_json::to_value(&r).unwrap_or_default()),
@@ -460,10 +517,15 @@ pub async fn ingest(
     // Forwarder task: owns `sse_tx`. Drains all SubAgent events first (guaranteed
     // ordering), then emits the terminal done/error frame from the macro result.
     // This eliminates the race where `done` could arrive before the last data events.
+    // If the client disconnects (sse_tx.send returns Err), signal cancellation.
+    let cancel_for_forwarder = cancel.clone();
     tokio::spawn(async move {
         while let Some(ev) = event_rx.recv().await {
             if let Ok(j) = serde_json::to_string(&ev) {
-                let _ = sse_tx.send(format!("data: {j}\n\n")).await;
+                if sse_tx.send(format!("data: {j}\n\n")).await.is_err() {
+                    cancel_for_forwarder.notify_one();
+                    return;
+                }
             }
         }
         match result_rx.recv().await {
@@ -501,10 +563,13 @@ pub async fn query_kb(
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
     let completer = build_completer(&body.model).await?;
 
+    let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
     let (result_tx, mut result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
 
+    let cancel_for_macro = cancel.clone();
     tokio::spawn(async move {
         let args = query_macro::QueryArgs {
             kb_id: id,
@@ -513,6 +578,7 @@ pub async fn query_kb(
             file_as_page: body.file_as_page.unwrap_or(false),
             bounds: SubAgentBounds::default(),
             event_sink: Some(event_tx),
+            cancel: Some(cancel_for_macro),
         };
         let outcome = match query_macro::query(&svc, args).await {
             Ok(r) => Ok(serde_json::to_value(&r).unwrap_or_default()),
@@ -521,10 +587,14 @@ pub async fn query_kb(
         let _ = result_tx.send(outcome).await;
     });
 
+    let cancel_for_forwarder = cancel.clone();
     tokio::spawn(async move {
         while let Some(ev) = event_rx.recv().await {
             if let Ok(j) = serde_json::to_string(&ev) {
-                let _ = sse_tx.send(format!("data: {j}\n\n")).await;
+                if sse_tx.send(format!("data: {j}\n\n")).await.is_err() {
+                    cancel_for_forwarder.notify_one();
+                    return;
+                }
             }
         }
         match result_rx.recv().await {
@@ -569,10 +639,13 @@ pub async fn lint(
             None
         };
 
+    let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
     let (result_tx, mut result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
 
+    let cancel_for_macro = cancel.clone();
     tokio::spawn(async move {
         let args = lint_macro::LintArgs {
             kb_id: id,
@@ -580,6 +653,7 @@ pub async fn lint(
             autofix,
             bounds: SubAgentBounds::default(),
             event_sink: Some(event_tx),
+            cancel: Some(cancel_for_macro),
         };
         let outcome = match lint_macro::lint(&svc, args).await {
             Ok(r) => Ok(serde_json::to_value(&r).unwrap_or_default()),
@@ -588,10 +662,14 @@ pub async fn lint(
         let _ = result_tx.send(outcome).await;
     });
 
+    let cancel_for_forwarder = cancel.clone();
     tokio::spawn(async move {
         while let Some(ev) = event_rx.recv().await {
             if let Ok(j) = serde_json::to_string(&ev) {
-                let _ = sse_tx.send(format!("data: {j}\n\n")).await;
+                if sse_tx.send(format!("data: {j}\n\n")).await.is_err() {
+                    cancel_for_forwarder.notify_one();
+                    return;
+                }
             }
         }
         match result_rx.recv().await {

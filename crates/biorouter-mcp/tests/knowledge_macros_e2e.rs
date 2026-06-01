@@ -120,6 +120,7 @@ async fn macros_e2e_ingest_query_lint() {
             focus: None,
             bounds: SubAgentBounds::default(),
             event_sink: None,
+            cancel: None,
         },
     )
     .await
@@ -158,6 +159,7 @@ async fn macros_e2e_ingest_query_lint() {
             file_as_page: false,
             bounds: SubAgentBounds::default(),
             event_sink: None,
+            cancel: None,
         },
     )
     .await

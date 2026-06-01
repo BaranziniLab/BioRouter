@@ -42,8 +42,7 @@ async fn list_bases_empty_returns_empty_array() {
 #[tokio::test]
 async fn create_then_get_base() {
     let (_d, app) = build_test_router();
-    let create_body =
-        serde_json::to_vec(&serde_json::json!({"id": "t", "name": "Test"})).unwrap();
+    let create_body = serde_json::to_vec(&serde_json::json!({"id": "t", "name": "Test"})).unwrap();
     let res = app
         .clone()
         .oneshot(
@@ -338,8 +337,7 @@ async fn history_write_restore_roundtrip() {
     );
 
     // 5. restore_state to the first commit (before the page write).
-    let restore_body =
-        serde_json::to_vec(&serde_json::json!({"commit_sha": first_sha})).unwrap();
+    let restore_body = serde_json::to_vec(&serde_json::json!({"commit_sha": first_sha})).unwrap();
     let res = app
         .clone()
         .oneshot(
@@ -552,7 +550,10 @@ async fn export_then_import_roundtrip() {
     let brkb_bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
         .await
         .unwrap();
-    assert!(brkb_bytes.len() > 100, "exported archive should have content");
+    assert!(
+        brkb_bytes.len() > 100,
+        "exported archive should have content"
+    );
 
     // 4. Import via multipart — build a minimal multipart body by hand.
     // Boundary and body structure per RFC 2046.
@@ -589,7 +590,10 @@ async fn export_then_import_roundtrip() {
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let new_id = v.get("id").and_then(|v| v.as_str()).unwrap();
     // The original id was "ex" and it already exists, so the import should assign "ex-2".
-    assert_eq!(new_id, "ex-2", "import into existing root should suffix with -2");
+    assert_eq!(
+        new_id, "ex-2",
+        "import into existing root should suffix with -2"
+    );
 
     // 5. The imported KB should show up in list_bases (we should now have 2 bases).
     let res = app
@@ -606,7 +610,10 @@ async fn export_then_import_roundtrip() {
         .unwrap();
     let bases: serde_json::Value = serde_json::from_slice(&body).unwrap();
     let count = bases.as_array().unwrap().len();
-    assert_eq!(count, 2, "should have 2 knowledge bases after import (original + imported)");
+    assert_eq!(
+        count, 2,
+        "should have 2 knowledge bases after import (original + imported)"
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -667,11 +674,7 @@ async fn reclassify_route_returns_credibility() {
         )
         .await
         .unwrap();
-    assert_eq!(
-        res.status(),
-        200,
-        "reclassify should return 200"
-    );
+    assert_eq!(res.status(), 200, "reclassify should return 200");
     let body = axum::body::to_bytes(res.into_body(), usize::MAX)
         .await
         .unwrap();
@@ -692,8 +695,7 @@ async fn reclassify_route_returns_credibility() {
 
 /// Helper: create a KB named `id` in `app`, assert 200.
 async fn create_kb(app: Router, id: &str, name: &str) {
-    let create_body =
-        serde_json::to_vec(&serde_json::json!({"id": id, "name": name})).unwrap();
+    let create_body = serde_json::to_vec(&serde_json::json!({"id": id, "name": name})).unwrap();
     let res = app
         .oneshot(
             Request::builder()
@@ -790,5 +792,45 @@ async fn lint_rejects_invalid_model_with_400_when_autofix() {
         res.status(),
         400,
         "lint with unknown provider + autofix=true should return 400"
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// check_model route
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn check_model_returns_502_for_unknown_provider() {
+    let (_d, app) = build_test_router();
+
+    let body = serde_json::to_vec(&serde_json::json!({
+        "model": {"provider": "nonexistent_provider_xyz", "model": "x"}
+    }))
+    .unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/check-model")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // The provider build fails → 502 Bad Gateway with ok: false
+    assert_eq!(
+        res.status(),
+        502,
+        "check_model with unknown provider should return 502"
+    );
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["ok"], false, "ok should be false");
+    assert!(
+        v.get("error").is_some(),
+        "response should have an error field"
     );
 }

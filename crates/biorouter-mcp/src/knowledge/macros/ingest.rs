@@ -30,6 +30,10 @@ pub struct IngestArgs {
     /// `SubAgentEvent` is sent here as soon as it is produced (not just at
     /// the end of the run). Set to `None` if streaming is not needed.
     pub event_sink: Option<tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
+    /// Optional cancellation signal. When `notify_one()` is called on the
+    /// shared `Notify`, the sub-agent loop returns `DoneReason::Cancelled`
+    /// at the start of its next iteration.
+    pub cancel: Option<std::sync::Arc<tokio::sync::Notify>>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -76,8 +80,9 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
         raw.source_id
     );
 
+    let cancel_ref = args.cancel.as_deref();
     let agent_result = agent
-        .run(&user, &dispatch, None, args.event_sink.as_ref())
+        .run(&user, &dispatch, cancel_ref, args.event_sink.as_ref())
         .await;
 
     match agent_result {
@@ -224,6 +229,7 @@ mod tests {
                 focus: None,
                 bounds: SubAgentBounds::default(),
                 event_sink: None,
+                cancel: None,
             },
         )
         .await
@@ -276,6 +282,7 @@ mod tests {
                     ..Default::default()
                 },
                 event_sink: None,
+                cancel: None,
             },
         )
         .await;
@@ -345,6 +352,7 @@ mod tests {
                 focus: None,
                 bounds: SubAgentBounds::default(),
                 event_sink: None,
+                cancel: None,
             },
         )
         .await;
