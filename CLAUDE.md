@@ -123,6 +123,11 @@ just generate-openapi   # Regenerate OpenAPI spec from server routes
 - **`components/`** — 64+ modular React UI components
 - **`contexts/`** — React Context for global state
 - **`workflow/`** — Workflow builder UI
+- **`components/knowledge/`** — Top-level Knowledge route in the sidebar
+  (between Skills and Settings). Provides KB selector with cmd-K-style
+  palette, ingest panel (dropzone / paste text with URL extraction / staged
+  list), and live SSE-streamed digestion progress via `useIngestStream`.
+  Graph view + change-log drawer come in Plan 5.
 
 ### Communication Flow
 
