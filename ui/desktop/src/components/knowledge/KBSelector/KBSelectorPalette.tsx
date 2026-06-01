@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { Search, Plus } from 'lucide-react';
+import { Search, Plus, FolderPlus } from 'lucide-react';
 import { createBase } from '../../../api';
 import { useKnowledge } from '../KnowledgeContext';
 import type { Manifest } from '../../../api/types.gen';
@@ -9,7 +9,8 @@ interface Props {
 }
 
 type CreateItem = { create: true; slug: string; name: string };
-type PaletteItem = Manifest | CreateItem;
+type CreatePromptItem = { createPrompt: true };
+type PaletteItem = Manifest | CreateItem | CreatePromptItem;
 
 export function KBSelectorPalette({ onClose }: Props) {
   const { bases, refresh, setActiveKbId } = useKnowledge();
@@ -28,32 +29,53 @@ export function KBSelectorPalette({ onClose }: Props) {
   const items: PaletteItem[] = [
     ...filtered,
     ...(showCreate ? [{ create: true as const, slug, name: query }] : []),
+    // Always-visible "Create new knowledge base…" fallback. Clicking this
+    // opens a window.prompt so users can name the KB without first typing
+    // into the search field.
+    { createPrompt: true as const },
   ];
 
   useEffect(() => { setCursor(0); }, [query]);
 
+  async function performCreate(rawName: string): Promise<void> {
+    const name = rawName.trim();
+    if (!name) return;
+    const id = slugify(name);
+    if (!id) {
+      window.alert('Please choose a name with at least one letter or number.');
+      return;
+    }
+    try {
+      const res = await createBase({ throwOnError: true, body: { id, name } });
+      await refresh();
+      if (res.data?.id) setActiveKbId(res.data.id);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error('createBase failed', err);
+      // Surface the error to the user rather than closing silently.
+      window.alert(`Failed to create knowledge base: ${msg}`);
+    }
+  }
+
   function commitAt(i: number) {
     const it = items[i];
     if (!it) return;
-    if ('create' in it) {
+    if ('createPrompt' in it) {
+      const name = window.prompt('Name for the new knowledge base:');
+      if (name === null) return; // user cancelled — keep palette open
+      void (async () => {
+        await performCreate(name);
+        onClose();
+      })();
+    } else if ('create' in it) {
       // Guard against empty slugs (can happen if the user types only special characters).
       if (!it.slug) {
         console.warn('KBSelectorPalette: slugify produced an empty string for query:', query);
         return;
       }
       void (async () => {
-        try {
-          const res = await createBase({ throwOnError: true, body: { id: it.slug, name: it.name } });
-          await refresh();
-          if (res.data?.id) setActiveKbId(res.data.id);
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error('createBase failed', err);
-          // Surface the error to the user rather than closing silently.
-          window.alert(`Failed to create knowledge base: ${msg}`);
-        } finally {
-          onClose();
-        }
+        await performCreate(it.name);
+        onClose();
       })();
     } else {
       setActiveKbId(it.id);
@@ -93,21 +115,39 @@ export function KBSelectorPalette({ onClose }: Props) {
           </kbd>
         </div>
         <div className="flex-1 overflow-y-auto p-2">
-          {items.length === 0 && (
+          {filtered.length === 0 && query.length > 0 && !showCreate && (
             <div className="px-4 py-6 text-center text-sm text-text-muted">
               No knowledge base matches.
             </div>
           )}
           {items.map((it, i) => (
             <div
-              key={'create' in it ? `__create_${it.slug}` : it.id}
+              key={
+                'createPrompt' in it
+                  ? '__createPrompt'
+                  : 'create' in it
+                    ? `__create_${it.slug}`
+                    : it.id
+              }
               onMouseEnter={() => setCursor(i)}
               onClick={() => commitAt(i)}
               className={`flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer ${
                 i === cursor ? 'bg-background-muted' : ''
               }`}
             >
-              {'create' in it ? (
+              {'createPrompt' in it ? (
+                <>
+                  <FolderPlus className="w-4 h-4 text-text-muted flex-shrink-0" />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium truncate">
+                      Create new knowledge base…
+                    </div>
+                    <div className="text-[10px] font-mono text-text-muted">
+                      name it yourself
+                    </div>
+                  </div>
+                </>
+              ) : 'create' in it ? (
                 <>
                   <Plus className="w-3 h-3 text-text-muted" />
                   <div className="flex-1 min-w-0">
