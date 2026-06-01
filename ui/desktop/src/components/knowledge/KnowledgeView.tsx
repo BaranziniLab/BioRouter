@@ -1,5 +1,6 @@
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { KnowledgeProvider } from './KnowledgeContext';
+import { KBSelectorTrigger } from './KBSelector/KBSelectorTrigger';
 
 export default function KnowledgeView() {
   return (
@@ -23,7 +24,7 @@ function KnowledgeViewInner() {
         </div>
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-[360px_1fr] min-h-0">
           <div className="border-r border-border-subtle p-6">
-            <p className="text-sm text-text-muted">Ingest panel coming in later tasks.</p>
+            <KBSelectorTrigger />
           </div>
           <div className="p-6">
             <p className="text-sm text-text-muted">Graph view comes in Plan 5.</p>
