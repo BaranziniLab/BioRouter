@@ -149,6 +149,7 @@ export function IngestPanel() {
           size="sm"
           disabled={!canDigest}
           onClick={() => void onDigest()}
+          className="min-w-[5.5rem]"
         >
           {digesting ? 'Digesting…' : 'Digest'}
         </Button>
