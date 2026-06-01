@@ -43,6 +43,17 @@ pub struct LlmReply {
 // Completer trait  (thin LLM abstraction, loop-internal)
 // ---------------------------------------------------------------------------
 
+/// One tool-result part within a compound `LlmMessage::ToolResults` turn.
+#[derive(Debug, Clone)]
+pub struct ToolResultPart {
+    /// Matches `LlmToolCall::id` from the corresponding assistant reply.
+    pub request_id: String,
+    /// Tool name (for debugging / logging).
+    pub name: String,
+    /// The string the tool returned.
+    pub content: String,
+}
+
 /// A conversation turn in the format the Completer expects.
 #[derive(Debug, Clone)]
 pub enum LlmMessage {
@@ -51,6 +62,10 @@ pub enum LlmMessage {
     /// The assistant's previous reply (needed so the provider can see context).
     Assistant(LlmReply),
     /// The result we are feeding back for a specific tool request.
+    ///
+    /// Kept for backward compatibility (single tool call per turn).  For turns
+    /// with multiple tool calls, prefer `ToolResults` so all results are bundled
+    /// into a single user message — required by Bedrock's strict validation.
     ToolResult {
         /// Matches `LlmToolCall::id` from the corresponding assistant reply.
         request_id: String,
@@ -59,6 +74,13 @@ pub enum LlmMessage {
         /// The string the tool returned.
         content: String,
     },
+    /// All tool results from a single assistant turn, bundled together.
+    ///
+    /// Bedrock (and the Anthropic spec) require that when an assistant turn
+    /// contains N `tool_use` blocks, ALL N `tool_result` blocks MUST appear
+    /// in a SINGLE subsequent user message.  Using this variant instead of N
+    /// separate `ToolResult` entries satisfies that constraint.
+    ToolResults(Vec<ToolResultPart>),
 }
 
 /// Minimal LLM capability needed by the sub-agent loop.
@@ -208,7 +230,14 @@ impl SubAgent {
             // Store the assistant turn in the conversation
             messages.push(LlmMessage::Assistant(reply.clone()));
 
-            // Dispatch each tool call and accumulate tool-result messages
+            // Dispatch each tool call and collect results.
+            //
+            // All results are then pushed as a SINGLE `LlmMessage::ToolResults`
+            // containing every result block.  Bedrock (and the Anthropic spec)
+            // require that when an assistant turn has N `tool_use` blocks, ALL N
+            // `tool_result` blocks appear in one subsequent user message; emitting
+            // separate messages causes a ValidationException.
+            let mut result_parts: Vec<ToolResultPart> = Vec::new();
             for call in &reply.tool_calls {
                 let call_ev = SubAgentEvent::ToolCall {
                     name: call.name.clone(),
@@ -246,11 +275,16 @@ impl SubAgent {
                         format!("error: {msg}")
                     }
                 };
-                messages.push(LlmMessage::ToolResult {
+                result_parts.push(ToolResultPart {
                     request_id: call.id.clone(),
                     name: call.name.clone(),
                     content: result_content,
                 });
+            }
+            // Bundle all results into one message so Bedrock sees a single user
+            // turn paired against the assistant turn above.
+            if !result_parts.is_empty() {
+                messages.push(LlmMessage::ToolResults(result_parts));
             }
             steps += 1;
         }
@@ -341,6 +375,24 @@ mod tests {
         }
     }
 
+    fn two_tool_call_reply() -> LlmReply {
+        LlmReply {
+            text: String::new(),
+            tool_calls: vec![
+                LlmToolCall {
+                    id: "tc-1".into(),
+                    name: "kb_search".to_string(),
+                    args: serde_json::Value::Object(Default::default()),
+                },
+                LlmToolCall {
+                    id: "tc-2".into(),
+                    name: "kb_read_page".to_string(),
+                    args: serde_json::Value::Object(Default::default()),
+                },
+            ],
+        }
+    }
+
     fn text_reply(text: &str) -> LlmReply {
         LlmReply {
             text: text.to_string(),
@@ -357,6 +409,33 @@ mod tests {
                 max_steps,
                 ..Default::default()
             },
+        }
+    }
+
+    /// A MockCompleter that also records the `messages` slice it receives each call.
+    ///
+    /// The `received` field is an `Arc<Mutex<…>>` so the test can clone a reference
+    /// before moving the completer into `Box<dyn Completer>` and inspect recordings
+    /// after the run completes.
+    struct RecordingCompleter {
+        replies: Mutex<Vec<LlmReply>>,
+        received: Arc<Mutex<Vec<Vec<LlmMessage>>>>,
+    }
+
+    #[async_trait]
+    impl Completer for RecordingCompleter {
+        async fn complete(
+            &self,
+            _system: &str,
+            messages: &[LlmMessage],
+            _tools: &[Tool],
+        ) -> Result<LlmReply> {
+            self.received.lock().await.push(messages.to_vec());
+            let mut q = self.replies.lock().await;
+            if q.is_empty() {
+                panic!("RecordingCompleter ran out of canned replies");
+            }
+            Ok(q.remove(0))
         }
     }
 
@@ -402,6 +481,66 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.reason, DoneReason::Cancelled);
+    }
+
+    /// Test: when the assistant returns 2 tool calls in one turn, the loop must
+    /// push exactly ONE `LlmMessage::ToolResults` (not two separate `ToolResult`
+    /// entries) so that Bedrock sees a single user message with both results.
+    #[tokio::test]
+    async fn loop_bundles_multiple_tool_calls_into_one_tool_results_message() {
+        // Shared recording store so we can inspect what the completer saw after run().
+        let received: Arc<Mutex<Vec<Vec<LlmMessage>>>> = Arc::new(Mutex::new(Vec::new()));
+        let received_clone = received.clone();
+
+        let recording = RecordingCompleter {
+            replies: Mutex::new(vec![
+                two_tool_call_reply(), // step 0: assistant issues 2 tool calls
+                text_reply("done"),    // step 1: no more tool calls → loop exits
+            ]),
+            received: received_clone,
+        };
+
+        let agent = SubAgent {
+            completer: Box::new(recording),
+            tools: vec![],
+            system_prompt: "sys".into(),
+            bounds: SubAgentBounds {
+                max_steps: 10,
+                ..Default::default()
+            },
+        };
+        let result = agent.run("go", &EchoDispatch, None, None).await.unwrap();
+        assert_eq!(result.reason, DoneReason::NoMoreToolCalls);
+
+        // calls[0] = first complete() call = [User]  (initial)
+        // calls[1] = second complete() call = [User, Assistant(2 tool calls), ToolResults(2 parts)]
+        let calls = received.lock().await;
+        assert!(
+            calls.len() >= 2,
+            "expected at least 2 completer calls, got {}",
+            calls.len()
+        );
+        let msgs_after_first_turn = &calls[1];
+
+        // The message right after the Assistant turn must be a single ToolResults,
+        // not two separate ToolResult entries.
+        let tool_result_msgs: Vec<&LlmMessage> = msgs_after_first_turn
+            .iter()
+            .filter(|m| matches!(m, LlmMessage::ToolResults(_) | LlmMessage::ToolResult { .. }))
+            .collect();
+
+        assert_eq!(
+            tool_result_msgs.len(),
+            1,
+            "all tool results from one turn must collapse into exactly ONE message; got {}",
+            tool_result_msgs.len()
+        );
+
+        // And that one message must be the ToolResults compound variant.
+        assert!(
+            matches!(tool_result_msgs[0], LlmMessage::ToolResults(parts) if parts.len() == 2),
+            "the single tool-result message must be LlmMessage::ToolResults with 2 parts"
+        );
     }
 
     /// Test 4: with an event_sink, events arrive in the channel as the loop runs.

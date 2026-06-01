@@ -9,7 +9,9 @@ use crate::conversation::message::{Message, MessageContent};
 use crate::providers::base::Provider;
 use anyhow::Result;
 use async_trait::async_trait;
-use biorouter_mcp::knowledge::subagent::loop_::{Completer, LlmMessage, LlmReply, LlmToolCall};
+use biorouter_mcp::knowledge::subagent::loop_::{
+    Completer, LlmMessage, LlmReply, LlmToolCall, ToolResultPart,
+};
 use rmcp::model::{CallToolRequestParams, CallToolResult, Content, Tool};
 use std::sync::Arc;
 
@@ -109,6 +111,27 @@ fn llm_to_provider_message(m: &LlmMessage) -> Message {
                 request_id.clone(),
                 Ok(call_result),
             ))
+        }
+
+        LlmMessage::ToolResults(parts) => {
+            // Bundle ALL tool-result blocks into ONE user-role message.
+            //
+            // Bedrock (and the Anthropic spec) require that when an assistant turn
+            // emits N `tool_use` blocks, ALL N `tool_result` blocks appear in a
+            // single subsequent user message.  Emitting one message per result
+            // causes a ValidationException ("Expected toolResult blocks at
+            // messages.N.content for the following tool_use_id").
+            let mut msg = Message::user();
+            for ToolResultPart {
+                request_id,
+                name: _,
+                content,
+            } in parts
+            {
+                let call_result = CallToolResult::success(vec![Content::text(content.clone())]);
+                msg = msg.with_tool_response(request_id.clone(), Ok(call_result));
+            }
+            msg
         }
     }
 }
@@ -379,6 +402,92 @@ mod tests {
         assert_eq!(
             tool_resp_id, tool_use_id,
             "ToolResponse id must equal the tool_use_id so Bedrock can pair them"
+        );
+    }
+
+    /// Bedrock requires that N tool_use blocks from one assistant turn are answered
+    /// by exactly ONE user message containing N tool_result blocks.  Verify that
+    /// `LlmMessage::ToolResults` (the compound variant) is collapsed into a single
+    /// user-role `Message` carrying all ToolResponse content blocks.
+    #[tokio::test]
+    async fn multiple_tool_results_collapse_into_single_user_message() {
+        let response = Message::assistant().with_text("all done");
+        let recording = Arc::new(RecordingMockProvider::new(response));
+        let completer = ProviderCompleter::new(recording.clone());
+
+        // Build a conversation: user → assistant (2 tool calls) → ToolResults (2 parts).
+        let msgs = vec![
+            LlmMessage::User("hello".into()),
+            LlmMessage::Assistant(LlmReply {
+                text: String::new(),
+                tool_calls: vec![
+                    LlmToolCall {
+                        id: "tc-1".into(),
+                        name: "kb_search".into(),
+                        args: serde_json::json!({}),
+                    },
+                    LlmToolCall {
+                        id: "tc-2".into(),
+                        name: "kb_read_page".into(),
+                        args: serde_json::json!({}),
+                    },
+                ],
+            }),
+            LlmMessage::ToolResults(vec![
+                ToolResultPart {
+                    request_id: "tc-1".into(),
+                    name: "kb_search".into(),
+                    content: "result one".into(),
+                },
+                ToolResultPart {
+                    request_id: "tc-2".into(),
+                    name: "kb_read_page".into(),
+                    content: "result two".into(),
+                },
+            ]),
+        ];
+
+        let _ = completer.complete("sys", &msgs, &[]).await.unwrap();
+
+        let calls = recording.received.lock().await;
+        assert_eq!(calls.len(), 1);
+        let provider_msgs = &calls[0];
+
+        // The provider must see exactly 3 messages (user, assistant, tool-results).
+        assert_eq!(
+            provider_msgs.len(),
+            3,
+            "expected 3 provider messages, got {}",
+            provider_msgs.len()
+        );
+
+        // The third message must be user-role and contain exactly 2 ToolResponse blocks.
+        let tool_result_msg = &provider_msgs[2];
+        let tool_resp_ids: Vec<String> = tool_result_msg
+            .content
+            .iter()
+            .filter_map(|c| {
+                if let MessageContent::ToolResponse(resp) = c {
+                    Some(resp.id.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        assert_eq!(
+            tool_resp_ids.len(),
+            2,
+            "both tool results must be in a single user message; got {} ToolResponse block(s)",
+            tool_resp_ids.len()
+        );
+        assert!(
+            tool_resp_ids.contains(&"tc-1".to_string()),
+            "ToolResponse for tc-1 missing"
+        );
+        assert!(
+            tool_resp_ids.contains(&"tc-2".to_string()),
+            "ToolResponse for tc-2 missing"
         );
     }
 }
