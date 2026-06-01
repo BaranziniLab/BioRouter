@@ -6,14 +6,20 @@ use axum::{
     routing::{get, post, put},
     Json, Router,
 };
+use biorouter::knowledge::ProviderCompleter;
+use biorouter::model::ModelConfig;
 use biorouter_mcp::knowledge::{
-    convert, paths, registry,
+    convert,
+    macros::{ingest as ingest_macro, lint as lint_macro, query as query_macro},
+    paths, registry,
     service::KnowledgeService,
     store,
-    types::{Credibility, Graph, HistoryEntry, Manifest},
+    subagent::{events::SubAgentEvent, loop_::SubAgentBounds},
+    types::{Credibility, Graph, HistoryEntry, Manifest, ModelRef},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use utoipa::ToSchema;
 
 /// Build the knowledge router.  The router owns an `Arc<KnowledgeService>` directly so
@@ -115,6 +121,30 @@ pub struct RawSourceResponse {
 #[derive(Serialize, ToSchema)]
 pub struct CredibilityResponse {
     pub credibility: Credibility,
+}
+
+// Task 9 DTOs
+#[derive(Deserialize, ToSchema)]
+pub struct IngestBody {
+    pub source: serde_json::Value,
+    pub model: ModelRef,
+    #[serde(default)]
+    pub focus: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct QueryBody {
+    pub question: String,
+    pub model: ModelRef,
+    #[serde(default)]
+    pub file_as_page: Option<bool>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct LintBody {
+    pub model: ModelRef,
+    #[serde(default)]
+    pub autofix: Option<bool>,
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -343,19 +373,201 @@ pub async fn restore_state(
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Stubs for Tasks 9 (SSE macros) — return 501 Not Implemented
+// Task 9: SSE-streamed macro routes (ingest / query / lint)
 // ──────────────────────────────────────────────────────────────────────────────
 
-pub async fn ingest() -> StatusCode {
-    StatusCode::NOT_IMPLEMENTED
+/// Build a `Provider + ProviderCompleter` for the given `ModelRef`.
+/// Returns a 400 error if the provider name is unknown or model config is invalid.
+async fn build_completer(
+    model: &ModelRef,
+) -> Result<Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>, (StatusCode, String)> {
+    let model_config = ModelConfig::new(&model.model)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let provider = biorouter::providers::create(&model.provider, model_config)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Box::new(ProviderCompleter::new(provider)))
 }
 
-pub async fn query_kb() -> StatusCode {
-    StatusCode::NOT_IMPLEMENTED
+/// Spawn the SSE forwarder: reads `SubAgentEvent`s from `event_rx` and sends
+/// serialized SSE frames to `sse_tx`.
+fn spawn_event_forwarder(
+    mut event_rx: tokio::sync::mpsc::UnboundedReceiver<SubAgentEvent>,
+    sse_tx: mpsc::Sender<String>,
+) {
+    tokio::spawn(async move {
+        while let Some(ev) = event_rx.recv().await {
+            if let Ok(j) = serde_json::to_string(&ev) {
+                let _ = sse_tx.send(format!("data: {j}\n\n")).await;
+            }
+        }
+    });
 }
 
-pub async fn lint() -> StatusCode {
-    StatusCode::NOT_IMPLEMENTED
+#[utoipa::path(
+    post, path = "/knowledge/bases/{id}/ingest",
+    request_body = IngestBody,
+    params(("id" = String, Path, description = "Knowledge base ID")),
+    responses(
+        (status = 200, description = "SSE stream of sub-agent events (text/event-stream)"),
+        (status = 400, description = "Invalid model or source"),
+    )
+)]
+pub async fn ingest(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+    Json(body): Json<IngestBody>,
+) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
+    let source = parse_source_input(&body.source)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let completer = build_completer(&body.model).await?;
+
+    let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
+
+    spawn_event_forwarder(event_rx, sse_tx.clone());
+
+    tokio::spawn(async move {
+        let args = ingest_macro::IngestArgs {
+            kb_id: id,
+            source,
+            completer,
+            focus: body.focus,
+            bounds: SubAgentBounds::default(),
+            event_sink: Some(event_tx),
+        };
+        match ingest_macro::ingest(&svc, args).await {
+            Ok(result) => {
+                let json = serde_json::to_value(&result).unwrap_or_default();
+                let _ = sse_tx.send(format!("event: done\ndata: {json}\n\n")).await;
+            }
+            Err(e) => {
+                let msg = e.to_string().replace('"', "\\\"");
+                let _ = sse_tx
+                    .send(format!("event: error\ndata: {{\"message\":\"{msg}\"}}\n\n"))
+                    .await;
+            }
+        }
+    });
+
+    Ok(crate::routes::reply::SseResponse::from_rx(sse_rx))
+}
+
+#[utoipa::path(
+    post, path = "/knowledge/bases/{id}/query",
+    request_body = QueryBody,
+    params(("id" = String, Path, description = "Knowledge base ID")),
+    responses(
+        (status = 200, description = "SSE stream of sub-agent events (text/event-stream)"),
+        (status = 400, description = "Invalid model"),
+    )
+)]
+pub async fn query_kb(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+    Json(body): Json<QueryBody>,
+) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
+    let completer = build_completer(&body.model).await?;
+
+    let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
+
+    spawn_event_forwarder(event_rx, sse_tx.clone());
+
+    tokio::spawn(async move {
+        let args = query_macro::QueryArgs {
+            kb_id: id,
+            question: body.question,
+            completer,
+            file_as_page: body.file_as_page.unwrap_or(false),
+            bounds: SubAgentBounds::default(),
+            event_sink: Some(event_tx),
+        };
+        match query_macro::query(&svc, args).await {
+            Ok(result) => {
+                let json = serde_json::to_value(&result).unwrap_or_default();
+                let _ = sse_tx.send(format!("event: done\ndata: {json}\n\n")).await;
+            }
+            Err(e) => {
+                let msg = e.to_string().replace('"', "\\\"");
+                let _ = sse_tx
+                    .send(format!("event: error\ndata: {{\"message\":\"{msg}\"}}\n\n"))
+                    .await;
+            }
+        }
+    });
+
+    Ok(crate::routes::reply::SseResponse::from_rx(sse_rx))
+}
+
+#[utoipa::path(
+    post, path = "/knowledge/bases/{id}/lint",
+    request_body = LintBody,
+    params(("id" = String, Path, description = "Knowledge base ID")),
+    responses(
+        (status = 200, description = "SSE stream of sub-agent events (text/event-stream)"),
+        (status = 400, description = "Invalid model"),
+    )
+)]
+pub async fn lint(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+    Json(body): Json<LintBody>,
+) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
+    let autofix = body.autofix.unwrap_or(false);
+    // Only build a completer when autofix is requested (it requires an LLM).
+    let completer: Option<Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>> =
+        if autofix {
+            Some(build_completer(&body.model).await?)
+        } else {
+            None
+        };
+
+    let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
+    let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
+
+    spawn_event_forwarder(event_rx, sse_tx.clone());
+
+    tokio::spawn(async move {
+        let args = lint_macro::LintArgs {
+            kb_id: id,
+            completer,
+            autofix,
+            bounds: SubAgentBounds::default(),
+            event_sink: Some(event_tx),
+        };
+        match lint_macro::lint(&svc, args).await {
+            Ok(result) => {
+                let json = serde_json::to_value(&result).unwrap_or_default();
+                let _ = sse_tx.send(format!("event: done\ndata: {json}\n\n")).await;
+            }
+            Err(e) => {
+                let msg = e.to_string().replace('"', "\\\"");
+                let _ = sse_tx
+                    .send(format!("event: error\ndata: {{\"message\":\"{msg}\"}}\n\n"))
+                    .await;
+            }
+        }
+    });
+
+    Ok(crate::routes::reply::SseResponse::from_rx(sse_rx))
+}
+
+/// Parse the JSON `source` field into a typed `SourceInput`.
+fn parse_source_input(v: &serde_json::Value) -> anyhow::Result<convert::SourceInput> {
+    if let Some(url) = v.get("url").and_then(|x| x.as_str()) {
+        Ok(convert::SourceInput::Url(url.to_string()))
+    } else if let Some(text) = v.get("text").and_then(|x| x.as_str()) {
+        Ok(convert::SourceInput::Text {
+            text: text.to_string(),
+            title: v
+                .get("title")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string()),
+        })
+    } else {
+        anyhow::bail!("source must have 'url' or 'text'")
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

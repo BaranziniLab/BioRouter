@@ -685,3 +685,110 @@ async fn reclassify_route_returns_credibility() {
         "credibility should have tier"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Task 9: SSE macro routes — 400 on invalid model
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Helper: create a KB named `id` in `app`, assert 200.
+async fn create_kb(app: Router, id: &str, name: &str) {
+    let create_body =
+        serde_json::to_vec(&serde_json::json!({"id": id, "name": name})).unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "helper create_kb should return 200");
+}
+
+#[tokio::test]
+async fn ingest_rejects_invalid_model_with_400() {
+    let (_d, app) = build_test_router();
+    create_kb(app.clone(), "ing", "Ingest Test").await;
+
+    let body = serde_json::to_vec(&serde_json::json!({
+        "source": {"text": "hello", "title": "x"},
+        "model": {"provider": "nonexistent_provider_xyz", "model": "x"}
+    }))
+    .unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases/ing/ingest")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        400,
+        "ingest with unknown provider should return 400"
+    );
+}
+
+#[tokio::test]
+async fn query_rejects_invalid_model_with_400() {
+    let (_d, app) = build_test_router();
+    create_kb(app.clone(), "qry", "Query Test").await;
+
+    let body = serde_json::to_vec(&serde_json::json!({
+        "question": "What is HRV?",
+        "model": {"provider": "nonexistent_provider_xyz", "model": "x"}
+    }))
+    .unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases/qry/query")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        400,
+        "query with unknown provider should return 400"
+    );
+}
+
+#[tokio::test]
+async fn lint_rejects_invalid_model_with_400_when_autofix() {
+    let (_d, app) = build_test_router();
+    create_kb(app.clone(), "lnt", "Lint Test").await;
+
+    // autofix=true requires a real completer → 400 on bad provider.
+    let body = serde_json::to_vec(&serde_json::json!({
+        "model": {"provider": "nonexistent_provider_xyz", "model": "x"},
+        "autofix": true
+    }))
+    .unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases/lnt/lint")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        400,
+        "lint with unknown provider + autofix=true should return 400"
+    );
+}

@@ -91,6 +91,14 @@ impl SseResponse {
     fn new(rx: ReceiverStream<String>) -> Self {
         Self { rx }
     }
+
+    /// Construct an `SseResponse` from a raw `mpsc::Receiver<String>`.
+    /// Each string pushed to the sender is forwarded verbatim as SSE bytes.
+    pub fn from_rx(rx: mpsc::Receiver<String>) -> Self {
+        Self {
+            rx: ReceiverStream::new(rx),
+        }
+    }
 }
 
 impl Stream for SseResponse {
