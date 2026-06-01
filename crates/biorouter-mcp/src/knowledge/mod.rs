@@ -3,6 +3,7 @@ pub mod credibility;
 pub mod git;
 pub mod graph;
 pub mod log;
+pub mod macros;
 pub mod manifest;
 pub mod paths;
 pub mod raw;
