@@ -66,6 +66,8 @@ export type CallToolResponse = {
     structured_content?: unknown;
 };
 
+export type ChangeKind = 'ingest' | 'link' | 'flag' | 'query' | 'lint' | 'restore' | 'manual';
+
 export type ChatRequest = {
     conversation_so_far?: Array<Message> | null;
     session_id: string;
@@ -79,6 +81,10 @@ export type CheckProviderRequest = {
 };
 
 export type CommandType = 'Builtin' | 'Workflow';
+
+export type CommitResponse = {
+    commit_sha: string;
+};
 
 /**
  * Configuration key metadata for provider setup
@@ -129,6 +135,12 @@ export type Content = RawTextContent | RawImageContent | RawEmbeddedResource | R
 
 export type Conversation = Array<Message>;
 
+export type CreateBaseBody = {
+    color?: string | null;
+    id: string;
+    name: string;
+};
+
 export type CreateScheduleRequest = {
     cron: string;
     id: string;
@@ -144,6 +156,23 @@ export type CreateWorkflowResponse = {
     error?: string | null;
     workflow?: Workflow | null;
 };
+
+export type Credibility = {
+    classifier_version: number;
+    confidence: number;
+    doi?: string | null;
+    publisher?: string | null;
+    reasoning: string;
+    retracted?: boolean;
+    tier: CredibilityTier;
+    venue?: string | null;
+};
+
+export type CredibilityResponse = {
+    credibility: Credibility;
+};
+
+export type CredibilityTier = 'peer_reviewed' | 'preprint' | 'book' | 'gray_lit' | 'web' | 'personal';
 
 /**
  * Content Security Policy metadata for MCP Apps
@@ -371,6 +400,37 @@ export type GetToolsQuery = {
     session_id: string;
 };
 
+export type Graph = {
+    edges: Array<GraphEdge>;
+    nodes: Array<GraphNode>;
+};
+
+export type GraphEdge = {
+    from: string;
+    relation?: string | null;
+    to: string;
+};
+
+export type GraphNode = {
+    credibility_tier?: CredibilityTier | null;
+    id: string;
+    kind: PageKind;
+    label: string;
+    path: string;
+};
+
+export type HistoryEntry = {
+    commit_sha: string;
+    delta?: string | null;
+    kind: ChangeKind;
+    summary: string;
+    timestamp: string;
+};
+
+export type HistoryQuery = {
+    limit?: number;
+};
+
 export type Icon = {
     mimeType?: string;
     sizes?: Array<string>;
@@ -392,6 +452,12 @@ export type ImportSessionRequest = {
     json: string;
 };
 
+export type IngestBody = {
+    focus?: string | null;
+    model: ModelRef;
+    source: unknown;
+};
+
 export type InspectJobResponse = {
     processStartTime?: string | null;
     runningDurationSeconds?: number | null;
@@ -406,12 +472,21 @@ export type KillJobResponse = {
     message: string;
 };
 
+export type LintBody = {
+    autofix?: boolean | null;
+    model: ModelRef;
+};
+
 export type ListAppsRequest = {
     session_id?: string | null;
 };
 
 export type ListAppsResponse = {
     apps: Array<BioRouterApp>;
+};
+
+export type ListPagesQuery = {
+    path_prefix?: string | null;
 };
 
 export type ListSchedulesResponse = {
@@ -425,6 +500,15 @@ export type ListWorkflowResponse = {
 export type LoadedProvider = {
     config: DeclarativeProviderConfig;
     is_editable: boolean;
+};
+
+export type Manifest = {
+    color: string;
+    created_at: string;
+    default_model?: ModelRef | null;
+    id: string;
+    name: string;
+    schema_version: number;
 };
 
 /**
@@ -584,6 +668,30 @@ export type ModelInfo = {
     supports_cache_control?: boolean | null;
 };
 
+export type ModelRef = {
+    model: string;
+    provider: string;
+};
+
+export type PageContent = {
+    content: string;
+    /**
+     * Raw YAML frontmatter from the page file.
+     */
+    frontmatter: {
+        [key: string]: unknown;
+    };
+    path: string;
+};
+
+export type PageKind = 'source' | 'entity' | 'concept' | 'hub' | 'note' | 'flag';
+
+export type PageRef = {
+    kind: string;
+    path: string;
+    title: string;
+};
+
 export type ParseWorkflowRequest = {
     content: string;
 };
@@ -596,6 +704,15 @@ export type ParseWorkflowResponse = {
  * Enum representing the possible permission levels for a tool.
  */
 export type PermissionLevel = 'always_allow' | 'ask_before' | 'never_allow';
+
+export type PreviewBody = {
+    commit_sha: string;
+    path: string;
+};
+
+export type PreviewResponse = {
+    content?: string | null;
+};
 
 export type PricingData = {
     context_length?: number | null;
@@ -671,6 +788,12 @@ export type ProvidersResponse = {
     providers: Array<ProviderDetails>;
 };
 
+export type QueryBody = {
+    file_as_page?: boolean | null;
+    model: ModelRef;
+    question: string;
+};
+
 export type RawAudioContent = {
     data: string;
     mimeType: string;
@@ -702,6 +825,11 @@ export type RawResource = {
     size?: number;
     title?: string;
     uri: string;
+};
+
+export type RawSourceResponse = {
+    source_id: string;
+    source_md_path: string;
 };
 
 export type RawTextContent = {
@@ -768,6 +896,14 @@ export type RestartAgentRequest = {
 
 export type RestartAgentResponse = {
     extension_results: Array<ExtensionLoadResult>;
+};
+
+export type RestoreBody = {
+    commit_sha: string;
+};
+
+export type RestoreResponse = {
+    new_commit_sha: string;
 };
 
 export type ResumeAgentRequest = {
@@ -941,6 +1077,17 @@ export type SlashCommand = {
 
 export type SlashCommandsResponse = {
     commands: Array<SlashCommand>;
+};
+
+export type SourceMeta = {
+    credibility: Credibility;
+    id: string;
+    ingested_at: string;
+    mime: string;
+    original_filename?: string | null;
+    sha256: string;
+    title: string;
+    url?: string | null;
 };
 
 export type StartAgentRequest = {
@@ -1235,6 +1382,11 @@ export type WorkflowToYamlRequest = {
 
 export type WorkflowToYamlResponse = {
     yaml: string;
+};
+
+export type WritePageBody = {
+    commit_message: string;
+    content: string;
 };
 
 export type ConfirmToolActionData = {
@@ -2252,6 +2404,531 @@ export type StartTetrateSetupResponses = {
 };
 
 export type StartTetrateSetupResponse = StartTetrateSetupResponses[keyof StartTetrateSetupResponses];
+
+export type ListBasesData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/knowledge/bases';
+};
+
+export type ListBasesResponses = {
+    /**
+     * List of knowledge bases
+     */
+    200: Array<Manifest>;
+};
+
+export type ListBasesResponse = ListBasesResponses[keyof ListBasesResponses];
+
+export type CreateBaseData = {
+    body: CreateBaseBody;
+    path?: never;
+    query?: never;
+    url: '/knowledge/bases';
+};
+
+export type CreateBaseResponses = {
+    /**
+     * Created knowledge base
+     */
+    200: Manifest;
+};
+
+export type CreateBaseResponse = CreateBaseResponses[keyof CreateBaseResponses];
+
+export type ImportBrkbData = {
+    /**
+     * multipart/form-data with a 'file' field containing the .brkb archive
+     */
+    body: unknown;
+    path?: never;
+    query?: never;
+    url: '/knowledge/bases/import';
+};
+
+export type ImportBrkbErrors = {
+    /**
+     * Bad request
+     */
+    400: unknown;
+    /**
+     * Internal error
+     */
+    500: unknown;
+};
+
+export type ImportBrkbResponses = {
+    /**
+     * Imported knowledge base ID
+     */
+    200: unknown;
+};
+
+export type DeleteBaseData = {
+    body?: never;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}';
+};
+
+export type DeleteBaseErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+};
+
+export type DeleteBaseResponses = {
+    /**
+     * Deleted
+     */
+    204: void;
+};
+
+export type DeleteBaseResponse = DeleteBaseResponses[keyof DeleteBaseResponses];
+
+export type GetBaseData = {
+    body?: never;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}';
+};
+
+export type GetBaseErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+};
+
+export type GetBaseResponses = {
+    /**
+     * Knowledge base manifest
+     */
+    200: Manifest;
+};
+
+export type GetBaseResponse = GetBaseResponses[keyof GetBaseResponses];
+
+export type ExportBrkbData = {
+    body?: never;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/export';
+};
+
+export type ExportBrkbErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Internal error
+     */
+    500: unknown;
+};
+
+export type ExportBrkbResponses = {
+    /**
+     * Binary .brkb archive
+     */
+    200: unknown;
+};
+
+export type GetGraphData = {
+    body?: never;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/graph';
+};
+
+export type GetGraphErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+};
+
+export type GetGraphResponses = {
+    /**
+     * Knowledge graph
+     */
+    200: Graph;
+};
+
+export type GetGraphResponse = GetGraphResponses[keyof GetGraphResponses];
+
+export type ListHistoryData = {
+    body?: never;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: {
+        /**
+         * Maximum entries (default 50)
+         */
+        limit?: number | null;
+    };
+    url: '/knowledge/bases/{id}/history';
+};
+
+export type ListHistoryResponses = {
+    /**
+     * Commit history
+     */
+    200: unknown;
+};
+
+export type IngestData = {
+    body: IngestBody;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/ingest';
+};
+
+export type IngestErrors = {
+    /**
+     * Invalid model or source
+     */
+    400: unknown;
+};
+
+export type IngestResponses = {
+    /**
+     * SSE stream of sub-agent events (text/event-stream)
+     */
+    200: unknown;
+};
+
+export type LintData = {
+    body: LintBody;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/lint';
+};
+
+export type LintErrors = {
+    /**
+     * Invalid model
+     */
+    400: unknown;
+};
+
+export type LintResponses = {
+    /**
+     * SSE stream of sub-agent events (text/event-stream)
+     */
+    200: unknown;
+};
+
+export type ListPagesData = {
+    body?: never;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: {
+        /**
+         * Optional path prefix filter
+         */
+        path_prefix?: string | null;
+    };
+    url: '/knowledge/bases/{id}/pages';
+};
+
+export type ListPagesResponses = {
+    /**
+     * Page list
+     */
+    200: unknown;
+};
+
+export type ReadPageData = {
+    body?: never;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+        /**
+         * Page path within KB
+         */
+        page_path: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/pages/{page_path}';
+};
+
+export type ReadPageErrors = {
+    /**
+     * Page not found
+     */
+    404: unknown;
+};
+
+export type ReadPageResponses = {
+    /**
+     * Page content
+     */
+    200: unknown;
+};
+
+export type WritePageData = {
+    body: WritePageBody;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+        /**
+         * Page path within KB
+         */
+        page_path: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/pages/{page_path}';
+};
+
+export type WritePageErrors = {
+    /**
+     * Bad request
+     */
+    400: unknown;
+};
+
+export type WritePageResponses = {
+    /**
+     * Written
+     */
+    200: CommitResponse;
+};
+
+export type WritePageResponse = WritePageResponses[keyof WritePageResponses];
+
+export type PreviewStateData = {
+    body: PreviewBody;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/preview';
+};
+
+export type PreviewStateErrors = {
+    /**
+     * Error
+     */
+    500: unknown;
+};
+
+export type PreviewStateResponses = {
+    /**
+     * File content at commit
+     */
+    200: PreviewResponse;
+};
+
+export type PreviewStateResponse = PreviewStateResponses[keyof PreviewStateResponses];
+
+export type QueryKbData = {
+    body: QueryBody;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/query';
+};
+
+export type QueryKbErrors = {
+    /**
+     * Invalid model
+     */
+    400: unknown;
+};
+
+export type QueryKbResponses = {
+    /**
+     * SSE stream of sub-agent events (text/event-stream)
+     */
+    200: unknown;
+};
+
+export type AddRawSourceData = {
+    /**
+     * One of: multipart/form-data with 'file' field, JSON {url}, or JSON {text, title?}
+     */
+    body: unknown;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/raw';
+};
+
+export type AddRawSourceErrors = {
+    /**
+     * Bad request
+     */
+    400: unknown;
+    /**
+     * Internal error
+     */
+    500: unknown;
+};
+
+export type AddRawSourceResponses = {
+    /**
+     * Source ingested
+     */
+    200: RawSourceResponse;
+};
+
+export type AddRawSourceResponse = AddRawSourceResponses[keyof AddRawSourceResponses];
+
+export type RestoreStateData = {
+    body: RestoreBody;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/restore';
+};
+
+export type RestoreStateErrors = {
+    /**
+     * Error
+     */
+    500: unknown;
+};
+
+export type RestoreStateResponses = {
+    /**
+     * Restored; returns new commit SHA
+     */
+    200: RestoreResponse;
+};
+
+export type RestoreStateResponse = RestoreStateResponses[keyof RestoreStateResponses];
+
+export type OverrideCredibilityData = {
+    body: Credibility;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+        /**
+         * Source ID
+         */
+        sid: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/sources/{sid}/credibility';
+};
+
+export type OverrideCredibilityErrors = {
+    /**
+     * Source not found
+     */
+    404: unknown;
+    /**
+     * Internal error
+     */
+    500: unknown;
+};
+
+export type OverrideCredibilityResponses = {
+    /**
+     * Credibility overridden
+     */
+    200: CredibilityResponse;
+};
+
+export type OverrideCredibilityResponse = OverrideCredibilityResponses[keyof OverrideCredibilityResponses];
+
+export type ReclassifyData = {
+    body?: never;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+        /**
+         * Source ID
+         */
+        sid: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/sources/{sid}/reclassify';
+};
+
+export type ReclassifyErrors = {
+    /**
+     * Source not found
+     */
+    404: unknown;
+    /**
+     * Internal error
+     */
+    500: unknown;
+};
+
+export type ReclassifyResponses = {
+    /**
+     * Reclassified credibility
+     */
+    200: CredibilityResponse;
+};
+
+export type ReclassifyResponse = ReclassifyResponses[keyof ReclassifyResponses];
 
 export type McpUiProxyData = {
     body?: never;

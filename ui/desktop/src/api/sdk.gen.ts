@@ -2,7 +2,7 @@
 
 import type { Client, Options as Options2, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AddExtensionData, AddExtensionErrors, AddExtensionResponses, AgentAddExtensionData, AgentAddExtensionErrors, AgentAddExtensionResponses, AgentRemoveExtensionData, AgentRemoveExtensionErrors, AgentRemoveExtensionResponses, BackupConfigData, BackupConfigErrors, BackupConfigResponses, CallToolData, CallToolErrors, CallToolResponses, CheckProviderData, ConfirmToolActionData, ConfirmToolActionErrors, ConfirmToolActionResponses, CreateCustomProviderData, CreateCustomProviderErrors, CreateCustomProviderResponses, CreateScheduleData, CreateScheduleErrors, CreateScheduleResponses, CreateWorkflowData, CreateWorkflowErrors, CreateWorkflowResponses, DecodeWorkflowData, DecodeWorkflowErrors, DecodeWorkflowResponses, DeleteScheduleData, DeleteScheduleErrors, DeleteScheduleResponses, DeleteSessionData, DeleteSessionErrors, DeleteSessionResponses, DeleteWorkflowData, DeleteWorkflowErrors, DeleteWorkflowResponses, DetectProviderData, DetectProviderErrors, DetectProviderResponses, DiagnosticsData, DiagnosticsErrors, DiagnosticsResponses, EditMessageData, EditMessageErrors, EditMessageResponses, EncodeWorkflowData, EncodeWorkflowErrors, EncodeWorkflowResponses, ExportSessionData, ExportSessionErrors, ExportSessionResponses, GetCustomProviderData, GetCustomProviderErrors, GetCustomProviderResponses, GetExtensionsData, GetExtensionsErrors, GetExtensionsResponses, GetPricingData, GetPricingResponses, GetProviderModelsData, GetProviderModelsErrors, GetProviderModelsResponses, GetSessionData, GetSessionErrors, GetSessionExtensionsData, GetSessionExtensionsErrors, GetSessionExtensionsResponses, GetSessionInsightsData, GetSessionInsightsErrors, GetSessionInsightsResponses, GetSessionResponses, GetSlashCommandsData, GetSlashCommandsResponses, GetToolsData, GetToolsErrors, GetToolsResponses, GetTunnelStatusData, GetTunnelStatusResponses, ImportSessionData, ImportSessionErrors, ImportSessionResponses, InitConfigData, InitConfigErrors, InitConfigResponses, InspectRunningJobData, InspectRunningJobErrors, InspectRunningJobResponses, KillRunningJobData, KillRunningJobResponses, ListAppsData, ListAppsErrors, ListAppsResponses, ListSchedulesData, ListSchedulesErrors, ListSchedulesResponses, ListSessionsData, ListSessionsErrors, ListSessionsResponses, ListWorkflowsData, ListWorkflowsErrors, ListWorkflowsResponses, McpUiProxyData, McpUiProxyErrors, McpUiProxyResponses, ParseWorkflowData, ParseWorkflowErrors, ParseWorkflowResponses, PauseScheduleData, PauseScheduleErrors, PauseScheduleResponses, ProvidersData, ProvidersResponses, ReadAllConfigData, ReadAllConfigResponses, ReadConfigData, ReadConfigErrors, ReadConfigResponses, ReadResourceData, ReadResourceErrors, ReadResourceResponses, RecoverConfigData, RecoverConfigErrors, RecoverConfigResponses, RemoveConfigData, RemoveConfigErrors, RemoveConfigResponses, RemoveCustomProviderData, RemoveCustomProviderErrors, RemoveCustomProviderResponses, RemoveExtensionData, RemoveExtensionErrors, RemoveExtensionResponses, ReplyData, ReplyErrors, ReplyResponses, RestartAgentData, RestartAgentErrors, RestartAgentResponses, ResumeAgentData, ResumeAgentErrors, ResumeAgentResponses, RunNowHandlerData, RunNowHandlerErrors, RunNowHandlerResponses, SaveWorkflowData, SaveWorkflowErrors, SaveWorkflowResponses, ScanWorkflowData, ScanWorkflowResponses, ScheduleWorkflowData, ScheduleWorkflowErrors, ScheduleWorkflowResponses, SendTelemetryEventData, SendTelemetryEventResponses, SessionsHandlerData, SessionsHandlerErrors, SessionsHandlerResponses, SetConfigProviderData, SetWorkflowSlashCommandData, SetWorkflowSlashCommandErrors, SetWorkflowSlashCommandResponses, StartAgentData, StartAgentErrors, StartAgentResponses, StartOpenrouterSetupData, StartOpenrouterSetupResponses, StartTetrateSetupData, StartTetrateSetupResponses, StartTunnelData, StartTunnelErrors, StartTunnelResponses, StatusData, StatusResponses, StopAgentData, StopAgentErrors, StopAgentResponses, StopTunnelData, StopTunnelErrors, StopTunnelResponses, SystemInfoData, SystemInfoResponses, UnpauseScheduleData, UnpauseScheduleErrors, UnpauseScheduleResponses, UpdateAgentProviderData, UpdateAgentProviderErrors, UpdateAgentProviderResponses, UpdateCustomProviderData, UpdateCustomProviderErrors, UpdateCustomProviderResponses, UpdateFromSessionData, UpdateFromSessionErrors, UpdateFromSessionResponses, UpdateScheduleData, UpdateScheduleErrors, UpdateScheduleResponses, UpdateSessionNameData, UpdateSessionNameErrors, UpdateSessionNameResponses, UpdateSessionUserWorkflowValuesData, UpdateSessionUserWorkflowValuesErrors, UpdateSessionUserWorkflowValuesResponses, UpdateWorkingDirData, UpdateWorkingDirErrors, UpdateWorkingDirResponses, UpsertConfigData, UpsertConfigErrors, UpsertConfigResponses, UpsertPermissionsData, UpsertPermissionsErrors, UpsertPermissionsResponses, ValidateConfigData, ValidateConfigErrors, ValidateConfigResponses, WorkflowToYamlData, WorkflowToYamlErrors, WorkflowToYamlResponses } from './types.gen';
+import type { AddExtensionData, AddExtensionErrors, AddExtensionResponses, AddRawSourceData, AddRawSourceErrors, AddRawSourceResponses, AgentAddExtensionData, AgentAddExtensionErrors, AgentAddExtensionResponses, AgentRemoveExtensionData, AgentRemoveExtensionErrors, AgentRemoveExtensionResponses, BackupConfigData, BackupConfigErrors, BackupConfigResponses, CallToolData, CallToolErrors, CallToolResponses, CheckProviderData, ConfirmToolActionData, ConfirmToolActionErrors, ConfirmToolActionResponses, CreateBaseData, CreateBaseResponses, CreateCustomProviderData, CreateCustomProviderErrors, CreateCustomProviderResponses, CreateScheduleData, CreateScheduleErrors, CreateScheduleResponses, CreateWorkflowData, CreateWorkflowErrors, CreateWorkflowResponses, DecodeWorkflowData, DecodeWorkflowErrors, DecodeWorkflowResponses, DeleteBaseData, DeleteBaseErrors, DeleteBaseResponses, DeleteScheduleData, DeleteScheduleErrors, DeleteScheduleResponses, DeleteSessionData, DeleteSessionErrors, DeleteSessionResponses, DeleteWorkflowData, DeleteWorkflowErrors, DeleteWorkflowResponses, DetectProviderData, DetectProviderErrors, DetectProviderResponses, DiagnosticsData, DiagnosticsErrors, DiagnosticsResponses, EditMessageData, EditMessageErrors, EditMessageResponses, EncodeWorkflowData, EncodeWorkflowErrors, EncodeWorkflowResponses, ExportBrkbData, ExportBrkbErrors, ExportBrkbResponses, ExportSessionData, ExportSessionErrors, ExportSessionResponses, GetBaseData, GetBaseErrors, GetBaseResponses, GetCustomProviderData, GetCustomProviderErrors, GetCustomProviderResponses, GetExtensionsData, GetExtensionsErrors, GetExtensionsResponses, GetGraphData, GetGraphErrors, GetGraphResponses, GetPricingData, GetPricingResponses, GetProviderModelsData, GetProviderModelsErrors, GetProviderModelsResponses, GetSessionData, GetSessionErrors, GetSessionExtensionsData, GetSessionExtensionsErrors, GetSessionExtensionsResponses, GetSessionInsightsData, GetSessionInsightsErrors, GetSessionInsightsResponses, GetSessionResponses, GetSlashCommandsData, GetSlashCommandsResponses, GetToolsData, GetToolsErrors, GetToolsResponses, GetTunnelStatusData, GetTunnelStatusResponses, ImportBrkbData, ImportBrkbErrors, ImportBrkbResponses, ImportSessionData, ImportSessionErrors, ImportSessionResponses, IngestData, IngestErrors, IngestResponses, InitConfigData, InitConfigErrors, InitConfigResponses, InspectRunningJobData, InspectRunningJobErrors, InspectRunningJobResponses, KillRunningJobData, KillRunningJobResponses, LintData, LintErrors, LintResponses, ListAppsData, ListAppsErrors, ListAppsResponses, ListBasesData, ListBasesResponses, ListHistoryData, ListHistoryResponses, ListPagesData, ListPagesResponses, ListSchedulesData, ListSchedulesErrors, ListSchedulesResponses, ListSessionsData, ListSessionsErrors, ListSessionsResponses, ListWorkflowsData, ListWorkflowsErrors, ListWorkflowsResponses, McpUiProxyData, McpUiProxyErrors, McpUiProxyResponses, OverrideCredibilityData, OverrideCredibilityErrors, OverrideCredibilityResponses, ParseWorkflowData, ParseWorkflowErrors, ParseWorkflowResponses, PauseScheduleData, PauseScheduleErrors, PauseScheduleResponses, PreviewStateData, PreviewStateErrors, PreviewStateResponses, ProvidersData, ProvidersResponses, QueryKbData, QueryKbErrors, QueryKbResponses, ReadAllConfigData, ReadAllConfigResponses, ReadConfigData, ReadConfigErrors, ReadConfigResponses, ReadPageData, ReadPageErrors, ReadPageResponses, ReadResourceData, ReadResourceErrors, ReadResourceResponses, ReclassifyData, ReclassifyErrors, ReclassifyResponses, RecoverConfigData, RecoverConfigErrors, RecoverConfigResponses, RemoveConfigData, RemoveConfigErrors, RemoveConfigResponses, RemoveCustomProviderData, RemoveCustomProviderErrors, RemoveCustomProviderResponses, RemoveExtensionData, RemoveExtensionErrors, RemoveExtensionResponses, ReplyData, ReplyErrors, ReplyResponses, RestartAgentData, RestartAgentErrors, RestartAgentResponses, RestoreStateData, RestoreStateErrors, RestoreStateResponses, ResumeAgentData, ResumeAgentErrors, ResumeAgentResponses, RunNowHandlerData, RunNowHandlerErrors, RunNowHandlerResponses, SaveWorkflowData, SaveWorkflowErrors, SaveWorkflowResponses, ScanWorkflowData, ScanWorkflowResponses, ScheduleWorkflowData, ScheduleWorkflowErrors, ScheduleWorkflowResponses, SendTelemetryEventData, SendTelemetryEventResponses, SessionsHandlerData, SessionsHandlerErrors, SessionsHandlerResponses, SetConfigProviderData, SetWorkflowSlashCommandData, SetWorkflowSlashCommandErrors, SetWorkflowSlashCommandResponses, StartAgentData, StartAgentErrors, StartAgentResponses, StartOpenrouterSetupData, StartOpenrouterSetupResponses, StartTetrateSetupData, StartTetrateSetupResponses, StartTunnelData, StartTunnelErrors, StartTunnelResponses, StatusData, StatusResponses, StopAgentData, StopAgentErrors, StopAgentResponses, StopTunnelData, StopTunnelErrors, StopTunnelResponses, SystemInfoData, SystemInfoResponses, UnpauseScheduleData, UnpauseScheduleErrors, UnpauseScheduleResponses, UpdateAgentProviderData, UpdateAgentProviderErrors, UpdateAgentProviderResponses, UpdateCustomProviderData, UpdateCustomProviderErrors, UpdateCustomProviderResponses, UpdateFromSessionData, UpdateFromSessionErrors, UpdateFromSessionResponses, UpdateScheduleData, UpdateScheduleErrors, UpdateScheduleResponses, UpdateSessionNameData, UpdateSessionNameErrors, UpdateSessionNameResponses, UpdateSessionUserWorkflowValuesData, UpdateSessionUserWorkflowValuesErrors, UpdateSessionUserWorkflowValuesResponses, UpdateWorkingDirData, UpdateWorkingDirErrors, UpdateWorkingDirResponses, UpsertConfigData, UpsertConfigErrors, UpsertConfigResponses, UpsertPermissionsData, UpsertPermissionsErrors, UpsertPermissionsResponses, ValidateConfigData, ValidateConfigErrors, ValidateConfigResponses, WorkflowToYamlData, WorkflowToYamlErrors, WorkflowToYamlResponses, WritePageData, WritePageErrors, WritePageResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean> = Options2<TData, ThrowOnError> & {
     /**
@@ -258,6 +258,114 @@ export const diagnostics = <ThrowOnError extends boolean = false>(options: Optio
 export const startOpenrouterSetup = <ThrowOnError extends boolean = false>(options?: Options<StartOpenrouterSetupData, ThrowOnError>) => (options?.client ?? client).post<StartOpenrouterSetupResponses, unknown, ThrowOnError>({ url: '/handle_openrouter', ...options });
 
 export const startTetrateSetup = <ThrowOnError extends boolean = false>(options?: Options<StartTetrateSetupData, ThrowOnError>) => (options?.client ?? client).post<StartTetrateSetupResponses, unknown, ThrowOnError>({ url: '/handle_tetrate', ...options });
+
+export const listBases = <ThrowOnError extends boolean = false>(options?: Options<ListBasesData, ThrowOnError>) => (options?.client ?? client).get<ListBasesResponses, unknown, ThrowOnError>({ url: '/knowledge/bases', ...options });
+
+export const createBase = <ThrowOnError extends boolean = false>(options: Options<CreateBaseData, ThrowOnError>) => (options.client ?? client).post<CreateBaseResponses, unknown, ThrowOnError>({
+    url: '/knowledge/bases',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const importBrkb = <ThrowOnError extends boolean = false>(options: Options<ImportBrkbData, ThrowOnError>) => (options.client ?? client).post<ImportBrkbResponses, ImportBrkbErrors, ThrowOnError>({
+    url: '/knowledge/bases/import',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const deleteBase = <ThrowOnError extends boolean = false>(options: Options<DeleteBaseData, ThrowOnError>) => (options.client ?? client).delete<DeleteBaseResponses, DeleteBaseErrors, ThrowOnError>({ url: '/knowledge/bases/{id}', ...options });
+
+export const getBase = <ThrowOnError extends boolean = false>(options: Options<GetBaseData, ThrowOnError>) => (options.client ?? client).get<GetBaseResponses, GetBaseErrors, ThrowOnError>({ url: '/knowledge/bases/{id}', ...options });
+
+export const exportBrkb = <ThrowOnError extends boolean = false>(options: Options<ExportBrkbData, ThrowOnError>) => (options.client ?? client).get<ExportBrkbResponses, ExportBrkbErrors, ThrowOnError>({ url: '/knowledge/bases/{id}/export', ...options });
+
+export const getGraph = <ThrowOnError extends boolean = false>(options: Options<GetGraphData, ThrowOnError>) => (options.client ?? client).get<GetGraphResponses, GetGraphErrors, ThrowOnError>({ url: '/knowledge/bases/{id}/graph', ...options });
+
+export const listHistory = <ThrowOnError extends boolean = false>(options: Options<ListHistoryData, ThrowOnError>) => (options.client ?? client).get<ListHistoryResponses, unknown, ThrowOnError>({ url: '/knowledge/bases/{id}/history', ...options });
+
+export const ingest = <ThrowOnError extends boolean = false>(options: Options<IngestData, ThrowOnError>) => (options.client ?? client).post<IngestResponses, IngestErrors, ThrowOnError>({
+    url: '/knowledge/bases/{id}/ingest',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const lint = <ThrowOnError extends boolean = false>(options: Options<LintData, ThrowOnError>) => (options.client ?? client).post<LintResponses, LintErrors, ThrowOnError>({
+    url: '/knowledge/bases/{id}/lint',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const listPages = <ThrowOnError extends boolean = false>(options: Options<ListPagesData, ThrowOnError>) => (options.client ?? client).get<ListPagesResponses, unknown, ThrowOnError>({ url: '/knowledge/bases/{id}/pages', ...options });
+
+export const readPage = <ThrowOnError extends boolean = false>(options: Options<ReadPageData, ThrowOnError>) => (options.client ?? client).get<ReadPageResponses, ReadPageErrors, ThrowOnError>({ url: '/knowledge/bases/{id}/pages/{page_path}', ...options });
+
+export const writePage = <ThrowOnError extends boolean = false>(options: Options<WritePageData, ThrowOnError>) => (options.client ?? client).put<WritePageResponses, WritePageErrors, ThrowOnError>({
+    url: '/knowledge/bases/{id}/pages/{page_path}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const previewState = <ThrowOnError extends boolean = false>(options: Options<PreviewStateData, ThrowOnError>) => (options.client ?? client).post<PreviewStateResponses, PreviewStateErrors, ThrowOnError>({
+    url: '/knowledge/bases/{id}/preview',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const queryKb = <ThrowOnError extends boolean = false>(options: Options<QueryKbData, ThrowOnError>) => (options.client ?? client).post<QueryKbResponses, QueryKbErrors, ThrowOnError>({
+    url: '/knowledge/bases/{id}/query',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const addRawSource = <ThrowOnError extends boolean = false>(options: Options<AddRawSourceData, ThrowOnError>) => (options.client ?? client).post<AddRawSourceResponses, AddRawSourceErrors, ThrowOnError>({
+    url: '/knowledge/bases/{id}/raw',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const restoreState = <ThrowOnError extends boolean = false>(options: Options<RestoreStateData, ThrowOnError>) => (options.client ?? client).post<RestoreStateResponses, RestoreStateErrors, ThrowOnError>({
+    url: '/knowledge/bases/{id}/restore',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const overrideCredibility = <ThrowOnError extends boolean = false>(options: Options<OverrideCredibilityData, ThrowOnError>) => (options.client ?? client).put<OverrideCredibilityResponses, OverrideCredibilityErrors, ThrowOnError>({
+    url: '/knowledge/bases/{id}/sources/{sid}/credibility',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+export const reclassify = <ThrowOnError extends boolean = false>(options: Options<ReclassifyData, ThrowOnError>) => (options.client ?? client).post<ReclassifyResponses, ReclassifyErrors, ThrowOnError>({ url: '/knowledge/bases/{id}/sources/{sid}/reclassify', ...options });
 
 export const mcpUiProxy = <ThrowOnError extends boolean = false>(options: Options<McpUiProxyData, ThrowOnError>) => (options.client ?? client).get<McpUiProxyResponses, McpUiProxyErrors, ThrowOnError>({ url: '/mcp-ui-proxy', ...options });
 
