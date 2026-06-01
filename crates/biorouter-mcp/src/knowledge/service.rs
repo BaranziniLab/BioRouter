@@ -122,7 +122,7 @@ impl KnowledgeService {
         }
 
         let converted = convert::convert(&input).await?;
-        let credibility = credibility::classify(&input).await?;
+        let credibility = credibility::classify(&input, None).await?;
 
         let title = converted.title.clone().unwrap_or_else(|| match &input {
             convert::SourceInput::Text { title, .. } => {
