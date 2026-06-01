@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { addRawSource } from '../../../api';
 import type { ModelRef } from '../../../api/types.gen';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { DispatchProgress } from '../DispatchProgress';
@@ -54,27 +53,27 @@ export function IngestPanel() {
 
         update(item.id, { status: 'ingesting' });
         try {
-          // Build source body
+          // Build source body — the ingest macro handles raw materialization
+          // internally (add_raw_source is called as its first step). Do NOT
+          // pre-call addRawSource here; doing so would create a duplicate source.
           const sourceBody =
             item.kind === 'url'
               ? { url: item.url }
               : { text: item.text, title: item.title };
 
-          // POST /knowledge/bases/:id/raw — register the raw source
-          await addRawSource({
-            throwOnError: true,
-            path: { id: activeKbId },
-            body: sourceBody,
-          });
-
-          // POST /knowledge/bases/:id/ingest — SSE streamed digestion
+          // POST /knowledge/bases/:id/ingest — SSE streamed digestion.
+          // The macro materialises the raw source and then runs the sub-agent.
           const result = await stream.start(`/knowledge/bases/${activeKbId}/ingest`, {
             source: sourceBody,
             model,
           });
 
           if (result === 'error') {
-            update(item.id, { status: 'error', error: 'ingest stream error' });
+            // stream.error is populated by useIngestStream from the SSE error frame.
+            update(item.id, {
+              status: 'error',
+              error: stream.error ?? 'ingest stream error',
+            });
           } else {
             update(item.id, { status: 'done' });
           }
