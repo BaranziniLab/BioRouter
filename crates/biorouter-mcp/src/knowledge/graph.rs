@@ -47,8 +47,23 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
         let body = std::fs::read_to_string(&abs)?;
         let from = id_for_path.get(&p.path).cloned().unwrap();
         for cap in re.captures_iter(&body) {
-            let target_label = cap.get(1).unwrap().as_str().trim();
-            let key = slug(&target_label.to_lowercase());
+            let raw = cap.get(1).unwrap().as_str().trim();
+            // Support Obsidian-style `[[target|alias]]` wiki-link syntax: only
+            // the part before the first `|` is the link target; the alias is
+            // display text. Without this split, the slug of the full bracket
+            // contents never matches any page's basename and every link is
+            // silently dropped.
+            let target = raw.split('|').next().unwrap_or(raw).trim();
+            // Targets may be plain labels (e.g. "Wanjun Gu") or full logical
+            // paths (e.g. "knowledge/entities/wanjun-gu" or with `.md`). For
+            // path-style targets, only the file basename participates in the
+            // label lookup since `label_to_id` is keyed by `slug(basename)`.
+            let basename = target
+                .rsplit('/')
+                .next()
+                .unwrap_or(target)
+                .trim_end_matches(".md");
+            let key = slug(&basename.to_lowercase());
             if let Some(to) = label_to_id.get(&key) {
                 if to != &from {
                     edges.push(GraphEdge {
@@ -179,6 +194,50 @@ mod tests {
         write_cache(&kb, &g).unwrap();
         let back = read_cache(&kb).unwrap().unwrap();
         assert_eq!(back, g);
+    }
+
+    #[test]
+    fn derives_edges_from_piped_wiki_link_syntax() {
+        // The sub-agent commonly emits Obsidian-style `[[target|alias]]`
+        // links pointing at full logical paths. Both the path prefix and the
+        // alias must be tolerated by the deriver.
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base("k", "K", None).unwrap();
+        let kb = dir.path().join("k");
+
+        write_page(
+            &kb,
+            "knowledge/entities/wanjun-gu.md",
+            "---\ntitle: Wanjun Gu\nkind: entity\n---\nBody.",
+            "add entity",
+            None,
+        )
+        .unwrap();
+        write_page(
+            &kb,
+            "knowledge/sources/wanjun-gu---google-scholar-d7f205.md",
+            "---\ntitle: Wanjun Gu — Google Scholar (URL reference)\nkind: source\n---\n\
+             References [[knowledge/entities/wanjun-gu|Wanjun Gu]] and\n\
+             also [[knowledge/entities/wanjun-gu.md|Wanjun Gu]] (with .md).\n",
+            "add source",
+            None,
+        )
+        .unwrap();
+
+        let g = derive(&kb).unwrap();
+        assert_eq!(g.nodes.len(), 2);
+        // Both piped wiki-link forms should resolve to the entity page.
+        let edges_to_entity = g
+            .edges
+            .iter()
+            .filter(|e| e.to == "entities:wanjun-gu")
+            .count();
+        assert!(
+            edges_to_entity >= 2,
+            "expected piped wiki-links to produce edges, got edges: {:?}",
+            g.edges
+        );
     }
 
     #[test]
