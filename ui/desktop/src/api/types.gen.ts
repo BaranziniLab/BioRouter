@@ -25,6 +25,10 @@ export type ActionRequiredData = {
     user_data: unknown;
 };
 
+export type ActiveKbResponse = {
+    active_kb?: string | null;
+};
+
 export type AddExtensionRequest = {
     config: ExtensionConfig;
     session_id: string;
@@ -1063,6 +1067,13 @@ export type SessionType = 'user' | 'scheduled' | 'sub_agent' | 'hidden' | 'termi
 
 export type SessionsQuery = {
     limit: number;
+};
+
+export type SetActiveBody = {
+    /**
+     * `None` clears the active KB.
+     */
+    kb_id?: string | null;
 };
 
 export type SetProviderRequest = {
@@ -2421,6 +2432,45 @@ export type StartTetrateSetupResponses = {
 };
 
 export type StartTetrateSetupResponse = StartTetrateSetupResponses[keyof StartTetrateSetupResponses];
+
+export type GetActiveData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/knowledge/active';
+};
+
+export type GetActiveResponses = {
+    /**
+     * Current active KB id
+     */
+    200: ActiveKbResponse;
+};
+
+export type GetActiveResponse = GetActiveResponses[keyof GetActiveResponses];
+
+export type SetActiveData = {
+    body: SetActiveBody;
+    path?: never;
+    query?: never;
+    url: '/knowledge/active';
+};
+
+export type SetActiveErrors = {
+    /**
+     * Invalid kb id
+     */
+    400: unknown;
+};
+
+export type SetActiveResponses = {
+    /**
+     * Set successfully
+     */
+    200: ActiveKbResponse;
+};
+
+export type SetActiveResponse = SetActiveResponses[keyof SetActiveResponses];
 
 export type ListBasesData = {
     body?: never;

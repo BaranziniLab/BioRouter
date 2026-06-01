@@ -426,6 +426,8 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::knowledge::reclassify,
         super::routes::knowledge::override_credibility,
         super::routes::knowledge::check_model,
+        super::routes::knowledge::get_active,
+        super::routes::knowledge::set_active,
     ),
     components(schemas(
         super::routes::config_management::UpsertConfigQuery,
@@ -612,6 +614,8 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::knowledge::LintBody,
         super::routes::knowledge::CheckModelBody,
         super::routes::knowledge::CheckModelResponse,
+        super::routes::knowledge::SetActiveBody,
+        super::routes::knowledge::ActiveKbResponse,
     ))
 )]
 pub struct ApiDoc;

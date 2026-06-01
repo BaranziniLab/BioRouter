@@ -1030,3 +1030,141 @@ async fn check_model_returns_502_for_unknown_provider() {
         "response should have an error field"
     );
 }
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Plan 6 Task 2: GET + POST /knowledge/active — cross-session active-KB sync
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn active_kb_roundtrip() {
+    let (_d, app) = build_test_router();
+
+    // Empty initially.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/active")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "GET /active on fresh root should be 200");
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        v["active_kb"].is_null(),
+        "active_kb should be null on a fresh root"
+    );
+
+    // Create a KB to point at.
+    let create_body = serde_json::to_vec(&serde_json::json!({"id": "act", "name": "Act"})).unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "POST /bases should return 200");
+
+    // Set it.
+    let set_body = serde_json::to_vec(&serde_json::json!({"kb_id": "act"})).unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/active")
+                .header("content-type", "application/json")
+                .body(Body::from(set_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "POST /active with valid id should be 200");
+
+    // Read it back.
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/active")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let after: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        after["active_kb"].as_str().unwrap(),
+        "act",
+        "active_kb should round-trip the set value"
+    );
+
+    // Clear it.
+    let clear_body = serde_json::to_vec(&serde_json::json!({"kb_id": null})).unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/active")
+                .header("content-type", "application/json")
+                .body(Body::from(clear_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "POST /active with null should clear");
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/active")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let cleared: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(
+        cleared["active_kb"].is_null(),
+        "active_kb should be null after clear"
+    );
+
+    // Invalid kb id returns 400.
+    let bad_body = serde_json::to_vec(&serde_json::json!({"kb_id": "INVALID--KB"})).unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/active")
+                .header("content-type", "application/json")
+                .body(Body::from(bad_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        400,
+        "POST /active with invalid kb id should return 400"
+    );
+}

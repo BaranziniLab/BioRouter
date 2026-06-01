@@ -49,6 +49,7 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
             "/bases/{id}/sources/{sid}/credibility",
             put(override_credibility),
         )
+        .route("/active", get(get_active).post(set_active))
         .route("/check-model", post(check_model))
         .with_state(svc)
 }
@@ -358,6 +359,56 @@ pub struct ReadPageQuery {
 #[derive(Serialize, ToSchema)]
 pub struct ReadPageResponse {
     pub content: String,
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Plan 6 Task 2: GET + POST /knowledge/active — cross-session active-KB sync.
+// Thin pass-throughs to `KnowledgeService::{get,set}_active_persisted` so the
+// frontend can render the chat chip on startup and persist user picks.
+// ──────────────────────────────────────────────────────────────────────────────
+
+#[derive(Deserialize, ToSchema)]
+pub struct SetActiveBody {
+    /// `None` clears the active KB.
+    #[serde(default)]
+    pub kb_id: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ActiveKbResponse {
+    pub active_kb: Option<String>,
+}
+
+#[utoipa::path(
+    get, path = "/knowledge/active",
+    responses((status = 200, description = "Current active KB id", body = ActiveKbResponse))
+)]
+pub async fn get_active(
+    State(svc): State<Arc<KnowledgeService>>,
+) -> Result<Json<ActiveKbResponse>, (StatusCode, String)> {
+    let active_kb = svc
+        .get_active_persisted()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    Ok(Json(ActiveKbResponse { active_kb }))
+}
+
+#[utoipa::path(
+    post, path = "/knowledge/active",
+    request_body = SetActiveBody,
+    responses(
+        (status = 200, description = "Set successfully", body = ActiveKbResponse),
+        (status = 400, description = "Invalid kb id"),
+    )
+)]
+pub async fn set_active(
+    State(svc): State<Arc<KnowledgeService>>,
+    Json(body): Json<SetActiveBody>,
+) -> Result<Json<ActiveKbResponse>, (StatusCode, String)> {
+    svc.set_active_persisted(body.kb_id.as_deref())
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok(Json(ActiveKbResponse {
+        active_kb: body.kb_id,
+    }))
 }
 
 #[utoipa::path(

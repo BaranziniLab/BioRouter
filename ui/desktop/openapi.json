@@ -1339,6 +1339,57 @@
         }
       }
     },
+    "/knowledge/active": {
+      "get": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "get_active",
+        "responses": {
+          "200": {
+            "description": "Current active KB id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveKbResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "set_active",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetActiveBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Set successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveKbResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid kb id"
+          }
+        }
+      }
+    },
     "/knowledge/bases": {
       "get": {
         "tags": [
@@ -3639,6 +3690,15 @@
         ],
         "discriminator": {
           "propertyName": "actionType"
+        }
+      },
+      "ActiveKbResponse": {
+        "type": "object",
+        "properties": {
+          "active_kb": {
+            "type": "string",
+            "nullable": true
+          }
         }
       },
       "AddExtensionRequest": {
@@ -6802,6 +6862,16 @@
           "limit": {
             "type": "integer",
             "minimum": 0
+          }
+        }
+      },
+      "SetActiveBody": {
+        "type": "object",
+        "properties": {
+          "kb_id": {
+            "type": "string",
+            "description": "`None` clears the active KB.",
+            "nullable": true
           }
         }
       },
