@@ -42,6 +42,26 @@ fn walk<W: Write + Seek>(
     Ok(())
 }
 
+/// Validate that joining `rel` onto `target` cannot escape `target`.
+///
+/// Rejects any path component that is `..`, an absolute root, or a Windows drive
+/// prefix. This prevents ZIP-slip attacks where a crafted archive entry such as
+/// `legit-id/../../../etc/cron.d/evil` would write outside the extraction root.
+fn safe_join(target: &Path, rel: &Path) -> Result<PathBuf> {
+    for component in rel.components() {
+        match component {
+            std::path::Component::Normal(_) | std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                anyhow::bail!("path traversal: '..' component in archive entry");
+            }
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                anyhow::bail!("absolute path component in archive entry");
+            }
+        }
+    }
+    Ok(target.join(rel))
+}
+
 /// Unpack a .brkb zip into a fresh directory under `knowledge_root` and return the new kb_id.
 /// The .brkb is expected to contain exactly one top-level directory (the kb_id at export time).
 /// If that id collides with an existing KB at the destination, suffix with `-N` to disambiguate.
@@ -82,7 +102,8 @@ pub fn import<R: Read + Seek>(zip_bytes: R, knowledge_root: &Path) -> Result<Str
             .strip_prefix(&format!("{original_id}/"))
             .unwrap_or(entry_name.as_str())
             .into();
-        let dest = target.join(rel);
+        // Reject any path component that could escape the extraction root.
+        let dest = safe_join(&target, &rel)?;
         if entry.is_dir() {
             std::fs::create_dir_all(&dest)?;
         } else {
@@ -150,5 +171,51 @@ mod tests {
         assert_eq!(new_id, "dup-2");
         assert!(dir.path().join("dup").exists());
         assert!(dir.path().join("dup-2").exists());
+    }
+
+    #[test]
+    fn import_rejects_path_traversal() {
+        use std::io::Write;
+        let dir = tempfile::tempdir().unwrap();
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut buf);
+            let opts = zip::write::FileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            // Single top-level dir + one entry whose relative path escapes via "..".
+            zip.add_directory("evil-kb", opts).unwrap();
+            zip.start_file("evil-kb/../escaped.txt", opts).unwrap();
+            zip.write_all(b"pwned").unwrap();
+            zip.finish().unwrap();
+        }
+        let bytes = buf.into_inner();
+        let cursor = std::io::Cursor::new(bytes);
+        let err = import(cursor, dir.path()).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("traversal") || msg.contains("..") || msg.contains("absolute"),
+            "unexpected error: {msg}"
+        );
+        // Confirm no file was written outside the extraction root.
+        assert!(
+            !dir.path().parent().unwrap().join("escaped.txt").exists(),
+            "escaped.txt must not exist outside the extraction dir"
+        );
+    }
+
+    #[test]
+    fn safe_join_rejects_parent_dir_component() {
+        let target = std::path::Path::new("/tmp/safe-root");
+        let rel = std::path::Path::new("../escape");
+        let err = safe_join(target, rel).unwrap_err();
+        assert!(err.to_string().contains("traversal") || err.to_string().contains(".."));
+    }
+
+    #[test]
+    fn safe_join_allows_normal_paths() {
+        let target = std::path::Path::new("/tmp/safe-root");
+        let rel = std::path::Path::new("subdir/file.txt");
+        let dest = safe_join(target, rel).unwrap();
+        assert_eq!(dest, std::path::Path::new("/tmp/safe-root/subdir/file.txt"));
     }
 }
