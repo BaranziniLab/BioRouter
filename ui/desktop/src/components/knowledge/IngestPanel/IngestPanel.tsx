@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
-import { addRawSource, ingest } from '../../../api';
+import { addRawSource } from '../../../api';
 import type { ModelRef } from '../../../api/types.gen';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
+import { DispatchProgress } from '../DispatchProgress';
 import { useKnowledge } from '../KnowledgeContext';
+import { useIngestStream } from '../hooks/useIngestStream';
 import { useStagedSources } from '../hooks/useStagedSources';
 import { Dropzone } from './Dropzone';
 import { IngestModelPicker } from './IngestModelPicker';
@@ -20,6 +22,7 @@ export function IngestPanel() {
   const { activeKbId } = useKnowledge();
   const { currentModel, currentProvider } = useModelAndProvider();
   const { items, add, remove, update, clear } = useStagedSources();
+  const stream = useIngestStream();
   const [showPasteBox, setShowPasteBox] = useState(false);
   const [digesting, setDigesting] = useState(false);
 
@@ -43,6 +46,7 @@ export function IngestPanel() {
     try {
       for (const item of items) {
         if (item.status === 'done') continue;
+
         if (item.kind === 'file') {
           update(item.id, { status: 'error', error: 'file upload not yet supported' });
           continue;
@@ -56,21 +60,24 @@ export function IngestPanel() {
               ? { url: item.url }
               : { text: item.text, title: item.title };
 
-          // POST /knowledge/bases/:id/raw
+          // POST /knowledge/bases/:id/raw — register the raw source
           await addRawSource({
             throwOnError: true,
             path: { id: activeKbId },
             body: sourceBody,
           });
 
-          // POST /knowledge/bases/:id/ingest (SSE stream — Task 8 replaces this with proper SSE)
-          // For now we await and ignore the stream body
-          await ingest({
-            path: { id: activeKbId },
-            body: { source: sourceBody, model },
+          // POST /knowledge/bases/:id/ingest — SSE streamed digestion
+          const result = await stream.start(`/knowledge/bases/${activeKbId}/ingest`, {
+            source: sourceBody,
+            model,
           });
 
-          update(item.id, { status: 'done' });
+          if (result === 'error') {
+            update(item.id, { status: 'error', error: 'ingest stream error' });
+          } else {
+            update(item.id, { status: 'done' });
+          }
         } catch (err) {
           update(item.id, {
             status: 'error',
@@ -101,6 +108,8 @@ export function IngestPanel() {
       )}
 
       <StagedList items={items} onRemove={remove} onClear={clear} />
+
+      <DispatchProgress state={stream} />
 
       <div className="flex items-center justify-between gap-2 pt-1">
         <IngestModelPicker value={model} onChange={setModel} />
