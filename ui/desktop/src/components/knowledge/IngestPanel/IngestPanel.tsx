@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { ModelRef } from '../../../api/types.gen';
+import { checkModel } from '../../../api/sdk.gen';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { Button } from '../../ui/button';
 import { DispatchProgress } from '../DispatchProgress';
@@ -42,6 +43,24 @@ export function IngestPanel() {
 
   async function onDigest() {
     if (!activeKbId || digesting) return;
+
+    // Pre-flight: confirm the model is reachable before iterating staged items.
+    try {
+      const res = await checkModel({ body: { model } });
+      const data = res.data;
+      if (!data?.ok) {
+        window.alert(
+          `Model unreachable: ${data?.error ?? 'unknown'}\n\nPlease switch to a different model.`,
+        );
+        return;
+      }
+    } catch (err) {
+      window.alert(
+        `Model check failed: ${err instanceof Error ? err.message : String(err)}\n\nPlease verify your provider's credentials and try a different model.`,
+      );
+      return;
+    }
+
     setDigesting(true);
     try {
       for (const item of items) {
@@ -120,7 +139,7 @@ export function IngestPanel() {
 
       <StagedList items={items} onRemove={remove} onClear={clear} />
 
-      <DispatchProgress state={stream} />
+      <DispatchProgress state={stream} onAbort={() => stream.abort()} />
 
       <div className="flex items-center justify-between gap-2 pt-1">
         <IngestModelPicker value={model} onChange={setModel} />
