@@ -68,7 +68,7 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
               <div className="overflow-hidden rounded-2xl border border-amber-200/50 bg-amber-50/70 shadow-sm">
                 <div className="flex items-center gap-2 border-b border-amber-200/60 px-3 py-2 text-[10px] font-medium uppercase tracking-[0.18em] text-amber-900/80">
                   <FileCode2 className="h-3.5 w-3.5" />
-                  YAML Banner
+                  Overview
                 </div>
                 <pre className="overflow-x-auto px-3 py-3 font-mono text-[11px] leading-5 text-amber-950/90 whitespace-pre-wrap">
                   {parsed.frontmatter}
