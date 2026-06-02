@@ -44,7 +44,7 @@ pub struct QueryResult {
 }
 
 pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResult> {
-    let _lock = svc.lock_kb(&args.kb_id).await;
+    let _lock = svc.lock_kb(&args.kb_id).await?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
     // Idempotently upgrade legacy schema.md files that pre-date the

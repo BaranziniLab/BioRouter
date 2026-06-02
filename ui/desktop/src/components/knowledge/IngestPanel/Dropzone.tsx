@@ -50,7 +50,7 @@ export function Dropzone({ onFiles, onPasteTextRequested }: Props) {
         ref={inputRef}
         type="file"
         multiple
-        accept=".pdf,.md,.html,.htm,.docx,.csv,.txt,.brkb"
+        accept=".pdf,.md,.markdown,.html,.htm,.docx,.csv,.txt"
         className="hidden"
         onChange={(e) => {
           const files = e.target.files ? Array.from(e.target.files) : [];
@@ -60,13 +60,17 @@ export function Dropzone({ onFiles, onPasteTextRequested }: Props) {
       />
       <Upload className="w-7 h-7 mx-auto text-text-muted" />
       <div className="mt-2 text-sm font-medium">Drag & drop to stage</div>
-      <div className="mt-1 text-xs text-text-muted">Papers, snippets, HTML, datasets, .brkb</div>
+      <div className="mt-1 text-xs text-text-muted">Papers, notes, HTML pages, and curated datasets</div>
       <div className="mt-3 flex flex-wrap gap-1.5 justify-center text-[10px] font-mono text-text-muted">
-        {['pdf', 'md', 'html', 'docx', 'csv', 'brkb'].map((ext) => (
+        {['pdf', 'md', 'html', 'docx', 'csv', 'txt'].map((ext) => (
           <span key={ext} className="border border-border-subtle rounded px-1.5 py-0.5">
             .{ext}
           </span>
         ))}
+      </div>
+      <div className="mt-2 text-[11px] text-text-muted">
+        Use <span className="font-medium text-text-default">Import from .brkb</span> in the
+        knowledge base menu for full archive imports.
       </div>
       <div className="mt-3 flex gap-2">
         <button

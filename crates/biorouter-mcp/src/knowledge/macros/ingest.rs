@@ -45,7 +45,7 @@ pub struct IngestResult {
 }
 
 pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestResult> {
-    let _lock = svc.lock_kb(&args.kb_id).await;
+    let _lock = svc.lock_kb(&args.kb_id).await?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
     // Idempotently upgrade legacy schema.md files that pre-date the

@@ -216,7 +216,7 @@ pub struct LintResult {
 }
 
 pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> {
-    let _lock = svc.lock_kb(&args.kb_id).await;
+    let _lock = svc.lock_kb(&args.kb_id).await?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
     // Idempotently upgrade legacy schema.md files that pre-date the

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ModelRef } from '../../../api/types.gen';
 import { checkModel } from '../../../api/sdk.gen';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
@@ -6,12 +6,14 @@ import { Button } from '../../ui/button';
 import { DispatchProgress } from '../DispatchProgress';
 import { useKnowledge } from '../KnowledgeContext';
 import { useIngestStream } from '../hooks/useIngestStream';
-import { useKnowledgeBases } from '../hooks/useKnowledgeBases';
 import { useStagedSources } from '../hooks/useStagedSources';
 import { Dropzone } from './Dropzone';
 import { IngestModelPicker } from './IngestModelPicker';
+import { IngestWarnings } from './IngestWarnings';
 import { PasteTextBox } from './PasteTextBox';
 import { StagedList } from './StagedList';
+import type { FileDropWarning } from './fileValidation';
+import { validateDroppedFiles } from './fileValidation';
 
 // TODO Plan 6: read default from config via useConfig once model picker is real
 const FALLBACK_MODEL: ModelRef = { provider: 'anthropic', model: 'claude-sonnet-4-6' };
@@ -24,10 +26,13 @@ export function IngestPanel() {
   const { activeKbId, triggerGraphRefresh } = useKnowledge();
   const { currentModel, currentProvider } = useModelAndProvider();
   const { items, add, remove, update, clear } = useStagedSources();
-  const { importArchive } = useKnowledgeBases();
   const stream = useIngestStream();
   const [showPasteBox, setShowPasteBox] = useState(false);
-  const [digesting, setDigesting] = useState(false);
+  const [digestState, setDigestState] = useState<'idle' | 'checking' | 'digesting' | 'stopping'>(
+    'idle',
+  );
+  const [warnings, setWarnings] = useState<FileDropWarning[]>([]);
+  const stopRequestedRef = useRef(false);
 
   // Seed the model from the existing config-backed context; fall back to hardcoded default
   const [model, setModel] = useState<ModelRef>(FALLBACK_MODEL);
@@ -38,46 +43,50 @@ export function IngestPanel() {
   }, [currentModel, currentProvider]);
 
   function onFiles(files: File[]) {
-    for (const file of files) {
+    const result = validateDroppedFiles(files);
+    if (result.warnings.length > 0) {
+      setWarnings((existing) => [...result.warnings, ...existing].slice(0, 8));
+    }
+    for (const file of result.accepted) {
       add({ kind: 'file', id: genId(), file, status: 'pending' });
     }
   }
 
   async function onDigest() {
-    if (!activeKbId || digesting) return;
+    if (!activeKbId || digestState !== 'idle') return;
+    stopRequestedRef.current = false;
+    setDigestState('checking');
+    const queue = [...items];
+    const succeededIds: string[] = [];
 
     // Pre-flight: confirm the model is reachable before iterating staged items.
     try {
       const res = await checkModel({ body: { model } });
       const data = res.data;
       if (!data?.ok) {
+        setDigestState('idle');
         window.alert(
           `Model unreachable: ${data?.error ?? 'unknown'}\n\nPlease switch to a different model.`,
         );
         return;
       }
     } catch (err) {
+      setDigestState('idle');
       window.alert(
         `Model check failed: ${err instanceof Error ? err.message : String(err)}\n\nPlease verify your provider's credentials and try a different model.`,
       );
       return;
     }
 
-    setDigesting(true);
+    setDigestState('digesting');
     try {
-      for (const item of items) {
+      for (const item of queue) {
+        if (stopRequestedRef.current) break;
         if (item.status === 'done') continue;
 
         if (item.kind === 'file') {
           update(item.id, { status: 'ingesting', error: undefined });
           try {
-            if (item.file.name.toLowerCase().endsWith('.brkb')) {
-              await importArchive(item.file);
-              update(item.id, { status: 'done' });
-              triggerGraphRefresh();
-              continue;
-            }
-
             const formData = new FormData();
             formData.append('file', item.file);
             formData.append('provider', model.provider);
@@ -93,8 +102,15 @@ export function IngestPanel() {
                 status: 'error',
                 error: stream.error ?? 'ingest stream error',
               });
+            } else if (result === 'aborted') {
+              update(item.id, {
+                status: 'pending',
+                error: 'Stopped before completion.',
+              });
+              break;
             } else {
               update(item.id, { status: 'done' });
+              succeededIds.push(item.id);
               triggerGraphRefresh();
             }
           } catch (err) {
@@ -129,8 +145,15 @@ export function IngestPanel() {
               status: 'error',
               error: stream.error ?? 'ingest stream error',
             });
+          } else if (result === 'aborted') {
+            update(item.id, {
+              status: 'pending',
+              error: 'Stopped before completion.',
+            });
+            break;
           } else {
             update(item.id, { status: 'done' });
+            succeededIds.push(item.id);
             triggerGraphRefresh();
           }
         } catch (err) {
@@ -141,19 +164,38 @@ export function IngestPanel() {
         }
       }
     } finally {
-      setDigesting(false);
+      setDigestState('idle');
       // Auto-clear successfully ingested items; keep errors visible for user action.
-      for (const item of items) {
-        if (item.status === 'done') remove(item.id);
+      for (const id of succeededIds) {
+        remove(id);
       }
     }
   }
 
-  const canDigest = items.length > 0 && !!activeKbId && !digesting;
+  function onAbort() {
+    stopRequestedRef.current = true;
+    setDigestState((current) => (current === 'idle' ? current : 'stopping'));
+    stream.abort();
+  }
+
+  const canDigest = items.length > 0 && !!activeKbId && digestState === 'idle';
+  const digestLabel =
+    digestState === 'checking'
+      ? 'Checking model…'
+      : digestState === 'digesting'
+        ? 'Digesting…'
+        : digestState === 'stopping'
+          ? 'Stopping…'
+          : 'Digest Staged Sources';
 
   return (
     <div className="flex flex-col gap-4 p-4">
       <Dropzone onFiles={onFiles} onPasteTextRequested={() => setShowPasteBox(true)} />
+      <IngestWarnings
+        warnings={warnings}
+        onDismiss={(id) => setWarnings((current) => current.filter((warning) => warning.id !== id))}
+        onClear={() => setWarnings([])}
+      />
 
       {showPasteBox && (
         <PasteTextBox
@@ -168,7 +210,7 @@ export function IngestPanel() {
 
       <StagedList items={items} onRemove={remove} onClear={clear} />
 
-      <DispatchProgress state={stream} onAbort={() => stream.abort()} />
+      <DispatchProgress state={stream} onAbort={onAbort} />
 
       <div className="flex flex-col gap-2 pt-1">
         <Button
@@ -178,7 +220,7 @@ export function IngestPanel() {
           onClick={() => void onDigest()}
           className="w-full min-h-9"
         >
-          {digesting ? 'Digesting…' : 'Digest Staged Sources'}
+          {digestLabel}
         </Button>
         <IngestModelPicker value={model} onChange={setModel} />
       </div>

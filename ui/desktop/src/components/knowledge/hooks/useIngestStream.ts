@@ -22,7 +22,7 @@ export type SubAgentEvent =
 
 export interface StreamState {
   events: SubAgentEvent[];
-  status: 'idle' | 'streaming' | 'done' | 'error';
+  status: 'idle' | 'starting' | 'streaming' | 'stopping' | 'done' | 'error';
   finalResult: unknown;
   error?: string;
 }
@@ -49,11 +49,11 @@ export function useIngestStream() {
     async (
       path: string,
       requestInit: Pick<RequestInit, 'body' | 'headers'>,
-    ): Promise<'done' | 'error'> => {
+    ): Promise<'done' | 'error' | 'aborted'> => {
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
-      setState({ events: [], status: 'streaming', finalResult: null });
+      setState({ events: [], status: 'starting', finalResult: null });
 
       // Build the full URL from the SDK client's configured baseUrl
       const cfg = client.getConfig();
@@ -80,6 +80,8 @@ export function useIngestStream() {
         if (!res.ok || !res.body) {
           throw new Error(`HTTP ${res.status}`);
         }
+
+        setState((s) => ({ ...s, status: s.status === 'stopping' ? 'stopping' : 'streaming' }));
 
         const reader = res.body.getReader();
         const decoder = new window.TextDecoder();
@@ -131,7 +133,9 @@ export function useIngestStream() {
 
         // If the stream closed without an explicit done/error event, mark done
         setState((s) => {
-          if (s.status === 'streaming') return { ...s, status: 'done' };
+          if (s.status === 'starting' || s.status === 'streaming' || s.status === 'stopping') {
+            return { ...s, status: 'done' };
+          }
           return s;
         });
 
@@ -143,14 +147,23 @@ export function useIngestStream() {
           setState((s) => ({ ...s, status: 'error', error: msg }));
           return 'error';
         }
-        return 'done'; // aborted — treat as non-error for the caller
+        setState((s) => ({
+          ...s,
+          status: 'done',
+          finalResult: { reason: 'cancelled' },
+          events:
+            s.events[s.events.length - 1]?.kind === 'done'
+              ? s.events
+              : [...s.events, { kind: 'done', reason: 'cancelled', final_text: '' }],
+        }));
+        return 'aborted';
       }
     },
     [],
   );
 
   const start = useCallback(
-    async (path: string, body: unknown): Promise<'done' | 'error'> =>
+    async (path: string, body: unknown): Promise<'done' | 'error' | 'aborted'> =>
       runStream(path, {
         headers: {
           'Content-Type': 'application/json',
@@ -161,7 +174,7 @@ export function useIngestStream() {
   );
 
   const startMultipart = useCallback(
-    async (path: string, formData: FormData): Promise<'done' | 'error'> =>
+    async (path: string, formData: FormData): Promise<'done' | 'error' | 'aborted'> =>
       runStream(path, {
         body: formData,
       }),
@@ -169,6 +182,12 @@ export function useIngestStream() {
   );
 
   const abort = useCallback(() => {
+    setState((s) => {
+      if (s.status === 'idle' || s.status === 'done' || s.status === 'error') {
+        return s;
+      }
+      return { ...s, status: 'stopping' };
+    });
     abortRef.current?.abort();
   }, []);
 

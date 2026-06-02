@@ -11,11 +11,11 @@ use biorouter::model::ModelConfig;
 use biorouter_mcp::knowledge::{
     convert,
     macros::{ingest as ingest_macro, lint as lint_macro, query as query_macro},
-    paths, registry,
+    paths,
     service::{KnowledgeService, ReadPageError},
     store,
     subagent::{events::SubAgentEvent, loop_::SubAgentBounds},
-    types::{Credibility, Graph, HistoryEntry, Manifest, ModelRef, RegistryEntry},
+    types::{Credibility, Graph, HistoryEntry, Manifest, ModelRef},
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -55,6 +55,53 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
         .route("/active", get(get_active).post(set_active))
         .route("/check-model", post(check_model))
         .with_state(svc)
+}
+
+const MAX_INGEST_FILE_BYTES: usize = 25 * 1024 * 1024;
+const MAX_INGEST_CSV_BYTES: usize = 8 * 1024 * 1024;
+
+fn ingest_upload_limit(filename: &str) -> usize {
+    if filename.to_lowercase().ends_with(".csv") {
+        MAX_INGEST_CSV_BYTES
+    } else {
+        MAX_INGEST_FILE_BYTES
+    }
+}
+
+fn validate_ingest_upload(filename: &str, size: usize) -> Result<(), (StatusCode, String)> {
+    let lower = filename.to_lowercase();
+
+    if lower.ends_with(".brkb") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "'.brkb' archives must be imported via the knowledge-base import action, not the digest dropzone"
+                .to_string(),
+        ));
+    }
+
+    if [
+        ".exe", ".app", ".pkg", ".dmg", ".msi", ".dll", ".dylib", ".so", ".bin", ".zip",
+    ]
+    .iter()
+    .any(|ext| lower.ends_with(ext))
+    {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "{filename} looks like an executable, binary, or packaged archive. Digest readable source material instead."
+            ),
+        ));
+    }
+
+    let limit = ingest_upload_limit(filename);
+    if size > limit {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!("{filename} is too large for ingestion ({size} bytes > {limit} byte limit)"),
+        ));
+    }
+
+    Ok(())
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -268,26 +315,14 @@ pub async fn delete_base(
     State(svc): State<Arc<KnowledgeService>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, (StatusCode, String)> {
-    let kb_root = paths::kb_root(svc.root(), &id);
-    if !kb_root.exists() {
-        return Err((StatusCode::NOT_FOUND, format!("kb '{id}' not found")));
-    }
-    // Unregister first (the cheap, error-prone step). If this fails the directory
-    // still exists and a subsequent retry will work correctly.
-    registry::unregister(svc.root(), &id)
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    // Remove the directory. On failure, attempt to re-register so the registry
-    // stays consistent with the filesystem.
-    if let Err(e) = std::fs::remove_dir_all(&kb_root) {
-        let _ = registry::register(
-            svc.root(),
-            RegistryEntry {
-                id: id.clone(),
-                path: kb_root.clone(),
-            },
-        );
-        return Err((StatusCode::INTERNAL_SERVER_ERROR, e.to_string()));
-    }
+    svc.delete_base(&id).map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("not found") {
+            (StatusCode::NOT_FOUND, msg)
+        } else {
+            (StatusCode::INTERNAL_SERVER_ERROR, msg)
+        }
+    })?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -609,13 +644,15 @@ async fn parse_ingest_multipart(
         match field.name() {
             Some("file") => {
                 filename = field.file_name().map(|s| s.to_string());
-                bytes_opt = Some(
-                    field
-                        .bytes()
-                        .await
-                        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-                        .to_vec(),
-                );
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+                    .to_vec();
+                if let Some(name) = filename.as_deref() {
+                    validate_ingest_upload(name, bytes.len())?;
+                }
+                bytes_opt = Some(bytes);
             }
             Some("provider") => {
                 provider = Some(
@@ -654,6 +691,7 @@ async fn parse_ingest_multipart(
     let model_name =
         model_name.ok_or((StatusCode::BAD_REQUEST, "missing 'model' field".to_string()))?;
     let filename = filename.unwrap_or_else(|| "upload.bin".to_string());
+    validate_ingest_upload(&filename, bytes.len())?;
 
     Ok((
         convert::SourceInput::File {

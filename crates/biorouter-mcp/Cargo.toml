@@ -75,6 +75,7 @@ bm25 = "2.3"
 dashmap = "6"
 futures = { workspace = true }
 async-trait = "0.1"
+fs2 = "0.4.3"
 
 [dev-dependencies]
 sysinfo = "0.32.1"

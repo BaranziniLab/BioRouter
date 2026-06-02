@@ -7,8 +7,12 @@ use crate::knowledge::{
 use anyhow::{Context, Result};
 use chrono::Utc;
 use dashmap::DashMap;
-use std::path::{Path, PathBuf};
+use fs2::FileExt as _;
 use std::sync::Arc;
+use std::{
+    fs::{File, OpenOptions},
+    path::{Path, PathBuf},
+};
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 const DEFAULT_SCHEMA: &str = include_str!("schema_default.md");
@@ -50,6 +54,38 @@ pub struct KnowledgeService {
     locks: Arc<DashMap<String, Arc<Mutex<()>>>>,
 }
 
+struct FileLockGuard {
+    file: File,
+}
+
+impl FileLockGuard {
+    fn acquire(path: &Path) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let file = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        file.lock_exclusive()?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for FileLockGuard {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+pub struct KnowledgeWriteGuard {
+    _process_guard: OwnedMutexGuard<()>,
+    _file_guard: FileLockGuard,
+}
+
 impl KnowledgeService {
     fn slugify_kb_name(name: &str) -> String {
         let mut slug = String::with_capacity(name.len());
@@ -87,18 +123,36 @@ impl KnowledgeService {
         &self.root
     }
 
+    fn root_lock_path(&self) -> PathBuf {
+        self.root.join(".knowledge-root.lock")
+    }
+
+    fn kb_lock_path(&self, kb_id: &str) -> PathBuf {
+        paths::kb_internal_dir(&self.root, kb_id).join("write.lock")
+    }
+
+    fn lock_root(&self) -> Result<FileLockGuard> {
+        FileLockGuard::acquire(&self.root_lock_path())
+    }
+
     /// Acquire an exclusive lock for `kb_id`. Held until the returned guard is dropped.
     /// Used by macros to serialize concurrent writers against the same KB.
-    pub async fn lock_kb(&self, kb_id: &str) -> OwnedMutexGuard<()> {
+    pub async fn lock_kb(&self, kb_id: &str) -> Result<KnowledgeWriteGuard> {
         let m = self
             .locks
             .entry(kb_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
-        m.lock_owned().await
+        let process_guard = m.lock_owned().await;
+        let file_guard = FileLockGuard::acquire(&self.kb_lock_path(kb_id))?;
+        Ok(KnowledgeWriteGuard {
+            _process_guard: process_guard,
+            _file_guard: file_guard,
+        })
     }
 
     pub fn create_base(&self, id: &str, name: &str, color: Option<&str>) -> Result<Manifest> {
+        let _lock = self.lock_root()?;
         paths::validate_kb_id(id)?;
         let kb_root = paths::kb_root(&self.root, id);
         if kb_root.exists() {
@@ -157,6 +211,7 @@ impl KnowledgeService {
     }
 
     pub fn import_brkb(&self, zip_bytes: &[u8]) -> Result<String> {
+        let _lock = self.lock_root()?;
         std::fs::create_dir_all(&self.root)?;
         let cursor = std::io::Cursor::new(zip_bytes);
         let new_id = crate::knowledge::brkb::import(cursor, &self.root)?;
@@ -189,6 +244,7 @@ impl KnowledgeService {
         name: Option<&str>,
         color: Option<&str>,
     ) -> Result<Manifest> {
+        let _lock = self.lock_root()?;
         paths::validate_kb_id(id)?;
         let current_root = paths::kb_root(&self.root, id);
         if !current_root.exists() {
@@ -252,8 +308,8 @@ impl KnowledgeService {
                     },
                 )?;
 
-                if self.get_active_persisted()?.as_deref() == Some(id) {
-                    self.set_active_persisted(Some(&target_id))?;
+                if self.get_active_persisted_unlocked()?.as_deref() == Some(id) {
+                    self.set_active_persisted_unlocked(Some(&target_id))?;
                 }
             }
 
@@ -269,9 +325,60 @@ impl KnowledgeService {
 
         Ok(current)
     }
+
+    pub fn delete_base(&self, id: &str) -> Result<()> {
+        let _lock = self.lock_root()?;
+        paths::validate_kb_id(id)?;
+        let kb_root = paths::kb_root(&self.root, id);
+        if !kb_root.exists() {
+            anyhow::bail!("kb '{id}' not found");
+        }
+
+        registry::unregister(&self.root, id)?;
+        if let Err(err) = std::fs::remove_dir_all(&kb_root) {
+            let _ = registry::register(
+                &self.root,
+                RegistryEntry {
+                    id: id.to_string(),
+                    path: kb_root.clone(),
+                },
+            );
+            return Err(err.into());
+        }
+
+        if self.get_active_persisted_unlocked()?.as_deref() == Some(id) {
+            self.set_active_persisted_unlocked(None)?;
+        }
+
+        Ok(())
+    }
 }
 
 impl KnowledgeService {
+    fn find_existing_source_match(
+        &self,
+        kb_root: &Path,
+        url: Option<&str>,
+        sha256: &str,
+    ) -> Result<(Option<SourceMeta>, Option<SourceMeta>)> {
+        let mut by_url = None;
+        let mut by_hash = None;
+
+        for meta in raw::list_sources(kb_root)? {
+            if by_url.is_none() && meta.url.as_deref() == url && url.is_some() {
+                by_url = Some(meta.clone());
+            }
+            if by_hash.is_none() && meta.sha256 == sha256 {
+                by_hash = Some(meta);
+            }
+            if by_url.is_some() && by_hash.is_some() {
+                break;
+            }
+        }
+
+        Ok((by_url, by_hash))
+    }
+
     pub async fn add_raw_source(
         &self,
         kb_id: &str,
@@ -295,7 +402,6 @@ impl KnowledgeService {
             convert::SourceInput::File { filename, .. } => filename.clone(),
         });
 
-        let source_id = raw::new_source_id(&title);
         let (original_bytes, original_filename, url) = match &input {
             convert::SourceInput::File {
                 bytes, filename, ..
@@ -308,6 +414,29 @@ impl KnowledgeService {
             Some(b) => raw::hash_bytes(b),
             None => raw::hash_bytes(converted.markdown.as_bytes()),
         };
+
+        let (existing_by_url, existing_by_hash) =
+            self.find_existing_source_match(&kb_root, url.as_deref(), &hash)?;
+
+        if let Some(existing) = existing_by_hash.as_ref() {
+            if existing_by_url
+                .as_ref()
+                .map(|meta| meta.id.as_str())
+                .unwrap_or(existing.id.as_str())
+                == existing.id
+            {
+                return Ok(raw::RawWrite {
+                    source_id: existing.id.clone(),
+                    source_md_path: format!("raw/{}/source.md", existing.id),
+                    meta_path: format!("raw/{}/meta.yaml", existing.id),
+                });
+            }
+        }
+
+        let source_id = existing_by_url
+            .as_ref()
+            .map(|meta| meta.id.clone())
+            .unwrap_or_else(|| raw::new_source_id(&title));
 
         let meta = SourceMeta {
             id: source_id.clone(),
@@ -329,8 +458,11 @@ impl KnowledgeService {
         )?;
 
         let repo = GitRepo::open(&kb_root)?;
-        let summary = format!("ingested {source_id}");
-        let delta = "+1 source";
+        let (summary, delta) = if existing_by_url.is_some() {
+            (format!("refresh source {source_id}"), "~1 source")
+        } else {
+            (format!("ingested {source_id}"), "+1 source")
+        };
         if let Some(_branch) = txn_branch {
             repo.commit_on_txn_in_progress(&summary)?;
         } else {
@@ -439,6 +571,10 @@ impl KnowledgeService {
     /// Read the persisted active-KB id (set via the UI or `kb_set_active`).
     /// Returns `Ok(None)` if no file exists or the file is empty.
     pub fn get_active_persisted(&self) -> anyhow::Result<Option<String>> {
+        self.get_active_persisted_unlocked()
+    }
+
+    fn get_active_persisted_unlocked(&self) -> anyhow::Result<Option<String>> {
         let path = crate::knowledge::paths::active_kb_path(self.root());
         if !path.exists() {
             return Ok(None);
@@ -454,6 +590,11 @@ impl KnowledgeService {
 
     /// Persist the active-KB id. Pass `None` to clear.
     pub fn set_active_persisted(&self, id: Option<&str>) -> anyhow::Result<()> {
+        let _lock = self.lock_root()?;
+        self.set_active_persisted_unlocked(id)
+    }
+
+    fn set_active_persisted_unlocked(&self, id: Option<&str>) -> anyhow::Result<()> {
         let path = crate::knowledge::paths::active_kb_path(self.root());
         if let Some(p) = path.parent() {
             std::fs::create_dir_all(p)?;
@@ -712,6 +853,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn add_raw_source_reuses_existing_source_for_same_text_hash() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let first = svc
+            .add_raw_source(
+                "k",
+                SourceInput::Text {
+                    text: "Same content".into(),
+                    title: Some("First note".into()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let second = svc
+            .add_raw_source(
+                "k",
+                SourceInput::Text {
+                    text: "Same content".into(),
+                    title: Some("Second note".into()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(first.source_id, second.source_id);
+
+        let repo = GitRepo::open(&svc.root().join("k")).unwrap();
+        let log = repo.log(10).unwrap();
+        assert_eq!(log.len(), 2, "create + first add_raw_source only");
+    }
+
+    #[tokio::test]
     async fn get_graph_returns_cached_after_create_and_add() {
         let (_dir, svc) = svc();
         svc.create_base("k", "K", None).unwrap();
@@ -742,14 +918,14 @@ mod tests {
         let svc1 = svc.clone();
         let svc2 = svc.clone();
         let h1 = tokio::spawn(async move {
-            let _g = svc1.lock_kb("k").await;
+            let _g = svc1.lock_kb("k").await.unwrap();
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             std::time::Instant::now()
         });
         // Brief delay so h1 acquires the lock first.
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         let h2 = tokio::spawn(async move {
-            let _g = svc2.lock_kb("k").await;
+            let _g = svc2.lock_kb("k").await.unwrap();
             std::time::Instant::now()
         });
         let t1 = h1.await.unwrap();

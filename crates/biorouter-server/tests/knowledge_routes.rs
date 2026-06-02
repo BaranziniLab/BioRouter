@@ -806,6 +806,40 @@ async fn create_kb(app: Router, id: &str, name: &str) {
     assert_eq!(res.status(), 200, "helper create_kb should return 200");
 }
 
+fn ingest_multipart_request(
+    uri: &str,
+    filename: &str,
+    bytes: Vec<u8>,
+    provider: &str,
+    model: &str,
+) -> Request<Body> {
+    let boundary = "XBOUNDARY";
+    let mut body = Vec::new();
+    body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(
+        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n\r\n")
+            .as_bytes(),
+    );
+    body.extend_from_slice(&bytes);
+    body.extend_from_slice(format!("\r\n--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"provider\"\r\n\r\n");
+    body.extend_from_slice(provider.as_bytes());
+    body.extend_from_slice(format!("\r\n--{boundary}\r\n").as_bytes());
+    body.extend_from_slice(b"Content-Disposition: form-data; name=\"model\"\r\n\r\n");
+    body.extend_from_slice(model.as_bytes());
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header(
+            "content-type",
+            format!("multipart/form-data; boundary={boundary}"),
+        )
+        .body(Body::from(body))
+        .unwrap()
+}
+
 #[tokio::test]
 async fn ingest_rejects_invalid_model_with_400() {
     let (_d, app) = build_test_router();
@@ -831,6 +865,48 @@ async fn ingest_rejects_invalid_model_with_400() {
         res.status(),
         400,
         "ingest with unknown provider should return 400"
+    );
+}
+
+#[tokio::test]
+async fn ingest_rejects_brkb_uploads_in_dropzone_route() {
+    let (_d, app) = build_test_router();
+    create_kb(app.clone(), "ing", "Ingest Test").await;
+
+    let res = app
+        .oneshot(ingest_multipart_request(
+            "/bases/ing/ingest",
+            "archive.brkb",
+            b"not-a-real-archive".to_vec(),
+            "test-provider",
+            "test-model",
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(res.status(), 400);
+}
+
+#[tokio::test]
+async fn ingest_rejects_oversized_csv_uploads_before_model_check() {
+    let (_d, app) = build_test_router();
+    create_kb(app.clone(), "ing", "Ingest Test").await;
+
+    let res = app
+        .oneshot(ingest_multipart_request(
+            "/bases/ing/ingest",
+            "huge.csv",
+            vec![b'a'; 8 * 1024 * 1024 + 1],
+            "test-provider",
+            "test-model",
+        ))
+        .await
+        .unwrap();
+
+    assert!(
+        res.status() == 400 || res.status() == 413,
+        "oversized uploads should be rejected before digestion starts, got {}",
+        res.status()
     );
 }
 
