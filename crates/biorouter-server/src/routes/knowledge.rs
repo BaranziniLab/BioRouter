@@ -28,7 +28,10 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
     Router::new()
         .route("/bases", get(list_bases).post(create_base))
         .route("/bases/import", post(import_brkb))
-        .route("/bases/{id}", get(get_base).delete(delete_base))
+        .route(
+            "/bases/{id}",
+            get(get_base).put(update_base).delete(delete_base),
+        )
         .route("/bases/{id}/graph", get(get_graph))
         .route("/bases/{id}/page", get(get_page_body))
         .route("/bases/{id}/pages", get(list_pages))
@@ -62,6 +65,14 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
 pub struct CreateBaseBody {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub color: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct UpdateBaseBody {
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub color: Option<String>,
 }
@@ -215,6 +226,34 @@ pub async fn get_base(
         .find(|b| b.id == id)
         .map(Json)
         .ok_or((StatusCode::NOT_FOUND, format!("kb '{id}' not found")))
+}
+
+#[utoipa::path(
+    put, path = "/knowledge/bases/{id}",
+    request_body = UpdateBaseBody,
+    params(("id" = String, Path, description = "Knowledge base ID")),
+    responses(
+        (status = 200, description = "Updated knowledge base manifest", body = Manifest),
+        (status = 400, description = "Bad request"),
+        (status = 404, description = "Not found"),
+    )
+)]
+pub async fn update_base(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateBaseBody>,
+) -> Result<Json<Manifest>, (StatusCode, String)> {
+    let manifest = svc
+        .update_base(&id, body.name.as_deref(), body.color.as_deref())
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("not found") {
+                (StatusCode::NOT_FOUND, msg)
+            } else {
+                (StatusCode::BAD_REQUEST, msg)
+            }
+        })?;
+    Ok(Json(manifest))
 }
 
 #[utoipa::path(
@@ -527,6 +566,109 @@ fn sse_error_frame(message: &str) -> String {
     format!("event: error\ndata: {json}\n\n")
 }
 
+async fn parse_ingest_request(
+    headers: &HeaderMap,
+    req: Request,
+) -> Result<(convert::SourceInput, ModelRef, Option<String>), (StatusCode, String)> {
+    let content_type = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    if content_type.starts_with("multipart/form-data") {
+        return parse_ingest_multipart(req).await;
+    }
+
+    let body_bytes = axum::body::to_bytes(req.into_body(), 16 * 1024 * 1024)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let body: IngestBody = serde_json::from_slice(&body_bytes)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let source =
+        parse_source_input(&body.source).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    Ok((source, body.model, body.focus))
+}
+
+async fn parse_ingest_multipart(
+    req: Request,
+) -> Result<(convert::SourceInput, ModelRef, Option<String>), (StatusCode, String)> {
+    let mut mp = Multipart::from_request(req, &())
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let mut bytes_opt: Option<Vec<u8>> = None;
+    let mut filename: Option<String> = None;
+    let mut provider: Option<String> = None;
+    let mut model_name: Option<String> = None;
+    let mut focus: Option<String> = None;
+
+    while let Some(field) = mp
+        .next_field()
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    {
+        match field.name() {
+            Some("file") => {
+                filename = field.file_name().map(|s| s.to_string());
+                bytes_opt = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+                        .to_vec(),
+                );
+            }
+            Some("provider") => {
+                provider = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
+                );
+            }
+            Some("model") => {
+                model_name = Some(
+                    field
+                        .text()
+                        .await
+                        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?,
+                );
+            }
+            Some("focus") => {
+                let value = field
+                    .text()
+                    .await
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+                if !value.trim().is_empty() {
+                    focus = Some(value);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let bytes = bytes_opt.ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
+    let provider = provider.ok_or((
+        StatusCode::BAD_REQUEST,
+        "missing 'provider' field".to_string(),
+    ))?;
+    let model_name =
+        model_name.ok_or((StatusCode::BAD_REQUEST, "missing 'model' field".to_string()))?;
+    let filename = filename.unwrap_or_else(|| "upload.bin".to_string());
+
+    Ok((
+        convert::SourceInput::File {
+            bytes,
+            filename,
+            mime: None,
+        },
+        ModelRef {
+            provider,
+            model: model_name,
+        },
+        focus,
+    ))
+}
+
 #[utoipa::path(
     post, path = "/knowledge/check-model",
     request_body = CheckModelBody,
@@ -578,11 +720,12 @@ pub async fn check_model(
 pub async fn ingest(
     State(svc): State<Arc<KnowledgeService>>,
     Path(id): Path<String>,
-    Json(body): Json<IngestBody>,
+    headers: HeaderMap,
+    req: Request,
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
-    let source =
-        parse_source_input(&body.source).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let completer = build_completer(&body.model).await?;
+    let (source, model, focus) = parse_ingest_request(&headers, req).await?;
+
+    let completer = build_completer(&model).await?;
 
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
@@ -598,7 +741,7 @@ pub async fn ingest(
             kb_id: id,
             source,
             completer,
-            focus: body.focus,
+            focus,
             bounds: SubAgentBounds::default(),
             event_sink: Some(event_tx),
             cancel: Some(cancel_for_macro),

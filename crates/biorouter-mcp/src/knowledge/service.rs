@@ -161,6 +161,56 @@ impl KnowledgeService {
         }
         Ok(out)
     }
+
+    pub fn update_base(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        color: Option<&str>,
+    ) -> Result<Manifest> {
+        paths::validate_kb_id(id)?;
+        let kb_root = paths::kb_root(&self.root, id);
+        if !kb_root.exists() {
+            anyhow::bail!("kb '{id}' not found");
+        }
+
+        let mut current = manifest::load(&kb_root)?;
+        let mut changed = false;
+
+        if let Some(name) = name {
+            let trimmed = name.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!("knowledge base name cannot be empty");
+            }
+            if current.name != trimmed {
+                current.name = trimmed.to_string();
+                changed = true;
+            }
+        }
+
+        if let Some(color) = color {
+            let trimmed = color.trim();
+            if trimmed.is_empty() {
+                anyhow::bail!("knowledge base color cannot be empty");
+            }
+            if current.color != trimmed {
+                current.color = trimmed.to_string();
+                changed = true;
+            }
+        }
+
+        if changed {
+            manifest::save(&kb_root, &current)?;
+            let repo = GitRepo::open(&kb_root)?;
+            repo.commit_all(
+                crate::knowledge::types::ChangeKind::Manual,
+                &format!("update knowledge base {id} metadata"),
+                None,
+            )?;
+        }
+
+        Ok(current)
+    }
 }
 
 impl KnowledgeService {

@@ -81,6 +81,69 @@ async fn create_then_get_base() {
 }
 
 #[tokio::test]
+async fn update_base_metadata_roundtrip() {
+    let (_d, app) = build_test_router();
+    let create_body =
+        serde_json::to_vec(&serde_json::json!({"id": "rename", "name": "Original"})).unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "POST /bases should return 200");
+
+    let update_body = serde_json::to_vec(&serde_json::json!({
+        "name": "Renamed Knowledge Base",
+        "color": "#123456"
+    }))
+    .unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/bases/rename")
+                .header("content-type", "application/json")
+                .body(Body::from(update_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "PUT /bases/rename should return 200");
+
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let manifest: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(manifest["name"], "Renamed Knowledge Base");
+    assert_eq!(manifest["color"], "#123456");
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/bases/rename")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "GET /bases/rename should return 200");
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let manifest: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(manifest["name"], "Renamed Knowledge Base");
+    assert_eq!(manifest["color"], "#123456");
+}
+
+#[tokio::test]
 async fn get_graph_returns_ok_on_new_kb() {
     let (_d, app) = build_test_router();
     // Create a KB first.
