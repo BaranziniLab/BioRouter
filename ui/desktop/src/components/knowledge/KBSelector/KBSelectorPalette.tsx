@@ -213,7 +213,7 @@ export function KBSelectorPalette({ onClose }: Props) {
               disabled={busyId === '__import'}
             >
               <FolderInput className="mr-1.5 h-4 w-4" />
-              {busyId === '__import' ? 'Importing…' : 'Import BRKB'}
+              {busyId === '__import' ? 'Importing…' : 'Import from .brkb'}
             </Button>
             <input
               ref={importRef}
