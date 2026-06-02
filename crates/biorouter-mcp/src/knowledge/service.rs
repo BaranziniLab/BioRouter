@@ -87,6 +87,59 @@ pub struct KnowledgeWriteGuard {
 }
 
 impl KnowledgeService {
+    fn active_session_path(&self, session_id: &str) -> PathBuf {
+        let digest = raw::hash_bytes(session_id.as_bytes());
+        paths::active_kb_sessions_dir(self.root()).join(digest)
+    }
+
+    fn set_active_path_unlocked(&self, path: &Path, kb_id: Option<&str>) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        match kb_id {
+            Some(id) => {
+                crate::knowledge::paths::validate_kb_id(id)?;
+                let tmp = path.with_extension("tmp");
+                std::fs::write(&tmp, id.as_bytes())?;
+                std::fs::rename(tmp, path)?;
+            }
+            None => {
+                if path.exists() {
+                    std::fs::remove_file(path)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn rewrite_session_active_refs_unlocked(
+        &self,
+        current_kb_id: &str,
+        next_kb_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let dir = paths::active_kb_sessions_dir(self.root());
+        if !dir.exists() {
+            return Ok(());
+        }
+
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+
+            let active = std::fs::read_to_string(&path)?;
+            if active.trim() == current_kb_id {
+                self.set_active_path_unlocked(&path, next_kb_id)?;
+            }
+        }
+
+        Ok(())
+    }
+
     fn slugify_kb_name(name: &str) -> String {
         let mut slug = String::with_capacity(name.len());
         let mut last_was_dash = false;
@@ -311,6 +364,7 @@ impl KnowledgeService {
                 if self.get_active_persisted_unlocked()?.as_deref() == Some(id) {
                     self.set_active_persisted_unlocked(Some(&target_id))?;
                 }
+                self.rewrite_session_active_refs_unlocked(id, Some(&target_id))?;
             }
 
             manifest::save(&target_root, &current)?;
@@ -349,6 +403,7 @@ impl KnowledgeService {
         if self.get_active_persisted_unlocked()?.as_deref() == Some(id) {
             self.set_active_persisted_unlocked(None)?;
         }
+        self.rewrite_session_active_refs_unlocked(id, None)?;
 
         Ok(())
     }
@@ -596,23 +651,31 @@ impl KnowledgeService {
 
     fn set_active_persisted_unlocked(&self, id: Option<&str>) -> anyhow::Result<()> {
         let path = crate::knowledge::paths::active_kb_path(self.root());
-        if let Some(p) = path.parent() {
-            std::fs::create_dir_all(p)?;
+        self.set_active_path_unlocked(&path, id)
+    }
+
+    pub fn get_active_for_session(&self, session_id: &str) -> anyhow::Result<Option<String>> {
+        let path = self.active_session_path(session_id);
+        if !path.exists() {
+            return Ok(None);
         }
-        match id {
-            Some(id) => {
-                crate::knowledge::paths::validate_kb_id(id)?;
-                let tmp = path.with_extension("tmp");
-                std::fs::write(&tmp, id.as_bytes())?;
-                std::fs::rename(tmp, &path)?;
-            }
-            None => {
-                if path.exists() {
-                    std::fs::remove_file(&path)?;
-                }
-            }
+        let s = std::fs::read_to_string(&path)?;
+        let trimmed = s.trim();
+        if trimmed.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(trimmed.to_string()))
         }
-        Ok(())
+    }
+
+    pub fn set_active_for_session(
+        &self,
+        session_id: &str,
+        kb_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let _lock = self.lock_root()?;
+        let path = self.active_session_path(session_id);
+        self.set_active_path_unlocked(&path, kb_id)
     }
 }
 
@@ -629,6 +692,7 @@ impl KnowledgeService {
     }
 
     pub fn restore_state(&self, kb_id: &str, commit_sha: &str) -> anyhow::Result<String> {
+        let _lock = FileLockGuard::acquire(&self.kb_lock_path(kb_id))?;
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         let repo = GitRepo::open(&kb_root)?;
@@ -659,6 +723,7 @@ impl KnowledgeService {
         kb_id: &str,
         source_id: &str,
     ) -> anyhow::Result<crate::knowledge::types::Credibility> {
+        let _lock = FileLockGuard::acquire(&self.kb_lock_path(kb_id))?;
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         let mut meta = raw::read_meta(&kb_root, source_id)?;
@@ -699,6 +764,7 @@ impl KnowledgeService {
         source_id: &str,
         cred: crate::knowledge::types::Credibility,
     ) -> anyhow::Result<crate::knowledge::types::Credibility> {
+        let _lock = FileLockGuard::acquire(&self.kb_lock_path(kb_id))?;
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         let mut meta = raw::read_meta(&kb_root, source_id)?;
@@ -1137,6 +1203,66 @@ mod tests {
         // Invalid IDs are rejected.
         let err = svc.set_active_persisted(Some("INVALID--KB"));
         assert!(err.is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn active_kb_can_be_scoped_per_session() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+
+        assert!(svc.get_active_for_session("session-a")?.is_none());
+        assert!(svc.get_active_for_session("session-b")?.is_none());
+
+        svc.set_active_for_session("session-a", Some("kb-a"))?;
+        svc.set_active_for_session("session-b", Some("kb-b"))?;
+
+        assert_eq!(
+            svc.get_active_for_session("session-a")?.as_deref(),
+            Some("kb-a")
+        );
+        assert_eq!(
+            svc.get_active_for_session("session-b")?.as_deref(),
+            Some("kb-b")
+        );
+
+        svc.set_active_for_session("session-a", None)?;
+        assert!(svc.get_active_for_session("session-a")?.is_none());
+        assert_eq!(
+            svc.get_active_for_session("session-b")?.as_deref(),
+            Some("kb-b")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn session_scoped_active_kb_tracks_rename_and_delete() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+
+        svc.create_base("kb-a", "KB A", None)?;
+        svc.set_active_persisted(Some("kb-a"))?;
+        svc.set_active_for_session("session-a", Some("kb-a"))?;
+        svc.set_active_for_session("session-b", Some("kb-a"))?;
+
+        let renamed = svc.update_base("kb-a", Some("Renamed KB"), None)?;
+        assert_eq!(renamed.id, "renamed-kb");
+        assert_eq!(svc.get_active_persisted()?.as_deref(), Some("renamed-kb"));
+        assert_eq!(
+            svc.get_active_for_session("session-a")?.as_deref(),
+            Some("renamed-kb")
+        );
+        assert_eq!(
+            svc.get_active_for_session("session-b")?.as_deref(),
+            Some("renamed-kb")
+        );
+
+        svc.delete_base("renamed-kb")?;
+        assert!(svc.get_active_persisted()?.is_none());
+        assert!(svc.get_active_for_session("session-a")?.is_none());
+        assert!(svc.get_active_for_session("session-b")?.is_none());
+
         Ok(())
     }
 

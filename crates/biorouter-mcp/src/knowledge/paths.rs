@@ -51,6 +51,10 @@ pub fn active_kb_path(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".active-kb")
 }
 
+pub fn active_kb_sessions_dir(root: &std::path::Path) -> std::path::PathBuf {
+    root.join(".active-kb-sessions")
+}
+
 pub fn kb_knowledge_dir(root: &Path, id: &str) -> PathBuf {
     kb_root(root, id).join("knowledge")
 }

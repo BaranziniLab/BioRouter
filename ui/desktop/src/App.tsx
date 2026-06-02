@@ -595,7 +595,7 @@ export function AppInner() {
       <div className="relative w-screen h-screen overflow-hidden bg-background-muted flex flex-col">
         <div className="titlebar-drag-region" />
         <DashboardProvider>
-          <KnowledgeProvider>
+          <KnowledgeProvider sessionId={chat.sessionId || null}>
             <Routes>
             <Route path="launcher" element={<LauncherView />} />
             <Route

@@ -1345,6 +1345,18 @@
           "super::routes::knowledge"
         ],
         "operationId": "get_active",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "query",
+            "description": "Optional chat session id for session-scoped active KB selection",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Current active KB id",
@@ -6880,6 +6892,10 @@
           "kb_id": {
             "type": "string",
             "description": "`None` clears the active KB.",
+            "nullable": true
+          },
+          "session_id": {
+            "type": "string",
             "nullable": true
           }
         }

@@ -1333,3 +1333,110 @@ async fn active_kb_roundtrip() {
         "POST /active with invalid kb id should return 400"
     );
 }
+
+#[tokio::test]
+async fn active_kb_can_be_scoped_per_session() {
+    let (_d, app) = build_test_router();
+
+    for (id, name) in [("act", "Act"), ("session-kb", "Session KB")] {
+        let create_body = serde_json::to_vec(&serde_json::json!({"id": id, "name": name})).unwrap();
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bases")
+                    .header("content-type", "application/json")
+                    .body(Body::from(create_body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+    }
+
+    let global_body = serde_json::to_vec(&serde_json::json!({"kb_id": "act"})).unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/active")
+                .header("content-type", "application/json")
+                .body(Body::from(global_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/active?session_id=session-a")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["active_kb"].as_str(), Some("act"));
+
+    let session_body = serde_json::to_vec(&serde_json::json!({
+        "kb_id": "session-kb",
+        "session_id": "session-a"
+    }))
+    .unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/active")
+                .header("content-type", "application/json")
+                .body(Body::from(session_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/active?session_id=session-a")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["active_kb"].as_str(), Some("session-kb"));
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/active")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["active_kb"].as_str(), Some("act"));
+}

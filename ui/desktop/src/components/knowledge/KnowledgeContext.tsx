@@ -13,6 +13,10 @@ import type { Manifest } from '../../api/types.gen';
 
 const STORAGE_KEY_ACTIVE_KB = 'knowledge_active_kb';
 
+function storageKeyForSession(sessionId: string | null | undefined): string {
+  return sessionId ? `${STORAGE_KEY_ACTIVE_KB}:${sessionId}` : STORAGE_KEY_ACTIVE_KB;
+}
+
 interface KnowledgeContextType {
   bases: Manifest[];
   loading: boolean;
@@ -28,24 +32,32 @@ interface KnowledgeContextType {
 
 const KnowledgeContext = createContext<KnowledgeContextType | null>(null);
 
-export function KnowledgeProvider({ children }: { children: ReactNode }) {
+export function KnowledgeProvider({
+  children,
+  sessionId = null,
+}: {
+  children: ReactNode;
+  sessionId?: string | null;
+}) {
   const [bases, setBases] = useState<Manifest[]>([]);
   const [loading, setLoading] = useState(true);
+  const storageKey = useMemo(() => storageKeyForSession(sessionId), [sessionId]);
   const [activeKbId, setActiveKbIdState] = useState<string | null>(() =>
-    localStorage.getItem(STORAGE_KEY_ACTIVE_KB)
+    localStorage.getItem(storageKeyForSession(sessionId))
   );
   const graphRefreshRef = useRef<(() => Promise<void>) | null>(null);
 
   const setActiveKbId = useCallback((id: string | null) => {
     setActiveKbIdState(id);
-    if (id) localStorage.setItem(STORAGE_KEY_ACTIVE_KB, id);
-    else localStorage.removeItem(STORAGE_KEY_ACTIVE_KB);
-    // Fire-and-forget server sync. Failures are non-fatal (chat won't see
-    // the pick until next reconnect, but the local UI keeps working).
-    void setActive({ body: { kb_id: id }, throwOnError: false }).catch((err) => {
+    if (id) localStorage.setItem(storageKey, id);
+    else localStorage.removeItem(storageKey);
+    void setActive({
+      body: { kb_id: id, session_id: sessionId || undefined },
+      throwOnError: false,
+    }).catch((err) => {
       console.warn('setActive (server sync) failed:', err);
     });
-  }, []);
+  }, [sessionId, storageKey]);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -79,21 +91,31 @@ export function KnowledgeProvider({ children }: { children: ReactNode }) {
   }, [activeKbId, bases, setActiveKbId]);
 
   useEffect(() => {
+    const local = localStorage.getItem(storageKey);
+    setActiveKbIdState(local);
+    let cancelled = false;
+
     void (async () => {
       try {
-        const res = await getActive({ throwOnError: true });
+        const res = await getActive({
+          query: sessionId ? { session_id: sessionId } : undefined,
+          throwOnError: true,
+        });
+        if (cancelled) return;
         const server = res.data?.active_kb ?? null;
-        if (server) {
-          // Server wins; sync localStorage to it.
-          setActiveKbIdState(server);
-          localStorage.setItem(STORAGE_KEY_ACTIVE_KB, server);
-        }
+        setActiveKbIdState(server);
+        if (server) localStorage.setItem(storageKey, server);
+        else localStorage.removeItem(storageKey);
       } catch (err) {
+        if (cancelled) return;
         console.warn('getActive (server hydrate) failed:', err);
+        setActiveKbIdState(local);
       }
     })();
-    // Run once on mount.
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, storageKey]);
 
   const activeKb = useMemo(
     () => bases.find((b) => b.id === activeKbId) ?? null,

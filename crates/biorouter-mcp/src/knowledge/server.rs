@@ -4,13 +4,15 @@ use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{CallToolResult, Content, Implementation, ServerCapabilities, ServerInfo},
     schemars::JsonSchema,
-    tool, tool_handler, tool_router, ErrorData, ServerHandler,
+    service::RequestContext,
+    tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+const SESSION_ID_META_KEY: &str = "biorouter-session-id";
+
 /// Process-local active-KB state (one per KnowledgeServer instance).
-/// Session-scoped binding is deferred to Plan 3.
 #[derive(Clone, Default)]
 pub struct ActiveKbState {
     inner: Arc<tokio::sync::Mutex<Option<String>>>,
@@ -219,12 +221,43 @@ impl KnowledgeServer {
         })
     }
 
-    /// Resolve `supplied` kb_id or fall back to the process-local active KB.
-    async fn kb_id_or_active(&self, supplied: Option<String>) -> Result<String, ErrorData> {
+    fn session_id_from_context(context: &RequestContext<RoleServer>) -> Option<&str> {
+        context.meta.0.get(SESSION_ID_META_KEY)?.as_str()
+    }
+
+    async fn active_kb_for_context(
+        &self,
+        context: Option<&RequestContext<RoleServer>>,
+    ) -> Result<Option<String>, ErrorData> {
+        if let Some(context) = context {
+            if let Some(session_id) = Self::session_id_from_context(context) {
+                if let Some(session_active) = self
+                    .service
+                    .get_active_for_session(session_id)
+                    .map_err(into_err)?
+                {
+                    return Ok(Some(session_active));
+                }
+            }
+        }
+
+        if let Some(active) = self.active.get().await {
+            return Ok(Some(active));
+        }
+
+        self.service.get_active_persisted().map_err(into_err)
+    }
+
+    /// Resolve `supplied` kb_id or fall back to the active KB for this request context.
+    async fn kb_id_or_active(
+        &self,
+        supplied: Option<String>,
+        context: Option<&RequestContext<RoleServer>>,
+    ) -> Result<String, ErrorData> {
         if let Some(id) = supplied {
             return Ok(id);
         }
-        self.active.get().await.ok_or_else(|| {
+        self.active_kb_for_context(context).await?.ok_or_else(|| {
             ErrorData::invalid_params(
                 "kb_id not supplied and no active knowledge base is set. Call kb_set_active first.",
                 None,
@@ -261,9 +294,10 @@ impl KnowledgeServer {
     pub async fn kb_list_pages(
         &self,
         p: Parameters<ListPagesOptParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id).await?;
+        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context)).await?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
         let pages = crate::knowledge::store::list_pages(&kb_root, p.path_prefix.as_deref())
             .map_err(into_err)?;
@@ -277,9 +311,10 @@ impl KnowledgeServer {
     pub async fn kb_read_page(
         &self,
         p: Parameters<ReadPageOptParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id).await?;
+        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context)).await?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
         let page = crate::knowledge::store::read_page(&kb_root, &p.path).map_err(into_err)?;
         ok_json(&page)
@@ -294,6 +329,7 @@ impl KnowledgeServer {
         p: Parameters<WritePageParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
+        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let sha = crate::knowledge::store::write_page(
             &kb_root,
@@ -315,6 +351,7 @@ impl KnowledgeServer {
         p: Parameters<AddRawSourceParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
+        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
         let res = self
             .service
             .add_raw_source(&p.kb_id, p.source.into(), None)
@@ -334,9 +371,10 @@ impl KnowledgeServer {
     pub async fn kb_get_graph(
         &self,
         p: Parameters<KbIdOptParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id).await?;
+        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context)).await?;
         let g = self.service.get_graph(&kb_id).map_err(into_err)?;
         ok_json(&g)
     }
@@ -348,9 +386,10 @@ impl KnowledgeServer {
     pub async fn kb_list_history(
         &self,
         p: Parameters<HistoryOptParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id).await?;
+        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context)).await?;
         let h = self
             .service
             .list_history(&kb_id, p.limit)
@@ -385,6 +424,7 @@ impl KnowledgeServer {
         p: Parameters<BeginTxnParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
+        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let repo = crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
         let txn = repo.begin_txn(&p.label).map_err(into_err)?;
@@ -400,6 +440,7 @@ impl KnowledgeServer {
         p: Parameters<CommitTxnParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
+        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let repo = crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
         let txn = crate::knowledge::git::Txn { branch: p.txn };
@@ -418,6 +459,7 @@ impl KnowledgeServer {
         p: Parameters<AbortTxnParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
+        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let repo = crate::knowledge::git::GitRepo::open(&kb_root).map_err(into_err)?;
         let txn = crate::knowledge::git::Txn { branch: p.txn };
@@ -432,9 +474,10 @@ impl KnowledgeServer {
     pub async fn kb_search(
         &self,
         p: Parameters<SearchParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id).await?;
+        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context)).await?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
         let hits =
             crate::knowledge::store::search(&kb_root, &p.query, p.limit).map_err(into_err)?;
@@ -450,6 +493,7 @@ impl KnowledgeServer {
         p: Parameters<AppendLogParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
+        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
         let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
         let sha =
             crate::knowledge::log::append(&kb_root, p.kind, &p.summary, p.delta.as_deref(), None)
@@ -466,12 +510,19 @@ impl KnowledgeServer {
     pub async fn kb_set_active(
         &self,
         p: Parameters<SetActiveParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         crate::knowledge::paths::validate_kb_id(&p.0.kb_id).map_err(|e| into_err(e.into()))?;
         self.active.set(&p.0.kb_id).await;
-        self.service
-            .set_active_persisted(Some(&p.0.kb_id))
-            .map_err(into_err)?;
+        if let Some(session_id) = Self::session_id_from_context(&context) {
+            self.service
+                .set_active_for_session(session_id, Some(&p.0.kb_id))
+                .map_err(into_err)?;
+        } else {
+            self.service
+                .set_active_persisted(Some(&p.0.kb_id))
+                .map_err(into_err)?;
+        }
         ok_json(&serde_json::json!({ "ok": true, "active_kb": p.0.kb_id }))
     }
 
@@ -479,8 +530,11 @@ impl KnowledgeServer {
         name = "kb_get_active",
         description = "Return the currently active knowledge base id (if any)."
     )]
-    pub async fn kb_get_active(&self) -> Result<CallToolResult, ErrorData> {
-        let v = self.active.get().await;
+    pub async fn kb_get_active(
+        &self,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let v = self.active_kb_for_context(Some(&context)).await?;
         ok_json(&serde_json::json!({ "active_kb": v }))
     }
 }

@@ -405,6 +405,10 @@ pub async fn write_page(
     Path((id, page_path)): Path<(String, String)>,
     Json(body): Json<WritePageBody>,
 ) -> Result<Json<CommitResponse>, (StatusCode, String)> {
+    let _lock = svc
+        .lock_kb(&id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let kb_root = paths::kb_root(svc.root(), &id);
     let sha_opt = store::write_page(
         &kb_root,
@@ -446,6 +450,8 @@ pub struct SetActiveBody {
     /// `None` clears the active KB.
     #[serde(default)]
     pub kb_id: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -453,16 +459,31 @@ pub struct ActiveKbResponse {
     pub active_kb: Option<String>,
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct GetActiveQuery {
+    #[serde(default)]
+    pub session_id: Option<String>,
+}
+
 #[utoipa::path(
     get, path = "/knowledge/active",
+    params(
+        ("session_id" = Option<String>, Query, description = "Optional chat session id for session-scoped active KB selection"),
+    ),
     responses((status = 200, description = "Current active KB id", body = ActiveKbResponse))
 )]
 pub async fn get_active(
     State(svc): State<Arc<KnowledgeService>>,
+    Query(q): Query<GetActiveQuery>,
 ) -> Result<Json<ActiveKbResponse>, (StatusCode, String)> {
-    let active_kb = svc
-        .get_active_persisted()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let active_kb = if let Some(session_id) = q.session_id.as_deref() {
+        svc.get_active_for_session(session_id)
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+            .or_else(|| svc.get_active_persisted().ok().flatten())
+    } else {
+        svc.get_active_persisted()
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+    };
     Ok(Json(ActiveKbResponse { active_kb }))
 }
 
@@ -478,8 +499,13 @@ pub async fn set_active(
     State(svc): State<Arc<KnowledgeService>>,
     Json(body): Json<SetActiveBody>,
 ) -> Result<Json<ActiveKbResponse>, (StatusCode, String)> {
-    svc.set_active_persisted(body.kb_id.as_deref())
-        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    if let Some(session_id) = body.session_id.as_deref() {
+        svc.set_active_for_session(session_id, body.kb_id.as_deref())
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    } else {
+        svc.set_active_persisted(body.kb_id.as_deref())
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    }
     Ok(Json(ActiveKbResponse {
         active_kb: body.kb_id,
     }))
@@ -1028,18 +1054,21 @@ pub async fn add_raw_source(
         {
             if field.name() == Some("file") {
                 filename = field.file_name().map(|s| s.to_string());
-                bytes_opt = Some(
-                    field
-                        .bytes()
-                        .await
-                        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
-                        .to_vec(),
-                );
+                let bytes = field
+                    .bytes()
+                    .await
+                    .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+                    .to_vec();
+                if let Some(name) = filename.as_deref() {
+                    validate_ingest_upload(name, bytes.len())?;
+                }
+                bytes_opt = Some(bytes);
             }
         }
         let bytes =
             bytes_opt.ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
         let fname = filename.unwrap_or_else(|| "upload.bin".to_string());
+        validate_ingest_upload(&fname, bytes.len())?;
         convert::SourceInput::File {
             bytes,
             filename: fname,
@@ -1071,6 +1100,10 @@ pub async fn add_raw_source(
         }
     };
 
+    let _lock = svc
+        .lock_kb(&id)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     let res = svc
         .add_raw_source(&id, input, None)
         .await

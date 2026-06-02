@@ -1082,6 +1082,7 @@ export type SetActiveBody = {
      * `None` clears the active KB.
      */
     kb_id?: string | null;
+    session_id?: string | null;
 };
 
 export type SetProviderRequest = {
@@ -2444,7 +2445,12 @@ export type StartTetrateSetupResponse = StartTetrateSetupResponses[keyof StartTe
 export type GetActiveData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Optional chat session id for session-scoped active KB selection
+         */
+        session_id?: string | null;
+    };
     url: '/knowledge/active';
 };
 
