@@ -43,6 +43,20 @@ pub fn unregister(root: &Path, id: &str) -> Result<()> {
     save(root, &bases)
 }
 
+pub fn replace(root: &Path, old_id: &str, entry: RegistryEntry) -> Result<()> {
+    let mut bases = load(root)?;
+    let Some(index) = bases.iter().position(|b| b.id == old_id) else {
+        anyhow::bail!("kb-id '{old_id}' not found in registry");
+    };
+
+    if entry.id != old_id && bases.iter().any(|b| b.id == entry.id) {
+        anyhow::bail!("kb-id '{}' already registered", entry.id);
+    }
+
+    bases[index] = entry;
+    save(root, &bases)
+}
+
 fn save(root: &Path, bases: &[RegistryEntry]) -> Result<()> {
     std::fs::create_dir_all(root)?;
     let doc = RegistryDoc {
@@ -105,5 +119,36 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let err = unregister(dir.path(), "nope").unwrap_err();
         assert!(err.to_string().contains("not found"));
+    }
+
+    #[test]
+    fn replace_updates_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        register(
+            dir.path(),
+            RegistryEntry {
+                id: "old".into(),
+                path: dir.path().join("old"),
+            },
+        )
+        .unwrap();
+
+        replace(
+            dir.path(),
+            "old",
+            RegistryEntry {
+                id: "new".into(),
+                path: dir.path().join("new"),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            load(dir.path()).unwrap(),
+            vec![RegistryEntry {
+                id: "new".into(),
+                path: dir.path().join("new"),
+            }]
+        );
     }
 }

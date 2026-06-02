@@ -122,6 +122,30 @@ async fn update_base_metadata_roundtrip() {
         .await
         .unwrap();
     let manifest: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(manifest["id"], "renamed-knowledge-base");
+    assert_eq!(manifest["name"], "Renamed Knowledge Base");
+    assert_eq!(manifest["color"], "#123456");
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/bases/renamed-knowledge-base")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        res.status(),
+        200,
+        "GET /bases/renamed-knowledge-base should return 200"
+    );
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let manifest: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(manifest["id"], "renamed-knowledge-base");
     assert_eq!(manifest["name"], "Renamed Knowledge Base");
     assert_eq!(manifest["color"], "#123456");
 
@@ -134,13 +158,11 @@ async fn update_base_metadata_roundtrip() {
         )
         .await
         .unwrap();
-    assert_eq!(res.status(), 200, "GET /bases/rename should return 200");
-    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let manifest: serde_json::Value = serde_json::from_slice(&body).unwrap();
-    assert_eq!(manifest["name"], "Renamed Knowledge Base");
-    assert_eq!(manifest["color"], "#123456");
+    assert_eq!(
+        res.status(),
+        404,
+        "GET /bases/rename should return 404 after rename"
+    );
 }
 
 #[tokio::test]

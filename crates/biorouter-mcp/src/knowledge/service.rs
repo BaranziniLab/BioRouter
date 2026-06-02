@@ -51,6 +51,27 @@ pub struct KnowledgeService {
 }
 
 impl KnowledgeService {
+    fn slugify_kb_name(name: &str) -> String {
+        let mut slug = String::with_capacity(name.len());
+        let mut last_was_dash = false;
+
+        for ch in name.chars().flat_map(|c| c.to_lowercase()) {
+            if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+                slug.push(ch);
+                last_was_dash = false;
+            } else if !slug.is_empty() && !last_was_dash {
+                slug.push('-');
+                last_was_dash = true;
+            }
+        }
+
+        while slug.ends_with('-') {
+            slug.pop();
+        }
+
+        slug
+    }
+
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
@@ -169,13 +190,15 @@ impl KnowledgeService {
         color: Option<&str>,
     ) -> Result<Manifest> {
         paths::validate_kb_id(id)?;
-        let kb_root = paths::kb_root(&self.root, id);
-        if !kb_root.exists() {
+        let current_root = paths::kb_root(&self.root, id);
+        if !current_root.exists() {
             anyhow::bail!("kb '{id}' not found");
         }
 
-        let mut current = manifest::load(&kb_root)?;
+        let mut current = manifest::load(&current_root)?;
         let mut changed = false;
+        let mut target_id = id.to_string();
+        let mut target_root = current_root.clone();
 
         if let Some(name) = name {
             let trimmed = name.trim();
@@ -183,7 +206,19 @@ impl KnowledgeService {
                 anyhow::bail!("knowledge base name cannot be empty");
             }
             if current.name != trimmed {
+                let next_id = Self::slugify_kb_name(trimmed);
+                if next_id.is_empty() {
+                    anyhow::bail!("knowledge base name must contain letters or numbers");
+                }
+                paths::validate_kb_id(&next_id)?;
+                let next_root = paths::kb_root(&self.root, &next_id);
+                if next_id != id && next_root.exists() {
+                    anyhow::bail!("kb '{next_id}' already exists");
+                }
                 current.name = trimmed.to_string();
+                current.id = next_id.clone();
+                target_id = next_id;
+                target_root = next_root;
                 changed = true;
             }
         }
@@ -200,13 +235,36 @@ impl KnowledgeService {
         }
 
         if changed {
-            manifest::save(&kb_root, &current)?;
-            let repo = GitRepo::open(&kb_root)?;
+            let commit_message = if target_id != id {
+                format!("rename knowledge base {id} to {}", current.id)
+            } else {
+                format!("update knowledge base {id} metadata")
+            };
+
+            if target_id != id {
+                std::fs::rename(&current_root, &target_root)?;
+                registry::replace(
+                    &self.root,
+                    id,
+                    RegistryEntry {
+                        id: target_id.clone(),
+                        path: target_root.clone(),
+                    },
+                )?;
+
+                if self.get_active_persisted()?.as_deref() == Some(id) {
+                    self.set_active_persisted(Some(&target_id))?;
+                }
+            }
+
+            manifest::save(&target_root, &current)?;
+            let repo = GitRepo::open(&target_root)?;
             repo.commit_all(
                 crate::knowledge::types::ChangeKind::Manual,
-                &format!("update knowledge base {id} metadata"),
+                &commit_message,
                 None,
             )?;
+            self.rebuild_graph_cache(&current.id)?;
         }
 
         Ok(current)
