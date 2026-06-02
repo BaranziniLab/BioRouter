@@ -27,6 +27,23 @@ export interface StreamState {
   error?: string;
 }
 
+export interface StreamRunResult {
+  status: 'done' | 'error' | 'aborted';
+  error?: string;
+}
+
+function extractErrorMessage(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return '';
+
+  try {
+    const parsed = JSON.parse(trimmed) as { message?: string; error?: string };
+    return parsed.message ?? parsed.error ?? trimmed;
+  } catch {
+    return trimmed;
+  }
+}
+
 /**
  * SSE ingest stream hook.
  *
@@ -49,7 +66,7 @@ export function useIngestStream() {
     async (
       path: string,
       requestInit: Pick<RequestInit, 'body' | 'headers'>,
-    ): Promise<'done' | 'error' | 'aborted'> => {
+    ): Promise<StreamRunResult> => {
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -78,7 +95,9 @@ export function useIngestStream() {
         });
 
         if (!res.ok || !res.body) {
-          throw new Error(`HTTP ${res.status}`);
+          const bodyText = await res.text().catch(() => '');
+          const details = extractErrorMessage(bodyText);
+          throw new Error(details ? `HTTP ${res.status}: ${details}` : `HTTP ${res.status}`);
         }
 
         setState((s) => ({ ...s, status: s.status === 'stopping' ? 'stopping' : 'streaming' }));
@@ -139,13 +158,12 @@ export function useIngestStream() {
           return s;
         });
 
-        void terminalError; // used only inside setState above
-        return terminalStatus;
+        return { status: terminalStatus, error: terminalError };
       } catch (e) {
         if ((e as Error).name !== 'AbortError') {
           const msg = e instanceof Error ? e.message : String(e);
           setState((s) => ({ ...s, status: 'error', error: msg }));
-          return 'error';
+          return { status: 'error', error: msg };
         }
         setState((s) => ({
           ...s,
@@ -156,14 +174,14 @@ export function useIngestStream() {
               ? s.events
               : [...s.events, { kind: 'done', reason: 'cancelled', final_text: '' }],
         }));
-        return 'aborted';
+        return { status: 'aborted' };
       }
     },
     [],
   );
 
   const start = useCallback(
-    async (path: string, body: unknown): Promise<'done' | 'error' | 'aborted'> =>
+    async (path: string, body: unknown): Promise<StreamRunResult> =>
       runStream(path, {
         headers: {
           'Content-Type': 'application/json',
@@ -174,7 +192,7 @@ export function useIngestStream() {
   );
 
   const startMultipart = useCallback(
-    async (path: string, formData: FormData): Promise<'done' | 'error' | 'aborted'> =>
+    async (path: string, formData: FormData): Promise<StreamRunResult> =>
       runStream(path, {
         body: formData,
       }),

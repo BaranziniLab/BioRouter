@@ -549,6 +549,60 @@ async fn add_raw_source_text() {
 }
 
 #[tokio::test]
+async fn add_raw_source_html_multipart_uses_part_mime() {
+    let (_d, app) = build_test_router();
+
+    let create_body =
+        serde_json::to_vec(&serde_json::json!({"id": "rawhtml", "name": "Raw Html"})).unwrap();
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .clone()
+        .oneshot(multipart_file_request(
+            "/bases/rawhtml/raw",
+            "upload",
+            Some("text/html; charset=utf-8"),
+            b"<html><body><h1>Hello</h1><p>World</p></body></html>".to_vec(),
+            &[],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let path = v["source_md_path"].as_str().unwrap();
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/bases/rawhtml/page?path={path}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert!(page["content"].as_str().unwrap().contains("# Hello"));
+}
+
+#[tokio::test]
 async fn add_raw_source_rejects_empty_body() {
     let (_d, app) = build_test_router();
 
@@ -806,27 +860,32 @@ async fn create_kb(app: Router, id: &str, name: &str) {
     assert_eq!(res.status(), 200, "helper create_kb should return 200");
 }
 
-fn ingest_multipart_request(
+fn multipart_file_request(
     uri: &str,
     filename: &str,
+    file_content_type: Option<&str>,
     bytes: Vec<u8>,
-    provider: &str,
-    model: &str,
+    fields: &[(&str, &str)],
 ) -> Request<Body> {
     let boundary = "XBOUNDARY";
     let mut body = Vec::new();
     body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
     body.extend_from_slice(
-        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n\r\n")
+        format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n")
             .as_bytes(),
     );
+    if let Some(content_type) = file_content_type {
+        body.extend_from_slice(format!("Content-Type: {content_type}\r\n").as_bytes());
+    }
+    body.extend_from_slice(b"\r\n");
     body.extend_from_slice(&bytes);
-    body.extend_from_slice(format!("\r\n--{boundary}\r\n").as_bytes());
-    body.extend_from_slice(b"Content-Disposition: form-data; name=\"provider\"\r\n\r\n");
-    body.extend_from_slice(provider.as_bytes());
-    body.extend_from_slice(format!("\r\n--{boundary}\r\n").as_bytes());
-    body.extend_from_slice(b"Content-Disposition: form-data; name=\"model\"\r\n\r\n");
-    body.extend_from_slice(model.as_bytes());
+    for (name, value) in fields {
+        body.extend_from_slice(format!("\r\n--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"{name}\"\r\n\r\n").as_bytes(),
+        );
+        body.extend_from_slice(value.as_bytes());
+    }
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
 
     Request::builder()
@@ -838,6 +897,23 @@ fn ingest_multipart_request(
         )
         .body(Body::from(body))
         .unwrap()
+}
+
+fn ingest_multipart_request(
+    uri: &str,
+    filename: &str,
+    file_content_type: Option<&str>,
+    bytes: Vec<u8>,
+    provider: &str,
+    model: &str,
+) -> Request<Body> {
+    multipart_file_request(
+        uri,
+        filename,
+        file_content_type,
+        bytes,
+        &[("provider", provider), ("model", model)],
+    )
 }
 
 #[tokio::test]
@@ -877,6 +953,7 @@ async fn ingest_rejects_brkb_uploads_in_dropzone_route() {
         .oneshot(ingest_multipart_request(
             "/bases/ing/ingest",
             "archive.brkb",
+            None,
             b"not-a-real-archive".to_vec(),
             "test-provider",
             "test-model",
@@ -896,6 +973,7 @@ async fn ingest_rejects_oversized_csv_uploads_before_model_check() {
         .oneshot(ingest_multipart_request(
             "/bases/ing/ingest",
             "huge.csv",
+            None,
             vec![b'a'; 8 * 1024 * 1024 + 1],
             "test-provider",
             "test-model",
@@ -907,6 +985,30 @@ async fn ingest_rejects_oversized_csv_uploads_before_model_check() {
         res.status() == 400 || res.status() == 413,
         "oversized uploads should be rejected before digestion starts, got {}",
         res.status()
+    );
+}
+
+#[tokio::test]
+async fn ingest_accepts_html_upload_before_model_validation() {
+    let (_d, app) = build_test_router();
+    create_kb(app.clone(), "ing", "Ingest Test").await;
+
+    let res = app
+        .oneshot(ingest_multipart_request(
+            "/bases/ing/ingest",
+            "upload",
+            Some("text/html; charset=utf-8"),
+            b"<html><body><h1>Hello</h1></body></html>".to_vec(),
+            "nonexistent_provider_xyz",
+            "x",
+        ))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        res.status(),
+        400,
+        "multipart HTML should parse successfully and then fail on invalid model"
     );
 }
 

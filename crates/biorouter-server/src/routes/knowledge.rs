@@ -104,6 +104,19 @@ fn validate_ingest_upload(filename: &str, size: usize) -> Result<(), (StatusCode
     Ok(())
 }
 
+#[derive(Debug)]
+struct MultipartUpload {
+    bytes: Vec<u8>,
+    filename: String,
+    mime: Option<String>,
+}
+
+fn sanitize_part_mime(mime: Option<&str>) -> Option<String> {
+    mime.map(str::trim)
+        .filter(|mime| !mime.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Request / response DTOs
 // ──────────────────────────────────────────────────────────────────────────────
@@ -656,8 +669,7 @@ async fn parse_ingest_multipart(
     let mut mp = Multipart::from_request(req, &())
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let mut bytes_opt: Option<Vec<u8>> = None;
-    let mut filename: Option<String> = None;
+    let mut upload: Option<MultipartUpload> = None;
     let mut provider: Option<String> = None;
     let mut model_name: Option<String> = None;
     let mut focus: Option<String> = None;
@@ -669,16 +681,22 @@ async fn parse_ingest_multipart(
     {
         match field.name() {
             Some("file") => {
-                filename = field.file_name().map(|s| s.to_string());
+                let filename = field
+                    .file_name()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "upload.bin".to_string());
+                let mime = sanitize_part_mime(field.content_type());
                 let bytes = field
                     .bytes()
                     .await
                     .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
                     .to_vec();
-                if let Some(name) = filename.as_deref() {
-                    validate_ingest_upload(name, bytes.len())?;
-                }
-                bytes_opt = Some(bytes);
+                validate_ingest_upload(&filename, bytes.len())?;
+                upload = Some(MultipartUpload {
+                    bytes,
+                    filename,
+                    mime,
+                });
             }
             Some("provider") => {
                 provider = Some(
@@ -709,21 +727,19 @@ async fn parse_ingest_multipart(
         }
     }
 
-    let bytes = bytes_opt.ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
+    let upload = upload.ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
     let provider = provider.ok_or((
         StatusCode::BAD_REQUEST,
         "missing 'provider' field".to_string(),
     ))?;
     let model_name =
         model_name.ok_or((StatusCode::BAD_REQUEST, "missing 'model' field".to_string()))?;
-    let filename = filename.unwrap_or_else(|| "upload.bin".to_string());
-    validate_ingest_upload(&filename, bytes.len())?;
 
     Ok((
         convert::SourceInput::File {
-            bytes,
-            filename,
-            mime: None,
+            bytes: upload.bytes,
+            filename: upload.filename,
+            mime: upload.mime,
         },
         ModelRef {
             provider,
@@ -1045,34 +1061,36 @@ pub async fn add_raw_source(
         let mut mp = Multipart::from_request(req, &())
             .await
             .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-        let mut bytes_opt: Option<Vec<u8>> = None;
-        let mut filename: Option<String> = None;
+        let mut upload: Option<MultipartUpload> = None;
         while let Some(field) = mp
             .next_field()
             .await
             .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
         {
             if field.name() == Some("file") {
-                filename = field.file_name().map(|s| s.to_string());
+                let filename = field
+                    .file_name()
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "upload.bin".to_string());
+                let mime = sanitize_part_mime(field.content_type());
                 let bytes = field
                     .bytes()
                     .await
                     .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
                     .to_vec();
-                if let Some(name) = filename.as_deref() {
-                    validate_ingest_upload(name, bytes.len())?;
-                }
-                bytes_opt = Some(bytes);
+                validate_ingest_upload(&filename, bytes.len())?;
+                upload = Some(MultipartUpload {
+                    bytes,
+                    filename,
+                    mime,
+                });
             }
         }
-        let bytes =
-            bytes_opt.ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
-        let fname = filename.unwrap_or_else(|| "upload.bin".to_string());
-        validate_ingest_upload(&fname, bytes.len())?;
+        let upload = upload.ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
         convert::SourceInput::File {
-            bytes,
-            filename: fname,
-            mime: None,
+            bytes: upload.bytes,
+            filename: upload.filename,
+            mime: upload.mime,
         }
     } else {
         // JSON body — read raw bytes then parse.

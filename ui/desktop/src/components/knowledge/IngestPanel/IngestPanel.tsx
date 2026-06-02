@@ -97,12 +97,12 @@ export function IngestPanel() {
               formData
             );
 
-            if (result === 'error') {
+            if (result.status === 'error') {
               update(item.id, {
                 status: 'error',
-                error: stream.error ?? 'ingest stream error',
+                error: result.error ?? stream.error ?? 'ingest stream error',
               });
-            } else if (result === 'aborted') {
+            } else if (result.status === 'aborted') {
               update(item.id, {
                 status: 'pending',
                 error: 'Stopped before completion.',
@@ -139,13 +139,12 @@ export function IngestPanel() {
             model,
           });
 
-          if (result === 'error') {
-            // stream.error is populated by useIngestStream from the SSE error frame.
+          if (result.status === 'error') {
             update(item.id, {
               status: 'error',
-              error: stream.error ?? 'ingest stream error',
+              error: result.error ?? stream.error ?? 'ingest stream error',
             });
-          } else if (result === 'aborted') {
+          } else if (result.status === 'aborted') {
             update(item.id, {
               status: 'pending',
               error: 'Stopped before completion.',
