@@ -65,7 +65,6 @@ function shouldSetupUpdater(): boolean {
 
 // Define temp directory for pasted images
 const biorouterTempDir = path.join(app.getPath('temp'), 'biorouter-pasted-images');
-
 // Function to ensure the temporary directory exists
 async function ensureTempDirExists(): Promise<string> {
   try {

@@ -43,6 +43,7 @@ if (typeof window.electron === 'undefined') {
     getBiorouterDir: async () => '/',
     checkForUpdates: async () => null,
     installUpdate: () => {},
+    getPathForFile: (file: File) => file.name,
   };
 }
 

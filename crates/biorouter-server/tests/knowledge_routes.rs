@@ -945,6 +945,82 @@ async fn ingest_rejects_invalid_model_with_400() {
 }
 
 #[tokio::test]
+async fn expand_path_returns_stageable_children_for_directory() {
+    let (_d, app) = build_test_router();
+    let temp = tempfile::tempdir().unwrap();
+    let bundle_dir = temp.path().join("bundle");
+    std::fs::create_dir_all(bundle_dir.join("docs")).unwrap();
+    std::fs::write(bundle_dir.join("docs/readme.md"), "# Archive file").unwrap();
+
+    let body = serde_json::to_vec(&serde_json::json!({
+        "path": bundle_dir.to_string_lossy()
+    }))
+    .unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/expand-path")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["files"].as_array().unwrap().len(), 1);
+    assert!(v["files"][0]["relative_path"]
+        .as_str()
+        .unwrap()
+        .contains("bundle/docs/readme.md"));
+}
+
+#[tokio::test]
+async fn expand_path_cleans_archive_wrapper_and_metadata_noise() {
+    let (_d, app) = build_test_router();
+    let temp = tempfile::tempdir().unwrap();
+    let archive_path = temp.path().join("bundle.zip");
+    let file = std::fs::File::create(&archive_path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default();
+    use std::io::Write;
+    zip.start_file("bundle/docs/readme.md", options).unwrap();
+    zip.write_all(b"# Archive child").unwrap();
+    zip.start_file("__MACOSX/bundle/docs/._readme.md", options)
+        .unwrap();
+    zip.write_all(b"metadata").unwrap();
+    zip.finish().unwrap();
+
+    let body = serde_json::to_vec(&serde_json::json!({
+        "path": archive_path.to_string_lossy()
+    }))
+    .unwrap();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/expand-path")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["files"].as_array().unwrap().len(), 1);
+    assert_eq!(v["files"][0]["relative_path"], "bundle/docs/readme.md");
+    assert!(v["warnings"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn ingest_rejects_brkb_uploads_in_dropzone_route() {
     let (_d, app) = build_test_router();
     create_kb(app.clone(), "ing", "Ingest Test").await;

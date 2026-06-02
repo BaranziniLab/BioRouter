@@ -14,6 +14,7 @@ pub enum SourceInput {
         filename: String,
         mime: Option<String>,
     },
+    Path(std::path::PathBuf),
     Url(String),
     Text {
         text: String,
@@ -86,6 +87,20 @@ pub async fn convert(input: &SourceInput) -> Result<Converted> {
                 bytes: fetched.bytes,
                 filename: filename_from_url(&fetched.final_url),
                 mime: Some(fetched.mime),
+            };
+            Box::pin(convert(&file)).await
+        }
+        SourceInput::Path(path) => {
+            let bytes = tokio::fs::read(path).await?;
+            let filename = path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("source")
+                .to_string();
+            let file = SourceInput::File {
+                bytes,
+                filename,
+                mime: None,
             };
             Box::pin(convert(&file)).await
         }

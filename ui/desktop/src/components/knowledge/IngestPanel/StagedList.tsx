@@ -27,10 +27,12 @@ export function StagedList({ items, onRemove, onClear }: Props) {
       </div>
       {items.map((s) => {
         const Icon =
-          s.kind === 'file' ? FileText : s.kind === 'url' ? Globe : ClipboardList;
+          s.kind === 'file' || s.kind === 'path' ? FileText : s.kind === 'url' ? Globe : ClipboardList;
         const label =
           s.kind === 'file'
-            ? s.file.name
+            ? s.label || s.file.name
+            : s.kind === 'path'
+              ? s.label
             : s.kind === 'url'
               ? s.url
               : s.title || s.text.substring(0, 60);

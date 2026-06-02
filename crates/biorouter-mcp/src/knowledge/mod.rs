@@ -11,6 +11,7 @@ pub mod raw;
 pub mod registry;
 pub mod server;
 pub mod service;
+pub mod source_paths;
 pub mod store;
 pub mod subagent;
 pub mod types;

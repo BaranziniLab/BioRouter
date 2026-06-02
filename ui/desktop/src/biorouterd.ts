@@ -243,10 +243,10 @@ const getBiorouterdBinaryPath = (app: Electron.App): string => {
   let possiblePaths: string[];
   if (!app.isPackaged) {
     possiblePaths = [
-      path.join(process.cwd(), 'src', 'bin', executableName),
-      path.join(process.cwd(), 'bin', executableName),
       path.join(process.cwd(), '..', '..', 'target', 'debug', executableName),
       path.join(process.cwd(), '..', '..', 'target', 'release', executableName),
+      path.join(process.cwd(), 'src', 'bin', executableName),
+      path.join(process.cwd(), 'bin', executableName),
     ];
   } else {
     possiblePaths = [path.join(process.resourcesPath, 'bin', executableName)];

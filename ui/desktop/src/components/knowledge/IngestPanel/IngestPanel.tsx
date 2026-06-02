@@ -5,6 +5,7 @@ import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { Button } from '../../ui/button';
 import { DispatchProgress } from '../DispatchProgress';
 import { useKnowledge } from '../KnowledgeContext';
+import { expandKnowledgePath } from '../hooks/knowledgeRequest';
 import { useIngestStream } from '../hooks/useIngestStream';
 import { useStagedSources } from '../hooks/useStagedSources';
 import { Dropzone } from './Dropzone';
@@ -12,7 +13,7 @@ import { IngestModelPicker } from './IngestModelPicker';
 import { IngestWarnings } from './IngestWarnings';
 import { PasteTextBox } from './PasteTextBox';
 import { StagedList } from './StagedList';
-import type { FileDropWarning } from './fileValidation';
+import type { FileDropWarning, StagedFileCandidate } from './fileValidation';
 import { validateDroppedFiles } from './fileValidation';
 
 // TODO Plan 6: read default from config via useConfig once model picker is real
@@ -42,13 +43,94 @@ export function IngestPanel() {
     }
   }, [currentModel, currentProvider]);
 
-  function onFiles(files: File[]) {
-    const result = validateDroppedFiles(files);
+  async function stageExpandedPath(path: string) {
+    const expanded = await expandKnowledgePath(path);
+    for (const entry of expanded.files) {
+      add({
+        kind: 'path',
+        id: genId(),
+        path: entry.path,
+        label: entry.relative_path,
+        status: 'pending',
+      });
+    }
+    return expanded.warnings.map((warning) => ({
+      id: `${warning.title}-${warning.message}-${path}`,
+      title: warning.title,
+      message: warning.message,
+      level: warning.level as 'warning' | 'error',
+    }));
+  }
+
+  async function onFiles(files: StagedFileCandidate[]) {
+    const stagedFileFallbacks: StagedFileCandidate[] = [];
+    const expansionWarnings: FileDropWarning[] = [];
+
+    for (const candidate of files) {
+      const actualPath =
+        candidate.path ||
+        (candidate.file && typeof window.electron?.getPathForFile === 'function'
+          ? window.electron.getPathForFile(candidate.file)
+          : '');
+
+      if (actualPath) {
+        try {
+          expansionWarnings.push(...(await stageExpandedPath(actualPath)));
+          continue;
+        } catch (err) {
+          expansionWarnings.push({
+            id: `${candidate.label ?? candidate.file?.name ?? actualPath}-expand-error`,
+            title: 'Could not expand dropped path',
+            message: err instanceof Error ? err.message : String(err),
+            level: 'error',
+          });
+          if (candidate.file) {
+            stagedFileFallbacks.push(candidate);
+          }
+          continue;
+        }
+      }
+
+      if (candidate.file) {
+        stagedFileFallbacks.push(candidate);
+      }
+    }
+
+    const result = validateDroppedFiles(stagedFileFallbacks);
     if (result.warnings.length > 0) {
-      setWarnings((existing) => [...result.warnings, ...existing].slice(0, 8));
+      setWarnings((existing) => [...expansionWarnings, ...result.warnings, ...existing].slice(0, 8));
+    } else if (expansionWarnings.length > 0) {
+      setWarnings((existing) => [...expansionWarnings, ...existing].slice(0, 8));
     }
     for (const file of result.accepted) {
-      add({ kind: 'file', id: genId(), file, status: 'pending' });
+      if (!file.file) {
+        continue;
+      }
+      add({ kind: 'file', id: genId(), file: file.file, label: file.label, status: 'pending' });
+    }
+  }
+
+  async function onPathPickRequested() {
+    const selected = await window.electron?.selectFileOrDirectory?.();
+    if (!selected) {
+      return;
+    }
+
+    try {
+      const expandedWarnings = await stageExpandedPath(selected);
+      if (expandedWarnings.length > 0) {
+        setWarnings((existing) => [...expandedWarnings, ...existing].slice(0, 8));
+      }
+    } catch (err) {
+      setWarnings((existing) => [
+        {
+          id: `path-expand-${Date.now()}`,
+          title: 'Could not expand selected path',
+          message: err instanceof Error ? err.message : String(err),
+          level: 'error' as const,
+        },
+        ...existing,
+      ].slice(0, 8));
     }
   }
 
@@ -96,6 +178,39 @@ export function IngestPanel() {
               `/knowledge/bases/${activeKbId}/ingest`,
               formData
             );
+
+            if (result.status === 'error') {
+              update(item.id, {
+                status: 'error',
+                error: result.error ?? stream.error ?? 'ingest stream error',
+              });
+            } else if (result.status === 'aborted') {
+              update(item.id, {
+                status: 'pending',
+                error: 'Stopped before completion.',
+              });
+              break;
+            } else {
+              update(item.id, { status: 'done' });
+              succeededIds.push(item.id);
+              triggerGraphRefresh();
+            }
+          } catch (err) {
+            update(item.id, {
+              status: 'error',
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          continue;
+        }
+
+        if (item.kind === 'path') {
+          update(item.id, { status: 'ingesting', error: undefined });
+          try {
+            const result = await stream.start(`/knowledge/bases/${activeKbId}/ingest`, {
+              source: { path: item.path },
+              model,
+            });
 
             if (result.status === 'error') {
               update(item.id, {
@@ -189,7 +304,11 @@ export function IngestPanel() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <Dropzone onFiles={onFiles} onPasteTextRequested={() => setShowPasteBox(true)} />
+      <Dropzone
+        onFiles={onFiles}
+        onPathPickRequested={() => void onPathPickRequested()}
+        onPasteTextRequested={() => setShowPasteBox(true)}
+      />
       <IngestWarnings
         warnings={warnings}
         onDismiss={(id) => setWarnings((current) => current.filter((warning) => warning.id !== id))}

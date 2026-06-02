@@ -455,12 +455,27 @@ impl KnowledgeService {
             }
             convert::SourceInput::Url(u) => u.clone(),
             convert::SourceInput::File { filename, .. } => filename.clone(),
+            convert::SourceInput::Path(path) => path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("source")
+                .to_string(),
         });
 
         let (original_bytes, original_filename, url) = match &input {
             convert::SourceInput::File {
                 bytes, filename, ..
             } => (Some(bytes.clone()), Some(filename.clone()), None),
+            convert::SourceInput::Path(path) => (
+                Some(std::fs::read(path)?),
+                Some(
+                    path.file_name()
+                        .and_then(|value| value.to_str())
+                        .unwrap_or("source")
+                        .to_string(),
+                ),
+                None,
+            ),
             convert::SourceInput::Url(u) => (None, None, Some(u.clone())),
             convert::SourceInput::Text { .. } => (None, None, None),
         };

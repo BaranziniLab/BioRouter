@@ -392,6 +392,12 @@ fn source_description(input: &SourceInput) -> String {
             let snippet = truncate(&head, 300);
             format!("Classify the credibility of a file named '{filename}'.\nFirst 1 KB: {snippet}")
         }
+        SourceInput::Path(path) => {
+            format!(
+                "Classify the credibility of a local file path named '{}'.",
+                path.display()
+            )
+        }
     }
 }
 

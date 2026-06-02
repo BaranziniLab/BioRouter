@@ -46,7 +46,7 @@ pub async fn classify(
 fn deterministic_default(input: &SourceInput) -> Result<Credibility> {
     use crate::knowledge::types::CredibilityTier;
     let (tier, reason) = match input {
-        SourceInput::Url(_) | SourceInput::File { .. } => (
+        SourceInput::Url(_) | SourceInput::File { .. } | SourceInput::Path(_) => (
             CredibilityTier::Web,
             "No identifier found and no host-pattern matched; defaulting to web.",
         ),
@@ -80,6 +80,7 @@ fn probe_text(input: &SourceInput) -> String {
             let head: String = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]).to_string();
             format!("{filename}\n{head}")
         }
+        SourceInput::Path(path) => path.display().to_string(),
     }
 }
 

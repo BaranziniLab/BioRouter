@@ -54,3 +54,36 @@ export async function knowledgeFetch(path: string, init: RequestInit = {}): Prom
     headers,
   });
 }
+
+export interface ExpandedKnowledgePathFile {
+  path: string;
+  name: string;
+  relative_path: string;
+}
+
+export interface ExpandedKnowledgePathWarning {
+  level: 'warning' | 'error';
+  title: string;
+  message: string;
+}
+
+export interface ExpandedKnowledgePathResponse {
+  files: ExpandedKnowledgePathFile[];
+  warnings: ExpandedKnowledgePathWarning[];
+}
+
+export async function expandKnowledgePath(path: string): Promise<ExpandedKnowledgePathResponse> {
+  const response = await knowledgeFetch('/knowledge/expand-path', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ path }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await response.text());
+  }
+
+  return (await response.json()) as ExpandedKnowledgePathResponse;
+}

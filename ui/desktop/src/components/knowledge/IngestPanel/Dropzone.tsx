@@ -1,12 +1,56 @@
 import { useCallback, useRef, useState } from 'react';
 import { Clipboard, FolderOpen, Upload } from 'lucide-react';
+import type { StagedFileCandidate } from './fileValidation';
 
 interface Props {
-  onFiles: (files: File[]) => void;
+  onFiles: (files: StagedFileCandidate[]) => void | Promise<void>;
   onPasteTextRequested: () => void;
+  onPathPickRequested: () => void | Promise<void>;
 }
 
-export function Dropzone({ onFiles, onPasteTextRequested }: Props) {
+function labelFromPath(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
+}
+
+function tryParseLocalPath(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.startsWith('#')) {
+    return null;
+  }
+
+  if (trimmed.startsWith('file://')) {
+    try {
+      return decodeURIComponent(new URL(trimmed).pathname);
+    } catch {
+      return null;
+    }
+  }
+
+  if (trimmed.startsWith('/') || /^[A-Za-z]:[\\/]/.test(trimmed)) {
+    return trimmed;
+  }
+
+  return null;
+}
+
+function getDroppedPathCandidates(e: React.DragEvent): StagedFileCandidate[] {
+  const candidates = new Map<string, StagedFileCandidate>();
+  const uriList = e.dataTransfer.getData('text/uri-list');
+  const plainText = e.dataTransfer.getData('text/plain');
+
+  for (const raw of `${uriList}\n${plainText}`.split('\n')) {
+    const parsed = tryParseLocalPath(raw);
+    if (!parsed) {
+      continue;
+    }
+    candidates.set(parsed, { path: parsed, label: labelFromPath(parsed) });
+  }
+
+  return [...candidates.values()];
+}
+
+export function Dropzone({ onFiles, onPasteTextRequested, onPathPickRequested }: Props) {
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   // Counter-based drag tracking prevents flicker when cursor moves over child elements.
@@ -17,8 +61,10 @@ export function Dropzone({ onFiles, onPasteTextRequested }: Props) {
       e.preventDefault();
       dragCounterRef.current = 0;
       setDragging(false);
-      const files = Array.from(e.dataTransfer.files);
-      if (files.length > 0) onFiles(files);
+      const droppedFiles = Array.from(e.dataTransfer.files).map((file) => ({ file }));
+      const droppedPaths = getDroppedPathCandidates(e);
+      const candidates = [...droppedFiles, ...droppedPaths];
+      if (candidates.length > 0) void onFiles(candidates);
     },
     [onFiles],
   );
@@ -50,11 +96,12 @@ export function Dropzone({ onFiles, onPasteTextRequested }: Props) {
         ref={inputRef}
         type="file"
         multiple
-        accept=".pdf,.md,.markdown,.html,.htm,.docx,.csv,.txt"
         className="hidden"
         onChange={(e) => {
           const files = e.target.files ? Array.from(e.target.files) : [];
-          if (files.length > 0) onFiles(files);
+          if (files.length > 0) {
+            void onFiles(files.map((file) => ({ file })));
+          }
           e.target.value = '';
         }}
       />
@@ -78,6 +125,12 @@ export function Dropzone({ onFiles, onPasteTextRequested }: Props) {
           className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-subtle bg-background-default text-xs hover:bg-background-muted"
         >
           <FolderOpen className="w-3 h-3" /> Browse files
+        </button>
+        <button
+          onClick={() => void onPathPickRequested()}
+          className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-subtle bg-background-default text-xs hover:bg-background-muted"
+        >
+          <FolderOpen className="w-3 h-3" /> Browse folder or archive
         </button>
         <button
           onClick={onPasteTextRequested}

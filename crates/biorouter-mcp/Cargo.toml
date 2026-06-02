@@ -76,6 +76,10 @@ dashmap = "6"
 futures = { workspace = true }
 async-trait = "0.1"
 fs2 = "0.4.3"
+tar = "0.4.46"
+flate2 = "1.1.9"
+xz2 = "0.1.7"
+bzip2 = "0.6.1"
 
 [dev-dependencies]
 sysinfo = "0.32.1"

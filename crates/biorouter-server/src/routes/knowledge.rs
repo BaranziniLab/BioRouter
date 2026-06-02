@@ -13,7 +13,7 @@ use biorouter_mcp::knowledge::{
     macros::{ingest as ingest_macro, lint as lint_macro, query as query_macro},
     paths,
     service::{KnowledgeService, ReadPageError},
-    store,
+    source_paths, store,
     subagent::{events::SubAgentEvent, loop_::SubAgentBounds},
     types::{Credibility, Graph, HistoryEntry, Manifest, ModelRef},
 };
@@ -42,6 +42,7 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
         .route("/bases/{id}/history", get(list_history))
         .route("/bases/{id}/preview", post(preview_state))
         .route("/bases/{id}/restore", post(restore_state))
+        .route("/expand-path", post(expand_path))
         .route("/bases/{id}/raw", post(add_raw_source))
         .route("/bases/{id}/ingest", post(ingest))
         .route("/bases/{id}/query", post(query_kb))
@@ -208,6 +209,31 @@ pub struct CheckModelResponse {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct ExpandPathBody {
+    pub path: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ExpandPathFile {
+    pub path: String,
+    pub name: String,
+    pub relative_path: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ExpandPathWarning {
+    pub level: String,
+    pub title: String,
+    pub message: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct ExpandPathResponse {
+    pub files: Vec<ExpandPathFile>,
+    pub warnings: Vec<ExpandPathWarning>,
 }
 
 // Task 9 DTOs
@@ -750,6 +776,45 @@ async fn parse_ingest_multipart(
 }
 
 #[utoipa::path(
+    post, path = "/knowledge/expand-path",
+    request_body = ExpandPathBody,
+    responses(
+        (status = 200, description = "Expanded local path into stageable files", body = ExpandPathResponse),
+        (status = 400, description = "Invalid local path"),
+    )
+)]
+pub async fn expand_path(
+    Json(body): Json<ExpandPathBody>,
+) -> Result<Json<ExpandPathResponse>, (StatusCode, String)> {
+    let expanded = source_paths::expand_ingest_path(std::path::Path::new(&body.path))
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    Ok(Json(ExpandPathResponse {
+        files: expanded
+            .files
+            .into_iter()
+            .map(|file| ExpandPathFile {
+                path: file.path.to_string_lossy().into_owned(),
+                name: file.name,
+                relative_path: file.relative_path,
+            })
+            .collect(),
+        warnings: expanded
+            .warnings
+            .into_iter()
+            .map(|warning| ExpandPathWarning {
+                level: match warning.level {
+                    source_paths::WarningLevel::Warning => "warning".to_string(),
+                    source_paths::WarningLevel::Error => "error".to_string(),
+                },
+                title: warning.title,
+                message: warning.message,
+            })
+            .collect(),
+    }))
+}
+
+#[utoipa::path(
     post, path = "/knowledge/check-model",
     request_body = CheckModelBody,
     responses(
@@ -1014,6 +1079,8 @@ pub async fn lint(
 fn parse_source_input(v: &serde_json::Value) -> anyhow::Result<convert::SourceInput> {
     if let Some(url) = v.get("url").and_then(|x| x.as_str()) {
         Ok(convert::SourceInput::Url(url.to_string()))
+    } else if let Some(path) = v.get("path").and_then(|x| x.as_str()) {
+        Ok(convert::SourceInput::Path(std::path::PathBuf::from(path)))
     } else if let Some(text) = v.get("text").and_then(|x| x.as_str()) {
         Ok(convert::SourceInput::Text {
             text: text.to_string(),
@@ -1023,7 +1090,7 @@ fn parse_source_input(v: &serde_json::Value) -> anyhow::Result<convert::SourceIn
                 .map(|s| s.to_string()),
         })
     } else {
-        anyhow::bail!("source must have 'url' or 'text'")
+        anyhow::bail!("source must have 'url', 'path', or 'text'")
     }
 }
 
@@ -1101,6 +1168,8 @@ pub async fn add_raw_source(
             .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
         if let Some(url) = json.get("url").and_then(|v| v.as_str()) {
             convert::SourceInput::Url(url.to_string())
+        } else if let Some(path) = json.get("path").and_then(|v| v.as_str()) {
+            convert::SourceInput::Path(std::path::PathBuf::from(path))
         } else if let Some(text) = json.get("text").and_then(|v| v.as_str()) {
             let title = json
                 .get("title")
