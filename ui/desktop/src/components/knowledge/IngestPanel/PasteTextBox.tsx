@@ -37,7 +37,7 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
       <textarea
         value={text}
         onChange={(e) => setText(e.target.value)}
-        placeholder="Paste notes, snippets, or a chunk of prose. URLs will be extracted and offered for ingestion."
+        placeholder="Paste knowledge, snippets, or a chunk of prose. URLs will be extracted and offered for ingestion."
         className="w-full min-h-[100px] px-3 py-2 text-xs bg-transparent outline-none resize-y text-text-default placeholder:text-textPlaceholder"
       />
       {detectedUrls.length > 0 && (
@@ -72,8 +72,8 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
           </button>
           <button
             disabled={!text.trim()}
-            onClick={() => onStage(text.trim(), title.trim() || 'Pasted note', urlsToFetch)}
-            className="text-xs px-2.5 py-1 rounded bg-text-default text-background-surface font-medium disabled:opacity-50"
+            onClick={() => onStage(text.trim(), title.trim() || 'Pasted knowledge', urlsToFetch)}
+            className="text-xs px-2.5 py-1 rounded bg-text-default text-white font-medium disabled:opacity-50 disabled:text-white"
           >
             Stage
           </button>

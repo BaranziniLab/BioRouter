@@ -35,7 +35,7 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
   };
 
   return (
-    <div className="my-2 border border-border-subtle rounded-xl bg-background-default overflow-hidden">
+    <div className="parameter-input parameter-input-container my-2 overflow-hidden rounded-xl border border-border-subtle bg-background-default">
       {/* Header row */}
       <div
         className={`flex items-center justify-between px-4 py-3 ${onToggleExpanded ? 'cursor-pointer hover:bg-background-muted' : ''} transition-colors duration-150`}
@@ -60,7 +60,9 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
           )}
 
           <code className="text-xs font-mono bg-background-medium px-2 py-0.5 rounded text-text-default">
-            {'{{'}{key}{'}}'}
+            {'{{'}
+            <span>{key}</span>
+            {'}}'}
           </code>
 
           {isUnused && (
@@ -82,7 +84,7 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
               onDelete(key);
             }}
             className="p-1 text-text-muted hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors flex-shrink-0"
-            title={`Delete ${key}`}
+            title={`Delete parameter ${key}`}
           >
             <Trash2 className="w-3.5 h-3.5" />
           </button>
@@ -100,7 +102,7 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
               value={description || ''}
               onChange={(e) => onChange(key, { description: e.target.value })}
               className={inputCls}
-              placeholder={`Prompt shown to the user for "${key}"`}
+              placeholder={`Enter the name or prompt shown to the user for "${key}"`}
             />
             <p className="text-xs text-text-muted mt-1">Shown to the end-user when running the workflow.</p>
           </div>
@@ -143,7 +145,7 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
                 value={defaultValue}
                 onChange={(e) => onChange(key, { default: e.target.value })}
                 className={inputCls}
-                placeholder="Value used when the user leaves this blank"
+                placeholder="Enter default value"
               />
             </div>
           )}

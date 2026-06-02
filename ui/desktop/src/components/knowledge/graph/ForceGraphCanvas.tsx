@@ -98,8 +98,46 @@ export function ForceGraphCanvas({
 
   const focusId = selectedId ?? hoveredId;
 
+  useEffect(() => {
+    const fg = fgRef.current as
+      | (ForceGraphMethods & {
+          d3Force?: (name: string) => {
+            strength?: (value: number) => unknown;
+            distance?: (value: number) => unknown;
+            distanceMax?: (value: number) => unknown;
+          };
+          zoomToFit?: (durationMs?: number, paddingPx?: number) => void;
+        })
+      | undefined;
+
+    if (!fg) {
+      return;
+    }
+
+    const nodeCount = graph.nodes.length;
+    const spread = nodeCount > 80 ? 155 : nodeCount > 35 ? 135 : 115;
+
+    fg.d3Force?.('charge')?.strength?.(-spread);
+    fg.d3Force?.('charge')?.distanceMax?.(360);
+    fg.d3Force?.('link')?.distance?.(nodeCount > 80 ? 92 : 108);
+    fg.d3Force?.('link')?.strength?.(0.22);
+
+    const timeout = window.setTimeout(() => {
+      fg.zoomToFit?.(500, 84);
+    }, 900);
+
+    return () => window.clearTimeout(timeout);
+  }, [graph, size.height, size.width]);
+
   return (
-    <div ref={containerRef} className="w-full h-full overflow-hidden">
+    <div
+      ref={containerRef}
+      className="h-full w-full overflow-hidden"
+      style={{
+        background:
+          'radial-gradient(circle at top left, rgba(214, 176, 106, 0.08), transparent 32%), radial-gradient(circle at top right, rgba(73, 101, 154, 0.08), transparent 28%), linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.04))',
+      }}
+    >
       <ForceGraph2D
         ref={fgRef as unknown as React.MutableRefObject<ForceGraphMethods>}
         graphData={data}
@@ -115,19 +153,19 @@ export function ForceGraphCanvas({
           const n = rawNode as GraphNode & { x: number; y: number };
           const isHub = hubIds.has(n.id);
           const r = isHub ? HUB_RADIUS : NODE_BASE_RADIUS;
+          const isFocused = focusId === n.id;
+          const isNeighbour = !!(focusId && neighbours.get(focusId)?.has(n.id));
           const dim =
-            (focusId && focusId !== n.id && !neighbours.get(focusId)?.has(n.id)) ||
+            (focusId && !isFocused && !isNeighbour) ||
             (visibleSet && !visibleSet.has(n.id));
           ctx.globalAlpha = dim ? DIMMED_OPACITY : 1.0;
           ctx.beginPath();
           ctx.arc(n.x, n.y, r, 0, Math.PI * 2);
           ctx.fillStyle = nodeFill(n);
           ctx.fill();
-          if (isHub) {
-            ctx.lineWidth = 1.5;
-            ctx.strokeStyle = '#1f1f1f';
-            ctx.stroke();
-          }
+          ctx.lineWidth = isHub ? 1.05 : 0.85;
+          ctx.strokeStyle = 'rgba(31, 36, 44, 0.5)';
+          ctx.stroke();
           if ((n as { retracted?: boolean }).retracted) {
             // Small red "!" badge top-right of the node.
             const bx = n.x + r * 0.7;
@@ -144,12 +182,15 @@ export function ForceGraphCanvas({
             ctx.fillText('!', bx, by + 0.5);
           }
           // Label
-          const fs = (isHub ? LABEL_FONT_PX_HUB : LABEL_FONT_PX) / globalScale;
-          ctx.font = `${isHub ? '600' : '400'} ${fs}px ui-sans-serif, system-ui, -apple-system`;
-          ctx.fillStyle = '#cfd2dc';
-          ctx.textAlign = 'left';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(' ' + n.label, n.x + r + 1, n.y);
+          const shouldShowLabel = isFocused || isNeighbour || isHub || globalScale >= 1.75;
+          if (shouldShowLabel) {
+            const fs = (isHub ? LABEL_FONT_PX_HUB : LABEL_FONT_PX) / globalScale;
+            ctx.font = `${isHub || isFocused ? '600' : '400'} ${fs}px ui-sans-serif, system-ui, -apple-system`;
+            ctx.fillStyle = '#1f242c';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(' ' + n.label, n.x + r + 1, n.y);
+          }
           ctx.globalAlpha = 1.0;
         }}
         linkCanvasObject={(rawLink: unknown, ctx) => {
@@ -162,11 +203,11 @@ export function ForceGraphCanvas({
             (l.target.kind === 'source' ? l.target.credibility_tier : null);
           const style = edgeStyle(tier);
           const dim = focusId && l.source.id !== focusId && l.target.id !== focusId;
-          ctx.globalAlpha = dim ? DIMMED_OPACITY : 0.9;
+          ctx.globalAlpha = dim ? 0.12 : 0.42;
           ctx.strokeStyle =
             focusId && (l.source.id === focusId || l.target.id === focusId)
-              ? '#7aa57c' // --t-green
-              : '#5b6072';
+              ? 'rgba(99, 141, 104, 0.75)'
+              : 'rgba(119, 128, 145, 0.42)';
           ctx.lineWidth = style.width;
           if (style.dash) ctx.setLineDash(style.dash);
           else ctx.setLineDash([]);

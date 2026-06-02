@@ -1,10 +1,12 @@
 // ui/desktop/src/components/knowledge/graph/KnowledgeGraphPanel.tsx
 import { useEffect, useState } from 'react';
-import { History, RefreshCw } from 'lucide-react';
+import { Download, History, RefreshCw } from 'lucide-react';
 import type { GraphNode } from '../../../api/types.gen';
 import { Button } from '../../ui/button';
 import { useKnowledge } from '../KnowledgeContext';
 import { useKnowledgeGraph } from '../hooks/useKnowledgeGraph';
+import { useKnowledgeBases } from '../hooks/useKnowledgeBases';
+import { credColor, kindColor } from './credColors';
 import { ForceGraphCanvas } from './ForceGraphCanvas';
 import { NodePreview } from './NodePreview';
 
@@ -20,6 +22,7 @@ interface Props {
 export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPreview }: Props) {
   const { activeKbId, activeKb, registerGraphRefresh } = useKnowledge();
   const { graph, loading, error, refresh } = useKnowledgeGraph(activeKbId);
+  const { exportArchive } = useKnowledgeBases();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selected, setSelected] = useState<GraphNode | null>(null);
 
@@ -45,6 +48,16 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
           )}
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => activeKb && void exportArchive(activeKb.id, activeKb.name)}
+            disabled={!activeKb}
+            title="Export current knowledge base as .brkb"
+          >
+            <Download className="mr-1 h-4 w-4" />
+            Export as .brkb
+          </Button>
           <Button
             variant="ghost"
             size="sm"
@@ -103,7 +116,45 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
           />
         )}
         {selected && activeKbId && (
-          <NodePreview kbId={activeKbId} node={selected} onClose={() => setSelected(null)} />
+          <NodePreview
+            kbId={activeKbId}
+            node={selected}
+            previewSha={previewSha}
+            onClose={() => setSelected(null)}
+          />
+        )}
+        {activeKbId && graph && graph.nodes.length > 0 && (
+          <div className="absolute bottom-4 left-4 rounded-2xl border border-border-subtle bg-background-default/85 px-4 py-3 shadow-lg backdrop-blur-sm">
+            <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.18em] text-text-muted">
+              Legend
+            </div>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-text-default">
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full" style={{ background: kindColor.entity }} />
+                Entity
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full" style={{ background: kindColor.concept }} />
+                Concept
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full" style={{ background: kindColor.hub }} />
+                Hub
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full" style={{ background: credColor.peer_reviewed }} />
+                Peer reviewed
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full" style={{ background: credColor.web }} />
+                Web source
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full" style={{ background: credColor.personal }} />
+                Personal source
+              </div>
+            </div>
+          </div>
         )}
       </div>
     </div>

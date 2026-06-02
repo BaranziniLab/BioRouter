@@ -45,8 +45,11 @@ export function useIngestStream() {
    * Start the SSE stream. Resolves when the stream closes.
    * Returns the terminal status so callers don't need to read stale state.
    */
-  const start = useCallback(
-    async (path: string, body: unknown): Promise<'done' | 'error'> => {
+  const runStream = useCallback(
+    async (
+      path: string,
+      requestInit: Pick<RequestInit, 'body' | 'headers'>,
+    ): Promise<'done' | 'error'> => {
       abortRef.current?.abort();
       const controller = new AbortController();
       abortRef.current = controller;
@@ -67,10 +70,10 @@ export function useIngestStream() {
         const res = await fetch(url, {
           method: 'POST',
           headers: {
-            'Content-Type': 'application/json',
             'X-Secret-Key': xSecretKey,
+            ...(requestInit.headers ?? {}),
           },
-          body: JSON.stringify(body),
+          body: requestInit.body,
           signal: controller.signal,
         });
 
@@ -146,9 +149,28 @@ export function useIngestStream() {
     [],
   );
 
+  const start = useCallback(
+    async (path: string, body: unknown): Promise<'done' | 'error'> =>
+      runStream(path, {
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      }),
+    [runStream]
+  );
+
+  const startMultipart = useCallback(
+    async (path: string, formData: FormData): Promise<'done' | 'error'> =>
+      runStream(path, {
+        body: formData,
+      }),
+    [runStream]
+  );
+
   const abort = useCallback(() => {
     abortRef.current?.abort();
   }, []);
 
-  return { ...state, start, abort };
+  return { ...state, start, startMultipart, abort };
 }

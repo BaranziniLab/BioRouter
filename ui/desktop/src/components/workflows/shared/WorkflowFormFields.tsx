@@ -189,6 +189,33 @@ export function WorkflowFormFields({
     }
   }, [extensions]);
 
+  useEffect(() => {
+    const parameterKeys = form.state.values.parameters
+      .map((parameter: Parameter) => parameter.key)
+      .filter((key: string | undefined): key is string => Boolean(key && key.trim()));
+
+    setExpandedParameters((prev) => {
+      const next = new Set(prev);
+      let changed = false;
+
+      for (const key of parameterKeys) {
+        if (!next.has(key)) {
+          next.add(key);
+          changed = true;
+        }
+      }
+
+      for (const key of [...next]) {
+        if (!parameterKeys.includes(key)) {
+          next.delete(key);
+          changed = true;
+        }
+      }
+
+      return changed ? next : prev;
+    });
+  }, [form.state.values.parameters]);
+
   return (
     <div className="space-y-4" data-testid="workflow-form">
       {/* Title Field */}
@@ -448,7 +475,7 @@ export function WorkflowFormFields({
                       value={newParameterName}
                       onChange={(e) => setNewParameterName(e.target.value)}
                       onKeyPress={handleKeyPress}
-                      placeholder="Parameter name…"
+                      placeholder="Enter parameter name..."
                       className="flex-1 h-9 px-3 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150"
                     />
                     <Button
@@ -458,7 +485,7 @@ export function WorkflowFormFields({
                       variant="outline"
                       size="sm"
                     >
-                      Add
+                      Add parameter
                     </Button>
                   </div>
 

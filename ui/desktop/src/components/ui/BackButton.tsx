@@ -52,7 +52,7 @@ const BackButton: React.FC<BackButtonProps> = ({
       document.addEventListener('mouseup', mouseBackHandler);
 
       return () => {
-        disposeMouseBack();
+        disposeMouseBack?.();
         document.removeEventListener('mouseup', mouseBackHandler);
       };
     }

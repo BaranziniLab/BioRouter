@@ -53,15 +53,25 @@ export function IngestModelPicker({ value, onChange }: Props) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md border border-border-subtle bg-background-surface text-xs hover:border-border-default">
-          <Brain className="w-3 h-3 text-text-muted" />
-          <span className="truncate max-w-[200px]">
-            {value.provider} / {value.model}
+        <button className="inline-flex w-full items-center justify-between gap-2 rounded-lg border border-border-subtle bg-background-surface px-3 py-2 text-xs hover:border-border-default">
+          <span className="flex min-w-0 items-center gap-2">
+            <Brain className="h-3.5 w-3.5 flex-shrink-0 text-text-muted" />
+            <span className="truncate">
+              {value.provider} / {value.model}
+            </span>
           </span>
-          <ChevronDown className="w-3 h-3 text-text-muted" />
+          <span className="flex items-center gap-1 text-[10px] uppercase tracking-wide text-text-muted">
+            Model
+            <ChevronDown className="h-3.5 w-3.5" />
+          </span>
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="max-h-[400px] overflow-y-auto">
+      <DropdownMenuContent
+        side="bottom"
+        align="start"
+        avoidCollisions={false}
+        className="z-[1100] max-h-[400px] w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto"
+      >
         <DropdownMenuLabel className="text-[10px] uppercase tracking-wide">
           Model for ingest
         </DropdownMenuLabel>

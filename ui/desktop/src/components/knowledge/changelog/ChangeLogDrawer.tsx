@@ -1,8 +1,7 @@
 import { useMemo, useState } from 'react';
-import { X } from 'lucide-react';
 import type { ChangeKind, HistoryEntry } from '../../../api/types.gen';
 import { Button } from '../../ui/button';
-import { Sheet, SheetClose, SheetContent, SheetHeader, SheetTitle } from '../../ui/sheet';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../../ui/sheet';
 import { useKnowledge } from '../KnowledgeContext';
 import { useHistory } from '../hooks/useHistory';
 import { ChangeKindChip } from './ChangeKindChip';
@@ -83,12 +82,6 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
       <SheetContent side="right" className="w-[420px] sm:max-w-[420px] flex flex-col p-0">
         <SheetHeader className="px-5 py-3 border-b border-border-subtle flex-row items-center justify-between">
           <SheetTitle className="text-sm">Change log</SheetTitle>
-          <SheetClose
-            aria-label="Close change log"
-            className="rounded p-1 text-text-muted hover:text-text-default hover:bg-background-muted transition-colors focus:outline-none focus:ring-2 focus:ring-ring/50"
-          >
-            <X className="w-4 h-4" />
-          </SheetClose>
         </SheetHeader>
 
         <div className="px-5 py-2 border-b border-border-subtle flex flex-wrap gap-1.5">

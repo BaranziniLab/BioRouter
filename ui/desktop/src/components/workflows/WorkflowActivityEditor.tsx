@@ -81,7 +81,7 @@ export default function WorkflowActivityEditor({
           onChange={(e) => handleMessageChange(e.target.value)}
           onBlur={onBlur}
           className="w-full px-3 py-2 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 resize-none"
-          placeholder="Enter a user-facing introduction message (supports **bold**, *italic*, `code`…)"
+          placeholder="Enter a user facing introduction message for your workflow (supports **bold**, *italic*, `code`, etc.)"
           rows={3}
           autoCorrect="off"
           autoCapitalize="off"

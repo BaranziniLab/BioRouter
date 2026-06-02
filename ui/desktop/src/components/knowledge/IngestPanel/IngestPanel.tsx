@@ -6,6 +6,7 @@ import { Button } from '../../ui/button';
 import { DispatchProgress } from '../DispatchProgress';
 import { useKnowledge } from '../KnowledgeContext';
 import { useIngestStream } from '../hooks/useIngestStream';
+import { useKnowledgeBases } from '../hooks/useKnowledgeBases';
 import { useStagedSources } from '../hooks/useStagedSources';
 import { Dropzone } from './Dropzone';
 import { IngestModelPicker } from './IngestModelPicker';
@@ -23,6 +24,7 @@ export function IngestPanel() {
   const { activeKbId, triggerGraphRefresh } = useKnowledge();
   const { currentModel, currentProvider } = useModelAndProvider();
   const { items, add, remove, update, clear } = useStagedSources();
+  const { importArchive } = useKnowledgeBases();
   const stream = useIngestStream();
   const [showPasteBox, setShowPasteBox] = useState(false);
   const [digesting, setDigesting] = useState(false);
@@ -67,7 +69,40 @@ export function IngestPanel() {
         if (item.status === 'done') continue;
 
         if (item.kind === 'file') {
-          update(item.id, { status: 'error', error: 'file upload not yet supported' });
+          update(item.id, { status: 'ingesting', error: undefined });
+          try {
+            if (item.file.name.toLowerCase().endsWith('.brkb')) {
+              await importArchive(item.file);
+              update(item.id, { status: 'done' });
+              triggerGraphRefresh();
+              continue;
+            }
+
+            const formData = new FormData();
+            formData.append('file', item.file);
+            formData.append('provider', model.provider);
+            formData.append('model', model.model);
+
+            const result = await stream.startMultipart(
+              `/knowledge/bases/${activeKbId}/ingest`,
+              formData
+            );
+
+            if (result === 'error') {
+              update(item.id, {
+                status: 'error',
+                error: stream.error ?? 'ingest stream error',
+              });
+            } else {
+              update(item.id, { status: 'done' });
+              triggerGraphRefresh();
+            }
+          } catch (err) {
+            update(item.id, {
+              status: 'error',
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
           continue;
         }
 
@@ -114,8 +149,7 @@ export function IngestPanel() {
     }
   }
 
-  const ingestable = items.filter((s) => s.kind !== 'file');
-  const canDigest = ingestable.length > 0 && !!activeKbId && !digesting;
+  const canDigest = items.length > 0 && !!activeKbId && !digesting;
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -132,27 +166,21 @@ export function IngestPanel() {
         />
       )}
 
-      {items.some((s) => s.kind === 'file') && (
-        <div className="mb-2 px-3 py-2 rounded-lg border border-amber-300 bg-amber-50 text-xs text-amber-700 dark:border-amber-600 dark:bg-amber-950/30 dark:text-amber-400">
-          File uploads not yet supported — only URL and pasted text sources will be digested.
-        </div>
-      )}
-
       <StagedList items={items} onRemove={remove} onClear={clear} />
 
       <DispatchProgress state={stream} onAbort={() => stream.abort()} />
 
-      <div className="flex items-center justify-between gap-2 pt-1">
-        <IngestModelPicker value={model} onChange={setModel} />
+      <div className="flex flex-col gap-2 pt-1">
         <Button
           variant="default"
           size="sm"
           disabled={!canDigest}
           onClick={() => void onDigest()}
-          className="min-w-[5.5rem]"
+          className="w-full min-h-9"
         >
-          {digesting ? 'Digesting…' : 'Digest'}
+          {digesting ? 'Digesting…' : 'Digest Staged Sources'}
         </Button>
+        <IngestModelPicker value={model} onChange={setModel} />
       </div>
 
       {!activeKbId && (

@@ -269,7 +269,7 @@ describe('App Component - Brand New State', () => {
       expect(mockElectron.reactReady).toHaveBeenCalled();
     });
 
-    expect(screen.getByText(/^Select an AI model provider/)).toBeInTheDocument();
+    expect(screen.getByText('Welcome to BioRouter!')).toBeInTheDocument();
   });
 
   it('should not redirect to /welcome when provider is configured', async () => {

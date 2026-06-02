@@ -1,6 +1,6 @@
 // ui/desktop/src/components/knowledge/hooks/usePagePreview.ts
 import { useEffect, useState } from 'react';
-import { getPageBody } from '../../../api';
+import { getPageBody, previewState } from '../../../api';
 
 export interface UsePagePreviewResult {
   content: string | null;
@@ -8,7 +8,11 @@ export interface UsePagePreviewResult {
   error: string | null;
 }
 
-export function usePagePreview(kbId: string | null, path: string | null): UsePagePreviewResult {
+export function usePagePreview(
+  kbId: string | null,
+  path: string | null,
+  previewSha?: string | null
+): UsePagePreviewResult {
   const [content, setContent] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -24,7 +28,17 @@ export function usePagePreview(kbId: string | null, path: string | null): UsePag
     setError(null);
     (async () => {
       try {
-        const res = await getPageBody({ path: { id: kbId }, query: { path }, throwOnError: true });
+        const res = previewSha
+          ? await previewState({
+              path: { id: kbId },
+              body: { commit_sha: previewSha, path },
+              throwOnError: true,
+            })
+          : await getPageBody({
+              path: { id: kbId },
+              query: { path },
+              throwOnError: true,
+            });
         if (!cancelled) setContent(res.data?.content ?? null);
       } catch (err) {
         if (!cancelled) {
@@ -38,7 +52,7 @@ export function usePagePreview(kbId: string | null, path: string | null): UsePag
     return () => {
       cancelled = true;
     };
-  }, [kbId, path]);
+  }, [kbId, path, previewSha]);
 
   return { content, loading, error };
 }
