@@ -1,18 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { client } from '../../../api/client.gen';
-
-async function getSecretKey(): Promise<string> {
-  // Match the renderer.tsx pattern — read directly from the Electron preload bridge.
-  const w = window as unknown as { electron?: { getSecretKey?: () => Promise<string> } };
-  if (w.electron?.getSecretKey) {
-    try {
-      return await w.electron.getSecretKey();
-    } catch {
-      return '';
-    }
-  }
-  return '';
-}
+import { buildKnowledgeUrl, getSecretKey } from './knowledgeRequest';
 
 export type SubAgentEvent =
   | { kind: 'step'; index: number; assistant_text: string }
@@ -72,10 +59,7 @@ export function useIngestStream() {
       abortRef.current = controller;
       setState({ events: [], status: 'starting', finalResult: null });
 
-      // Build the full URL from the SDK client's configured baseUrl
-      const cfg = client.getConfig();
-      const baseUrl = (cfg.baseUrl as string | undefined) ?? '';
-      const url = baseUrl.replace(/\/$/, '') + path;
+      const url = await buildKnowledgeUrl(path);
 
       // Read the secret key directly from the Electron preload bridge,
       // matching how renderer.tsx sets up the API client. The cast

@@ -1,39 +1,8 @@
 import { useCallback } from 'react';
 import { createBase as apiCreate, deleteBase as apiDelete } from '../../../api';
-import { client } from '../../../api/client.gen';
 import { useKnowledge } from '../KnowledgeContext';
 import type { Manifest } from '../../../api/types.gen';
-
-async function getSecretKey(): Promise<string> {
-  const w = window as unknown as { electron?: { getSecretKey?: () => Promise<string> } };
-  if (w.electron?.getSecretKey) {
-    try {
-      return await w.electron.getSecretKey();
-    } catch {
-      return '';
-    }
-  }
-  return '';
-}
-
-function getKnowledgeUrl(path: string): string {
-  const cfg = client.getConfig();
-  const baseUrl = (cfg.baseUrl as string | undefined) ?? '';
-  return baseUrl.replace(/\/$/, '') + path;
-}
-
-async function knowledgeFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const headers = new Headers(init.headers ?? {});
-  const secret = await getSecretKey();
-  if (secret) {
-    headers.set('X-Secret-Key', secret);
-  }
-
-  return fetch(getKnowledgeUrl(path), {
-    ...init,
-    headers,
-  });
-}
+import { knowledgeFetch } from './knowledgeRequest';
 
 export function useKnowledgeBases() {
   const { refresh, setActiveKbId, activeKbId } = useKnowledge();
