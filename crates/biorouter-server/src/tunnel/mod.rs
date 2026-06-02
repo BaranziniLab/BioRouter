@@ -4,8 +4,8 @@ pub mod lapstone;
 mod lapstone_test;
 
 use crate::configuration::Settings;
-use fs2::FileExt as _;
 use biorouter::config::{paths::Paths, Config};
+use fs2::FileExt as _;
 use serde::{Deserialize, Serialize};
 use std::fs::{File, OpenOptions};
 use std::io::Write;

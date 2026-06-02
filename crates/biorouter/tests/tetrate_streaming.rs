@@ -1,9 +1,9 @@
 use anyhow::Result;
-use futures::StreamExt;
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::model::ModelConfig;
 use biorouter::providers::base::Provider;
 use biorouter::providers::tetrate::TetrateProvider;
+use futures::StreamExt;
 use rmcp::model::Tool;
 use rmcp::object;
 use serial_test::serial;

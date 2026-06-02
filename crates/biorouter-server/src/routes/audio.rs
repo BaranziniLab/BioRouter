@@ -230,6 +230,7 @@ async fn transcribe_handler(
 ///
 /// Uses ElevenLabs' speech-to-text endpoint for transcription.
 /// Requires an ElevenLabs API key with speech-to-text access.
+#[allow(clippy::too_many_lines)]
 async fn transcribe_elevenlabs_handler(
     Json(request): Json<TranscribeElevenLabsRequest>,
 ) -> Result<Json<TranscribeResponse>, StatusCode> {

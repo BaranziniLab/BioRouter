@@ -112,7 +112,9 @@ async fn create_schedule(
             match e {
                 biorouter::scheduler::SchedulerError::JobNotFound(_) => StatusCode::NOT_FOUND,
                 biorouter::scheduler::SchedulerError::CronParseError(_) => StatusCode::BAD_REQUEST,
-                biorouter::scheduler::SchedulerError::WorkflowLoadError(_) => StatusCode::BAD_REQUEST,
+                biorouter::scheduler::SchedulerError::WorkflowLoadError(_) => {
+                    StatusCode::BAD_REQUEST
+                }
                 biorouter::scheduler::SchedulerError::JobIdExists(_) => StatusCode::CONFLICT,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             }

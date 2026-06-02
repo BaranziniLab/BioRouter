@@ -24,8 +24,8 @@ use biorouter::conversation::message::{
     ThinkingContent, TokenState, ToolConfirmationRequest, ToolRequest, ToolResponse,
 };
 
-use crate::routes::workflow_utils::WorkflowManifest;
 use crate::routes::reply::MessageEvent;
+use crate::routes::workflow_utils::WorkflowManifest;
 use utoipa::openapi::schema::{
     AdditionalProperties, AnyOfBuilder, ArrayBuilder, ObjectBuilder, OneOfBuilder, Schema,
     SchemaFormat, SchemaType,
@@ -123,6 +123,7 @@ fn convert_json_object_to_utoipa(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 fn convert_typed_schema(
     type_str: &str,
     obj: &serde_json::Map<String, serde_json::Value>,
@@ -405,6 +406,29 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::tunnel::stop_tunnel,
         super::routes::tunnel::get_tunnel_status,
         super::routes::telemetry::send_telemetry_event,
+        super::routes::knowledge::list_bases,
+        super::routes::knowledge::create_base,
+        super::routes::knowledge::get_base,
+        super::routes::knowledge::delete_base,
+        super::routes::knowledge::get_graph,
+        super::routes::knowledge::list_pages,
+        super::routes::knowledge::read_page,
+        super::routes::knowledge::get_page_body,
+        super::routes::knowledge::write_page,
+        super::routes::knowledge::list_history,
+        super::routes::knowledge::preview_state,
+        super::routes::knowledge::restore_state,
+        super::routes::knowledge::add_raw_source,
+        super::routes::knowledge::ingest,
+        super::routes::knowledge::query_kb,
+        super::routes::knowledge::lint,
+        super::routes::knowledge::export_brkb,
+        super::routes::knowledge::import_brkb,
+        super::routes::knowledge::reclassify,
+        super::routes::knowledge::override_credibility,
+        super::routes::knowledge::check_model,
+        super::routes::knowledge::get_active,
+        super::routes::knowledge::set_active,
     ),
     components(schemas(
         super::routes::config_management::UpsertConfigQuery,
@@ -558,6 +582,41 @@ derive_utoipa!(Icon as IconSchema);
         biorouter::biorouter_apps::CspMetadata,
         biorouter::biorouter_apps::UiMetadata,
         biorouter::biorouter_apps::ResourceMetadata,
+        // knowledge types
+        biorouter_mcp::knowledge::types::Manifest,
+        biorouter_mcp::knowledge::types::Graph,
+        biorouter_mcp::knowledge::types::GraphNode,
+        biorouter_mcp::knowledge::types::GraphEdge,
+        biorouter_mcp::knowledge::types::HistoryEntry,
+        biorouter_mcp::knowledge::types::ChangeKind,
+        biorouter_mcp::knowledge::types::Credibility,
+        biorouter_mcp::knowledge::types::CredibilityTier,
+        biorouter_mcp::knowledge::types::ModelRef,
+        biorouter_mcp::knowledge::types::SourceMeta,
+        biorouter_mcp::knowledge::types::PageKind,
+        biorouter_mcp::knowledge::store::PageRef,
+        biorouter_mcp::knowledge::store::PageContent,
+        // knowledge route DTOs
+        super::routes::knowledge::CreateBaseBody,
+        super::routes::knowledge::ListPagesQuery,
+        super::routes::knowledge::ReadPageQuery,
+        super::routes::knowledge::ReadPageResponse,
+        super::routes::knowledge::WritePageBody,
+        super::routes::knowledge::CommitResponse,
+        super::routes::knowledge::HistoryQuery,
+        super::routes::knowledge::PreviewBody,
+        super::routes::knowledge::PreviewResponse,
+        super::routes::knowledge::RestoreBody,
+        super::routes::knowledge::RestoreResponse,
+        super::routes::knowledge::RawSourceResponse,
+        super::routes::knowledge::CredibilityResponse,
+        super::routes::knowledge::IngestBody,
+        super::routes::knowledge::QueryBody,
+        super::routes::knowledge::LintBody,
+        super::routes::knowledge::CheckModelBody,
+        super::routes::knowledge::CheckModelResponse,
+        super::routes::knowledge::SetActiveBody,
+        super::routes::knowledge::ActiveKbResponse,
     ))
 )]
 pub struct ApiDoc;

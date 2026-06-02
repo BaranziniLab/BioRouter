@@ -18,8 +18,7 @@ use rmcp::model::Tool;
 pub const VERSA_AZURE_ENDPOINT: &str = "https://unified-api.ucsf.edu/general";
 pub const VERSA_AZURE_DEPLOYMENT: &str = "gpt-5.2-2025-12-11";
 pub const VERSA_AZURE_API_VERSION: &str = "2025-01-01-preview";
-pub const VERSA_AZURE_DOC_URL: &str =
-    "https://baranzinilab.github.io/biorouter-landing/docs.html";
+pub const VERSA_AZURE_DOC_URL: &str = "https://baranzinilab.github.io/biorouter-landing/docs.html";
 
 pub const VERSA_AZURE_KNOWN_MODELS: &[&str] = &[
     "gpt-5.2-2025-12-11",

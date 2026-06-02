@@ -77,6 +77,7 @@ impl Default for MemoryServer {
 
 #[tool_router(router = tool_router)]
 impl MemoryServer {
+    #[allow(clippy::too_many_lines)]
     pub fn new() -> Self {
         let instructions = formatdoc! {r#"
              This extension allows storage and retrieval of categorized information with tagging support. It's designed to help

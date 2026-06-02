@@ -118,6 +118,7 @@ release-intel:
     @just copy-binary-intel
 
 copy-binary BUILD_MODE="release":
+    @mkdir -p ./ui/desktop/src/bin
     @if [ -f ./target/{{BUILD_MODE}}/biorouterd ]; then \
         echo "Copying biorouterd binary from target/{{BUILD_MODE}}..."; \
         cp -p ./target/{{BUILD_MODE}}/biorouterd ./ui/desktop/src/bin/; \

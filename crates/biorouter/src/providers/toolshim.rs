@@ -229,7 +229,8 @@ impl OllamaInterpreter {
                                     task: None,
                                     name: name.into(),
                                     arguments: Some(object(arguments)),
-                                    meta: None});
+                                    meta: None,
+                                });
                             }
                         }
                     }

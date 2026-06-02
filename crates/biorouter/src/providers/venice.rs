@@ -464,7 +464,8 @@ impl Provider for VeniceProvider {
                         task: None,
                         name: name.into(),
                         arguments: Some(object(arguments)),
-                        meta: None};
+                        meta: None,
+                    };
 
                     // Create a ToolRequest MessageContent
                     let tool_request = MessageContent::tool_request(id, ToolResult::Ok(tool_call));

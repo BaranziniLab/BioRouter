@@ -67,7 +67,10 @@ mod tests {
 
         assert_eq!(original_workflow.title, decoded_workflow.title);
         assert_eq!(original_workflow.description, decoded_workflow.description);
-        assert_eq!(original_workflow.instructions, decoded_workflow.instructions);
+        assert_eq!(
+            original_workflow.instructions,
+            decoded_workflow.instructions
+        );
         assert_eq!(original_workflow.version, decoded_workflow.version);
     }
 

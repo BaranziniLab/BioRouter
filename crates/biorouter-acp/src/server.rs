@@ -1,5 +1,4 @@
 use anyhow::Result;
-use fs_err as fs;
 use biorouter::agents::extension::{Envs, PLATFORM_EXTENSIONS};
 use biorouter::agents::{Agent, AgentConfig, ExtensionConfig, SessionConfig};
 use biorouter::config::paths::Paths;
@@ -13,6 +12,7 @@ use biorouter::permission::{Permission, PermissionConfirmation};
 use biorouter::providers::create;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{Session, SessionManager};
+use fs_err as fs;
 use rmcp::model::{CallToolResult, RawContent, ResourceContents, Role};
 use sacp::schema::{
     AgentCapabilities, AuthenticateRequest, AuthenticateResponse, BlobResourceContents,
@@ -697,7 +697,8 @@ impl BioRouterAcpAgent {
             .map_err(|e| {
                 sacp::Error::internal_error().data(format!("Failed to create session: {}", e))
             })?;
-        self.update_session_with_provider(&biorouter_session).await?;
+        self.update_session_with_provider(&biorouter_session)
+            .await?;
 
         // Add MCP servers specified in the session request
         for mcp_server in args.mcp_servers {
@@ -729,7 +730,9 @@ impl BioRouterAcpAgent {
             "Session started"
         );
 
-        Ok(NewSessionResponse::new(SessionId::new(biorouter_session.id)))
+        Ok(NewSessionResponse::new(SessionId::new(
+            biorouter_session.id,
+        )))
     }
 
     async fn update_session_with_provider(
@@ -759,7 +762,8 @@ impl BioRouterAcpAgent {
             sacp::Error::invalid_params()
                 .data(format!("Failed to load session {}: {}", session_id, e))
         })?;
-        self.update_session_with_provider(&biorouter_session).await?;
+        self.update_session_with_provider(&biorouter_session)
+            .await?;
 
         let conversation = biorouter_session.conversation.ok_or_else(|| {
             sacp::Error::internal_error()

@@ -31,6 +31,7 @@ const SIGNATURE_FIELD: &str = "signature";
 const DATA_FIELD: &str = "data";
 
 /// Convert internal Message format to Anthropic's API message specification
+#[allow(clippy::too_many_lines)]
 pub fn format_messages(messages: &[Message]) -> Vec<Value> {
     let mut anthropic_messages = Vec::new();
 
@@ -253,7 +254,8 @@ pub fn response_to_message(response: &Value) -> Result<Message> {
                     task: None,
                     name: name.into(),
                     arguments: Some(object(input.clone())),
-                    meta: None};
+                    meta: None,
+                };
                 message = message.with_tool_request(id, Ok(tool_call));
             }
             Some(THINKING_TYPE) => {
@@ -463,6 +465,7 @@ pub fn create_request(
 }
 
 /// Process streaming response from Anthropic's API
+#[allow(clippy::too_many_lines)]
 pub fn response_to_streaming_message<S>(
     mut stream: S,
 ) -> impl futures::Stream<
@@ -987,7 +990,8 @@ mod tests {
                     task: None,
                     name: "calculator".into(),
                     arguments: Some(object!({"expression": "2 + 2"})),
-                    meta: None}),
+                    meta: None,
+                }),
             ),
             Message::user().with_tool_response(
                 "tool_1",

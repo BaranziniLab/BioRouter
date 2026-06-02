@@ -138,7 +138,12 @@ impl Provider for AzureProvider {
             AZURE_OPENAI_KNOWN_MODELS.to_vec(),
             AZURE_DOC_URL,
             vec![
-                ConfigKey::new("AZURE_OPENAI_ENDPOINT", true, false, Some("https://unified-api.ucsf.edu/general")),
+                ConfigKey::new(
+                    "AZURE_OPENAI_ENDPOINT",
+                    true,
+                    false,
+                    Some("https://unified-api.ucsf.edu/general"),
+                ),
                 ConfigKey::new("AZURE_OPENAI_DEPLOYMENT_NAME", true, false, None),
                 ConfigKey::new("AZURE_OPENAI_API_VERSION", true, false, Some("2024-10-21")),
                 ConfigKey::new("AZURE_OPENAI_API_KEY", false, true, Some("")),

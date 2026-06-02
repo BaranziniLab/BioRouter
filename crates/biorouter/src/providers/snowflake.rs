@@ -107,6 +107,7 @@ impl SnowflakeProvider {
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn post(&self, payload: &Value) -> Result<Value, ProviderError> {
         let response = self
             .api_client

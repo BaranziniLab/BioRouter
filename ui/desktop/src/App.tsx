@@ -41,6 +41,8 @@ import PermissionSettingsView from './components/settings/permission/PermissionS
 import ExtensionsView, { ExtensionsViewOptions } from './components/extensions/ExtensionsView';
 import WorkflowsView from './components/workflows/WorkflowsView';
 import SkillsView from './components/skills/SkillsView';
+import KnowledgeView from './components/knowledge/KnowledgeView';
+import { KnowledgeProvider } from './components/knowledge/KnowledgeContext';
 import AppsView from './components/apps/AppsView';
 import StandaloneAppView from './components/apps/StandaloneAppView';
 import { View, ViewOptions } from './utils/navigationUtils';
@@ -222,6 +224,7 @@ const WorkflowsRoute = () => {
 };
 
 const SkillsRoute = () => <SkillsView />;
+const KnowledgeRoute = () => <KnowledgeView />;
 
 const PermissionRoute = () => {
   const location = useLocation();
@@ -592,7 +595,8 @@ export function AppInner() {
       <div className="relative w-screen h-screen overflow-hidden bg-background-muted flex flex-col">
         <div className="titlebar-drag-region" />
         <DashboardProvider>
-          <Routes>
+          <KnowledgeProvider>
+            <Routes>
             <Route path="launcher" element={<LauncherView />} />
             <Route
               path="welcome"
@@ -626,6 +630,7 @@ export function AppInner() {
               <Route path="schedules" element={<SchedulesRoute />} />
               <Route path="workflows" element={<WorkflowsRoute />} />
               <Route path="skills" element={<SkillsRoute />} />
+              <Route path="knowledge" element={<KnowledgeRoute />} />
               <Route path="dashboard" element={<DashboardRoute />} />
               <Route
                 path="shared-session"
@@ -639,7 +644,8 @@ export function AppInner() {
               />
               <Route path="permission" element={<PermissionRoute />} />
             </Route>
-          </Routes>
+            </Routes>
+          </KnowledgeProvider>
         </DashboardProvider>
       </div>
     </>

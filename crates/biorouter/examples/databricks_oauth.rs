@@ -1,8 +1,8 @@
 use anyhow::Result;
-use dotenvy::dotenv;
 use biorouter::conversation::message::Message;
 use biorouter::providers::databricks::DATABRICKS_DEFAULT_MODEL;
 use biorouter::providers::{base::Usage, create_with_named_model};
+use dotenvy::dotenv;
 use tokio_stream::StreamExt;
 
 #[tokio::main]

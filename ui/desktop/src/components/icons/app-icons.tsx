@@ -217,6 +217,33 @@ export const XIcon = X;
 export const Zap = light(_Zap);
 
 // ---------------------------------------------------------------------------
+// Custom icons — hand-crafted SVGs not available in lucide-react.
+// ---------------------------------------------------------------------------
+
+/** Central node with rays — represents a knowledge graph / KB. */
+export const KnowledgeIcon: React.FC<LucideProps> = ({
+  strokeWidth = 1.6,
+  ...props
+}) => (
+  <svg
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={strokeWidth}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    {...props}
+  >
+    <circle cx="12" cy="12" r="3" />
+    <circle cx="5" cy="6" r="1.6" />
+    <circle cx="19" cy="6" r="1.6" />
+    <circle cx="6" cy="18" r="1.6" />
+    <circle cx="18" cy="18" r="1.6" />
+    <path d="M10 10.5L6 7M14 10.5l4-3.5M10 14l-4 3M14 14l4 3" />
+  </svg>
+);
+
+// ---------------------------------------------------------------------------
 // LucideIcon type re-export — kept for consumers that import the type.
 // ---------------------------------------------------------------------------
 export type { LucideIcon };

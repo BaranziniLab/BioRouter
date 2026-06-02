@@ -1,6 +1,6 @@
 use anyhow::Result;
-use console::style;
 use biorouter::workflow::validate_workflow::validate_workflow_template_from_file;
+use console::style;
 use std::collections::HashMap;
 
 use crate::workflows::github_workflow::WorkflowSource;
@@ -374,7 +374,10 @@ instructions: "Test instructions"
         let (url, workflow) = result.unwrap();
         assert!(url.starts_with("biorouter://workflow?config="));
         assert_eq!(workflow.title, "Test Workflow with Valid JSON Schema");
-        assert_eq!(workflow.description, "A test workflow with valid JSON schema");
+        assert_eq!(
+            workflow.description,
+            "A test workflow with valid JSON schema"
+        );
         let encoded_part = url.strip_prefix("biorouter://workflow?config=").unwrap();
         assert!(!encoded_part.is_empty());
     }

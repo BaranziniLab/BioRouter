@@ -1,12 +1,12 @@
 mod common;
 
-use common::{setup_mock_openai, spawn_mcp_http_server, FAKE_CODE};
-use fs_err as fs;
 use biorouter::config::BioRouterMode;
 use biorouter::model::ModelConfig;
 use biorouter::providers::api_client::{ApiClient, AuthMethod};
 use biorouter::providers::openai::OpenAiProvider;
 use biorouter_acp::server::{serve, BioRouterAcpAgent, BioRouterAcpConfig};
+use common::{setup_mock_openai, spawn_mcp_http_server, FAKE_CODE};
+use fs_err as fs;
 use sacp::schema::{
     ContentBlock, ContentChunk, InitializeRequest, McpServer, McpServerHttp, NewSessionRequest,
     PermissionOptionKind, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
@@ -15,6 +15,7 @@ use sacp::schema::{
     ToolCallUpdate, ToolCallUpdateFields,
 };
 use sacp::{ClientToAgent, JrConnectionCx};
+use std::future::Future;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -22,149 +23,165 @@ use test_case::test_case;
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use wiremock::MockServer;
 
-#[tokio::test]
-async fn test_acp_basic_completion() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let prompt = "what is 1+1";
-    let mock_server = setup_mock_openai(vec![(
-        format!(r#"</info-msg>\n{prompt}""#),
-        include_str!("./test_data/openai_basic_response.txt"),
-    )])
-    .await;
-
-    run_acp_session(
-        &mock_server,
-        vec![],
-        &[],
-        temp_dir.path(),
-        BioRouterMode::Auto,
-        None,
-        |cx, session_id, updates| async move {
-            let response = cx
-                .send_request(PromptRequest::new(
-                    session_id,
-                    vec![ContentBlock::Text(TextContent::new(prompt))],
-                ))
-                .block_task()
-                .await
-                .unwrap();
-
-            assert_eq!(response.stop_reason, StopReason::EndTurn);
-            wait_for(
-                &updates,
-                &SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                    TextContent::new("2"),
-                ))),
-            )
-            .await;
-        },
-    )
-    .await;
+fn run_async_test(future: impl Future<Output = ()>) {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .thread_stack_size(16 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(future);
 }
 
-#[tokio::test]
-async fn test_acp_with_mcp_http_server() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let prompt = "Use the get_code tool and output only its result.";
-    let (mcp_url, _handle) = spawn_mcp_http_server().await;
-
-    let mock_server = setup_mock_openai(vec![
-        (
+#[test]
+fn test_acp_basic_completion() {
+    run_async_test(async {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let prompt = "what is 1+1";
+        let mock_server = setup_mock_openai(vec![(
             format!(r#"</info-msg>\n{prompt}""#),
-            include_str!("./test_data/openai_tool_call_response.txt"),
-        ),
-        (
-            format!(r#""content":"{FAKE_CODE}""#),
-            include_str!("./test_data/openai_tool_result_response.txt"),
-        ),
-    ])
-    .await;
+            include_str!("./test_data/openai_basic_response.txt"),
+        )])
+        .await;
 
-    run_acp_session(
-        &mock_server,
-        vec![McpServer::Http(McpServerHttp::new("lookup", mcp_url))],
-        &[],
-        temp_dir.path(),
-        BioRouterMode::Auto,
-        None,
-        |cx, session_id, updates| async move {
-            let response = cx
-                .send_request(PromptRequest::new(
-                    session_id,
-                    vec![ContentBlock::Text(TextContent::new(prompt))],
-                ))
-                .block_task()
-                .await
-                .unwrap();
+        run_acp_session(
+            &mock_server,
+            vec![],
+            &[],
+            temp_dir.path(),
+            BioRouterMode::Auto,
+            None,
+            |cx, session_id, updates| async move {
+                let response = cx
+                    .send_request(PromptRequest::new(
+                        session_id,
+                        vec![ContentBlock::Text(TextContent::new(prompt))],
+                    ))
+                    .block_task()
+                    .await
+                    .unwrap();
 
-            assert_eq!(response.stop_reason, StopReason::EndTurn);
-            wait_for(
-                &updates,
-                &SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                    TextContent::new(FAKE_CODE),
-                ))),
-            )
-            .await;
-        },
-    )
-    .await;
+                assert_eq!(response.stop_reason, StopReason::EndTurn);
+                wait_for(
+                    &updates,
+                    &SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                        TextContent::new("2"),
+                    ))),
+                )
+                .await;
+            },
+        )
+        .await;
+    });
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn test_acp_with_builtin_and_mcp() {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let prompt =
-        "Search for get_code and text_editor tools. Use them to save the code to /tmp/result.txt.";
-    let (lookup_url, _lookup_handle) = spawn_mcp_http_server().await;
+#[test]
+fn test_acp_with_mcp_http_server() {
+    run_async_test(async {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let prompt = "Use the get_code tool and output only its result.";
+        let (mcp_url, _handle) = spawn_mcp_http_server().await;
 
-    let mock_server = setup_mock_openai(vec![
-        (
-            format!(r#"</info-msg>\n{prompt}""#),
-            include_str!("./test_data/openai_builtin_search.txt"),
-        ),
-        (
-            r#"lookup/get_code: Get the code"#.into(),
-            include_str!("./test_data/openai_builtin_read_modules.txt"),
-        ),
-        (
-            r#"lookup[\"get_code\"]({}): string - Get the code"#.into(),
-            include_str!("./test_data/openai_builtin_execute.txt"),
-        ),
-        (
-            r#"Successfully wrote to /tmp/result.txt"#.into(),
-            include_str!("./test_data/openai_builtin_final.txt"),
-        ),
-    ])
-    .await;
+        let mock_server = setup_mock_openai(vec![
+            (
+                format!(r#"</info-msg>\n{prompt}""#),
+                include_str!("./test_data/openai_tool_call_response.txt"),
+            ),
+            (
+                format!(r#""content":"{FAKE_CODE}""#),
+                include_str!("./test_data/openai_tool_result_response.txt"),
+            ),
+        ])
+        .await;
 
-    run_acp_session(
-        &mock_server,
-        vec![McpServer::Http(McpServerHttp::new("lookup", lookup_url))],
-        &["code_execution", "developer"],
-        temp_dir.path(),
-        BioRouterMode::Auto,
-        None,
-        |cx, session_id, updates| async move {
-            let response = cx
-                .send_request(PromptRequest::new(
-                    session_id,
-                    vec![ContentBlock::Text(TextContent::new(prompt))],
-                ))
-                .block_task()
-                .await
-                .unwrap();
+        run_acp_session(
+            &mock_server,
+            vec![McpServer::Http(McpServerHttp::new("lookup", mcp_url))],
+            &[],
+            temp_dir.path(),
+            BioRouterMode::Auto,
+            None,
+            |cx, session_id, updates| async move {
+                let response = cx
+                    .send_request(PromptRequest::new(
+                        session_id,
+                        vec![ContentBlock::Text(TextContent::new(prompt))],
+                    ))
+                    .block_task()
+                    .await
+                    .unwrap();
 
-            assert_eq!(response.stop_reason, StopReason::EndTurn);
-            wait_for(
-                &updates,
-                &SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
-                    TextContent::new(FAKE_CODE),
-                ))),
-            )
-            .await;
-        },
-    )
-    .await;
+                assert_eq!(response.stop_reason, StopReason::EndTurn);
+                wait_for(
+                    &updates,
+                    &SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                        TextContent::new(FAKE_CODE),
+                    ))),
+                )
+                .await;
+            },
+        )
+        .await;
+    });
+}
+
+#[test]
+fn test_acp_with_builtin_and_mcp() {
+    run_async_test(async {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let prompt =
+            "Search for get_code and text_editor tools. Use them to save the code to result.txt.";
+        let (lookup_url, _lookup_handle) = spawn_mcp_http_server().await;
+
+        let mock_server = setup_mock_openai(vec![
+            (
+                format!(r#"</info-msg>\n{prompt}""#),
+                include_str!("./test_data/openai_builtin_search.txt"),
+            ),
+            (
+                r#"lookup/get_code: Get the code"#.into(),
+                include_str!("./test_data/openai_builtin_read_modules.txt"),
+            ),
+            (
+                r#"lookup[\"get_code\"]({}): string - Get the code"#.into(),
+                include_str!("./test_data/openai_builtin_execute.txt"),
+            ),
+            (
+                r#"Successfully wrote to result.txt"#.into(),
+                include_str!("./test_data/openai_builtin_final.txt"),
+            ),
+        ])
+        .await;
+
+        run_acp_session(
+            &mock_server,
+            vec![McpServer::Http(McpServerHttp::new("lookup", lookup_url))],
+            &["code_execution", "developer"],
+            temp_dir.path(),
+            BioRouterMode::Auto,
+            None,
+            |cx, session_id, updates| async move {
+                let response = cx
+                    .send_request(PromptRequest::new(
+                        session_id,
+                        vec![ContentBlock::Text(TextContent::new(prompt))],
+                    ))
+                    .block_task()
+                    .await
+                    .unwrap();
+
+                assert_eq!(response.stop_reason, StopReason::EndTurn);
+                wait_for(
+                    &updates,
+                    &SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                        TextContent::new(FAKE_CODE),
+                    ))),
+                )
+                .await;
+            },
+        )
+        .await;
+    });
 }
 
 async fn wait_for(updates: &Arc<Mutex<Vec<SessionNotification>>>, expected: &SessionUpdate) {
@@ -344,57 +361,58 @@ async fn run_acp_session<F, Fut>(
 #[test_case(Some(PermissionOptionKind::RejectAlways), ToolCallStatus::Failed, "user:\n  always_allow: []\n  ask_before: []\n  never_allow:\n  - lookup__get_code\n"; "reject_always")]
 #[test_case(Some(PermissionOptionKind::RejectOnce), ToolCallStatus::Failed, ""; "reject_once")]
 #[test_case(None, ToolCallStatus::Failed, ""; "cancelled")]
-#[tokio::test]
-async fn test_permission_persistence(
+fn test_permission_persistence(
     kind: Option<PermissionOptionKind>,
     expected_status: ToolCallStatus,
     expected_yaml: &str,
 ) {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let prompt = "Use the get_code tool and output only its result.";
-    let (mcp_url, _handle) = spawn_mcp_http_server().await;
+    run_async_test(async move {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let prompt = "Use the get_code tool and output only its result.";
+        let (mcp_url, _handle) = spawn_mcp_http_server().await;
 
-    let mock_server = setup_mock_openai(vec![
-        (
-            format!(r#"</info-msg>\n{prompt}""#),
-            include_str!("./test_data/openai_tool_call_response.txt"),
-        ),
-        (
-            format!(r#""content":"{FAKE_CODE}""#),
-            include_str!("./test_data/openai_tool_result_response.txt"),
-        ),
-    ])
-    .await;
+        let mock_server = setup_mock_openai(vec![
+            (
+                format!(r#"</info-msg>\n{prompt}""#),
+                include_str!("./test_data/openai_tool_call_response.txt"),
+            ),
+            (
+                format!(r#""content":"{FAKE_CODE}""#),
+                include_str!("./test_data/openai_tool_result_response.txt"),
+            ),
+        ])
+        .await;
 
-    run_acp_session(
-        &mock_server,
-        vec![McpServer::Http(McpServerHttp::new("lookup", mcp_url))],
-        &[],
-        temp_dir.path(),
-        BioRouterMode::Approve,
-        kind,
-        |cx, session_id, updates| async move {
-            cx.send_request(PromptRequest::new(
-                session_id,
-                vec![ContentBlock::Text(TextContent::new(prompt))],
-            ))
-            .block_task()
-            .await
-            .unwrap();
-            wait_for(
-                &updates,
-                &SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
-                    ToolCallId::new(""),
-                    ToolCallUpdateFields::new().status(Some(expected_status)),
-                )),
-            )
-            .await;
-        },
-    )
-    .await;
+        run_acp_session(
+            &mock_server,
+            vec![McpServer::Http(McpServerHttp::new("lookup", mcp_url))],
+            &[],
+            temp_dir.path(),
+            BioRouterMode::Approve,
+            kind,
+            |cx, session_id, updates| async move {
+                cx.send_request(PromptRequest::new(
+                    session_id,
+                    vec![ContentBlock::Text(TextContent::new(prompt))],
+                ))
+                .block_task()
+                .await
+                .unwrap();
+                wait_for(
+                    &updates,
+                    &SessionUpdate::ToolCallUpdate(ToolCallUpdate::new(
+                        ToolCallId::new(""),
+                        ToolCallUpdateFields::new().status(Some(expected_status)),
+                    )),
+                )
+                .await;
+            },
+        )
+        .await;
 
-    assert_eq!(
-        fs::read_to_string(temp_dir.path().join("permission.yaml")).unwrap_or_default(),
-        expected_yaml
-    );
+        assert_eq!(
+            fs::read_to_string(temp_dir.path().join("permission.yaml")).unwrap_or_default(),
+            expected_yaml
+        );
+    });
 }

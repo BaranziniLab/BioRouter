@@ -1,6 +1,4 @@
 use crate::workflows::github_workflow::BIOROUTER_WORKFLOW_GITHUB_REPO_CONFIG_KEY;
-use cliclack::spinner;
-use console::style;
 use biorouter::agents::extension::ToolInfo;
 use biorouter::agents::extension_manager::get_parameter_names;
 use biorouter::agents::Agent;
@@ -14,7 +12,7 @@ use biorouter::config::paths::Paths;
 use biorouter::config::permission::PermissionLevel;
 use biorouter::config::signup_tetrate::TetrateAuth;
 use biorouter::config::{
-    configure_tetrate, Config, ConfigError, ExperimentManager, ExtensionEntry, BioRouterMode,
+    configure_tetrate, BioRouterMode, Config, ConfigError, ExperimentManager, ExtensionEntry,
     PermissionManager,
 };
 use biorouter::conversation::message::Message;
@@ -23,6 +21,8 @@ use biorouter::posthog::{get_telemetry_choice, TELEMETRY_ENABLED_KEY};
 use biorouter::providers::provider_test::test_provider_configuration;
 use biorouter::providers::{create, providers, retry_operation, RetryConfig};
 use biorouter::session::SessionType;
+use cliclack::spinner;
+use console::style;
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -61,7 +61,10 @@ pub fn configure_telemetry_consent_dialog() -> anyhow::Result<bool> {
         "{}",
         style("  • Operating system, version, and architecture").dim()
     );
-    println!("{}", style("  • biorouter version and install method").dim());
+    println!(
+        "{}",
+        style("  • biorouter version and install method").dim()
+    );
     println!("{}", style("  • Provider and model used").dim());
     println!(
         "{}",
@@ -82,7 +85,8 @@ pub fn configure_telemetry_consent_dialog() -> anyhow::Result<bool> {
     );
     println!(
         "{}",
-        style("or any personal data. You can change this anytime with 'biorouter configure'.").dim()
+        style("or any personal data. You can change this anytime with 'biorouter configure'.")
+            .dim()
     );
     println!();
 
@@ -103,7 +107,10 @@ pub fn configure_telemetry_consent_dialog() -> anyhow::Result<bool> {
 
 async fn handle_first_time_setup(config: &Config) -> anyhow::Result<()> {
     println!();
-    println!("{}", style("Welcome to biorouter! Let's get you set up.").dim());
+    println!(
+        "{}",
+        style("Welcome to biorouter! Let's get you set up.").dim()
+    );
     println!(
         "{}",
         style("  you can rerun this command later to update your configuration").dim()
@@ -540,6 +547,7 @@ fn try_store_secret(config: &Config, key_name: &str, value: String) -> anyhow::R
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
     // Get global config instance
     let config = Config::global();
@@ -1128,7 +1136,11 @@ pub fn remove_extension_dialog() -> anyhow::Result<()> {
 
 pub async fn configure_settings_dialog() -> anyhow::Result<()> {
     let setting_type = cliclack::select("What setting would you like to configure?")
-        .item("biorouter_mode", "biorouter mode", "Configure biorouter mode")
+        .item(
+            "biorouter_mode",
+            "biorouter mode",
+            "Configure biorouter mode",
+        )
         .item(
             "telemetry",
             "Telemetry",
@@ -1238,7 +1250,9 @@ pub fn configure_biorouter_mode_dialog() -> anyhow::Result<()> {
     config.set_biorouter_mode(mode)?;
     let msg = match mode {
         BioRouterMode::Auto => "Set to Auto Mode - full file modification enabled",
-        BioRouterMode::Approve => "Set to Approve Mode - all tools and modifications require approval",
+        BioRouterMode::Approve => {
+            "Set to Approve Mode - all tools and modifications require approval"
+        }
         BioRouterMode::SmartApprove => "Set to Smart Approve Mode - modifications require approval",
         BioRouterMode::Chat => "Set to Chat Mode - no tools or modifications enabled",
     };
@@ -1315,7 +1329,9 @@ pub fn configure_keyring_dialog() -> anyhow::Result<()> {
         let _ = cliclack::log::info("Notice: BIOROUTER_DISABLE_KEYRING environment variable is set and will override the configuration here.");
     }
 
-    let currently_disabled = config.get_param::<String>("BIOROUTER_DISABLE_KEYRING").is_ok();
+    let currently_disabled = config
+        .get_param::<String>("BIOROUTER_DISABLE_KEYRING")
+        .is_ok();
 
     let current_status = if currently_disabled {
         "Disabled (using file-based storage)"
@@ -1344,17 +1360,22 @@ pub fn configure_keyring_dialog() -> anyhow::Result<()> {
             // Set to empty string to enable keyring (absence or empty = enabled)
             config.set_param("BIOROUTER_DISABLE_KEYRING", Value::String("".to_string()))?;
             cliclack::outro("Secret storage set to system keyring (secure)")?;
-            let _ =
-                cliclack::log::info("You may need to restart biorouter for this change to take effect");
+            let _ = cliclack::log::info(
+                "You may need to restart biorouter for this change to take effect",
+            );
         }
         "file" => {
             // Set the disable flag to use file storage
-            config.set_param("BIOROUTER_DISABLE_KEYRING", Value::String("true".to_string()))?;
+            config.set_param(
+                "BIOROUTER_DISABLE_KEYRING",
+                Value::String("true".to_string()),
+            )?;
             cliclack::outro(
                 "Secret storage set to file (~/.config/biorouter/secrets.yaml). Keep this file secure!",
             )?;
-            let _ =
-                cliclack::log::info("You may need to restart biorouter for this change to take effect");
+            let _ = cliclack::log::info(
+                "You may need to restart biorouter for this change to take effect",
+            );
         }
         _ => unreachable!(),
     };
@@ -1402,6 +1423,7 @@ pub fn toggle_experiments_dialog() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn configure_tool_permissions_dialog() -> anyhow::Result<()> {
     let mut extensions: Vec<String> = get_enabled_extensions()
         .into_iter()
@@ -1679,7 +1701,9 @@ pub async fn handle_openrouter_auth() -> anyhow::Result<()> {
                             enabled: true,
                             config: ExtensionConfig::Builtin {
                                 name: "developer".to_string(),
-                                display_name: Some(biorouter::config::DEFAULT_DISPLAY_NAME.to_string()),
+                                display_name: Some(
+                                    biorouter::config::DEFAULT_DISPLAY_NAME.to_string(),
+                                ),
                                 timeout: Some(biorouter::config::DEFAULT_EXTENSION_TIMEOUT),
                                 bundled: Some(true),
                                 description: "Developer extension".to_string(),
@@ -1755,7 +1779,9 @@ pub async fn handle_tetrate_auth() -> anyhow::Result<()> {
                             enabled: true,
                             config: ExtensionConfig::Builtin {
                                 name: "developer".to_string(),
-                                display_name: Some(biorouter::config::DEFAULT_DISPLAY_NAME.to_string()),
+                                display_name: Some(
+                                    biorouter::config::DEFAULT_DISPLAY_NAME.to_string(),
+                                ),
                                 timeout: Some(biorouter::config::DEFAULT_EXTENSION_TIMEOUT),
                                 bundled: Some(true),
                                 description: "Developer extension".to_string(),

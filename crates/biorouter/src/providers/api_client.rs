@@ -56,7 +56,9 @@ impl TlsConfig {
         let mut tls_config = TlsConfig::new();
         let mut has_tls_config = false;
 
-        let client_cert_path = config.get_param::<String>("BIOROUTER_CLIENT_CERT_PATH").ok();
+        let client_cert_path = config
+            .get_param::<String>("BIOROUTER_CLIENT_CERT_PATH")
+            .ok();
         let client_key_path = config.get_param::<String>("BIOROUTER_CLIENT_KEY_PATH").ok();
 
         // Validate that both cert and key are provided if either is provided

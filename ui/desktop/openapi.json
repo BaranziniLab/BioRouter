@@ -1339,6 +1339,848 @@
         }
       }
     },
+    "/knowledge/active": {
+      "get": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "get_active",
+        "responses": {
+          "200": {
+            "description": "Current active KB id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveKbResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "set_active",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetActiveBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Set successfully",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActiveKbResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid kb id"
+          }
+        }
+      }
+    },
+    "/knowledge/bases": {
+      "get": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "list_bases",
+        "responses": {
+          "200": {
+            "description": "List of knowledge bases",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Manifest"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "create_base",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateBaseBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Created knowledge base",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Manifest"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/knowledge/bases/import": {
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "import_brkb",
+        "requestBody": {
+          "description": "multipart/form-data with a 'file' field containing the .brkb archive",
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Imported knowledge base ID"
+          },
+          "400": {
+            "description": "Bad request"
+          },
+          "500": {
+            "description": "Internal error"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}": {
+      "get": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "get_base",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Knowledge base manifest",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Manifest"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "delete_base",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted"
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/export": {
+      "get": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "export_brkb",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Binary .brkb archive"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "500": {
+            "description": "Internal error"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/graph": {
+      "get": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "get_graph",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Knowledge graph",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Graph"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/history": {
+      "get": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "list_history",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Maximum entries (default 50)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "nullable": true,
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Commit history"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/ingest": {
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "ingest",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream of sub-agent events (text/event-stream)"
+          },
+          "400": {
+            "description": "Invalid model or source"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/lint": {
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "lint",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LintBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream of sub-agent events (text/event-stream)"
+          },
+          "400": {
+            "description": "Invalid model"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/page": {
+      "get": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "get_page_body",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "description": "Page path under the KB root (knowledge/*.md, raw/*/source.md, or index.md/schema.md/log.md)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page content",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadPageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid kb id or path"
+          },
+          "404": {
+            "description": "Page not found"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/pages": {
+      "get": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "list_pages",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "path_prefix",
+            "in": "query",
+            "description": "Optional path prefix filter",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page list"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/pages/{page_path}": {
+      "get": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "read_page",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page_path",
+            "in": "path",
+            "description": "Page path within KB",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page content"
+          },
+          "404": {
+            "description": "Page not found"
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "write_page",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "page_path",
+            "in": "path",
+            "description": "Page path within KB",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WritePageBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommitResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/preview": {
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "preview_state",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PreviewBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "File content at commit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PreviewResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/query": {
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "query_kb",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/QueryBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream of sub-agent events (text/event-stream)"
+          },
+          "400": {
+            "description": "Invalid model"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/raw": {
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "add_raw_source",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "One of: multipart/form-data with 'file' field, JSON {url}, or JSON {text, title?}",
+          "content": {
+            "application/json": {
+              "schema": {}
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Source ingested",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RawSourceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          },
+          "500": {
+            "description": "Internal error"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/restore": {
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "restore_state",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RestoreBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Restored; returns new commit SHA",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RestoreResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Error"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/sources/{sid}/credibility": {
+      "put": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "override_credibility",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Source ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Credibility"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Credibility overridden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredibilityResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Source not found"
+          },
+          "500": {
+            "description": "Internal error"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/sources/{sid}/reclassify": {
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "reclassify",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "sid",
+            "in": "path",
+            "description": "Source ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Reclassified credibility",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CredibilityResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Source not found"
+          },
+          "500": {
+            "description": "Internal error"
+          }
+        }
+      }
+    },
+    "/knowledge/check-model": {
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "check_model",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckModelBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Model responded OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckModelResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "Model is unreachable / invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckModelResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/mcp-ui-proxy": {
       "get": {
         "tags": [
@@ -2850,6 +3692,15 @@
           "propertyName": "actionType"
         }
       },
+      "ActiveKbResponse": {
+        "type": "object",
+        "properties": {
+          "active_kb": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
       "AddExtensionRequest": {
         "type": "object",
         "required": [
@@ -2975,6 +3826,18 @@
           }
         }
       },
+      "ChangeKind": {
+        "type": "string",
+        "enum": [
+          "ingest",
+          "link",
+          "flag",
+          "query",
+          "lint",
+          "restore",
+          "manual"
+        ]
+      },
       "ChatRequest": {
         "type": "object",
         "required": [
@@ -3005,6 +3868,32 @@
           }
         }
       },
+      "CheckModelBody": {
+        "type": "object",
+        "required": [
+          "model"
+        ],
+        "properties": {
+          "model": {
+            "$ref": "#/components/schemas/ModelRef"
+          }
+        }
+      },
+      "CheckModelResponse": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "nullable": true
+          },
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
       "CheckProviderRequest": {
         "type": "object",
         "required": [
@@ -3022,6 +3911,17 @@
           "Builtin",
           "Workflow"
         ]
+      },
+      "CommitResponse": {
+        "type": "object",
+        "required": [
+          "commit_sha"
+        ],
+        "properties": {
+          "commit_sha": {
+            "type": "string"
+          }
+        }
       },
       "ConfigKey": {
         "type": "object",
@@ -3150,6 +4050,25 @@
           "$ref": "#/components/schemas/Message"
         }
       },
+      "CreateBaseBody": {
+        "type": "object",
+        "required": [
+          "id",
+          "name"
+        ],
+        "properties": {
+          "color": {
+            "type": "string",
+            "nullable": true
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "CreateScheduleRequest": {
         "type": "object",
         "required": [
@@ -3204,6 +4123,69 @@
             "nullable": true
           }
         }
+      },
+      "Credibility": {
+        "type": "object",
+        "required": [
+          "tier",
+          "confidence",
+          "reasoning",
+          "classifier_version"
+        ],
+        "properties": {
+          "classifier_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "confidence": {
+            "type": "number",
+            "format": "float"
+          },
+          "doi": {
+            "type": "string",
+            "nullable": true
+          },
+          "publisher": {
+            "type": "string",
+            "nullable": true
+          },
+          "reasoning": {
+            "type": "string"
+          },
+          "retracted": {
+            "type": "boolean"
+          },
+          "tier": {
+            "$ref": "#/components/schemas/CredibilityTier"
+          },
+          "venue": {
+            "type": "string",
+            "nullable": true
+          }
+        }
+      },
+      "CredibilityResponse": {
+        "type": "object",
+        "required": [
+          "credibility"
+        ],
+        "properties": {
+          "credibility": {
+            "$ref": "#/components/schemas/Credibility"
+          }
+        }
+      },
+      "CredibilityTier": {
+        "type": "string",
+        "enum": [
+          "peer_reviewed",
+          "preprint",
+          "book",
+          "gray_lit",
+          "web",
+          "personal"
+        ]
       },
       "CspMetadata": {
         "type": "object",
@@ -3882,6 +4864,118 @@
           }
         }
       },
+      "Graph": {
+        "type": "object",
+        "required": [
+          "nodes",
+          "edges"
+        ],
+        "properties": {
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GraphEdge"
+            }
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GraphNode"
+            }
+          }
+        }
+      },
+      "GraphEdge": {
+        "type": "object",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "relation": {
+            "type": "string",
+            "nullable": true
+          },
+          "to": {
+            "type": "string"
+          }
+        }
+      },
+      "GraphNode": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "kind",
+          "path"
+        ],
+        "properties": {
+          "credibility_tier": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/CredibilityTier"
+              }
+            ],
+            "nullable": true
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/PageKind"
+          },
+          "label": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "retracted": {
+            "type": "boolean",
+            "description": "True if this is a source node whose `raw/<id>/meta.yaml` marks it retracted."
+          }
+        }
+      },
+      "HistoryEntry": {
+        "type": "object",
+        "required": [
+          "commit_sha",
+          "kind",
+          "summary",
+          "timestamp"
+        ],
+        "properties": {
+          "commit_sha": {
+            "type": "string"
+          },
+          "delta": {
+            "type": "string",
+            "nullable": true
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ChangeKind"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "HistoryQuery": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "Icon": {
         "type": "object",
         "required": [
@@ -3942,6 +5036,23 @@
           }
         }
       },
+      "IngestBody": {
+        "type": "object",
+        "required": [
+          "source",
+          "model"
+        ],
+        "properties": {
+          "focus": {
+            "type": "string",
+            "nullable": true
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelRef"
+          },
+          "source": {}
+        }
+      },
       "InspectJobResponse": {
         "type": "object",
         "properties": {
@@ -3975,6 +5086,21 @@
           }
         }
       },
+      "LintBody": {
+        "type": "object",
+        "required": [
+          "model"
+        ],
+        "properties": {
+          "autofix": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelRef"
+          }
+        }
+      },
       "ListAppsRequest": {
         "type": "object",
         "properties": {
@@ -3995,6 +5121,15 @@
             "items": {
               "$ref": "#/components/schemas/BioRouterApp"
             }
+          }
+        }
+      },
+      "ListPagesQuery": {
+        "type": "object",
+        "properties": {
+          "path_prefix": {
+            "type": "string",
+            "nullable": true
           }
         }
       },
@@ -4038,6 +5173,44 @@
           },
           "is_editable": {
             "type": "boolean"
+          }
+        }
+      },
+      "Manifest": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "color",
+          "created_at",
+          "schema_version"
+        ],
+        "properties": {
+          "color": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "default_model": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ModelRef"
+              }
+            ],
+            "nullable": true
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "schema_version": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
           }
         }
       },
@@ -4594,6 +5767,71 @@
           }
         }
       },
+      "ModelRef": {
+        "type": "object",
+        "required": [
+          "provider",
+          "model"
+        ],
+        "properties": {
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          }
+        }
+      },
+      "PageContent": {
+        "type": "object",
+        "required": [
+          "path",
+          "content",
+          "frontmatter"
+        ],
+        "properties": {
+          "content": {
+            "type": "string"
+          },
+          "frontmatter": {
+            "type": "object",
+            "description": "Raw YAML frontmatter from the page file."
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "PageKind": {
+        "type": "string",
+        "enum": [
+          "source",
+          "entity",
+          "concept",
+          "hub",
+          "note",
+          "flag"
+        ]
+      },
+      "PageRef": {
+        "type": "object",
+        "required": [
+          "path",
+          "title",
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
       "ParseWorkflowRequest": {
         "type": "object",
         "required": [
@@ -4624,6 +5862,30 @@
           "ask_before",
           "never_allow"
         ]
+      },
+      "PreviewBody": {
+        "type": "object",
+        "required": [
+          "commit_sha",
+          "path"
+        ],
+        "properties": {
+          "commit_sha": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "PreviewResponse": {
+        "type": "object",
+        "properties": {
+          "content": {
+            "type": "string",
+            "nullable": true
+          }
+        }
       },
       "PricingData": {
         "type": "object",
@@ -4807,6 +6069,25 @@
           }
         }
       },
+      "QueryBody": {
+        "type": "object",
+        "required": [
+          "question",
+          "model"
+        ],
+        "properties": {
+          "file_as_page": {
+            "type": "boolean",
+            "nullable": true
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelRef"
+          },
+          "question": {
+            "type": "string"
+          }
+        }
+      },
       "RawAudioContent": {
         "type": "object",
         "required": [
@@ -4894,6 +6175,21 @@
           }
         }
       },
+      "RawSourceResponse": {
+        "type": "object",
+        "required": [
+          "source_id",
+          "source_md_path"
+        ],
+        "properties": {
+          "source_id": {
+            "type": "string"
+          },
+          "source_md_path": {
+            "type": "string"
+          }
+        }
+      },
       "RawTextContent": {
         "type": "object",
         "required": [
@@ -4905,6 +6201,28 @@
             "additionalProperties": true
           },
           "text": {
+            "type": "string"
+          }
+        }
+      },
+      "ReadPageQuery": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "ReadPageResponse": {
+        "type": "object",
+        "required": [
+          "content"
+        ],
+        "properties": {
+          "content": {
             "type": "string"
           }
         }
@@ -5070,6 +6388,28 @@
             "items": {
               "$ref": "#/components/schemas/ExtensionLoadResult"
             }
+          }
+        }
+      },
+      "RestoreBody": {
+        "type": "object",
+        "required": [
+          "commit_sha"
+        ],
+        "properties": {
+          "commit_sha": {
+            "type": "string"
+          }
+        }
+      },
+      "RestoreResponse": {
+        "type": "object",
+        "required": [
+          "new_commit_sha"
+        ],
+        "properties": {
+          "new_commit_sha": {
+            "type": "string"
           }
         }
       },
@@ -5534,6 +6874,16 @@
           }
         }
       },
+      "SetActiveBody": {
+        "type": "object",
+        "properties": {
+          "kb_id": {
+            "type": "string",
+            "description": "`None` clears the active KB.",
+            "nullable": true
+          }
+        }
+      },
       "SetProviderRequest": {
         "type": "object",
         "required": [
@@ -5627,6 +6977,46 @@
             "items": {
               "$ref": "#/components/schemas/SlashCommand"
             }
+          }
+        }
+      },
+      "SourceMeta": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "ingested_at",
+          "sha256",
+          "mime",
+          "credibility"
+        ],
+        "properties": {
+          "credibility": {
+            "$ref": "#/components/schemas/Credibility"
+          },
+          "id": {
+            "type": "string"
+          },
+          "ingested_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "mime": {
+            "type": "string"
+          },
+          "original_filename": {
+            "type": "string",
+            "nullable": true
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string",
+            "nullable": true
           }
         }
       },
@@ -6502,6 +7892,21 @@
         ],
         "properties": {
           "yaml": {
+            "type": "string"
+          }
+        }
+      },
+      "WritePageBody": {
+        "type": "object",
+        "required": [
+          "content",
+          "commit_message"
+        ],
+        "properties": {
+          "commit_message": {
+            "type": "string"
+          },
+          "content": {
             "type": "string"
           }
         }

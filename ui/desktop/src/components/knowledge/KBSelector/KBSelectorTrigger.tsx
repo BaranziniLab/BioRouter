@@ -1,0 +1,43 @@
+import { useState } from 'react';
+import { ChevronDown } from 'lucide-react';
+import { useKnowledge } from '../KnowledgeContext';
+import { KBSelectorPalette } from './KBSelectorPalette';
+
+interface Props {
+  /** Controlled open state. When provided, the trigger acts as a controlled component. */
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
+}
+
+export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
+  const { activeKb } = useKnowledge();
+  const [openInternal, setOpenInternal] = useState(false);
+
+  // Support both controlled (open+onOpenChange) and uncontrolled usage.
+  const isControlled = openProp !== undefined;
+  const open = isControlled ? openProp : openInternal;
+  const setOpen = isControlled
+    ? (v: boolean) => onOpenChange?.(v)
+    : setOpenInternal;
+
+  return (
+    <>
+      <button
+        onClick={() => setOpen(true)}
+        className="w-full inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border-subtle bg-background-surface hover:border-border-default transition-colors"
+      >
+        <span
+          className="w-2 h-2 rounded-full flex-shrink-0"
+          style={{ background: activeKb?.color ?? 'var(--text-muted)' }}
+        />
+        <span className="flex-1 text-left min-w-0">
+          <span className="block text-sm font-medium truncate">
+            {activeKb?.name ?? 'Select a knowledge base'}
+          </span>
+        </span>
+        <ChevronDown className="w-3 h-3 text-text-muted flex-shrink-0" />
+      </button>
+      {open && <KBSelectorPalette onClose={() => setOpen(false)} />}
+    </>
+  );
+}

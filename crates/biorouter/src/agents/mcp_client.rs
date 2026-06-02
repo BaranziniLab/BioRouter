@@ -15,8 +15,9 @@ use rmcp::{
         ListPromptsRequest, ListPromptsResult, ListResourcesRequest, ListResourcesResult,
         ListToolsRequest, ListToolsResult, LoggingMessageNotification,
         LoggingMessageNotificationMethod, PaginatedRequestParams, ProgressNotification,
-        ProgressNotificationMethod, ProtocolVersion, ReadResourceRequest, ReadResourceRequestParams,
-        ReadResourceResult, RequestId, Role, SamplingMessage, ServerNotification, ServerResult,
+        ProgressNotificationMethod, ProtocolVersion, ReadResourceRequest,
+        ReadResourceRequestParams, ReadResourceResult, RequestId, Role, SamplingMessage,
+        ServerNotification, ServerResult,
     },
     service::{
         ClientInitializeError, PeerRequestOptions, RequestContext, RequestHandle, RunningService,
@@ -406,7 +407,7 @@ impl McpClientTrait for McpClient {
         let res = self
             .send_request(
                 ClientRequest::ListResourcesRequest(ListResourcesRequest {
-                    params: Some(PaginatedRequestParams { cursor , meta: None}),
+                    params: Some(PaginatedRequestParams { cursor, meta: None }),
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),
@@ -430,7 +431,8 @@ impl McpClientTrait for McpClient {
                 ClientRequest::ReadResourceRequest(ReadResourceRequest {
                     params: ReadResourceRequestParams {
                         uri: uri.to_string(),
-                        meta: None},
+                        meta: None,
+                    },
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),
@@ -452,7 +454,7 @@ impl McpClientTrait for McpClient {
         let res = self
             .send_request(
                 ClientRequest::ListToolsRequest(ListToolsRequest {
-                    params: Some(PaginatedRequestParams { cursor , meta: None}),
+                    params: Some(PaginatedRequestParams { cursor, meta: None }),
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),
@@ -480,7 +482,8 @@ impl McpClientTrait for McpClient {
                         task: None,
                         name: name.to_string().into(),
                         arguments,
-                        meta: None},
+                        meta: None,
+                    },
                     method: Default::default(),
                     extensions: meta.inject_into_extensions(Default::default()),
                 }),
@@ -502,7 +505,7 @@ impl McpClientTrait for McpClient {
         let res = self
             .send_request(
                 ClientRequest::ListPromptsRequest(ListPromptsRequest {
-                    params: Some(PaginatedRequestParams { cursor , meta: None}),
+                    params: Some(PaginatedRequestParams { cursor, meta: None }),
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),
@@ -532,7 +535,8 @@ impl McpClientTrait for McpClient {
                     params: GetPromptRequestParams {
                         name: name.to_string(),
                         arguments,
-                        meta: None},
+                        meta: None,
+                    },
                     method: Default::default(),
                     extensions: inject_current_session_id_into_extensions(Default::default()),
                 }),

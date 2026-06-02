@@ -26,7 +26,7 @@ use crate::agents::subagent_tool::{
 use crate::agents::types::SessionConfig;
 use crate::agents::types::{FrontendTool, SharedProvider, ToolResultReceiver};
 use crate::config::permission::PermissionManager;
-use crate::config::{get_enabled_extensions, Config, BioRouterMode};
+use crate::config::{get_enabled_extensions, BioRouterMode, Config};
 use crate::context_mgmt::{
     check_if_compaction_needed, compact_messages, DEFAULT_COMPACTION_THRESHOLD,
 };
@@ -42,7 +42,6 @@ use crate::permission::permission_judge::PermissionCheckResult;
 use crate::permission::PermissionConfirmation;
 use crate::providers::base::Provider;
 use crate::providers::errors::ProviderError;
-use crate::workflow::{Author, Workflow, Response, Settings, SubWorkflow};
 use crate::scheduler_trait::SchedulerTrait;
 use crate::security::security_inspector::SecurityInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
@@ -50,6 +49,7 @@ use crate::session::{Session, SessionManager, SessionType};
 use crate::tool_inspection::ToolInspectionManager;
 use crate::tool_monitor::RepetitionInspector;
 use crate::utils::is_token_cancelled;
+use crate::workflow::{Author, Response, Settings, SubWorkflow, Workflow};
 use regex::Regex;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, ErrorCode, ErrorData, GetPromptResult, Prompt,
@@ -186,7 +186,9 @@ impl Agent {
             Arc::new(SessionManager::instance()),
             PermissionManager::instance(),
             None,
-            Config::global().get_biorouter_mode().unwrap_or(BioRouterMode::Auto),
+            Config::global()
+                .get_biorouter_mode()
+                .unwrap_or(BioRouterMode::Auto),
         ))
     }
 
@@ -454,6 +456,7 @@ impl Agent {
 
     /// Dispatch a single tool call to the appropriate client
     #[instrument(skip(self, tool_call, request_id), fields(input, output))]
+    #[allow(clippy::too_many_lines)]
     pub async fn dispatch_tool_call(
         &self,
         tool_call: CallToolRequestParams,
@@ -823,6 +826,7 @@ impl Agent {
     }
 
     #[instrument(skip(self, user_message, session_config), fields(user_message))]
+    #[allow(clippy::too_many_lines)]
     pub async fn reply(
         &self,
         user_message: Message,
@@ -1015,6 +1019,7 @@ impl Agent {
         }))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn reply_internal(
         &self,
         conversation: Conversation,
@@ -1582,8 +1587,12 @@ impl Agent {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn create_workflow(&self, mut messages: Conversation) -> Result<Workflow> {
-        tracing::info!("Starting workflow creation with {} messages", messages.len());
+        tracing::info!(
+            "Starting workflow creation with {} messages",
+            messages.len()
+        );
 
         let extensions_info = self.extension_manager.get_extensions_info().await;
         tracing::debug!("Retrieved {} extensions info", extensions_info.len());

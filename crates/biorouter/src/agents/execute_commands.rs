@@ -384,8 +384,12 @@ impl Agent {
             Err(e) => return Err(anyhow!("Failed to build workflow: {}", e)),
         };
 
-        self.apply_workflow_components(workflow.sub_workflows.clone(), workflow.response.clone(), true)
-            .await;
+        self.apply_workflow_components(
+            workflow.sub_workflows.clone(),
+            workflow.response.clone(),
+            true,
+        )
+        .await;
 
         let prompt = [workflow.instructions.as_deref(), workflow.prompt.as_deref()]
             .into_iter()

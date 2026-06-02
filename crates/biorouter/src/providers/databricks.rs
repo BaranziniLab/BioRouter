@@ -5,7 +5,9 @@ use serde_json::Value;
 use std::time::Duration;
 
 use super::api_client::{ApiClient, AuthMethod, AuthProvider};
-use super::base::{ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::base::{
+    ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage,
+};
 use super::embedding::EmbeddingCapable;
 use super::errors::ProviderError;
 use super::formats::databricks::{create_request, response_to_message};

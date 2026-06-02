@@ -18,21 +18,21 @@ use tokio::signal::ctrl_c;
 use tokio_util::task::AbortOnDropHandle;
 
 pub use self::export::message_to_markdown;
-pub use builder::{build_session, SessionBuilderConfig};
-use console::Color;
 use biorouter::agents::AgentEvent;
 use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::permission::Permission;
 use biorouter::permission::PermissionConfirmation;
 use biorouter::providers::base::Provider;
 use biorouter::utils::safe_truncate;
+pub use builder::{build_session, SessionBuilderConfig};
+use console::Color;
 
 use anyhow::{Context, Result};
-use completion::BioRouterCompleter;
 use biorouter::agents::extension::{Envs, ExtensionConfig, PLATFORM_EXTENSIONS};
 use biorouter::agents::types::RetryConfig;
 use biorouter::agents::{Agent, SessionConfig, COMPACT_TRIGGERS};
-use biorouter::config::{Config, BioRouterMode};
+use biorouter::config::{BioRouterMode, Config};
+use completion::BioRouterCompleter;
 use input::InputResult;
 use rmcp::model::PromptMessage;
 use rmcp::model::ServerNotification;
@@ -816,7 +816,8 @@ impl CliSession {
                     self.run_mode = RunMode::Normal;
                     // set biorouter mode: auto if that isn't already the case
                     let config = Config::global();
-                    let curr_biorouter_mode = config.get_biorouter_mode().unwrap_or(BioRouterMode::Auto);
+                    let curr_biorouter_mode =
+                        config.get_biorouter_mode().unwrap_or(BioRouterMode::Auto);
                     if curr_biorouter_mode != BioRouterMode::Auto {
                         config.set_biorouter_mode(BioRouterMode::Auto).unwrap();
                     }
@@ -860,6 +861,7 @@ impl CliSession {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn process_agent_response(
         &mut self,
         interactive: bool,

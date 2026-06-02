@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Clock, Home, Layers, Puzzle, History, AppWindow, MessageSquare, Pipeline, Settings } from '../icons/app-icons';
+import { Clock, Home, Layers, Puzzle, History, AppWindow, MessageSquare, Pipeline, Settings, KnowledgeIcon } from '../icons/app-icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   SidebarContent,
@@ -91,6 +91,13 @@ const menuItems: NavigationEntry[] = [
     label: 'Skills',
     icon: Layers,
     tooltip: 'Manage reusable instruction skills',
+  },
+  {
+    type: 'item' as const,
+    path: '/knowledge',
+    label: 'Knowledge',
+    icon: KnowledgeIcon,
+    tooltip: 'Personal knowledge bases',
   },
   {
     type: 'item',

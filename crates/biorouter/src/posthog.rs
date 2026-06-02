@@ -376,7 +376,8 @@ async fn send_session_event(installation: &InstallationData) -> Result<(), Strin
     if let Ok(lead_turns) = config.get_param::<i64>("BIOROUTER_LEAD_TURNS") {
         event.insert_prop("setting_lead_turns", lead_turns).ok();
     }
-    if let Ok(lead_failure_threshold) = config.get_param::<i64>("BIOROUTER_LEAD_FAILURE_THRESHOLD") {
+    if let Ok(lead_failure_threshold) = config.get_param::<i64>("BIOROUTER_LEAD_FAILURE_THRESHOLD")
+    {
         event
             .insert_prop("setting_lead_failure_threshold", lead_failure_threshold)
             .ok();
@@ -483,7 +484,8 @@ static SENSITIVE_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
         Regex::new(r"(?i)token[_-]?[a-zA-Z0-9]{16,}").expect("invalid regex pattern"),
         Regex::new(r"(?i)bearer\s+[a-zA-Z0-9._-]+").expect("invalid regex pattern"),
         // Email addresses
-        Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}").expect("invalid regex pattern"),
+        Regex::new(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}")
+            .expect("invalid regex pattern"),
         // URLs with auth info
         Regex::new(r"https?://[^:]+:[^@]+@").expect("invalid regex pattern"),
         // UUIDs (might be session/user IDs in error messages)

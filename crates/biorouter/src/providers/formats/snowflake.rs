@@ -188,7 +188,8 @@ pub fn parse_streaming_response(sse_data: &str) -> Result<Message> {
                 task: None,
                 name: name.into(),
                 arguments: Some(object(input_value)),
-                meta: None};
+                meta: None,
+            };
             message = message.with_tool_request(&id, Ok(tool_call));
         } else {
             // Tool with no input - use empty object
@@ -196,7 +197,8 @@ pub fn parse_streaming_response(sse_data: &str) -> Result<Message> {
                 task: None,
                 name: name.into(),
                 arguments: Some(object!({})),
-                meta: None};
+                meta: None,
+            };
             message = message.with_tool_request(&id, Ok(tool_call));
         }
     }
@@ -257,7 +259,8 @@ pub fn response_to_message(response: &Value) -> Result<Message> {
                     task: None,
                     name: name.into(),
                     arguments: Some(object(input)),
-                    meta: None};
+                    meta: None,
+                };
                 message = message.with_tool_request(id, Ok(tool_call));
             }
             Some("thinking") => {
@@ -697,7 +700,8 @@ data: {"id":"a9537c2c-2017-4906-9817-2456168d89fa","model":"claude-sonnet-4-2025
             task: None,
             name: "calculator".into(),
             arguments: Some(object!({"expression": "2 + 2"})),
-            meta: None};
+            meta: None,
+        };
 
         let messages = vec![
             Message::user().with_text("Calculate 2 + 2"),

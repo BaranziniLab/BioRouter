@@ -52,5 +52,16 @@
     "type": "builtin",
     "env_keys": [],
     "bundled": true
+  },
+  {
+    "id": "knowledge",
+    "name": "knowledge",
+    "display_name": "Knowledge",
+    "description": "Personal, LLM-maintained knowledge bases backed by markdown knowledge folders + git history.",
+    "enabled": false,
+    "type": "builtin",
+    "env_keys": [],
+    "timeout": 300,
+    "bundled": true
   }
 ]

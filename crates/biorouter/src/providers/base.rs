@@ -787,9 +787,7 @@ mod tests {
                 .known_models
                 .iter()
                 .find(|m| m.name == model_name)
-                .unwrap_or_else(|| {
-                    panic!("model {model_name} not in known_models for {label}")
-                });
+                .unwrap_or_else(|| panic!("model {model_name} not in known_models for {label}"));
             assert_eq!(
                 info.supports_vision,
                 Some(true),

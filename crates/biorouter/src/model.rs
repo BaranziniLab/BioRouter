@@ -139,7 +139,10 @@ impl ModelConfig {
                     pm.context_limit
                 }
             } else if let Ok(val) = std::env::var("BIOROUTER_CONTEXT_LIMIT") {
-                Some(Self::validate_context_limit(&val, "BIOROUTER_CONTEXT_LIMIT")?)
+                Some(Self::validate_context_limit(
+                    &val,
+                    "BIOROUTER_CONTEXT_LIMIT",
+                )?)
             } else {
                 pm.context_limit
             }

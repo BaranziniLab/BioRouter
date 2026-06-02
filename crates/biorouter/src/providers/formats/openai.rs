@@ -57,6 +57,7 @@ struct StreamingChunk {
     model: Option<String>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<Value> {
     let mut messages_spec = Vec::new();
     for message in messages.iter().filter(|m| m.is_agent_visible()) {
@@ -343,7 +344,8 @@ pub fn response_to_message(response: &Value) -> anyhow::Result<Message> {
                                     task: None,
                                     name: function_name.into(),
                                     arguments: Some(object(params)),
-                                    meta: None}),
+                                    meta: None,
+                                }),
                             ));
                         }
                         Err(e) => {
@@ -443,6 +445,7 @@ fn strip_data_prefix(line: &str) -> Option<&str> {
     line.strip_prefix("data: ").map(|s| s.trim())
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn response_to_streaming_message<S>(
     mut stream: S,
 ) -> impl Stream<Item = anyhow::Result<(Option<Message>, Option<ProviderUsage>)>> + 'static
@@ -882,7 +885,8 @@ mod tests {
                     task: None,
                     name: "example".into(),
                     arguments: Some(object!({"param1": "value1"})),
-                    meta: None}),
+                    meta: None,
+                }),
             ),
         ];
 
@@ -927,7 +931,8 @@ mod tests {
                 task: None,
                 name: "example".into(),
                 arguments: Some(object!({"param1": "value1"})),
-                meta: None}),
+                meta: None,
+            }),
         )];
 
         // Get the ID from the tool request to use in the response
@@ -1167,7 +1172,8 @@ mod tests {
                 task: None,
                 name: "test_tool".into(),
                 arguments: None, // This is the key case the fix addresses
-                meta: None}),
+                meta: None,
+            }),
         );
 
         let spec = format_messages(&[message], &ImageFormat::OpenAi);
@@ -1195,7 +1201,8 @@ mod tests {
                 task: None,
                 name: "test_tool".into(),
                 arguments: Some(object!({"param": "value", "number": 42})),
-                meta: None}),
+                meta: None,
+            }),
         );
 
         let spec = format_messages(&[message], &ImageFormat::OpenAi);
@@ -1226,7 +1233,8 @@ mod tests {
                 task: None,
                 name: "frontend_test_tool".into(),
                 arguments: None, // This is the key case the fix addresses
-                meta: None}),
+                meta: None,
+            }),
         );
 
         let spec = format_messages(&[message], &ImageFormat::OpenAi);
@@ -1254,7 +1262,8 @@ mod tests {
                 task: None,
                 name: "frontend_test_tool".into(),
                 arguments: Some(object!({"action": "click", "element": "button"})),
-                meta: None}),
+                meta: None,
+            }),
         );
 
         let spec = format_messages(&[message], &ImageFormat::OpenAi);

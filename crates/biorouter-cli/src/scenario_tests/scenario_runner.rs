@@ -1,5 +1,5 @@
-use dotenvy::dotenv;
 use biorouter::conversation::Conversation;
+use dotenvy::dotenv;
 
 use crate::scenario_tests::message_generator::MessageGenerator;
 use crate::scenario_tests::mock_client::weather_client;
@@ -204,7 +204,12 @@ where
     let temp_dir = TempDir::new()?;
     let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
     let permission_manager = Arc::new(PermissionManager::new(temp_dir.path().to_path_buf()));
-    let agent_config = AgentConfig::new(session_manager, permission_manager, None, BioRouterMode::Auto); // no scheduler needed for scenario tests
+    let agent_config = AgentConfig::new(
+        session_manager,
+        permission_manager,
+        None,
+        BioRouterMode::Auto,
+    ); // no scheduler needed for scenario tests
     let agent = Agent::with_config(agent_config);
     agent
         .extension_manager

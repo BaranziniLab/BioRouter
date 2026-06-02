@@ -870,8 +870,8 @@ mod tests {
     use crate::conversation::message::{Message, MessageContent, MessageMetadata};
     use crate::conversation::*;
     use rmcp::model::{
-        AnnotateAble, CallToolRequestParams, PromptMessage, PromptMessageContent, PromptMessageRole,
-        RawEmbeddedResource, RawImageContent, ResourceContents,
+        AnnotateAble, CallToolRequestParams, PromptMessage, PromptMessageContent,
+        PromptMessageRole, RawEmbeddedResource, RawImageContent, ResourceContents,
     };
     use rmcp::model::{ErrorCode, ErrorData};
     use rmcp::object;

@@ -20,6 +20,16 @@ const typeOrder: Record<DisplayItemType, number> = {
   Workflow: 3,
 };
 
+// Slash commands that are purely a UI convenience: selecting them inserts a
+// templated prompt into the chat input rather than triggering a backend
+// handler. Keyed by the command name (no leading '/').
+const CLIENT_INSERT_COMMANDS: Record<string, { description: string; insert: string }> = {
+  knowledge: {
+    description: 'Use the active knowledge base — inserts a templated prompt',
+    insert: 'Using the Knowledge extension on the active knowledge base, ',
+  },
+};
+
 export interface DisplayItem {
   name: string;
   extra: string;
@@ -447,10 +457,15 @@ const MentionPopover = forwardRef<
       () => ({
         getDisplayFiles: () => displayItems,
         selectFile: (index: number) => {
-          if (displayItems[index]) {
-            onSelect(displayItems[index].extra);
-            onClose();
+          const item = displayItems[index];
+          if (!item) return;
+          const clientInsert = CLIENT_INSERT_COMMANDS[item.name];
+          if (clientInsert) {
+            onSelect(clientInsert.insert);
+          } else {
+            onSelect(item.extra);
           }
+          onClose();
         },
       }),
       [displayItems, onSelect, onClose]
@@ -466,6 +481,19 @@ const MentionPopover = forwardRef<
             itemType: cmd.command_type,
             relativePath: cmd.command,
           }));
+          // Inject client-side insert commands (e.g. /knowledge) that exist
+          // purely to drop a templated prompt into the chat input. Skip any
+          // that the backend already advertises so we don't duplicate.
+          const existingNames = new Set(commandItems.map((c) => c.name));
+          for (const [name, def] of Object.entries(CLIENT_INSERT_COMMANDS)) {
+            if (existingNames.has(name)) continue;
+            commandItems.push({
+              name,
+              extra: def.description,
+              itemType: 'Builtin',
+              relativePath: name,
+            });
+          }
           setItems(commandItems);
         } else {
           await scanFilesFromRoot();
@@ -510,11 +538,16 @@ const MentionPopover = forwardRef<
       if (index >= 0 && index < displayItems.length) {
         onSelectedIndexChange(index);
         const displayItem = displayItems[index];
-        onSelect(
-          ['Builtin', 'Workflow'].includes(displayItem.itemType)
-            ? '/' + displayItem.name
-            : displayItem.extra
-        );
+        const clientInsert = CLIENT_INSERT_COMMANDS[displayItem.name];
+        if (clientInsert) {
+          onSelect(clientInsert.insert);
+        } else {
+          onSelect(
+            ['Builtin', 'Workflow'].includes(displayItem.itemType)
+              ? '/' + displayItem.name
+              : displayItem.extra
+          );
+        }
         onClose();
       }
     };

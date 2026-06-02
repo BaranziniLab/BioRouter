@@ -35,6 +35,9 @@ mod tests {
         assert_eq!(to_env_var("type"), "BIOROUTER_PROVIDER__TYPE");
         assert_eq!(to_env_var("api_key"), "BIOROUTER_PROVIDER__API_KEY");
         assert_eq!(to_env_var("provider.host"), "BIOROUTER_PROVIDER__HOST");
-        assert_eq!(to_env_var("provider.api_key"), "BIOROUTER_PROVIDER__API_KEY");
+        assert_eq!(
+            to_env_var("provider.api_key"),
+            "BIOROUTER_PROVIDER__API_KEY"
+        );
     }
 }

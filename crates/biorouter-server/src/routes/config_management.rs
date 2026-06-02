@@ -370,7 +370,8 @@ pub async fn providers() -> Result<Json<Vec<ProviderDetails>>, StatusCode> {
 pub async fn get_provider_models(
     Path(name): Path<String>,
 ) -> Result<Json<Vec<String>>, StatusCode> {
-    let loaded_provider = biorouter::config::declarative_providers::load_provider(name.as_str()).ok();
+    let loaded_provider =
+        biorouter::config::declarative_providers::load_provider(name.as_str()).ok();
     // TODO(Douwe): support a get models url for custom providers
     if let Some(loaded_provider) = loaded_provider {
         return Ok(Json(
@@ -872,7 +873,8 @@ mod tests {
             ConfigValueResponse::MaskedValue(_) => panic!("unexpected secret"),
         };
 
-        let limits: Vec<biorouter::model::ModelLimitConfig> = serde_json::from_value(response).unwrap();
+        let limits: Vec<biorouter::model::ModelLimitConfig> =
+            serde_json::from_value(response).unwrap();
         assert!(!limits.is_empty());
 
         let gpt4_limit = limits.iter().find(|l| l.pattern == "gpt-4o");

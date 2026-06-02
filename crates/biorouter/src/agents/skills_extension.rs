@@ -248,10 +248,15 @@ impl SkillsClient {
         }
 
         let disabled = Self::get_disabled_skills();
-        let mut skill_list: Vec<_> = self.skills.iter()
+        let mut skill_list: Vec<_> = self
+            .skills
+            .iter()
             .filter(|(name, skill)| {
                 !disabled.contains(*name)
-                    && !skill.bundle_name.as_deref().is_some_and(|b| disabled.contains(b))
+                    && !skill
+                        .bundle_name
+                        .as_deref()
+                        .is_some_and(|b| disabled.contains(b))
             })
             .collect();
 
@@ -284,7 +289,10 @@ impl SkillsClient {
         let disabled = Self::get_disabled_skills();
         if let Some(skill) = self.skills.get(skill_name) {
             let is_disabled = disabled.contains(skill_name)
-                || skill.bundle_name.as_deref().is_some_and(|b| disabled.contains(b));
+                || skill
+                    .bundle_name
+                    .as_deref()
+                    .is_some_and(|b| disabled.contains(b));
             if is_disabled {
                 return Err(format!(
                     "Skill '{}' is currently disabled. Enable it in BioRouter's Skills settings to use it.",
@@ -358,7 +366,10 @@ impl McpClientTrait for SkillsClient {
         let disabled = Self::get_disabled_skills();
         let has_enabled_skills = self.skills.iter().any(|(name, skill)| {
             !disabled.contains(name)
-                && !skill.bundle_name.as_deref().is_some_and(|b| disabled.contains(b))
+                && !skill
+                    .bundle_name
+                    .as_deref()
+                    .is_some_and(|b| disabled.contains(b))
         });
         let tools = if has_enabled_skills {
             Self::get_tools()
@@ -942,9 +953,16 @@ Working dir biorouter content
         )
         .unwrap();
 
-        let ext_skills_dir = temp_dir.path().join("extensions").join("myext").join("skills");
+        let ext_skills_dir = temp_dir
+            .path()
+            .join("extensions")
+            .join("myext")
+            .join("skills");
         let skills = SkillsClient::discover_skills_in_directories(&[ext_skills_dir]);
-        assert!(skills.contains_key("my-ext-skill"), "extension skill not found");
+        assert!(
+            skills.contains_key("my-ext-skill"),
+            "extension skill not found"
+        );
         assert_eq!(
             skills["my-ext-skill"].metadata.description,
             "An extension skill"
@@ -1061,6 +1079,9 @@ Working dir biorouter content
             })
             .collect();
 
-        assert!(filtered.is_empty(), "bundle skill should be filtered when bundle name is disabled");
+        assert!(
+            filtered.is_empty(),
+            "bundle skill should be filtered when bundle name is disabled"
+        );
     }
 }

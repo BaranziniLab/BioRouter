@@ -988,8 +988,7 @@ Example:
 
         Ok(CallToolResult::success(vec![
             Content::resource(resource_contents).with_audience(vec![Role::User]),
-            Content::text("Map rendered inline for the user.")
-                .with_audience(vec![Role::Assistant]),
+            Content::text("Map rendered inline for the user.").with_audience(vec![Role::Assistant]),
         ]))
     }
 

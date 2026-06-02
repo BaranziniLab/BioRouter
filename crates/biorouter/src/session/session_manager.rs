@@ -3,8 +3,8 @@ use crate::conversation::message::Message;
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
 use crate::providers::base::{Provider, MSG_COUNT_FOR_SESSION_NAME_GENERATION};
-use crate::workflow::Workflow;
 use crate::session::extension_data::ExtensionData;
+use crate::workflow::Workflow;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rmcp::model::Role;
@@ -764,6 +764,7 @@ impl SessionStorage {
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn apply_migration(pool: &Pool<Sqlite>, version: i32) -> Result<()> {
         match version {
             1 => {
@@ -853,11 +854,9 @@ impl SessionStorage {
                 .await?;
 
                 if recipe_col_count > 0 {
-                    sqlx::query(
-                        "ALTER TABLE sessions RENAME COLUMN recipe_json TO workflow_json",
-                    )
-                    .execute(pool)
-                    .await?;
+                    sqlx::query("ALTER TABLE sessions RENAME COLUMN recipe_json TO workflow_json")
+                        .execute(pool)
+                        .await?;
                 }
 
                 let user_recipe_col_count: i32 = sqlx::query_scalar(

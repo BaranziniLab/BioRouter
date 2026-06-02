@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use anstream::println;
-use console::style;
 use biorouter::workflow::{Workflow, BUILT_IN_WORKFLOW_DIR_PARAM};
+use console::style;
 
 pub fn print_workflow_explanation(workflow: &Workflow) {
     println!(

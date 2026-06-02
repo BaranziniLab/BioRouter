@@ -110,6 +110,7 @@ fn format_tool_response(
 ///   Databricks is mostly OpenAI compatible, but has some differences (reasoning type, etc)
 ///   some openai compatible endpoints use the anthropic image spec at the content level
 ///   even though the message structure is otherwise following openai, the enum switches this
+#[allow(clippy::too_many_lines)]
 fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<DatabricksMessage> {
     let mut result = Vec::new();
     for message in messages.iter().filter(|m| m.is_agent_visible()) {
@@ -344,7 +345,8 @@ pub fn response_to_message(response: &Value) -> anyhow::Result<Message> {
                                     task: None,
                                     name: function_name.into(),
                                     arguments: Some(object(params)),
-                                    meta: None}),
+                                    meta: None,
+                                }),
                             ));
                         }
                         Err(e) => {
@@ -739,7 +741,8 @@ mod tests {
                     task: None,
                     name: "example".into(),
                     arguments: Some(object!({"param1": "value1"})),
-                    meta: None}),
+                    meta: None,
+                }),
             ),
         ];
 
@@ -785,7 +788,8 @@ mod tests {
                 task: None,
                 name: "example".into(),
                 arguments: Some(object!({"param1": "value1"})),
-                meta: None}),
+                meta: None,
+            }),
         )];
 
         let tool_id = if let MessageContent::ToolRequest(request) = &messages[0].content[0] {
@@ -1164,7 +1168,8 @@ mod tests {
                 task: None,
                 name: "test_tool".into(),
                 arguments: None, // This is the key case the fix addresses
-                meta: None}),
+                meta: None,
+            }),
         );
 
         let spec = format_messages(&[message], &ImageFormat::OpenAi);
@@ -1194,7 +1199,8 @@ mod tests {
                 task: None,
                 name: "test_tool".into(),
                 arguments: Some(object!({"param": "value", "number": 42})),
-                meta: None}),
+                meta: None,
+            }),
         );
 
         let spec = format_messages(&[message], &ImageFormat::OpenAi);

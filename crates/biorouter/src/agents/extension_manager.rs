@@ -225,9 +225,11 @@ async fn child_process_client(
     }
 
     // Use explicitly passed working_dir, falling back to BIOROUTER_WORKING_DIR env var
-    let effective_working_dir = working_dir
-        .map(|p| p.to_path_buf())
-        .or_else(|| std::env::var("BIOROUTER_WORKING_DIR").ok().map(PathBuf::from));
+    let effective_working_dir = working_dir.map(|p| p.to_path_buf()).or_else(|| {
+        std::env::var("BIOROUTER_WORKING_DIR")
+            .ok()
+            .map(PathBuf::from)
+    });
 
     if let Some(ref dir) = effective_working_dir {
         if dir.exists() && dir.is_dir() {
@@ -481,6 +483,7 @@ impl ExtensionManager {
             .any(|ext| ext.supports_resources())
     }
 
+    #[allow(clippy::too_many_lines)]
     pub async fn add_extension(self: &Arc<Self>, config: ExtensionConfig) -> ExtensionResult<()> {
         let config_name = config.key().to_string();
         let sanitized_name = normalize(&config_name);

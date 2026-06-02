@@ -98,19 +98,27 @@ fn test_build_workflow_from_template_success() {
                     }
                 ]"#;
 
-    let (_temp_dir, workflow_content, workflow_dir) = setup_workflow_file(instructions_and_parameters);
+    let (_temp_dir, workflow_content, workflow_dir) =
+        setup_workflow_file(instructions_and_parameters);
 
     let params = vec![("my_name".to_string(), "value".to_string())];
     let workflow =
-        build_workflow_from_template(workflow_content, &workflow_dir, params, NO_USER_PROMPT).unwrap();
+        build_workflow_from_template(workflow_content, &workflow_dir, params, NO_USER_PROMPT)
+            .unwrap();
 
     assert_eq!(workflow.title, "Test Workflow");
     assert_eq!(workflow.description, "A test workflow");
-    assert_eq!(workflow.instructions.unwrap(), "Test instructions with value");
+    assert_eq!(
+        workflow.instructions.unwrap(),
+        "Test instructions with value"
+    );
     assert_eq!(workflow.parameters.as_ref().unwrap().len(), 1);
     let param = &workflow.parameters.as_ref().unwrap()[0];
     assert_eq!(param.key, "my_name");
-    assert!(matches!(param.input_type, WorkflowParameterInputType::String));
+    assert!(matches!(
+        param.input_type,
+        WorkflowParameterInputType::String
+    ));
     assert!(matches!(
         param.requirement,
         WorkflowParameterRequirement::Required
@@ -132,11 +140,13 @@ fn test_build_workflow_from_template_success_variable_in_prompt() {
                     }
                 ]"#;
 
-    let (_temp_dir, workflow_content, workflow_dir) = setup_workflow_file(instructions_and_parameters);
+    let (_temp_dir, workflow_content, workflow_dir) =
+        setup_workflow_file(instructions_and_parameters);
 
     let params = vec![("my_name".to_string(), "value".to_string())];
     let workflow =
-        build_workflow_from_template(workflow_content, &workflow_dir, params, NO_USER_PROMPT).unwrap();
+        build_workflow_from_template(workflow_content, &workflow_dir, params, NO_USER_PROMPT)
+            .unwrap();
 
     assert_eq!(workflow.title, "Test Workflow");
     assert_eq!(workflow.description, "A test workflow");
@@ -144,7 +154,10 @@ fn test_build_workflow_from_template_success_variable_in_prompt() {
     assert_eq!(workflow.prompt.unwrap(), "My prompt value");
     let param = &workflow.parameters.as_ref().unwrap()[0];
     assert_eq!(param.key, "my_name");
-    assert!(matches!(param.input_type, WorkflowParameterInputType::String));
+    assert!(matches!(
+        param.input_type,
+        WorkflowParameterInputType::String
+    ));
     assert!(matches!(
         param.requirement,
         WorkflowParameterRequirement::Required
@@ -164,7 +177,8 @@ fn test_build_workflow_from_template_wrong_parameters_in_workflow_file() {
                         "description": "A test parameter"
                     }
                 ]"#;
-    let (_temp_dir, workflow_content, workflow_dir) = setup_workflow_file(instructions_and_parameters);
+    let (_temp_dir, workflow_content, workflow_dir) =
+        setup_workflow_file(instructions_and_parameters);
 
     let build_workflow_result =
         build_workflow_from_template(workflow_content, &workflow_dir, Vec::new(), NO_USER_PROMPT);
@@ -203,11 +217,13 @@ fn test_build_workflow_from_template_with_default_values_in_workflow_file() {
                         "description": "A test parameter"
                     }
                 ]"#;
-    let (_temp_dir, workflow_content, workflow_dir) = setup_workflow_file(instructions_and_parameters);
+    let (_temp_dir, workflow_content, workflow_dir) =
+        setup_workflow_file(instructions_and_parameters);
     let params = vec![("param_without_default".to_string(), "value1".to_string())];
 
     let workflow =
-        build_workflow_from_template(workflow_content, &workflow_dir, params, NO_USER_PROMPT).unwrap();
+        build_workflow_from_template(workflow_content, &workflow_dir, params, NO_USER_PROMPT)
+            .unwrap();
 
     assert_eq!(workflow.title, "Test Workflow");
     assert_eq!(workflow.description, "A test workflow");
@@ -218,7 +234,8 @@ fn test_build_workflow_from_template_with_default_values_in_workflow_file() {
 }
 
 #[test]
-fn test_build_workflow_from_template_optional_parameters_with_empty_default_values_in_workflow_file() {
+fn test_build_workflow_from_template_optional_parameters_with_empty_default_values_in_workflow_file(
+) {
     let instructions_and_parameters = r#"
                 "instructions": "Test instructions with {{ optional_param }}",
                 "parameters": [
@@ -230,7 +247,8 @@ fn test_build_workflow_from_template_optional_parameters_with_empty_default_valu
                         "default": ""
                     }
                 ]"#;
-    let (_temp_dir, workflow_content, workflow_dir) = setup_workflow_file(instructions_and_parameters);
+    let (_temp_dir, workflow_content, workflow_dir) =
+        setup_workflow_file(instructions_and_parameters);
 
     let workflow =
         build_workflow_from_template(workflow_content, &workflow_dir, Vec::new(), NO_USER_PROMPT)
@@ -252,7 +270,8 @@ fn test_build_workflow_from_template_optional_parameters_without_default_values_
                         "description": "A test parameter"
                     }
                 ]"#;
-    let (_temp_dir, workflow_content, workflow_dir) = setup_workflow_file(instructions_and_parameters);
+    let (_temp_dir, workflow_content, workflow_dir) =
+        setup_workflow_file(instructions_and_parameters);
 
     let build_workflow_result =
         build_workflow_from_template(workflow_content, &workflow_dir, Vec::new(), NO_USER_PROMPT);
@@ -280,7 +299,8 @@ fn test_build_workflow_from_template_wrong_input_type_in_workflow_file() {
                     }
                 ]"#;
     let params = vec![("param".to_string(), "value".to_string())];
-    let (_temp_dir, workflow_content, workflow_dir) = setup_workflow_file(instructions_and_parameters);
+    let (_temp_dir, workflow_content, workflow_dir) =
+        setup_workflow_file(instructions_and_parameters);
 
     let build_workflow_result =
         build_workflow_from_template(workflow_content, &workflow_dir, params, NO_USER_PROMPT);
@@ -301,7 +321,8 @@ fn test_build_workflow_from_template_success_without_parameters() {
     let instructions_and_parameters = r#"
                 "instructions": "Test instructions"
                 "#;
-    let (_temp_dir, workflow_content, workflow_dir) = setup_workflow_file(instructions_and_parameters);
+    let (_temp_dir, workflow_content, workflow_dir) =
+        setup_workflow_file(instructions_and_parameters);
 
     let workflow =
         build_workflow_from_template(workflow_content, &workflow_dir, Vec::new(), NO_USER_PROMPT)
@@ -313,7 +334,8 @@ fn test_build_workflow_from_template_success_without_parameters() {
 #[test]
 fn test_build_workflow_from_template_missing_prompt_and_instructions() {
     let instructions_and_parameters = "";
-    let (_temp_dir, workflow_content, workflow_dir) = setup_workflow_file(instructions_and_parameters);
+    let (_temp_dir, workflow_content, workflow_dir) =
+        setup_workflow_file(instructions_and_parameters);
 
     let build_workflow_result =
         build_workflow_from_template(workflow_content, &workflow_dir, Vec::new(), NO_USER_PROMPT);
@@ -324,9 +346,8 @@ fn test_build_workflow_from_template_missing_prompt_and_instructions() {
     match err {
         WorkflowError::TemplateRendering { source } => {
             let err_str = source.to_string();
-            assert!(
-                err_str.contains("Workflow must specify at least one of `instructions` or `prompt`.")
-            );
+            assert!(err_str
+                .contains("Workflow must specify at least one of `instructions` or `prompt`."));
         }
         _ => panic!("Expected TemplateRendering error"),
     }
@@ -441,7 +462,12 @@ version: 1.0.0
 title: Child Workflow
 description: A child workflow
 instructions: Child instructions"#;
-        create_workflow_file(parent_dir, "sub-workflows", "child.yaml", sub_workflow_content);
+        create_workflow_file(
+            parent_dir,
+            "sub-workflows",
+            "child.yaml",
+            sub_workflow_content,
+        );
 
         let result = resolve_sub_workflow_path("./sub-workflows/child.yaml", parent_dir);
         assert!(result.is_ok());
@@ -460,8 +486,12 @@ version: 1.0.0
 title: Absolute Workflow
 description: A workflow with absolute path
 instructions: Absolute instructions"#;
-        let absolute_path =
-            create_workflow_file(parent_dir, "absolute", "workflow.yaml", sub_workflow_content);
+        let absolute_path = create_workflow_file(
+            parent_dir,
+            "absolute",
+            "workflow.yaml",
+            sub_workflow_content,
+        );
         let absolute_path_str = absolute_path.to_str().unwrap();
 
         let result = resolve_sub_workflow_path(absolute_path_str, parent_dir);
@@ -497,7 +527,12 @@ title: Child Workflow
 description: A child workflow
 instructions: Child instructions
             "#;
-        create_workflow_file(temp_path, "sub-workflows", "child.yaml", sub_workflow_content);
+        create_workflow_file(
+            temp_path,
+            "sub-workflows",
+            "child.yaml",
+            sub_workflow_content,
+        );
         let main_workflow_content = r#"{
                 "version": "1.0.0",
                 "title": "Main Workflow",

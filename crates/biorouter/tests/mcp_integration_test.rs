@@ -121,18 +121,18 @@ enum TestMode {
 #[test_case(
     vec!["npx", "-y", "@modelcontextprotocol/server-everything"],
     vec![
-        CallToolRequestParams { task: None, name: "echo".into(), arguments: Some(object!({"message": "Hello, world!" })) },
-        CallToolRequestParams { task: None, name: "add".into(), arguments: Some(object!({"a": 1, "b": 2 })) },
-        CallToolRequestParams { task: None, name: "longRunningOperation".into(), arguments: Some(object!({"duration": 1, "steps": 5 })) },
-        CallToolRequestParams { task: None, name: "structuredContent".into(), arguments: Some(object!({"location": "11238"})) },
-        CallToolRequestParams { task: None, name: "sampleLLM".into(), arguments: Some(object!({"prompt": "Please provide a quote from The Great Gatsby", "maxTokens": 100 })) }
+        CallToolRequestParams { task: None, meta: None, name: "echo".into(), arguments: Some(object!({"message": "Hello, world!" })) },
+        CallToolRequestParams { task: None, meta: None, name: "add".into(), arguments: Some(object!({"a": 1, "b": 2 })) },
+        CallToolRequestParams { task: None, meta: None, name: "longRunningOperation".into(), arguments: Some(object!({"duration": 1, "steps": 5 })) },
+        CallToolRequestParams { task: None, meta: None, name: "structuredContent".into(), arguments: Some(object!({"location": "11238"})) },
+        CallToolRequestParams { task: None, meta: None, name: "sampleLLM".into(), arguments: Some(object!({"prompt": "Please provide a quote from The Great Gatsby", "maxTokens": 100 })) }
     ],
     vec![]
 )]
 #[test_case(
     vec!["github-mcp-server", "stdio"],
     vec![
-        CallToolRequestParams { task: None, name: "get_file_contents".into(), arguments: Some(object!({
+        CallToolRequestParams { task: None, meta: None, name: "get_file_contents".into(), arguments: Some(object!({
             "owner": "block",
             "repo": "biorouter",
             "path": "README.md",
@@ -144,7 +144,7 @@ enum TestMode {
 #[test_case(
     vec!["uvx", "mcp-server-fetch"],
     vec![
-        CallToolRequestParams { task: None, name: "fetch".into(), arguments: Some(object!({
+        CallToolRequestParams { task: None, meta: None, name: "fetch".into(), arguments: Some(object!({
             "url": "https://example.com",
         })) }
     ],
@@ -153,28 +153,28 @@ enum TestMode {
 #[test_case(
     vec!["cargo", "run", "--quiet", "-p", "biorouter-server", "--bin", "biorouterd", "--", "mcp", "developer"],
     vec![
-        CallToolRequestParams { task: None, name: "text_editor".into(), arguments: Some(object!({
+        CallToolRequestParams { task: None, meta: None, name: "text_editor".into(), arguments: Some(object!({
             "command": "view",
             "path": "/tmp/biorouter_test/biorouter.txt"
         }))},
-        CallToolRequestParams { task: None, name: "text_editor".into(), arguments: Some(object!({
+        CallToolRequestParams { task: None, meta: None, name: "text_editor".into(), arguments: Some(object!({
             "command": "str_replace",
             "path": "/tmp/biorouter_test/biorouter.txt",
             "old_str": "# biorouter",
             "new_str": "# biorouter (modified by test)"
         }))},
         // Test shell command to verify file was modified
-        CallToolRequestParams { task: None, name: "shell".into(), arguments: Some(object!({
+        CallToolRequestParams { task: None, meta: None, name: "shell".into(), arguments: Some(object!({
             "command": "cat /tmp/biorouter_test/biorouter.txt"
         })) },
         // Test text_editor tool to restore original content
-        CallToolRequestParams { task: None, name: "text_editor".into(), arguments: Some(object!({
+        CallToolRequestParams { task: None, meta: None, name: "text_editor".into(), arguments: Some(object!({
             "command": "str_replace",
             "path": "/tmp/biorouter_test/biorouter.txt",
             "old_str": "# biorouter (modified by test)",
             "new_str": "# biorouter"
         }))},
-        CallToolRequestParams { task: None, name: "list_windows".into(), arguments: Some(object!({})) },
+        CallToolRequestParams { task: None, meta: None, name: "list_windows".into(), arguments: Some(object!({})) },
     ],
     vec![]
 )]
@@ -269,6 +269,7 @@ async fn test_replayed_session(
         for tool_call in tool_calls {
             let tool_call = CallToolRequestParams {
                 task: None,
+                meta: None,
                 name: format!("test__{}", tool_call.name).into(),
                 arguments: tool_call.arguments,
             };

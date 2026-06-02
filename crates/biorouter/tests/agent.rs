@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use futures::StreamExt;
 use biorouter::agents::{Agent, AgentEvent};
 use biorouter::config::extensions::{set_extension, ExtensionEntry};
+use futures::StreamExt;
 
 #[cfg(test)]
 mod tests {
@@ -13,7 +13,6 @@ mod tests {
     mod schedule_tool_tests {
         use super::*;
         use async_trait::async_trait;
-        use chrono::{DateTime, Utc};
         use biorouter::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME;
         use biorouter::agents::AgentConfig;
         use biorouter::config::permission::PermissionManager;
@@ -21,6 +20,7 @@ mod tests {
         use biorouter::scheduler::{ScheduledJob, SchedulerError};
         use biorouter::scheduler_trait::SchedulerTrait;
         use biorouter::session::{Session, SessionManager};
+        use chrono::{DateTime, Utc};
         use std::path::PathBuf;
         use std::sync::Arc;
         use tempfile::TempDir;
@@ -361,6 +361,7 @@ mod tests {
             ) -> Result<(Message, ProviderUsage), ProviderError> {
                 let tool_call = CallToolRequestParams {
                     task: None,
+                    meta: None,
                     name: "test_tool".into(),
                     arguments: Some(object!({"param": "value"})),
                 };

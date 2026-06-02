@@ -1,6 +1,4 @@
 use anyhow::Result;
-use clap::{Args, CommandFactory, Parser, Subcommand};
-use clap_complete::{generate, Shell as ClapShell};
 use biorouter::config::Config;
 use biorouter::posthog::get_telemetry_choice;
 use biorouter::workflow::Workflow;
@@ -8,15 +6,17 @@ use biorouter_mcp::mcp_server_runner::{serve, McpCommand};
 use biorouter_mcp::{
     AutoVisualiserRouter, ComputerControllerServer, DeveloperServer, MemoryServer, TutorialServer,
 };
+use clap::{Args, CommandFactory, Parser, Subcommand};
+use clap_complete::{generate, Shell as ClapShell};
 
 use crate::commands::bench::agent_generator;
 use crate::commands::configure::{configure_telemetry_consent_dialog, handle_configure};
 use crate::commands::info::handle_info;
 use crate::commands::project::{handle_project_default, handle_projects_interactive};
-use crate::commands::workflow::{handle_deeplink, handle_list, handle_open, handle_validate};
 use crate::commands::term::{
     handle_term_info, handle_term_init, handle_term_log, handle_term_run, Shell,
 };
+use crate::commands::workflow::{handle_deeplink, handle_list, handle_open, handle_validate};
 
 use crate::commands::schedule::{
     handle_schedule_add, handle_schedule_cron_help, handle_schedule_list, handle_schedule_remove,
@@ -24,9 +24,9 @@ use crate::commands::schedule::{
     handle_schedule_sessions,
 };
 use crate::commands::session::{handle_session_list, handle_session_remove};
+use crate::session::{build_session, SessionBuilderConfig};
 use crate::workflows::extract_from_cli::extract_workflow_info_from_cli;
 use crate::workflows::workflow::{explain_workflow, render_workflow_as_yaml};
-use crate::session::{build_session, SessionBuilderConfig};
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::SessionManager;
 use biorouter_bench::bench_config::BenchRunConfig;
@@ -606,7 +606,9 @@ enum WorkflowCommand {
     #[command(about = "Validate a workflow")]
     Validate {
         /// Workflow name to get workflow file to validate
-        #[arg(help = "workflow name to get workflow file or full path to the workflow file to validate")]
+        #[arg(
+            help = "workflow name to get workflow file or full path to the workflow file to validate"
+        )]
         workflow_name: String,
     },
 
@@ -866,7 +868,11 @@ enum Command {
         #[arg(value_enum)]
         shell: ClapShell,
 
-        #[arg(long, default_value = "biorouter", help = "Provide a custom binary name")]
+        #[arg(
+            long,
+            default_value = "biorouter",
+            help = "Provide a custom binary name"
+        )]
         bin_name: String,
     },
 }
@@ -1199,24 +1205,26 @@ fn parse_run_input(
                 .and_then(|name| name.to_str())
                 .unwrap_or(workflow_name);
 
-            let workflow_version = crate::workflows::search_workflow::load_workflow_file(workflow_name)
-                .ok()
-                .and_then(|rf| {
-                    biorouter::workflow::template_workflow::parse_workflow_content(
-                        &rf.content,
-                        Some(rf.parent_dir.display().to_string()),
-                    )
+            let workflow_version =
+                crate::workflows::search_workflow::load_workflow_file(workflow_name)
                     .ok()
-                    .map(|(r, _)| r.version)
-                })
-                .unwrap_or_else(|| "unknown".to_string());
+                    .and_then(|rf| {
+                        biorouter::workflow::template_workflow::parse_workflow_content(
+                            &rf.content,
+                            Some(rf.parent_dir.display().to_string()),
+                        )
+                        .ok()
+                        .map(|(r, _)| r.version)
+                    })
+                    .unwrap_or_else(|| "unknown".to_string());
 
             if input_opts.explain {
                 explain_workflow(workflow_name, input_opts.params.clone())?;
                 return Ok(None);
             }
             if input_opts.render_workflow {
-                if let Err(err) = render_workflow_as_yaml(workflow_name, input_opts.params.clone()) {
+                if let Err(err) = render_workflow_as_yaml(workflow_name, input_opts.params.clone())
+                {
                     eprintln!("{}: {}", console::style("Error").red().bold(), err);
                     std::process::exit(1);
                 }
@@ -1305,7 +1313,11 @@ async fn handle_run_command(
         session.interactive(input_config.contents).await
     } else if let Some(contents) = input_config.contents {
         let session_start = std::time::Instant::now();
-        let session_type = if workflow.is_some() { "workflow" } else { "run" };
+        let session_type = if workflow.is_some() {
+            "workflow"
+        } else {
+            "run"
+        };
 
         tracing::info!(
             counter.biorouter.session_starts = 1,

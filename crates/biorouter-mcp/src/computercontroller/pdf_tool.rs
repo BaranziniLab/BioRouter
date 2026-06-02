@@ -2,6 +2,7 @@ use lopdf::{content::Content as PdfContent, Document, Object};
 use rmcp::model::{Content, ErrorCode, ErrorData};
 use std::{fs, path::Path};
 
+#[allow(clippy::too_many_lines)]
 pub async fn pdf_tool(
     path: &str,
     operation: &str,

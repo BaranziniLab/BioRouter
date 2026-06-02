@@ -294,6 +294,7 @@ impl Default for ComputerControllerServer {
 
 #[tool_router(router = tool_router)]
 impl ComputerControllerServer {
+    #[allow(clippy::too_many_lines)]
     pub fn new() -> Self {
         // choose_app_strategy().cache_dir()
         // - macOS/Linux: ~/.cache/biorouter/computer_controller/
@@ -417,7 +418,10 @@ impl ComputerControllerServer {
             tool_router: Self::tool_router(),
             cache_dir,
             active_resources: Arc::new(Mutex::new(HashMap::new())),
-            http_client: Client::builder().user_agent("biorouter/1.0").build().unwrap(),
+            http_client: Client::builder()
+                .user_agent("biorouter/1.0")
+                .build()
+                .unwrap(),
             instructions,
             system_automation,
         }

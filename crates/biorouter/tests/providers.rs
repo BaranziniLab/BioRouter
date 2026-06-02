@@ -1,5 +1,4 @@
 use anyhow::Result;
-use dotenvy::dotenv;
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::providers::anthropic::ANTHROPIC_DEFAULT_MODEL;
 use biorouter::providers::azure::AZURE_DEFAULT_MODEL;
@@ -15,6 +14,7 @@ use biorouter::providers::openai::OPEN_AI_DEFAULT_MODEL;
 use biorouter::providers::sagemaker_tgi::SAGEMAKER_TGI_DEFAULT_MODEL;
 use biorouter::providers::snowflake::SNOWFLAKE_DEFAULT_MODEL;
 use biorouter::providers::xai::XAI_DEFAULT_MODEL;
+use dotenvy::dotenv;
 use rmcp::model::{AnnotateAble, Content, RawImageContent};
 use rmcp::model::{CallToolRequestParams, Tool};
 use rmcp::object;
@@ -318,6 +318,7 @@ impl ProviderTester {
             "test_id",
             Ok(CallToolRequestParams {
                 task: None,
+                meta: None,
                 name: "get_screenshot".into(),
                 arguments: Some(object!({})),
             }),

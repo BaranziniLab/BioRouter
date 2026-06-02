@@ -1,5 +1,7 @@
 use crate::routes::errors::ErrorResponse;
-use crate::routes::workflow_utils::{apply_workflow_to_agent, build_workflow_with_parameter_values};
+use crate::routes::workflow_utils::{
+    apply_workflow_to_agent, build_workflow_with_parameter_values,
+};
 use crate::state::AppState;
 use axum::extract::State;
 use axum::routing::post;
@@ -10,10 +12,10 @@ use axum::{
     Json, Router,
 };
 use biorouter::agents::ExtensionConfig;
-use biorouter::workflow::Workflow;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::SessionInsights;
 use biorouter::session::{EnabledExtensionsState, Session};
+use biorouter::workflow::Workflow;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -81,7 +83,9 @@ const MAX_NAME_LENGTH: usize = 200;
 fn is_valid_session_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 128
-        && id.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_')
+        && id
+            .chars()
+            .all(|c| c.is_alphanumeric() || c == '-' || c == '_')
 }
 
 #[utoipa::path(

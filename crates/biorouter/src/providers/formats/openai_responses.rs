@@ -456,7 +456,8 @@ pub fn responses_api_to_message(response: &ResponsesApiResponse) -> anyhow::Resu
                                     task: None,
                                     name: name.clone().into(),
                                     arguments: Some(object(input.clone())),
-                                    meta: None}),
+                                    meta: None,
+                                }),
                             ));
                         }
                     }
@@ -481,7 +482,8 @@ pub fn responses_api_to_message(response: &ResponsesApiResponse) -> anyhow::Resu
                         task: None,
                         name: name.clone().into(),
                         arguments: Some(object(parsed_args)),
-                        meta: None}),
+                        meta: None,
+                    }),
                 ));
             }
         }
@@ -540,7 +542,8 @@ fn process_streaming_output_items(
                                     task: None,
                                     name: name.into(),
                                     arguments: Some(object(parsed_args)),
-                                    meta: None}),
+                                    meta: None,
+                                }),
                             ));
                         }
                     }
@@ -564,7 +567,8 @@ fn process_streaming_output_items(
                         task: None,
                         name: name.into(),
                         arguments: Some(object(parsed_args)),
-                        meta: None}),
+                        meta: None,
+                    }),
                 ));
             }
         }

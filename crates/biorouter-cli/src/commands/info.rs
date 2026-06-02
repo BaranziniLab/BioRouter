@@ -1,8 +1,8 @@
 use anyhow::Result;
-use console::style;
 use biorouter::config::paths::Paths;
 use biorouter::config::Config;
 use biorouter::session::session_manager::{DB_NAME, SESSIONS_FOLDER};
+use console::style;
 use serde_yaml;
 
 fn print_aligned(label: &str, value: &str, width: usize) {

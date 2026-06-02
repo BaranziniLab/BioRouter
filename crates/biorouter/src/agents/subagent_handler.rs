@@ -35,16 +35,21 @@ pub async fn run_complete_subagent_task(
     session_id: String,
     cancellation_token: Option<CancellationToken>,
 ) -> Result<String, anyhow::Error> {
-    let (messages, final_output) =
-        get_agent_messages(config, workflow, task_config, session_id, cancellation_token)
-            .await
-            .map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to execute task: {}", e),
-                    None,
-                )
-            })?;
+    let (messages, final_output) = get_agent_messages(
+        config,
+        workflow,
+        task_config,
+        session_id,
+        cancellation_token,
+    )
+    .await
+    .map_err(|e| {
+        ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            format!("Failed to execute task: {}", e),
+            None,
+        )
+    })?;
 
     if let Some(output) = final_output {
         return Ok(output);
@@ -144,7 +149,11 @@ fn get_agent_messages(
 
         let has_response_schema = workflow.response.is_some();
         agent
-            .apply_workflow_components(workflow.sub_workflows.clone(), workflow.response.clone(), true)
+            .apply_workflow_components(
+                workflow.sub_workflows.clone(),
+                workflow.response.clone(),
+                true,
+            )
             .await;
 
         let tools = agent.list_tools(&session_id, None).await;

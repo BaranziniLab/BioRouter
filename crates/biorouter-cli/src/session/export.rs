@@ -216,6 +216,7 @@ pub fn tool_request_to_markdown(req: &ToolRequest, export_all_content: bool) -> 
     md
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn tool_response_to_markdown(resp: &ToolResponse, export_all_content: bool) -> String {
     let mut md = String::new();
     md.push_str("#### Tool Response:\n");
@@ -533,6 +534,7 @@ mod tests {
                 "command": "ls -la",
                 "working_dir": "/home/user"
             })),
+            meta: None,
         };
         let tool_request = ToolRequest {
             id: "test-id".to_string(),
@@ -559,6 +561,7 @@ mod tests {
                 "path": "/path/to/file.txt",
                 "code_edit": "print('Hello World')"
             })),
+            meta: None,
         };
         let tool_request = ToolRequest {
             id: "test-id".to_string(),
@@ -640,6 +643,7 @@ mod tests {
             task: None,
             name: "test_tool".into(),
             arguments: Some(object!({"param": "value"})),
+            meta: None,
         };
 
         let message = Message::assistant().with_tool_request("test-id", Ok(tool_call));
@@ -702,6 +706,7 @@ mod tests {
             arguments: Some(object!({
                 "command": "cat main.py"
             })),
+            meta: None,
         };
         let tool_request = ToolRequest {
             id: "shell-cat".to_string(),
@@ -757,6 +762,7 @@ if __name__ == "__main__":
             arguments: Some(object!({
                 "command": "git status --porcelain"
             })),
+            meta: None,
         };
         let tool_request = ToolRequest {
             id: "git-status".to_string(),
@@ -804,6 +810,7 @@ if __name__ == "__main__":
             arguments: Some(object!({
                 "command": "cargo build"
             })),
+            meta: None,
         };
         let _tool_request = ToolRequest {
             id: "cargo-build".to_string(),
@@ -857,6 +864,7 @@ warning: unused variable `x`
             arguments: Some(object!({
                 "command": "curl -s https://api.github.com/repos/microsoft/vscode/releases/latest"
             })),
+            meta: None,
         };
         let _tool_request = ToolRequest {
             id: "curl-api".to_string(),
@@ -914,6 +922,7 @@ warning: unused variable `x`
                 "path": "/tmp/fibonacci.js",
                 "file_text": "function fibonacci(n) {\n  if (n <= 1) return n;\n  return fibonacci(n - 1) + fibonacci(n - 2);\n}\n\nconsole.log(fibonacci(10));"
             })),
+            meta: None,
         };
         let tool_request = ToolRequest {
             id: "editor-write".to_string(),
@@ -963,6 +972,7 @@ warning: unused variable `x`
                 "command": "view",
                 "path": "/src/utils.py"
             })),
+            meta: None,
         };
         let _tool_request = ToolRequest {
             id: "editor-view".to_string(),
@@ -1021,6 +1031,7 @@ def process_data(data: List[Dict]) -> List[Dict]:
             arguments: Some(object!({
                 "command": "python nonexistent_script.py"
             })),
+            meta: None,
         };
         let _tool_request = ToolRequest {
             id: "shell-error".to_string(),
@@ -1065,6 +1076,7 @@ Command failed with exit code 2"#;
             arguments: Some(object!({
                 "command": "python -c \"import sys; print(f'Python {sys.version}'); [print(f'{i}^2 = {i**2}') for i in range(1, 6)]\""
             })),
+            meta: None,
         };
         let tool_request = ToolRequest {
             id: "script-exec".to_string(),
@@ -1120,6 +1132,7 @@ Command failed with exit code 2"#;
             arguments: Some(object!({
                 "command": "cd /tmp && ls -la | head -5 && pwd"
             })),
+            meta: None,
         };
         let _tool_request = ToolRequest {
             id: "multi-cmd".to_string(),
@@ -1173,6 +1186,7 @@ drwx------   3 user  staff    96 Dec  6 16:20 com.apple.launchd.abc
             arguments: Some(object!({
                 "command": "rg 'async fn' --type rust -n"
             })),
+            meta: None,
         };
         let tool_request = ToolRequest {
             id: "grep-search".to_string(),
@@ -1225,6 +1239,7 @@ src/middleware.rs:12:async fn auth_middleware(req: Request, next: Next) -> Resul
             arguments: Some(object!({
                 "command": "echo '{\"test\": \"json\"}'"
             })),
+            meta: None,
         };
         let _tool_request = ToolRequest {
             id: "json-test".to_string(),
@@ -1268,6 +1283,7 @@ src/middleware.rs:12:async fn auth_middleware(req: Request, next: Next) -> Resul
             arguments: Some(object!({
                 "command": "npm install express typescript @types/node --save-dev"
             })),
+            meta: None,
         };
         let tool_request = ToolRequest {
             id: "npm-install".to_string(),

@@ -12,10 +12,10 @@ use axum::{
     Json, Router,
 };
 use base64::Engine;
-use futures::{sink::SinkExt, stream::StreamExt};
 use biorouter::agents::{Agent, AgentEvent};
 use biorouter::conversation::message::Message as BioRouterMessage;
 use biorouter::session::session_manager::SessionType;
+use futures::{sink::SinkExt, stream::StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{net::ToSocketAddrs, sync::Arc};

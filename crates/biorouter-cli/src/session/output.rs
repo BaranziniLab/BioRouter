@@ -1,12 +1,12 @@
 use anstream::println;
 use bat::WrappingMode;
-use console::{measure_text_width, style, Color, Term};
 use biorouter::config::Config;
 use biorouter::conversation::message::{
     ActionRequiredData, Message, MessageContent, ToolRequest, ToolResponse,
 };
 use biorouter::providers::canonical::maybe_get_canonical_model;
 use biorouter::utils::safe_truncate;
+use console::{measure_text_width, style, Color, Term};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rmcp::model::{CallToolRequestParams, JsonObject, PromptArgument};
 use serde_json::Value;
@@ -519,7 +519,11 @@ fn render_subagent_request(call: &CallToolRequestParams, debug: bool) {
 
     if let Some(args) = &call.arguments {
         if let Some(Value::String(subworkflow)) = args.get("subworkflow") {
-            println!("{}: {}", style("subworkflow").dim(), style(subworkflow).cyan());
+            println!(
+                "{}: {}",
+                style("subworkflow").dim(),
+                style(subworkflow).cyan()
+            );
         }
 
         if let Some(Value::String(instructions)) = args.get("instructions") {
@@ -821,7 +825,9 @@ pub fn display_session_info(
 }
 
 pub fn display_greeting() {
-    println!("\nbiorouter is running! Enter your instructions, or try asking what biorouter can do.\n");
+    println!(
+        "\nbiorouter is running! Enter your instructions, or try asking what biorouter can do.\n"
+    );
 }
 
 /// Display context window usage with both current and session totals

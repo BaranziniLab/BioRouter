@@ -1326,10 +1326,7 @@ impl DeveloperServer {
                         if !canonical_parent.starts_with(&canonical_cwd) {
                             return Err(ErrorData::new(
                                 rmcp::model::ErrorCode::INVALID_PARAMS,
-                                format!(
-                                    "Path '{}' is outside the working directory",
-                                    path_str
-                                ),
+                                format!("Path '{}' is outside the working directory", path_str),
                                 None,
                             ));
                         }

@@ -122,13 +122,8 @@ impl VersaBedrockProvider {
         // chain (profile files, IMDS, env vars), so users who only set the
         // access key + secret in BioRouter — and have nothing in ~/.aws — still
         // get a working setup.
-        let credentials = Credentials::new(
-            access_key_id,
-            secret_access_key,
-            None,
-            None,
-            "VersaBedrock",
-        );
+        let credentials =
+            Credentials::new(access_key_id, secret_access_key, None, None, "VersaBedrock");
 
         let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .credentials_provider(credentials)
@@ -217,10 +212,7 @@ impl VersaBedrockProvider {
                         .unwrap_or_default()
                         .contains("Input is too long for requested model.") =>
                 {
-                    ProviderError::ContextLengthExceeded(format!(
-                        "Failed to call Bedrock: {:?}",
-                        e
-                    ))
+                    ProviderError::ContextLengthExceeded(format!("Failed to call Bedrock: {:?}", e))
                 }
                 ConverseError::ModelErrorException(e) => {
                     ProviderError::ExecutionError(format!("Failed to call Bedrock: {:?}", e))

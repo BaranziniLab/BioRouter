@@ -238,13 +238,26 @@ impl Provider for OpenAiProvider {
         // most o-series models accept image inputs. Excluded: gpt-5.1-codex
         // (codex variant, text-focused) and o3-mini (text-only per OpenAI docs).
         const OPEN_AI_VISION_MODELS: &[&str] = &[
-            "gpt-5.5", "gpt-5.5-pro",
-            "gpt-5.4", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano",
-            "gpt-5", "gpt-5-2025-08-07", "gpt-5-mini", "gpt-5-nano",
-            "gpt-5.1", "gpt-5.2",
-            "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
-            "gpt-4o", "gpt-4o-mini",
-            "o1", "o3", "o4-mini",
+            "gpt-5.5",
+            "gpt-5.5-pro",
+            "gpt-5.4",
+            "gpt-5.4-pro",
+            "gpt-5.4-mini",
+            "gpt-5.4-nano",
+            "gpt-5",
+            "gpt-5-2025-08-07",
+            "gpt-5-mini",
+            "gpt-5-nano",
+            "gpt-5.1",
+            "gpt-5.2",
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-4.1-nano",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "o1",
+            "o3",
+            "o4-mini",
         ];
         let models = OPEN_AI_KNOWN_MODELS
             .iter()

@@ -174,7 +174,10 @@ fn generate_workflow_filename(title: &str, workflow_library_dir: &Path) -> PathB
     }
 }
 
-pub fn save_workflow_to_file(workflow: Workflow, file_path: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+pub fn save_workflow_to_file(
+    workflow: Workflow,
+    file_path: Option<PathBuf>,
+) -> anyhow::Result<PathBuf> {
     let workflow_library_dir = get_workflow_library_dir(true);
 
     let file_path_value = match file_path {

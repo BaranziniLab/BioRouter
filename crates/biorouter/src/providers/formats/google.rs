@@ -30,6 +30,7 @@ pub fn get_thought_signature(metadata: &Option<ProviderMetadata>) -> Option<&str
 }
 
 /// Convert internal Message format to Google's API message specification
+#[allow(clippy::too_many_lines)]
 pub fn format_messages(messages: &[Message]) -> Vec<Value> {
     let filtered: Vec<_> = messages
         .iter()
@@ -433,7 +434,8 @@ fn process_response_part_impl(
                     task: None,
                     name: name.to_string().into(),
                     arguments,
-                    meta: None}),
+                    meta: None,
+                }),
                 metadata.as_ref(),
             ))
         }
@@ -782,7 +784,8 @@ mod tests {
                     task: None,
                     name: "tool_name".into(),
                     arguments: Some(object(arguments.clone())),
-                    meta: None},
+                    meta: None,
+                },
             ),
             set_up_action_required_message(
                 "id2",
@@ -790,7 +793,8 @@ mod tests {
                     task: None,
                     name: "tool_name_2".into(),
                     arguments: Some(object(arguments.clone())),
-                    meta: None},
+                    meta: None,
+                },
             ),
         ];
         let payload = format_messages(&messages);
@@ -1520,8 +1524,7 @@ data: [DONE]"#;
 
     #[test]
     fn format_messages_emits_inline_data_for_user_image() {
-        let msg = Message::user()
-            .with_image("BASE64DATA".to_string(), "image/png".to_string());
+        let msg = Message::user().with_image("BASE64DATA".to_string(), "image/png".to_string());
         let formatted = format_messages(&[msg]);
         let json_str = serde_json::to_string(&formatted).unwrap();
 

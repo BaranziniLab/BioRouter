@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
-use chrono;
 use biorouter::conversation::message::{Message, MessageContent, MessageMetadata};
 use biorouter::session::{SessionManager, SessionType};
+use chrono;
 use rmcp::model::Role;
 
 use crate::session::{build_session, SessionBuilderConfig};
@@ -178,7 +178,9 @@ pub async fn handle_term_init(
 
 pub async fn handle_term_log(command: String) -> Result<()> {
     let session_id = std::env::var("BIOROUTER_SESSION_ID").map_err(|_| {
-        anyhow!("BIOROUTER_SESSION_ID not set. Run 'eval \"$(biorouter term init <shell>)\"' first.")
+        anyhow!(
+            "BIOROUTER_SESSION_ID not set. Run 'eval \"$(biorouter term init <shell>)\"' first."
+        )
     })?;
 
     let message = Message::new(

@@ -1,6 +1,6 @@
 use crate::workflows::print_workflow::{
-    missing_parameters_command_line, print_workflow_explanation,
-    print_required_parameters_for_template,
+    missing_parameters_command_line, print_required_parameters_for_template,
+    print_workflow_explanation,
 };
 use crate::workflows::search_workflow::load_workflow_file;
 use crate::workflows::secret_discovery::{discover_workflow_secrets, SecretRequirement};
@@ -185,12 +185,18 @@ mod tests {
 
             assert_eq!(workflow.title, "Test Workflow");
             assert_eq!(workflow.description, "A test workflow");
-            assert_eq!(workflow.instructions.unwrap(), "Test instructions with value");
+            assert_eq!(
+                workflow.instructions.unwrap(),
+                "Test instructions with value"
+            );
             // Verify parameters match workflow definition
             assert_eq!(workflow.parameters.as_ref().unwrap().len(), 1);
             let param = &workflow.parameters.as_ref().unwrap()[0];
             assert_eq!(param.key, "my_name");
-            assert!(matches!(param.input_type, WorkflowParameterInputType::String));
+            assert!(matches!(
+                param.input_type,
+                WorkflowParameterInputType::String
+            ));
             assert!(matches!(
                 param.requirement,
                 WorkflowParameterRequirement::Required

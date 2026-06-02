@@ -6,9 +6,9 @@ use std::path::Path;
 
 use crate::agents::extension::ExtensionConfig;
 use crate::agents::types::RetryConfig;
+use crate::utils::contains_unicode_tags;
 use crate::workflow::read_workflow_file_content::read_workflow_file;
 use crate::workflow::yaml_format_utils::reformat_fields_with_multiline_values;
-use crate::utils::contains_unicode_tags;
 use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -16,9 +16,9 @@ use utoipa::ToSchema;
 pub mod build_workflow;
 pub mod local_workflows;
 pub mod read_workflow_file_content;
-mod workflow_extension_adapter;
 pub mod template_workflow;
 pub mod validate_workflow;
+mod workflow_extension_adapter;
 pub mod yaml_format_utils;
 
 pub const BUILT_IN_WORKFLOW_DIR_PARAM: &str = "workflow_dir";
@@ -687,7 +687,10 @@ isGlobal: true"#;
 
         let workflow = Workflow::from_content(content).unwrap();
         assert_eq!(workflow.title, "Nested Workflow Test");
-        assert_eq!(workflow.description, "A test workflow with nested structure");
+        assert_eq!(
+            workflow.description,
+            "A test workflow with nested structure"
+        );
         assert_eq!(
             workflow.instructions,
             Some("Test instructions for nested workflow".to_string())

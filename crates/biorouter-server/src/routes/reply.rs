@@ -6,12 +6,12 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use bytes::Bytes;
-use futures::{stream::StreamExt, Stream};
 use biorouter::agents::{AgentEvent, SessionConfig};
 use biorouter::conversation::message::{Message, MessageContent, TokenState};
 use biorouter::conversation::Conversation;
 use biorouter::session::SessionManager;
+use bytes::Bytes;
+use futures::{stream::StreamExt, Stream};
 use rmcp::model::ServerNotification;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -90,6 +90,14 @@ pub struct SseResponse {
 impl SseResponse {
     fn new(rx: ReceiverStream<String>) -> Self {
         Self { rx }
+    }
+
+    /// Construct an `SseResponse` from a raw `mpsc::Receiver<String>`.
+    /// Each string pushed to the sender is forwarded verbatim as SSE bytes.
+    pub fn from_rx(rx: mpsc::Receiver<String>) -> Self {
+        Self {
+            rx: ReceiverStream::new(rx),
+        }
     }
 }
 

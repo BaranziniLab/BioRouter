@@ -90,7 +90,10 @@ impl ToolInspectionManager {
                 "Running tool inspector"
             );
 
-            match inspector.inspect(tool_requests, messages, biorouter_mode).await {
+            match inspector
+                .inspect(tool_requests, messages, biorouter_mode)
+                .await
+            {
                 Ok(results) => {
                     tracing::debug!(
                         inspector_name = inspector.name(),

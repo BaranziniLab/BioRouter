@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
-use biorouter::workflow::{Workflow, SubWorkflow};
+use biorouter::workflow::{SubWorkflow, Workflow};
 
 use crate::cli::InputConfig;
 use crate::workflows::print_workflow::print_workflow_info;
-use crate::workflows::workflow::load_workflow;
 use crate::workflows::search_workflow::load_workflow_file;
+use crate::workflows::workflow::load_workflow;
 
 pub fn extract_workflow_info_from_cli(
     workflow_name: String,
@@ -101,7 +101,10 @@ mod tests {
 
         assert!(settings.is_some());
         let settings = settings.unwrap();
-        assert_eq!(settings.biorouter_provider, Some("test_provider".to_string()));
+        assert_eq!(
+            settings.biorouter_provider,
+            Some("test_provider".to_string())
+        );
         assert_eq!(settings.biorouter_model, Some("test_model".to_string()));
         assert_eq!(settings.temperature, Some(0.7));
 
@@ -166,7 +169,10 @@ mod tests {
 
         assert!(settings.is_some());
         let settings = settings.unwrap();
-        assert_eq!(settings.biorouter_provider, Some("test_provider".to_string()));
+        assert_eq!(
+            settings.biorouter_provider,
+            Some("test_provider".to_string())
+        );
         assert_eq!(settings.biorouter_model, Some("test_model".to_string()));
         assert_eq!(settings.temperature, Some(0.7));
 
@@ -248,7 +254,8 @@ prompt: sub workflow prompt
 "#;
         let temp_dir = tempfile::tempdir().unwrap();
         let workflow_path: std::path::PathBuf = temp_dir.path().join("test_workflow.yaml");
-        let sub_workflow_path: std::path::PathBuf = temp_dir.path().join("existing_sub_workflow.yaml");
+        let sub_workflow_path: std::path::PathBuf =
+            temp_dir.path().join("existing_sub_workflow.yaml");
 
         std::fs::write(&workflow_path, test_workflow_content).unwrap();
         std::fs::write(&sub_workflow_path, sub_workflow_content).unwrap();

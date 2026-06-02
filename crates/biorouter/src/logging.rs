@@ -50,11 +50,7 @@ pub fn cleanup_old_logs(component: &str) -> Result<()> {
             if let Ok(modified) = metadata.modified() {
                 if modified < two_weeks && path.is_dir() {
                     if let Err(e) = fs::remove_dir_all(&path) {
-                        tracing::warn!(
-                            "Failed to clean up old log directory {:?}: {}",
-                            path,
-                            e
-                        );
+                        tracing::warn!("Failed to clean up old log directory {:?}: {}", path, e);
                     }
                 }
             }

@@ -1,11 +1,11 @@
-use dotenvy::dotenv;
-use futures::StreamExt;
 use biorouter::agents::{Agent, AgentEvent, ExtensionConfig, SessionConfig};
 use biorouter::config::{DEFAULT_EXTENSION_DESCRIPTION, DEFAULT_EXTENSION_TIMEOUT};
 use biorouter::conversation::message::Message;
 use biorouter::providers::create_with_named_model;
 use biorouter::providers::databricks::DATABRICKS_DEFAULT_MODEL;
 use biorouter::session::session_manager::SessionType;
+use dotenvy::dotenv;
+use futures::StreamExt;
 use std::path::PathBuf;
 
 #[tokio::main]

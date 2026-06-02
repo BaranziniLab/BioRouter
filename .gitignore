@@ -43,6 +43,9 @@ ui/desktop/dist/
 
 # Root-level screenshot debug artifacts
 *.png
+# …but the CLI ships these via include_bytes! and they must be tracked
+!crates/biorouter-cli/static/img/logo_dark.png
+!crates/biorouter-cli/static/img/logo_light.png
 
 # Sensitive credentials — never commit
 notarization/

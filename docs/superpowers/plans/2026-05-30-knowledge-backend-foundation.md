@@ -48,7 +48,7 @@ crates/biorouter/src/knowledge/
 ├── manifest.rs                  — per-KB <kb-root>/manifest.yaml
 ├── schema_default.md            — embedded default schema.md template
 ├── service.rs                   — KnowledgeService public surface (create_base, …)
-├── store.rs                     — page CRUD on the wiki/ tree
+├── store.rs                     — page CRUD on the knowledge/ tree
 ├── raw.rs                       — raw source CRUD on the raw/ tree
 ├── git.rs                       — git2-backed init / commit / log / preview / restore / txn
 ├── convert/
@@ -67,7 +67,7 @@ crates/biorouter/src/knowledge/
 │   ├── host_patterns.rs         — preprint / .gov / .edu / etc.
 │   ├── allowlist.rs             — curated publisher allow-list → peer_reviewed
 │   └── agentic.rs               — stubbed fallback (real impl in Plan 2)
-└── graph.rs                     — derive nodes+edges from wiki/, write graph-cache.json
+└── graph.rs                     — derive nodes+edges from knowledge/, write graph-cache.json
 
 crates/biorouter-mcp/src/knowledge/
 └── mod.rs                       — KnowledgeServer, #[tool] methods delegating to service
@@ -498,8 +498,8 @@ pub fn kb_root(root: &Path, id: &str) -> PathBuf {
     root.join(id)
 }
 
-pub fn kb_wiki_dir(root: &Path, id: &str) -> PathBuf {
-    kb_root(root, id).join("wiki")
+pub fn kb_knowledge_dir(root: &Path, id: &str) -> PathBuf {
+    kb_root(root, id).join("knowledge")
 }
 
 pub fn kb_raw_dir(root: &Path, id: &str) -> PathBuf {
@@ -541,7 +541,7 @@ mod tests {
     fn path_helpers_compose() {
         let root = Path::new("/tmp/kb");
         assert_eq!(kb_root(root, "x"), Path::new("/tmp/kb/x"));
-        assert_eq!(kb_wiki_dir(root, "x"), Path::new("/tmp/kb/x/wiki"));
+        assert_eq!(kb_knowledge_dir(root, "x"), Path::new("/tmp/kb/x/knowledge"));
         assert_eq!(kb_raw_dir(root, "x"), Path::new("/tmp/kb/x/raw"));
         assert_eq!(
             kb_internal_dir(root, "x"),
@@ -788,23 +788,23 @@ Create the file with the following content:
 # Knowledge Base — Maintenance Schema
 
 This document tells the LLM how to maintain *this particular* knowledge base.
-It is read fresh on every macro call. Edit it freely to shape the wiki's
+It is read fresh on every macro call. Edit it freely to shape the knowledge
 voice, structure, and conventions.
 
 ## Layout
 
 - `raw/<source-id>/` — original files + derived `source.md` + `meta.yaml`. **Read-only.**
-- `wiki/sources/<source-id>.md` — one page per source; summary + key extractions + outbound links.
-- `wiki/entities/<name>.md` — proper nouns (genes, drugs, people, datasets, methods).
-- `wiki/concepts/<name>.md` — ideas, mechanisms, theories.
-- `wiki/notes/<slug>.md` — ad-hoc pages, including queries-as-pages.
-- `<name>.md` at the root of wiki — cross-cutting hubs (top of the graph).
+- `knowledge/sources/<source-id>.md` — one page per source; summary + key extractions + outbound links.
+- `knowledge/entities/<name>.md` — proper nouns (genes, drugs, people, datasets, methods).
+- `knowledge/concepts/<name>.md` — ideas, mechanisms, theories.
+- `knowledge/notes/<slug>.md` — ad-hoc pages, including queries-as-pages.
+- `<name>.md` at the root of the knowledge folder — cross-cutting hubs (top of the graph).
 - `index.md` — flat catalog of all pages. You maintain it on every change.
 - `log.md` — chronological log; you append on every change.
 
 ## Page format
 
-Every wiki page starts with YAML frontmatter:
+Every knowledge page starts with YAML frontmatter:
 
 ```yaml
 ---
@@ -817,7 +817,7 @@ contradiction: false   # set true to render as a flag node
 ---
 ```
 
-Body is prose markdown with `[[wiki-link]]` cross-references.
+Body is prose markdown with `[[knowledge-link]]` cross-references.
 
 ## Ingest workflow
 
@@ -825,7 +825,7 @@ When `kb_ingest_source` is called:
 
 1. Read `raw/<source-id>/source.md` and `meta.yaml`.
 2. Decide what biomedical entities and concepts the source touches.
-3. Create or update `wiki/sources/<source-id>.md` with: 2-3 sentence summary,
+3. Create or update `knowledge/sources/<source-id>.md` with: 2-3 sentence summary,
    key claims as bullets, methods if applicable, limitations, and outbound
    links to entity/concept pages.
 4. For each entity/concept mentioned: if a page exists, update it; otherwise
@@ -842,16 +842,16 @@ When `kb_ingest_source` is called:
 - Peer-reviewed papers and books outweigh preprints, gray literature, and
   web posts. Reflect this in language: hedge claims sourced only from web
   or personal materials ("according to a blog post", "the user noted").
-- Never silently elevate a web claim to wiki-page assertion — always cite.
+- Never silently elevate a web claim to a knowledge-page assertion — always cite.
 
 ## Query workflow
 
 When `kb_query` is called:
 
-1. Search the wiki for pages matching the question's entities/concepts.
+1. Search the knowledge folder for pages matching the question's entities/concepts.
 2. Read the most relevant pages.
-3. Compose an answer that cites pages with `[[wiki-link]]`.
-4. If `file_as_page=true`, write the answer to `wiki/notes/<slug>.md` and
+3. Compose an answer that cites pages with `[[knowledge-link]]`.
+4. If `file_as_page=true`, write the answer to `knowledge/notes/<slug>.md` and
    include it in the response. Append a log entry of kind `query`.
 
 ## Lint workflow
@@ -1366,10 +1366,10 @@ impl KnowledgeService {
         if kb_root.exists() {
             anyhow::bail!("kb '{id}' already exists at {}", kb_root.display());
         }
-        std::fs::create_dir_all(paths::kb_wiki_dir(&self.root, id).join("entities"))?;
-        std::fs::create_dir_all(paths::kb_wiki_dir(&self.root, id).join("concepts"))?;
-        std::fs::create_dir_all(paths::kb_wiki_dir(&self.root, id).join("sources"))?;
-        std::fs::create_dir_all(paths::kb_wiki_dir(&self.root, id).join("notes"))?;
+        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("entities"))?;
+        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("concepts"))?;
+        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("sources"))?;
+        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("notes"))?;
         std::fs::create_dir_all(paths::kb_raw_dir(&self.root, id))?;
         std::fs::create_dir_all(paths::kb_internal_dir(&self.root, id))?;
 
@@ -1435,10 +1435,10 @@ mod tests {
         assert!(kb.join("index.md").exists());
         assert!(kb.join("log.md").exists());
         assert!(kb.join(".gitignore").exists());
-        assert!(kb.join("wiki/entities").exists());
-        assert!(kb.join("wiki/concepts").exists());
-        assert!(kb.join("wiki/sources").exists());
-        assert!(kb.join("wiki/notes").exists());
+        assert!(kb.join("knowledge/entities").exists());
+        assert!(kb.join("knowledge/concepts").exists());
+        assert!(kb.join("knowledge/sources").exists());
+        assert!(kb.join("knowledge/notes").exists());
         assert!(kb.join("raw").exists());
         assert!(kb.join(".biorouter-knowledge").exists());
         assert!(kb.join(".git").exists());
@@ -1515,10 +1515,10 @@ pub struct PageContent {
 }
 
 pub fn list_pages(kb_root: &Path, prefix: Option<&str>) -> Result<Vec<PageRef>> {
-    let wiki = kb_root.join("wiki");
-    if !wiki.exists() { return Ok(Vec::new()); }
+    let knowledge_dir = kb_root.join("knowledge");
+    if !knowledge_dir.exists() { return Ok(Vec::new()); }
     let mut out = Vec::new();
-    walk_md(&wiki, &wiki, prefix, &mut out)?;
+    walk_md(&knowledge_dir, &knowledge_dir, prefix, &mut out)?;
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }
@@ -1531,7 +1531,7 @@ fn walk_md(base: &Path, dir: &Path, prefix: Option<&str>, out: &mut Vec<PageRef>
             walk_md(base, &p, prefix, out)?;
         } else if p.extension().and_then(|e| e.to_str()) == Some("md") {
             let rel = p.strip_prefix(base).unwrap().to_string_lossy().to_string();
-            let logical = format!("wiki/{rel}");
+            let logical = format!("knowledge/{rel}");
             if let Some(pre) = prefix {
                 if !logical.starts_with(pre) { continue; }
             }
@@ -1582,8 +1582,8 @@ pub fn write_page(
 }
 
 fn resolve_page_path(kb_root: &Path, logical: &str) -> Result<std::path::PathBuf> {
-    if !logical.starts_with("wiki/") && logical != "index.md" && logical != "schema.md" && logical != "log.md" {
-        anyhow::bail!("page path must start with wiki/ or be index.md/schema.md/log.md");
+    if !logical.starts_with("knowledge/") && logical != "index.md" && logical != "schema.md" && logical != "log.md" {
+        anyhow::bail!("page path must start with knowledge/ or be index.md/schema.md/log.md");
     }
     if logical.contains("..") { anyhow::bail!("path traversal not allowed"); }
     Ok(kb_root.join(logical))
@@ -1619,8 +1619,8 @@ mod tests {
     fn write_then_read_roundtrip() {
         let (_dir, kb) = fresh();
         let body = "---\ntitle: HRV\nkind: entity\n---\n\nBody text.";
-        write_page(&kb, "wiki/entities/hrv.md", body, "add HRV", None).unwrap();
-        let p = read_page(&kb, "wiki/entities/hrv.md").unwrap();
+        write_page(&kb, "knowledge/entities/hrv.md", body, "add HRV", None).unwrap();
+        let p = read_page(&kb, "knowledge/entities/hrv.md").unwrap();
         assert_eq!(p.frontmatter["title"], serde_yaml::Value::from("HRV"));
         assert_eq!(p.content.trim(), "Body text.");
     }
@@ -1628,27 +1628,27 @@ mod tests {
     #[test]
     fn list_pages_sorted_and_filtered() {
         let (_dir, kb) = fresh();
-        write_page(&kb, "wiki/entities/b.md", "---\ntitle: B\n---\n", "b", None).unwrap();
-        write_page(&kb, "wiki/concepts/a.md", "---\ntitle: A\n---\n", "a", None).unwrap();
+        write_page(&kb, "knowledge/entities/b.md", "---\ntitle: B\n---\n", "b", None).unwrap();
+        write_page(&kb, "knowledge/concepts/a.md", "---\ntitle: A\n---\n", "a", None).unwrap();
         let all = list_pages(&kb, None).unwrap();
         let paths: Vec<_> = all.iter().map(|p| p.path.as_str()).collect();
-        assert_eq!(paths, vec!["wiki/concepts/a.md", "wiki/entities/b.md"]);
-        let only_entities = list_pages(&kb, Some("wiki/entities/")).unwrap();
+        assert_eq!(paths, vec!["knowledge/concepts/a.md", "knowledge/entities/b.md"]);
+        let only_entities = list_pages(&kb, Some("knowledge/entities/")).unwrap();
         assert_eq!(only_entities.len(), 1);
     }
 
     #[test]
     fn rejects_path_traversal() {
         let (_dir, kb) = fresh();
-        let err = write_page(&kb, "wiki/../escape.md", "x", "x", None).unwrap_err();
+        let err = write_page(&kb, "knowledge/../escape.md", "x", "x", None).unwrap_err();
         assert!(err.to_string().contains("traversal"));
     }
 
     #[test]
-    fn rejects_paths_outside_wiki() {
+    fn rejects_paths_outside_knowledge() {
         let (_dir, kb) = fresh();
         let err = write_page(&kb, "raw/x.md", "x", "x", None).unwrap_err();
-        assert!(err.to_string().contains("wiki/"));
+        assert!(err.to_string().contains("knowledge/"));
     }
 }
 ```
@@ -1704,7 +1704,7 @@ use std::path::Path;
 
 pub struct RawWrite {
     pub source_id: String,
-    pub source_md_path: String,   // wiki-relative for ergonomics (raw/<id>/source.md)
+    pub source_md_path: String,   // kb-relative path (raw/<id>/source.md)
     pub meta_path: String,
 }
 
@@ -3507,7 +3507,7 @@ use crate::knowledge::{
 use anyhow::Result;
 use std::path::Path;
 
-const WIKI_LINK_RE: &str = r"\[\[([^\]]+)\]\]";
+const KNOWLEDGE_LINK_RE: &str = r"\[\[([^\]]+)\]\]";
 
 pub fn derive(kb_root: &Path) -> Result<Graph> {
     let pages = store::list_pages(kb_root, None)?;
@@ -3531,7 +3531,7 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
 
     // Source nodes inherit credibility from raw/<id>/meta.yaml.
     for src in raw::list_sources(kb_root)? {
-        let logical = format!("wiki/sources/{}.md", src.id);
+        let logical = format!("knowledge/sources/{}.md", src.id);
         if let Some(node_id) = id_for_path.get(&logical) {
             if let Some(n) = nodes.iter_mut().find(|n| &n.id == node_id) {
                 n.credibility_tier = Some(src.credibility.tier);
@@ -3540,7 +3540,7 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
     }
 
     let mut edges = Vec::new();
-    let re = regex::Regex::new(WIKI_LINK_RE).unwrap();
+    let re = regex::Regex::new(KNOWLEDGE_LINK_RE).unwrap();
     for p in &pages {
         let abs = kb_root.join(&p.path);
         let body = std::fs::read_to_string(&abs)?;
@@ -3577,7 +3577,7 @@ pub fn read_cache(kb_root: &Path) -> Result<Option<Graph>> {
 
 fn path_to_node_id(logical: &str) -> String {
     logical
-        .strip_prefix("wiki/")
+        .strip_prefix("knowledge/")
         .unwrap_or(logical)
         .trim_end_matches(".md")
         .replace('/', ":")
@@ -3602,10 +3602,10 @@ fn page_kind_of(p: &PageRef) -> PageKind {
         ("concept", _) => PageKind::Concept,
         ("hub", _) => PageKind::Hub,
         ("flag", _) => PageKind::Flag,
-        (_, path) if path.starts_with("wiki/sources/") => PageKind::Source,
-        (_, path) if path.starts_with("wiki/entities/") => PageKind::Entity,
-        (_, path) if path.starts_with("wiki/concepts/") => PageKind::Concept,
-        (_, path) if path.starts_with("wiki/notes/") => PageKind::Note,
+        (_, path) if path.starts_with("knowledge/sources/") => PageKind::Source,
+        (_, path) if path.starts_with("knowledge/entities/") => PageKind::Entity,
+        (_, path) if path.starts_with("knowledge/concepts/") => PageKind::Concept,
+        (_, path) if path.starts_with("knowledge/notes/") => PageKind::Note,
         _ => PageKind::Hub,
     }
 }
@@ -3621,10 +3621,10 @@ mod tests {
         let svc = KnowledgeService::new(dir.path().to_path_buf());
         svc.create_base("k", "K", None).unwrap();
         let kb = dir.path().join("k");
-        write_page(&kb, "wiki/entities/hrv.md",
+        write_page(&kb, "knowledge/entities/hrv.md",
             "---\ntitle: HRV\nkind: entity\n---\nLinks to [[zone-2 base]].",
             "add hrv", None).unwrap();
-        write_page(&kb, "wiki/concepts/zone-2 base.md",
+        write_page(&kb, "knowledge/concepts/zone-2 base.md",
             "---\ntitle: Zone-2 base\nkind: concept\n---\nLinks to [[hrv]].",
             "add z2", None).unwrap();
         (dir, kb)
@@ -3661,7 +3661,7 @@ Expected: 2 passed.
 
 ```bash
 git add crates/biorouter/src/knowledge/graph.rs
-git commit -m "feat(knowledge): derive node/edge graph from wiki pages + cache file"
+git commit -m "feat(knowledge): derive node/edge graph from knowledge pages + cache file"
 ```
 
 ---
@@ -3713,9 +3713,9 @@ Append to the `tests` module in `service.rs`:
         }, None).await.unwrap();
         let kb = svc.root().join("k");
         // Source pages aren't written by add_raw_source — only raw/. So the graph
-        // remains empty until a macro creates wiki/sources/<id>.md (Plan 2).
+        // remains empty until a macro creates knowledge/sources/<id>.md (Plan 2).
         let g = svc.get_graph("k").unwrap();
-        assert_eq!(g.nodes.len(), 0, "no wiki pages yet");
+        assert_eq!(g.nodes.len(), 0, "no knowledge pages yet");
         assert!(kb.join(".biorouter-knowledge/graph-cache.json").exists());
     }
 ```
@@ -3939,7 +3939,7 @@ impl KnowledgeServer {
         ok_json(&m)
     }
 
-    #[tool(name = "kb_list_pages", description = "List wiki pages in a knowledge base.")]
+    #[tool(name = "kb_list_pages", description = "List knowledge pages in a knowledge base.")]
     pub async fn kb_list_pages(&self, p: Parameters<ListPagesParams>) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         let kb_root = biorouter::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
@@ -3947,7 +3947,7 @@ impl KnowledgeServer {
         ok_json(&pages)
     }
 
-    #[tool(name = "kb_read_page", description = "Read a single wiki page by path.")]
+    #[tool(name = "kb_read_page", description = "Read a single knowledge page by path.")]
     pub async fn kb_read_page(&self, p: Parameters<ReadPageParams>) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         let kb_root = biorouter::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
@@ -3955,7 +3955,7 @@ impl KnowledgeServer {
         ok_json(&page)
     }
 
-    #[tool(name = "kb_write_page", description = "Create or overwrite a wiki page and commit.")]
+    #[tool(name = "kb_write_page", description = "Create or overwrite a knowledge page and commit.")]
     pub async fn kb_write_page(&self, p: Parameters<WritePageParams>) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         let kb_root = biorouter::knowledge::paths::kb_root(self.service.root(), &p.kb_id);
@@ -3990,7 +3990,7 @@ impl KnowledgeServer {
         ok_json(&h)
     }
 
-    #[tool(name = "kb_restore_state", description = "Restore the wiki to a previous commit by creating a new commit on top of HEAD.")]
+    #[tool(name = "kb_restore_state", description = "Restore the knowledge folder to a previous commit by creating a new commit on top of HEAD.")]
     pub async fn kb_restore_state(&self, p: Parameters<RestoreParams>) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
         let sha = self.service.restore_state(&p.kb_id, &p.commit_sha).map_err(into_err)?;
@@ -4031,7 +4031,7 @@ Create `crates/biorouter-mcp/src/knowledge/instructions.md`:
 # Knowledge extension
 
 You can create and maintain personal knowledge bases backed by markdown
-wikis + git history. Use these primitive tools to read and write the wiki.
+knowledge folders + git history. Use these primitive tools to read and write the knowledge folder.
 
 Common operations:
 
@@ -4039,9 +4039,9 @@ Common operations:
 - `kb_create_base` — create a new one.
 - `kb_add_raw_source` — ingest a URL or pasted text. The result is filed under
   `raw/<source-id>/` with `source.md` and `meta.yaml`; credibility is auto-classified.
-  This does NOT create wiki pages — read the source and write wiki pages with
+  This does NOT create knowledge pages — read the source and write knowledge pages with
   `kb_write_page` to integrate the source into the knowledge graph.
-- `kb_list_pages` / `kb_read_page` / `kb_write_page` — wiki CRUD.
+- `kb_list_pages` / `kb_read_page` / `kb_write_page` — knowledge CRUD.
 - `kb_get_graph` — derived nodes+edges for visualisation.
 - `kb_list_history` / `kb_restore_state` — git-backed change log + revert.
 
@@ -4154,7 +4154,7 @@ async fn e2e_create_add_query_restore() {
 
     // 6. Graph cache is up to date.
     let g = svc.get_graph("ms").unwrap();
-    assert!(g.nodes.is_empty()); // No wiki pages yet (macros not in this plan)
+    assert!(g.nodes.is_empty()); // No knowledge pages yet (macros not in this plan)
 }
 ```
 
@@ -4233,7 +4233,7 @@ If clippy / fmt fixed anything, commit those tweaks separately under a `chore(kn
 ## What this plan does NOT cover (handled by later plans)
 
 - `kb_set_active` / `kb_get_active` (session-state binding) — Plan 2.
-- `kb_search` (BM25 search over wiki pages) — Plan 2.
+- `kb_search` (BM25 search over knowledge pages) — Plan 2.
 - `kb_append_log` (explicit log.md appending) — Plan 2.
 - The transaction primitives `kb_begin_txn` / `kb_commit_txn` / `kb_abort_txn` as MCP tools — internals are built in Tasks 8/11; the MCP surface is added in Plan 2 where the macros use them.
 - `kb_ingest_source`, `kb_query`, `kb_lint` macros + sub-agent loop — Plan 2.

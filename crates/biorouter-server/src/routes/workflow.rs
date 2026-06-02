@@ -9,7 +9,7 @@ use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use biorouter::workflow::local_workflows;
 use biorouter::workflow::validate_workflow::validate_workflow_template_from_content;
 use biorouter::workflow::Workflow;
-use biorouter::{workflow_deeplink, slash_commands};
+use biorouter::{slash_commands, workflow_deeplink};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -38,8 +38,8 @@ fn clean_data_error(err: &axum::extract::rejection::JsonDataError) -> String {
 
 use crate::routes::errors::ErrorResponse;
 use crate::routes::workflow_utils::{
-    get_all_workflows_manifests, get_workflow_file_path_by_id, short_id_from_path, validate_workflow,
-    WorkflowManifest, WorkflowValidationError,
+    get_all_workflows_manifests, get_workflow_file_path_by_id, short_id_from_path,
+    validate_workflow, WorkflowManifest, WorkflowValidationError,
 };
 use crate::state::AppState;
 
@@ -307,7 +307,9 @@ async fn list_workflows(
         .iter()
         .map(|m| (m.id.clone(), m.file_path.clone()))
         .collect();
-    state.set_workflow_file_hash_map(workflow_file_hash_map).await;
+    state
+        .set_workflow_file_hash_map(workflow_file_hash_map)
+        .await;
 
     let scheduler = state.scheduler();
     let scheduled_jobs = scheduler.list_scheduled_jobs().await;
@@ -523,12 +525,13 @@ fn deserialize_save_workflow_request(value: Value) -> Result<SaveWorkflowRequest
 async fn parse_workflow(
     Json(request): Json<ParseWorkflowRequest>,
 ) -> Result<Json<ParseWorkflowResponse>, ErrorResponse> {
-    let workflow = validate_workflow_template_from_content(&request.content, None).map_err(|e| {
-        ErrorResponse {
-            message: format!("Invalid workflow format: {}", e),
-            status: StatusCode::BAD_REQUEST,
-        }
-    })?;
+    let workflow =
+        validate_workflow_template_from_content(&request.content, None).map_err(|e| {
+            ErrorResponse {
+                message: format!("Invalid workflow format: {}", e),
+                status: StatusCode::BAD_REQUEST,
+            }
+        })?;
 
     Ok(Json(ParseWorkflowResponse { workflow }))
 }

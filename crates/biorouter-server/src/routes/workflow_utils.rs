@@ -117,7 +117,9 @@ pub async fn get_workflow_file_path_by_id(
         );
     }
 
-    state.set_workflow_file_hash_map(workflow_file_hash_map).await;
+    state
+        .set_workflow_file_hash_map(workflow_file_hash_map)
+        .await;
 
     resolved_path.ok_or_else(|| ErrorResponse {
         message: format!("Workflow not found: {}", id),
@@ -173,6 +175,7 @@ pub async fn apply_workflow_to_agent(
     workflow.instructions.as_ref().map(|instructions| {
         let mut context: HashMap<&str, Value> = HashMap::new();
         context.insert("workflow_instructions", Value::String(instructions.clone()));
-        render_global_file("desktop_workflow_instruction.md", &context).expect("Prompt should render")
+        render_global_file("desktop_workflow_instruction.md", &context)
+            .expect("Prompt should render")
     })
 }

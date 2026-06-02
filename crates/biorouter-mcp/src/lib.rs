@@ -12,6 +12,7 @@ pub static APP_STRATEGY: Lazy<AppStrategyArgs> = Lazy::new(|| AppStrategyArgs {
 pub mod autovisualiser;
 pub mod computercontroller;
 pub mod developer;
+pub mod knowledge;
 pub mod mcp_server_runner;
 mod memory;
 pub mod tutorial;
@@ -19,6 +20,7 @@ pub mod tutorial;
 pub use autovisualiser::AutoVisualiserRouter;
 pub use computercontroller::ComputerControllerServer;
 pub use developer::rmcp_developer::DeveloperServer;
+pub use knowledge::KnowledgeServer;
 pub use memory::MemoryServer;
 pub use tutorial::TutorialServer;
 
@@ -68,5 +70,21 @@ pub static BUILTIN_EXTENSIONS: Lazy<HashMap<&'static str, BuiltinDef>> = Lazy::n
         builtin!(computercontroller, ComputerControllerServer),
         builtin!(memory, MemoryServer),
         builtin!(tutorial, TutorialServer),
+        (
+            "knowledge",
+            BuiltinDef {
+                name: "knowledge",
+                spawn_server: {
+                    fn spawn(r: tokio::io::DuplexStream, w: tokio::io::DuplexStream) {
+                        spawn_and_serve(
+                            "knowledge",
+                            KnowledgeServer::new().expect("init knowledge server"),
+                            (r, w),
+                        );
+                    }
+                    spawn
+                },
+            },
+        ),
     ])
 });

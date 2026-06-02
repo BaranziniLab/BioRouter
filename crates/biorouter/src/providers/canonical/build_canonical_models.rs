@@ -8,11 +8,11 @@
 ///   cargo run --bin build_canonical_models --no-check   # Build only, skip checker
 ///
 use anyhow::{Context, Result};
-use clap::Parser;
 use biorouter::providers::canonical::{
     canonical_name, CanonicalModel, CanonicalModelRegistry, Pricing,
 };
 use biorouter::providers::{canonical::ModelMapping, create_with_named_model};
+use clap::Parser;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};

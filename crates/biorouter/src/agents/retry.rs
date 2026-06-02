@@ -32,7 +32,8 @@ pub enum RetryResult {
 const BIOROUTER_WORKFLOW_RETRY_TIMEOUT_SECONDS: &str = "BIOROUTER_WORKFLOW_RETRY_TIMEOUT_SECONDS";
 
 /// Environment variable for configuring on_failure timeout globally
-const BIOROUTER_WORKFLOW_ON_FAILURE_TIMEOUT_SECONDS: &str = "BIOROUTER_WORKFLOW_ON_FAILURE_TIMEOUT_SECONDS";
+const BIOROUTER_WORKFLOW_ON_FAILURE_TIMEOUT_SECONDS: &str =
+    "BIOROUTER_WORKFLOW_ON_FAILURE_TIMEOUT_SECONDS";
 
 /// Manages retry state and operations for agent execution
 #[derive(Debug)]
@@ -165,7 +166,9 @@ fn get_retry_timeout(retry_config: &RetryConfig) -> Duration {
         .timeout_seconds
         .or_else(|| {
             let config = Config::global();
-            config.get_param(BIOROUTER_WORKFLOW_RETRY_TIMEOUT_SECONDS).ok()
+            config
+                .get_param(BIOROUTER_WORKFLOW_RETRY_TIMEOUT_SECONDS)
+                .ok()
         })
         .unwrap_or(DEFAULT_RETRY_TIMEOUT_SECONDS);
 

@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use crate::agents::extension::ExtensionInfo;
 use crate::hints::load_hints::{load_hint_files, AGENTS_MD_FILENAME, BIOROUTER_HINTS_FILENAME};
 use crate::{
-    config::{Config, BioRouterMode},
+    config::{BioRouterMode, Config},
     prompt_template,
     utils::sanitize_unicode_tags,
 };

@@ -34,8 +34,12 @@ where
         validate_workflow_template_from_content(&workflow_content, Some(workflow_dir_str.clone()))?
             .parameters;
 
-    let (params_for_template, missing_params) =
-        apply_values_to_parameters(&params, workflow_parameters, &workflow_dir_str, user_prompt_fn)?;
+    let (params_for_template, missing_params) = apply_values_to_parameters(
+        &params,
+        workflow_parameters,
+        &workflow_dir_str,
+        user_prompt_fn,
+    )?;
 
     let rendered_content = if missing_params.is_empty() {
         render_workflow_content_with_params(&workflow_content, &params_for_template)?
@@ -55,9 +59,13 @@ pub fn build_workflow_from_template<F>(
 where
     F: Fn(&str, &str) -> Result<String, anyhow::Error>,
 {
-    let (rendered_content, missing_params) =
-        render_workflow_template(workflow_content, workflow_dir, params.clone(), user_prompt_fn)
-            .map_err(|source| WorkflowError::TemplateRendering { source })?;
+    let (rendered_content, missing_params) = render_workflow_template(
+        workflow_content,
+        workflow_dir,
+        params.clone(),
+        user_prompt_fn,
+    )
+    .map_err(|source| WorkflowError::TemplateRendering { source })?;
 
     if !missing_params.is_empty() {
         return Err(WorkflowError::MissingParams {
@@ -94,7 +102,10 @@ where
             .parameters;
 
     let param_pairs: Vec<(String, String)> = if let Some(workflow_params) = &workflow_parameters {
-        let required_count = workflow_params.iter().filter(|p| p.default.is_none()).count();
+        let required_count = workflow_params
+            .iter()
+            .filter(|p| p.default.is_none())
+            .count();
         if params.len() < required_count {
             let required_keys: Vec<String> = workflow_params
                 .iter()

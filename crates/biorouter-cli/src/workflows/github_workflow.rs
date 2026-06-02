@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
-use console::style;
 use biorouter::workflow::template_workflow::parse_workflow_content;
 use biorouter::workflow::WORKFLOW_FILE_EXTENSIONS;
+use console::style;
 use serde::{Deserialize, Serialize};
 
 use biorouter::workflow::read_workflow_file_content::WorkflowFile;
@@ -94,7 +94,10 @@ fn read_workflow_file(download_dir: &Path) -> Result<(String, PathBuf)> {
     ))
 }
 
-fn clone_and_download_workflow(workflow_name: &str, workflow_repo_full_name: &str) -> Result<PathBuf> {
+fn clone_and_download_workflow(
+    workflow_name: &str,
+    workflow_repo_full_name: &str,
+) -> Result<PathBuf> {
     let local_repo_path = ensure_repo_cloned(workflow_repo_full_name)?;
     fetch_origin(&local_repo_path)?;
     get_folder_from_github(&local_repo_path, workflow_name)
@@ -296,7 +299,11 @@ fn check_github_directory_for_workflow(repo: &str, dir_name: &str) -> Result<Wor
     Err(anyhow!("No workflow file found in directory: {}", dir_name))
 }
 
-fn get_github_workflow_info(repo: &str, dir_name: &str, workflow_filename: &str) -> Result<WorkflowInfo> {
+fn get_github_workflow_info(
+    repo: &str,
+    dir_name: &str,
+    workflow_filename: &str,
+) -> Result<WorkflowInfo> {
     use serde_json::Value;
     use std::process::Command;
 
@@ -331,7 +338,8 @@ fn get_github_workflow_info(repo: &str, dir_name: &str, workflow_filename: &str)
             .map_err(|e| anyhow!("Failed to convert content to string: {}", e))?;
 
         // Parse the workflow content
-        let (workflow, _) = parse_workflow_content(&content, Some(format!("{}/{}", repo, dir_name)))?;
+        let (workflow, _) =
+            parse_workflow_content(&content, Some(format!("{}/{}", repo, dir_name)))?;
 
         return Ok(WorkflowInfo {
             name: dir_name.to_string(),

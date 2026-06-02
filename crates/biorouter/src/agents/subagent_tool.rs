@@ -16,7 +16,7 @@ use crate::agents::AgentConfig;
 use crate::providers;
 use crate::workflow::build_workflow::build_workflow_from_template;
 use crate::workflow::local_workflows::load_local_workflow_file;
-use crate::workflow::{Workflow, SubWorkflow};
+use crate::workflow::{SubWorkflow, Workflow};
 
 pub const SUBAGENT_TOOL_NAME: &str = "subagent";
 
@@ -155,7 +155,9 @@ fn get_subworkflow_params_description(sub_workflow: &SubWorkflow) -> String {
                         })
                         .map(|p| {
                             let req = match p.requirement {
-                                crate::workflow::WorkflowParameterRequirement::Required => "[required]",
+                                crate::workflow::WorkflowParameterRequirement::Required => {
+                                    "[required]"
+                                }
                                 _ => "[optional]",
                             };
                             format!("{} {}", p.key, req)

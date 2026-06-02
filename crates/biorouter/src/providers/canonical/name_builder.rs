@@ -301,8 +301,8 @@ mod tests {
 
         // === Direct provider (non-hosting) ===
         assert_eq!(
-            map_to_canonical_model("anthropic", "claude-3-5-sonnet-20241022", r),
-            Some("anthropic/claude-3.5-sonnet".to_string())
+            map_to_canonical_model("anthropic", "claude-sonnet-4-20250514", r),
+            Some("anthropic/claude-sonnet-4".to_string())
         );
         assert_eq!(
             map_to_canonical_model("openai", "gpt-4o-latest", r),
@@ -315,22 +315,22 @@ mod tests {
 
         // === OpenRouter (already canonical format) ===
         assert_eq!(
-            map_to_canonical_model("openrouter", "anthropic/claude-3.5-sonnet", r),
-            Some("anthropic/claude-3.5-sonnet".to_string())
+            map_to_canonical_model("openrouter", "anthropic/claude-sonnet-4", r),
+            Some("anthropic/claude-sonnet-4".to_string())
         );
 
         // === Anthropic Claude - basic ===
         assert_eq!(
-            map_to_canonical_model("databricks", "claude-3-5-sonnet", r),
-            Some("anthropic/claude-3.5-sonnet".to_string())
+            map_to_canonical_model("databricks", "claude-sonnet-4", r),
+            Some("anthropic/claude-sonnet-4".to_string())
         );
         assert_eq!(
-            map_to_canonical_model("databricks", "claude-3-5-sonnet-20241022", r),
-            Some("anthropic/claude-3.5-sonnet".to_string())
+            map_to_canonical_model("databricks", "claude-sonnet-4-20250514", r),
+            Some("anthropic/claude-sonnet-4".to_string())
         );
         assert_eq!(
-            map_to_canonical_model("databricks", "claude-3-5-sonnet-latest", r),
-            Some("anthropic/claude-3.5-sonnet".to_string())
+            map_to_canonical_model("databricks", "claude-sonnet-4-latest", r),
+            Some("anthropic/claude-sonnet-4".to_string())
         );
 
         // 3.x: {model}-{version} → {version}-{model}
@@ -361,8 +361,8 @@ mod tests {
             Some("anthropic/claude-sonnet-4".to_string())
         );
         assert_eq!(
-            map_to_canonical_model("bedrock", "claude-3-5-sonnet", r),
-            Some("anthropic/claude-3.5-sonnet".to_string())
+            map_to_canonical_model("bedrock", "claude-sonnet-4-6", r),
+            Some("anthropic/claude-sonnet-4.6".to_string())
         );
 
         // === OpenAI GPT ===
@@ -479,8 +479,8 @@ mod tests {
 
         // === Provider-prefixed extraction ===
         assert_eq!(
-            map_to_canonical_model("databricks", "anthropic-claude-3-5-sonnet", r),
-            Some("anthropic/claude-3.5-sonnet".to_string())
+            map_to_canonical_model("databricks", "anthropic-claude-sonnet-4", r),
+            Some("anthropic/claude-sonnet-4".to_string())
         );
         assert_eq!(
             map_to_canonical_model("databricks", "openai-gpt-4o", r),

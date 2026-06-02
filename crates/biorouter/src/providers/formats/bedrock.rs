@@ -304,7 +304,8 @@ pub fn from_bedrock_content_block(block: &bedrock::ContentBlock) -> Result<Messa
                 task: None,
                 name: tool_use.name.clone().into(),
                 arguments: Some(object(from_bedrock_json(&tool_use.input.clone())?)),
-                meta: None}),
+                meta: None,
+            }),
         ),
         bedrock::ContentBlock::ToolResult(tool_res) => MessageContent::tool_response(
             tool_res.tool_use_id.to_string(),

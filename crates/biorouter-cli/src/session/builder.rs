@@ -1,6 +1,5 @@
 use super::output;
 use super::CliSession;
-use console::style;
 use biorouter::agents::Agent;
 use biorouter::config::get_enabled_extensions;
 use biorouter::config::resolve_extensions_for_new_session;
@@ -8,9 +7,10 @@ use biorouter::config::{
     extensions::get_extension_by_name, get_all_extensions, Config, ExtensionConfig,
 };
 use biorouter::providers::create;
-use biorouter::workflow::Workflow;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, ExtensionState};
+use biorouter::workflow::Workflow;
+use console::style;
 use rustyline::EditMode;
 use std::collections::BTreeSet;
 use std::process;
@@ -363,6 +363,7 @@ fn check_missing_extensions_or_exit(saved_extensions: &[ExtensionConfig], intera
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     biorouter::posthog::set_session_context("cli", session_config.resume);
 
@@ -630,7 +631,8 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     }
 
     // Only override system prompt if a system override exists
-    let system_prompt_file: Option<String> = config.get_param("BIOROUTER_SYSTEM_PROMPT_FILE_PATH").ok();
+    let system_prompt_file: Option<String> =
+        config.get_param("BIOROUTER_SYSTEM_PROMPT_FILE_PATH").ok();
     if let Some(ref path) = system_prompt_file {
         let override_prompt =
             std::fs::read_to_string(path).expect("Failed to read system prompt file");

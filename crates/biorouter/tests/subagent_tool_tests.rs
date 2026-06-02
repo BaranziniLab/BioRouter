@@ -1,5 +1,5 @@
 use biorouter::agents::subagent_tool::{create_subagent_tool, SUBAGENT_TOOL_NAME};
-use biorouter::workflow::{Workflow, SubWorkflow};
+use biorouter::workflow::{SubWorkflow, Workflow};
 use std::collections::HashMap;
 use tempfile::TempDir;
 
@@ -25,7 +25,11 @@ fn write_workflow(temp_dir: &TempDir, name: &str, content: &str) -> String {
     path.to_string_lossy().to_string()
 }
 
-fn make_subworkflow(path: String, name: &str, values: Option<HashMap<String, String>>) -> SubWorkflow {
+fn make_subworkflow(
+    path: String,
+    name: &str,
+    values: Option<HashMap<String, String>>,
+) -> SubWorkflow {
     SubWorkflow {
         name: name.to_string(),
         path,

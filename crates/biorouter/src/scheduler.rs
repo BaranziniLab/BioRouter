@@ -20,10 +20,10 @@ use crate::conversation::message::Message;
 use crate::conversation::Conversation;
 use crate::posthog;
 use crate::providers::create;
-use crate::workflow::Workflow;
 use crate::scheduler_trait::SchedulerTrait;
 use crate::session::session_manager::SessionType;
 use crate::session::{Session, SessionManager};
+use crate::workflow::Workflow;
 
 type RunningTasksMap = HashMap<String, CancellationToken>;
 type JobsMap = HashMap<String, (JobId, ScheduledJob)>;

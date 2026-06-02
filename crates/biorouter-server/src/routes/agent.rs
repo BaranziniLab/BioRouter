@@ -1,6 +1,7 @@
 use crate::routes::errors::ErrorResponse;
 use crate::routes::workflow_utils::{
-    apply_workflow_to_agent, build_workflow_with_parameter_values, load_workflow_by_id, validate_workflow,
+    apply_workflow_to_agent, build_workflow_with_parameter_values, load_workflow_by_id,
+    validate_workflow,
 };
 use crate::state::AppState;
 use axum::response::IntoResponse;
@@ -16,15 +17,15 @@ use biorouter::biorouter_apps::{fetch_mcp_apps, BioRouterApp, McpAppCache};
 use base64::Engine;
 use biorouter::agents::ExtensionConfig;
 use biorouter::config::resolve_extensions_for_new_session;
-use biorouter::config::{Config, BioRouterMode};
+use biorouter::config::{BioRouterMode, Config};
 use biorouter::model::ModelConfig;
 use biorouter::prompt_template::render_global_file;
 use biorouter::providers::create;
-use biorouter::workflow::Workflow;
-use biorouter::workflow_deeplink;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::{EnabledExtensionsState, Session};
+use biorouter::workflow::Workflow;
+use biorouter::workflow_deeplink;
 use biorouter::{
     agents::{extension::ToolInfo, extension_manager::get_parameter_names},
     config::permission::PermissionLevel,

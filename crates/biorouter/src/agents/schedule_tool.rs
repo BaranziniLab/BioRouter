@@ -10,8 +10,8 @@ use chrono::Utc;
 use rmcp::model::{Content, ErrorCode, ErrorData};
 
 use super::Agent;
-use crate::workflow::Workflow;
 use crate::scheduler_trait::SchedulerTrait;
+use crate::workflow::Workflow;
 
 impl Agent {
     /// Handle schedule management tool calls

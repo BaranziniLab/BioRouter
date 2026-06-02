@@ -1,7 +1,7 @@
 use crate::agents::{Agent, AgentConfig};
 use crate::config::paths::Paths;
 use crate::config::permission::PermissionManager;
-use crate::config::{Config, BioRouterMode};
+use crate::config::{BioRouterMode, Config};
 use crate::scheduler::Scheduler;
 use crate::scheduler_trait::SchedulerTrait;
 use crate::session::SessionManager;
@@ -82,7 +82,9 @@ impl AgentManager {
             }
         }
 
-        let mode = Config::global().get_biorouter_mode().unwrap_or(BioRouterMode::Auto);
+        let mode = Config::global()
+            .get_biorouter_mode()
+            .unwrap_or(BioRouterMode::Auto);
         let permission_manager = PermissionManager::instance();
         let config = AgentConfig::new(
             Arc::clone(&self.session_manager),

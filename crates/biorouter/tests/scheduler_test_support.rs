@@ -7,7 +7,8 @@ use tokio::sync::Mutex;
 
 use biorouter::providers::base::Provider as BioRouterProvider;
 
-static TEST_PROVIDER: Lazy<Mutex<Option<Arc<dyn BioRouterProvider>>>> = Lazy::new(|| Mutex::new(None));
+static TEST_PROVIDER: Lazy<Mutex<Option<Arc<dyn BioRouterProvider>>>> =
+    Lazy::new(|| Mutex::new(None));
 
 /// Register a default provider for scheduler job executions when running under tests.
 /// The provider will be used by [`Scheduler`] when no provider_override is supplied.

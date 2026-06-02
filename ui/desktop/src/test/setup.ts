@@ -1,6 +1,7 @@
 import '@testing-library/jest-dom';
 import { vi, afterEach } from 'vitest';
 import { cleanup } from '@testing-library/react';
+import { client } from '../api/client.gen';
 
 // This is the standard setup to ensure that React Testing Library's
 // automatic cleanup runs after each test.
@@ -51,4 +52,8 @@ const memoryLocal = new MemoryStorage();
 Object.defineProperty(globalThis, 'localStorage', {
   value: memoryLocal,
   writable: true,
+});
+
+client.setConfig({
+  baseUrl: 'http://localhost',
 });

@@ -15,6 +15,7 @@ fn format_date(date: DateTime<chrono::Utc>) -> String {
 /// Handle the default project command
 ///
 /// Offers options to resume the most recently accessed project
+#[allow(clippy::too_many_lines)]
 pub fn handle_project_default() -> Result<()> {
     let tracker = ProjectTracker::load()?;
     let mut projects = tracker.list_projects();
@@ -162,6 +163,7 @@ pub fn handle_project_default() -> Result<()> {
 /// Handle the interactive projects command
 ///
 /// Shows a list of projects and lets the user select one to resume
+#[allow(clippy::too_many_lines)]
 pub fn handle_projects_interactive() -> Result<()> {
     let tracker = ProjectTracker::load()?;
     let mut projects = tracker.list_projects();

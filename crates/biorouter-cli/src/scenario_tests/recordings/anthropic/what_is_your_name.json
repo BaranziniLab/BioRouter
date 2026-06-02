@@ -281,7 +281,7 @@
         "content": [
           {
             "type": "text",
-            "text": "My name is **goose**. I'm a general-purpose AI agent created by Block, the parent company of Square, CashApp, and Tidal. I'm being developed as an open-source software project and can help you with various tasks using different extensions and tools.\n\nIs there something specific you'd like help with today?"
+            "text": "My name is **biorouter**. I'm a general-purpose AI agent created by Wanjun Gu from the Baranzini lab at UCSF. I'm being developed as an open-source software project and can help you with various tasks using different extensions and tools.\n\nIs there something specific you'd like help with today?"
           }
         ],
         "metadata": {

@@ -116,8 +116,7 @@ impl Provider for GoogleProvider {
         let models: Vec<ModelInfo> = GOOGLE_KNOWN_MODELS
             .iter()
             .map(|&name| {
-                ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit())
-                    .with_vision()
+                ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit()).with_vision()
             })
             .collect();
 
