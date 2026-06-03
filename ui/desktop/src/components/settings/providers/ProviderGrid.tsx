@@ -11,6 +11,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../ui/dialo
 import CustomProviderForm from './modal/subcomponents/forms/CustomProviderForm';
 import { SwitchModelModal } from '../models/subcomponents/SwitchModelModal';
 import type { View } from '../../../utils/navigationUtils';
+import { getOrderedProviderGroups } from './providerOrdering';
 
 const GridLayout = memo(function GridLayout({ children }: { children: React.ReactNode }) {
   return <div className="flex flex-col">{children}</div>;
@@ -161,33 +162,10 @@ function ProviderCards({
   );
 
   const { institutionalCards, localCards, commercialCards } = useMemo(() => {
-    const HIDDEN_PROVIDERS = new Set(['claude-code', 'codex', 'cursor-agent']);
-    const INSTITUTIONAL = new Set(['versa_azure', 'versa_bedrock']);
-    const LOCAL = new Set(['ollama']);
-
-    const priorityOrder: Record<string, number> = {
-      versa_azure: 0,
-      versa_bedrock: 1,
-      ollama: 0,
-      azure_openai: 0,
-      aws_bedrock: 1,
-      anthropic: 2,
-      openai: 3,
-      google: 4,
-    };
-
     const providersArray = Array.isArray(providers) ? providers : [];
-    const visible = providersArray.filter((p) => !HIDDEN_PROVIDERS.has(p.name));
 
     const makeCards = (subset: ProviderDetails[]) =>
-      [...subset]
-        .sort((a, b) => {
-          const pa = priorityOrder[a.name] ?? 999;
-          const pb = priorityOrder[b.name] ?? 999;
-          if (pa !== pb) return pa - pb;
-          return a.name.localeCompare(b.name);
-        })
-        .map((provider) => (
+      subset.map((provider) => (
           <ProviderCard
             key={provider.name}
             provider={provider}
@@ -197,10 +175,15 @@ function ProviderCards({
           />
         ));
 
+    const groups = getOrderedProviderGroups(providersArray);
+    const institutional = groups.find((group) => group.key === 'institutional')?.providers ?? [];
+    const local = groups.find((group) => group.key === 'local')?.providers ?? [];
+    const commercial = groups.find((group) => group.key === 'commercial')?.providers ?? [];
+
     return {
-      institutionalCards: makeCards(visible.filter((p) => INSTITUTIONAL.has(p.name))),
-      localCards: makeCards(visible.filter((p) => LOCAL.has(p.name))),
-      commercialCards: makeCards(visible.filter((p) => !INSTITUTIONAL.has(p.name) && !LOCAL.has(p.name))),
+      institutionalCards: makeCards(institutional),
+      localCards: makeCards(local),
+      commercialCards: makeCards(commercial),
     };
   }, [providers, isOnboarding, configureProviderViaModal, handleProviderLaunchWithModelSelection]);
 
