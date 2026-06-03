@@ -37,7 +37,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
       <div className="flex flex-col gap-3 border-b border-border-subtle px-6 py-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-center gap-2 text-xs text-text-muted">
           <span className="truncate font-medium text-text-default">
-            {activeKb?.name ?? 'No knowledge base'}
+            {activeKb?.name ?? 'No knowledge base in focus'}
           </span>
           {graph && (
             <span>
@@ -94,7 +94,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
       <div className="flex-1 relative min-h-0">
         {!activeKbId && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-text-muted">
-            Select a knowledge base to see its graph.
+            Focus a knowledge base to see its graph.
           </div>
         )}
         {activeKbId && error && (

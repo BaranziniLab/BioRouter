@@ -491,11 +491,14 @@ pub struct SetActiveBody {
     pub kb_id: Option<String>,
     #[serde(default)]
     pub session_id: Option<String>,
+    #[serde(default)]
+    pub hidden_kbs: Option<Vec<String>>,
 }
 
 #[derive(Serialize, ToSchema)]
 pub struct ActiveKbResponse {
     pub active_kb: Option<String>,
+    pub hidden_kbs: Vec<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -515,15 +518,26 @@ pub async fn get_active(
     State(svc): State<Arc<KnowledgeService>>,
     Query(q): Query<GetActiveQuery>,
 ) -> Result<Json<ActiveKbResponse>, (StatusCode, String)> {
-    let active_kb = if let Some(session_id) = q.session_id.as_deref() {
-        svc.get_active_for_session(session_id)
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
-            .or_else(|| svc.get_active_persisted().ok().flatten())
+    let (active_kb, hidden_kbs) = if let Some(session_id) = q.session_id.as_deref() {
+        (
+            svc.get_active_for_session(session_id)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+                .or_else(|| svc.get_active_persisted().ok().flatten()),
+            svc.get_hidden_for_session_or_persisted(session_id)
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+        )
     } else {
-        svc.get_active_persisted()
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+        (
+            svc.get_active_persisted()
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+            svc.get_hidden_persisted()
+                .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?,
+        )
     };
-    Ok(Json(ActiveKbResponse { active_kb }))
+    Ok(Json(ActiveKbResponse {
+        active_kb,
+        hidden_kbs,
+    }))
 }
 
 #[utoipa::path(
@@ -538,15 +552,39 @@ pub async fn set_active(
     State(svc): State<Arc<KnowledgeService>>,
     Json(body): Json<SetActiveBody>,
 ) -> Result<Json<ActiveKbResponse>, (StatusCode, String)> {
+    let session_id = body.session_id.clone();
     if let Some(session_id) = body.session_id.as_deref() {
         svc.set_active_for_session(session_id, body.kb_id.as_deref())
             .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        if let Some(hidden_kbs) = body.hidden_kbs.as_ref() {
+            svc.set_hidden_for_session(session_id, hidden_kbs)
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        }
     } else {
         svc.set_active_persisted(body.kb_id.as_deref())
             .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        if let Some(hidden_kbs) = body.hidden_kbs.as_ref() {
+            svc.set_hidden_persisted(hidden_kbs)
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+        }
     }
+    let active_kb = if let Some(session_id) = session_id.as_deref() {
+        svc.get_active_for_session(session_id)
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+            .or_else(|| svc.get_active_persisted().ok().flatten())
+    } else {
+        svc.get_active_persisted()
+            .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+    };
     Ok(Json(ActiveKbResponse {
-        active_kb: body.kb_id,
+        active_kb,
+        hidden_kbs: if let Some(session_id) = session_id.as_deref() {
+            svc.get_hidden_for_session_or_persisted(session_id)
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+        } else {
+            svc.get_hidden_persisted()
+                .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+        },
     }))
 }
 

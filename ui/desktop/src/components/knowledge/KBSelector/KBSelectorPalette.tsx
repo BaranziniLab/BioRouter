@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Download,
+  EyeOff,
   FolderInput,
   FolderPlus,
   Pencil,
@@ -17,6 +18,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../../ui/dialog';
+import { Switch } from '../../ui/switch';
 import { useKnowledge } from '../KnowledgeContext';
 import { useKnowledgeBases } from '../hooks/useKnowledgeBases';
 
@@ -30,7 +32,8 @@ type DraftMode =
   | null;
 
 export function KBSelectorPalette({ onClose }: Props) {
-  const { bases, activeKbId, refresh, setActiveKbId } = useKnowledge();
+  const { bases, activeKbId, hiddenKbIds, refresh, setActiveKbId, toggleKbHidden } =
+    useKnowledge();
   const { create, exportArchive, importArchive, remove, rename } = useKnowledgeBases();
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState('');
@@ -183,7 +186,8 @@ export function KBSelectorPalette({ onClose }: Props) {
         <DialogHeader className="px-6 pt-6 pb-0">
           <DialogTitle>Knowledge Bases</DialogTitle>
           <DialogDescription>
-            Switch, create, import, export, rename, and remove your knowledge bases.
+            Focus one knowledge base for graphing and ingest while choosing which ones stay
+            visible to chat discovery.
           </DialogDescription>
         </DialogHeader>
 
@@ -288,6 +292,7 @@ export function KBSelectorPalette({ onClose }: Props) {
               {filtered.map((base) => {
                 const isActive = activeKbId === base.id;
                 const isBusy = busyId === base.id;
+                const hidden = hiddenKbIds.includes(base.id);
 
                 return (
                   <div
@@ -311,8 +316,15 @@ export function KBSelectorPalette({ onClose }: Props) {
                         style={{ background: base.color }}
                       />
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-medium text-text-default">
-                          {base.name}
+                        <div className="flex items-center gap-2">
+                          <div className="truncate text-sm font-medium text-text-default">
+                            {base.name}
+                          </div>
+                          {hidden && (
+                            <span className="rounded-full bg-background-default px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-text-muted">
+                              Hidden from chat
+                            </span>
+                          )}
                         </div>
                         <div className="truncate text-[11px] font-mono text-text-muted">
                           {base.id}
@@ -320,12 +332,21 @@ export function KBSelectorPalette({ onClose }: Props) {
                       </div>
                       {isActive && (
                         <span className="rounded-full bg-background-default px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-text-muted">
-                          Active
+                          Focused
                         </span>
                       )}
                     </button>
 
-                    <div className="flex items-center gap-1">
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 rounded-full border border-border-subtle px-2 py-1">
+                        <EyeOff className="h-3.5 w-3.5 text-text-muted" />
+                        <Switch
+                          checked={!hidden}
+                          onCheckedChange={() => toggleKbHidden(base.id)}
+                          variant="mono"
+                          aria-label={`Toggle chat discovery for ${base.name}`}
+                        />
+                      </div>
                       <Button
                         type="button"
                         variant="ghost"
@@ -369,7 +390,8 @@ export function KBSelectorPalette({ onClose }: Props) {
 
         <DialogFooter className="border-t border-border-subtle px-6 py-4 sm:justify-between">
           <div className="text-xs text-text-muted">
-            Tip: select a knowledge base here, then ingest content from the left panel.
+            Tip: focus a knowledge base here for editing and ingest. Hidden knowledge bases stay
+            available here even when chats stop searching them by default.
           </div>
           <Button type="button" variant="outline" size="sm" onClick={onClose}>
             Close

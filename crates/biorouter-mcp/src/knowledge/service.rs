@@ -92,6 +92,11 @@ impl KnowledgeService {
         paths::active_kb_sessions_dir(self.root()).join(digest)
     }
 
+    fn hidden_session_path(&self, session_id: &str) -> PathBuf {
+        let digest = raw::hash_bytes(session_id.as_bytes());
+        paths::hidden_kb_sessions_dir(self.root()).join(digest)
+    }
+
     fn set_active_path_unlocked(&self, path: &Path, kb_id: Option<&str>) -> anyhow::Result<()> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
@@ -112,6 +117,74 @@ impl KnowledgeService {
         }
 
         Ok(())
+    }
+
+    fn get_hidden_path_unlocked(&self, path: &Path) -> anyhow::Result<Vec<String>> {
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let s = std::fs::read_to_string(path)?;
+        if s.trim().is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut hidden = serde_json::from_str::<Vec<String>>(&s)?;
+        hidden.sort();
+        hidden.dedup();
+        Ok(hidden)
+    }
+
+    fn set_hidden_path_unlocked(&self, path: &Path, ids: &[String]) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let mut sanitized = ids
+            .iter()
+            .map(|id| id.trim())
+            .filter(|id| !id.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        sanitized.sort();
+        sanitized.dedup();
+
+        for id in &sanitized {
+            crate::knowledge::paths::validate_kb_id(id)?;
+        }
+
+        if sanitized.is_empty() {
+            if path.exists() {
+                std::fs::remove_file(path)?;
+            }
+            return Ok(());
+        }
+
+        let tmp = path.with_extension("tmp");
+        std::fs::write(&tmp, serde_json::to_vec(&sanitized)?)?;
+        std::fs::rename(tmp, path)?;
+        Ok(())
+    }
+
+    fn rewrite_hidden_path_refs_unlocked(
+        &self,
+        path: &Path,
+        current_kb_id: &str,
+        next_kb_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let hidden = self.get_hidden_path_unlocked(path)?;
+        if hidden.is_empty() || !hidden.iter().any(|id| id == current_kb_id) {
+            return Ok(());
+        }
+
+        let mut next_hidden = hidden
+            .into_iter()
+            .filter(|id| id != current_kb_id)
+            .collect::<Vec<_>>();
+        if let Some(next_kb_id) = next_kb_id {
+            next_hidden.push(next_kb_id.to_string());
+        }
+        self.set_hidden_path_unlocked(path, &next_hidden)
     }
 
     fn rewrite_session_active_refs_unlocked(
@@ -135,6 +208,30 @@ impl KnowledgeService {
             if active.trim() == current_kb_id {
                 self.set_active_path_unlocked(&path, next_kb_id)?;
             }
+        }
+
+        Ok(())
+    }
+
+    fn rewrite_hidden_refs_unlocked(
+        &self,
+        current_kb_id: &str,
+        next_kb_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let global_path = paths::hidden_kbs_path(self.root());
+        self.rewrite_hidden_path_refs_unlocked(&global_path, current_kb_id, next_kb_id)?;
+
+        let dir = paths::hidden_kb_sessions_dir(self.root());
+        if !dir.exists() {
+            return Ok(());
+        }
+
+        for entry in std::fs::read_dir(&dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_file() {
+                continue;
+            }
+            self.rewrite_hidden_path_refs_unlocked(&entry.path(), current_kb_id, next_kb_id)?;
         }
 
         Ok(())
@@ -365,6 +462,7 @@ impl KnowledgeService {
                     self.set_active_persisted_unlocked(Some(&target_id))?;
                 }
                 self.rewrite_session_active_refs_unlocked(id, Some(&target_id))?;
+                self.rewrite_hidden_refs_unlocked(id, Some(&target_id))?;
             }
 
             manifest::save(&target_root, &current)?;
@@ -404,6 +502,7 @@ impl KnowledgeService {
             self.set_active_persisted_unlocked(None)?;
         }
         self.rewrite_session_active_refs_unlocked(id, None)?;
+        self.rewrite_hidden_refs_unlocked(id, None)?;
 
         Ok(())
     }
@@ -691,6 +790,36 @@ impl KnowledgeService {
         let _lock = self.lock_root()?;
         let path = self.active_session_path(session_id);
         self.set_active_path_unlocked(&path, kb_id)
+    }
+
+    pub fn get_hidden_persisted(&self) -> anyhow::Result<Vec<String>> {
+        self.get_hidden_path_unlocked(&crate::knowledge::paths::hidden_kbs_path(self.root()))
+    }
+
+    pub fn set_hidden_persisted(&self, ids: &[String]) -> anyhow::Result<()> {
+        let _lock = self.lock_root()?;
+        self.set_hidden_path_unlocked(&crate::knowledge::paths::hidden_kbs_path(self.root()), ids)
+    }
+
+    pub fn get_hidden_for_session(&self, session_id: &str) -> anyhow::Result<Vec<String>> {
+        self.get_hidden_path_unlocked(&self.hidden_session_path(session_id))
+    }
+
+    pub fn get_hidden_for_session_or_persisted(
+        &self,
+        session_id: &str,
+    ) -> anyhow::Result<Vec<String>> {
+        let path = self.hidden_session_path(session_id);
+        if path.exists() {
+            self.get_hidden_path_unlocked(&path)
+        } else {
+            self.get_hidden_persisted()
+        }
+    }
+
+    pub fn set_hidden_for_session(&self, session_id: &str, ids: &[String]) -> anyhow::Result<()> {
+        let _lock = self.lock_root()?;
+        self.set_hidden_path_unlocked(&self.hidden_session_path(session_id), ids)
     }
 }
 
@@ -1277,6 +1406,68 @@ mod tests {
         assert!(svc.get_active_persisted()?.is_none());
         assert!(svc.get_active_for_session("session-a")?.is_none());
         assert!(svc.get_active_for_session("session-b")?.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn hidden_kbs_can_be_scoped_per_session() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+
+        assert!(svc.get_hidden_persisted()?.is_empty());
+        assert!(svc.get_hidden_for_session("session-a")?.is_empty());
+
+        svc.set_hidden_persisted(&["kb-a".to_string(), "kb-b".to_string()])?;
+        assert_eq!(
+            svc.get_hidden_for_session_or_persisted("session-a")?,
+            vec!["kb-a".to_string(), "kb-b".to_string()]
+        );
+
+        svc.set_hidden_for_session("session-a", &["kb-c".to_string()])?;
+        assert_eq!(
+            svc.get_hidden_for_session("session-a")?,
+            vec!["kb-c".to_string()]
+        );
+        assert_eq!(
+            svc.get_hidden_for_session_or_persisted("session-a")?,
+            vec!["kb-c".to_string()]
+        );
+        assert_eq!(
+            svc.get_hidden_for_session_or_persisted("session-b")?,
+            vec!["kb-a".to_string(), "kb-b".to_string()]
+        );
+
+        svc.set_hidden_for_session("session-a", &[])?;
+        assert!(svc.get_hidden_for_session("session-a")?.is_empty());
+        assert_eq!(
+            svc.get_hidden_for_session_or_persisted("session-a")?,
+            vec!["kb-a".to_string(), "kb-b".to_string()]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn hidden_kbs_track_rename_and_delete() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+
+        svc.create_base("kb-a", "KB A", None)?;
+        svc.set_hidden_persisted(&["kb-a".to_string()])?;
+        svc.set_hidden_for_session("session-a", &["kb-a".to_string()])?;
+
+        let renamed = svc.update_base("kb-a", Some("Renamed KB"), None)?;
+        assert_eq!(renamed.id, "renamed-kb");
+        assert_eq!(svc.get_hidden_persisted()?, vec!["renamed-kb".to_string()]);
+        assert_eq!(
+            svc.get_hidden_for_session("session-a")?,
+            vec!["renamed-kb".to_string()]
+        );
+
+        svc.delete_base("renamed-kb")?;
+        assert!(svc.get_hidden_persisted()?.is_empty());
+        assert!(svc.get_hidden_for_session("session-a")?.is_empty());
 
         Ok(())
     }

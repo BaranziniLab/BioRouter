@@ -3706,10 +3706,19 @@
       },
       "ActiveKbResponse": {
         "type": "object",
+        "required": [
+          "hidden_kbs"
+        ],
         "properties": {
           "active_kb": {
             "type": "string",
             "nullable": true
+          },
+          "hidden_kbs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       },
@@ -6889,6 +6898,13 @@
       "SetActiveBody": {
         "type": "object",
         "properties": {
+          "hidden_kbs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "nullable": true
+          },
           "kb_id": {
             "type": "string",
             "description": "`None` clears the active KB.",

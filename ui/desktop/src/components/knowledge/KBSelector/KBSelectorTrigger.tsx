@@ -33,7 +33,7 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
         />
         <span className="flex-1 text-left min-w-0">
           <span className="block text-sm font-medium truncate">
-            {activeKb?.name ?? 'Select a knowledge base'}
+            {activeKb?.name ?? 'Focus a knowledge base'}
           </span>
         </span>
         <ChevronDown className="w-3 h-3 text-text-muted flex-shrink-0" />

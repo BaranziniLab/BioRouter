@@ -25,8 +25,8 @@ const typeOrder: Record<DisplayItemType, number> = {
 // handler. Keyed by the command name (no leading '/').
 const CLIENT_INSERT_COMMANDS: Record<string, { description: string; insert: string }> = {
   knowledge: {
-    description: 'Use the active knowledge base — inserts a templated prompt',
-    insert: 'Using the Knowledge extension on the active knowledge base, ',
+    description: 'Use the visible knowledge bases, prioritizing the focused one — inserts a templated prompt',
+    insert: 'Using the Knowledge extension, search the visible knowledge bases and prioritize the focused knowledge base, ',
   },
 };
 

@@ -24,7 +24,7 @@ import { toastError } from '../../toasts';
 import { errorMessage } from '../../utils/conversionUtils';
 
 // Default window size — kept in sync with DashboardBoard.MIN_WINDOW_*.
-const MIN_WINDOW_W = 520;
+const MIN_WINDOW_W = 600;
 const MIN_WINDOW_H = 440;
 const GAP = 16;
 

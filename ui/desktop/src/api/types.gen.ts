@@ -27,6 +27,7 @@ export type ActionRequiredData = {
 
 export type ActiveKbResponse = {
     active_kb?: string | null;
+    hidden_kbs: Array<string>;
 };
 
 export type AddExtensionRequest = {
@@ -1078,6 +1079,7 @@ export type SessionsQuery = {
 };
 
 export type SetActiveBody = {
+    hidden_kbs?: Array<string> | null;
     /**
      * `None` clears the active KB.
      */

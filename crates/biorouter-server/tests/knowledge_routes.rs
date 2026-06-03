@@ -1518,6 +1518,11 @@ async fn active_kb_roundtrip() {
         v["active_kb"].is_null(),
         "active_kb should be null on a fresh root"
     );
+    assert_eq!(
+        v["hidden_kbs"].as_array().map(|items| items.len()),
+        Some(0),
+        "hidden_kbs should be empty on a fresh root"
+    );
 
     // Create a KB to point at.
     let create_body = serde_json::to_vec(&serde_json::json!({"id": "act", "name": "Act"})).unwrap();
@@ -1536,7 +1541,11 @@ async fn active_kb_roundtrip() {
     assert_eq!(res.status(), 200, "POST /bases should return 200");
 
     // Set it.
-    let set_body = serde_json::to_vec(&serde_json::json!({"kb_id": "act"})).unwrap();
+    let set_body = serde_json::to_vec(&serde_json::json!({
+        "kb_id": "act",
+        "hidden_kbs": ["hidden-a"]
+    }))
+    .unwrap();
     let res = app
         .clone()
         .oneshot(
@@ -1576,6 +1585,11 @@ async fn active_kb_roundtrip() {
         "act",
         "active_kb should round-trip the set value"
     );
+    assert_eq!(
+        after["hidden_kbs"],
+        serde_json::json!(["hidden-a"]),
+        "hidden_kbs should round-trip the set value"
+    );
 
     // Clear it.
     let clear_body = serde_json::to_vec(&serde_json::json!({"kb_id": null})).unwrap();
@@ -1610,6 +1624,11 @@ async fn active_kb_roundtrip() {
     assert!(
         cleared["active_kb"].is_null(),
         "active_kb should be null after clear"
+    );
+    assert_eq!(
+        cleared["hidden_kbs"],
+        serde_json::json!(["hidden-a"]),
+        "clearing active_kb should not reset hidden_kbs"
     );
 
     // Invalid kb id returns 400.
@@ -1653,7 +1672,11 @@ async fn active_kb_can_be_scoped_per_session() {
         assert_eq!(res.status(), 200);
     }
 
-    let global_body = serde_json::to_vec(&serde_json::json!({"kb_id": "act"})).unwrap();
+    let global_body = serde_json::to_vec(&serde_json::json!({
+        "kb_id": "act",
+        "hidden_kbs": ["act"]
+    }))
+    .unwrap();
     let res = app
         .clone()
         .oneshot(
@@ -1684,10 +1707,12 @@ async fn active_kb_can_be_scoped_per_session() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["active_kb"].as_str(), Some("act"));
+    assert_eq!(v["hidden_kbs"], serde_json::json!(["act"]));
 
     let session_body = serde_json::to_vec(&serde_json::json!({
         "kb_id": "session-kb",
-        "session_id": "session-a"
+        "session_id": "session-a",
+        "hidden_kbs": ["session-kb"]
     }))
     .unwrap();
     let res = app
@@ -1720,6 +1745,7 @@ async fn active_kb_can_be_scoped_per_session() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["active_kb"].as_str(), Some("session-kb"));
+    assert_eq!(v["hidden_kbs"], serde_json::json!(["session-kb"]));
 
     let res = app
         .clone()
@@ -1737,4 +1763,5 @@ async fn active_kb_can_be_scoped_per_session() {
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["active_kb"].as_str(), Some("act"));
+    assert_eq!(v["hidden_kbs"], serde_json::json!(["act"]));
 }

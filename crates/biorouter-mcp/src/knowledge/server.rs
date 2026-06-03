@@ -1,4 +1,8 @@
-use crate::knowledge::{convert::SourceInput, service::KnowledgeService, types::ChangeKind};
+use crate::knowledge::{
+    convert::SourceInput,
+    service::KnowledgeService,
+    types::{ChangeKind, Manifest},
+};
 use anyhow::Result;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -8,7 +12,7 @@ use rmcp::{
     tool, tool_handler, tool_router, ErrorData, RoleServer, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+use std::{cmp::Ordering, collections::HashSet, sync::Arc};
 
 const SESSION_ID_META_KEY: &str = "biorouter-session-id";
 
@@ -174,6 +178,14 @@ pub struct AppendLogParams {
     pub delta: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
+pub struct SearchHitWithKb {
+    pub kb_id: String,
+    pub path: String,
+    pub score: f32,
+    pub snippet: String,
+}
+
 // ── Task 5: Active-KB tools ───────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -225,6 +237,67 @@ impl KnowledgeServer {
         context.meta.0.get(SESSION_ID_META_KEY)?.as_str()
     }
 
+    fn session_id(context: Option<&RequestContext<RoleServer>>) -> Option<&str> {
+        context.and_then(Self::session_id_from_context)
+    }
+
+    fn hidden_kbs_for_session(&self, session_id: Option<&str>) -> Result<Vec<String>, ErrorData> {
+        match session_id {
+            Some(session_id) => self
+                .service
+                .get_hidden_for_session_or_persisted(session_id)
+                .map_err(into_err),
+            None => self.service.get_hidden_persisted().map_err(into_err),
+        }
+    }
+
+    fn visible_bases_for_session(
+        &self,
+        session_id: Option<&str>,
+    ) -> Result<Vec<Manifest>, ErrorData> {
+        let hidden = self.hidden_kbs_for_session(session_id)?;
+        let hidden = hidden.into_iter().collect::<HashSet<_>>();
+        let mut bases = self.service.list_bases().map_err(into_err)?;
+        bases.retain(|base| !hidden.contains(&base.id));
+        Ok(bases)
+    }
+
+    fn visible_bases_for_context(
+        &self,
+        context: Option<&RequestContext<RoleServer>>,
+    ) -> Result<Vec<Manifest>, ErrorData> {
+        self.visible_bases_for_session(Self::session_id(context))
+    }
+
+    fn search_visible_bases(
+        &self,
+        query: &str,
+        limit: usize,
+        session_id: Option<&str>,
+    ) -> Result<Vec<SearchHitWithKb>, ErrorData> {
+        let mut hits = Vec::new();
+        for base in self.visible_bases_for_session(session_id)? {
+            let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &base.id);
+            let kb_hits =
+                crate::knowledge::store::search(&kb_root, query, limit).map_err(into_err)?;
+            hits.extend(kb_hits.into_iter().map(|hit| SearchHitWithKb {
+                kb_id: base.id.clone(),
+                path: hit.path,
+                score: hit.score,
+                snippet: hit.snippet,
+            }));
+        }
+        hits.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.kb_id.cmp(&b.kb_id))
+                .then_with(|| a.path.cmp(&b.path))
+        });
+        hits.truncate(limit);
+        Ok(hits)
+    }
+
     async fn active_kb_for_context(
         &self,
         context: Option<&RequestContext<RoleServer>>,
@@ -267,10 +340,13 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_list_bases",
-        description = "List all knowledge bases on this machine."
+        description = "List knowledge bases visible to this session. Hidden knowledge bases are omitted from discovery."
     )]
-    pub async fn kb_list_bases(&self) -> Result<CallToolResult, ErrorData> {
-        let bases = self.service.list_bases().map_err(into_err)?;
+    pub async fn kb_list_bases(
+        &self,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let bases = self.visible_bases_for_context(Some(&context))?;
         ok_json(&bases)
     }
 
@@ -469,7 +545,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_search",
-        description = "BM25 full-text search over knowledge pages and raw source documents. Omit kb_id to use the active KB."
+        description = "BM25 full-text search over knowledge pages and raw source documents. Omit kb_id to search all knowledge bases visible to this session."
     )]
     pub async fn kb_search(
         &self,
@@ -477,10 +553,21 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
-        let kb_id = self.kb_id_or_active(p.kb_id, Some(&context)).await?;
-        let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
-        let hits =
-            crate::knowledge::store::search(&kb_root, &p.query, p.limit).map_err(into_err)?;
+        let hits = if let Some(kb_id) = p.kb_id {
+            let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
+            crate::knowledge::store::search(&kb_root, &p.query, p.limit)
+                .map_err(into_err)?
+                .into_iter()
+                .map(|hit| SearchHitWithKb {
+                    kb_id: kb_id.clone(),
+                    path: hit.path,
+                    score: hit.score,
+                    snippet: hit.snippet,
+                })
+                .collect::<Vec<_>>()
+        } else {
+            self.search_visible_bases(&p.query, p.limit, Self::session_id(Some(&context)))?
+        };
         ok_json(&hits)
     }
 
@@ -565,4 +652,79 @@ fn ok_json<T: Serialize>(v: &T) -> Result<CallToolResult, ErrorData> {
 
 fn into_err(e: anyhow::Error) -> ErrorData {
     ErrorData::internal_error(format!("{e:#}"), None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn server_with_root(root: std::path::PathBuf) -> KnowledgeServer {
+        let service = KnowledgeService::new(root);
+        KnowledgeServer {
+            tool_router: KnowledgeServer::tool_router(),
+            service,
+            instructions: String::new(),
+            active: ActiveKbState::default(),
+        }
+    }
+
+    #[test]
+    fn list_bases_hides_session_hidden_kbs() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let server = server_with_root(tmp.path().to_path_buf());
+        server.service.create_base("visible", "Visible", None)?;
+        server.service.create_base("hidden", "Hidden", None)?;
+        server
+            .service
+            .set_hidden_for_session("session-a", &["hidden".to_string()])?;
+
+        let visible = server.visible_bases_for_session(Some("session-a"))?;
+        let ids = visible.into_iter().map(|base| base.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec!["visible".to_string()]);
+
+        let all_visible = server.visible_bases_for_session(Some("session-b"))?;
+        assert_eq!(all_visible.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn search_without_kb_id_spans_all_visible_bases() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let server = server_with_root(tmp.path().to_path_buf());
+        server.service.create_base("alpha", "Alpha", None)?;
+        server.service.create_base("beta", "Beta", None)?;
+        server.service.create_base("hidden", "Hidden", None)?;
+
+        crate::knowledge::store::write_page(
+            &crate::knowledge::paths::kb_root(server.service.root(), "alpha"),
+            "knowledge/notes/a.md",
+            "# Shared topic\n\nalpha content",
+            "alpha page",
+            None,
+        )?;
+        crate::knowledge::store::write_page(
+            &crate::knowledge::paths::kb_root(server.service.root(), "beta"),
+            "knowledge/notes/b.md",
+            "# Shared topic\n\nbeta content",
+            "beta page",
+            None,
+        )?;
+        crate::knowledge::store::write_page(
+            &crate::knowledge::paths::kb_root(server.service.root(), "hidden"),
+            "knowledge/notes/c.md",
+            "# Shared topic\n\nhidden content",
+            "hidden page",
+            None,
+        )?;
+        server
+            .service
+            .set_hidden_for_session("session-a", &["hidden".to_string()])?;
+
+        let hits = server.search_visible_bases("shared topic", 10, Some("session-a"))?;
+        let kb_ids = hits.into_iter().map(|hit| hit.kb_id).collect::<Vec<_>>();
+        assert!(kb_ids.contains(&"alpha".to_string()));
+        assert!(kb_ids.contains(&"beta".to_string()));
+        assert!(!kb_ids.contains(&"hidden".to_string()));
+        Ok(())
+    }
 }
