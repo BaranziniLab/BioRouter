@@ -19,7 +19,9 @@ use biorouter_mcp::knowledge::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::task::JoinHandle;
 use utoipa::ToSchema;
 
 /// Build the knowledge router.  The router owns an `Arc<KnowledgeService>` directly so
@@ -116,6 +118,40 @@ fn sanitize_part_mime(mime: Option<&str>) -> Option<String> {
     mime.map(str::trim)
         .filter(|mime| !mime.is_empty())
         .map(ToOwned::to_owned)
+}
+
+async fn finish_macro_stream(
+    sse_tx: mpsc::Sender<String>,
+    mut result_rx: mpsc::Receiver<Result<serde_json::Value, String>>,
+    macro_handle: JoinHandle<()>,
+) {
+    match result_rx.recv().await {
+        Some(Ok(result_json)) => {
+            let data = serde_json::to_string(&result_json).unwrap_or_default();
+            let _ = sse_tx.send(format!("event: done\ndata: {data}\n\n")).await;
+        }
+        Some(Err(msg)) => {
+            let _ = sse_tx.send(sse_error_frame(&msg)).await;
+        }
+        None => {
+            let msg = match macro_handle.await {
+                Ok(()) => "macro task ended without result".to_string(),
+                Err(join_err) if join_err.is_cancelled() => {
+                    "macro task was cancelled before producing a result".to_string()
+                }
+                Err(join_err) => format!("macro task failed: {join_err}"),
+            };
+            let _ = sse_tx.send(sse_error_frame(&msg)).await;
+        }
+    }
+}
+
+fn ingest_bounds() -> SubAgentBounds {
+    SubAgentBounds {
+        max_steps: 60,
+        max_wall: Duration::from_secs(900),
+        max_tokens: 200_000,
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -920,18 +956,18 @@ pub async fn ingest(
 
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
-    let (result_tx, mut result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
+    let (result_tx, result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
 
     // Macro task: run ingest, then report result through a dedicated channel.
     // Dropping `event_tx` signals the forwarder that no more events are coming.
     let cancel_for_macro = cancel.clone();
-    tokio::spawn(async move {
+    let macro_handle = tokio::spawn(async move {
         let args = ingest_macro::IngestArgs {
             kb_id: id,
             source,
             completer,
             focus,
-            bounds: SubAgentBounds::default(),
+            bounds: ingest_bounds(),
             event_sink: Some(event_tx),
             cancel: Some(cancel_for_macro),
         };
@@ -956,20 +992,7 @@ pub async fn ingest(
                 }
             }
         }
-        match result_rx.recv().await {
-            Some(Ok(result_json)) => {
-                let data = serde_json::to_string(&result_json).unwrap_or_default();
-                let _ = sse_tx.send(format!("event: done\ndata: {data}\n\n")).await;
-            }
-            Some(Err(msg)) => {
-                let _ = sse_tx.send(sse_error_frame(&msg)).await;
-            }
-            None => {
-                let _ = sse_tx
-                    .send(sse_error_frame("macro task ended without result"))
-                    .await;
-            }
-        }
+        finish_macro_stream(sse_tx, result_rx, macro_handle).await;
     });
 
     Ok(crate::routes::reply::SseResponse::from_rx(sse_rx))
@@ -995,10 +1018,10 @@ pub async fn query_kb(
 
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
-    let (result_tx, mut result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
+    let (result_tx, result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
 
     let cancel_for_macro = cancel.clone();
-    tokio::spawn(async move {
+    let macro_handle = tokio::spawn(async move {
         let args = query_macro::QueryArgs {
             kb_id: id,
             question: body.question,
@@ -1025,20 +1048,7 @@ pub async fn query_kb(
                 }
             }
         }
-        match result_rx.recv().await {
-            Some(Ok(result_json)) => {
-                let data = serde_json::to_string(&result_json).unwrap_or_default();
-                let _ = sse_tx.send(format!("event: done\ndata: {data}\n\n")).await;
-            }
-            Some(Err(msg)) => {
-                let _ = sse_tx.send(sse_error_frame(&msg)).await;
-            }
-            None => {
-                let _ = sse_tx
-                    .send(sse_error_frame("macro task ended without result"))
-                    .await;
-            }
-        }
+        finish_macro_stream(sse_tx, result_rx, macro_handle).await;
     });
 
     Ok(crate::routes::reply::SseResponse::from_rx(sse_rx))
@@ -1071,10 +1081,10 @@ pub async fn lint(
 
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
     let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
-    let (result_tx, mut result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
+    let (result_tx, result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
 
     let cancel_for_macro = cancel.clone();
-    tokio::spawn(async move {
+    let macro_handle = tokio::spawn(async move {
         let args = lint_macro::LintArgs {
             kb_id: id,
             completer,
@@ -1100,20 +1110,7 @@ pub async fn lint(
                 }
             }
         }
-        match result_rx.recv().await {
-            Some(Ok(result_json)) => {
-                let data = serde_json::to_string(&result_json).unwrap_or_default();
-                let _ = sse_tx.send(format!("event: done\ndata: {data}\n\n")).await;
-            }
-            Some(Err(msg)) => {
-                let _ = sse_tx.send(sse_error_frame(&msg)).await;
-            }
-            None => {
-                let _ = sse_tx
-                    .send(sse_error_frame("macro task ended without result"))
-                    .await;
-            }
-        }
+        finish_macro_stream(sse_tx, result_rx, macro_handle).await;
     });
 
     Ok(crate::routes::reply::SseResponse::from_rx(sse_rx))
