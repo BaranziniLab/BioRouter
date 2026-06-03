@@ -105,12 +105,14 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
             let commit_sha = if let Some(branch) = txn_branch {
                 let repo = GitRepo::open(&kb_root)?;
                 let txn = Txn { branch };
-                Some(repo.commit_txn(
+                let sha = repo.commit_txn(
                     &txn,
                     ChangeKind::Query,
                     "query filed",
                     Some(&format!("+1 note · {} steps", r.steps_used)),
-                )?)
+                )?;
+                svc.rebuild_graph_cache(&args.kb_id)?;
+                Some(sha)
             } else {
                 None
             };

@@ -1,10 +1,18 @@
 import { useCallback, useRef, useState } from 'react';
-import { Clipboard, FolderOpen, Upload } from 'lucide-react';
+import { FileStack, FolderTree, Upload } from 'lucide-react';
+import { Button } from '../../ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../../ui/dialog';
 import type { StagedFileCandidate } from './fileValidation';
 
 interface Props {
   onFiles: (files: StagedFileCandidate[]) => void | Promise<void>;
-  onPasteTextRequested: () => void;
   onPathPickRequested: () => void | Promise<void>;
 }
 
@@ -50,8 +58,9 @@ function getDroppedPathCandidates(e: React.DragEvent): StagedFileCandidate[] {
   return [...candidates.values()];
 }
 
-export function Dropzone({ onFiles, onPasteTextRequested, onPathPickRequested }: Props) {
+export function Dropzone({ onFiles, onPathPickRequested }: Props) {
   const [dragging, setDragging] = useState(false);
+  const [chooserOpen, setChooserOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   // Counter-based drag tracking prevents flicker when cursor moves over child elements.
   const dragCounterRef = useRef(0);
@@ -66,79 +75,131 @@ export function Dropzone({ onFiles, onPasteTextRequested, onPathPickRequested }:
       const candidates = [...droppedFiles, ...droppedPaths];
       if (candidates.length > 0) void onFiles(candidates);
     },
-    [onFiles],
+    [onFiles]
   );
 
+  function openChooser() {
+    setChooserOpen(true);
+  }
+
   return (
-    <div
-      onDragEnter={(e) => {
-        e.preventDefault();
-        dragCounterRef.current++;
-        setDragging(true);
-      }}
-      onDragOver={(e) => {
-        e.preventDefault();
-        // Don't touch dragging state — counter handles it.
-      }}
-      onDragLeave={(e) => {
-        e.preventDefault();
-        dragCounterRef.current--;
-        if (dragCounterRef.current === 0) setDragging(false);
-      }}
-      onDrop={onDrop}
-      className={`relative border-2 border-dashed rounded-xl p-6 text-center transition-colors ${
-        dragging
-          ? 'border-success-default bg-background-muted'
-          : 'border-border-subtle bg-background-surface'
-      }`}
-    >
-      <input
-        ref={inputRef}
-        type="file"
-        multiple
-        className="hidden"
-        onChange={(e) => {
-          const files = e.target.files ? Array.from(e.target.files) : [];
-          if (files.length > 0) {
-            void onFiles(files.map((file) => ({ file })));
+    <>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={openChooser}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            openChooser();
           }
-          e.target.value = '';
         }}
-      />
-      <Upload className="w-7 h-7 mx-auto text-text-muted" />
-      <div className="mt-2 text-sm font-medium">Drag & drop to stage</div>
-      <div className="mt-1 text-xs text-text-muted">Papers, notes, HTML pages, and curated datasets</div>
-      <div className="mt-3 flex flex-wrap gap-1.5 justify-center text-[10px] font-mono text-text-muted">
-        {['pdf', 'md', 'html', 'docx', 'csv', 'txt'].map((ext) => (
-          <span key={ext} className="border border-border-subtle rounded px-1.5 py-0.5">
-            .{ext}
-          </span>
-        ))}
+        onDragEnter={(e) => {
+          e.preventDefault();
+          dragCounterRef.current++;
+          setDragging(true);
+        }}
+        onDragOver={(e) => {
+          e.preventDefault();
+        }}
+        onDragLeave={(e) => {
+          e.preventDefault();
+          dragCounterRef.current--;
+          if (dragCounterRef.current === 0) setDragging(false);
+        }}
+        onDrop={onDrop}
+        className={`relative cursor-pointer rounded-2xl border-2 border-dashed p-6 text-center transition-colors focus:outline-none focus:ring-2 focus:ring-border-default focus:ring-offset-2 ${
+          dragging
+            ? 'border-success-default bg-background-muted'
+            : 'border-border-subtle bg-background-surface hover:border-border-default hover:bg-background-default'
+        }`}
+      >
+        <input
+          data-testid="knowledge-ingest-file-input"
+          ref={inputRef}
+          type="file"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            const files = e.target.files ? Array.from(e.target.files) : [];
+            if (files.length > 0) {
+              void onFiles(files.map((file) => ({ file })));
+            }
+            e.target.value = '';
+          }}
+        />
+        <Upload className="mx-auto h-7 w-7 text-text-muted" />
+        <div className="mt-2 text-sm font-medium">Drag and drop to stage</div>
+        <div className="mt-1 text-xs leading-5 text-text-muted">
+          Drop readable files directly, or click to choose files, folders, and archives for backend
+          staging.
+        </div>
+        <div className="mt-3 flex flex-wrap justify-center gap-1.5 text-[10px] font-mono text-text-muted">
+          {['.pdf', '.md', '.html', '.docx', '.csv', '.txt', 'folders', 'archives'].map((label) => (
+            <span key={label} className="rounded px-1.5 py-0.5 ring-1 ring-border-subtle">
+              {label}
+            </span>
+          ))}
+        </div>
+        <div className="mt-2 text-[11px] leading-5 text-text-muted">
+          Readable contents are staged file by file. Binaries are skipped, and{' '}
+          <span className="font-medium text-text-default">Import from .brkb</span> stays in the
+          knowledge base menu for full knowledge-base archives.
+        </div>
       </div>
-      <div className="mt-2 text-[11px] text-text-muted">
-        Use <span className="font-medium text-text-default">Import from .brkb</span> in the
-        knowledge base menu for full archive imports.
-      </div>
-      <div className="mt-3 flex gap-2">
-        <button
-          onClick={() => inputRef.current?.click()}
-          className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-subtle bg-background-default text-xs hover:bg-background-muted"
-        >
-          <FolderOpen className="w-3 h-3" /> Browse files
-        </button>
-        <button
-          onClick={() => void onPathPickRequested()}
-          className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-subtle bg-background-default text-xs hover:bg-background-muted"
-        >
-          <FolderOpen className="w-3 h-3" /> Browse folder or archive
-        </button>
-        <button
-          onClick={onPasteTextRequested}
-          className="flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg border border-border-subtle bg-background-default text-xs hover:bg-background-muted"
-        >
-          <Clipboard className="w-3 h-3" /> Paste text
-        </button>
-      </div>
-    </div>
+
+      <Dialog open={chooserOpen} onOpenChange={setChooserOpen}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle>Stage knowledge sources</DialogTitle>
+            <DialogDescription>
+              Choose how you want to bring material into the staging queue. Folders and archives are
+              unpacked in the backend so their readable contents can be staged separately.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button
+              data-testid="knowledge-ingest-browse-files"
+              type="button"
+              onClick={() => {
+                setChooserOpen(false);
+                inputRef.current?.click();
+              }}
+              className="rounded-2xl border border-border-subtle bg-background-surface px-4 py-4 text-left transition-colors hover:border-border-default hover:bg-background-default"
+            >
+              <FileStack className="h-5 w-5 text-text-muted" />
+              <div className="mt-3 text-sm font-medium">Choose files</div>
+              <p className="mt-1 text-xs leading-5 text-text-muted">
+                Stage PDFs, Markdown, HTML, DOCX, CSV, plain text, and similar readable files.
+              </p>
+            </button>
+
+            <button
+              data-testid="knowledge-ingest-browse-path"
+              type="button"
+              onClick={() => {
+                setChooserOpen(false);
+                void onPathPickRequested();
+              }}
+              className="rounded-2xl border border-border-subtle bg-background-surface px-4 py-4 text-left transition-colors hover:border-border-default hover:bg-background-default"
+            >
+              <FolderTree className="h-5 w-5 text-text-muted" />
+              <div className="mt-3 text-sm font-medium">Choose folder or archive</div>
+              <p className="mt-1 text-xs leading-5 text-text-muted">
+                Let BioRouter unpack archives, skip binaries, and stage readable children one by one
+                for curation.
+              </p>
+            </button>
+          </div>
+
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setChooserOpen(false)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

@@ -23,6 +23,7 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
   return (
     <>
       <button
+        data-testid="knowledge-kb-selector-trigger"
         onClick={() => setOpen(true)}
         className="w-full inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border-subtle bg-background-surface hover:border-border-default transition-colors"
       >

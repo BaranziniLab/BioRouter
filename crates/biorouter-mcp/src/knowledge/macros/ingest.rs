@@ -105,6 +105,7 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
                 &format!("ingest {}", raw.source_id),
                 Some(&format!("+1 source · {} steps", r.steps_used)),
             )?;
+            svc.rebuild_graph_cache(&args.kb_id)?;
             Ok(IngestResult {
                 source_id: raw.source_id,
                 commit_sha: sha,

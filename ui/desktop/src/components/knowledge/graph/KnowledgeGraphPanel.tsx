@@ -33,21 +33,32 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
   }, [refresh, registerGraphRefresh]);
 
   return (
-    <div className="flex flex-col h-full relative">
-      <div className="flex items-center justify-between px-6 py-3 border-b border-border-subtle">
-        <div className="flex items-center gap-2 text-xs text-text-muted">
-          <span className="font-medium text-text-default">
+    <div className="relative flex h-full min-w-0 flex-col overflow-hidden">
+      <div className="flex flex-col gap-3 border-b border-border-subtle px-6 py-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="flex min-w-0 items-center gap-2 text-xs text-text-muted">
+          <span className="truncate font-medium text-text-default">
             {activeKb?.name ?? 'No knowledge base'}
           </span>
           {graph && (
             <span>
-              · {graph.nodes.length} {graph.nodes.length === 1 ? 'page' : 'pages'}
-              {' · '}
-              {graph.edges.length} {graph.edges.length === 1 ? 'link' : 'links'}
+              <span data-testid="knowledge-graph-summary">
+                · {graph.nodes.length} {graph.nodes.length === 1 ? 'page' : 'pages'}
+                {' · '}
+                {graph.edges.length} {graph.edges.length === 1 ? 'link' : 'links'}
+              </span>
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex w-full flex-wrap items-center justify-end gap-2 lg:w-auto lg:flex-nowrap">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => void refresh()}
+            disabled={!activeKbId || loading}
+            title="Refresh graph"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -57,15 +68,6 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
           >
             <Download className="mr-1 h-4 w-4" />
             Export as .brkb
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void refresh()}
-            disabled={!activeKbId || loading}
-            title="Refresh graph"
-          >
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
           </Button>
           <Button
             variant="outline"
@@ -125,16 +127,19 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
         )}
         {activeKbId && graph && graph.nodes.length > 0 && (
           <div className="absolute bottom-4 left-4 rounded-2xl border border-border-subtle bg-background-default/85 px-4 py-3 shadow-lg backdrop-blur-sm">
-            <div className="mb-2 text-[10px] font-medium uppercase tracking-[0.18em] text-text-muted">
-              Legend
-            </div>
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-text-default">
               <div className="flex items-center gap-2">
-                <span className="h-2.5 w-2.5 rounded-full" style={{ background: kindColor.entity }} />
+                <span
+                  className="h-2.5 w-2.5 rounded-full"
+                  style={{ background: kindColor.entity }}
+                />
                 Entity
               </div>
               <div className="flex items-center gap-2">
-                <span className="h-2.5 w-2.5 rounded-full" style={{ background: kindColor.concept }} />
+                <span
+                  className="h-2.5 w-2.5 rounded-full"
+                  style={{ background: kindColor.concept }}
+                />
                 Concept
               </div>
               <div className="flex items-center gap-2">
@@ -142,7 +147,10 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
                 Hub
               </div>
               <div className="flex items-center gap-2">
-                <span className="h-2.5 w-2.5 rounded-full" style={{ background: credColor.peer_reviewed }} />
+                <span
+                  className="h-2.5 w-2.5 rounded-full"
+                  style={{ background: credColor.peer_reviewed }}
+                />
                 Peer reviewed
               </div>
               <div className="flex items-center gap-2">
@@ -150,7 +158,10 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
                 Web source
               </div>
               <div className="flex items-center gap-2">
-                <span className="h-2.5 w-2.5 rounded-full" style={{ background: credColor.personal }} />
+                <span
+                  className="h-2.5 w-2.5 rounded-full"
+                  style={{ background: credColor.personal }}
+                />
                 Personal source
               </div>
             </div>

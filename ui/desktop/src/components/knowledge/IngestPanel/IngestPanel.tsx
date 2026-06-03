@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { Clipboard } from 'lucide-react';
 import type { ModelRef } from '../../../api/types.gen';
 import { checkModel } from '../../../api/sdk.gen';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
@@ -30,7 +31,7 @@ export function IngestPanel() {
   const stream = useIngestStream();
   const [showPasteBox, setShowPasteBox] = useState(false);
   const [digestState, setDigestState] = useState<'idle' | 'checking' | 'digesting' | 'stopping'>(
-    'idle',
+    'idle'
   );
   const [warnings, setWarnings] = useState<FileDropWarning[]>([]);
   const stopRequestedRef = useRef(false);
@@ -98,7 +99,9 @@ export function IngestPanel() {
 
     const result = validateDroppedFiles(stagedFileFallbacks);
     if (result.warnings.length > 0) {
-      setWarnings((existing) => [...expansionWarnings, ...result.warnings, ...existing].slice(0, 8));
+      setWarnings((existing) =>
+        [...expansionWarnings, ...result.warnings, ...existing].slice(0, 8)
+      );
     } else if (expansionWarnings.length > 0) {
       setWarnings((existing) => [...expansionWarnings, ...existing].slice(0, 8));
     }
@@ -122,15 +125,17 @@ export function IngestPanel() {
         setWarnings((existing) => [...expandedWarnings, ...existing].slice(0, 8));
       }
     } catch (err) {
-      setWarnings((existing) => [
-        {
-          id: `path-expand-${Date.now()}`,
-          title: 'Could not expand selected path',
-          message: err instanceof Error ? err.message : String(err),
-          level: 'error' as const,
-        },
-        ...existing,
-      ].slice(0, 8));
+      setWarnings((existing) =>
+        [
+          {
+            id: `path-expand-${Date.now()}`,
+            title: 'Could not expand selected path',
+            message: err instanceof Error ? err.message : String(err),
+            level: 'error' as const,
+          },
+          ...existing,
+        ].slice(0, 8)
+      );
     }
   }
 
@@ -148,14 +153,14 @@ export function IngestPanel() {
       if (!data?.ok) {
         setDigestState('idle');
         window.alert(
-          `Model unreachable: ${data?.error ?? 'unknown'}\n\nPlease switch to a different model.`,
+          `Model unreachable: ${data?.error ?? 'unknown'}\n\nPlease switch to a different model.`
         );
         return;
       }
     } catch (err) {
       setDigestState('idle');
       window.alert(
-        `Model check failed: ${err instanceof Error ? err.message : String(err)}\n\nPlease verify your provider's credentials and try a different model.`,
+        `Model check failed: ${err instanceof Error ? err.message : String(err)}\n\nPlease verify your provider's credentials and try a different model.`
       );
       return;
     }
@@ -243,9 +248,7 @@ export function IngestPanel() {
           // internally (add_raw_source is called as its first step). Do NOT
           // pre-call addRawSource here; doing so would create a duplicate source.
           const sourceBody =
-            item.kind === 'url'
-              ? { url: item.url }
-              : { text: item.text, title: item.title };
+            item.kind === 'url' ? { url: item.url } : { text: item.text, title: item.title };
 
           // POST /knowledge/bases/:id/ingest — SSE streamed digestion.
           // The macro materialises the raw source and then runs the sub-agent.
@@ -304,11 +307,17 @@ export function IngestPanel() {
 
   return (
     <div className="flex flex-col gap-4 p-4">
-      <Dropzone
-        onFiles={onFiles}
-        onPathPickRequested={() => void onPathPickRequested()}
-        onPasteTextRequested={() => setShowPasteBox(true)}
-      />
+      <Dropzone onFiles={onFiles} onPathPickRequested={() => void onPathPickRequested()} />
+      <Button
+        data-testid="knowledge-ingest-paste-text"
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => setShowPasteBox(true)}
+      >
+        <Clipboard className="mr-1.5 h-4 w-4" />
+        Paste text
+      </Button>
       <IngestWarnings
         warnings={warnings}
         onDismiss={(id) => setWarnings((current) => current.filter((warning) => warning.id !== id))}
@@ -331,7 +340,9 @@ export function IngestPanel() {
       <DispatchProgress state={stream} onAbort={onAbort} />
 
       <div className="flex flex-col gap-2 pt-1">
+        <IngestModelPicker value={model} onChange={setModel} />
         <Button
+          data-testid="knowledge-digest-button"
           variant="default"
           size="sm"
           disabled={!canDigest}
@@ -340,7 +351,6 @@ export function IngestPanel() {
         >
           {digestLabel}
         </Button>
-        <IngestModelPicker value={model} onChange={setModel} />
       </div>
 
       {!activeKbId && (

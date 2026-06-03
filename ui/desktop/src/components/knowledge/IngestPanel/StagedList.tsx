@@ -40,6 +40,8 @@ export function StagedList({ items, onRemove, onClear }: Props) {
         return (
           <div
             key={s.id}
+            data-testid="knowledge-staged-item"
+            data-label={label}
             className="flex items-center gap-2 px-2.5 py-2 bg-background-surface border border-border-subtle rounded-lg"
           >
             <Icon className="w-3.5 h-3.5 text-text-muted flex-shrink-0" />

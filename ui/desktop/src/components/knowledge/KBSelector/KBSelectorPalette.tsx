@@ -191,6 +191,7 @@ export function KBSelectorPalette({ onClose }: Props) {
           <div className="flex items-center gap-2 rounded-xl border border-border-subtle bg-background-default px-3 py-2">
             <Search className="h-4 w-4 text-text-muted" />
             <input
+              data-testid="knowledge-kb-search"
               ref={searchRef}
               type="text"
               value={query}
@@ -201,11 +202,18 @@ export function KBSelectorPalette({ onClose }: Props) {
           </div>
 
           <div className="mt-3 flex flex-wrap gap-2">
-            <Button type="button" variant="default" size="sm" onClick={startCreate}>
+            <Button
+              data-testid="knowledge-kb-create"
+              type="button"
+              variant="default"
+              size="sm"
+              onClick={startCreate}
+            >
               <FolderPlus className="mr-1.5 h-4 w-4" />
               Create Knowledge Base
             </Button>
             <Button
+              data-testid="knowledge-kb-import"
               type="button"
               variant="outline"
               size="sm"
@@ -237,6 +245,7 @@ export function KBSelectorPalette({ onClose }: Props) {
               </div>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <input
+                  data-testid="knowledge-kb-name-input"
                   type="text"
                   value={draft}
                   onChange={(e) => setDraft(e.target.value)}
@@ -253,7 +262,12 @@ export function KBSelectorPalette({ onClose }: Props) {
                   <Button type="button" variant="outline" size="sm" onClick={resetDraft}>
                     Cancel
                   </Button>
-                  <Button type="button" size="sm" onClick={() => void submitDraft()}>
+                  <Button
+                    data-testid="knowledge-kb-submit"
+                    type="button"
+                    size="sm"
+                    onClick={() => void submitDraft()}
+                  >
                     {draftMode.kind === 'create' ? 'Create' : 'Save'}
                   </Button>
                 </div>

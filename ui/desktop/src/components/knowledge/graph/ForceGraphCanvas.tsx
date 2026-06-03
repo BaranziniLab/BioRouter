@@ -35,15 +35,24 @@ function useSize(): [React.RefObject<HTMLDivElement | null>, Sized] {
   useEffect(() => {
     if (!ref.current) return;
     const el = ref.current;
-    const ro = new ResizeObserver(() => {
+    const update = () => {
       const r = el.getBoundingClientRect();
       setSize({
         width: Math.max(1, Math.floor(r.width)),
         height: Math.max(1, Math.floor(r.height)),
       });
+    };
+    const ro = new ResizeObserver(() => {
+      update();
     });
     ro.observe(el);
-    return () => ro.disconnect();
+    const raf = window.requestAnimationFrame(update);
+    window.addEventListener('resize', update);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener('resize', update);
+      ro.disconnect();
+    };
   }, []);
   return [ref, size];
 }
@@ -131,6 +140,7 @@ export function ForceGraphCanvas({
 
   return (
     <div
+      data-testid="knowledge-graph-canvas"
       ref={containerRef}
       className="h-full w-full overflow-hidden"
       style={{
@@ -156,8 +166,7 @@ export function ForceGraphCanvas({
           const isFocused = focusId === n.id;
           const isNeighbour = !!(focusId && neighbours.get(focusId)?.has(n.id));
           const dim =
-            (focusId && !isFocused && !isNeighbour) ||
-            (visibleSet && !visibleSet.has(n.id));
+            (focusId && !isFocused && !isNeighbour) || (visibleSet && !visibleSet.has(n.id));
           ctx.globalAlpha = dim ? DIMMED_OPACITY : 1.0;
           ctx.beginPath();
           ctx.arc(n.x, n.y, r, 0, Math.PI * 2);

@@ -648,6 +648,12 @@ pub async fn restore_state(
 async fn build_completer(
     model: &ModelRef,
 ) -> Result<Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>, (StatusCode, String)> {
+    if biorouter_mcp::knowledge::test_mode::env_enabled() {
+        return Ok(Box::new(
+            biorouter_mcp::knowledge::test_mode::TestModeCompleter,
+        ));
+    }
+
     let model_config =
         ModelConfig::new(&model.model).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let provider = biorouter::providers::create(&model.provider, model_config)

@@ -288,6 +288,7 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
                 })
                 .count();
             let sha = repo.commit_txn(&txn, ChangeKind::Lint, "lint autofix", None)?;
+            svc.rebuild_graph_cache(&args.kb_id)?;
             Ok(LintResult {
                 report,
                 commit_sha: Some(sha),

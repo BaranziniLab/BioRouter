@@ -1,14 +1,12 @@
 import {
   AlertCircle,
-  Bot,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
-  Hammer,
   LoaderCircle,
   StopCircle,
 } from 'lucide-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { StreamState, SubAgentEvent } from './hooks/useIngestStream';
 
 function prettyToolName(name: string): string {
@@ -21,7 +19,7 @@ function prettyToolName(name: string): string {
 
 function summarizeArgs(args: unknown): string {
   if (!args || typeof args !== 'object' || Array.isArray(args)) {
-    return 'Running with the current source context';
+    return 'Using the current staged source context.';
   }
 
   const entries = Object.entries(args as Record<string, unknown>)
@@ -37,79 +35,40 @@ function summarizeArgs(args: unknown): string {
       return `${key}: ${rendered}`;
     });
 
-  return entries.length > 0 ? entries.join(' • ') : 'Running with the current source context';
+  return entries.length > 0 ? entries.join(' • ') : 'Using the current staged source context.';
 }
 
-function EventCard({ ev }: { ev: SubAgentEvent }) {
+function renderEventLine(ev: SubAgentEvent): { tone: string; text: string } {
   if (ev.kind === 'step') {
-    return (
-      <div className="rounded-xl border border-border-subtle bg-background-default px-3 py-2">
-        <div className="flex items-start gap-2">
-          <Bot className="mt-0.5 h-4 w-4 shrink-0 text-text-muted" />
-          <div className="min-w-0">
-            <div className="text-[11px] font-medium text-text-default">Planner step {ev.index + 1}</div>
-            <p className="mt-1 text-[11px] leading-5 text-text-muted">
-              {ev.assistant_text.trim() || 'Preparing the next knowledge-base action.'}
-            </p>
-          </div>
-        </div>
-      </div>
-    );
+    return {
+      tone: 'text-text-default',
+      text: `Step ${ev.index + 1}: ${ev.assistant_text.trim() || 'Preparing the next knowledge-base action.'}`,
+    };
   }
 
   if (ev.kind === 'tool_call') {
-    return (
-      <div className="rounded-xl border border-border-subtle bg-background-default px-3 py-2">
-        <div className="flex items-start gap-2">
-          <Hammer className="mt-0.5 h-4 w-4 shrink-0 text-text-accent" />
-          <div className="min-w-0">
-            <div className="text-[11px] font-medium text-text-default">{prettyToolName(ev.name)}</div>
-            <p className="mt-1 text-[11px] leading-5 text-text-muted">{summarizeArgs(ev.args)}</p>
-          </div>
-        </div>
-      </div>
-    );
+    return {
+      tone: 'text-text-muted',
+      text: `Tool call · ${prettyToolName(ev.name)} · ${summarizeArgs(ev.args)}`,
+    };
   }
 
   if (ev.kind === 'tool_result') {
-    return (
-      <div
-        className={`rounded-xl border px-3 py-2 ${
-          ev.ok
-            ? 'border-emerald-200/70 bg-emerald-50/60 dark:border-emerald-900/40 dark:bg-emerald-950/20'
-            : 'border-red-200/70 bg-red-50/60 dark:border-red-900/40 dark:bg-red-950/20'
-        }`}
-      >
-        <div className="flex items-start gap-2">
-          {ev.ok ? (
-            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
-          ) : (
-            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
-          )}
-          <div className="min-w-0">
-            <div className="text-[11px] font-medium text-text-default">{prettyToolName(ev.name)}</div>
-            <p className="mt-1 text-[11px] leading-5 text-text-muted">
-              {ev.summary.trim() || (ev.ok ? 'Completed successfully.' : 'Returned an error.')}
-            </p>
-          </div>
-        </div>
-      </div>
-    );
+    return {
+      tone: ev.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300',
+      text: `${ev.ok ? 'Completed' : 'Issue'} · ${prettyToolName(ev.name)} · ${
+        ev.summary.trim() || (ev.ok ? 'Completed successfully.' : 'Returned an error.')
+      }`,
+    };
   }
 
-  return (
-    <div className="rounded-xl border border-border-subtle bg-background-default px-3 py-2">
-      <div className="flex items-start gap-2">
-        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-text-muted" />
-        <div className="min-w-0">
-          <div className="text-[11px] font-medium text-text-default">Digest finished</div>
-          <p className="mt-1 text-[11px] leading-5 text-text-muted">
-            {ev.reason === 'cancelled' ? 'Stopped before the current item completed.' : ev.reason}
-          </p>
-        </div>
-      </div>
-    </div>
-  );
+  return {
+    tone: 'text-text-muted',
+    text:
+      ev.reason === 'cancelled'
+        ? 'Digest stopped before the current item completed.'
+        : `Digest finished · ${ev.reason}`,
+  };
 }
 
 interface Props {
@@ -120,66 +79,92 @@ interface Props {
 export function DispatchProgress({ state, onAbort }: Props) {
   const [open, setOpen] = useState(true);
 
-  if (state.status === 'idle') return null;
-
   const statusLabel =
     state.status === 'starting'
-      ? 'Preparing digest…'
+      ? 'Preparing digest...'
       : state.status === 'streaming'
-      ? 'Digesting…'
-      : state.status === 'stopping'
-        ? 'Stopping…'
-      : state.status === 'done'
-        ? 'Done'
-        : state.status === 'error'
-          ? `Error: ${state.error}`
-          : '';
+        ? 'Digesting...'
+        : state.status === 'stopping'
+          ? 'Stopping...'
+          : state.status === 'done'
+            ? 'Digest complete'
+            : state.status === 'error'
+              ? `Digest error: ${state.error}`
+              : '';
+
+  const lines = useMemo(() => state.events.map(renderEventLine), [state.events]);
+
+  if (state.status === 'idle') return null;
 
   return (
-    <div className="border border-border-subtle rounded-xl bg-background-surface">
-      <div className="w-full flex items-center justify-between px-3 py-2">
+    <div className="rounded-xl border border-border-subtle bg-background-surface">
+      <div className="flex items-center justify-between gap-3 px-3 py-2.5">
         <button
-          onClick={() => setOpen((o) => !o)}
-          className="flex items-center gap-2 text-xs font-medium"
+          type="button"
+          onClick={() => setOpen((value) => !value)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs font-medium"
         >
-          <span>
+          {open ? (
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+          )}
+          <span className="min-w-0 break-words">
             {statusLabel}
             <span className="ml-2 text-text-muted">{state.events.length} events</span>
           </span>
-          {open ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
         </button>
-        {(state.status === 'starting' || state.status === 'streaming' || state.status === 'stopping') &&
+
+        {(state.status === 'starting' ||
+          state.status === 'streaming' ||
+          state.status === 'stopping') &&
           onAbort && (
-          <button
-            onClick={onAbort}
-            className="text-xs text-text-muted hover:text-red-500 inline-flex items-center gap-1"
-            title="Stop digestion"
-            disabled={state.status === 'stopping'}
-          >
-            {state.status === 'stopping' ? (
-              <LoaderCircle className="w-3 h-3 animate-spin" />
-            ) : (
-              <StopCircle className="w-3 h-3" />
-            )}{' '}
-            {state.status === 'stopping' ? 'Stopping…' : 'Stop'}
-          </button>
-        )}
+            <button
+              type="button"
+              onClick={onAbort}
+              className="inline-flex shrink-0 items-center gap-1 text-xs text-text-muted transition-colors hover:text-red-500"
+              title="Stop digestion"
+              disabled={state.status === 'stopping'}
+            >
+              {state.status === 'stopping' ? (
+                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <StopCircle className="h-3.5 w-3.5" />
+              )}
+              {state.status === 'stopping' ? 'Stopping...' : 'Stop'}
+            </button>
+          )}
       </div>
 
       {open && (
-        <div className="border-t border-border-subtle px-3 py-2 max-h-[260px] overflow-y-auto flex flex-col gap-2">
-          {state.events.length === 0 && (
-            <div className="rounded-xl border border-border-subtle bg-background-default px-3 py-2 text-[11px] text-text-muted">
-              {state.status === 'starting'
-                ? 'Checking the upload and opening the digestion pipeline…'
-                : state.status === 'stopping'
-                  ? 'Waiting for the current request to stop cleanly…'
-                  : 'Waiting for tool events…'}
-            </div>
-          )}
-          {state.events.map((ev, i) => (
-            <EventCard key={i} ev={ev} />
-          ))}
+        <div className="border-t border-border-subtle px-3 py-3">
+          <div className="max-h-[260px] space-y-2 overflow-y-auto text-[11px] leading-5">
+            {lines.length === 0 && (
+              <div className="flex items-start gap-2 text-text-muted">
+                <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
+                <p className="min-w-0 break-words whitespace-pre-wrap">
+                  {state.status === 'starting'
+                    ? 'Checking the staged source and opening the digest pipeline.'
+                    : state.status === 'stopping'
+                      ? 'Waiting for the current request to stop cleanly.'
+                      : 'Waiting for tool-call updates.'}
+                </p>
+              </div>
+            )}
+
+            {lines.map((line, index) => (
+              <div key={index} className={`flex items-start gap-2 ${line.tone}`}>
+                {line.text.startsWith('Completed') ? (
+                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                ) : line.text.startsWith('Issue') || line.text.startsWith('Digest error') ? (
+                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                ) : (
+                  <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-60" />
+                )}
+                <p className="min-w-0 break-words whitespace-pre-wrap">{line.text}</p>
+              </div>
+            ))}
+          </div>
         </div>
       )}
     </div>

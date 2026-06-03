@@ -15,8 +15,10 @@ use biorouter_mcp::knowledge::{
     },
     service::KnowledgeService,
     subagent::loop_::{Completer, LlmMessage, LlmReply, LlmToolCall, SubAgentBounds},
+    test_mode::TestModeCompleter,
 };
 use rmcp::model::Tool;
+use std::path::{Path, PathBuf};
 use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
@@ -210,4 +212,87 @@ async fn macros_e2e_ingest_query_lint() {
         "hrv-zone2.md has no inbound links → should be an orphan; orphans={:?}",
         report.orphans
     );
+}
+
+#[tokio::test]
+async fn ingest_supported_path_formats_builds_graph_nodes() {
+    let dir = tempfile::tempdir().unwrap();
+    let fixture_dir = dir.path().join("fixtures");
+    std::fs::create_dir_all(&fixture_dir).unwrap();
+
+    let cases = write_supported_fixtures(&fixture_dir);
+
+    let svc = KnowledgeService::new(dir.path().to_path_buf());
+    svc.create_base("formats", "Formats", None).unwrap();
+
+    for (index, path) in cases.iter().enumerate() {
+        let result = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "formats".into(),
+                source: SourceInput::Path(path.clone()),
+                completer: Box::new(TestModeCompleter),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !result.commit_sha.is_empty(),
+            "supported format should produce a commit"
+        );
+
+        let graph = svc.get_graph("formats").unwrap();
+        assert_eq!(
+            graph.nodes.len(),
+            index + 1,
+            "graph should include one source node per digested file"
+        );
+        assert!(
+            !graph.nodes.iter().all(|node| node.label.trim().is_empty()),
+            "graph nodes should have visible labels"
+        );
+    }
+}
+
+fn write_supported_fixtures(dir: &Path) -> Vec<PathBuf> {
+    let markdown = dir.join("note.md");
+    std::fs::write(
+        &markdown,
+        "# Markdown Fixture\n\nDigest this markdown note.",
+    )
+    .unwrap();
+
+    let text = dir.join("note.txt");
+    std::fs::write(&text, "Plain text fixture for ingestion.").unwrap();
+
+    let csv = dir.join("table.csv");
+    std::fs::write(&csv, "name,score\nAlice,9\nBob,7\n").unwrap();
+
+    let html = dir.join("article.html");
+    std::fs::write(
+        &html,
+        include_bytes!("../src/knowledge/convert/fixtures/article.html"),
+    )
+    .unwrap();
+
+    let pdf = dir.join("sample.pdf");
+    std::fs::write(
+        &pdf,
+        include_bytes!("../src/computercontroller/tests/data/test.pdf"),
+    )
+    .unwrap();
+
+    let docx = dir.join("sample.docx");
+    std::fs::write(
+        &docx,
+        include_bytes!("../src/computercontroller/tests/data/sample.docx"),
+    )
+    .unwrap();
+
+    vec![markdown, text, csv, html, pdf, docx]
 }

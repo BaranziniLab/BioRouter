@@ -28,7 +28,10 @@ function KnowledgeViewInner() {
 
   return (
     <MainPanelLayout>
-      <div className="flex flex-col min-w-0 flex-1 overflow-y-auto relative" data-search-scroll-area>
+      <div
+        className="flex flex-col min-w-0 flex-1 overflow-y-auto relative"
+        data-search-scroll-area
+      >
         <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
           <div className="flex flex-col page-transition">
             <h1 className="text-2xl font-semibold tracking-tight mb-1">Knowledge</h1>
@@ -37,14 +40,14 @@ function KnowledgeViewInner() {
             </p>
           </div>
         </div>
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-[360px_1fr] min-h-0">
+        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)]">
           <div className="border-r border-border-subtle overflow-y-auto">
             <div className="p-6">
               <KBSelectorTrigger open={paletteOpen} onOpenChange={setPaletteOpen} />
             </div>
             <IngestPanel />
           </div>
-          <div className="min-h-0">
+          <div className="min-h-0 min-w-0 overflow-hidden">
             <KnowledgeGraphPanel
               onOpenChangeLog={() => setChangeLogOpen(true)}
               previewSha={previewSha}

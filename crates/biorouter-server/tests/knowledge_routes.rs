@@ -603,6 +603,126 @@ async fn add_raw_source_html_multipart_uses_part_mime() {
 }
 
 #[tokio::test]
+async fn add_raw_source_accepts_supported_file_formats() {
+    let (_d, app) = build_test_router();
+
+    struct Case<'a> {
+        slug: &'a str,
+        filename: &'a str,
+        mime: Option<&'a str>,
+        bytes: Vec<u8>,
+        expected: Option<&'a str>,
+    }
+
+    let cases = vec![
+        Case {
+            slug: "html",
+            filename: "article.html",
+            mime: Some("text/html"),
+            bytes: include_bytes!(
+                "../../biorouter-mcp/src/knowledge/convert/fixtures/article.html"
+            )
+            .to_vec(),
+            expected: Some("# Example article"),
+        },
+        Case {
+            slug: "markdown",
+            filename: "note.md",
+            mime: Some("text/markdown"),
+            bytes: b"# Markdown source\n\nDigest this note.".to_vec(),
+            expected: Some("# Markdown source"),
+        },
+        Case {
+            slug: "text",
+            filename: "note.txt",
+            mime: Some("text/plain"),
+            bytes: b"Plain text note for digestion.".to_vec(),
+            expected: Some("Plain text note for digestion."),
+        },
+        Case {
+            slug: "csv",
+            filename: "table.csv",
+            mime: Some("text/csv"),
+            bytes: b"name,score\nAlice,9\nBob,7\n".to_vec(),
+            expected: Some("| name | score |"),
+        },
+        Case {
+            slug: "docx",
+            filename: "sample.docx",
+            mime: Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            bytes: include_bytes!(
+                "../../biorouter-mcp/src/computercontroller/tests/data/sample.docx"
+            )
+            .to_vec(),
+            expected: None,
+        },
+        Case {
+            slug: "pdf",
+            filename: "sample.pdf",
+            mime: Some("application/pdf"),
+            bytes: include_bytes!("../../biorouter-mcp/src/computercontroller/tests/data/test.pdf")
+                .to_vec(),
+            expected: None,
+        },
+    ];
+
+    for (index, case) in cases.into_iter().enumerate() {
+        let kb_id = format!("fmt{index}");
+        create_kb(app.clone(), &kb_id, case.slug).await;
+
+        let res = app
+            .clone()
+            .oneshot(multipart_file_request(
+                &format!("/bases/{kb_id}/raw"),
+                case.filename,
+                case.mime,
+                case.bytes,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{} upload should return 200", case.slug);
+
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let path = v["source_md_path"].as_str().unwrap();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/bases/{kb_id}/page?path={path}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{} page should be readable", case.slug);
+
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let page: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let content = page["content"].as_str().unwrap();
+        if let Some(expected) = case.expected {
+            assert!(
+                content.contains(expected),
+                "{} converted content should contain {expected:?}, got {content:?}",
+                case.slug
+            );
+        } else {
+            assert!(
+                !content.trim().is_empty(),
+                "{} converted content should not be empty",
+                case.slug
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn add_raw_source_rejects_empty_body() {
     let (_d, app) = build_test_router();
 
