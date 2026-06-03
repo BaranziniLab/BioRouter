@@ -1,4 +1,8 @@
-import type { MenuItemConstructorOptions, OpenDialogOptions, OpenDialogReturnValue } from 'electron';
+import type {
+  MenuItemConstructorOptions,
+  OpenDialogOptions,
+  OpenDialogReturnValue,
+} from 'electron';
 import {
   app,
   App,
@@ -51,7 +55,12 @@ import {
 } from './utils/autoUpdater';
 import { UPDATES_ENABLED } from './updates';
 import './utils/workflowHash';
-import { registerDependencyIpcHandlers, setupDependencyChecker, triggerDependencyCheck, SPAWN_ENV } from './utils/dependencyChecker';
+import {
+  registerDependencyIpcHandlers,
+  setupDependencyChecker,
+  triggerDependencyCheck,
+  SPAWN_ENV,
+} from './utils/dependencyChecker';
 import { runExtensionUpdateCheck, scheduleExtensionUpdateCheck } from './utils/extensionUpdater';
 import { Client, createClient, createConfig } from './api/client';
 import { BioRouterApp } from './api';
@@ -1216,8 +1225,7 @@ const handleFatalError = (error: Error) => {
 };
 
 function sanitizeErrorForLogging(err: unknown): string {
-  const msg =
-    err instanceof Error ? err.message + '\n' + (err.stack || '') : String(err);
+  const msg = err instanceof Error ? err.message + '\n' + (err.stack || '') : String(err);
   return msg
     .replace(/sk-[a-zA-Z0-9]{20,}/g, 'sk-***')
     .replace(/[Aa]pi[_-]?[Kk]ey[=:]\s*\S+/g, 'api_key=***')
@@ -1568,6 +1576,10 @@ ipcMain.handle('get-spellcheck-state', () => {
 
 // Add file/directory selection handler
 ipcMain.handle('select-file-or-directory', async (_event, defaultPath?: string) => {
+  if (process.env.PLAYWRIGHT_SELECT_PATH) {
+    return process.env.PLAYWRIGHT_SELECT_PATH;
+  }
+
   const dialogOptions: OpenDialogOptions = {
     properties: process.platform === 'darwin' ? ['openFile', 'openDirectory'] : ['openFile'],
   };
@@ -1952,11 +1964,7 @@ ipcMain.handle('read-file', async (_event, filePath) => {
   const expandedPath = expandTilde(filePath);
   try {
     const resolvedPath = path.resolve(expandedPath);
-    const allowedRoots = [
-      os.homedir(),
-      app.getPath('userData'),
-      app.getPath('temp'),
-    ];
+    const allowedRoots = [os.homedir(), app.getPath('userData'), app.getPath('temp')];
     const isAllowed = allowedRoots.some(
       (root) => resolvedPath.startsWith(root + path.sep) || resolvedPath === root
     );
@@ -2021,11 +2029,7 @@ ipcMain.handle('delete-file', async (_event, filePath: string) => {
   try {
     const expandedPath = expandTilde(filePath);
     const resolvedPath = path.resolve(expandedPath);
-    const allowedRoots = [
-      os.homedir(),
-      app.getPath('userData'),
-      app.getPath('temp'),
-    ];
+    const allowedRoots = [os.homedir(), app.getPath('userData'), app.getPath('temp')];
     const isAllowed = allowedRoots.some(
       (root) => resolvedPath.startsWith(root + path.sep) || resolvedPath === root
     );
@@ -2108,58 +2112,68 @@ ipcMain.handle('brxt:open-file-dialog', async (event) => {
   return result.filePaths[0];
 });
 
-ipcMain.handle(
-  'brxt:validate-and-read',
-  async (_event, { filePath }: { filePath: string }) => {
-    try {
-      const zip = new AdmZip(filePath);
-      const entries = zip.getEntries().map((e) => e.entryName);
+ipcMain.handle('brxt:validate-and-read', async (_event, { filePath }: { filePath: string }) => {
+  try {
+    const zip = new AdmZip(filePath);
+    const entries = zip.getEntries().map((e) => e.entryName);
 
-      if (!entries.some((e) => e === 'manifest.json'))
-        return { error: 'Missing manifest.json — not a valid .brxt bundle' };
-      if (!entries.some((e) => e.toLowerCase() === 'readme.md'))
-        return { error: 'Missing README.md — not a valid .brxt bundle' };
-      if (!entries.some((e) => e === 'pyproject.toml'))
-        return { error: 'Missing pyproject.toml — not a valid .brxt bundle' };
-      if (!entries.some((e) => e.startsWith('src/')))
-        return { error: 'Missing src/ directory — not a valid .brxt bundle' };
+    if (!entries.some((e) => e === 'manifest.json'))
+      return { error: 'Missing manifest.json — not a valid .brxt bundle' };
+    if (!entries.some((e) => e.toLowerCase() === 'readme.md'))
+      return { error: 'Missing README.md — not a valid .brxt bundle' };
+    if (!entries.some((e) => e === 'pyproject.toml'))
+      return { error: 'Missing pyproject.toml — not a valid .brxt bundle' };
+    if (!entries.some((e) => e.startsWith('src/')))
+      return { error: 'Missing src/ directory — not a valid .brxt bundle' };
 
-      const manifestEntry = zip.getEntry('manifest.json');
-      if (!manifestEntry) return { error: 'Could not read manifest.json' };
+    const manifestEntry = zip.getEntry('manifest.json');
+    if (!manifestEntry) return { error: 'Could not read manifest.json' };
 
-      const manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
+    const manifest = JSON.parse(manifestEntry.getData().toString('utf8'));
 
-      for (const field of ['name', 'display_name', 'description', 'version', 'entry_point', 'repository']) {
-        if (!manifest[field])
-          return { error: `manifest.json missing required field: "${field}"` };
-      }
-
-      if (!Array.isArray(manifest.env_vars))
-        return { error: 'manifest.json "env_vars" must be an array' };
-
-      // Scan for bundled skills in skills/<slug>/SKILL.md
-      const skillsPreview: Array<{ slug: string; name: string; description: string }> = [];
-      for (const entry of zip.getEntries()) {
-        const m = entry.entryName.match(/^skills\/([^/]+)\/SKILL\.md$/);
-        if (m) {
-          const slug = m[1];
-          const parsed = parseFrontmatterFromSkillMd(entry.getData().toString('utf8'));
-          if (parsed) skillsPreview.push({ slug, name: parsed.name, description: parsed.description });
-        }
-      }
-
-      return { manifest, skillsPreview };
-    } catch (err) {
-      return { error: `Failed to read bundle: ${(err as Error).message}` };
+    for (const field of [
+      'name',
+      'display_name',
+      'description',
+      'version',
+      'entry_point',
+      'repository',
+    ]) {
+      if (!manifest[field]) return { error: `manifest.json missing required field: "${field}"` };
     }
+
+    if (!Array.isArray(manifest.env_vars))
+      return { error: 'manifest.json "env_vars" must be an array' };
+
+    // Scan for bundled skills in skills/<slug>/SKILL.md
+    const skillsPreview: Array<{ slug: string; name: string; description: string }> = [];
+    for (const entry of zip.getEntries()) {
+      const m = entry.entryName.match(/^skills\/([^/]+)\/SKILL\.md$/);
+      if (m) {
+        const slug = m[1];
+        const parsed = parseFrontmatterFromSkillMd(entry.getData().toString('utf8'));
+        if (parsed)
+          skillsPreview.push({ slug, name: parsed.name, description: parsed.description });
+      }
+    }
+
+    return { manifest, skillsPreview };
+  } catch (err) {
+    return { error: `Failed to read bundle: ${(err as Error).message}` };
   }
-);
+});
 
 ipcMain.handle(
   'brxt:install',
   async (_event, { filePath, extensionName }: { filePath: string; extensionName: string }) => {
     try {
-      const installDir = path.join(os.homedir(), '.config', 'biorouter', 'extensions', extensionName);
+      const installDir = path.join(
+        os.homedir(),
+        '.config',
+        'biorouter',
+        'extensions',
+        extensionName
+      );
 
       // Create install directory
       fsSync.mkdirSync(installDir, { recursive: true });
@@ -2192,134 +2206,137 @@ ipcMain.handle(
   }
 );
 
-ipcMain.handle(
-  'brxt:uninstall',
-  async (_event, { extensionName }: { extensionName: string }) => {
-    try {
-      if (!extensionName || /[/\\]/.test(extensionName) || extensionName === '..' || extensionName === '.') {
-        return { error: 'Invalid extension name.' };
-      }
-      const installDir = path.join(os.homedir(), '.config', 'biorouter', 'extensions', extensionName);
-      const extensionsBase = path.join(os.homedir(), '.config', 'biorouter', 'extensions');
-      if (!installDir.startsWith(extensionsBase + path.sep)) {
-        return { error: 'Invalid extension name.' };
-      }
-      if (fsSync.existsSync(installDir)) {
-        fsSync.rmSync(installDir, { recursive: true, force: true });
-      }
-      return { success: true as const };
-    } catch (err) {
-      return { error: `Uninstall failed: ${(err as Error).message}` };
+ipcMain.handle('brxt:uninstall', async (_event, { extensionName }: { extensionName: string }) => {
+  try {
+    if (
+      !extensionName ||
+      /[/\\]/.test(extensionName) ||
+      extensionName === '..' ||
+      extensionName === '.'
+    ) {
+      return { error: 'Invalid extension name.' };
     }
+    const installDir = path.join(os.homedir(), '.config', 'biorouter', 'extensions', extensionName);
+    const extensionsBase = path.join(os.homedir(), '.config', 'biorouter', 'extensions');
+    if (!installDir.startsWith(extensionsBase + path.sep)) {
+      return { error: 'Invalid extension name.' };
+    }
+    if (fsSync.existsSync(installDir)) {
+      fsSync.rmSync(installDir, { recursive: true, force: true });
+    }
+    return { success: true as const };
+  } catch (err) {
+    return { error: `Uninstall failed: ${(err as Error).message}` };
   }
-);
+});
 
-ipcMain.handle(
-  'skills:extract-zip',
-  async (_event, { filePath }: { filePath: string }) => {
-    try {
-      const zip = new AdmZip(filePath);
-      const entries = zip.getEntries();
+ipcMain.handle('skills:extract-zip', async (_event, { filePath }: { filePath: string }) => {
+  try {
+    const zip = new AdmZip(filePath);
+    const entries = zip.getEntries();
 
-      const TEXT_EXTENSIONS = ['.md', '.txt', '.yaml', '.yml', '.json', '.py', '.sh'];
+    const TEXT_EXTENSIONS = ['.md', '.txt', '.yaml', '.yml', '.json', '.py', '.sh'];
 
-      // --- Single skill: root SKILL.md ---
-      let skillEntry = entries.find((e) => e.entryName === 'SKILL.md');
-      let prefix = '';
+    // --- Single skill: root SKILL.md ---
+    let skillEntry = entries.find((e) => e.entryName === 'SKILL.md');
+    let prefix = '';
 
-      if (!skillEntry) {
-        // Single skill inside a folder: <slug>/SKILL.md
-        const single = entries.find((e) => /^[^/]+\/SKILL\.md$/.test(e.entryName));
-        if (single) {
-          skillEntry = single;
-          prefix = single.entryName.replace(/\/SKILL\.md$/, '') + '/';
-        }
+    if (!skillEntry) {
+      // Single skill inside a folder: <slug>/SKILL.md
+      const single = entries.find((e) => /^[^/]+\/SKILL\.md$/.test(e.entryName));
+      if (single) {
+        skillEntry = single;
+        prefix = single.entryName.replace(/\/SKILL\.md$/, '') + '/';
+      }
+    }
+
+    if (skillEntry) {
+      // --- Single skill install ---
+      const parsed = parseFrontmatterFromSkillMd(skillEntry.getData().toString('utf8'));
+      if (!parsed) {
+        return {
+          error: 'SKILL.md must have valid frontmatter with "name" and "description".',
+        };
       }
 
-      if (skillEntry) {
-        // --- Single skill install ---
-        const parsed = parseFrontmatterFromSkillMd(skillEntry.getData().toString('utf8'));
-        if (!parsed) {
-          return {
-            error: 'SKILL.md must have valid frontmatter with "name" and "description".',
-          };
-        }
-
-        const slug = parsed.name
-          .replace(/[^a-z0-9-_]/gi, '-')
-          .replace(/-{2,}/g, '-')
-          .replace(/^-|-$/g, '')
-          .toLowerCase();
-
-        const files: [string, string][] = [];
-        for (const entry of entries) {
-          if (entry.isDirectory) continue;
-          if (prefix && !entry.entryName.startsWith(prefix)) continue;
-          const relName = prefix ? entry.entryName.slice(prefix.length) : entry.entryName;
-          if (!relName) continue;
-          const ext = path.extname(relName).toLowerCase();
-          if (!TEXT_EXTENSIONS.includes(ext)) continue;
-          files.push([relName, entry.getData().toString('utf8')]);
-        }
-
-        return { isBundle: false as const, files, name: parsed.name, description: parsed.description, slug };
-      }
-
-      // --- Bundle detection: <bundleName>/<subSlug>/SKILL.md ---
-      const bundleSkillEntries = entries.filter((e) =>
-        /^[^/]+\/[^/]+\/SKILL\.md$/.test(e.entryName)
-      );
-
-      if (bundleSkillEntries.length === 0) {
-        return { error: 'No SKILL.md found in the ZIP file.' };
-      }
-
-      // Group by bundle folder (first path component)
-      const bundleFolder = bundleSkillEntries[0].entryName.split('/')[0];
-      const bundlePrefix = bundleFolder + '/';
-      const bundleSkills: Array<{ name: string; description: string }> = [];
-
-      for (const entry of bundleSkillEntries) {
-        if (!entry.entryName.startsWith(bundlePrefix)) continue;
-        const parsed = parseFrontmatterFromSkillMd(entry.getData().toString('utf8'));
-        if (parsed) bundleSkills.push(parsed);
-      }
-
-      if (bundleSkills.length === 0) {
-        return { error: 'No valid SKILL.md files found in bundle.' };
-      }
-
-      const bundleFiles: [string, string][] = [];
-      for (const entry of entries) {
-        if (entry.isDirectory) continue;
-        if (!entry.entryName.startsWith(bundlePrefix)) continue;
-        const relName = entry.entryName.slice(bundlePrefix.length);
-        if (!relName) continue;
-        const ext = path.extname(relName).toLowerCase();
-        if (!TEXT_EXTENSIONS.includes(ext)) continue;
-        bundleFiles.push([relName, entry.getData().toString('utf8')]);
-      }
-
-      const slug = bundleFolder
+      const slug = parsed.name
         .replace(/[^a-z0-9-_]/gi, '-')
         .replace(/-{2,}/g, '-')
         .replace(/^-|-$/g, '')
         .toLowerCase();
 
+      const files: [string, string][] = [];
+      for (const entry of entries) {
+        if (entry.isDirectory) continue;
+        if (prefix && !entry.entryName.startsWith(prefix)) continue;
+        const relName = prefix ? entry.entryName.slice(prefix.length) : entry.entryName;
+        if (!relName) continue;
+        const ext = path.extname(relName).toLowerCase();
+        if (!TEXT_EXTENSIONS.includes(ext)) continue;
+        files.push([relName, entry.getData().toString('utf8')]);
+      }
+
       return {
-        isBundle: true as const,
-        bundleName: bundleFolder,
-        bundleSkills,
-        files: bundleFiles,
+        isBundle: false as const,
+        files,
+        name: parsed.name,
+        description: parsed.description,
         slug,
-        name: bundleFolder,
-        description: `Bundle of ${bundleSkills.length} skills`,
       };
-    } catch (err) {
-      return { error: `Failed to read ZIP: ${(err as Error).message}` };
     }
+
+    // --- Bundle detection: <bundleName>/<subSlug>/SKILL.md ---
+    const bundleSkillEntries = entries.filter((e) => /^[^/]+\/[^/]+\/SKILL\.md$/.test(e.entryName));
+
+    if (bundleSkillEntries.length === 0) {
+      return { error: 'No SKILL.md found in the ZIP file.' };
+    }
+
+    // Group by bundle folder (first path component)
+    const bundleFolder = bundleSkillEntries[0].entryName.split('/')[0];
+    const bundlePrefix = bundleFolder + '/';
+    const bundleSkills: Array<{ name: string; description: string }> = [];
+
+    for (const entry of bundleSkillEntries) {
+      if (!entry.entryName.startsWith(bundlePrefix)) continue;
+      const parsed = parseFrontmatterFromSkillMd(entry.getData().toString('utf8'));
+      if (parsed) bundleSkills.push(parsed);
+    }
+
+    if (bundleSkills.length === 0) {
+      return { error: 'No valid SKILL.md files found in bundle.' };
+    }
+
+    const bundleFiles: [string, string][] = [];
+    for (const entry of entries) {
+      if (entry.isDirectory) continue;
+      if (!entry.entryName.startsWith(bundlePrefix)) continue;
+      const relName = entry.entryName.slice(bundlePrefix.length);
+      if (!relName) continue;
+      const ext = path.extname(relName).toLowerCase();
+      if (!TEXT_EXTENSIONS.includes(ext)) continue;
+      bundleFiles.push([relName, entry.getData().toString('utf8')]);
+    }
+
+    const slug = bundleFolder
+      .replace(/[^a-z0-9-_]/gi, '-')
+      .replace(/-{2,}/g, '-')
+      .replace(/^-|-$/g, '')
+      .toLowerCase();
+
+    return {
+      isBundle: true as const,
+      bundleName: bundleFolder,
+      bundleSkills,
+      files: bundleFiles,
+      slug,
+      name: bundleFolder,
+      description: `Bundle of ${bundleSkills.length} skills`,
+    };
+  } catch (err) {
+    return { error: `Failed to read ZIP: ${(err as Error).message}` };
   }
-);
+});
 
 function handleBrxtFileOpen(filePath: string) {
   // Find the main window (or store for when one is ready)
@@ -2359,57 +2376,75 @@ function buildApplicationMenu() {
     {
       label: 'Find…',
       accelerator: isMac ? 'Command+F' : 'Control+F',
-      click() { BrowserWindow.getFocusedWindow()?.webContents.send('find-command'); },
+      click() {
+        BrowserWindow.getFocusedWindow()?.webContents.send('find-command');
+      },
     },
     {
       label: 'Find Next',
       accelerator: isMac ? 'Command+G' : 'Control+G',
-      click() { BrowserWindow.getFocusedWindow()?.webContents.send('find-next'); },
+      click() {
+        BrowserWindow.getFocusedWindow()?.webContents.send('find-next');
+      },
     },
     {
       label: 'Find Previous',
       accelerator: isMac ? 'Shift+Command+G' : 'Shift+Control+G',
-      click() { BrowserWindow.getFocusedWindow()?.webContents.send('find-previous'); },
+      click() {
+        BrowserWindow.getFocusedWindow()?.webContents.send('find-previous');
+      },
     },
     ...(isMac
-      ? [{
-          label: 'Use Selection for Find',
-          accelerator: 'Command+E',
-          click() { BrowserWindow.getFocusedWindow()?.webContents.send('use-selection-find'); },
-        } as MenuItemConstructorOptions]
+      ? [
+          {
+            label: 'Use Selection for Find',
+            accelerator: 'Command+E',
+            click() {
+              BrowserWindow.getFocusedWindow()?.webContents.send('use-selection-find');
+            },
+          } as MenuItemConstructorOptions,
+        ]
       : []),
   ];
 
   const template: MenuItemConstructorOptions[] = [
     // ── BioRouter app menu (macOS only) ──────────────────────────────────
     ...(isMac
-      ? [{
-          label: 'BioRouter',
-          submenu: [
-            { role: 'about' as const },
-            { type: 'separator' as const },
-            {
-              label: 'Settings',
-              accelerator: 'CmdOrCtrl+,',
-              click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'settings'); },
-            },
-            { type: 'separator' as const },
-            {
-              label: 'Check for Updates…',
-              click: openUpdateSettings,
-            },
-            {
-              label: 'Check for Dependencies…',
-              click() { triggerDependencyCheck(); },
-            },
-            {
-              label: 'Check for Extension Updates',
-              click() { runExtensionUpdateCheck(); },
-            },
-            { type: 'separator' as const },
-            { role: 'quit' as const, label: 'Quit BioRouter' },
-          ],
-        } as MenuItemConstructorOptions]
+      ? [
+          {
+            label: 'BioRouter',
+            submenu: [
+              { role: 'about' as const },
+              { type: 'separator' as const },
+              {
+                label: 'Settings',
+                accelerator: 'CmdOrCtrl+,',
+                click() {
+                  BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'settings');
+                },
+              },
+              { type: 'separator' as const },
+              {
+                label: 'Check for Updates…',
+                click: openUpdateSettings,
+              },
+              {
+                label: 'Check for Dependencies…',
+                click() {
+                  triggerDependencyCheck();
+                },
+              },
+              {
+                label: 'Check for Extension Updates',
+                click() {
+                  runExtensionUpdateCheck();
+                },
+              },
+              { type: 'separator' as const },
+              { role: 'quit' as const, label: 'Quit BioRouter' },
+            ],
+          } as MenuItemConstructorOptions,
+        ]
       : []),
 
     // ── Go ────────────────────────────────────────────────────────────────
@@ -2419,39 +2454,53 @@ function buildApplicationMenu() {
         {
           label: 'Home',
           accelerator: 'CmdOrCtrl+1',
-          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', ''); },
+          click() {
+            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', '');
+          },
         },
         {
           label: 'New Chat',
           accelerator: 'CmdOrCtrl+T',
-          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', ''); },
+          click() {
+            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', '');
+          },
         },
         {
           label: 'History',
           accelerator: 'CmdOrCtrl+2',
-          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'sessions'); },
+          click() {
+            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'sessions');
+          },
         },
         { type: 'separator' as const },
         {
           label: 'Workflows',
           accelerator: 'CmdOrCtrl+3',
-          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'workflows'); },
+          click() {
+            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'workflows');
+          },
         },
         {
           label: 'Scheduler',
           accelerator: 'CmdOrCtrl+4',
-          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'schedules'); },
+          click() {
+            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'schedules');
+          },
         },
         { type: 'separator' as const },
         {
           label: 'Extensions',
           accelerator: 'CmdOrCtrl+5',
-          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'extensions'); },
+          click() {
+            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'extensions');
+          },
         },
         {
           label: 'Skills',
           accelerator: 'CmdOrCtrl+6',
-          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'skills'); },
+          click() {
+            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'skills');
+          },
         },
       ],
     },
@@ -2462,12 +2511,16 @@ function buildApplicationMenu() {
       submenu: [
         {
           label: 'New Chat',
-          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', ''); },
+          click() {
+            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', '');
+          },
         },
         {
           label: 'New Window',
           accelerator: isMac ? 'Cmd+N' : 'Ctrl+N',
-          click() { ipcMain.emit('create-chat-window'); },
+          click() {
+            ipcMain.emit('create-chat-window');
+          },
         },
         { type: 'separator' as const },
         {
@@ -2486,7 +2539,9 @@ function buildApplicationMenu() {
         {
           label: 'Focus BioRouter Window',
           accelerator: 'CmdOrCtrl+Alt+G',
-          click() { focusWindow(); },
+          click() {
+            focusWindow();
+          },
         },
       ],
     },
@@ -2500,20 +2555,28 @@ function buildApplicationMenu() {
       submenu: [
         {
           label: 'Install Extension (.brxt)',
-          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'extensions'); },
+          click() {
+            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'extensions');
+          },
         },
         {
           label: 'Browse Extensions',
-          click() { shell.openExternal('https://baranzinilab.github.io/biorouter-landing/baam.html'); },
+          click() {
+            shell.openExternal('https://baranzinilab.github.io/biorouter-landing/baam.html');
+          },
         },
         {
           label: 'Add Custom Extension…',
-          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'extensions'); },
+          click() {
+            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'extensions');
+          },
         },
         { type: 'separator' as const },
         {
           label: 'Check for Extension Updates',
-          click() { runExtensionUpdateCheck(); },
+          click() {
+            runExtensionUpdateCheck();
+          },
         },
       ],
     },
@@ -2524,15 +2587,21 @@ function buildApplicationMenu() {
       submenu: [
         {
           label: 'Configure Providers…',
-          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'configure-providers'); },
+          click() {
+            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'configure-providers');
+          },
         },
         {
           label: 'Switch Model…',
-          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'settings', 'models'); },
+          click() {
+            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'settings', 'models');
+          },
         },
         {
           label: 'Reset Provider',
-          click() { BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'configure-providers'); },
+          click() {
+            BrowserWindow.getFocusedWindow()?.webContents.send('set-view', 'configure-providers');
+          },
         },
       ],
     },
@@ -2585,7 +2654,9 @@ function buildApplicationMenu() {
       submenu: [
         {
           label: 'Biorouter Documentation',
-          click() { shell.openExternal('https://baranzinilab.github.io/biorouter-landing/docs.html'); },
+          click() {
+            shell.openExternal('https://baranzinilab.github.io/biorouter-landing/docs.html');
+          },
         },
         { type: 'separator' as const },
         {
