@@ -27,18 +27,33 @@ release-binary:
     cargo run -p biorouter-server --bin generate_schema
 
 # release-windows docker build command
+#
+# Two cross-compile fixes are required for the x86_64-pc-windows-gnu target:
+#  1. aws-lc-sys (pulled in via the AWS SDK / rustls) compiles its POSIX
+#     threading shim under mingw and references winpthread symbols
+#     (pthread_*). rustc places `-C link-arg=-l...` BEFORE the rlibs, so GNU
+#     ld discards the lib before it's needed. We wrap the linker so
+#     `-lpthread -lwinpthread` are appended AFTER everything else.
+#  2. lzma-sys (via xz2, used by the knowledge .brkb path) would otherwise
+#     find the HOST liblzma through pkg-config (PKG_CONFIG_ALLOW_CROSS) and
+#     emit an invalid dynamic link. LZMA_API_STATIC=1 forces it to compile
+#     its bundled liblzma C source statically — keeping the build
+#     self-contained (no liblzma DLL to ship).
 win_docker_build_sh := '''rustup target add x86_64-pc-windows-gnu && \
 	apt-get update && \
 	apt-get install -y mingw-w64 protobuf-compiler cmake && \
+	printf "#!/bin/sh\nexec x86_64-w64-mingw32-gcc \"\$@\" -lpthread -lwinpthread\n" > /usr/local/bin/winpthread-gcc && \
+	chmod +x /usr/local/bin/winpthread-gcc && \
 	export CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc && \
 	export CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++ && \
 	export AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar && \
-	export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc && \
+	export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=/usr/local/bin/winpthread-gcc && \
+	export LZMA_API_STATIC=1 && \
 	export PKG_CONFIG_ALLOW_CROSS=1 && \
 	export PROTOC=/usr/bin/protoc && \
 	export PATH=/usr/bin:\$PATH && \
 	protoc --version && \
-	cargo build --release --target x86_64-pc-windows-gnu && \
+	cargo build --release --target x86_64-pc-windows-gnu --bin biorouterd --bin biorouter && \
 	GCC_DIR=\$(ls -d /usr/lib/gcc/x86_64-w64-mingw32/*/ | head -n 1) && \
 	cp \$GCC_DIR/libstdc++-6.dll /usr/src/myapp/target/x86_64-pc-windows-gnu/release/ && \
 	cp \$GCC_DIR/libgcc_s_seh-1.dll /usr/src/myapp/target/x86_64-pc-windows-gnu/release/ && \
@@ -78,6 +93,7 @@ linux_docker_build_sh := '''rustup target add x86_64-unknown-linux-gnu && \
 	export CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++ && \
 	export AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar && \
 	export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc && \
+	export LZMA_API_STATIC=1 && \
 	export PKG_CONFIG_ALLOW_CROSS=1 && \
 	export PKG_CONFIG_PATH_x86_64_unknown_linux_gnu=/usr/lib/x86_64-linux-gnu/pkgconfig && \
 	export PROTOC=/usr/bin/protoc && \

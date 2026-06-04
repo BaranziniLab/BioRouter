@@ -931,7 +931,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter"
-version = "1.76.1"
+version = "1.80.0"
 dependencies = [
  "agent-client-protocol-schema",
  "ahash",
@@ -1020,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-acp"
-version = "1.76.1"
+version = "1.80.0"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-bench"
-version = "1.76.1"
+version = "1.80.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1067,7 +1067,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-cli"
-version = "1.76.1"
+version = "1.80.0"
 dependencies = [
  "anstream",
  "anyhow",
@@ -1117,7 +1117,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-mcp"
-version = "1.76.1"
+version = "1.80.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1190,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-server"
-version = "1.76.1"
+version = "1.80.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1236,7 +1236,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-test"
-version = "1.76.1"
+version = "1.80.0"
 dependencies = [
  "clap",
  "serde_json",
