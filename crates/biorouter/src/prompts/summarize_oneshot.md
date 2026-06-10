@@ -3,7 +3,7 @@
 - Generate a version of the below messages with only the most verbose parts removed
 - Include user requests, your responses, all technical content, and as much of the original context as possible
 - This will be used to let the user continue the working session
-- Use framing and tone knowing the content will be read an agent (you) on a next exchange to allow for continuation of the session
+- Use framing and tone knowing the content will be read by an agent (you) on a next exchange to allow for continuation of the session
 
 **Conversation History:**
 {{ messages }}

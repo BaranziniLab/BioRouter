@@ -19,6 +19,18 @@ const KEYRING_SERVICE: &str = "biorouter";
 const KEYRING_USERNAME: &str = "secrets";
 pub const CONFIG_YAML_NAME: &str = "config.yaml";
 
+// Windows Credential Manager caps a credential blob at 2560 bytes (1280 UTF-16
+// units), so on Windows the secrets JSON is split across continuation entries
+// named "secrets.1", "secrets.2", ... with the main entry holding a chunk-count
+// header. Other platforms have no practical limit and always use one entry —
+// extra entries on macOS would mean extra Keychain authorization prompts.
+const KEYRING_CHUNK_MARKER: &str = "__BIOROUTER_CHUNKED__:";
+#[cfg(windows)]
+const KEYRING_CHUNK_UTF16_LIMIT: usize = 1000;
+#[cfg(not(windows))]
+const KEYRING_CHUNK_UTF16_LIMIT: usize = usize::MAX;
+const KEYRING_MAX_CHUNKS: usize = 64;
+
 #[derive(Error, Debug)]
 pub enum ConfigError {
     #[error("Configuration value not found: {0}")]
@@ -71,8 +83,11 @@ impl From<keyring::Error> for ConfigError {
 ///
 /// Secrets are loaded with the following precedence:
 /// 1. Environment variables (exact key match)
-/// 2. System keyring (which can be disabled with BIOROUTER_DISABLE_KEYRING)
-/// 3. If the keyring is disabled, secrets are stored in a secrets file
+/// 2. System keyring (which can be disabled with BIOROUTER_DISABLE_KEYRING).
+///    The keyring is read at most once per process and cached in memory, so
+///    macOS shows at most one Keychain authorization prompt per run.
+/// 3. If the keyring is disabled (or the platform store is unavailable,
+///    e.g. headless Linux), secrets are stored in a secrets file
 ///    (~/.config/biorouter/secrets.yaml by default)
 ///
 /// # Examples
@@ -105,11 +120,46 @@ pub struct Config {
     config_path: PathBuf,
     secrets: SecretStorage,
     guard: Mutex<()>,
+    // Process-lifetime cache of the secrets map. The OS credential store is
+    // read at most once per process; without this, every secret lookup is a
+    // separate store access — on macOS that means one Keychain authorization
+    // prompt per lookup until the user clicks "Always Allow".
+    secrets_cache: Mutex<Option<HashMap<String, Value>>>,
+    // Test-only replacement for the OS credential store, so cache and
+    // chunking behavior can be exercised without touching a real keyring
+    // (which would show authorization prompts on macOS).
+    #[cfg(test)]
+    test_keyring_store: Option<std::sync::Arc<dyn KeyringBlobStore + Send + Sync>>,
 }
 
 enum SecretStorage {
     Keyring { service: String },
     File { path: PathBuf },
+}
+
+/// Minimal username → value store interface over the OS keyring, so the
+/// chunking logic can be exercised in tests without a real credential store
+/// (the keyring mock has no shared state between Entry instances).
+trait KeyringBlobStore {
+    fn get(&self, username: &str) -> Result<String, keyring::Error>;
+    fn set(&self, username: &str, value: &str) -> Result<(), keyring::Error>;
+    fn delete(&self, username: &str) -> Result<(), keyring::Error>;
+}
+
+struct OsKeyringStore<'a> {
+    service: &'a str,
+}
+
+impl KeyringBlobStore for OsKeyringStore<'_> {
+    fn get(&self, username: &str) -> Result<String, keyring::Error> {
+        Entry::new(self.service, username)?.get_password()
+    }
+    fn set(&self, username: &str, value: &str) -> Result<(), keyring::Error> {
+        Entry::new(self.service, username)?.set_password(value)
+    }
+    fn delete(&self, username: &str) -> Result<(), keyring::Error> {
+        Entry::new(self.service, username)?.delete_credential()
+    }
 }
 
 // Global instance
@@ -133,6 +183,9 @@ impl Default for Config {
             config_path,
             secrets,
             guard: Mutex::new(()),
+            secrets_cache: Mutex::new(None),
+            #[cfg(test)]
+            test_keyring_store: None,
         }
     }
 }
@@ -236,6 +289,9 @@ impl Config {
                 service: service.to_string(),
             },
             guard: Mutex::new(()),
+            secrets_cache: Mutex::new(None),
+            #[cfg(test)]
+            test_keyring_store: None,
         })
     }
 
@@ -253,6 +309,9 @@ impl Config {
                 path: secrets_path.as_ref().to_path_buf(),
             },
             guard: Mutex::new(()),
+            secrets_cache: Mutex::new(None),
+            #[cfg(test)]
+            test_keyring_store: None,
         })
     }
 
@@ -540,10 +599,31 @@ impl Config {
     }
 
     pub fn all_secrets(&self) -> Result<HashMap<String, Value>, ConfigError> {
+        // Plaintext secrets.yaml stays uncached so hand edits are picked up
+        // immediately; reading it is cheap and never prompts.
+        if matches!(self.secrets, SecretStorage::File { .. }) {
+            return self.read_all_secrets_uncached();
+        }
+
+        if let Some(cached) = self.secrets_cache.lock().unwrap().clone() {
+            return Ok(cached);
+        }
+        let values = self.read_all_secrets_uncached()?;
+        *self.secrets_cache.lock().unwrap() = Some(values.clone());
+        Ok(values)
+    }
+
+    /// Drop the in-memory secrets cache so the next access re-reads the
+    /// backing store (e.g. after another process is known to have written).
+    pub fn invalidate_secrets_cache(&self) {
+        *self.secrets_cache.lock().unwrap() = None;
+    }
+
+    fn read_all_secrets_uncached(&self) -> Result<HashMap<String, Value>, ConfigError> {
         match &self.secrets {
             SecretStorage::Keyring { service } => {
                 let result =
-                    self.handle_keyring_operation(|entry| entry.get_password(), service, None);
+                    self.handle_keyring_operation(|| self.keyring_read_blob(service), None);
 
                 match result {
                     Ok(content) => {
@@ -772,21 +852,7 @@ impl Config {
         let mut values = self.all_secrets()?;
         values.insert(key.to_string(), serde_json::to_value(value)?);
 
-        match &self.secrets {
-            SecretStorage::Keyring { service } => {
-                let json_value = serde_json::to_string(&values)?;
-                self.handle_keyring_operation(
-                    |entry| entry.set_password(&json_value),
-                    service,
-                    Some(&values),
-                )?;
-            }
-            SecretStorage::File { path } => {
-                let yaml_value = serde_yaml::to_string(&values)?;
-                std::fs::write(path, yaml_value)?;
-            }
-        };
-        Ok(())
+        self.persist_secrets(&values)
     }
 
     /// Delete a secret from the system keyring.
@@ -806,21 +872,34 @@ impl Config {
         let mut values = self.all_secrets()?;
         values.remove(key);
 
-        match &self.secrets {
+        self.persist_secrets(&values)
+    }
+
+    /// Write the full secrets map to the active backend and keep the
+    /// in-memory cache in sync. On success the cache holds the new values;
+    /// on any failure (including keyring → file fallback) the cache is
+    /// dropped so the next read consults the backing store.
+    fn persist_secrets(&self, values: &HashMap<String, Value>) -> Result<(), ConfigError> {
+        let result = match &self.secrets {
             SecretStorage::Keyring { service } => {
-                let json_value = serde_json::to_string(&values)?;
+                let json_value = serde_json::to_string(values)?;
                 self.handle_keyring_operation(
-                    |entry| entry.set_password(&json_value),
-                    service,
-                    Some(&values),
-                )?;
+                    || self.keyring_write_blob(service, &json_value),
+                    Some(values),
+                )
             }
             SecretStorage::File { path } => {
-                let yaml_value = serde_yaml::to_string(&values)?;
+                let yaml_value = serde_yaml::to_string(values)?;
                 std::fs::write(path, yaml_value)?;
+                Ok(())
             }
         };
-        Ok(())
+
+        match &result {
+            Ok(()) => *self.secrets_cache.lock().unwrap() = Some(values.clone()),
+            Err(_) => *self.secrets_cache.lock().unwrap() = None,
+        }
+        result
     }
 
     /// Read secrets from a YAML file
@@ -860,15 +939,113 @@ impl Config {
 
     /// Check if an error string indicates a keyring availability issue that should trigger fallback
     fn is_keyring_availability_error(&self, error_str: &str) -> bool {
+        // keyring::Error renders NoStorageAccess as "Couldn't access platform
+        // secure storage: ..." and PlatformFailure as "Platform secure storage
+        // failure: ..." — both mean the credential store is unusable (headless
+        // Linux without a Secret Service daemon, locked collection, WSL, ...).
+        let error_str = error_str.to_lowercase();
         error_str.contains("keyring")
-            || error_str.contains("DBus error")
+            || error_str.contains("dbus error")
             || error_str.contains("org.freedesktop.secrets")
             || error_str.contains("couldn't access platform secure storage")
+            || error_str.contains("platform secure storage failure")
     }
 
-    /// Get a keyring entry for the specified service
-    fn get_keyring_entry(service: &str) -> Result<keyring::Entry, keyring::Error> {
-        Entry::new(service, KEYRING_USERNAME)
+    /// Username for the i-th continuation entry of a chunked secrets blob.
+    fn chunk_username(index: usize) -> String {
+        format!("{}.{}", KEYRING_USERNAME, index)
+    }
+
+    /// Split a blob into pieces small enough for one credential entry,
+    /// measured in UTF-16 code units (the unit Windows enforces its
+    /// credential blob limit in). Always returns at least one piece.
+    fn split_blob_into_chunks(blob: &str, limit: usize) -> Vec<String> {
+        let mut chunks = Vec::new();
+        let mut current = String::new();
+        let mut current_units = 0usize;
+        for ch in blob.chars() {
+            let units = ch.len_utf16();
+            if current_units + units > limit && !current.is_empty() {
+                chunks.push(std::mem::take(&mut current));
+                current_units = 0;
+            }
+            current.push(ch);
+            current_units += units;
+        }
+        if !current.is_empty() || chunks.is_empty() {
+            chunks.push(current);
+        }
+        chunks
+    }
+
+    /// Read the secrets blob, reassembling continuation entries if the main
+    /// entry holds a chunk-count header.
+    fn keyring_read_blob(&self, service: &str) -> Result<String, keyring::Error> {
+        #[cfg(test)]
+        if let Some(store) = &self.test_keyring_store {
+            return Self::read_blob_from(store.as_ref());
+        }
+        Self::read_blob_from(&OsKeyringStore { service })
+    }
+
+    /// Write the secrets blob, splitting it across continuation entries when
+    /// it exceeds the per-credential limit (Windows only in practice).
+    fn keyring_write_blob(&self, service: &str, blob: &str) -> Result<(), keyring::Error> {
+        #[cfg(test)]
+        if let Some(store) = &self.test_keyring_store {
+            return Self::write_blob_to(store.as_ref(), blob, KEYRING_CHUNK_UTF16_LIMIT);
+        }
+        Self::write_blob_to(&OsKeyringStore { service }, blob, KEYRING_CHUNK_UTF16_LIMIT)
+    }
+
+    fn read_blob_from(store: &dyn KeyringBlobStore) -> Result<String, keyring::Error> {
+        let main = store.get(KEYRING_USERNAME)?;
+        let Some(count_str) = main.strip_prefix(KEYRING_CHUNK_MARKER) else {
+            return Ok(main);
+        };
+        let count: usize = count_str.trim().parse().map_err(|_| {
+            keyring::Error::Invalid("chunk header".to_string(), "not a number".to_string())
+        })?;
+        let count = count.min(KEYRING_MAX_CHUNKS);
+        let mut blob = String::new();
+        for i in 1..=count {
+            blob.push_str(&store.get(&Self::chunk_username(i))?);
+        }
+        Ok(blob)
+    }
+
+    /// Write `blob` to the store, chunking when it exceeds `limit`, and
+    /// remove any stale continuation entries left over from a larger
+    /// previous write.
+    fn write_blob_to(
+        store: &dyn KeyringBlobStore,
+        blob: &str,
+        limit: usize,
+    ) -> Result<(), keyring::Error> {
+        let chunks = Self::split_blob_into_chunks(blob, limit);
+        let stale_start = if chunks.len() == 1 {
+            store.set(KEYRING_USERNAME, blob)?;
+            1
+        } else {
+            for (i, chunk) in chunks.iter().enumerate() {
+                store.set(&Self::chunk_username(i + 1), chunk)?;
+            }
+            // Write the header last so an interrupted write never leaves a
+            // header pointing at missing chunks.
+            store.set(
+                KEYRING_USERNAME,
+                &format!("{}{}", KEYRING_CHUNK_MARKER, chunks.len()),
+            )?;
+            chunks.len() + 1
+        };
+        for i in stale_start..=KEYRING_MAX_CHUNKS {
+            match store.delete(&Self::chunk_username(i)) {
+                Ok(()) => continue,
+                Err(keyring::Error::NoEntry) => break,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
     }
 
     /// Handle keyring errors with automatic fallback to file storage
@@ -895,20 +1072,10 @@ impl Config {
     /// Handle keyring operation with automatic fallback to file storage
     fn handle_keyring_operation<T>(
         &self,
-        operation: impl FnOnce(keyring::Entry) -> Result<T, keyring::Error>,
-        service: &str,
+        operation: impl FnOnce() -> Result<T, keyring::Error>,
         fallback_values: Option<&HashMap<String, Value>>,
     ) -> Result<T, ConfigError> {
-        // Try to get the keyring entry and perform the operation
-        let entry = match Self::get_keyring_entry(service) {
-            Ok(entry) => entry,
-            Err(keyring_err) => {
-                return self.handle_keyring_fallback_error(&keyring_err, fallback_values);
-            }
-        };
-
-        // Perform the operation
-        match operation(entry) {
+        match operation() {
             Ok(result) => Ok(result),
             Err(keyring_err) => self.handle_keyring_fallback_error(&keyring_err, fallback_values),
         }
@@ -1685,5 +1852,138 @@ mod tests {
         let config_file = NamedTempFile::new().unwrap();
         let secrets_file = NamedTempFile::new().unwrap();
         Config::new_with_file_secrets(config_file.path(), secrets_file.path()).unwrap()
+    }
+
+    #[test]
+    fn test_split_blob_into_chunks() {
+        assert_eq!(Config::split_blob_into_chunks("", 10), vec![String::new()]);
+
+        let blob = "a".repeat(25);
+        let chunks = Config::split_blob_into_chunks(&blob, 10);
+        assert_eq!(chunks.len(), 3);
+        assert_eq!(chunks.concat(), blob);
+        assert!(chunks.iter().all(|c| c.encode_utf16().count() <= 10));
+
+        // Multibyte characters: each emoji is 2 UTF-16 units and must never
+        // be split across chunks.
+        let blob = "🌍".repeat(7);
+        let chunks = Config::split_blob_into_chunks(&blob, 4);
+        assert_eq!(chunks.concat(), blob);
+        assert!(chunks.iter().all(|c| c.encode_utf16().count() <= 4));
+    }
+
+    /// In-memory KeyringBlobStore for exercising the chunking logic.
+    struct MapStore(Mutex<HashMap<String, String>>);
+
+    impl MapStore {
+        fn new() -> Self {
+            MapStore(Mutex::new(HashMap::new()))
+        }
+    }
+
+    impl KeyringBlobStore for MapStore {
+        fn get(&self, username: &str) -> Result<String, keyring::Error> {
+            self.0
+                .lock()
+                .unwrap()
+                .get(username)
+                .cloned()
+                .ok_or(keyring::Error::NoEntry)
+        }
+        fn set(&self, username: &str, value: &str) -> Result<(), keyring::Error> {
+            self.0
+                .lock()
+                .unwrap()
+                .insert(username.to_string(), value.to_string());
+            Ok(())
+        }
+        fn delete(&self, username: &str) -> Result<(), keyring::Error> {
+            self.0
+                .lock()
+                .unwrap()
+                .remove(username)
+                .map(|_| ())
+                .ok_or(keyring::Error::NoEntry)
+        }
+    }
+
+    #[test]
+    fn test_chunked_blob_roundtrip() {
+        let store = MapStore::new();
+
+        // Small blobs use a single entry, no header.
+        Config::write_blob_to(&store, "{\"k\":\"v\"}", 1000).unwrap();
+        assert_eq!(store.0.lock().unwrap().len(), 1);
+        assert_eq!(Config::read_blob_from(&store).unwrap(), "{\"k\":\"v\"}");
+
+        // A large blob is split across continuation entries (the Windows
+        // Credential Manager case) and reassembles exactly.
+        let big: String = (0..200)
+            .map(|i| format!("\"key{i}\":\"value with ünïcode 🌍 {i}\","))
+            .collect();
+        let big = format!("{{{}}}", big.trim_end_matches(','));
+        Config::write_blob_to(&store, &big, 1000).unwrap();
+        assert!(store
+            .get(KEYRING_USERNAME)
+            .unwrap()
+            .starts_with(KEYRING_CHUNK_MARKER));
+        assert!(store
+            .0
+            .lock()
+            .unwrap()
+            .values()
+            .all(|v| v.encode_utf16().count() <= 1000));
+        assert_eq!(Config::read_blob_from(&store).unwrap(), big);
+
+        // Shrinking back to a small blob removes stale continuation entries.
+        Config::write_blob_to(&store, "{\"k\":\"v2\"}", 1000).unwrap();
+        assert_eq!(Config::read_blob_from(&store).unwrap(), "{\"k\":\"v2\"}");
+        assert_eq!(store.0.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn test_secrets_cache_serves_reads_and_tracks_writes() -> Result<(), ConfigError> {
+        // The cache is what collapses N keychain reads (each a potential
+        // macOS authorization prompt) into a single read per process.
+        let config_file = NamedTempFile::new().unwrap();
+        let store = std::sync::Arc::new(MapStore::new());
+        let config = Config {
+            config_path: config_file.path().to_path_buf(),
+            secrets: SecretStorage::Keyring {
+                service: "biorouter-test".to_string(),
+            },
+            guard: Mutex::new(()),
+            secrets_cache: Mutex::new(None),
+            test_keyring_store: Some(store.clone()),
+        };
+
+        config.set_secret("cache_test_key", &"v1")?;
+        let value: String = config.get_secret("cache_test_key")?;
+        assert_eq!(value, "v1");
+
+        // Mutate the underlying store directly; the cached value must be
+        // served without another store read.
+        store
+            .set(KEYRING_USERNAME, "{\"cache_test_key\":\"external\"}")
+            .unwrap();
+        let value: String = config.get_secret("cache_test_key")?;
+        assert_eq!(value, "v1");
+
+        // Invalidation forces a re-read from the store.
+        config.invalidate_secrets_cache();
+        let value: String = config.get_secret("cache_test_key")?;
+        assert_eq!(value, "external");
+
+        // Writes go through to the store, not just the cache.
+        config.set_secret("cache_test_key", &"v2")?;
+        assert!(store.get(KEYRING_USERNAME).unwrap().contains("v2"));
+        let value: String = config.get_secret("cache_test_key")?;
+        assert_eq!(value, "v2");
+
+        // Deletes persist and update the cache.
+        config.delete_secret("cache_test_key")?;
+        let missing: Result<String, _> = config.get_secret("cache_test_key");
+        assert!(matches!(missing, Err(ConfigError::NotFound(_))));
+        Ok(())
     }
 }

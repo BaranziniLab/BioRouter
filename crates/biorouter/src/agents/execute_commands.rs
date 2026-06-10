@@ -34,6 +34,18 @@ static COMMANDS: &[CommandDef] = &[
         name: "clear",
         description: "Clear the conversation history",
     },
+    CommandDef {
+        name: "goal",
+        description: "Keep working until a condition is met (/goal <condition>, /goal clear)",
+    },
+    CommandDef {
+        name: "loop",
+        description: "Run a prompt on an interval (/loop 5m <prompt>, /loop stop <id>)",
+    },
+    CommandDef {
+        name: "schedule",
+        description: "Schedule a recurring prompt (/schedule @daily <prompt>, /schedule list)",
+    },
 ];
 
 pub fn list_commands() -> &'static [CommandDef] {
@@ -74,6 +86,9 @@ impl Agent {
             "prompt" => self.handle_prompt_command(&params, session_id).await,
             "compact" => self.handle_compact_command(session_config).await,
             "clear" => self.handle_clear_command(session_id).await,
+            "goal" => self.handle_goal_command(params_str, session_id).await,
+            "loop" => self.handle_loop_command(params_str, session_id).await,
+            "schedule" => self.handle_schedule_command(params_str, session_id).await,
             _ => {
                 self.handle_workflow_command(command, params_str, session_id)
                     .await
@@ -92,6 +107,14 @@ impl Agent {
             .conversation
             .ok_or_else(|| anyhow!("Session has no conversation"))?;
 
+        self.fire_compaction_hook(
+            crate::hooks::HookEvent::PreCompact,
+            session_id,
+            &session.working_dir,
+            "manual",
+            None,
+        );
+
         let (compacted_conversation, summarization_usage) = compact_messages(
             self.provider().await?.as_ref(),
             &conversation,
@@ -102,6 +125,14 @@ impl Agent {
         manager
             .replace_conversation(session_id, &compacted_conversation)
             .await?;
+
+        self.fire_compaction_hook(
+            crate::hooks::HookEvent::PostCompact,
+            session_id,
+            &session.working_dir,
+            "manual",
+            None,
+        );
 
         // Without this, session.total_tokens stays at the pre-compact value:
         // the UI gauge keeps reading the old number, and the next reply's

@@ -44,26 +44,48 @@ pub enum ConfigError {
     InvalidRange(String, String),
 }
 
+// Patterns are matched with `str::contains`, first match wins — keep more
+// specific patterns before their prefixes (e.g. "gpt-5.4-mini" before "gpt-5").
+// Context windows verified against official provider docs, June 2026.
 static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
     vec![
         // openai
-        ("gpt-5.2-codex", 400_000), // auto-compacting context
-        ("gpt-5.2", 400_000),       // auto-compacting context
-        ("gpt-5.1-codex-max", 256_000),
-        ("gpt-5.1-codex-mini", 256_000),
+        ("gpt-5.5", 1_050_000), // covers gpt-5.5 and gpt-5.5-pro
+        ("gpt-5.4-mini", 400_000),
+        ("gpt-5.4-nano", 400_000),
+        ("gpt-5.4", 1_050_000), // covers gpt-5.4 and gpt-5.4-pro
+        ("gpt-5.3-codex", 400_000),
+        ("gpt-5.2", 400_000),
+        ("gpt-5.1", 400_000),
+        ("gpt-5", 400_000), // gpt-5 / gpt-5-mini / gpt-5-nano / gpt-5-pro
         ("gpt-4-turbo", 128_000),
-        ("gpt-4.1", 1_000_000),
-        ("gpt-4-1", 1_000_000),
+        ("gpt-4.1", 1_047_576),
+        ("gpt-4-1", 1_047_576),
         ("gpt-4o", 128_000),
         ("o4-mini", 200_000),
         ("o3-mini", 200_000),
         ("o3", 200_000),
-        // anthropic - all 200k
+        ("o1", 200_000),
+        // anthropic — Fable 5 / Opus 4.6+ / Sonnet 4.6 are 1M; older Claude 200k.
+        // Dotted variants cover OpenRouter/Copilot-style IDs.
+        ("claude-fable-5", 1_000_000),
+        ("claude-opus-4-8", 1_000_000),
+        ("claude-opus-4.8", 1_000_000),
+        ("claude-opus-4-7", 1_000_000),
+        ("claude-opus-4.7", 1_000_000),
+        ("claude-opus-4-6", 1_000_000),
+        ("claude-opus-4.6", 1_000_000),
+        ("claude-sonnet-4-6", 1_000_000),
+        ("claude-sonnet-4.6", 1_000_000),
         ("claude", 200_000),
-        // google
+        // google — all Gemini 2.x/3.x text models are 1,048,576 in
+        ("gemini-3", 1_048_576),
+        ("gemini-2", 1_048_576),
         ("gemini-1.5-flash", 1_000_000),
         ("gemini-1", 128_000),
-        ("gemini-2", 1_000_000),
+        ("gemma-4-e2b", 128_000),
+        ("gemma-4-e4b", 128_000),
+        ("gemma-4", 256_000),
         ("gemma-3-27b", 128_000),
         ("gemma-3-12b", 128_000),
         ("gemma-3-4b", 128_000),
@@ -84,18 +106,24 @@ static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
         ("llama-2-1b", 32_000),
         ("llama", 128_000),
         // qwen
-        ("qwen3-coder", 262_144),
+        ("qwen3-coder-next", 262_144),
+        ("qwen3-coder", 1_048_576),
         ("qwen2-7b", 128_000),
         ("qwen2-14b", 128_000),
         ("qwen2-32b", 131_072),
         ("qwen2-70b", 262_144),
         ("qwen2", 128_000),
         ("qwen3-32b", 131_072),
-        // xai
-        ("grok-4", 256_000),
+        // xai — grok-4.3 / grok-4.20 are 1M; grok-build-0.1 is 256k
+        ("grok-build", 256_000),
         ("grok-code-fast-1", 256_000),
+        ("grok-4", 1_000_000),
         ("grok", 131_072),
-        // other
+        // deepseek — V4 family is 1M
+        ("deepseek-v4", 1_000_000),
+        // moonshot — k2.5/k2.6 are 256k, original k2 is 128k
+        ("kimi-k2.5", 262_144),
+        ("kimi-k2.6", 262_144),
         ("kimi-k2", 131_072),
     ]
 });
