@@ -546,6 +546,7 @@ derive_utoipa!(Icon as IconSchema);
         biorouter::workflow::Workflow,
         biorouter::workflow::Author,
         biorouter::workflow::Settings,
+        biorouter::workflow::WorkflowKnowledgeBases,
         biorouter::workflow::WorkflowParameter,
         biorouter::workflow::WorkflowParameterInputType,
         biorouter::workflow::WorkflowParameterRequirement,

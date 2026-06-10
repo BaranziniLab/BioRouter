@@ -64,7 +64,13 @@ const MAX_INGEST_FILE_BYTES: usize = 25 * 1024 * 1024;
 const MAX_INGEST_CSV_BYTES: usize = 8 * 1024 * 1024;
 
 fn ingest_upload_limit(filename: &str) -> usize {
-    if filename.to_lowercase().ends_with(".csv") {
+    let lower = filename.to_lowercase();
+    // Tabular formats share the tighter cap: their markdown-table expansion is
+    // much larger than the file itself.
+    if [".csv", ".xlsx", ".xlsm", ".xls", ".ods"]
+        .iter()
+        .any(|ext| lower.ends_with(ext))
+    {
         MAX_INGEST_CSV_BYTES
     } else {
         MAX_INGEST_FILE_BYTES
@@ -79,6 +85,15 @@ fn validate_ingest_upload(filename: &str, size: usize) -> Result<(), (StatusCode
             StatusCode::BAD_REQUEST,
             "'.brkb' archives must be imported via the knowledge-base import action, not the digest dropzone"
                 .to_string(),
+        ));
+    }
+
+    if lower.ends_with(".ppt") {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "{filename} is a legacy PowerPoint binary. Re-save it as .pptx and ingest that instead."
+            ),
         ));
     }
 
