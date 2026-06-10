@@ -194,10 +194,10 @@ export default function BottomMenuAlertPopover({ alerts }: AlertPopoverProps) {
   const hasError = alerts.some((alert) => alert.type === AlertType.Error);
   const hasInfo = alerts.some((alert) => alert.type === AlertType.Info);
   const triggerColor = hasError
-    ? 'text-[#d7040e]' // Red color for error alerts
+    ? 'text-text-danger'
     : hasInfo || alerts.length === 0 // Default to green for context info when no alerts
-      ? 'text-[#00b300]' // Green color for info alerts
-      : 'text-[#cc4b03]'; // Orange color for warning alerts
+      ? 'text-text-success'
+      : 'text-text-warning';
 
   return (
     <>

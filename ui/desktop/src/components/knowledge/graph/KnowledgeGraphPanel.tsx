@@ -83,7 +83,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
       </div>
 
       {previewSha && (
-        <div className="px-6 py-2 bg-yellow-900/30 border-b border-yellow-700/50 text-xs text-yellow-200 flex items-center justify-between">
+        <div className="px-6 py-2 bg-background-warning/10 border-b border-border-warning/40 text-xs text-text-warning flex items-center justify-between">
           <span>Previewing commit {previewSha.slice(0, 7)} — read-only</span>
           <button onClick={onClearPreview} className="underline">
             Exit preview
@@ -98,7 +98,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
           </div>
         )}
         {activeKbId && error && (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-red-400">
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-text-danger">
             {error}
           </div>
         )}
@@ -126,7 +126,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
           />
         )}
         {activeKbId && graph && graph.nodes.length > 0 && (
-          <div className="absolute bottom-4 left-4 rounded-2xl border border-border-subtle bg-background-default/85 px-4 py-3 shadow-lg backdrop-blur-sm">
+          <div className="absolute bottom-4 left-4 rounded-2xl border border-border-subtle bg-background-default/85 px-4 py-3 backdrop-blur-sm">
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-text-default">
               <div className="flex items-center gap-2">
                 <span

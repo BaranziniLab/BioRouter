@@ -55,7 +55,7 @@ function renderEventLine(ev: SubAgentEvent): { tone: string; text: string } {
 
   if (ev.kind === 'tool_result') {
     return {
-      tone: ev.ok ? 'text-emerald-700 dark:text-emerald-300' : 'text-red-700 dark:text-red-300',
+      tone: ev.ok ? 'text-text-success' : 'text-text-danger',
       text: `${ev.ok ? 'Completed' : 'Issue'} · ${prettyToolName(ev.name)} · ${
         ev.summary.trim() || (ev.ok ? 'Completed successfully.' : 'Returned an error.')
       }`,
@@ -122,7 +122,7 @@ export function DispatchProgress({ state, onAbort }: Props) {
             <button
               type="button"
               onClick={onAbort}
-              className="inline-flex shrink-0 items-center gap-1 text-xs text-text-muted transition-colors hover:text-red-500"
+              className="inline-flex shrink-0 items-center gap-1 text-xs text-text-muted transition-colors hover:text-text-danger"
               title="Stop digestion"
               disabled={state.status === 'stopping'}
             >

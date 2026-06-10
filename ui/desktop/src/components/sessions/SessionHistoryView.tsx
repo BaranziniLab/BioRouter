@@ -65,7 +65,7 @@ const SessionHeader: React.FC<{
       <div className="flex items-center pt-0 mb-1">
         <BackButton onClick={onBack} />
       </div>
-      <h1 className="text-4xl font-light mb-4 pt-6">{title}</h1>
+      <h1 className="text-2xl font-semibold tracking-tight mb-4 pt-6">{title}</h1>
       <div className="flex items-center">{children}</div>
       {actionButtons && <div className="flex items-center space-x-3 mt-4">{actionButtons}</div>}
     </div>
@@ -90,10 +90,10 @@ const SessionMessages: React.FC<{
             </div>
           ) : error ? (
             <div className="flex flex-col items-center justify-center py-8 text-text-muted">
-              <div className="text-red-500 mb-4">
+              <div className="text-text-danger mb-4">
                 <AlertCircle size={32} />
               </div>
-              <p className="text-md mb-2">Error Loading Session Details</p>
+              <p className="text-sm font-medium mb-2">Error Loading Session Details</p>
               <p className="text-sm text-center mb-4">{error}</p>
               <Button onClick={onRetry} variant="default">
                 Try Again
@@ -323,8 +323,8 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
           </DialogHeader>
 
           <div className="py-4">
-            <div className="relative rounded-full border border-border-subtle px-3 py-2 flex items-center bg-gray-100 dark:bg-gray-600">
-              <code className="text-sm text-text-default dark:text-text-defaultInverse overflow-x-hidden break-all pr-8 w-full">
+            <div className="relative rounded-xl border border-border-subtle px-3 py-2 flex items-center bg-background-medium">
+              <code className="text-sm text-text-default overflow-x-hidden break-all pr-8 w-full">
                 {shareLink}
               </code>
               <Button

@@ -19,7 +19,7 @@ const SessionHeader: React.FC<{
 }> = ({ children, title }) => {
   return (
     <div className="flex flex-col pb-8 border-b">
-      <h1 className="text-4xl font-light mb-4 pt-6">{title}</h1>
+      <h1 className="text-2xl font-semibold tracking-tight mb-4 pt-6">{title}</h1>
       <div className="flex items-center">{children}</div>
     </div>
   );

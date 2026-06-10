@@ -354,7 +354,7 @@ export function IngestPanel() {
       </div>
 
       {!activeKbId && (
-        <p className="text-[10px] text-text-muted text-center">
+        <p className="text-[11px] text-text-muted text-center">
           Focus or create a knowledge base above to enable digestion.
         </p>
       )}

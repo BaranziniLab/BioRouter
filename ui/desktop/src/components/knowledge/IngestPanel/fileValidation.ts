@@ -50,6 +50,22 @@ const TEXTLIKE_EXTENSIONS = new Set([
   'yml',
 ]);
 
+// Binary formats with first-class converters in the backend (convert/ in
+// biorouter-mcp). Keep in sync with `guess_mime()` / the `convert()` dispatch.
+const FIRST_CLASS_BINARY_EXTENSIONS = new Set([
+  'docx',
+  'pdf',
+  'pptx',
+  'xlsx',
+  'xlsm',
+  'xls',
+  'ods',
+]);
+
+// Tabular formats share the tighter CSV cap: their markdown-table expansion
+// is much larger than the file itself.
+const SPREADSHEET_EXTENSIONS = new Set(['csv', 'xlsx', 'xlsm', 'xls', 'ods']);
+
 export interface FileDropWarning {
   id: string;
   title: string;
@@ -88,7 +104,7 @@ function warningFor(
   label: string,
   level: 'warning' | 'error',
   title: string,
-  message: string,
+  message: string
 ): FileDropWarning {
   return {
     id: `${label}-${level}-${title}`,
@@ -117,8 +133,8 @@ export function validateDroppedFiles(candidates: StagedFileCandidate[]): FileVal
           label,
           'error',
           'Use the knowledge base importer for archives',
-          `${label} is a full knowledge-base archive. Use "Import from .brkb" in the knowledge base selector instead of staging it for digestion.`,
-        ),
+          `${label} is a full knowledge-base archive. Use "Import from .brkb" in the knowledge base selector instead of staging it for digestion.`
+        )
       );
       continue;
     }
@@ -129,35 +145,37 @@ export function validateDroppedFiles(candidates: StagedFileCandidate[]): FileVal
           label,
           'error',
           'This file is not suitable for knowledge ingestion',
-          `${label} looks like an executable or compiled binary, so it was left out of the staging set.`,
-        ),
+          `${label} looks like an executable or compiled binary, so it was left out of the staging set.`
+        )
       );
       continue;
     }
 
-    const sizeLimit = ext === 'csv' ? MAX_INGEST_CSV_BYTES : MAX_INGEST_FILE_BYTES;
+    const sizeLimit = SPREADSHEET_EXTENSIONS.has(ext)
+      ? MAX_INGEST_CSV_BYTES
+      : MAX_INGEST_FILE_BYTES;
     if (file.size > sizeLimit) {
       warnings.push(
         warningFor(
           label,
           'error',
           'File is too large to digest safely',
-          `${label} is ${formatBytes(file.size)}. The current limit is ${formatBytes(sizeLimit)} for this kind of staged file.`,
-        ),
+          `${label} is ${formatBytes(file.size)}. The current limit is ${formatBytes(sizeLimit)} for this kind of staged file.`
+        )
       );
       continue;
     }
 
     accepted.push(candidate);
 
-    if (ext && !TEXTLIKE_EXTENSIONS.has(ext) && ext !== 'docx' && ext !== 'pdf') {
+    if (ext && !TEXTLIKE_EXTENSIONS.has(ext) && !FIRST_CLASS_BINARY_EXTENSIONS.has(ext)) {
       warnings.push(
         warningFor(
           label,
           'warning',
           'Staging as plain text',
-          `${label} is not one of the common first-class ingest formats, so BioRouter will treat it as readable text if possible during digestion.`,
-        ),
+          `${label} is not one of the common first-class ingest formats, so BioRouter will treat it as readable text if possible during digestion.`
+        )
       );
     }
   }

@@ -108,7 +108,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
 
   const detectedPill = (
     <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
-      <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+      <span className="w-1.5 h-1.5 rounded-full bg-background-success" />
       Ollama running · {getPreferredModel()}
       {modelStatus === 'available'
         ? ' ready'
@@ -120,7 +120,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
 
   const notDetectedPill = (
     <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
-      <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+      <span className="w-1.5 h-1.5 rounded-full bg-background-warning" />
       Ollama not detected
     </span>
   );
@@ -157,7 +157,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
                 <>
                   <div className="mt-2 bg-background-medium rounded-full h-1.5 overflow-hidden">
                     <div
-                      className="bg-emerald-500 h-full transition-all duration-300"
+                      className="bg-background-success h-full transition-all duration-300"
                       style={{
                         width: `${(downloadProgress.completed / downloadProgress.total) * 100}%`,
                       }}

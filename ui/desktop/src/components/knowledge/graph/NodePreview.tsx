@@ -61,16 +61,16 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
       </div>
       <div className="flex-1 overflow-y-auto px-4 py-3 text-xs leading-relaxed text-text-default">
         {loading && <span className="text-text-muted">Loading…</span>}
-        {error && <span className="text-red-400">{error}</span>}
+        {error && <span className="text-text-danger">{error}</span>}
         {!loading && !error && content && (
           <div className="space-y-4">
             {parsed.frontmatter && (
-              <div className="overflow-hidden rounded-2xl border border-amber-200/50 bg-amber-50/70 shadow-sm">
-                <div className="flex items-center gap-2 border-b border-amber-200/60 px-3 py-2 text-[10px] font-medium uppercase tracking-[0.18em] text-amber-900/80">
+              <div className="overflow-hidden rounded-2xl border border-border-warning/40 bg-background-warning/10">
+                <div className="flex items-center gap-2 border-b border-border-warning/40 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-text-warning">
                   <FileCode2 className="h-3.5 w-3.5" />
                   Overview
                 </div>
-                <pre className="overflow-x-auto px-3 py-3 font-mono text-[11px] leading-5 text-amber-950/90 whitespace-pre-wrap">
+                <pre className="overflow-x-auto px-3 py-3 font-mono text-[11px] leading-5 text-text-warning whitespace-pre-wrap">
                   {parsed.frontmatter}
                 </pre>
               </div>

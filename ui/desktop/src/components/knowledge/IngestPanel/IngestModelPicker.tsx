@@ -103,7 +103,7 @@ export function IngestModelPicker({ value, onChange }: Props) {
 
     return (
       <section key={provider.name} className="space-y-2">
-        <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-text-muted">
+        <div className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
           {providerDisplayNames[provider.name] ?? provider.name}
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
@@ -155,7 +155,7 @@ export function IngestModelPicker({ value, onChange }: Props) {
               : `${value.provider} / ${value.model}`}
           </span>
         </span>
-        <span className="flex shrink-0 items-center gap-1 text-[10px] uppercase tracking-wide text-text-muted">
+        <span className="flex shrink-0 items-center gap-1 text-[11px] uppercase tracking-wider text-text-muted">
           Model
           <ChevronDown className="h-3.5 w-3.5" />
         </span>

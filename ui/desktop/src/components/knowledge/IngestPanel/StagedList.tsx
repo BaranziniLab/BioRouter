@@ -15,12 +15,12 @@ export function StagedList({ items, onRemove, onClear }: Props) {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-[10px] uppercase tracking-wide text-text-muted">
+        <span className="text-[11px] uppercase tracking-wider text-text-muted">
           Staged · {items.length}
         </span>
         <button
           onClick={onClear}
-          className="text-[10px] text-text-muted hover:text-text-default"
+          className="text-[11px] text-text-muted hover:text-text-default"
         >
           clear all
         </button>
@@ -42,13 +42,13 @@ export function StagedList({ items, onRemove, onClear }: Props) {
             key={s.id}
             data-testid="knowledge-staged-item"
             data-label={label}
-            className="flex items-center gap-2 px-2.5 py-2 bg-background-surface border border-border-subtle rounded-lg"
+            className="flex items-center gap-2 px-2.5 py-2 bg-background-surface border border-border-subtle rounded-xl"
           >
             <Icon className="w-3.5 h-3.5 text-text-muted flex-shrink-0" />
             <div className="flex-1 min-w-0">
               <div className="text-xs font-medium truncate">{label}</div>
               {s.status !== 'pending' && (
-                <div className="text-[10px] font-mono text-text-muted">
+                <div className="text-[11px] font-mono text-text-muted">
                   {s.status}
                   {s.error ? `: ${s.error}` : ''}
                 </div>

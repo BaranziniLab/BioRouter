@@ -126,7 +126,7 @@ export function SessionInsights() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8 px-8 pb-8">
         {(['Sessions', 'Tokens'] as const).map((group) => (
           <div key={group}>
-            <p className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-3">
+            <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
               {group}
             </p>
             <div className="flex items-end gap-8">
@@ -142,7 +142,7 @@ export function SessionInsights() {
       </div>
       <div className="px-8 pb-8">
         <div className="flex justify-between items-center pb-3 border-b border-border-subtle">
-          <span className="text-[11px] font-medium text-text-muted uppercase tracking-wider">Recent chats</span>
+          <span className="text-xs font-medium text-text-muted uppercase tracking-wider">Recent chats</span>
         </div>
         <div className="space-y-0 min-h-[96px]">
           {[200, 160, 220].map((w, i) => (
@@ -174,8 +174,8 @@ export function SessionInsights() {
       {/* Grouped stats — Sessions / Tokens, each with Total · Past 30d · Past 7d */}
       <div className="px-8 pb-8">
         {error ? (
-          <div className="flex items-center gap-2 text-xs text-orange-600 dark:text-orange-400">
-            <div className="w-2 h-2 bg-orange-400 rounded-full flex-shrink-0" />
+          <div className="flex items-center gap-2 text-xs text-text-warning">
+            <div className="w-2 h-2 bg-background-warning rounded-full flex-shrink-0" />
             Failed to load insights
           </div>
         ) : (
@@ -211,7 +211,7 @@ export function SessionInsights() {
               },
             ] as const).map((group) => (
               <div key={group.heading}>
-                <p className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-3">
+                <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
                   {group.heading}
                 </p>
                 <div className="flex items-end gap-8">
@@ -226,7 +226,7 @@ export function SessionInsights() {
                       >
                         {item.value}
                       </p>
-                      <span className="text-[11px] text-text-muted uppercase tracking-wider whitespace-nowrap">
+                      <span className="text-xs text-text-muted uppercase tracking-wider whitespace-nowrap">
                         {item.label}
                       </span>
                     </div>
@@ -241,7 +241,7 @@ export function SessionInsights() {
       {/* Recent chats — flat list, no card wrapper */}
       <div className="px-8 pb-8 page-transition">
         <div className="flex justify-between items-center pb-3 border-b border-border-subtle">
-          <span className="text-[11px] font-medium text-text-muted uppercase tracking-wider">
+          <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
             Recent chats
           </span>
           <Button

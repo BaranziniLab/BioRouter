@@ -112,7 +112,7 @@ export default function WorkflowActivityEditor({
                 <button
                   type="button"
                   onClick={() => handleRemoveActivity(activity)}
-                  className="text-text-muted hover:text-red-500 transition-colors leading-none"
+                  className="text-text-muted hover:text-text-danger transition-colors leading-none"
                   aria-label={`Remove ${activity}`}
                 >
                   ×

@@ -74,29 +74,29 @@ export const ScheduleFromWorkflowModal: React.FC<ScheduleFromWorkflowModalProps>
 
   return (
     <div className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4">
-      <Card className="w-full max-w-md bg-background-default shadow-xl rounded-lg z-50 flex flex-col">
+      <Card className="w-full max-w-md bg-background-default shadow-xl rounded-xl z-50 flex flex-col">
         <div className="px-6 pt-6 pb-4">
-          <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
+          <h2 className="text-base font-semibold text-text-default">
             Create Schedule from Workflow
           </h2>
-          <p className="text-sm text-gray-600 dark:text-gray-400 mt-2">
+          <p className="text-sm text-text-muted mt-2">
             Create a scheduled task using this workflow configuration.
           </p>
         </div>
 
         <div className="px-6 py-4 space-y-4">
           <div>
-            <h3 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            <h3 className="text-sm font-medium text-text-default mb-2">
               Workflow Details:
             </h3>
-            <div className="bg-gray-50 dark:bg-gray-800 p-3 rounded-md">
-              <p className="text-sm font-medium text-gray-900 dark:text-white">{workflow.title}</p>
-              <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">{workflow.description}</p>
+            <div className="bg-background-muted p-3 rounded-md">
+              <p className="text-sm font-medium text-text-default">{workflow.title}</p>
+              <p className="text-xs text-text-muted mt-1">{workflow.description}</p>
             </div>
           </div>
 
           <div>
-            <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            <label className="block text-sm font-medium text-text-default mb-2">
               Workflow Deep Link:
             </label>
             <div className="flex items-center">
@@ -104,12 +104,12 @@ export const ScheduleFromWorkflowModal: React.FC<ScheduleFromWorkflowModalProps>
               <Button
                 type="button"
                 onClick={handleCopy}
-                className="ml-2 px-3 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 flex items-center"
+                className="ml-2 px-3 py-2 bg-background-accent text-text-on-accent rounded-md hover:bg-background-accent/90 flex items-center"
               >
                 {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
               </Button>
             </div>
-            <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+            <p className="text-xs text-text-muted mt-1">
               This link contains your workflow configuration and can be used to create a schedule.
             </p>
           </div>
@@ -127,7 +127,7 @@ export const ScheduleFromWorkflowModal: React.FC<ScheduleFromWorkflowModalProps>
           <Button
             type="button"
             onClick={handleCreateSchedule}
-            className="flex-1 bg-background-defaultInverse text-sm text-textProminentInverse rounded-xl hover:bg-bgStandardInverse transition-colors"
+            className="flex-1 bg-background-accent text-sm text-text-on-accent rounded-xl hover:bg-background-accent/90 transition-colors"
           >
             Create Schedule
           </Button>

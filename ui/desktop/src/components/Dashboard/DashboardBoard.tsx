@@ -234,10 +234,10 @@ export const DashboardBoard: React.FC = () => {
             <button
               type="button"
               // Borderless empty-state CTA — matches the sidebar item
-              // typography (text-[13.5px], px-3 py-2, hover:bg-background-medium)
+              // typography (text-sm, px-3 py-2, hover:bg-background-medium)
               // so it reads as a quiet inline action rather than a heavy
               // bordered button.
-              className="px-3 py-2 rounded-lg text-[13.5px] hover:bg-background-medium hover:text-text-default transition-colors duration-150 pointer-events-auto cursor-pointer"
+              className="px-3 py-2 rounded-lg text-sm hover:bg-background-medium hover:text-text-default transition-colors duration-150 pointer-events-auto cursor-pointer"
               onClick={() => dashboard.spawnWindow()}
             >
               Spawn a conversation

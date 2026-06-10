@@ -10,10 +10,12 @@ import {
   BIOROUTER_SKILLS_DIR,
   OTHER_SKILL_DIRS,
   loadSkillsFromDirs,
+  isBuiltinSkill,
 } from './skillUtils';
 import SkillItem from './SkillItem';
 import AddSkillModal from './AddSkillModal';
 import CustomSkillModal from './CustomSkillModal';
+import BrowseSkillsModal from '../baam/BrowseSkillsModal';
 import { toastSuccess, toastError } from '../../toasts';
 import { SearchView } from '../conversation/SearchView';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
@@ -31,6 +33,7 @@ export default function SkillsView() {
   const [otherBundles, setOtherBundles] = useState<SkillBundle[]>([]);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isCustomModalOpen, setIsCustomModalOpen] = useState(false);
+  const [isBrowseModalOpen, setIsBrowseModalOpen] = useState(false);
   const [skillToDelete, setSkillToDelete] = useState<Skill | null>(null);
   const [bundleToDelete, setBundleToDelete] = useState<SkillBundle | null>(null);
   const [isDeletingSkill, setIsDeletingSkill] = useState(false);
@@ -100,6 +103,11 @@ export default function SkillsView() {
 
   const confirmDeleteSkill = async () => {
     if (!skillToDelete) return;
+    if (isBuiltinSkill(skillToDelete.name)) {
+      toastError({ title: skillToDelete.name, msg: 'Built-in skills cannot be deleted' });
+      setSkillToDelete(null);
+      return;
+    }
     setIsDeletingSkill(true);
     const skill = skillToDelete;
     const ok = await window.electron.deleteDirectory(skill.folderPath);
@@ -149,14 +157,17 @@ export default function SkillsView() {
 
   return (
     <MainPanelLayout>
-      <div className="flex flex-col min-w-0 flex-1 overflow-y-auto relative" data-search-scroll-area>
+      <div
+        className="flex flex-col min-w-0 flex-1 overflow-y-auto relative"
+        data-search-scroll-area
+      >
         {/* Header */}
         <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
           <div className="flex flex-col page-transition">
             <h1 className="text-2xl font-semibold tracking-tight mb-1">Skills</h1>
             <p className="text-sm text-text-muted mb-0">
-              Reusable instruction sets that guide BioRouter's behavior.{' '}
-              {getSearchShortcutText()} to search.
+              Reusable instruction sets that guide BioRouter's behavior. {getSearchShortcutText()}{' '}
+              to search.
             </p>
           </div>
           <div className="flex gap-3 mt-5">
@@ -171,12 +182,7 @@ export default function SkillsView() {
             <Button
               className="flex items-center gap-2"
               variant="outline"
-              onClick={() =>
-                window.open(
-                  'https://baranzinilab.github.io/biorouter-landing/baam.html',
-                  '_blank'
-                )
-              }
+              onClick={() => setIsBrowseModalOpen(true)}
             >
               <Globe className="h-4 w-4" />
               Browse Skills
@@ -193,12 +199,15 @@ export default function SkillsView() {
         </div>
 
         {/* List */}
-        <SearchView onSearch={(term, _caseSensitive) => setSearchTerm(term)} placeholder="Search skills...">
+        <SearchView
+          onSearch={(term, _caseSensitive) => setSearchTerm(term)}
+          placeholder="Search skills..."
+        >
           <div key={overrideTrigger} className="px-6 py-4">
             {totalBR > 0 && (
               <>
                 <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500 flex-shrink-0" />
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-background-info flex-shrink-0" />
                   BioRouter Skills ({totalBR})
                 </h2>
                 {filteredBRBundles.map((bundle) => (
@@ -228,7 +237,7 @@ export default function SkillsView() {
             {totalOther > 0 && (
               <>
                 <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mt-6 mb-3 flex items-center gap-2">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-neutral-400 flex-shrink-0" />
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-background-strong flex-shrink-0" />
                   Skills From Other Agents ({totalOther})
                 </h2>
                 {filteredOtherBundles.map((bundle) => (
@@ -271,6 +280,28 @@ export default function SkillsView() {
       )}
       {isCustomModalOpen && (
         <CustomSkillModal onClose={() => setIsCustomModalOpen(false)} onSaved={loadSkills} />
+      )}
+      {isBrowseModalOpen && (
+        <BrowseSkillsModal
+          onClose={() => setIsBrowseModalOpen(false)}
+          onInstalled={loadSkills}
+          installedIds={
+            new Set(
+              [...bioRouterSkills, ...otherSkills]
+                .flatMap((s) => [
+                  s.name.toLowerCase(),
+                  s.folderPath.split('/').pop()?.toLowerCase() ?? '',
+                ])
+                .concat(
+                  [...bioBundles, ...otherBundles].flatMap((b) => [
+                    b.bundleName.toLowerCase(),
+                    b.folderPath.split('/').pop()?.toLowerCase() ?? '',
+                  ])
+                )
+                .filter(Boolean)
+            )
+          }
+        />
       )}
 
       <ConfirmationModal

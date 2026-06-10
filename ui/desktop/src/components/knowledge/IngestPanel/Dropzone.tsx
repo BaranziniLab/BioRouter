@@ -108,10 +108,10 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
           if (dragCounterRef.current === 0) setDragging(false);
         }}
         onDrop={onDrop}
-        className={`relative cursor-pointer rounded-2xl border-2 border-dashed p-6 text-center transition-colors focus:outline-none focus:ring-2 focus:ring-border-default focus:ring-offset-2 ${
+        className={`relative cursor-pointer rounded-xl border p-6 text-center transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${
           dragging
-            ? 'border-success-default bg-background-muted'
-            : 'border-border-subtle bg-background-surface hover:border-border-default hover:bg-background-default'
+            ? 'border-block-teal bg-block-teal/5'
+            : 'border-border-subtle bg-background-muted hover:bg-background-medium'
         }`}
       >
         <input
@@ -134,8 +134,19 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
           Drop readable files directly, or click to choose files, folders, and archives for backend
           staging.
         </div>
-        <div className="mt-3 flex flex-wrap justify-center gap-1.5 text-[10px] font-mono text-text-muted">
-          {['.pdf', '.md', '.html', '.docx', '.csv', '.txt', 'folders', 'archives'].map((label) => (
+        <div className="mt-3 flex flex-wrap justify-center gap-1.5 text-[11px] font-mono text-text-muted">
+          {[
+            '.pdf',
+            '.pptx',
+            '.xlsx',
+            '.docx',
+            '.csv',
+            '.md',
+            '.html',
+            '.txt',
+            'folders',
+            'archives',
+          ].map((label) => (
             <span key={label} className="rounded px-1.5 py-0.5 ring-1 ring-border-subtle">
               {label}
             </span>

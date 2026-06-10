@@ -278,7 +278,7 @@ export default function InstitutionalSetupCard({
       </div>
 
       {error && (
-        <div className="mt-3 text-xs p-2.5 rounded-md bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-300 border border-red-200 dark:border-red-800/50">
+        <div className="mt-3 text-xs p-2.5 rounded-md bg-background-danger/10 text-text-danger border border-border-danger/40">
           {error}
         </div>
       )}

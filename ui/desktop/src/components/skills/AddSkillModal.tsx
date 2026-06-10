@@ -163,12 +163,12 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
             onDrop={handleDrop}
             onClick={() => mdInputRef.current?.click()}
             className={[
-              'border-2 border-dashed rounded-xl p-10 text-center cursor-pointer select-none transition-colors duration-150',
+              'border rounded-xl p-10 text-center cursor-pointer select-none transition-colors duration-150',
               isDragging
-                ? 'border-[#cf6d47] bg-[#cf6d47]/5'
+                ? 'border-block-teal bg-block-teal/5'
                 : error
-                ? 'border-red-400 bg-red-50 dark:bg-red-900/10'
-                : 'border-border-subtle hover:border-border-strong hover:bg-background-medium/30',
+                ? 'border-border-danger bg-background-danger/10'
+                : 'border-border-subtle bg-background-muted hover:border-border-strong hover:bg-background-medium',
             ].join(' ')}
           >
             <p className="text-sm font-medium text-text-default mb-1">

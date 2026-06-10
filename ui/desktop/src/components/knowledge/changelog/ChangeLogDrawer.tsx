@@ -89,7 +89,7 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
             <button
               key={k}
               onClick={() => toggleKind(k)}
-              className={`text-[10px] uppercase tracking-wide rounded px-1.5 py-0.5 border ${
+              className={`text-[11px] uppercase tracking-wider rounded px-1.5 py-0.5 border ${
                 activeKinds.has(k)
                   ? 'border-border-default text-text-default'
                   : 'border-border-subtle text-text-muted opacity-50'
@@ -102,7 +102,7 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
 
         <div className="flex-1 overflow-y-auto">
           {loading && <div className="p-5 text-xs text-text-muted">Loading…</div>}
-          {error && <div className="p-5 text-xs text-red-400">{error}</div>}
+          {error && <div className="p-5 text-xs text-text-danger">{error}</div>}
           {!loading && !error && filtered.length === 0 && (
             <div className="p-5 text-xs text-text-muted">No history entries match.</div>
           )}
@@ -115,10 +115,10 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
               >
                 <div className="flex items-center gap-2 mb-1">
                   <ChangeKindChip kind={entry.kind} />
-                  <span className="text-[10px] text-text-muted font-mono">
+                  <span className="text-[11px] text-text-muted font-mono">
                     {entry.commit_sha.slice(0, 7)}
                   </span>
-                  <span className="text-[10px] text-text-muted ml-auto">
+                  <span className="text-[11px] text-text-muted ml-auto">
                     {relativeTime(entry.timestamp)}
                   </span>
                 </div>

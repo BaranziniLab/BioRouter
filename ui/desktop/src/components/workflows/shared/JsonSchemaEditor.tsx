@@ -130,7 +130,7 @@ export default function JsonSchemaEditor({
                 setLocalError('');
               }}
               className={`w-full h-full min-h-[400px] px-3 py-2 text-sm border rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 resize-none font-mono ${
-                localError || error ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
+                localError || error ? 'border-border-danger' : 'border-border-subtle'
               }`}
               placeholder={`{
   "type": "object",
@@ -144,7 +144,7 @@ export default function JsonSchemaEditor({
 }`}
             />
             {(localError || error) && (
-              <p className="text-red-500 dark:text-red-400 text-sm mt-2">{localError || error}</p>
+              <p className="text-text-danger text-sm mt-2">{localError || error}</p>
             )}
           </div>
         </div>

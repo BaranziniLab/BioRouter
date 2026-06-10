@@ -106,11 +106,11 @@ Use {{parameter_name}} syntax for any user-provided values.`;
               value={localValue}
               onChange={(e) => setLocalValue(e.target.value)}
               className={`w-full h-full min-h-[500px] px-3 py-2 text-sm border rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 resize-none font-mono ${
-                error ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
+                error ? 'border-border-danger' : 'border-border-subtle'
               }`}
               placeholder="Detailed instructions for the AI, hidden from the user"
             />
-            {error && <p className="text-red-500 dark:text-red-400 text-sm mt-2">{error}</p>}
+            {error && <p className="text-text-danger text-sm mt-2">{error}</p>}
           </div>
         </div>
 

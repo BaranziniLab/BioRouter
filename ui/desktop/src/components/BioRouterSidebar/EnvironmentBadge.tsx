@@ -11,7 +11,7 @@ const EnvironmentBadge: React.FC = () => {
   }
 
   const tooltipText = isAlpha ? 'Alpha' : 'Dev';
-  const bgColor = isAlpha ? 'bg-purple-600' : 'bg-orange-400';
+  const bgColor = isAlpha ? 'bg-background-info' : 'bg-background-warning';
 
   return (
     <Tooltip>

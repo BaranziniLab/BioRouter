@@ -70,13 +70,13 @@ const ScheduleCard: React.FC<{
               {job.id}
             </h3>
             {job.currently_running && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-300">
-                <span className="inline-block w-2 h-2 bg-green-500 rounded-full mr-1 animate-pulse"></span>
+              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-background-success/15 text-text-success">
+                <span className="inline-block w-2 h-2 bg-background-success rounded-full mr-1 animate-pulse"></span>
                 Running
               </span>
             )}
             {job.paused && (
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-800 dark:bg-orange-900/30 dark:text-orange-300">
+              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-background-warning/15 text-text-warning">
                 <Pause className="w-3 h-3 mr-1" />
                 Paused
               </span>
@@ -172,7 +172,7 @@ const ScheduleCard: React.FC<{
             disabled={actionInProgress}
             variant="ghost"
             size="sm"
-            className="h-8 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
+            className="h-8 text-text-danger hover:bg-background-danger/10"
           >
             <TrashIcon className="w-4 h-4" />
           </Button>
@@ -476,8 +476,8 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
             <ScrollArea className="h-full">
               <div className="h-full relative">
                 {apiError && (
-                  <div className="mb-4 p-4 bg-background-error border border-border-error rounded-md">
-                    <p className="text-text-error text-sm">Error: {apiError}</p>
+                  <div className="mb-4 p-4 bg-background-danger/10 border border-border-danger/40 rounded-md">
+                    <p className="text-text-danger text-sm">Error: {apiError}</p>
                   </div>
                 )}
 
@@ -490,7 +490,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
                 {!isLoading && !apiError && schedules.length === 0 && (
                   <div className="flex flex-col pt-4 pb-12">
                     <CircleDotDashed className="h-5 w-5 text-text-muted mb-3.5" />
-                    <p className="text-base text-text-muted font-light mb-2">No schedules yet</p>
+                    <p className="text-base text-text-muted mb-2">No schedules yet</p>
                   </div>
                 )}
 

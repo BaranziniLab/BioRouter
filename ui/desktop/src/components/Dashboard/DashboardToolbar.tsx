@@ -7,7 +7,7 @@ export const DashboardToolbar: React.FC = () => {
   const foldMode = dashboard.state.foldMode;
 
   const btnClass =
-    'no-drag h-7 px-3 text-[13.5px] font-normal rounded-md ' +
+    'no-drag h-7 px-3 text-sm font-normal rounded-md ' +
     'text-text-default/80 hover:text-text-default hover:bg-background-medium/40 ' +
     'active:translate-y-px transition-colors';
 

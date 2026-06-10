@@ -121,11 +121,11 @@ export default function ImportWorkflowForm({ isOpen, onClose, onSuccess }: Impor
           onDrop={handleDrop}
           onClick={() => !isSubmitting && fileInputRef.current?.click()}
           className={[
-            'flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed py-10 cursor-pointer transition-colors duration-150 select-none',
+            'flex flex-col items-center justify-center gap-2 rounded-xl border py-10 cursor-pointer transition-colors duration-150 select-none',
             isDragging
-              ? 'border-[#cf6d47] bg-[#cf6d47]/5'
+              ? 'border-block-teal bg-block-teal/5'
               : error
-              ? 'border-red-400 bg-red-50 dark:bg-red-900/10'
+              ? 'border-border-danger bg-background-danger/10'
               : 'border-border-subtle bg-background-muted hover:border-border-strong hover:bg-background-medium',
           ].join(' ')}
         >
@@ -148,7 +148,7 @@ export default function ImportWorkflowForm({ isOpen, onClose, onSuccess }: Impor
         </div>
 
         {error && (
-          <p className="text-sm text-red-500 dark:text-red-400">{error}</p>
+          <p className="text-sm text-text-danger">{error}</p>
         )}
 
         <DialogFooter>

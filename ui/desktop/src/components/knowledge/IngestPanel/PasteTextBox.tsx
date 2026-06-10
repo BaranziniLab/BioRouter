@@ -42,14 +42,14 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
       />
       {detectedUrls.length > 0 && (
         <div className="border-t border-border-subtle px-3 py-2 flex flex-wrap gap-1.5">
-          <span className="text-[10px] text-text-muted self-center mr-1">Will fetch:</span>
+          <span className="text-[11px] text-text-muted self-center mr-1">Will fetch:</span>
           {detectedUrls.map((u) => {
             const on = includeUrls[u] !== false;
             return (
               <button
                 key={u}
                 onClick={() => toggleUrl(u)}
-                className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+                className={`text-[11px] font-mono px-2 py-0.5 rounded-md border ${
                   on
                     ? 'border-border-default bg-background-muted'
                     : 'border-border-subtle text-text-muted line-through'
@@ -62,7 +62,7 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
         </div>
       )}
       <div className="border-t border-border-subtle px-3 py-2 flex justify-between items-center">
-        <span className="text-[10px] text-text-muted">{text.length} chars</span>
+        <span className="text-[11px] text-text-muted">{text.length} chars</span>
         <div className="flex gap-1.5">
           <button
             onClick={onCancel}

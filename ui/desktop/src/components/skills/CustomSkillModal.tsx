@@ -72,7 +72,7 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
             in BioRouter Skills with a <code>SKILL.md</code> inside.
           </p>
           <textarea
-            className="flex-1 min-h-[300px] font-mono text-sm bg-background-medium/30 border border-border-subtle rounded-lg p-3 resize-none outline-none focus:ring-1 focus:ring-blue-500"
+            className="flex-1 min-h-[300px] font-mono text-sm bg-background-medium/30 border border-border-subtle rounded-lg p-3 resize-none outline-none focus:ring-1 focus:ring-ring"
             value={content}
             onChange={(e) => setContent(e.target.value)}
             spellCheck={false}
