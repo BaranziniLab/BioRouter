@@ -63,7 +63,39 @@ just generate-openapi   # Regenerate OpenAPI spec from server routes
 
 ### Releasing (cross-platform)
 
-- **Version bump**: edit 5 files — `Cargo.toml`, `ui/desktop/package.json`, `ui/desktop/package-lock.json` (2 occurrences), `ui/desktop/openapi.json`. Then `cargo check` to refresh `Cargo.lock`.
+**Automated path (preferred): `scripts/release.sh` and the `release` workflow.**
+The entire pipeline — version bump → compile all 4 backends → sign + **notarize**
+both macOS dmgs → package Windows zip + Linux deb/rpm → verify → publish to GitHub —
+is encoded in [`scripts/release.sh`](scripts/release.sh). It bakes in every
+hard-won invariant below (Node-24 dmg maker, winpthread + `LZMA_API_STATIC`
+cross-compile fixes, one-platform-at-a-time staging, Linux-last node_modules
+order, auto-installing the `appdmg` dmg dep, notarization creds read from
+`notarization/APPLE_DEVELOPER_NOTES.md`).
+
+```bash
+scripts/release.sh all 1.80.1          # whole release end-to-end
+# or one phase at a time (resumable):
+scripts/release.sh bump 1.80.1
+scripts/release.sh backends 1.80.1     # mac arm64/x64 + windows + linux (docker)
+scripts/release.sh mac-arm64 1.80.1    # sign + notarize
+scripts/release.sh mac-intel 1.80.1
+scripts/release.sh windows 1.80.1
+scripts/release.sh linux 1.80.1        # deb + rpm; run LAST (corrupts node_modules)
+scripts/release.sh verify 1.80.1
+scripts/release.sh publish 1.80.1
+```
+
+For an agent-orchestrated run (each phase as a verified subagent that stops on
+the first failure), use the **`release` workflow** in
+[`.claude/workflows/release.js`](.claude/workflows/release.js):
+`Workflow({ name: 'release', args: { version: '1.80.1' } })`. After a release,
+restore a mac-native node_modules: `cd ui/desktop && rm -rf node_modules && npm install`.
+
+The detailed manual steps and the reasoning behind each invariant follow.
+
+- **Version bump**: edit 5 files — `Cargo.toml`, `ui/desktop/package.json`, `ui/desktop/package-lock.json` (2 occurrences), `ui/desktop/openapi.json`. Then `cargo check` to refresh `Cargo.lock`. (`scripts/release.sh bump <ver>` does this.)
+- **macOS dmg maker needs Node 24**: the `macos-alias` / `appdmg` native modules only build under hermit's Node (v24), not a newer Homebrew Node — run all packaging under `source bin/activate-hermit`. If the dmg maker dies with `Cannot find module 'appdmg'` or a `NODE_MODULE_VERSION` mismatch, `(cd ui/desktop && npm install && npm rebuild macos-alias ds-store)`.
+- **Cross-compile link fixes** (windows-gnu / linux-gnu, in the Justfile + `release.sh`): `aws-lc-sys` needs winpthread appended *after* the rlibs on the mingw link line (linker wrapper); `lzma-sys` (via `xz2`, the `.brkb` path) needs `LZMA_API_STATIC=1` so it statically builds bundled liblzma instead of the host one. Run the docker cross builds with the system docker (hermit does **not** shadow it).
 - **macOS sign + notarize**: set `APPLE_ID` and `APPLE_APP_SPECIFIC_PASSWORD` on the `npm run bundle:default` / `bundle:intel` invocation. Signing identity is the UCSF Developer ID Application (team `F3YYBXAFJ8`).
 - **Intel macOS requires `just release-intel` first**. `bundle:intel` does NOT cross-compile the Rust backend — it repackages whatever is in `ui/desktop/src/bin/`. Without `target/x86_64-apple-darwin/release/{biorouter,biorouterd}`, `prepare-platform-binaries.js` falls through to the arm64 build and ships an Intel dmg that crashes on Intel Macs with "bad CPU type." Always run `just release-intel` (or have a recent `target/x86_64-apple-darwin/release/` build) immediately before `npm run bundle:intel`. Verify with `file ui/desktop/out/BioRouter-darwin-x64/BioRouter.app/Contents/Resources/bin/biorouter` — must say `x86_64`, not `arm64`. Same rule applies symmetrically: `bundle:default` needs `target/release/` to be the arm64 build (`just release-binary` or `just copy-binary`).
 - **Build platforms one at a time** — every bundle writes to `ui/desktop/src/bin/` and clobbers the others. After any non-mac build, run `just release-binary` (or `just copy-binary`) to restore the local arm64 binary.
