@@ -63,10 +63,10 @@ export function ResponseStyleSelectionItem({
             className="peer sr-only"
           />
           <div
-            className="h-4 w-4 rounded-full border border-neutral-300
-                  peer-checked:border-[6px] peer-checked:border-black dark:peer-checked:border-white
-                  peer-checked:bg-white dark:peer-checked:bg-black
-                  transition-all duration-200 ease-in-out group-hover:border-neutral-400"
+            className="h-4 w-4 rounded-full border border-text-muted
+                  peer-checked:border-[6px] peer-checked:border-text-default
+                  peer-checked:bg-background-default
+                  transition-all duration-200 ease-in-out group-hover:border-text-default"
           ></div>
         </div>
       </div>

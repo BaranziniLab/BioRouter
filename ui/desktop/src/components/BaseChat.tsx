@@ -532,7 +532,7 @@ function BaseChatContent({
           <div className="flex flex-col flex-1 mb-0.5 min-h-0 relative">
             <div className="flex-1 bg-background-default rounded-b-2xl flex items-center justify-center">
               <div className="flex flex-col items-center justify-center p-8">
-                <div className="text-red-700 dark:text-red-300 bg-red-400/50 p-4 rounded-lg mb-4 max-w-md">
+                <div className="text-text-danger bg-background-danger/10 border border-border-danger/40 p-4 rounded-lg mb-4 max-w-md">
                   <h3 className="font-semibold mb-2">Failed to Load Session</h3>
                   <p className="text-sm">{sessionLoadError}</p>
                 </div>

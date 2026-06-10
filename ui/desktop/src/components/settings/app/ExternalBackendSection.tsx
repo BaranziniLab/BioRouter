@@ -20,7 +20,9 @@ const DEFAULT_CONFIG: ExternalBiorouterdConfig = {
   secret: '',
 };
 
-function parseConfig(partial: Partial<ExternalBiorouterdConfig> | undefined): ExternalBiorouterdConfig {
+function parseConfig(
+  partial: Partial<ExternalBiorouterdConfig> | undefined
+): ExternalBiorouterdConfig {
   return {
     enabled: partial?.enabled ?? DEFAULT_CONFIG.enabled,
     url: partial?.url ?? DEFAULT_CONFIG.url,
@@ -101,8 +103,8 @@ export default function ExternalBackendSection() {
         <CardHeader className="pb-0">
           <CardTitle>BioRouter Server</CardTitle>
           <CardDescription>
-            By default BioRouter launches a server for you, use this to connect to an external BioRouter
-            server
+            By default BioRouter launches a server for you, use this to connect to an external
+            BioRouter server
           </CardDescription>
         </CardHeader>
         <CardContent className="pt-4 space-y-4 px-4">
@@ -137,10 +139,10 @@ export default function ExternalBackendSection() {
                   onChange={(e) => handleUrlChange(e.target.value)}
                   onBlur={handleUrlBlur}
                   disabled={isSaving}
-                  className={urlError ? 'border-red-500' : ''}
+                  className={urlError ? 'border-border-danger' : ''}
                 />
                 {urlError && (
-                  <p className="text-xs text-red-500 dark:text-red-400 flex items-center gap-1">
+                  <p className="text-xs text-text-danger flex items-center gap-1">
                     <AlertCircle size={12} />
                     {urlError}
                   </p>
@@ -165,10 +167,10 @@ export default function ExternalBackendSection() {
                 </p>
               </div>
 
-              <div className="bg-amber-50 dark:bg-amber-950 border border-amber-200 dark:border-amber-800 rounded-md p-3">
-                <p className="text-xs text-amber-800 dark:text-amber-200">
-                  <strong>Note:</strong> Changes require restarting BioRouter to take effect. New chat
-                  windows will connect to the external server.
+              <div className="bg-background-warning/10 border border-border-warning/40 rounded-md p-3">
+                <p className="text-xs text-text-warning">
+                  <strong>Note:</strong> Changes require restarting BioRouter to take effect. New
+                  chat windows will connect to the external server.
                 </p>
               </div>
             </>

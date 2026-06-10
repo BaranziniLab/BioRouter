@@ -20,7 +20,7 @@ const HelpText = () => (
 );
 
 const ErrorDisplay = ({ error }: { error: Error }) => (
-  <div className="text-xs text-red-600 dark:text-red-400 p-3 rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50">
+  <div className="text-xs text-text-danger p-3 rounded-lg bg-background-danger/10 border border-border-danger/40">
     Error reading .biorouterhints: {error.message}
   </div>
 );
@@ -28,7 +28,7 @@ const ErrorDisplay = ({ error }: { error: Error }) => (
 const FileInfo = ({ filePath, found }: { filePath: string; found: boolean }) => (
   <div className="flex items-center gap-1.5 text-xs mb-2">
     {found ? (
-      <span className="flex items-center gap-1 text-green-600 dark:text-green-400 font-medium flex-shrink-0">
+      <span className="flex items-center gap-1 text-text-success font-medium flex-shrink-0">
         <Check className="w-3 h-3" />
         Found
       </span>
@@ -119,7 +119,7 @@ export const BioRouterHintsModal = ({
 
         <DialogFooter className="border-t border-border-subtle pt-4 mt-1">
           {saveSuccess && (
-            <span className="text-green-600 dark:text-green-400 text-xs flex items-center gap-1 mr-auto font-medium">
+            <span className="text-text-success text-xs flex items-center gap-1 mr-auto font-medium">
               <Check className="w-3.5 h-3.5" />
               Saved
             </span>

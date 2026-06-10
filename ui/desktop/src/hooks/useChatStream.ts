@@ -125,10 +125,18 @@ interface UseChatStreamReturn {
   ) => Promise<void>;
 }
 
+function sameContent(a: Message, b: Message): boolean {
+  return a.role === b.role && JSON.stringify(a.content) === JSON.stringify(b.content);
+}
+
 function pushMessage(currentMessages: Message[], incomingMsg: Message): Message[] {
   const lastMsg = currentMessages[currentMessages.length - 1];
 
   if (lastMsg?.id && lastMsg.id === incomingMsg.id) {
+    const updatedLastMsg = {
+      ...lastMsg,
+      content: [...lastMsg.content],
+    };
     const lastContent = lastMsg.content[lastMsg.content.length - 1];
     const newContent = incomingMsg.content[incomingMsg.content.length - 1];
 
@@ -137,14 +145,27 @@ function pushMessage(currentMessages: Message[], incomingMsg: Message): Message[
       newContent?.type === 'text' &&
       incomingMsg.content.length === 1
     ) {
-      lastContent.text += newContent.text;
+      const updatedLastContent = { ...lastContent };
+      if (newContent.text.startsWith(updatedLastContent.text)) {
+        updatedLastContent.text = newContent.text;
+      } else if (!updatedLastContent.text.endsWith(newContent.text)) {
+        updatedLastContent.text += newContent.text;
+      }
+      updatedLastMsg.content[updatedLastMsg.content.length - 1] = updatedLastContent;
     } else {
-      lastMsg.content.push(...incomingMsg.content);
+      const existingContent = new Set(updatedLastMsg.content.map((content) => JSON.stringify(content)));
+      updatedLastMsg.content.push(
+        ...incomingMsg.content.filter((content) => !existingContent.has(JSON.stringify(content)))
+      );
     }
-    return [...currentMessages];
-  } else {
-    return [...currentMessages, incomingMsg];
+    return [...currentMessages.slice(0, -1), updatedLastMsg];
   }
+
+  if (lastMsg && sameContent(lastMsg, incomingMsg)) {
+    return currentMessages;
+  }
+
+  return [...currentMessages, incomingMsg];
 }
 
 async function streamFromResponse(
@@ -249,6 +270,7 @@ export function useChatStream({
   });
   const [notifications, setNotifications] = useState<NotificationEvent[]>([]);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const activeStreamIdRef = useRef(0);
   const lastInteractionTimeRef = useRef<number>(Date.now());
 
   useEffect(() => {
@@ -289,6 +311,7 @@ export function useChatStream({
       if (error) {
         setSessionLoadError(error);
       }
+      abortControllerRef.current = null;
 
       const timeSinceLastInteraction = Date.now() - lastInteractionTimeRef.current;
       if (!error && timeSinceLastInteraction > 60000) {
@@ -469,6 +492,10 @@ export function useChatStream({
         return;
       }
 
+      if (abortControllerRef.current && !abortControllerRef.current.signal.aborted) {
+        return;
+      }
+
       const hasExistingMessages = messagesRef.current.length > 0;
       const hasNewMessage = userMessage.trim().length > 0;
 
@@ -509,6 +536,14 @@ export function useChatStream({
       setChatState(ChatState.Streaming);
       setNotifications([]);
       abortControllerRef.current = new AbortController();
+      const streamId = activeStreamIdRef.current + 1;
+      activeStreamIdRef.current = streamId;
+      const finishCurrentStream = (error?: string) => {
+        if (activeStreamIdRef.current !== streamId) {
+          return;
+        }
+        onFinish(error);
+      };
 
       try {
         const { stream } = await reply({
@@ -518,11 +553,7 @@ export function useChatStream({
           },
           throwOnError: true,
           signal: abortControllerRef.current.signal,
-          // Without a cap the SSE client retries forever (3s → 30s
-          // exponential backoff), holding a Request/Response pair across
-          // each attempt. A killed/restarted biorouterd otherwise leaves
-          // every open ChatWindow leaking connections indefinitely.
-          sseMaxRetryAttempts: 5,
+          sseMaxRetryAttempts: 1,
         });
 
         await streamFromResponse(
@@ -532,7 +563,7 @@ export function useChatStream({
           setTokenState,
           setChatState,
           updateNotifications,
-          onFinish
+          finishCurrentStream
         );
       } catch (error) {
         // AbortError is expected when user stops streaming
@@ -540,7 +571,11 @@ export function useChatStream({
           // Silently handle abort
         } else {
           // Unexpected error during fetch setup (streamFromResponse handles its own errors)
-          onFinish('Submit error: ' + errorMessage(error));
+          finishCurrentStream('Submit error: ' + errorMessage(error));
+        }
+      } finally {
+        if (activeStreamIdRef.current === streamId && abortControllerRef.current?.signal.aborted) {
+          abortControllerRef.current = null;
         }
       }
     },
@@ -553,6 +588,10 @@ export function useChatStream({
         return;
       }
 
+      if (abortControllerRef.current && !abortControllerRef.current.signal.aborted) {
+        return;
+      }
+
       lastInteractionTimeRef.current = Date.now();
 
       const responseMessage = createElicitationResponseMessage(elicitationId, userData);
@@ -562,6 +601,14 @@ export function useChatStream({
       setChatState(ChatState.Streaming);
       setNotifications([]);
       abortControllerRef.current = new AbortController();
+      const streamId = activeStreamIdRef.current + 1;
+      activeStreamIdRef.current = streamId;
+      const finishCurrentStream = (error?: string) => {
+        if (activeStreamIdRef.current !== streamId) {
+          return;
+        }
+        onFinish(error);
+      };
 
       try {
         const { stream } = await reply({
@@ -571,7 +618,7 @@ export function useChatStream({
           },
           throwOnError: true,
           signal: abortControllerRef.current.signal,
-          sseMaxRetryAttempts: 5,
+          sseMaxRetryAttempts: 1,
         });
 
         await streamFromResponse(
@@ -581,13 +628,17 @@ export function useChatStream({
           setTokenState,
           setChatState,
           updateNotifications,
-          onFinish
+          finishCurrentStream
         );
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') {
           // Silently handle abort
         } else {
-          onFinish('Submit error: ' + errorMessage(error));
+          finishCurrentStream('Submit error: ' + errorMessage(error));
+        }
+      } finally {
+        if (activeStreamIdRef.current === streamId && abortControllerRef.current?.signal.aborted) {
+          abortControllerRef.current = null;
         }
       }
     },
@@ -633,6 +684,7 @@ export function useChatStream({
   }, [session]);
 
   const stopStreaming = useCallback(() => {
+    activeStreamIdRef.current += 1;
     abortControllerRef.current?.abort();
     setChatState(ChatState.Idle);
     lastInteractionTimeRef.current = Date.now();

@@ -91,14 +91,14 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
       {showCancelOptions ? (
         // Cancel options modal
         <div className="bg-background-default border border-border-subtle rounded-xl p-8 shadow-2xl w-full max-w-md">
-          <h2 className="text-xl font-bold text-textProminent mb-4">Cancel Workflow Setup</h2>
+          <h2 className="text-base font-semibold text-text-default mb-4">Cancel Workflow Setup</h2>
           <p className="text-text-default mb-6">What would you like to do?</p>
           <div className="flex flex-col gap-3">
             <Button
               onClick={() => handleCancelOption('back-to-form')}
               variant="default"
               size="lg"
-              className="w-full rounded-full"
+              className="w-full rounded-md"
             >
               Back to Parameter Form
             </Button>
@@ -106,7 +106,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
               onClick={() => handleCancelOption('new-chat')}
               variant="outline"
               size="lg"
-              className="w-full rounded-full"
+              className="w-full rounded-md"
             >
               Start New Chat (No Workflow)
             </Button>
@@ -116,16 +116,16 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
         // Main parameter form
         <div className="bg-background-default border border-border-subtle rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
           <div className="p-8 pb-4 flex-shrink-0">
-            <h2 className="text-xl font-bold text-textProminent mb-6">Workflow Parameters</h2>
+            <h2 className="text-base font-semibold text-text-default mb-6">Workflow Parameters</h2>
           </div>
           <div className="flex-1 overflow-y-auto px-8">
             <form onSubmit={handleSubmit} className="space-y-4 mb-4">
               {parameters.map((param) => (
                 <div key={param.key}>
-                  <label className="block text-md font-medium text-text-default mb-2">
+                  <label className="block text-sm font-medium text-text-default mb-2">
                     {param.description || param.key}
                     {param.requirement === 'required' && (
-                      <span className="text-red-500 dark:text-red-400 ml-1">*</span>
+                      <span className="text-text-danger ml-1">*</span>
                     )}
                   </label>
 
@@ -136,8 +136,8 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
                       onChange={(e) => handleChange(param.key, e.target.value)}
                       className={`w-full p-3 border rounded-lg bg-background-medium text-text-default focus:outline-none focus:ring-2 ${
                         validationErrors[param.key]
-                          ? 'border-red-500 focus:ring-red-500'
-                          : 'border-border-subtle focus:ring-borderProminent'
+                          ? 'border-border-danger focus:ring-border-danger'
+                          : 'border-border-subtle focus:ring-ring'
                       }`}
                     >
                       <option value="">Select an option...</option>
@@ -153,8 +153,8 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
                       onChange={(e) => handleChange(param.key, e.target.value)}
                       className={`w-full p-3 border rounded-lg bg-background-medium text-text-default focus:outline-none focus:ring-2 ${
                         validationErrors[param.key]
-                          ? 'border-red-500 focus:ring-red-500'
-                          : 'border-border-subtle focus:ring-borderProminent'
+                          ? 'border-border-danger focus:ring-border-danger'
+                          : 'border-border-subtle focus:ring-ring'
                       }`}
                     >
                       <option value="">Select...</option>
@@ -168,15 +168,15 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
                       onChange={(e) => handleChange(param.key, e.target.value)}
                       className={`w-full p-3 border rounded-lg bg-background-medium text-text-default focus:outline-none focus:ring-2 ${
                         validationErrors[param.key]
-                          ? 'border-red-500 focus:ring-red-500'
-                          : 'border-border-subtle focus:ring-borderProminent'
+                          ? 'border-border-danger focus:ring-border-danger'
+                          : 'border-border-subtle focus:ring-ring'
                       }`}
                       placeholder={param.default || `Enter value for ${param.key}...`}
                     />
                   )}
 
                   {validationErrors[param.key] && (
-                    <p className="text-red-500 dark:text-red-400 text-sm mt-1">{validationErrors[param.key]}</p>
+                    <p className="text-text-danger text-sm mt-1">{validationErrors[param.key]}</p>
                   )}
                 </div>
               ))}
@@ -189,7 +189,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
                 onClick={handleCancel}
                 variant="outline"
                 size="default"
-                className="rounded-full"
+                className="rounded-md"
               >
                 Cancel
               </Button>
@@ -198,7 +198,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
                 onClick={handleSubmit}
                 variant="default"
                 size="default"
-                className="rounded-full"
+                className="rounded-md"
               >
                 Start Workflow
               </Button>

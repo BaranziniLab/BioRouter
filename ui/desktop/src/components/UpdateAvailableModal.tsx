@@ -12,7 +12,7 @@ import { UPDATES_ENABLED } from '../updates';
 
 const GITHUB_API_URL = 'https://api.github.com/repos/BaranziniLab/BioRouter/releases/latest';
 const GITHUB_RELEASES_URL = 'https://github.com/BaranziniLab/BioRouter/releases/latest';
-const BIOROUTER_DOWNLOAD_URL = 'https://baranzinilab.github.io/biorouter-landing/download.html';
+const BIOROUTER_DOWNLOAD_URL = 'http://biorouter.ucsf.edu/download';
 const DISMISS_STORAGE_KEY = 'biorouter:update-modal-dismissed-version';
 const STARTUP_DELAY_MS = 3000;
 const RELEASE_NOTES_MAX_LEN = 600;

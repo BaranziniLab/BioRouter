@@ -18,8 +18,8 @@ interface AlertBoxProps {
 }
 
 const alertStyles: Record<AlertType, string> = {
-  [AlertType.Error]: 'bg-[#d7040e] text-white',
-  [AlertType.Warning]: 'bg-[#cc4b03] text-white',
+  [AlertType.Error]: 'bg-background-danger text-white',
+  [AlertType.Warning]: 'bg-background-warning text-neutral-900',
   [AlertType.Info]: 'dark:bg-white dark:text-black bg-black text-white',
 };
 
@@ -114,7 +114,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
           <div className="flex items-center justify-center gap-1 min-h-[20px]">
             {isEditingThreshold ? (
               <>
-                <span className="text-[10px] opacity-70">Auto compact at</span>
+                <span className="text-[11px] opacity-70">Auto compact at</span>
                 <input
                   type="number"
                   min="1"
@@ -157,11 +157,11 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
                     // Prevent issues with text selection
                     e.stopPropagation();
                   }}
-                  className="w-12 px-1 text-[10px] bg-white/10 border border-current/30 rounded outline-none text-center focus:bg-white/20 focus:border-current/50 transition-colors"
+                  className="w-12 px-1 text-[11px] bg-white/10 border border-current/30 rounded outline-none text-center focus:bg-white/20 focus:border-current/50 transition-colors"
                   disabled={isSaving}
                   autoFocus
                 />
-                <span className="text-[10px] opacity-70">%</span>
+                <span className="text-[11px] opacity-70">%</span>
                 <button
                   type="button"
                   onMouseDown={(e) => {
@@ -178,7 +178,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
               </>
             ) : (
               <>
-                <span className="text-[10px] opacity-70">
+                <span className="text-[11px] opacity-70">
                   Auto compact at {Math.round(currentThreshold * 100)}%
                 </span>
                 <button
@@ -221,18 +221,18 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
 
                 const getProgressColor = () => {
                   if (progressPercentage <= 50) {
-                    return 'bg-green-500';
+                    return 'bg-background-success';
                   } else if (progressPercentage <= 75) {
-                    return 'bg-yellow-500';
+                    return 'bg-background-warning';
                   } else if (progressPercentage <= 90) {
-                    return 'bg-orange-500';
+                    return 'bg-background-warning';
                   } else {
-                    return 'bg-red-500';
+                    return 'bg-background-danger';
                   }
                 };
 
                 const progressColor = getProgressColor();
-                const inactiveColor = 'bg-gray-300 dark:bg-gray-600';
+                const inactiveColor = 'bg-background-strong';
 
                 return (
                   <div

@@ -101,7 +101,7 @@ export default function HeadersSection({
                 placeholder="Header name"
                 className={cn(
                   'w-full text-text-default border-border-subtle hover:border-border-default',
-                  isFieldInvalid(index, 'key') && 'border-red-500 focus:border-red-500'
+                  isFieldInvalid(index, 'key') && 'border-border-danger focus:border-border-danger'
                 )}
               />
             </div>
@@ -112,7 +112,8 @@ export default function HeadersSection({
                 placeholder="Value"
                 className={cn(
                   'w-full text-text-default border-border-subtle hover:border-border-default',
-                  isFieldInvalid(index, 'value') && 'border-red-500 focus:border-red-500'
+                  isFieldInvalid(index, 'value') &&
+                    'border-border-danger focus:border-border-danger'
                 )}
               />
             </div>
@@ -136,7 +137,7 @@ export default function HeadersSection({
           placeholder="Header name"
           className={cn(
             'w-full text-text-default border-border-subtle hover:border-border-default',
-            invalidFields.key && 'border-red-500 focus:border-red-500'
+            invalidFields.key && 'border-border-danger focus:border-border-danger'
           )}
         />
         <Input
@@ -148,7 +149,7 @@ export default function HeadersSection({
           placeholder="Value"
           className={cn(
             'w-full text-text-default border-border-subtle hover:border-border-default',
-            invalidFields.value && 'border-red-500 focus:border-red-500'
+            invalidFields.value && 'border-border-danger focus:border-border-danger'
           )}
         />
         <Button
@@ -159,7 +160,7 @@ export default function HeadersSection({
           <Plus /> Add
         </Button>
       </div>
-      {validationError && <div className="mt-2 text-red-500 dark:text-red-400 text-sm">{validationError}</div>}
+      {validationError && <div className="mt-2 text-text-danger text-sm">{validationError}</div>}
     </div>
   );
 }

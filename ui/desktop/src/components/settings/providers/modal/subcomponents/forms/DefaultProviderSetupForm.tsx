@@ -85,8 +85,7 @@ export default function DefaultProviderSetupForm({
         if (configValue) {
           values[parameter.name] = { serverValue: configValue };
         } else {
-          const defaultValue =
-            parameter.default ?? frontendDefaults[parameter.name] ?? null;
+          const defaultValue = parameter.default ?? frontendDefaults[parameter.name] ?? null;
           if (defaultValue !== null) {
             values[parameter.name] = { value: defaultValue };
           }
@@ -169,7 +168,7 @@ export default function DefaultProviderSetupForm({
       <div key={parameter.name}>
         <label className="block text-sm font-medium text-text-default mb-1">
           {getFieldLabel(parameter)}
-          {parameter.required && <span className="text-red-500 dark:text-red-400 ml-1">*</span>}
+          {parameter.required && <span className="text-text-danger ml-1">*</span>}
         </label>
         <Input
           type="text"
@@ -186,13 +185,13 @@ export default function DefaultProviderSetupForm({
           placeholder={getPlaceholder(parameter)}
           className={`w-full h-9 px-3 rounded-lg shadow-none text-sm ${
             validationErrors[parameter.name]
-              ? 'border-2 border-red-500 dark:border-red-400'
+              ? 'border-2 border-border-danger'
               : 'border border-border-subtle hover:border-border-strong focus:border-border-strong'
           } bg-background-default placeholder:text-text-muted text-text-default`}
           required={parameter.required}
         />
         {validationErrors[parameter.name] && (
-          <p className="text-red-500 dark:text-red-400 text-sm mt-1">{validationErrors[parameter.name]}</p>
+          <p className="text-text-danger text-sm mt-1">{validationErrors[parameter.name]}</p>
         )}
       </div>
     ));

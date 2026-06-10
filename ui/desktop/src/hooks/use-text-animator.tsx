@@ -145,8 +145,6 @@ export class TextAnimator {
           {
             opacity: 1,
             color: '#666',
-            fontFamily: 'Cash Sans Mono',
-            fontWeight: '300',
           },
           {
             opacity: 0.5,
@@ -155,8 +153,6 @@ export class TextAnimator {
           {
             opacity: 1,
             color: 'inherit',
-            fontFamily: 'inherit',
-            fontWeight: 'inherit',
           },
         ],
         {
@@ -190,7 +186,6 @@ export class TextAnimator {
       animation.onfinish = () => {
         char.textContent = initialText;
         char.style.color = '';
-        char.style.fontFamily = '';
         char.style.opacity = '1';
       };
     });

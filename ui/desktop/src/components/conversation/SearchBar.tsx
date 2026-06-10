@@ -191,7 +191,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             }`}
             title="Case Sensitive"
           >
-            <span className="text-md font-normal">Aa</span>
+            <span className="text-sm font-normal">Aa</span>
           </Button>
 
           <div className="flex items-center gap-2">

@@ -67,16 +67,14 @@ export const ProviderCard = function ProviderCard({
       {/* Right: configured badge + action buttons */}
       <div className="flex items-center gap-3 flex-shrink-0">
         {provider.is_configured && (
-          <span className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400 font-medium">
+          <span className="flex items-center gap-1 text-xs text-text-success font-medium">
             <Check className="w-3 h-3" />
             Configured
           </span>
         )}
         <div
           className={
-            !isOnboarding
-              ? 'opacity-0 group-hover:opacity-100 transition-opacity duration-150'
-              : ''
+            !isOnboarding ? 'opacity-0 group-hover:opacity-100 transition-opacity duration-150' : ''
           }
         >
           <DefaultCardButtons

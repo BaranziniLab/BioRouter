@@ -192,7 +192,7 @@ export default function SessionSharingSection() {
                   <label htmlFor="session-sharing-url" className="text-sm text-text-default">
                     Base URL
                   </label>
-                  {isUrlConfigured && <Check className="w-5 h-5 text-green-500 dark:text-green-400" />}
+                  {isUrlConfigured && <Check className="w-5 h-5 text-text-success" />}
                 </div>
                 <div className="flex items-center">
                   <Input
@@ -204,7 +204,7 @@ export default function SessionSharingSection() {
                     {...(envBaseUrlShare ? {} : { onChange: handleBaseUrlChange })}
                   />
                 </div>
-                {urlError && <p className="text-red-500 dark:text-red-400 text-sm">{urlError}</p>}
+                {urlError && <p className="text-text-danger text-sm">{urlError}</p>}
 
                 {(isUrlConfigured || (envBaseUrlShare as string)) && (
                   <div className="space-y-2">
@@ -230,8 +230,8 @@ export default function SessionSharingSection() {
                       <div
                         className={`flex items-start gap-2 p-3 rounded-md text-sm ${
                           testResult.status === 'success'
-                            ? 'bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-300 border border-green-200 dark:border-green-800/50'
-                            : 'bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-300 border border-red-200 dark:border-red-800/50'
+                            ? 'bg-background-success/10 text-text-success border border-border-success/40'
+                            : 'bg-background-danger/10 text-text-danger border border-border-danger/40'
                         }`}
                       >
                         {testResult.status === 'success' ? (

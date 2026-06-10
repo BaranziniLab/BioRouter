@@ -51,7 +51,7 @@ export default function ExtensionList({
       {sortedEnabledExtensions.length > 0 && (
         <div>
           <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-            <span className="w-1.5 h-1.5 bg-green-500 rounded-full flex-shrink-0"></span>
+            <span className="w-1.5 h-1.5 bg-background-success rounded-full flex-shrink-0"></span>
             Default Extensions ({sortedEnabledExtensions.length})
           </h2>
           <div className="divide-y divide-border-subtle">
@@ -71,7 +71,7 @@ export default function ExtensionList({
       {sortedDisabledExtensions.length > 0 && (
         <div>
           <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-            <span className="w-1.5 h-1.5 bg-neutral-400 rounded-full flex-shrink-0"></span>
+            <span className="w-1.5 h-1.5 bg-background-strong rounded-full flex-shrink-0"></span>
             Available Extensions ({sortedDisabledExtensions.length})
           </h2>
           <div className="divide-y divide-border-subtle">

@@ -71,14 +71,14 @@ const ToastComponent = ({
 
   return (
     <div className="flex flex-col gap-0 py-2 pr-4">
-      <p className="font-bold">{title}</p>
+      <p className="font-semibold">{title}</p>
       {isImplemented ? (
         <p>
-          Message received for <span className="font-bold">{message}</span>.
+          Message received for <span className="font-semibold">{message}</span>.
         </p>
       ) : (
         <p>
-          Message received for <span className="font-bold">{message}</span>.
+          Message received for <span className="font-semibold">{message}</span>.
           <br />
           {messageType.charAt(0).toUpperCase() + messageType.slice(1)} messages aren't supported
           yet, refer to console for more details.

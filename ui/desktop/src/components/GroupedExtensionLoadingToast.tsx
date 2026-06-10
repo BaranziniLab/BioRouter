@@ -36,11 +36,11 @@ export function GroupedExtensionLoadingToast({
   const getStatusIcon = (status: 'loading' | 'success' | 'error') => {
     switch (status) {
       case 'loading':
-        return <Loader2 className="w-4 h-4 animate-spin text-blue-500" />;
+        return <Loader2 className="w-4 h-4 animate-spin text-text-info" />;
       case 'success':
-        return <div className="w-4 h-4 rounded-full bg-green-500" />;
+        return <div className="w-4 h-4 rounded-md bg-background-success" />;
       case 'error':
-        return <div className="w-4 h-4 rounded-full bg-red-500" />;
+        return <div className="w-4 h-4 rounded-md bg-background-danger" />;
     }
   };
 
@@ -58,14 +58,14 @@ export function GroupedExtensionLoadingToast({
 
   const getSummaryIcon = () => {
     if (!isComplete) {
-      return <Loader2 className="w-5 h-5 animate-spin text-blue-500" />;
+      return <Loader2 className="w-5 h-5 animate-spin text-text-info" />;
     }
 
     if (errorCount === 0) {
-      return <div className="w-5 h-5 rounded-full bg-green-500" />;
+      return <div className="w-5 h-5 rounded-md bg-background-success" />;
     }
 
-    return <div className="w-5 h-5 rounded-full bg-yellow-500" />;
+    return <div className="w-5 h-5 rounded-md bg-background-warning" />;
   };
 
   return (

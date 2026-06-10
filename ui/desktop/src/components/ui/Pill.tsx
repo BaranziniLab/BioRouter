@@ -23,7 +23,7 @@ export function Pill({
   animated = false,
 }: PillProps) {
   const baseStyles =
-    'inline-flex items-center justify-center rounded-full transition-all duration-300 ease-out font-medium';
+    'inline-flex items-center justify-center rounded-md transition-all duration-300 ease-out font-medium';
 
   const variants = {
     default: 'bg-background border border-border hover:bg-muted/50',

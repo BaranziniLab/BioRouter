@@ -55,7 +55,7 @@ function DialogContent({
         {...props}
       >
         {children}
-        <DialogPrimitive.Close className="ring-offset-background p-2 hover:bg-background-muted rounded-full focus:ring-ring data-[state=open]:bg-background-muted transition-all duration-200 data-[state=open]:text-text-muted absolute top-5 right-4 opacity-70 hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4">
+        <DialogPrimitive.Close className="ring-offset-background p-2 hover:bg-background-muted rounded-md focus:ring-ring data-[state=open]:bg-background-muted transition-all duration-200 data-[state=open]:text-text-muted absolute top-5 right-4 opacity-70 hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4">
           <XIcon />
           <span className="sr-only">Close</span>
         </DialogPrimitive.Close>
@@ -88,7 +88,7 @@ function DialogTitle({ className, ...props }: React.ComponentProps<typeof Dialog
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn('text-lg leading-none font-medium', className)}
+      className={cn('text-base leading-none font-semibold', className)}
       {...props}
     />
   );

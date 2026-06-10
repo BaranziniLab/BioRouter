@@ -166,7 +166,7 @@ export default function ModelsBottomBar({
             <span className="truncate text-xs">
               {displayModel}
               {isLeadWorkerActive && modelMode && (
-                <span className="ml-1 text-[10px] opacity-60">({modelMode})</span>
+                <span className="ml-1 text-[11px] opacity-60">({modelMode})</span>
               )}
             </span>
           </div>

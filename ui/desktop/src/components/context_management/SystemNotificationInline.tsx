@@ -15,5 +15,5 @@ export const SystemNotificationInline: React.FC<SystemNotificationInlineProps> =
     return null;
   }
 
-  return <div className="text-xs text-gray-400 py-2 text-left">{systemNotification.msg}</div>;
+  return <div className="text-xs text-text-muted py-2 text-left">{systemNotification.msg}</div>;
 };

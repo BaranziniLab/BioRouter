@@ -1383,14 +1383,21 @@ export type Workflow = {
     description: string;
     extensions?: Array<ExtensionConfig> | null;
     instructions?: string | null;
+    knowledge_bases?: WorkflowKnowledgeBases | null;
     parameters?: Array<WorkflowParameter> | null;
     prompt?: string | null;
     response?: Response | null;
     retry?: RetryConfig | null;
     settings?: Settings | null;
+    skills?: Array<string> | null;
     sub_workflows?: Array<SubWorkflow> | null;
     title: string;
     version?: string;
+};
+
+export type WorkflowKnowledgeBases = {
+    default?: string | null;
+    visible?: Array<string>;
 };
 
 export type WorkflowManifest = {

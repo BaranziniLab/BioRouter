@@ -54,22 +54,22 @@ const buttonVariants = cva(
       {
         shape: 'round',
         size: 'xs',
-        className: 'w-6 h-6 p-0 rounded-full',
+        className: 'w-6 h-6 p-0 rounded-md',
       },
       {
         shape: 'round',
         size: 'default',
-        className: 'w-9 h-9 p-0 rounded-full',
+        className: 'w-9 h-9 p-0 rounded-md',
       },
       {
         shape: 'round',
         size: 'sm',
-        className: 'w-8 h-8 p-0 rounded-full',
+        className: 'w-8 h-8 p-0 rounded-md',
       },
       {
         shape: 'round',
         size: 'lg',
-        className: 'w-10 h-10 p-0 rounded-full',
+        className: 'w-10 h-10 p-0 rounded-md',
       },
     ],
     defaultVariants: {

@@ -31,10 +31,10 @@ export default function ExtensionInfoFields({
               value={name}
               onChange={(e) => onChange('name', e.target.value)}
               placeholder="Enter extension name..."
-              className={`${!submitAttempted || isNameValid() ? 'border-border-subtle' : 'border-red-500'} text-text-default focus:border-border-default`}
+              className={`${!submitAttempted || isNameValid() ? 'border-border-subtle' : 'border-border-danger'} text-text-default focus:border-border-default`}
             />
             {submitAttempted && !isNameValid() && (
-              <div className="absolute text-xs text-red-500 dark:text-red-400 mt-1">Name is required</div>
+              <div className="absolute text-xs text-text-danger mt-1">Name is required</div>
             )}
           </div>
         </div>

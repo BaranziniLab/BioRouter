@@ -15,14 +15,14 @@ export const ToolCallStatusIndicator: React.FC<ToolCallStatusIndicatorProps> = (
   const getStatusStyles = () => {
     switch (status) {
       case 'success':
-        return 'bg-green-500';
+        return 'bg-background-success';
       case 'error':
-        return 'bg-red-500';
+        return 'bg-background-danger';
       case 'loading':
-        return 'bg-yellow-500 animate-pulse';
+        return 'bg-background-warning animate-pulse';
       case 'pending':
       default:
-        return 'bg-gray-400';
+        return 'bg-background-strong';
     }
   };
 

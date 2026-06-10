@@ -871,7 +871,7 @@ const ProgressBar = ({ progress, total, message }: Omit<Progress, 'progressToken
     <div className="w-full space-y-2">
       {message && <div className="font-sans text-sm text-text-muted">{message}</div>}
 
-      <div className="w-full bg-background-subtle rounded-full h-4 overflow-hidden relative">
+      <div className="w-full bg-background-muted rounded-md h-4 overflow-hidden relative">
         {isDeterminate ? (
           <div
             className="bg-primary h-full transition-all duration-300"
