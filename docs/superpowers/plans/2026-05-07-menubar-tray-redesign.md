@@ -441,7 +441,7 @@ Also import the one new function needed from `extensionUpdater.ts`.
           },
           {
             label: 'Browse Extensions',
-            click() { shell.openExternal('https://baranzinilab.github.io/biorouter-landing/baam.html'); },
+            click() { shell.openExternal('http://biorouter.ucsf.edu/baam'); },
           },
           {
             label: 'Add Custom Extension…',
@@ -522,7 +522,7 @@ Also import the one new function needed from `extensionUpdater.ts`.
         submenu: [
           {
             label: 'Biorouter Documentation',
-            click() { shell.openExternal('https://baranzinilab.github.io/biorouter-landing/docs.html'); },
+            click() { shell.openExternal('http://biorouter.ucsf.edu/docs'); },
           },
           { type: 'separator' as const },
           {

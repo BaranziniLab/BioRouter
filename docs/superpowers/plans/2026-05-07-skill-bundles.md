@@ -419,7 +419,7 @@ export default function SkillsView() {
               variant="outline"
               onClick={() =>
                 window.open(
-                  'https://baranzinilab.github.io/biorouter-landing/baam.html',
+                  'http://biorouter.ucsf.edu/baam',
                   '_blank'
                 )
               }

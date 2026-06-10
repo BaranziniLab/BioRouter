@@ -9,10 +9,10 @@ assignees: ''
 **Describe the bug**
 
 💡 Before filing, please check common issues:  
-[BioRouter Troubleshooting Guide](https://baranzinilab.github.io/biorouter-landing/docs.html)
+[BioRouter Troubleshooting Guide](http://biorouter.ucsf.edu/docs)
 
 📦 To help us debug faster, please describe your setup and attach any relevant logs from `~/.config/biorouter/logs/`.  
-👉 [Full troubleshooting guide](https://baranzinilab.github.io/biorouter-landing/docs.html)
+👉 [Full troubleshooting guide](http://biorouter.ucsf.edu/docs)
 
 A clear and concise description of what the bug is.
 

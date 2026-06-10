@@ -48,7 +48,7 @@
 ### Extensions
 
 - Install Extension (.brxt)…
-- Browse Extensions *(opens https://baranzinilab.github.io/biorouter-landing/baam.html)*
+- Browse Extensions *(opens http://biorouter.ucsf.edu/baam)*
 - Add Custom Extension…
 - — separator —
 - Check for Extension Updates
@@ -69,7 +69,7 @@
 
 ### Help
 
-- Biorouter Documentation *(opens https://baranzinilab.github.io/biorouter-landing/docs.html)*
+- Biorouter Documentation *(opens http://biorouter.ucsf.edu/docs)*
 - — separator —
 - Report a Bug… *(opens GitHub issues)*
 - Request a Feature… *(opens GitHub discussions or issues)*
