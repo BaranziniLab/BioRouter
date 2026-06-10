@@ -12,6 +12,9 @@ use clap_complete::{generate, Shell as ClapShell};
 use crate::commands::bench::agent_generator;
 use crate::commands::configure::{configure_telemetry_consent_dialog, handle_configure};
 use crate::commands::info::handle_info;
+use crate::commands::models::{
+    handle_models_current, handle_models_list, handle_models_providers, handle_models_set,
+};
 use crate::commands::project::{handle_project_default, handle_projects_interactive};
 use crate::commands::term::{
     handle_term_info, handle_term_init, handle_term_log, handle_term_run, Shell,
@@ -128,7 +131,7 @@ pub struct ExtensionOptions {
         long = "with-builtin",
         value_name = "NAME",
         help = "Add builtin extensions by name (e.g., 'developer' or multiple: 'developer,github')",
-        long_help = "Add one or more builtin extensions that are bundled with biorouter by specifying their names, comma-separated",
+        long_help = "Add one or more builtin extensions that are bundled with Biorouter by specifying their names, comma-separated",
         value_delimiter = ','
     )]
     pub builtins: Vec<String>,
@@ -153,8 +156,8 @@ pub struct InputOptions {
         short = 't',
         long = "text",
         value_name = "TEXT",
-        help = "Input text to provide to biorouter directly",
-        long_help = "Input text containing commands for biorouter. Use this in lieu of the instructions argument.",
+        help = "Input text to provide to Biorouter directly",
+        long_help = "Input text containing commands for Biorouter. Use this in lieu of the instructions argument.",
         conflicts_with = "instructions",
         conflicts_with = "workflow"
     )]
@@ -264,7 +267,7 @@ pub struct ModelOptions {
     #[arg(
         long = "model",
         value_name = "MODEL",
-        help = "Specify the model to use (e.g., 'gpt-4o', 'claude-sonnet-4-20250514')",
+        help = "Specify the model to use (e.g., 'gpt-5.5', 'claude-sonnet-4-6')",
         long_help = "Override the BIOROUTER_MODEL environment variable for this run. The model must be supported by the specified provider."
     )]
     pub model: Option<String>,
@@ -602,6 +605,13 @@ pub enum BenchCommand {
 
 #[derive(Subcommand)]
 enum WorkflowCommand {
+    /// Install a workflow file (.json/.yaml) into the workflow library
+    #[command(about = "Install a workflow into the library")]
+    Install {
+        #[arg(help = "Path to a workflow .json or .yaml file")]
+        path: String,
+    },
+
     /// Validate a workflow file
     #[command(about = "Validate a workflow")]
     Validate {
@@ -630,8 +640,8 @@ enum WorkflowCommand {
         params: Vec<String>,
     },
 
-    /// Open a workflow in BioRouter Desktop
-    #[command(about = "Open a workflow in BioRouter Desktop")]
+    /// Open a workflow in Biorouter Desktop
+    #[command(about = "Open a workflow in Biorouter Desktop")]
     Open {
         /// Workflow name to get workflow file to open
         #[arg(help = "workflow name or full path to the workflow file")]
@@ -669,13 +679,249 @@ enum WorkflowCommand {
 }
 
 #[derive(Subcommand)]
+enum ModelsCommand {
+    /// Show the configured provider and model
+    #[command(about = "Show the configured provider and model")]
+    Current {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+    },
+
+    /// List available providers
+    #[command(about = "List available providers")]
+    Providers {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+    },
+
+    /// List known models for a provider
+    #[command(about = "List known models for a provider")]
+    List {
+        #[arg(help = "Provider name, for example openai, anthropic, ollama, tetrate, databricks")]
+        provider: String,
+
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+    },
+
+    /// Set the default provider and model
+    #[command(about = "Set the default provider and model")]
+    Set {
+        #[arg(long = "provider", value_name = "PROVIDER")]
+        provider: String,
+
+        #[arg(long = "model", value_name = "MODEL")]
+        model: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ExtensionCommand {
+    /// Install an extension from a .brxt bundle (extracts, runs `uv sync`, registers)
+    #[command(about = "Install an extension from a .brxt bundle")]
+    Install {
+        #[arg(help = "Path to a .brxt bundle")]
+        path: std::path::PathBuf,
+        #[arg(
+            long = "env",
+            value_name = "KEY=VALUE",
+            help = "Set a plain env var (repeatable)"
+        )]
+        env: Vec<String>,
+        #[arg(
+            long = "secret",
+            value_name = "KEY=VALUE",
+            help = "Set a secret env var, stored in the keyring (repeatable)"
+        )]
+        secret: Vec<String>,
+        #[arg(long = "no-enable", help = "Install without enabling")]
+        no_enable: bool,
+    },
+
+    /// List configured extensions
+    #[command(about = "List configured extensions")]
+    List {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+    },
+
+    /// Remove a configured extension
+    #[command(about = "Remove a configured extension")]
+    Remove {
+        #[arg(help = "Extension name")]
+        name: String,
+        #[arg(long = "purge", help = "Also delete the installed files on disk")]
+        purge: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum SkillCommand {
+    /// Install a skill (or bundle) from a .zip
+    #[command(about = "Install a skill from a .zip")]
+    Install {
+        #[arg(help = "Path to a skill .zip")]
+        path: std::path::PathBuf,
+        #[arg(long = "force", help = "Overwrite if already installed")]
+        force: bool,
+    },
+
+    /// List installed skills
+    #[command(about = "List installed skills")]
+    List {},
+
+    /// Remove an installed skill by slug
+    #[command(about = "Remove an installed skill")]
+    Remove {
+        #[arg(help = "Skill slug (as shown by `skill list`)")]
+        slug: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum KnowledgeCommand {
+    /// List knowledge bases (the active one is marked)
+    #[command(about = "List knowledge bases")]
+    List {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+    },
+
+    /// Show, set, or clear the active knowledge base
+    #[command(about = "Show or set the active knowledge base")]
+    Active {
+        #[arg(
+            long = "set",
+            value_name = "ID",
+            help = "Set the active knowledge base"
+        )]
+        set: Option<String>,
+        #[arg(long = "clear", help = "Clear the active knowledge base")]
+        clear: bool,
+    },
+
+    /// Create a new knowledge base
+    #[command(about = "Create a new knowledge base")]
+    Create {
+        #[arg(help = "Knowledge base id (kebab-case)")]
+        id: String,
+        #[arg(long = "name", value_name = "NAME", help = "Human-friendly name")]
+        name: Option<String>,
+        #[arg(
+            long = "color",
+            value_name = "HEX",
+            help = "Accent color, e.g. #cf6d47"
+        )]
+        color: Option<String>,
+    },
+
+    /// Ingest a source (URL, file, or text) into a knowledge base
+    #[command(about = "Ingest a source into a knowledge base")]
+    Ingest {
+        #[arg(
+            long = "kb",
+            value_name = "ID",
+            help = "Target base (defaults to active)"
+        )]
+        kb: Option<String>,
+        #[arg(long = "url", value_name = "URL")]
+        url: Option<String>,
+        #[arg(long = "file", value_name = "PATH")]
+        file: Option<std::path::PathBuf>,
+        #[arg(long = "text", value_name = "TEXT")]
+        text: Option<String>,
+        #[arg(long = "focus", value_name = "HINTS", help = "Optional focus hints")]
+        focus: Option<String>,
+        #[arg(long = "provider", value_name = "PROVIDER")]
+        provider: Option<String>,
+        #[arg(long = "model", value_name = "MODEL")]
+        model: Option<String>,
+    },
+
+    /// Lint a knowledge base for orphans, contradictions, and stale sources
+    #[command(about = "Lint a knowledge base")]
+    Lint {
+        #[arg(
+            long = "kb",
+            value_name = "ID",
+            help = "Target base (defaults to active)"
+        )]
+        kb: Option<String>,
+        #[arg(long = "fix", help = "Let the sub-agent repair the findings")]
+        fix: bool,
+        #[arg(long = "provider", value_name = "PROVIDER")]
+        provider: Option<String>,
+        #[arg(long = "model", value_name = "MODEL")]
+        model: Option<String>,
+    },
+
+    /// Hide a knowledge base from the agent (it stays on disk)
+    #[command(about = "Hide a knowledge base from the agent")]
+    Hide {
+        #[arg(help = "Knowledge base id")]
+        id: String,
+    },
+
+    /// Make a previously hidden knowledge base visible to the agent again
+    #[command(about = "Unhide a knowledge base")]
+    Unhide {
+        #[arg(help = "Knowledge base id")]
+        id: String,
+    },
+
+    /// Ask a question against a knowledge base
+    #[command(about = "Query a knowledge base")]
+    Query {
+        #[arg(help = "The question to ask")]
+        question: String,
+        #[arg(
+            long = "kb",
+            value_name = "ID",
+            help = "Target base (defaults to active)"
+        )]
+        kb: Option<String>,
+        #[arg(long = "save", help = "Persist the answer as a knowledge page")]
+        save: bool,
+        #[arg(long = "provider", value_name = "PROVIDER")]
+        provider: Option<String>,
+        #[arg(long = "model", value_name = "MODEL")]
+        model: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum Command {
-    /// Configure biorouter settings
-    #[command(about = "Configure biorouter settings")]
+    /// Configure Biorouter settings
+    #[command(about = "Configure Biorouter settings")]
     Configure {},
 
-    /// Display biorouter configuration information
-    #[command(about = "Display biorouter information")]
+    /// Display Biorouter configuration information
+    #[command(about = "Display Biorouter information")]
     Info {
         /// Show verbose information including current configuration
         #[arg(short, long, help = "Show verbose information including config.yaml")]
@@ -683,21 +929,21 @@ enum Command {
     },
 
     /// Manage system prompts and behaviors
-    #[command(about = "Run one of the mcp servers bundled with biorouter")]
+    #[command(about = "Run one of the mcp servers bundled with Biorouter")]
     Mcp {
         #[arg(value_parser = clap::value_parser!(McpCommand))]
         server: McpCommand,
     },
 
-    /// Run biorouter as an ACP (Agent Client Protocol) agent
-    #[command(about = "Run biorouter as an ACP agent server on stdio")]
+    /// Run Biorouter as an ACP (Agent Client Protocol) agent
+    #[command(about = "Run Biorouter as an ACP agent server on stdio")]
     Acp {
         /// Add builtin extensions by name
         #[arg(
             long = "with-builtin",
             value_name = "NAME",
             help = "Add builtin extensions by name (e.g., 'developer' or multiple: 'developer,github')",
-            long_help = "Add one or more builtin extensions that are bundled with biorouter by specifying their names, comma-separated",
+            long_help = "Add one or more builtin extensions that are bundled with Biorouter by specifying their names, comma-separated",
             value_delimiter = ','
         )]
         builtins: Vec<String>,
@@ -779,6 +1025,34 @@ enum Command {
         command: WorkflowCommand,
     },
 
+    /// Inspect and update model/provider configuration
+    #[command(about = "Inspect and update model/provider configuration")]
+    Models {
+        #[command(subcommand)]
+        command: ModelsCommand,
+    },
+
+    /// Manage personal knowledge bases (ingest, lint, query)
+    #[command(about = "Manage personal knowledge bases", visible_alias = "kb")]
+    Knowledge {
+        #[command(subcommand)]
+        command: KnowledgeCommand,
+    },
+
+    /// Install and manage extensions (.brxt bundles)
+    #[command(about = "Install and manage extensions", visible_alias = "ext")]
+    Extension {
+        #[command(subcommand)]
+        command: ExtensionCommand,
+    },
+
+    /// Install and manage skills (.zip)
+    #[command(about = "Install and manage skills")]
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
+    },
+
     /// Manage scheduled jobs
     #[command(about = "Manage scheduled jobs", visible_alias = "sched")]
     Schedule {
@@ -786,20 +1060,39 @@ enum Command {
         command: SchedulerCommand,
     },
 
-    /// Update the biorouter CLI version
-    #[command(about = "Update the biorouter CLI version")]
+    /// Check system prerequisites (git, uv, node, …) and the CLI install
+    #[command(about = "Check system prerequisites and the CLI install")]
+    Doctor {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+        /// Skip the (networked) self-update check
+        #[arg(long = "no-update")]
+        no_update: bool,
+    },
+
+    /// Install the `biorouter` command onto your PATH
+    #[command(about = "Install the biorouter command onto your PATH", visible_alias = "install-cli")]
+    SetupPath {},
+
+    /// Update the Biorouter CLI version
+    #[command(about = "Update the Biorouter CLI version")]
     Update {
         /// Update to canary version
         #[arg(
             short,
             long,
             help = "Update to canary version",
-            long_help = "Update to the latest canary version of the biorouter CLI, otherwise updates to the latest stable version."
+            long_help = "Update to the latest canary version of the Biorouter CLI, otherwise updates to the latest stable version."
         )]
         canary: bool,
 
-        /// Enforce to re-configure biorouter during update
-        #[arg(short, long, help = "Enforce to re-configure biorouter during update")]
+        /// Enforce to re-configure Biorouter during update
+        #[arg(short, long, help = "Enforce to re-configure Biorouter during update")]
         reconfigure: bool,
     },
 
@@ -848,8 +1141,8 @@ enum Command {
 
     /// Terminal-integrated session (one session per terminal)
     #[command(
-        about = "Terminal-integrated biorouter session",
-        long_about = "Runs a biorouter session tied to your terminal window.\n\
+        about = "Terminal-integrated Biorouter session",
+        long_about = "Runs a Biorouter session tied to your terminal window.\n\
                       Each terminal maintains its own persistent session that resumes automatically.\n\n\
                       Setup:\n  \
                         eval \"$(biorouter term init zsh)\"  # Add to ~/.zshrc\n\n\
@@ -898,11 +1191,11 @@ enum TermCommand {
         #[arg(short, long, help = "Name for the terminal session")]
         name: Option<String>,
 
-        /// Make biorouter the default handler for unknown commands
+        /// Make Biorouter the default handler for unknown commands
         #[arg(
             long = "default",
-            help = "Make biorouter the default handler for unknown commands",
-            long_help = "When enabled, anything you type that isn't a valid command will be sent to biorouter. Only supported for zsh and bash."
+            help = "Make Biorouter the default handler for unknown commands",
+            long_help = "When enabled, anything you type that is not a valid command will be sent to Biorouter. Only supported for zsh and bash."
         )]
         default: bool,
     },
@@ -924,7 +1217,7 @@ enum TermCommand {
                         @g why did that fail  # short alias"
     )]
     Run {
-        /// The prompt to send to biorouter (multiple words allowed without quotes)
+        /// The prompt to send to Biorouter (multiple words allowed without quotes)
         #[arg(required = true, num_args = 1..)]
         prompt: Vec<String>,
     },
@@ -962,7 +1255,13 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Projects) => "projects",
         Some(Command::Run { .. }) => "run",
         Some(Command::Schedule { .. }) => "schedule",
+        Some(Command::Models { .. }) => "models",
+        Some(Command::Knowledge { .. }) => "knowledge",
+        Some(Command::Extension { .. }) => "extension",
+        Some(Command::Skill { .. }) => "skill",
         Some(Command::Update { .. }) => "update",
+        Some(Command::Doctor { .. }) => "doctor",
+        Some(Command::SetupPath { .. }) => "setup-path",
         Some(Command::Bench { .. }) => "bench",
         Some(Command::Workflow { .. }) => "workflow",
         Some(Command::Web { .. }) => "web",
@@ -1376,6 +1675,7 @@ async fn handle_bench_command(cmd: BenchCommand) -> Result<()> {
 
 fn handle_workflow_subcommand(command: WorkflowCommand) -> Result<()> {
     match command {
+        WorkflowCommand::Install { path } => crate::commands::workflow::handle_install(&path),
         WorkflowCommand::Validate { workflow_name } => handle_validate(&workflow_name),
         WorkflowCommand::Deeplink {
             workflow_name,
@@ -1389,6 +1689,73 @@ fn handle_workflow_subcommand(command: WorkflowCommand) -> Result<()> {
             params,
         } => handle_open(&workflow_name, &params),
         WorkflowCommand::List { format, verbose } => handle_list(&format, verbose),
+    }
+}
+
+async fn handle_models_subcommand(command: ModelsCommand) -> Result<()> {
+    match command {
+        ModelsCommand::Current { format } => handle_models_current(&format).await,
+        ModelsCommand::Providers { format } => handle_models_providers(&format).await,
+        ModelsCommand::List { provider, format } => handle_models_list(provider, &format).await,
+        ModelsCommand::Set { provider, model } => handle_models_set(provider, model).await,
+    }
+}
+
+async fn handle_knowledge_subcommand(command: KnowledgeCommand) -> Result<()> {
+    use crate::commands::knowledge;
+    match command {
+        KnowledgeCommand::List { format } => knowledge::handle_list(&format).await,
+        KnowledgeCommand::Active { set, clear } => knowledge::handle_active(set, clear).await,
+        KnowledgeCommand::Create { id, name, color } => {
+            knowledge::handle_create(id, name, color).await
+        }
+        KnowledgeCommand::Ingest {
+            kb,
+            url,
+            file,
+            text,
+            focus,
+            provider,
+            model,
+        } => knowledge::handle_ingest(kb, url, file, text, focus, provider, model).await,
+        KnowledgeCommand::Lint {
+            kb,
+            fix,
+            provider,
+            model,
+        } => knowledge::handle_lint(kb, fix, provider, model).await,
+        KnowledgeCommand::Hide { id } => knowledge::handle_hide(id).await,
+        KnowledgeCommand::Unhide { id } => knowledge::handle_unhide(id).await,
+        KnowledgeCommand::Query {
+            question,
+            kb,
+            save,
+            provider,
+            model,
+        } => knowledge::handle_query(question, kb, save, provider, model).await,
+    }
+}
+
+async fn handle_extension_subcommand(command: ExtensionCommand) -> Result<()> {
+    use crate::commands::extension;
+    match command {
+        ExtensionCommand::Install {
+            path,
+            env,
+            secret,
+            no_enable,
+        } => extension::handle_install(path, env, secret, no_enable).await,
+        ExtensionCommand::List { format } => extension::handle_list(&format).await,
+        ExtensionCommand::Remove { name, purge } => extension::handle_remove(name, purge).await,
+    }
+}
+
+async fn handle_skill_subcommand(command: SkillCommand) -> Result<()> {
+    use crate::commands::skill;
+    match command {
+        SkillCommand::Install { path, force } => skill::handle_install(path, force).await,
+        SkillCommand::List {} => skill::handle_list().await,
+        SkillCommand::Remove { slug } => skill::handle_remove(slug).await,
     }
 }
 
@@ -1513,8 +1880,16 @@ pub async fn cli() -> anyhow::Result<()> {
             crate::commands::update::update(canary, reconfigure)?;
             Ok(())
         }
+        Some(Command::Doctor { format, no_update }) => {
+            crate::commands::doctor::handle_doctor(&format, !no_update).await
+        }
+        Some(Command::SetupPath {}) => crate::commands::doctor::handle_setup_path().await,
         Some(Command::Bench { cmd }) => handle_bench_command(cmd).await,
         Some(Command::Workflow { command }) => handle_workflow_subcommand(command),
+        Some(Command::Models { command }) => handle_models_subcommand(command).await,
+        Some(Command::Knowledge { command }) => handle_knowledge_subcommand(command).await,
+        Some(Command::Extension { command }) => handle_extension_subcommand(command).await,
+        Some(Command::Skill { command }) => handle_skill_subcommand(command).await,
         Some(Command::Web {
             port,
             host,

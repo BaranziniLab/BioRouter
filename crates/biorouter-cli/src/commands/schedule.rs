@@ -19,11 +19,11 @@ fn validate_cron_expression(cron: &str) -> Result<()> {
     match parts.len() {
         5 => {
             // Standard 5-field cron (minute hour day month weekday)
-            println!("✅ Using standard 5-field cron format: {}", cron);
+            println!("Using standard 5-field cron format: {}", cron);
         }
         6 => {
             // 6-field cron with seconds (second minute hour day month weekday)
-            println!("✅ Using 6-field cron format with seconds: {}", cron);
+            println!("Using 6-field cron format with seconds: {}", cron);
         }
         1 if cron.starts_with('@') => {
             // Shorthand expressions like @hourly, @daily, etc.
@@ -37,17 +37,17 @@ fn validate_cron_expression(cron: &str) -> Result<()> {
                 "@hourly",
             ];
             if valid_shorthands.contains(&cron) {
-                println!("✅ Using cron shorthand: {}", cron);
+                println!("Using cron shorthand: {}", cron);
             } else {
                 println!(
-                    "⚠️  Unknown cron shorthand '{}'. Valid options: {}",
+                    "Unknown cron shorthand '{}'. Valid options: {}",
                     cron,
                     valid_shorthands.join(", ")
                 );
             }
         }
         _ => {
-            println!("⚠️  Unusual cron format detected: '{}'", cron);
+            println!("Unusual cron format detected: '{}'", cron);
             println!("   Common formats:");
             println!("   - 5 fields: '0 * * * *' (minute hour day month weekday)");
             println!("   - 6 fields: '0 0 * * * *' (second minute hour day month weekday)");
@@ -57,7 +57,7 @@ fn validate_cron_expression(cron: &str) -> Result<()> {
 
     // Provide examples for common scheduling needs
     if cron == "* * * * *" {
-        println!("⚠️  This will run every minute! Did you mean:");
+        println!("This will run every minute. Did you mean:");
         println!("   - '0 * * * *' for every hour?");
         println!("   - '0 0 * * *' for every day?");
     }
@@ -70,11 +70,6 @@ pub async fn handle_schedule_add(
     cron: String,
     workflow_source_arg: String, // This is expected to be a file path by the Scheduler
 ) -> Result<()> {
-    println!(
-        "[CLI Debug] Scheduling job ID: {}, Cron: {}, Workflow Source Path: {}",
-        schedule_id, cron, workflow_source_arg
-    );
-
     validate_cron_expression(&cron)?;
 
     // The Scheduler's add_scheduled_job will handle copying the workflow from workflow_source_arg
@@ -82,7 +77,7 @@ pub async fn handle_schedule_add(
     let job = ScheduledJob {
         id: schedule_id.clone(),
         source: workflow_source_arg.clone(), // Pass the original user-provided path
-        cron,
+        cron: cron.clone(),
         last_run: None,
         currently_running: false,
         paused: false,
@@ -110,10 +105,9 @@ pub async fn handle_schedule_add(
             let final_workflow_path =
                 scheduled_workflows_dir.join(format!("{}.{}", schedule_id, extension));
 
-            println!(
-                "Scheduled job '{}' added. Workflow expected at {:?}",
-                schedule_id, final_workflow_path
-            );
+            println!("Scheduled job '{}' added.", schedule_id);
+            println!("  cron: {}", cron);
+            println!("  workflow: {}", final_workflow_path.display());
             Ok(())
         }
         Err(e) => {
@@ -151,15 +145,15 @@ pub async fn handle_schedule_list() -> Result<()> {
         println!("Scheduled Jobs:");
         for job in jobs {
             let status = if job.currently_running {
-                "🟢 RUNNING"
+                "running"
             } else if job.paused {
-                "⏸️  PAUSED"
+                "paused"
             } else {
-                "⏹️  IDLE"
+                "idle"
             };
 
             println!(
-                "- ID: {}\n  Status: {}\n  Cron: {}\n  Workflow Source (in store): {}\n  Last Run: {}",
+                "- {}\n  status: {}\n  cron: {}\n  workflow: {}\n  last run: {}",
                 job.id,
                 status,
                 job.cron,
@@ -279,34 +273,39 @@ pub async fn handle_schedule_services_stop() -> Result<()> {
 }
 
 pub async fn handle_schedule_cron_help() -> Result<()> {
-    println!("📅 Cron Expression Guide for biorouter Scheduler");
-    println!("===========================================\\n");
+    println!("Cron Expression Guide for biorouter Scheduler");
+    println!("===========================================");
+    println!();
 
-    println!("🕐 HOURLY SCHEDULES (Most Common Request):");
+    println!("HOURLY SCHEDULES (Most Common Request):");
     println!("  0 * * * *       - Every hour at minute 0 (e.g., 1:00, 2:00, 3:00...)");
     println!("  30 * * * *      - Every hour at minute 30 (e.g., 1:30, 2:30, 3:30...)");
     println!("  0 */2 * * *     - Every 2 hours at minute 0 (e.g., 2:00, 4:00, 6:00...)");
     println!("  0 */3 * * *     - Every 3 hours at minute 0 (e.g., 3:00, 6:00, 9:00...)");
-    println!("  @hourly         - Every hour (same as \"0 * * * *\")\\n");
+    println!("  @hourly         - Every hour (same as \"0 * * * *\")");
+    println!();
 
-    println!("📅 DAILY SCHEDULES:");
+    println!("DAILY SCHEDULES:");
     println!("  0 9 * * *       - Every day at 9:00 AM");
     println!("  30 14 * * *     - Every day at 2:30 PM");
     println!("  0 0 * * *       - Every day at midnight");
-    println!("  @daily          - Every day at midnight\\n");
+    println!("  @daily          - Every day at midnight");
+    println!();
 
-    println!("📆 WEEKLY SCHEDULES:");
+    println!("WEEKLY SCHEDULES:");
     println!("  0 9 * * 1       - Every Monday at 9:00 AM");
     println!("  0 17 * * 5      - Every Friday at 5:00 PM");
     println!("  0 0 * * 0       - Every Sunday at midnight");
-    println!("  @weekly         - Every Sunday at midnight\\n");
+    println!("  @weekly         - Every Sunday at midnight");
+    println!();
 
-    println!("🗓️  MONTHLY SCHEDULES:");
+    println!("MONTHLY SCHEDULES:");
     println!("  0 9 1 * *       - First day of every month at 9:00 AM");
     println!("  0 0 15 * *      - 15th of every month at midnight");
-    println!("  @monthly        - First day of every month at midnight\\n");
+    println!("  @monthly        - First day of every month at midnight");
+    println!();
 
-    println!("📝 CRON FORMAT:");
+    println!("CRON FORMAT:");
     println!("  Standard 5-field: minute hour day month weekday");
     println!("  ┌───────────── minute (0 - 59)");
     println!("  │ ┌─────────── hour (0 - 23)");
@@ -314,22 +313,25 @@ pub async fn handle_schedule_cron_help() -> Result<()> {
     println!("  │ │ │ ┌─────── month (1 - 12)");
     println!("  │ │ │ │ ┌───── day of week (0 - 7, Sunday = 0 or 7)");
     println!("  │ │ │ │ │");
-    println!("  * * * * *\\n");
+    println!("  * * * * *");
+    println!();
 
-    println!("🔧 SPECIAL CHARACTERS:");
+    println!("SPECIAL CHARACTERS:");
     println!("  *     - Any value (every minute, hour, day, etc.)");
     println!("  */n   - Every nth interval (*/5 = every 5 minutes)");
     println!("  n-m   - Range (1-5 = 1,2,3,4,5)");
-    println!("  n,m   - List (1,3,5 = 1 or 3 or 5)\\n");
+    println!("  n,m   - List (1,3,5 = 1 or 3 or 5)");
+    println!();
 
-    println!("⚡ SHORTHAND EXPRESSIONS:");
+    println!("SHORTHAND EXPRESSIONS:");
     println!("  @yearly   - Once a year (0 0 1 1 *)");
     println!("  @monthly  - Once a month (0 0 1 * *)");
     println!("  @weekly   - Once a week (0 0 * * 0)");
     println!("  @daily    - Once a day (0 0 * * *)");
-    println!("  @hourly   - Once an hour (0 * * * *)\\n");
+    println!("  @hourly   - Once an hour (0 * * * *)");
+    println!();
 
-    println!("💡 EXAMPLES:");
+    println!("EXAMPLES:");
     println!(
         "  biorouter schedule add --schedule-id hourly-report --cron \"0 * * * *\" --workflow-source report.yaml"
     );

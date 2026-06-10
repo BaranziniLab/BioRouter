@@ -55,7 +55,7 @@ pub fn handle_info(verbose: bool) -> Result<()> {
         .unwrap_or(0)
         + 4;
 
-    println!("{}", style("BioRouter Version:").cyan().bold());
+    println!("{}", style("Biorouter Version:").cyan().bold());
     print_aligned("Version:", env!("CARGO_PKG_VERSION"), label_padding);
     println!();
 
@@ -70,7 +70,7 @@ pub fn handle_info(verbose: bool) -> Result<()> {
     }
 
     if verbose {
-        println!("\n{}", style("BioRouter Configuration:").cyan().bold());
+        println!("\n{}", style("Biorouter Configuration:").cyan().bold());
         let values = config.all_values()?;
         if values.is_empty() {
             println!("  No configuration values set");

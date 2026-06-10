@@ -21,6 +21,33 @@ pub fn handle_validate(workflow_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Install a workflow file (.json or .yaml) into the global workflow library
+/// (`~/.config/biorouter/workflows/`), where it becomes available to `list`,
+/// `deeplink`, and `open` — the same library the desktop GUI reads.
+pub fn handle_install(workflow_path: &str) -> Result<()> {
+    let workflow_file = load_workflow_file(workflow_path)?;
+    let workflow = validate_workflow_template_from_file(&workflow_file).map_err(|err| {
+        anyhow::anyhow!(
+            "{} workflow file is invalid: {}",
+            style("✗").red().bold(),
+            err
+        )
+    })?;
+    let title = workflow.title.clone();
+    let saved = biorouter::workflow::local_workflows::save_workflow_to_file(workflow, None)?;
+    println!(
+        "{} installed workflow '{}'",
+        style("✓").green().bold(),
+        style(&title).bold()
+    );
+    println!(
+        "  {} {}",
+        style("path:").dim(),
+        style(saved.display()).dim()
+    );
+    Ok(())
+}
+
 pub fn handle_deeplink(workflow_name: &str, params: &[String]) -> Result<String> {
     let params_map = parse_params(params)?;
     match generate_deeplink(workflow_name, params_map) {
