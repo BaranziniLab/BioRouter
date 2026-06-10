@@ -3,6 +3,8 @@ pub mod docx;
 pub mod html;
 pub mod note;
 pub mod pdf;
+pub mod pptx;
+pub mod spreadsheet;
 pub mod url_fetch;
 
 use anyhow::Result;
@@ -66,7 +68,20 @@ fn normalize_mime(filename: &str, mime: Option<&str>, bytes: &[u8]) -> String {
             }
         }
         "text/x-markdown" | "application/markdown" => "text/markdown".into(),
-        "text/x-csv" | "application/csv" | "application/vnd.ms-excel" => "text/csv".into(),
+        "text/x-csv" | "application/csv" => "text/csv".into(),
+        // Legacy quirk: many servers label CSV downloads with the old Excel
+        // MIME. Only treat it as a real .xls workbook when the filename says
+        // so; otherwise fall back to CSV like before.
+        "application/vnd.ms-excel" => {
+            if std::path::Path::new(filename)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("xls"))
+            {
+                "application/vnd.ms-excel".into()
+            } else {
+                "text/csv".into()
+            }
+        }
         "application/xhtml+xml" => "application/xhtml+xml".into(),
         "text/plain" if sniff_html(bytes) => "text/html".into(),
         other => other.to_string(),
@@ -108,10 +123,14 @@ pub async fn convert(input: &SourceInput) -> Result<Converted> {
             bytes,
             filename,
             mime,
-        } => {
-            let effective_mime = normalize_mime(filename, mime.as_deref(), bytes);
-            match effective_mime.as_str() {
-                "text/html" | "application/xhtml+xml" => {
+        } => convert_file(bytes, filename, mime.as_deref()),
+    }
+}
+
+fn convert_file(bytes: &[u8], filename: &str, mime: Option<&str>) -> Result<Converted> {
+    let effective_mime = normalize_mime(filename, mime, bytes);
+    match effective_mime.as_str() {
+        "text/html" | "application/xhtml+xml" => {
                     let s = String::from_utf8_lossy(bytes);
                     let c = html::html_to_markdown(&s)?;
                     Ok(Converted {
@@ -125,7 +144,7 @@ pub async fn convert(input: &SourceInput) -> Result<Converted> {
                     let c = pdf::pdf_to_markdown(bytes)?;
                     Ok(Converted {
                         markdown: c.markdown,
-                        title: None,
+                        title: c.title,
                         mime: effective_mime,
                         needs_llm_fallback: c.needs_llm_fallback,
                     })
@@ -148,15 +167,37 @@ pub async fn convert(input: &SourceInput) -> Result<Converted> {
                         needs_llm_fallback: false,
                     })
                 }
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                | "application/vnd.ms-excel.sheet.macroenabled.12"
+                | "application/vnd.ms-excel"
+                | "application/vnd.oasis.opendocument.spreadsheet" => {
+                    let md = spreadsheet::spreadsheet_to_markdown(bytes)?;
+                    Ok(Converted {
+                        markdown: md,
+                        title: None,
+                        mime: effective_mime,
+                        needs_llm_fallback: false,
+                    })
+                }
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
+                    let c = pptx::pptx_to_markdown(bytes)?;
+                    Ok(Converted {
+                        markdown: c.markdown,
+                        title: c.title,
+                        mime: effective_mime,
+                        needs_llm_fallback: false,
+                    })
+                }
+                "application/vnd.ms-powerpoint" => anyhow::bail!(
+                    "legacy .ppt files are not supported — please re-save the deck as .pptx and ingest that"
+                ),
                 "text/markdown" | "text/plain" => Ok(Converted {
                     markdown: String::from_utf8_lossy(bytes).into_owned(),
                     title: None,
                     mime: effective_mime,
                     needs_llm_fallback: false,
                 }),
-                other => anyhow::bail!("unsupported mime: {other}"),
-            }
-        }
+        other => anyhow::bail!("unsupported mime: {other}"),
     }
 }
 
@@ -170,6 +211,16 @@ fn guess_mime(filename: &str) -> String {
         "application/pdf".into()
     } else if lower.ends_with(".docx") {
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into()
+    } else if lower.ends_with(".xlsx") || lower.ends_with(".xlsm") {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".into()
+    } else if lower.ends_with(".xls") {
+        "application/vnd.ms-excel".into()
+    } else if lower.ends_with(".ods") {
+        "application/vnd.oasis.opendocument.spreadsheet".into()
+    } else if lower.ends_with(".pptx") {
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation".into()
+    } else if lower.ends_with(".ppt") {
+        "application/vnd.ms-powerpoint".into()
     } else if lower.ends_with(".csv") {
         "text/csv".into()
     } else if lower.ends_with(".md") {
