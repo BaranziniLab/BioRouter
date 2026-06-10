@@ -1,4 +1,4 @@
-# Building an Extension with MCP (Model Context Protocol)
+# Building an Extension with MCP (Model Context Protocol): create a custom tool server and register it in Biorouter
 
 For this tutorial you will guide the user through building an MCP extension.
 This will require you to get familiar with one of the three available SDKs:
@@ -379,6 +379,42 @@ When users encounter issues:
    - Check if parameters are being passed correctly
    - Verify the implementation matches the SDK patterns
    - Suggest specific fixes based on the error details
+
+## Registering the Extension in Biorouter
+
+`--with-extension` only enables the extension for that one session. Once the
+extension works, help the user install it persistently:
+
+1. **Desktop app:** Extensions page (left sidebar) → Add custom extension →
+   enter a name, the command (e.g. `python /path/to/server.py`), any
+   environment variable names it needs (their values are stored in the
+   secrets backend, not the config file), and a timeout. Toggle it on.
+
+2. **Config file:** the equivalent block in `~/.config/biorouter/config.yaml`:
+
+   ```yaml
+   extensions:
+     my-extension:
+       enabled: true
+       type: stdio
+       cmd: python
+       args: ["/path/to/server.py"]
+       timeout: 300
+   ```
+
+3. **Verify tool visibility:** start a new session and ask "what tools do you
+   have from my-extension?". If tools are missing, check that the server
+   starts cleanly when run by hand, that the command path is absolute, and
+   that the extension's instructions/tool descriptions are well-formed —
+   each extension's `instructions` string is injected into the agent's
+   system prompt, so write it to explain *when* to use the tools.
+
+4. **Permissions:** tool calls go through Biorouter's permission system.
+   Mark read-only tools with read-only annotations so approval modes can
+   auto-approve them.
+
+5. **Sharing:** extensions can be published to the community marketplace
+   (BAAM) at <http://biorouter.ucsf.edu/baam>.
 
 ## Important Guidelines for You (the Agent)
 

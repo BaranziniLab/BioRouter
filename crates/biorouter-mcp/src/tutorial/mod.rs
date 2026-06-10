@@ -40,19 +40,23 @@ impl TutorialServer {
         let available_tutorials = Self::get_available_tutorials();
 
         let instructions = formatdoc! {r#"
-            Because the tutorial extension is enabled, be aware that the user may be new to using biorouter
-            or looking for help with specific features. Proactively offer relevant tutorials when appropriate.
+            Because the tutorial extension is enabled, be aware that the user may be new to Biorouter
+            or looking for help with specific features. Proactively offer the relevant tutorial when the
+            conversation touches its topic — for example offer getting-started to a new user,
+            knowledge-bases when they mention papers or documents to keep, create-workflows when they
+            repeat a task, schedule-automations when they want something to run regularly, and
+            create-skills when they keep re-explaining their preferred methods.
 
             Available tutorials:
             {tutorials}
 
-            The specific content of the tutorial are available in by running load_tutorial.
-            To run through a tutorial, make sure to be interactive with the user. Don't run more than
-            a few related tool calls in a row. Make sure to prompt the user for understanding and participation.
+            Load a tutorial's full content with the load_tutorial tool, then guide the user through it.
+            Run tutorials interactively: take one phase at a time, don't run more than a few related
+            tool calls in a row, and check the user's understanding and participation as you go.
 
-            **Important**: Make sure that you provide guidance or info *before* you run commands, as the command will
-            run immediately for the user. For example while running a game tutorial, let the user know what to expect
-            before you run a command to start the game itself.
+            **Important**: Provide guidance or info *before* you run commands, as the command will
+            run immediately for the user. For example while running a game tutorial, let the user know
+            what to expect before you run a command to start the game itself.
             "#,
             tutorials=available_tutorials,
         };
