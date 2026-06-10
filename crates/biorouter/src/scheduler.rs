@@ -823,6 +823,25 @@ async fn execute_job(
         }
     }
 
+    // Scheduled run finished: SessionEnd hooks (awaited; failure-open).
+    {
+        let hooks = agent.hooks_manager();
+        let mut payload = crate::hooks::HookPayload::new(
+            crate::hooks::HookEvent::SessionEnd,
+            &session.id,
+            session.working_dir.to_string_lossy(),
+        );
+        payload.source = Some("scheduled_run_complete".to_string());
+        hooks
+            .dispatch(
+                crate::hooks::HookEvent::SessionEnd,
+                Some("scheduled_run_complete"),
+                &payload,
+                &session.working_dir,
+            )
+            .await;
+    }
+
     agent
         .config
         .session_manager

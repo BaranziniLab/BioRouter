@@ -6,6 +6,7 @@ use crate::config::BioRouterMode;
 use crate::conversation::message::{Message, ToolRequest};
 use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
+use crate::session::Session;
 
 /// Result of inspecting a tool call
 #[derive(Debug, Clone)]
@@ -41,6 +42,7 @@ pub trait ToolInspector: Send + Sync {
         tool_requests: &[ToolRequest],
         messages: &[Message],
         biorouter_mode: BioRouterMode,
+        session: &Session,
     ) -> Result<Vec<InspectionResult>>;
 
     /// Whether this inspector is enabled
@@ -76,6 +78,7 @@ impl ToolInspectionManager {
         tool_requests: &[ToolRequest],
         messages: &[Message],
         biorouter_mode: BioRouterMode,
+        session: &Session,
     ) -> Result<Vec<InspectionResult>> {
         let mut all_results = Vec::new();
 
@@ -91,7 +94,7 @@ impl ToolInspectionManager {
             );
 
             match inspector
-                .inspect(tool_requests, messages, biorouter_mode)
+                .inspect(tool_requests, messages, biorouter_mode, session)
                 .await
             {
                 Ok(results) => {
