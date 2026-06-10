@@ -207,6 +207,18 @@ cmd_linux() {
   log "NOTE: node_modules is now Linux-flavored — run 'cd ui/desktop && rm -rf node_modules && npm install' before any further mac build."
 }
 
+# ── CLI-only Linux packages (deb + rpm; headless biorouter + biorouterd) ───────
+# Independent of the GUI packaging — does NOT corrupt node_modules. Builds and
+# smoke-tests both packages in clean containers.
+cmd_cli-linux() {
+  local v="$1"; ensure_docker
+  [ -f "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter" ] || die "linux backend missing — run: scripts/release.sh backends $v"
+  log "building CLI-only Linux packages (deb + rpm)"
+  bash "$ROOT/scripts/build-cli-linux-packages.sh" "$v"
+  log "cli deb: $ROOT/dist/cli/biorouter-cli_${v}_amd64.deb"
+  log "cli rpm: $ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
+}
+
 # ── verify ────────────────────────────────────────────────────────────────────
 cmd_verify() {
   local v="$1" ok=1
@@ -215,7 +227,9 @@ cmd_verify() {
   local win="$DESK/out/make/zip/win32/x64/BioRouter-win32-x64-$v.zip"
   local deb="$DESK/out/make/deb/x64/biorouter_${v}_amd64.deb"
   local rpm="$DESK/out/make/rpm/x64/BioRouter-$v-1.x86_64.rpm"
-  for f in "$arm" "$x64" "$win" "$deb" "$rpm"; do
+  local clideb="$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb"
+  local clirpm="$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
+  for f in "$arm" "$x64" "$win" "$deb" "$rpm" "$clideb" "$clirpm"; do
     [ -f "$f" ] && log "present: $(basename "$f") ($(du -h "$f" | cut -f1))" || { printf 'MISSING: %s\n' "$f"; ok=0; }
   done
   if [ -d "$DESK/out/BioRouter-darwin-arm64/BioRouter.app" ]; then
@@ -241,7 +255,9 @@ cmd_publish() {
     "$DESK/out/make/BioRouter-$v-x64.dmg" \
     "$DESK/out/make/zip/win32/x64/BioRouter-win32-x64-$v.zip" \
     "$DESK/out/make/deb/x64/biorouter_${v}_amd64.deb" \
-    "$DESK/out/make/rpm/x64/BioRouter-$v-1.x86_64.rpm"
+    "$DESK/out/make/rpm/x64/BioRouter-$v-1.x86_64.rpm" \
+    "$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb" \
+    "$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
   log "published: $(gh release view "v$v" --json url --jq .url)"
 }
 
@@ -249,13 +265,14 @@ cmd_all() {
   local v="$1"
   cmd_bump "$v"; cmd_backends "$v"
   cmd_mac-arm64 "$v"; cmd_mac-intel "$v"; cmd_windows "$v"; cmd_linux "$v"
+  cmd_cli-linux "$v"                                                    # headless CLI deb/rpm
   ( cd "$DESK" && rm -rf node_modules && npm install >/dev/null 2>&1 )  # un-Linux node_modules
   cmd_verify "$v"; cmd_publish "$v"
 }
 
 CMD="${1:-}"; VER="${2:-}"
 case "$CMD" in
-  bump|backends|mac-arm64|mac-intel|windows|linux|verify|publish|all)
+  bump|backends|mac-arm64|mac-intel|windows|linux|cli-linux|verify|publish|all)
     need_version "$VER"; "cmd_${CMD}" "$VER" ;;
-  *) die "usage: scripts/release.sh {bump|backends|mac-arm64|mac-intel|windows|linux|verify|publish|all} <version>" ;;
+  *) die "usage: scripts/release.sh {bump|backends|mac-arm64|mac-intel|windows|linux|cli-linux|verify|publish|all} <version>" ;;
 esac

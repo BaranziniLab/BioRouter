@@ -1,0 +1,49 @@
+# nfpm spec for the CLI-only Linux packages (deb + rpm).
+#
+# Ships ONLY the headless Rust binaries — the interactive `biorouter` CLI and
+# the `biorouterd` server daemon — with no Electron/GUI payload. Built by
+# scripts/build-cli-linux-packages.sh from the prebuilt linux-gnu binaries at
+# target/x86_64-unknown-linux-gnu/release/. Version is injected via ${VERSION}.
+name: "biorouter-cli"
+arch: "amd64"
+platform: "linux"
+version: "${VERSION}"
+release: "1"
+section: "science"
+priority: "optional"
+maintainer: "UCSF Baranzini Lab <baranzinilab@ucsf.edu>"
+vendor: "UCSF Baranzini Lab"
+homepage: "https://github.com/BaranziniLab/biorouter"
+license: "Apache-2.0"
+description: |
+  Biorouter CLI — AI-powered biomedical research environment (headless).
+  Bundles the interactive `biorouter` command-line interface and the
+  `biorouterd` REST/WebSocket server daemon. No desktop GUI is installed.
+  Run `biorouter doctor` after install to check optional prerequisites
+  (git, uv, node) and `biorouter setup-path` is not needed — the package
+  installs both binaries onto PATH at /usr/bin.
+
+contents:
+  - src: ./target/x86_64-unknown-linux-gnu/release/biorouter
+    dst: /usr/bin/biorouter
+    file_info:
+      mode: 0755
+  - src: ./target/x86_64-unknown-linux-gnu/release/biorouterd
+    dst: /usr/bin/biorouterd
+    file_info:
+      mode: 0755
+
+# libxcb is linked for clipboard/terminal support; declare it so a clean,
+# headless system pulls it in on install. git is recommended at runtime for
+# repository/knowledge-base features (uv/node are checked by `biorouter doctor`).
+overrides:
+  deb:
+    depends:
+      - libxcb1
+    recommends:
+      - git
+  rpm:
+    depends:
+      - libxcb
+    recommends:
+      - git
