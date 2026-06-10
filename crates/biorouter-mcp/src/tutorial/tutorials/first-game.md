@@ -1,4 +1,4 @@
-# Building Your First Game
+# Building Your First Game: a hands-on coding introduction by building a simple game together
 
 This tutorial provides a framework for guiding a user through building their first simple game. The default suggestion is a Flappy Bird clone using Python and Pygame, but you should adapt based on user preferences and experience.
 
