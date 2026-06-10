@@ -130,21 +130,22 @@ fn test_format_tasks_update_from_event() {
     let event = TaskExecutionNotificationEvent::TasksUpdate { stats, tasks };
     let result = format_tasks_update_from_event(&event);
 
-    assert!(result.contains("🎯 Task Execution Dashboard"));
-    assert!(result.contains("═══════════════════════════"));
-    assert!(result.contains("📊 Progress: 3 total"));
-    assert!(result.contains("⏳ 1 pending"));
-    assert!(result.contains("🏃 1 running"));
-    assert!(result.contains("✅ 1 completed"));
-    assert!(result.contains("❌ 0 failed"));
-    assert!(result.contains("🏃 test-task"));
-    assert!(result.contains("✅ another-task"));
-    assert!(result.contains("📋 Parameters: param=value"));
-    assert!(result.contains("⏱️  1.5s"));
-    assert!(result.contains("💬 Processing..."));
+    assert!(result.contains("Task execution"));
+    assert!(result.contains("Progress: 3 total"));
+    assert!(result.contains("1 pending"));
+    assert!(result.contains("1 running"));
+    assert!(result.contains("1 completed"));
+    assert!(result.contains("0 failed"));
+    assert!(result.contains("running"));
+    assert!(result.contains("test-task"));
+    assert!(result.contains("completed"));
+    assert!(result.contains("another-task"));
+    assert!(result.contains("Parameters: param=value"));
+    assert!(result.contains("Duration: 1.5s"));
+    assert!(result.contains("Output: Processing..."));
 
     let result2 = format_tasks_update_from_event(&event);
-    assert!(!result2.contains("🎯 Task Execution Dashboard"));
+    assert!(!result2.contains("Task Execution"));
     assert!(result2.contains(MOVE_TO_PROGRESS_LINE));
 }
 
@@ -163,16 +164,15 @@ fn test_format_tasks_complete_from_event() {
     };
     let result = format_tasks_complete_from_event(&event);
 
-    assert!(result.contains("Execution Complete!"));
-    assert!(result.contains("═══════════════════════"));
+    assert!(result.contains("Execution complete"));
     assert!(result.contains("Total Tasks: 5"));
-    assert!(result.contains("✅ Completed: 4"));
-    assert!(result.contains("❌ Failed: 1"));
-    assert!(result.contains("📈 Success Rate: 80.0%"));
-    assert!(result.contains("❌ Failed Tasks:"));
-    assert!(result.contains("• failed-task"));
+    assert!(result.contains("Completed: 4"));
+    assert!(result.contains("Failed: 1"));
+    assert!(result.contains("Success Rate: 80.0%"));
+    assert!(result.contains("Failed Tasks:"));
+    assert!(result.contains("failed-task"));
     assert!(result.contains("Error: Connection timeout"));
-    assert!(result.contains("📝 Generating summary..."));
+    assert!(result.contains("Generating summary..."));
 }
 
 #[test]
@@ -186,9 +186,9 @@ fn test_format_tasks_complete_from_event_no_failures() {
     };
     let result = format_tasks_complete_from_event(&event);
 
-    assert!(!result.contains("❌ Failed Tasks:"));
-    assert!(result.contains("📈 Success Rate: 100.0%"));
-    assert!(result.contains("❌ Failed: 0"));
+    assert!(!result.contains("Failed Tasks:"));
+    assert!(result.contains("Success Rate: 100.0%"));
+    assert!(result.contains("Failed: 0"));
 }
 
 #[test]
@@ -207,10 +207,11 @@ fn test_format_task_display_running() {
 
     let result = format_task_display(&task);
 
-    assert!(result.contains("🏃 data-processor (sub_workflow)"));
-    assert!(result.contains("📋 Parameters: input=file.txt,output=result.json"));
-    assert!(result.contains("⏱️  1.5s"));
-    assert!(result.contains("💬 Processing data... ... Almost done..."));
+    assert!(result.contains("running"));
+    assert!(result.contains("data-processor (sub_workflow)"));
+    assert!(result.contains("Parameters: input=file.txt,output=result.json"));
+    assert!(result.contains("Duration: 1.5s"));
+    assert!(result.contains("Output: Processing data... ... Almost done..."));
 }
 
 #[test]
@@ -229,10 +230,11 @@ fn test_format_task_display_completed() {
 
     let result = format_task_display(&task);
 
-    assert!(result.contains("✅ analyzer (text_instruction)"));
-    assert!(result.contains("⏱️  3.2s"));
-    assert!(!result.contains("📋 Parameters"));
-    assert!(result.contains("📄"));
+    assert!(result.contains("completed"));
+    assert!(result.contains("analyzer (text_instruction)"));
+    assert!(result.contains("Duration: 3.2s"));
+    assert!(!result.contains("Parameters"));
+    assert!(result.contains("Result:"));
 }
 
 #[test]
@@ -254,9 +256,10 @@ fn test_format_task_display_failed() {
 
     let result = format_task_display(&task);
 
-    assert!(result.contains("❌ failing-task (sub_workflow)"));
-    assert!(!result.contains("⏱️"));
-    assert!(result.contains("⚠️"));
+    assert!(result.contains("failed"));
+    assert!(result.contains("failing-task (sub_workflow)"));
+    assert!(!result.contains("Duration:"));
+    assert!(result.contains("Error:"));
     assert!(result.contains("Network connection failed after multiple retries"));
 }
 
@@ -276,12 +279,13 @@ fn test_format_task_display_pending() {
 
     let result = format_task_display(&task);
 
-    assert!(result.contains("⏳ waiting-task (sub_workflow)"));
-    assert!(result.contains("📋 Parameters: priority=high"));
-    assert!(!result.contains("⏱️"));
-    assert!(!result.contains("💬"));
-    assert!(!result.contains("📄"));
-    assert!(!result.contains("⚠️"));
+    assert!(result.contains("pending"));
+    assert!(result.contains("waiting-task (sub_workflow)"));
+    assert!(result.contains("Parameters: priority=high"));
+    assert!(!result.contains("Duration:"));
+    assert!(!result.contains("Output:"));
+    assert!(!result.contains("Result:"));
+    assert!(!result.contains("Error:"));
 }
 
 #[test]
@@ -300,5 +304,5 @@ fn test_format_task_display_empty_current_output() {
 
     let result = format_task_display(&task);
 
-    assert!(!result.contains("💬"));
+    assert!(!result.contains("Output:"));
 }

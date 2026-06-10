@@ -200,7 +200,7 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
         s if s.starts_with(CMD_WORKFLOW) => parse_workflow_command(s),
         s if s == CMD_COMPACT => Some(InputResult::Compact),
         s if s == CMD_SUMMARIZE_DEPRECATED => {
-            println!("{}", console::style("⚠️  Note: /summarize has been renamed to /compact and will be removed in a future release.").yellow());
+            println!("{}", console::style("Note: /summarize has been renamed to /compact and will be removed in a future release.").yellow());
             Some(InputResult::Compact)
         }
         "/r" => Some(InputResult::ToggleFullToolOutput),
@@ -295,50 +295,146 @@ fn parse_plan_command(input: String) -> Option<InputResult> {
 }
 
 /// Generates the input prompt string for the CLI interface.
-/// Returns a styled prompt with the biorouter face "( O)>" followed by a space.
-/// On Windows, returns plain text without ANSI styling for better compatibility.
-/// On other platforms, applies styling using ANSI escape codes.
 fn get_input_prompt_string() -> String {
-    let biorouter = "( O)>";
+    // The brand warm tan-brown accent (xterm-256 137 ≈ #af875f), Biorouter's light cream palette
+    const ACCENT: console::Color = console::Color::Color256(137);
     if cfg!(target_os = "windows") {
-        // Use plain text on Windows to avoid ANSI compatibility issues
-        format!("{biorouter} ")
+        "Biorouter> ".to_string()
     } else {
-        // On other platforms, use styled prompt with ANSI colors
-        format!("{} ", console::style(biorouter).cyan().bold())
+        format!(
+            "{} {} ",
+            console::style("Biorouter").fg(ACCENT).bold(),
+            console::style("❯").fg(ACCENT)
+        )
     }
 }
 
 fn print_help() {
-    let newline_key = get_newline_key().to_ascii_uppercase();
-    println!(
-        "Available commands:
-/exit or /quit - Exit the session
-/t - Toggle Light/Dark/Ansi theme
-/t <name> - Set theme directly (light, dark, ansi)
-/r - Toggle full tool output display (show complete tool parameters without truncation)
-/extension <command> - Add a stdio extension (format: ENV1=val1 command args...)
-/builtin <names> - Add builtin extensions by name (comma-separated)
-/prompts [--extension <name>] - List all available prompts, optionally filtered by extension
-/prompt <n> [--info] [key=value...] - Get prompt info or execute a prompt
-/mode <name> - Set the biorouter mode to use ('auto', 'approve', 'chat', 'smart_approve')
-/plan <message_text> -  Enters 'plan' mode with optional message. Create a plan based on the current messages and asks user if they want to act on it.
-                        If user acts on the plan, biorouter mode is set to 'auto' and returns to 'normal' biorouter mode.
-                        To warm up biorouter before using '/plan', we recommend setting '/mode approve' & putting appropriate context into biorouter.
-                        The model is used based on $BIOROUTER_PLANNER_PROVIDER and $BIOROUTER_PLANNER_MODEL environment variables.
-                        If no model is set, the default model is used.
-/endplan - Exit plan mode and return to 'normal' biorouter mode.
-/workflow [filepath] - Generate a workflow from the current conversation and save it to the specified filepath (must end with .yaml).
-                       If no filepath is provided, it will be saved to ./workflow.yaml.
-/compact - Compact the current conversation to reduce context length while preserving key information.
-/? or /help - Display this help message
-/clear - Clears the current chat history
+    use console::{style, Color};
+    const ACCENT: Color = Color::Color256(137);
 
-Navigation:
-Ctrl+C - Clear current line if text is entered, otherwise exit the session
-Ctrl+{newline_key} - Add a newline (configurable via BIOROUTER_CLI_NEWLINE_KEY)
-Up/Down arrows - Navigate through command history"
+    // (command, description) pairs rendered as an aligned two-column table.
+    let commands: &[(&str, &str)] = &[
+        ("/exit, /quit", "Exit the session"),
+        ("/t", "Toggle Light / Dark / Ansi theme"),
+        ("/t <name>", "Set theme directly (light, dark, ansi)"),
+        ("/r", "Toggle full (untruncated) tool output"),
+        (
+            "/extension <cmd>",
+            "Add a stdio extension (ENV1=val1 command args…)",
+        ),
+        (
+            "/builtin <names>",
+            "Add builtin extensions by name (comma-separated)",
+        ),
+        (
+            "/prompts [--extension <name>]",
+            "List available prompts, optionally filtered",
+        ),
+        (
+            "/prompt <name> [--info] [k=v…]",
+            "Show prompt info or execute a prompt",
+        ),
+        (
+            "/mode <name>",
+            "Set mode: auto, approve, chat, smart_approve",
+        ),
+        (
+            "/plan [message]",
+            "Enter plan mode, then optionally act on the plan",
+        ),
+        ("/endplan", "Exit plan mode, return to normal mode"),
+        (
+            "/workflow [file.yaml]",
+            "Save the conversation as a workflow",
+        ),
+        ("/compact", "Compact the conversation to reclaim context"),
+        ("/clear", "Clear the current chat history"),
+        (
+            "/goal <condition>",
+            "Keep working until the condition is met (/goal clear to stop)",
+        ),
+        (
+            "/loop <interval> <prompt>",
+            "Run a prompt on an interval, e.g. /loop 5m … (/loop stop <id>)",
+        ),
+        (
+            "/schedule <spec> <prompt>",
+            "Schedule a recurring prompt: 5m, @daily, or a quoted cron",
+        ),
+        ("/help, /?", "Show this help message"),
+    ];
+
+    let width = commands.iter().map(|(c, _)| c.len()).max().unwrap_or(0);
+
+    println!();
+    println!("  {} {}", style("▌").fg(ACCENT), style("Commands").bold());
+    for (cmd, desc) in commands {
+        println!(
+            "    {:<width$}   {}",
+            style(cmd).fg(ACCENT),
+            style(desc).dim(),
+            width = width
+        );
+    }
+
+    let newline_key = get_newline_key().to_ascii_uppercase();
+    let nav: &[(&str, &str)] = &[
+        ("Ctrl+C", "Clear the current line, or exit when empty"),
+        (
+            "Ctrl+_KEY_",
+            "Insert a newline (set via BIOROUTER_CLI_NEWLINE_KEY)",
+        ),
+        ("↑ / ↓", "Navigate command history"),
+    ];
+
+    println!();
+    println!("  {} {}", style("▌").fg(ACCENT), style("Navigation").bold());
+    for (key, desc) in nav {
+        let key = key.replace("_KEY_", &newline_key.to_string());
+        println!(
+            "    {:<width$}   {}",
+            style(key).fg(ACCENT),
+            style(desc).dim(),
+            width = width
+        );
+    }
+
+    // Pointers to the shell-level management subcommands (run outside a session).
+    let shell: &[(&str, &str)] = &[
+        (
+            "biorouter knowledge",
+            "Manage knowledge bases — ingest, lint, query",
+        ),
+        (
+            "biorouter extension",
+            "Install extensions from .brxt bundles",
+        ),
+        ("biorouter skill", "Install skills from .zip files"),
+        (
+            "biorouter workflow",
+            "Install and run workflows (.json / .yaml)",
+        ),
+        ("biorouter models", "Inspect and set the provider / model"),
+        ("biorouter schedule", "Manage scheduled jobs"),
+    ];
+    println!();
+    println!(
+        "  {} {} {}",
+        style("▌").fg(ACCENT),
+        style("Shell commands").bold(),
+        style("(run from your terminal)").dim()
     );
+    let shell_width = shell.iter().map(|(c, _)| c.len()).max().unwrap_or(0);
+    for (cmd, desc) in shell {
+        println!(
+            "    {:<shell_width$}   {}",
+            style(cmd).fg(ACCENT),
+            style(desc).dim(),
+            shell_width = shell_width
+        );
+    }
+    println!();
 }
 
 #[cfg(test)]
@@ -579,13 +675,13 @@ mod tests {
         // Prompt should always end with a space
         assert!(prompt.ends_with(" "));
 
-        // Prompt should contain the biorouter face
-        assert!(prompt.contains("( O)>"));
+        // Prompt should contain the brand label
+        assert!(prompt.contains("Biorouter"));
 
         // On Windows, prompt should be plain text without ANSI codes
         #[cfg(target_os = "windows")]
         {
-            assert_eq!(prompt, "( O)> ");
+            assert_eq!(prompt, "Biorouter> ");
             // Ensure no ANSI escape sequences
             assert!(!prompt.contains("\x1b["));
         }
@@ -598,15 +694,15 @@ mod tests {
 
             if is_ci {
                 // In CI, just verify basic structure - console crate handles ANSI detection
-                assert!(prompt.len() >= "( O)> ".len());
+                assert!(prompt.len() >= "Biorouter> ".len());
             } else {
                 // In interactive terminals, expect styling to be applied
                 // Note: This may still vary based on terminal capabilities
-                assert!(prompt.len() >= "( O)> ".len());
+                assert!(prompt.len() >= "Biorouter> ".len());
 
-                // If ANSI codes are present, they should be valid
+                // If ANSI codes are present, they should be valid 256-color/bold sequences
                 if prompt.contains("\x1b[") {
-                    assert!(prompt.contains("36") || prompt.contains("1"));
+                    assert!(prompt.contains("38") || prompt.contains("1"));
                 }
             }
         }
