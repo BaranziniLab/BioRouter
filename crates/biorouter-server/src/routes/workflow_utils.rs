@@ -173,8 +173,18 @@ pub async fn apply_workflow_to_agent(
         .await;
 
     workflow.instructions.as_ref().map(|instructions| {
+        let mut instructions = instructions.clone();
+        if let Some(skills) = workflow.skills.as_ref().filter(|skills| !skills.is_empty()) {
+            instructions.push_str(
+                "\n\nWorkflow skill selection: when using the skills extension, prefer these skills for this workflow:\n",
+            );
+            for skill in skills {
+                instructions.push_str(&format!("- {skill}\n"));
+            }
+        }
+
         let mut context: HashMap<&str, Value> = HashMap::new();
-        context.insert("workflow_instructions", Value::String(instructions.clone()));
+        context.insert("workflow_instructions", Value::String(instructions));
         render_global_file("desktop_workflow_instruction.md", &context)
             .expect("Prompt should render")
     })

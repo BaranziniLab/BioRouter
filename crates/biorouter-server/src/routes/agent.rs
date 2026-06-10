@@ -33,7 +33,7 @@ use biorouter::{
 use rmcp::model::{CallToolRequestParams, Content};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -75,6 +75,54 @@ pub struct StartAgentRequest {
 #[derive(Deserialize, utoipa::ToSchema)]
 pub struct StopAgentRequest {
     session_id: String,
+}
+
+fn apply_workflow_knowledge_selection(
+    state: &AppState,
+    session_id: &str,
+    workflow: &Workflow,
+) -> Result<(), ErrorResponse> {
+    let Some(selection) = workflow.knowledge_bases.as_ref() else {
+        return Ok(());
+    };
+
+    let visible: HashSet<&str> = selection.visible.iter().map(String::as_str).collect();
+    let all_bases = state.knowledge_service.list_bases().map_err(|err| {
+        error!(
+            "Failed to list knowledge bases for workflow session: {}",
+            err
+        );
+        ErrorResponse {
+            message: format!("Failed to apply workflow knowledge bases: {}", err),
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    })?;
+    let hidden: Vec<String> = all_bases
+        .into_iter()
+        .map(|base| base.id)
+        .filter(|id| !visible.contains(id.as_str()))
+        .collect();
+    let active = selection
+        .default
+        .as_deref()
+        .or_else(|| selection.visible.first().map(String::as_str));
+
+    state
+        .knowledge_service
+        .set_active_for_session(session_id, active)
+        .map_err(|err| ErrorResponse {
+            message: format!("Failed to set workflow default knowledge base: {}", err),
+            status: StatusCode::BAD_REQUEST,
+        })?;
+    state
+        .knowledge_service
+        .set_hidden_for_session(session_id, &hidden)
+        .map_err(|err| ErrorResponse {
+            message: format!("Failed to set workflow visible knowledge bases: {}", err),
+            status: StatusCode::BAD_REQUEST,
+        })?;
+
+    Ok(())
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -229,6 +277,10 @@ async fn start_agent(
                 status: StatusCode::BAD_REQUEST,
             }
         })?;
+
+    if let Some(workflow) = original_workflow.as_ref() {
+        apply_workflow_knowledge_selection(state.as_ref(), &session.id, workflow)?;
+    }
 
     let workflow_extensions = original_workflow
         .as_ref()
