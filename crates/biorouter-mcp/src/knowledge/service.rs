@@ -618,11 +618,13 @@ impl KnowledgeService {
             credibility,
         };
 
+        let source_markdown = source_markdown_with_quality_banner(&converted);
+
         let written = raw::write_raw(
             &kb_root,
             original_bytes.as_deref(),
             meta.original_filename.clone().as_deref(),
-            &converted.markdown,
+            &source_markdown,
             meta,
         )?;
 
@@ -643,6 +645,23 @@ impl KnowledgeService {
         }
         self.rebuild_graph_cache(kb_id)?;
         Ok(written)
+    }
+}
+
+/// Surface poor extraction (scanned / image-based sources) instead of silently
+/// storing an empty source.md: the banner is visible in the raw-source preview
+/// and tells the digestion sub-agent the content is incomplete. Applied after
+/// content hashing so dedup stays keyed on the real converted content.
+fn source_markdown_with_quality_banner(converted: &convert::Converted) -> String {
+    if converted.needs_llm_fallback {
+        format!(
+            "> **Warning — poor extraction quality.** This source appears to be \
+             scanned or image-based; its text could not be extracted faithfully. \
+             Treat the content below (if any) as incomplete.\n\n{}",
+            converted.markdown
+        )
+    } else {
+        converted.markdown.clone()
     }
 }
 

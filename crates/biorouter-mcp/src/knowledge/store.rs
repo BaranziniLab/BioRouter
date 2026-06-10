@@ -162,24 +162,44 @@ pub struct SearchHit {
     pub snippet: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchScope {
+    Knowledge,
+    RawSources,
+    All,
+}
+
 pub fn search(kb_root: &Path, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+    search_with_scope(kb_root, query, limit, SearchScope::All)
+}
+
+pub fn search_with_scope(
+    kb_root: &Path,
+    query: &str,
+    limit: usize,
+    scope: SearchScope,
+) -> Result<Vec<SearchHit>> {
     let mut docs: Vec<(String, String)> = Vec::new(); // (logical_path, body)
-    let knowledge_dir = kb_root.join("knowledge");
-    if knowledge_dir.exists() {
-        collect_docs_under(&knowledge_dir, &knowledge_dir, "knowledge", &mut docs)?;
+    if matches!(scope, SearchScope::Knowledge | SearchScope::All) {
+        let knowledge_dir = kb_root.join("knowledge");
+        if knowledge_dir.exists() {
+            collect_docs_under(&knowledge_dir, &knowledge_dir, "knowledge", &mut docs)?;
+        }
     }
-    let raw_dir = kb_root.join("raw");
-    if raw_dir.exists() {
-        for entry in std::fs::read_dir(&raw_dir)? {
-            let entry = entry?;
-            if !entry.path().is_dir() {
-                continue;
-            }
-            let id = entry.file_name().to_string_lossy().to_string();
-            let source_md = entry.path().join("source.md");
-            if source_md.exists() {
-                let body = std::fs::read_to_string(&source_md)?;
-                docs.push((format!("raw/{id}/source.md"), body));
+    if matches!(scope, SearchScope::RawSources | SearchScope::All) {
+        let raw_dir = kb_root.join("raw");
+        if raw_dir.exists() {
+            for entry in std::fs::read_dir(&raw_dir)? {
+                let entry = entry?;
+                if !entry.path().is_dir() {
+                    continue;
+                }
+                let id = entry.file_name().to_string_lossy().to_string();
+                let source_md = entry.path().join("source.md");
+                if source_md.exists() {
+                    let body = std::fs::read_to_string(&source_md)?;
+                    docs.push((format!("raw/{id}/source.md"), body));
+                }
             }
         }
     }
@@ -408,5 +428,31 @@ mod tests {
         .unwrap();
         let hits = search(&kb, "zzznonexistent", 5).unwrap();
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn search_scope_controls_raw_sources() {
+        let (_dir, kb) = fresh();
+        write_page(
+            &kb,
+            "knowledge/entities/curated.md",
+            "---\ntitle: Curated\n---\ncurated-only signal",
+            "curated",
+            None,
+        )
+        .unwrap();
+        std::fs::create_dir_all(kb.join("raw/raw-a")).unwrap();
+        std::fs::write(kb.join("raw/raw-a/source.md"), "raw-only signal").unwrap();
+
+        let curated = search_with_scope(&kb, "raw-only", 5, SearchScope::Knowledge).unwrap();
+        assert!(curated.is_empty());
+
+        let raw = search_with_scope(&kb, "raw-only", 5, SearchScope::RawSources).unwrap();
+        assert_eq!(raw.len(), 1);
+        assert_eq!(raw[0].path, "raw/raw-a/source.md");
+
+        let all = search(&kb, "raw-only", 5).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].path, "raw/raw-a/source.md");
     }
 }

@@ -6,16 +6,51 @@ use tempfile::NamedTempFile;
 
 pub struct PdfConversion {
     pub markdown: String,
+    pub title: Option<String>,
     pub needs_llm_fallback: bool,
 }
 
 pub fn pdf_to_markdown(bytes: &[u8]) -> Result<PdfConversion> {
+    // Primary: pdf-inspector — structured markdown (headings, tables,
+    // multi-column reading order) plus a scanned-vs-text classification that
+    // replaces the old "fewer than 32 chars" heuristic.
+    if let Some(conversion) = pdf_inspector_convert(bytes) {
+        return Ok(conversion);
+    }
+
+    // Fallback: legacy text-layer chain (pdf-extract → lopdf → pdfminer →
+    // lossy content-op scan).
     let text = extract_pdf_text(bytes)?;
     let cleaned = normalize_text(&text);
     let needs_llm_fallback = cleaned.trim().len() < 32;
     Ok(PdfConversion {
         markdown: cleaned,
+        title: None,
         needs_llm_fallback,
+    })
+}
+
+fn pdf_inspector_convert(bytes: &[u8]) -> Option<PdfConversion> {
+    let result = panic::catch_unwind(AssertUnwindSafe(|| pdf_inspector::process_pdf_mem(bytes)))
+        .ok()?
+        .ok()?;
+
+    let scanned = matches!(
+        result.pdf_type,
+        pdf_inspector::PdfType::Scanned | pdf_inspector::PdfType::ImageBased
+    );
+    let markdown = result.markdown.unwrap_or_default().trim().to_string();
+
+    // For text-based PDFs with no usable output, let the legacy extractor
+    // chain have a go instead of giving up here.
+    if markdown.len() < 32 && !scanned {
+        return None;
+    }
+
+    Some(PdfConversion {
+        title: result.title.filter(|t| !t.trim().is_empty()),
+        needs_llm_fallback: scanned || markdown.len() < 32,
+        markdown,
     })
 }
 

@@ -7,7 +7,7 @@
 
 use crate::knowledge::{
     convert::SourceInput, log as kb_log, paths, raw, service::KnowledgeService, store,
-    subagent::loop_::ToolDispatch, types::ChangeKind,
+    store::SearchScope, subagent::loop_::ToolDispatch, types::ChangeKind,
 };
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -79,7 +79,16 @@ impl ToolDispatch for KbToolDispatch {
                     .as_str()
                     .ok_or_else(|| anyhow!("kb_search: missing 'query'"))?;
                 let limit = args.get("limit").and_then(|v| v.as_u64()).unwrap_or(5) as usize;
-                let hits = store::search(&kb_root, q, limit)?;
+                let include_raw_sources = args
+                    .get("include_raw_sources")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let scope = if include_raw_sources {
+                    SearchScope::All
+                } else {
+                    SearchScope::Knowledge
+                };
+                let hits = store::search_with_scope(&kb_root, q, limit, scope)?;
                 Ok(serde_json::to_string(&hits)?)
             }
 
@@ -234,8 +243,13 @@ pub fn tool_specs() -> Vec<Tool> {
         ),
         Tool::new(
             Cow::Borrowed("kb_search"),
-            Cow::Borrowed("BM25 full-text search over knowledge pages and raw sources."),
-            make_schema(&[("query", "string")], &[("limit", "integer")]),
+            Cow::Borrowed(
+                "BM25 full-text search over curated knowledge pages. Set include_raw_sources true only when the user specifically asks for original/raw sources.",
+            ),
+            make_schema(
+                &[("query", "string")],
+                &[("limit", "integer"), ("include_raw_sources", "boolean")],
+            ),
         ),
         Tool::new(
             Cow::Borrowed("kb_append_log"),
