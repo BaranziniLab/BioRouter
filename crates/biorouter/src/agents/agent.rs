@@ -46,7 +46,7 @@ use crate::scheduler_trait::SchedulerTrait;
 use crate::security::security_inspector::SecurityInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
 use crate::session::{Session, SessionManager, SessionType};
-use crate::tool_inspection::ToolInspectionManager;
+use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspectionManager};
 use crate::tool_monitor::RepetitionInspector;
 use crate::utils::is_token_cancelled;
 use crate::workflow::{Author, Response, Settings, SubWorkflow, Workflow};
@@ -60,7 +60,8 @@ use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
-const DEFAULT_MAX_TURNS: u32 = 1000;
+const DEFAULT_MAX_TURNS: u32 = 100;
+const DEFAULT_MAX_REPETITIONS: u32 = 3;
 const COMPACTION_THINKING_TEXT: &str = "biorouter is compacting the conversation...";
 
 /// Context needed for the reply function
@@ -129,6 +130,12 @@ pub struct Agent {
 
     pub(super) retry_manager: RetryManager,
     pub(super) tool_inspection_manager: ToolInspectionManager,
+    pub(super) hooks_manager: Arc<crate::hooks::HooksManager>,
+    /// Active `/goal` conditions per session (see [`crate::agents::goal`]).
+    pub(super) goals: crate::agents::goal::GoalRegistry,
+    /// Lazily-created scheduler for `/loop`/`/schedule` when no
+    /// `scheduler_service` was injected (plain CLI/TUI sessions).
+    pub(super) fallback_scheduler: tokio::sync::OnceCell<Arc<dyn SchedulerTrait>>,
 }
 
 #[derive(Clone, Debug)]
@@ -200,6 +207,7 @@ impl Agent {
 
         let session_manager = Arc::clone(&config.session_manager);
         let permission_manager = Arc::clone(&config.permission_manager);
+        let hooks_manager = Arc::new(crate::hooks::HooksManager::new(provider.clone()));
         Self {
             provider: provider.clone(),
             config,
@@ -214,13 +222,46 @@ impl Agent {
             tool_result_tx: tool_tx,
             tool_result_rx: Arc::new(Mutex::new(tool_rx)),
             retry_manager: RetryManager::new(),
-            tool_inspection_manager: Self::create_tool_inspection_manager(permission_manager),
+            tool_inspection_manager: Self::create_tool_inspection_manager(
+                permission_manager,
+                Arc::clone(&hooks_manager),
+            ),
+            hooks_manager,
+            goals: Default::default(),
+            fallback_scheduler: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// The hooks manager driving user-configured lifecycle hooks.
+    pub fn hooks_manager(&self) -> Arc<crate::hooks::HooksManager> {
+        Arc::clone(&self.hooks_manager)
+    }
+
+    /// Fire a PreCompact/PostCompact hook (observe-only, fire-and-forget).
+    pub(super) fn fire_compaction_hook(
+        &self,
+        event: crate::hooks::HookEvent,
+        session_id: &str,
+        working_dir: &std::path::Path,
+        trigger: &str,
+        reason: Option<&str>,
+    ) {
+        let mut payload =
+            crate::hooks::HookPayload::new(event, session_id, working_dir.to_string_lossy());
+        payload.trigger = Some(trigger.to_string());
+        payload.reason = reason.map(str::to_string);
+        self.hooks_manager.fire(
+            event,
+            Some(trigger.to_string()),
+            payload,
+            working_dir.to_path_buf(),
+        );
     }
 
     /// Create a tool inspection manager with default inspectors
     fn create_tool_inspection_manager(
         permission_manager: Arc<PermissionManager>,
+        hooks_manager: Arc<crate::hooks::HooksManager>,
     ) -> ToolInspectionManager {
         let mut tool_inspection_manager = ToolInspectionManager::new();
 
@@ -235,7 +276,13 @@ impl Agent {
         )));
 
         // Add repetition inspector (lower priority - basic repetition checking)
-        tool_inspection_manager.add_inspector(Box::new(RepetitionInspector::new(None)));
+        tool_inspection_manager.add_inspector(Box::new(RepetitionInspector::new(Some(
+            DEFAULT_MAX_REPETITIONS,
+        ))));
+
+        // Add user-configured PreToolUse hooks (runs last)
+        tool_inspection_manager
+            .add_inspector(Box::new(crate::hooks::HookInspector::new(hooks_manager)));
 
         tool_inspection_manager
     }
@@ -347,6 +394,7 @@ impl Agent {
         request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
         cancel_token: Option<tokio_util::sync::CancellationToken>,
         session: &Session,
+        inspection_results: &[InspectionResult],
     ) -> Result<Vec<(String, ToolStream)>> {
         let mut tool_futures: Vec<(String, ToolStream)> = Vec::new();
 
@@ -379,21 +427,40 @@ impl Agent {
             }
         }
 
-        Self::handle_denied_tools(permission_check_result, request_to_response_map).await;
+        Self::handle_denied_tools(
+            permission_check_result,
+            request_to_response_map,
+            inspection_results,
+        )
+        .await;
         Ok(tool_futures)
     }
 
     async fn handle_denied_tools(
         permission_check_result: &PermissionCheckResult,
         request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+        inspection_results: &[InspectionResult],
     ) {
         for request in &permission_check_result.denied {
             if let Some(response_msg) = request_to_response_map.get(&request.id) {
+                // When a hook denied this call, tell the model why so it can
+                // adjust instead of blindly retrying.
+                let hook_reason = inspection_results.iter().find(|result| {
+                    result.tool_request_id == request.id
+                        && result.inspector_name == crate::hooks::inspector::HOOK_INSPECTOR_NAME
+                        && result.action == InspectionAction::Deny
+                });
+                let response_text = match hook_reason {
+                    Some(result) if !result.reason.trim().is_empty() => {
+                        format!("{DECLINED_RESPONSE}\n\nHook feedback: {}", result.reason)
+                    }
+                    _ => DECLINED_RESPONSE.to_string(),
+                };
                 let mut response = response_msg.lock().await;
                 *response = response.clone().with_tool_response_with_metadata(
                     request.id.clone(),
                     Ok(CallToolResult {
-                        content: vec![rmcp::model::Content::text(DECLINED_RESPONSE)],
+                        content: vec![rmcp::model::Content::text(response_text)],
                         structured_content: None,
                         is_error: Some(true),
                         meta: None,
@@ -862,6 +929,65 @@ impl Agent {
 
         let message_text = user_message.as_concat_text();
 
+        // User-configured hooks: SessionStart fires once per session, then
+        // UserPromptSubmit may block the prompt or inject context. Slash
+        // commands and elicitation responses don't count as prompts.
+        let mut hook_context: Option<String> = None;
+        if !message_text.trim().starts_with('/') {
+            if let Ok(hook_session) = session_manager.get_session(&session_config.id, false).await {
+                let hooks = self.hooks_manager();
+                hooks.reset_stop_blocks(&session_config.id).await;
+
+                let source = if hook_session.message_count > 0 {
+                    "resume"
+                } else {
+                    "startup"
+                };
+                let session_start_context = hooks
+                    .session_start_once(&hook_session.id, &hook_session.working_dir, source)
+                    .await
+                    .and_then(|aggregate| aggregate.joined_context());
+
+                let prompt_aggregate = hooks
+                    .user_prompt_submit(&hook_session.id, &hook_session.working_dir, &message_text)
+                    .await;
+
+                if prompt_aggregate.is_denied() {
+                    let reason = prompt_aggregate
+                        .deny_reason()
+                        .unwrap_or("blocked")
+                        .to_string();
+                    session_manager
+                        .add_message(
+                            &session_config.id,
+                            &user_message.clone().with_visibility(true, false),
+                        )
+                        .await?;
+                    let notice = Message::assistant()
+                        .with_system_notification(
+                            SystemNotificationType::InlineMessage,
+                            format!("Prompt blocked by hook: {reason}"),
+                        )
+                        .user_only();
+                    return Ok(Box::pin(stream::iter(vec![
+                        Ok(AgentEvent::Message(user_message)),
+                        Ok(AgentEvent::Message(notice)),
+                    ])));
+                }
+
+                let mut contexts: Vec<String> = Vec::new();
+                if let Some(ctx) = session_start_context {
+                    contexts.push(ctx);
+                }
+                if let Some(ctx) = prompt_aggregate.joined_context() {
+                    contexts.push(ctx);
+                }
+                if !contexts.is_empty() {
+                    hook_context = Some(contexts.join("\n\n"));
+                }
+            }
+        }
+
         // Track custom slash command usage (don't track command name for privacy)
         if message_text.trim().starts_with('/') {
             let command = message_text.split_whitespace().next();
@@ -938,6 +1064,20 @@ impl Agent {
                     .await?;
             }
         }
+
+        // Context injected by SessionStart/UserPromptSubmit hooks: visible to
+        // the model, hidden from the user.
+        if let Some(context) = hook_context {
+            session_manager
+                .add_message(
+                    &session_config.id,
+                    &Message::user()
+                        .with_text(format!("<hook-context>\n{context}\n</hook-context>"))
+                        .with_visibility(false, true),
+                )
+                .await?;
+        }
+
         let session = session_manager
             .get_session(&session_config.id, true)
             .await?;
@@ -985,10 +1125,24 @@ impl Agent {
                     )
                 );
 
+                self.fire_compaction_hook(
+                    crate::hooks::HookEvent::PreCompact,
+                    &session_config.id,
+                    &session.working_dir,
+                    "auto",
+                    None,
+                );
                 match compact_messages(self.provider().await?.as_ref(), &conversation_to_compact, false).await {
                     Ok((compacted_conversation, summarization_usage)) => {
                         session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
                         self.update_session_metrics(&session_config, &summarization_usage, true).await?;
+                        self.fire_compaction_hook(
+                            crate::hooks::HookEvent::PostCompact,
+                            &session_config.id,
+                            &session.working_dir,
+                            "auto",
+                            None,
+                        );
 
                         yield AgentEvent::HistoryReplaced(compacted_conversation.clone());
 
@@ -1051,7 +1205,10 @@ impl Agent {
         Ok(Box::pin(async_stream::try_stream! {
             let _ = reply_span.enter();
             let mut turns_taken = 0u32;
-            let max_turns = session_config.max_turns.unwrap_or(DEFAULT_MAX_TURNS);
+            let max_turns = session_config
+                .max_turns
+                .or_else(|| Config::global().get_param("BIOROUTER_MAX_TURNS").ok())
+                .unwrap_or(DEFAULT_MAX_TURNS);
             let mut compaction_attempts = 0;
 
             loop {
@@ -1196,6 +1353,7 @@ impl Agent {
                                             &remaining_requests,
                                             conversation.messages(),
                                             biorouter_mode,
+                                            &session,
                                         )
                                         .await?;
 
@@ -1229,6 +1387,7 @@ impl Agent {
                                         &request_to_response_map,
                                         cancel_token.clone(),
                                         &session,
+                                        &inspection_results,
                                     ).await?;
 
                                     let tool_futures_arc = Arc::new(Mutex::new(tool_futures));
@@ -1260,6 +1419,8 @@ impl Agent {
 
                                     let mut combined = stream::select_all(with_id);
                                     let mut all_install_successful = true;
+                                    // (request_id, tool_response, error) captured for PostToolUse hooks
+                                    let mut post_tool_results: Vec<(String, Option<Value>, Option<String>)> = Vec::new();
 
                                     while let Some((request_id, item)) = combined.next().await {
                                         if is_token_cancelled(&cancel_token) {
@@ -1279,6 +1440,24 @@ impl Agent {
                                                 {
                                                     all_install_successful = false;
                                                 }
+                                                {
+                                                    let (response_value, error_text) = match &output {
+                                                        Ok(res) => {
+                                                            let value = serde_json::to_value(res).ok();
+                                                            if res.is_error == Some(true) {
+                                                                let text = value
+                                                                    .as_ref()
+                                                                    .map(|v| v.to_string())
+                                                                    .unwrap_or_else(|| "tool returned an error".to_string());
+                                                                (value, Some(text))
+                                                            } else {
+                                                                (value, None)
+                                                            }
+                                                        }
+                                                        Err(e) => (None, Some(e.to_string())),
+                                                    };
+                                                    post_tool_results.push((request_id.clone(), response_value, error_text));
+                                                }
                                                 if let Some(response_msg) = request_to_response_map.get(&request_id) {
                                                     let metadata = request_metadata.get(&request_id).and_then(|m| m.as_ref());
                                                     let mut response = response_msg.lock().await;
@@ -1287,6 +1466,76 @@ impl Agent {
                                             }
                                             ToolStreamItem::Message(msg) => {
                                                 yield AgentEvent::McpNotification((request_id, msg));
+                                            }
+                                        }
+                                    }
+
+                                    // PostToolUse / PostToolUseFailure hooks (observe-only):
+                                    // awaited so injected context lands before the next
+                                    // provider call, but decisions are ignored.
+                                    {
+                                        let hooks = self.hooks_manager();
+                                        let mut post_futures = Vec::new();
+                                        for (request_id, response_value, error_text) in post_tool_results {
+                                            let Some(request) = remaining_requests.iter().find(|r| r.id == request_id) else { continue };
+                                            let Ok(tool_call) = &request.tool_call else { continue };
+                                            let tool_name = tool_call.name.to_string();
+                                            let event = if error_text.is_some() {
+                                                crate::hooks::HookEvent::PostToolUseFailure
+                                            } else {
+                                                crate::hooks::HookEvent::PostToolUse
+                                            };
+                                            if !hooks.has_hooks(event, Some(&tool_name), &session.working_dir).await {
+                                                continue;
+                                            }
+                                            let mut payload = crate::hooks::HookPayload::new(
+                                                event,
+                                                &session_config.id,
+                                                session.working_dir.to_string_lossy(),
+                                            );
+                                            payload.tool_name = Some(tool_name.clone());
+                                            payload.tool_input = Some(
+                                                tool_call
+                                                    .arguments
+                                                    .clone()
+                                                    .map(Value::Object)
+                                                    .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
+                                            );
+                                            payload.tool_response = response_value;
+                                            payload.error = error_text;
+                                            let hooks = Arc::clone(&hooks);
+                                            let working_dir = session.working_dir.clone();
+                                            post_futures.push(async move {
+                                                hooks
+                                                    .dispatch(event, Some(&tool_name), &payload, &working_dir)
+                                                    .await
+                                            });
+                                        }
+                                        if !post_futures.is_empty() {
+                                            let mut hook_contexts: Vec<String> = Vec::new();
+                                            for aggregate in futures::future::join_all(post_futures).await {
+                                                for msg in &aggregate.system_messages {
+                                                    yield AgentEvent::Message(
+                                                        Message::assistant()
+                                                            .with_system_notification(
+                                                                SystemNotificationType::InlineMessage,
+                                                                msg.clone(),
+                                                            )
+                                                            .user_only(),
+                                                    );
+                                                }
+                                                if let Some(ctx) = aggregate.joined_context() {
+                                                    hook_contexts.push(ctx);
+                                                }
+                                            }
+                                            if !hook_contexts.is_empty() {
+                                                let context_message = Message::user()
+                                                    .with_text(format!(
+                                                        "<hook-context>\n{}\n</hook-context>",
+                                                        hook_contexts.join("\n\n")
+                                                    ))
+                                                    .with_visibility(false, true);
+                                                messages_to_add.push(context_message);
                                             }
                                         }
                                     }
@@ -1368,12 +1617,26 @@ impl Agent {
                                 )
                             );
 
+                            self.fire_compaction_hook(
+                                crate::hooks::HookEvent::PreCompact,
+                                &session_config.id,
+                                &session.working_dir,
+                                "auto",
+                                Some("context_overflow"),
+                            );
                             match compact_messages(self.provider().await?.as_ref(), &conversation, false).await {
                                 Ok((compacted_conversation, usage)) => {
                                     session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
                                     self.update_session_metrics(&session_config, &usage, true).await?;
                                     conversation = compacted_conversation;
                                     did_recovery_compact_this_iteration = true;
+                                    self.fire_compaction_hook(
+                                        crate::hooks::HookEvent::PostCompact,
+                                        &session_config.id,
+                                        &session.working_dir,
+                                        "auto",
+                                        Some("context_overflow"),
+                                    );
                                     yield AgentEvent::HistoryReplaced(conversation.clone());
                                     break;
                                 }
@@ -1442,8 +1705,89 @@ impl Agent {
                     session_manager.add_message(&session_config.id, msg).await?;
                 }
                 conversation.extend(messages_to_add);
+
+                if !no_tools_called {
+                    // Tools ran this iteration: any Stop-hook block streak is over.
+                    self.hooks_manager.reset_stop_blocks(&session_config.id).await;
+                }
+
                 if exit_chat {
-                    break;
+                    if session.session_type == SessionType::SubAgent {
+                        // Subagents get an observe-only SubagentStop instead of a
+                        // blockable Stop (avoids nested runaway loops).
+                        let mut payload = crate::hooks::HookPayload::new(
+                            crate::hooks::HookEvent::SubagentStop,
+                            &session_config.id,
+                            session.working_dir.to_string_lossy(),
+                        );
+                        payload.subagent_id = Some(session_config.id.clone());
+                        self.hooks_manager.fire(
+                            crate::hooks::HookEvent::SubagentStop,
+                            None,
+                            payload,
+                            session.working_dir.clone(),
+                        );
+                        break;
+                    }
+                    let active_goal = self.active_goal(&session_config.id).await;
+                    let transcript_tail = crate::agents::goal::transcript_tail(&conversation);
+                    match self.hooks_manager.stop(&session_config.id, &session.working_dir, transcript_tail).await {
+                        crate::hooks::StopHookVerdict::Proceed => {
+                            // An active goal whose evaluator let the stop
+                            // proceed is met: clear it and tell the user.
+                            if let Some(goal) = active_goal {
+                                self.clear_goal(&session_config.id).await;
+                                yield AgentEvent::Message(
+                                    Message::assistant()
+                                        .with_system_notification(
+                                            SystemNotificationType::InlineMessage,
+                                            format!(
+                                                "🎯 Goal met — cleared: {}",
+                                                crate::agents::goal::ellipsize(&goal.condition, 200)
+                                            ),
+                                        )
+                                        .user_only(),
+                                );
+                            }
+                            break;
+                        }
+                        crate::hooks::StopHookVerdict::CapReached => {
+                            let goal_hint = if active_goal.is_some() {
+                                " The /goal stays active and will be re-evaluated next turn; run /goal clear to stop it."
+                            } else {
+                                ""
+                            };
+                            yield AgentEvent::Message(
+                                Message::assistant()
+                                    .with_system_notification(
+                                        SystemNotificationType::InlineMessage,
+                                        format!(
+                                            "Stop hook block limit ({}) reached; finishing anyway.{}",
+                                            crate::hooks::STOP_HOOK_BLOCK_CAP,
+                                            goal_hint
+                                        ),
+                                    )
+                                    .user_only(),
+                            );
+                            break;
+                        }
+                        crate::hooks::StopHookVerdict::Blocked { reason } => {
+                            let feedback = Message::user()
+                                .with_text(format!("Stop hook feedback: {reason}"))
+                                .with_visibility(false, true);
+                            session_manager.add_message(&session_config.id, &feedback).await?;
+                            conversation.push(feedback);
+                            yield AgentEvent::Message(
+                                Message::assistant()
+                                    .with_system_notification(
+                                        SystemNotificationType::InlineMessage,
+                                        format!("Stop hook blocked completion: {reason}"),
+                                    )
+                                    .user_only(),
+                            );
+                            // Keep looping: the model sees the feedback next turn.
+                        }
+                    }
                 }
 
                 tokio::task::yield_now().await;
@@ -1596,8 +1940,6 @@ impl Agent {
 
         let extensions_info = self.extension_manager.get_extensions_info().await;
         tracing::debug!("Retrieved {} extensions info", extensions_info.len());
-        let (extension_count, tool_count) =
-            self.extension_manager.get_extension_and_tool_counts().await;
 
         // Get model name from provider
         let provider = self.provider().await.map_err(|e| {
@@ -1613,7 +1955,6 @@ impl Agent {
             .builder()
             .with_extensions(extensions_info.into_iter())
             .with_frontend_instructions(self.frontend_instructions.lock().await.clone())
-            .with_extension_and_tool_counts(extension_count, tool_count)
             .build();
 
         let workflow_prompt = prompt_manager.get_workflow_prompt().await;

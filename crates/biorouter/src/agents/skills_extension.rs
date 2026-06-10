@@ -16,6 +16,14 @@ use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "skills";
 
+/// Skills that ship with Biorouter. They are re-seeded into the user's skills
+/// directory on every session start, so removing the folder only lasts until
+/// the next session — users disable them via the normal toggle instead.
+pub static BUILTIN_SKILLS: &[(&str, &str)] = &[(
+    "about-biorouter",
+    include_str!("builtin_skills/about-biorouter/SKILL.md"),
+)];
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct LoadSkillParams {
     name: String,
@@ -66,15 +74,58 @@ impl SkillsClient {
             instructions: Some(String::new()),
         };
 
+        Self::ensure_builtin_skills(&Paths::config_dir().join("skills"));
+
         let directories = Self::get_default_skill_directories()
             .into_iter()
             .filter(|d| d.exists())
             .collect::<Vec<_>>();
-        let skills = Self::discover_skills_in_directories(&directories);
+        let mut skills = Self::discover_skills_in_directories(&directories);
+
+        // Guarantee builtin skills are present even if seeding to disk failed
+        // (e.g. read-only config dir) or a user skill shadowed the slug.
+        for (name, content) in BUILTIN_SKILLS {
+            if !skills.contains_key(*name) {
+                if let Ok((metadata, body)) = Self::parse_frontmatter(content) {
+                    skills.insert(
+                        metadata.name.clone(),
+                        Skill {
+                            metadata,
+                            body,
+                            directory: Paths::config_dir().join("skills").join(name),
+                            supporting_files: Vec::new(),
+                            bundle_name: None,
+                        },
+                    );
+                }
+            }
+        }
 
         let mut client = Self { info, skills };
         client.info.instructions = Some(client.generate_instructions());
         Ok(client)
+    }
+
+    /// Seed (or refresh) the built-in skills under the user's skills directory
+    /// so they show up in the Skills UI and survive deletion. Content is
+    /// rewritten when it differs so app updates propagate. Failures are
+    /// non-fatal: the in-memory fallback in `new()` still registers them.
+    fn ensure_builtin_skills(skills_dir: &Path) {
+        for (name, content) in BUILTIN_SKILLS {
+            let dir = skills_dir.join(name);
+            let file = dir.join("SKILL.md");
+            let up_to_date = std::fs::read_to_string(&file)
+                .map(|existing| existing == *content)
+                .unwrap_or(false);
+            if up_to_date {
+                continue;
+            }
+            if let Err(e) =
+                std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&file, content))
+            {
+                tracing::warn!("failed to seed builtin skill '{}': {}", name, e);
+            }
+        }
     }
 
     fn get_default_skill_directories() -> Vec<PathBuf> {
@@ -1082,6 +1133,43 @@ Working dir biorouter content
         assert!(
             filtered.is_empty(),
             "bundle skill should be filtered when bundle name is disabled"
+        );
+    }
+
+    #[test]
+    fn test_builtin_skill_content_is_valid() {
+        for (name, content) in BUILTIN_SKILLS {
+            let (metadata, body) = SkillsClient::parse_frontmatter(content).unwrap_or_else(|e| {
+                panic!("builtin skill '{}' has invalid frontmatter: {}", name, e)
+            });
+            assert_eq!(&metadata.name, name, "frontmatter name must match slug");
+            assert!(!metadata.description.is_empty());
+            assert!(!body.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_ensure_builtin_skills_seeds_and_restores() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+
+        // First call seeds from scratch.
+        SkillsClient::ensure_builtin_skills(&skills_dir);
+        let seeded = skills_dir.join("about-biorouter").join("SKILL.md");
+        assert!(seeded.exists(), "builtin skill should be seeded");
+
+        // Stale content is refreshed.
+        fs::write(&seeded, "outdated").unwrap();
+        SkillsClient::ensure_builtin_skills(&skills_dir);
+        let refreshed = fs::read_to_string(&seeded).unwrap();
+        assert!(refreshed.contains("name: about-biorouter"));
+
+        // Deletion is undone on the next call.
+        fs::remove_dir_all(skills_dir.join("about-biorouter")).unwrap();
+        SkillsClient::ensure_builtin_skills(&skills_dir);
+        assert!(
+            seeded.exists(),
+            "builtin skill should be restored after deletion"
         );
     }
 }

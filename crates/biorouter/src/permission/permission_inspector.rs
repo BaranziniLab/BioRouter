@@ -108,6 +108,7 @@ impl ToolInspector for PermissionInspector {
         tool_requests: &[ToolRequest],
         _messages: &[Message],
         biorouter_mode: BioRouterMode,
+        _session: &crate::session::Session,
     ) -> Result<Vec<InspectionResult>> {
         let mut results = Vec::new();
         let permission_manager = &self.permission_manager;

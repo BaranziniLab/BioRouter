@@ -49,6 +49,7 @@ pub const CHAT_MODE_TOOL_SKIPPED_RESPONSE: &str = "Let the user know the tool ca
                                         If needed, adjust the explanation based on user preferences or questions.";
 
 impl Agent {
+    #[allow(clippy::too_many_lines)]
     pub(crate) fn handle_approval_tool_requests<'a>(
         &'a self,
         tool_requests: &'a [ToolRequest],
@@ -61,6 +62,91 @@ impl Agent {
         try_stream! {
         for request in tool_requests.iter() {
             if let Ok(tool_call) = request.tool_call.clone() {
+                // PermissionRequest hooks may resolve the approval without
+                // prompting the user (allow -> dispatch, deny -> declined).
+                let hook_decision = {
+                    let tool_input = tool_call
+                        .arguments
+                        .clone()
+                        .map(serde_json::Value::Object)
+                        .unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()));
+                    let aggregate = self
+                        .hooks_manager
+                        .permission_request(&session.id, &session.working_dir, &tool_call.name, &tool_input)
+                        .await;
+                    aggregate.decision
+                };
+
+                match hook_decision {
+                    Some(crate::hooks::HookDecision::Allow { reason }) => {
+                        tracing::info!(
+                            tool_name = %tool_call.name,
+                            reason = reason.as_deref().unwrap_or(""),
+                            "PermissionRequest hook auto-approved tool call"
+                        );
+                        let (req_id, tool_result) = self.dispatch_tool_call(tool_call.clone(), request.id.clone(), cancellation_token.clone(), session).await;
+                        let mut futures = tool_futures.lock().await;
+                        futures.push((req_id, match tool_result {
+                            Ok(result) => tool_stream(
+                                result.notification_stream.unwrap_or_else(|| Box::new(stream::empty())),
+                                result.result,
+                            ),
+                            Err(e) => tool_stream(
+                                Box::new(stream::empty()),
+                                futures::future::ready(Err(e)),
+                            ),
+                        }));
+                        continue;
+                    }
+                    Some(crate::hooks::HookDecision::Deny { reason }) => {
+                        tracing::info!(
+                            tool_name = %tool_call.name,
+                            reason = %reason,
+                            "PermissionRequest hook denied tool call"
+                        );
+                        if let Some(response_msg) = request_to_response_map.get(&request.id) {
+                            let mut response = response_msg.lock().await;
+                            *response = response.clone().with_tool_response_with_metadata(
+                                request.id.clone(),
+                                Ok(rmcp::model::CallToolResult {
+                                    content: vec![Content::text(format!(
+                                        "{DECLINED_RESPONSE}\n\nHook feedback: {reason}"
+                                    ))],
+                                    structured_content: None,
+                                    is_error: Some(true),
+                                    meta: None,
+                                }),
+                                request.metadata.as_ref(),
+                            );
+                        }
+                        yield Message::assistant()
+                            .with_system_notification(
+                                crate::conversation::message::SystemNotificationType::InlineMessage,
+                                format!("Hook denied permission for {}: {}", tool_call.name, reason),
+                            )
+                            .user_only();
+                        continue;
+                    }
+                    _ => {}
+                }
+
+                // No hook decision: notify hooks that a permission prompt is
+                // being shown, then fall through to the normal confirmation.
+                {
+                    let mut payload = crate::hooks::HookPayload::new(
+                        crate::hooks::HookEvent::Notification,
+                        &session.id,
+                        session.working_dir.to_string_lossy(),
+                    );
+                    payload.message = Some(format!("Permission required for {}", tool_call.name));
+                    self.hooks_manager.fire(
+                        crate::hooks::HookEvent::Notification,
+                        Some("permission_prompt".to_string()),
+                        payload,
+                        session.working_dir.clone(),
+                    );
+                }
+
                 // Find the corresponding inspection result for this tool request
                 let security_message = inspection_results.iter()
                     .find(|result| result.tool_request_id == request.id)

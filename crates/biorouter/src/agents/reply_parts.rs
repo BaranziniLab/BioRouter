@@ -139,8 +139,6 @@ impl Agent {
 
         // Prepare system prompt
         let extensions_info = self.extension_manager.get_extensions_info().await;
-        let (extension_count, tool_count) =
-            self.extension_manager.get_extension_and_tool_counts().await;
 
         // Get model name from provider
         let provider = self.provider().await?;
@@ -151,7 +149,6 @@ impl Agent {
             .builder()
             .with_extensions(extensions_info.into_iter())
             .with_frontend_instructions(self.frontend_instructions.lock().await.clone())
-            .with_extension_and_tool_counts(extension_count, tool_count)
             .with_code_execution_mode(code_execution_active)
             .with_hints(working_dir)
             .with_enable_subagents(self.subagents_enabled(session_id).await)

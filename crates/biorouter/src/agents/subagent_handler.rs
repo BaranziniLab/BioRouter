@@ -116,6 +116,7 @@ pub async fn run_complete_subagent_task(
     Ok(response_text)
 }
 
+#[allow(clippy::too_many_lines)]
 fn get_agent_messages(
     config: AgentConfig,
     workflow: Workflow,
@@ -131,6 +132,26 @@ fn get_agent_messages(
             .unwrap_or_else(|| "Begin.".to_string());
 
         let agent = Arc::new(Agent::with_config(config));
+        let parent_working_dir = task_config.parent_working_dir.clone();
+
+        // SubagentStart hook (observe-only). The child agent fires its own
+        // tool/stop hooks while it runs.
+        {
+            let hooks = agent.hooks_manager();
+            let mut payload = crate::hooks::HookPayload::new(
+                crate::hooks::HookEvent::SubagentStart,
+                &task_config.parent_session_id,
+                parent_working_dir.to_string_lossy(),
+            );
+            payload.subagent_id = Some(session_id.clone());
+            payload.message = Some(system_instructions.chars().take(500).collect());
+            hooks.fire(
+                crate::hooks::HookEvent::SubagentStart,
+                None,
+                payload,
+                parent_working_dir.clone(),
+            );
+        }
 
         agent
             .update_provider(task_config.provider, &session_id)

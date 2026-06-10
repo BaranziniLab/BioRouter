@@ -14,9 +14,6 @@ use crate::{
 };
 use std::path::Path;
 
-const MAX_EXTENSIONS: usize = 10;
-const MAX_TOOLS: usize = 50;
-
 pub struct PromptManager {
     system_prompt_override: Option<String>,
     system_prompt_extras: Vec<String>,
@@ -33,13 +30,9 @@ impl Default for PromptManager {
 struct SystemPromptContext {
     extensions: Vec<ExtensionInfo>,
     current_date_time: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    extension_tool_limits: Option<(usize, usize)>,
     biorouter_mode: BioRouterMode,
     is_autonomous: bool,
     enable_subagents: bool,
-    max_extensions: usize,
-    max_tools: usize,
     code_execution_mode: bool,
 }
 
@@ -48,7 +41,6 @@ pub struct SystemPromptBuilder<'a, M> {
 
     extensions_info: Vec<ExtensionInfo>,
     frontend_instructions: Option<String>,
-    extension_tool_count: Option<(usize, usize)>,
     subagents_enabled: bool,
     hints: Option<String>,
     code_execution_mode: bool,
@@ -69,15 +61,6 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
 
     pub fn with_frontend_instructions(mut self, frontend_instructions: Option<String>) -> Self {
         self.frontend_instructions = frontend_instructions;
-        self
-    }
-
-    pub fn with_extension_and_tool_counts(
-        mut self,
-        extension_count: usize,
-        tool_count: usize,
-    ) -> Self {
-        self.extension_tool_count = Some((extension_count, tool_count));
         self
     }
 
@@ -143,19 +126,12 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         let config = Config::global();
         let biorouter_mode = config.get_biorouter_mode().unwrap_or(BioRouterMode::Auto);
 
-        let extension_tool_limits = self
-            .extension_tool_count
-            .filter(|(extensions, tools)| *extensions > MAX_EXTENSIONS || *tools > MAX_TOOLS);
-
         let context = SystemPromptContext {
             extensions: sanitized_extensions_info,
             current_date_time: self.manager.current_date_timestamp.clone(),
-            extension_tool_limits,
             biorouter_mode,
             is_autonomous: biorouter_mode == BioRouterMode::Auto,
             enable_subagents: self.subagents_enabled,
-            max_extensions: MAX_EXTENSIONS,
-            max_tools: MAX_TOOLS,
             code_execution_mode: self.code_execution_mode,
         };
 
@@ -166,7 +142,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             prompt_template::render_global_file("system.md", &context)
         }
         .unwrap_or_else(|_| {
-            "You are a general-purpose AI agent called biorouter, created by Wanjun Gu from the Baranzini lab at UCSF".to_string()
+            "You are Biorouter, a general-purpose AI agent and integrated research environment for biomedical discovery, created by Wanjun Gu and the Baranzini Lab at UCSF".to_string()
         });
 
         let mut system_prompt_extras = self.manager.system_prompt_extras.clone();
@@ -236,7 +212,6 @@ impl PromptManager {
 
             extensions_info: vec![],
             frontend_instructions: None,
-            extension_tool_count: None,
             subagents_enabled: false,
             hints: None,
             code_execution_mode: false,
@@ -379,7 +354,6 @@ mod tests {
                 "<instructions on how to use extension B (no resources)>",
                 false,
             ))
-            .with_extension_and_tool_counts(MAX_EXTENSIONS + 1, MAX_TOOLS + 1)
             .build();
 
         assert_snapshot!(system_prompt)
