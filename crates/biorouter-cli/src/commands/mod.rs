@@ -1,9 +1,14 @@
 pub mod bench;
 pub mod configure;
+pub mod doctor;
+pub mod extension;
 pub mod info;
+pub mod knowledge;
+pub mod models;
 pub mod project;
 pub mod schedule;
 pub mod session;
+pub mod skill;
 pub mod term;
 pub mod update;
 pub mod web;

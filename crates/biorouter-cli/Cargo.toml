@@ -45,6 +45,10 @@ async-trait = "0.1.89"
 base64 = "0.22.1"
 regex = "1.11.1"
 tar = "0.4"
+zip = "0.6"
+ratatui = "0.29"
+crossterm = { version = "0.28", features = ["event-stream"] }
+unicode-width = "0.2"
 # Web server dependencies
 axum = { version = "0.8.1", features = ["ws", "macros"] }
 tower-http = { version = "0.5", features = ["cors", "fs", "auth"] }
