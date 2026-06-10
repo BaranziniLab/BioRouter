@@ -1,6 +1,7 @@
 use crate::knowledge::{
     convert::SourceInput,
     service::KnowledgeService,
+    store::SearchScope,
     types::{ChangeKind, Manifest},
 };
 use anyhow::Result;
@@ -59,6 +60,22 @@ pub struct CreateBaseParams {
     pub name: String,
     #[serde(default)]
     pub color: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExportArchiveParams {
+    /// Knowledge base id to export.
+    pub kb_id: String,
+    /// Absolute file path to write the `.brkb` archive to. If omitted, a file
+    /// named `<kb_id>.brkb` is written to the system temp directory.
+    #[serde(default)]
+    pub dest_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ImportArchiveParams {
+    /// Absolute path to the `.brkb` archive file to import.
+    pub src_path: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -163,6 +180,8 @@ pub struct SearchParams {
     pub query: String,
     #[serde(default = "default_search_limit")]
     pub limit: usize,
+    #[serde(default)]
+    pub include_raw_sources: bool,
 }
 
 fn default_search_limit() -> usize {
@@ -274,12 +293,13 @@ impl KnowledgeServer {
         query: &str,
         limit: usize,
         session_id: Option<&str>,
+        scope: SearchScope,
     ) -> Result<Vec<SearchHitWithKb>, ErrorData> {
         let mut hits = Vec::new();
         for base in self.visible_bases_for_session(session_id)? {
             let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &base.id);
-            let kb_hits =
-                crate::knowledge::store::search(&kb_root, query, limit).map_err(into_err)?;
+            let kb_hits = crate::knowledge::store::search_with_scope(&kb_root, query, limit, scope)
+                .map_err(into_err)?;
             hits.extend(kb_hits.into_iter().map(|hit| SearchHitWithKb {
                 kb_id: base.id.clone(),
                 path: hit.path,
@@ -415,6 +435,15 @@ impl KnowledgeServer {
             None,
         )
         .map_err(into_err)?;
+        // Keep the derived graph cache in sync after a page write. Without
+        // this, pages authored from chat (via this tool) never appear in the
+        // Knowledge graph view: get_graph returns the empty cache written at
+        // create time, and the "Refresh graph" button only re-reads that
+        // cache. add_raw_source already rebuilds for the GUI ingest path; do
+        // the same here so chat-curated KBs visualize their pages/links.
+        self.service
+            .rebuild_graph_cache(&p.kb_id)
+            .map_err(into_err)?;
         ok_json(&serde_json::json!({ "commit_sha": sha }))
     }
 
@@ -545,7 +574,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_search",
-        description = "BM25 full-text search over knowledge pages and raw source documents. Omit kb_id to search all knowledge bases visible to this session."
+        description = "BM25 full-text search over curated knowledge pages. Omit kb_id to search all visible knowledge bases. Set include_raw_sources=true only when the user explicitly asks to inspect/search original raw sources."
     )]
     pub async fn kb_search(
         &self,
@@ -553,9 +582,14 @@ impl KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = p.0;
+        let scope = if p.include_raw_sources {
+            SearchScope::All
+        } else {
+            SearchScope::Knowledge
+        };
         let hits = if let Some(kb_id) = p.kb_id {
             let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
-            crate::knowledge::store::search(&kb_root, &p.query, p.limit)
+            crate::knowledge::store::search_with_scope(&kb_root, &p.query, p.limit, scope)
                 .map_err(into_err)?
                 .into_iter()
                 .map(|hit| SearchHitWithKb {
@@ -566,7 +600,45 @@ impl KnowledgeServer {
                 })
                 .collect::<Vec<_>>()
         } else {
-            self.search_visible_bases(&p.query, p.limit, Self::session_id(Some(&context)))?
+            self.search_visible_bases(&p.query, p.limit, Self::session_id(Some(&context)), scope)?
+        };
+        ok_json(&hits)
+    }
+
+    #[tool(
+        name = "kb_search_raw_sources",
+        description = "BM25 full-text search over original raw source markdown only. Use this rarely, when the user specifically asks for raw/original/source-document evidence instead of the curated knowledge graph."
+    )]
+    pub async fn kb_search_raw_sources(
+        &self,
+        p: Parameters<SearchParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = p.0;
+        let hits = if let Some(kb_id) = p.kb_id {
+            let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
+            crate::knowledge::store::search_with_scope(
+                &kb_root,
+                &p.query,
+                p.limit,
+                SearchScope::RawSources,
+            )
+            .map_err(into_err)?
+            .into_iter()
+            .map(|hit| SearchHitWithKb {
+                kb_id: kb_id.clone(),
+                path: hit.path,
+                score: hit.score,
+                snippet: hit.snippet,
+            })
+            .collect::<Vec<_>>()
+        } else {
+            self.search_visible_bases(
+                &p.query,
+                p.limit,
+                Self::session_id(Some(&context)),
+                SearchScope::RawSources,
+            )?
         };
         ok_json(&hits)
     }
@@ -623,6 +695,48 @@ impl KnowledgeServer {
     ) -> Result<CallToolResult, ErrorData> {
         let v = self.active_kb_for_context(Some(&context)).await?;
         ok_json(&serde_json::json!({ "active_kb": v }))
+    }
+
+    #[tool(
+        name = "kb_export",
+        description = "Export a knowledge base to a .brkb archive file on disk. Returns the absolute path written."
+    )]
+    pub async fn kb_export(
+        &self,
+        p: Parameters<ExportArchiveParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = p.0;
+        let _lock = self.service.lock_kb(&p.kb_id).await.map_err(into_err)?;
+        let bytes = self.service.export_brkb(&p.kb_id).map_err(into_err)?;
+        let dest = match p.dest_path {
+            Some(path) => std::path::PathBuf::from(path),
+            None => std::env::temp_dir().join(format!("{}.brkb", p.kb_id)),
+        };
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| into_err(anyhow::anyhow!("create export dir: {e}")))?;
+        }
+        std::fs::write(&dest, &bytes).map_err(|e| into_err(anyhow::anyhow!("write .brkb: {e}")))?;
+        ok_json(&serde_json::json!({
+            "kb_id": p.kb_id,
+            "path": dest.to_string_lossy(),
+            "bytes": bytes.len(),
+        }))
+    }
+
+    #[tool(
+        name = "kb_import",
+        description = "Import a .brkb archive file from disk as a new knowledge base. Returns the new knowledge base id."
+    )]
+    pub async fn kb_import(
+        &self,
+        p: Parameters<ImportArchiveParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = p.0;
+        let bytes = std::fs::read(&p.src_path)
+            .map_err(|e| into_err(anyhow::anyhow!("read .brkb '{}': {e}", p.src_path)))?;
+        let new_id = self.service.import_brkb(&bytes).map_err(into_err)?;
+        ok_json(&serde_json::json!({ "imported_kb_id": new_id }))
     }
 }
 
@@ -720,7 +834,12 @@ mod tests {
             .service
             .set_hidden_for_session("session-a", &["hidden".to_string()])?;
 
-        let hits = server.search_visible_bases("shared topic", 10, Some("session-a"))?;
+        let hits = server.search_visible_bases(
+            "shared topic",
+            10,
+            Some("session-a"),
+            SearchScope::Knowledge,
+        )?;
         let kb_ids = hits.into_iter().map(|hit| hit.kb_id).collect::<Vec<_>>();
         assert!(kb_ids.contains(&"alpha".to_string()));
         assert!(kb_ids.contains(&"beta".to_string()));

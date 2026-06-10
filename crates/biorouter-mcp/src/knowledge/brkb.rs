@@ -114,6 +114,18 @@ pub fn import<R: Read + Seek>(zip_bytes: R, knowledge_root: &Path) -> Result<Str
             std::io::copy(&mut entry, &mut f)?;
         }
     }
+    // The archived manifest carries the *original* base id. When the import
+    // landed under a deduplicated id (a collision with an existing base),
+    // rewrite the manifest so its `id` matches the new folder / registry id.
+    // Otherwise the registry points at `<id>` while the manifest still says
+    // `<original_id>`, so the UI lists the imported base under the original id
+    // and it visually collides with the source base.
+    if id != original_id {
+        if let Ok(mut m) = crate::knowledge::manifest::load(&target) {
+            m.id = id.clone();
+            crate::knowledge::manifest::save(&target, &m)?;
+        }
+    }
     Ok(id)
 }
 

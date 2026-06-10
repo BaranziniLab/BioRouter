@@ -45,7 +45,11 @@ export function KBSelectorPalette({ onClose }: Props) {
 
   useEffect(() => {
     searchRef.current?.focus();
-  }, []);
+    // Re-fetch the base list every time the palette opens so knowledge bases
+    // created elsewhere (e.g. via chat / the knowledge MCP tools) appear here
+    // without requiring a full app reload.
+    void refresh();
+  }, [refresh]);
 
   const filtered = useMemo(() => {
     const value = query.trim().toLowerCase();
