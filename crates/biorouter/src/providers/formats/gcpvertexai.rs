@@ -71,24 +71,30 @@ pub enum ModelError {
 }
 
 /// Default model for GCP Vertex AI.
-pub const DEFAULT_MODEL: &str = "gemini-2.5-flash";
+pub const DEFAULT_MODEL: &str = "gemini-3.5-flash";
 
+// Verified against the Vertex AI partner-model docs (June 2026). Claude 4.6+
+// models have no @date suffix on Vertex; older ones keep it. Removed:
+// claude-opus-4@20250514 / claude-sonnet-4@20250514 (retired Jun 15, 2026),
+// claude-opus-4-1@20250805 (deprecated, retires Aug 2026), claude-3-5-haiku /
+// claude-3-haiku (retired), gemini-2.0-flash(-lite) (discontinued Jun 1, 2026).
 pub const KNOWN_MODELS: &[&str] = &[
+    "claude-fable-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-4-6",
     "claude-opus-4-5@20251101",
     "claude-sonnet-4-5@20250929",
-    "claude-opus-4-1@20250805",
     "claude-haiku-4-5@20251001",
-    "claude-opus-4@20250514",
-    "claude-sonnet-4@20250514",
-    "claude-3-5-haiku@20241022",
-    "claude-3-haiku@20240307",
+    "gemini-3.5-flash",
+    "gemini-3.1-pro",
+    "gemini-3.1-flash-lite",
     "gemini-3-pro",
     "gemini-3-flash",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
 ];
 
 /// Represents available GCP Vertex AI models for biorouter.

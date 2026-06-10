@@ -774,7 +774,7 @@ mod tests {
                 "claude-sonnet-4-6",
                 "Anthropic Claude Sonnet 4.6",
             ),
-            (OpenAiProvider::metadata(), "gpt-4o", "OpenAI GPT-4o"),
+            (OpenAiProvider::metadata(), "gpt-5.5", "OpenAI GPT-5.5"),
             (
                 GoogleProvider::metadata(),
                 "gemini-2.5-pro",

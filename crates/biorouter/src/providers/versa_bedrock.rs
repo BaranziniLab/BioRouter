@@ -15,8 +15,7 @@ use super::formats::bedrock::{
     from_bedrock_message, from_bedrock_usage, to_bedrock_message, to_bedrock_tool_config,
 };
 
-pub const VERSA_BEDROCK_DOC_LINK: &str =
-    "https://baranzinilab.github.io/biorouter-landing/docs.html";
+pub const VERSA_BEDROCK_DOC_LINK: &str = "http://biorouter.ucsf.edu/docs";
 pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-6-v1";
 // Ordered newest → oldest. The UI auto-selects the first entry as the default
 // model when switching providers. Model IDs follow the AWS Bedrock format
@@ -30,15 +29,15 @@ pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-6-v1";
 // for them; users can still type a newer ID via the "Enter a model not
 // listed..." option once UCSF enables it.
 pub const VERSA_BEDROCK_KNOWN_MODELS: &[&str] = &[
-    // Claude 4.6
+    // Claude 4.6 (1M context)
     "us.anthropic.claude-opus-4-6-v1",
     "us.anthropic.claude-sonnet-4-6",
-    // Claude 4.5
+    // Claude 4.5 (200K context)
     "us.anthropic.claude-opus-4-5-20251101-v1:0",
-    // Haiku 4.5
+    // Haiku 4.5 (200K context)
     "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-    // Sonnet 4 (legacy — still entitled)
-    "us.anthropic.claude-sonnet-4-20250514-v1:0",
+    // Sonnet 4 removed: Anthropic retires claude-sonnet-4-20250514 on
+    // June 15, 2026 (Bedrock marked it Legacy in April 2026).
 ];
 
 // UCSF MuleSoft Bedrock proxy. UCSF-issued access keys are signed against this

@@ -16,26 +16,24 @@ use async_trait::async_trait;
 use rmcp::model::Tool;
 use serde_json::Value;
 pub const XAI_API_HOST: &str = "https://api.x.ai/v1";
-pub const XAI_DEFAULT_MODEL: &str = "grok-code-fast-1";
+// Verified against docs.x.ai (June 2026). xAI retired the entire grok-2 /
+// grok-3 / grok-4-0709 / grok-code-fast-1 lineup on (or before) May 15, 2026;
+// retired slugs auto-redirect to grok-4.3 at grok-4.3 pricing.
+pub const XAI_DEFAULT_MODEL: &str = "grok-4.3";
 pub const XAI_KNOWN_MODELS: &[&str] = &[
-    "grok-code-fast-1",
-    "grok-4-0709",
-    "grok-3",
-    "grok-3-fast",
-    "grok-3-mini",
-    "grok-3-mini-fast",
-    "grok-2-vision-1212",
-    "grok-2-image-1212",
-    "grok-3-latest",
-    "grok-3-fast-latest",
-    "grok-3-mini-latest",
-    "grok-3-mini-fast-latest",
-    "grok-2-vision",
-    "grok-2-vision-latest",
-    "grok-2-image",
-    "grok-2-image-latest",
-    "grok-2",
-    "grok-2-latest",
+    // Flagship (1M context)
+    "grok-4.3",
+    "grok-4.3-latest",
+    "grok-latest",
+    // grok-4.20 family (1M context)
+    "grok-4.20-0309-reasoning",
+    "grok-4.20-0309-non-reasoning",
+    "grok-4.20-multi-agent-0309",
+    // Fast agentic coding (256K context; successor to grok-code-fast-1)
+    "grok-build-0.1",
+    // Image generation
+    "grok-imagine-image",
+    "grok-imagine-image-quality",
 ];
 
 pub const XAI_DOC_URL: &str = "https://docs.x.ai/docs/overview";

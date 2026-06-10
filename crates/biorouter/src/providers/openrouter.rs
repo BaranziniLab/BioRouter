@@ -17,22 +17,27 @@ use crate::providers::formats::openai::{create_request, get_usage};
 use crate::providers::formats::openrouter as openrouter_format;
 use rmcp::model::Tool;
 
-pub const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4";
-pub const OPENROUTER_DEFAULT_FAST_MODEL: &str = "google/gemini-2.5-flash";
+pub const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-4.6";
+pub const OPENROUTER_DEFAULT_FAST_MODEL: &str = "google/gemini-3.5-flash";
 pub const OPENROUTER_MODEL_PREFIX_ANTHROPIC: &str = "anthropic";
 
-// OpenRouter can run many models, we suggest the default
+// OpenRouter can run many models; this is a curated list of current,
+// tool-capable slugs verified against the live /api/v1/models catalog
+// (June 2026). x-ai/grok-code-fast-1 was removed from OpenRouter.
 pub const OPENROUTER_KNOWN_MODELS: &[&str] = &[
-    "x-ai/grok-code-fast-1",
-    "anthropic/claude-sonnet-4.5",
-    "anthropic/claude-sonnet-4",
-    "anthropic/claude-opus-4.1",
-    "anthropic/claude-opus-4",
-    "google/gemini-2.5-pro",
-    "google/gemini-2.5-flash",
-    "deepseek/deepseek-r1-0528",
-    "qwen/qwen3-coder",
-    "moonshotai/kimi-k2",
+    "anthropic/claude-opus-4.8",
+    "anthropic/claude-sonnet-4.6",
+    "anthropic/claude-haiku-4.5",
+    "google/gemini-3.1-pro-preview",
+    "google/gemini-3.5-flash",
+    "x-ai/grok-4.3",
+    "x-ai/grok-build-0.1",
+    "deepseek/deepseek-v4-pro",
+    "deepseek/deepseek-v4-flash",
+    "qwen/qwen3-coder-next",
+    "moonshotai/kimi-k2.6",
+    "z-ai/glm-5.1",
+    "minimax/minimax-m3",
 ];
 pub const OPENROUTER_DOC_URL: &str = "https://openrouter.ai/models";
 

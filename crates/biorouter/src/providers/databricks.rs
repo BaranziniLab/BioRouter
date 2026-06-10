@@ -33,14 +33,24 @@ const DEFAULT_REDIRECT_URL: &str = "http://localhost";
 const DEFAULT_SCOPES: &[&str] = &["all-apis", "offline_access"];
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
 
-pub const DATABRICKS_DEFAULT_MODEL: &str = "databricks-claude-sonnet-4";
-const DATABRICKS_DEFAULT_FAST_MODEL: &str = "gemini-2-5-flash";
+// Verified against the Databricks Foundation Model APIs supported-models page
+// (June 2026). Removed retired pay-per-token endpoints: claude-3-7-sonnet
+// (Apr 12, 2026), meta-llama-3-1-405b-instruct (Feb 15, 2026), dbrx-instruct
+// (Apr 30, 2025).
+pub const DATABRICKS_DEFAULT_MODEL: &str = "databricks-claude-sonnet-4-6";
+const DATABRICKS_DEFAULT_FAST_MODEL: &str = "databricks-gemini-3-5-flash";
 pub const DATABRICKS_KNOWN_MODELS: &[&str] = &[
+    "databricks-claude-sonnet-4-6",
+    "databricks-claude-opus-4-8",
+    "databricks-claude-opus-4-6",
     "databricks-claude-sonnet-4-5",
-    "databricks-claude-3-7-sonnet",
+    "databricks-claude-haiku-4-5",
+    "databricks-gpt-5-5",
+    "databricks-gpt-5-4",
+    "databricks-gemini-3-5-flash",
+    "databricks-gemini-3-1-pro",
     "databricks-meta-llama-3-3-70b-instruct",
-    "databricks-meta-llama-3-1-405b-instruct",
-    "databricks-dbrx-instruct",
+    "databricks-llama-4-maverick",
 ];
 
 pub const DATABRICKS_DOC_URL: &str =

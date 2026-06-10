@@ -26,27 +26,33 @@ use crate::model::ModelConfig;
 use crate::providers::base::{ConfigKey, MessageStream};
 use rmcp::model::Tool;
 
-pub const GITHUB_COPILOT_DEFAULT_MODEL: &str = "gpt-4.1";
+// Verified against docs.github.com supported-models (June 2026). GitHub made
+// gpt-5.3-codex the Copilot base/LTS model on Mar 18, 2026 and removed
+// gpt-4.1 (Jun 1, 2026), gpt-4o, gpt-5, gpt-5-codex, claude-sonnet-4, and
+// grok-code-fast-1 from Copilot Chat.
+pub const GITHUB_COPILOT_DEFAULT_MODEL: &str = "gpt-5.3-codex";
 pub const GITHUB_COPILOT_KNOWN_MODELS: &[&str] = &[
-    "gpt-4.1",
+    "gpt-5.3-codex",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
     "gpt-5-mini",
-    "gpt-5",
-    "gpt-4o",
-    "grok-code-fast-1",
-    "gpt-5-codex",
-    "claude-sonnet-4",
+    "claude-opus-4.8",
+    "claude-sonnet-4.6",
     "claude-sonnet-4.5",
     "claude-haiku-4.5",
+    "gemini-3.5-flash",
     "gemini-2.5-pro",
 ];
 
 pub const GITHUB_COPILOT_STREAM_MODELS: &[&str] = &[
-    "gpt-4.1",
-    "gpt-5",
+    "gpt-5.3-codex",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
     "gpt-5-mini",
-    "gpt-5-codex",
+    "gemini-3.5-flash",
     "gemini-2.5-pro",
-    "grok-code-fast-1",
 ];
 
 const GITHUB_COPILOT_DOC_URL: &str =

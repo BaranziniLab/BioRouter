@@ -15,26 +15,36 @@ use crate::model::ModelConfig;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
-pub const AZURE_DEFAULT_MODEL: &str = "gpt-5.2-2025-12-11";
+// gpt-5.4 (GA, retires 2027-03-05) is the default: gpt-5.5 is newer but may
+// require a quota request below Tier 5/6 on Azure.
+pub const AZURE_DEFAULT_MODEL: &str = "gpt-5.4-2026-03-05";
 pub const AZURE_DOC_URL: &str =
     "https://learn.microsoft.com/en-us/azure/ai-services/openai/concepts/models";
-// Use 2025-01-01-preview to support o1/o3-mini/o4-mini alongside GPT models.
+// Use 2025-01-01-preview to support o-series alongside GPT models.
 pub const AZURE_DEFAULT_API_VERSION: &str = "2025-01-01-preview";
-// Verified working on UCSF unified-api.ucsf.edu/general Azure proxy (April 2026).
+// Verified against the Azure Foundry model catalog + retirement schedule
+// (June 2026). Removed (Azure-deprecated): o1-2024-12-17 (retires 2026-07-15),
+// o3-mini-2025-01-31 (retires 2026-08-02).
 // Deployment names must match the exact deployment name configured in the Azure OpenAI resource.
-// o-series models require API version >= 2024-12-01-preview.
 pub const AZURE_OPENAI_KNOWN_MODELS: &[&str] = &[
-    // GPT-5 (latest)
+    // GPT-5.5 (flagship; may need a quota request on lower tiers)
+    "gpt-5.5-2026-04-24",
+    // GPT-5.4 family
+    "gpt-5.4-2026-03-05",
+    "gpt-5.4-mini-2026-03-17",
+    "gpt-5.4-nano-2026-03-17",
+    // GPT-5.x previous generation (still GA)
     "gpt-5.2-2025-12-11",
-    // GPT-4.1 family
+    "gpt-5.1-2025-11-13",
+    "gpt-5-2025-08-07",
+    // GPT-4.1 family (GA until 2026-10-14)
     "gpt-4.1-2025-04-14",
     "gpt-4.1-mini-2025-04-14",
-    // GPT-4o
+    // GPT-4o (GA until 2026-10-01)
     "gpt-4o-2024-11-20",
     // o-series reasoning models (requires API version >= 2024-12-01-preview)
     "o4-mini-2025-04-16",
-    "o3-mini-2025-01-31",
-    "o1-2024-12-17",
+    "o3-2025-04-16",
 ];
 
 #[derive(Debug)]

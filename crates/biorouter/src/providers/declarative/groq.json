@@ -19,7 +19,15 @@
       "context_limit": 131072
     },
     {
-      "name": "meta-llama/llama-guard-4-12b",
+      "name": "openai/gpt-oss-safeguard-20b",
+      "context_limit": 131072
+    },
+    {
+      "name": "groq/compound",
+      "context_limit": 131072
+    },
+    {
+      "name": "groq/compound-mini",
       "context_limit": 131072
     },
     {
