@@ -133,7 +133,29 @@ release-intel:
     cargo build --release --target x86_64-apple-darwin
     @just copy-binary-intel
 
+# Sign locally built binaries with the Developer ID (when the identity is in
+# the keychain) so the macOS Keychain "Always Allow" grant survives rebuilds.
+# Unsigned dev binaries carry a per-build cdhash requirement, so the Keychain
+# treats every rebuild as a new app and prompts again; a Developer ID
+# signature pins a stable designated requirement (team + identifier) instead.
+# No-op on non-macOS or when no identity is installed.
+sign-dev-binaries BUILD_MODE="release":
+    #!/usr/bin/env sh
+    [ "$(uname)" = "Darwin" ] || exit 0
+    IDENTITY=$(security find-identity -v -p codesigning 2>/dev/null | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')
+    if [ -z "$IDENTITY" ]; then
+        echo "No Developer ID identity in keychain; dev binaries stay ad-hoc signed (Keychain will re-prompt after rebuilds)"
+        exit 0
+    fi
+    for bin in biorouterd biorouter; do
+        if [ -f "./target/{{BUILD_MODE}}/$bin" ]; then
+            codesign --force --sign "$IDENTITY" "./target/{{BUILD_MODE}}/$bin" && \
+                echo "Signed target/{{BUILD_MODE}}/$bin (stable Keychain identity)"
+        fi
+    done
+
 copy-binary BUILD_MODE="release":
+    @just sign-dev-binaries {{BUILD_MODE}}
     @mkdir -p ./ui/desktop/src/bin
     @if [ -f ./target/{{BUILD_MODE}}/biorouterd ]; then \
         echo "Copying biorouterd binary from target/{{BUILD_MODE}}..."; \
