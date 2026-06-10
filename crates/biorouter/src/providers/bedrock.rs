@@ -23,18 +23,24 @@ pub const BEDROCK_DOC_LINK: &str =
     "https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html";
 
 pub const BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-sonnet-4-6";
-// Verified working on UCSF MuleSoft Bedrock proxy (April 2026).
-// Short-form IDs (e.g. claude-sonnet-4-6) are cross-region inference profiles accepted by the proxy.
+// Verified against AWS Bedrock model cards + lifecycle page (June 2026).
+// Short-form IDs (e.g. claude-sonnet-4-6) are cross-region inference profiles.
 // Versioned IDs (v1:0 suffix) are the full inference-profile ARN names.
+// Removed: claude-sonnet-4-20250514 (Bedrock Legacy since Apr 2026, retired
+// by Anthropic Jun 15, 2026) and claude-opus-4-1 (deprecated, retires Aug
+// 2026). Opus 4.7/4.8/Fable 5 are only served via the newer bedrock-mantle
+// Messages API path and have no us.* inference-profile IDs.
 pub const BEDROCK_KNOWN_MODELS: &[&str] = &[
-    // Claude Sonnet 4.6 — latest, preferred default
+    // Claude Sonnet 4.6 — latest, preferred default (1M context)
     "us.anthropic.claude-sonnet-4-6",
-    // Claude Sonnet 4.0 (May 2025 versioned ID)
-    "us.anthropic.claude-sonnet-4-20250514-v1:0",
-    // Claude Opus 4.5 (Nov 2025 versioned ID)
+    // Claude Opus 4.6 (1M context)
+    "us.anthropic.claude-opus-4-6-v1",
+    // Claude Opus 4.5 (Nov 2025 versioned ID, 200K)
     "us.anthropic.claude-opus-4-5-20251101-v1:0",
-    // Claude Opus 4.1 (Aug 2025 versioned ID)
-    "us.anthropic.claude-opus-4-1-20250805-v1:0",
+    // Claude Sonnet 4.5 (Sep 2025 versioned ID, 200K)
+    "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+    // Claude Haiku 4.5 (Oct 2025 versioned ID, 200K)
+    "us.anthropic.claude-haiku-4-5-20251001-v1:0",
 ];
 
 pub const BEDROCK_DEFAULT_MAX_RETRIES: usize = 6;

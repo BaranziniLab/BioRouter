@@ -32,38 +32,36 @@ use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
 pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-5.5";
-pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-4.1-mini";
-// Verified working against OpenAI API (April 2026).
+pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-5.4-mini";
+// Verified against OpenAI docs (June 2026). Context windows are per-model
+// pages at developers.openai.com/api/docs/models. Removed (API-deprecated,
+// shutdown 2026): o1, o3-mini, o4-mini, gpt-4.1-nano, gpt-4o, gpt-5.1-codex.
 // Models marked [responses] route to /v1/responses instead of /v1/chat/completions.
 pub const OPEN_AI_KNOWN_MODELS: &[(&str, usize)] = &[
     // GPT-5.5 family [responses] — requires /v1/responses API
-    ("gpt-5.5", 1_047_576),
-    ("gpt-5.5-pro", 1_047_576),
+    ("gpt-5.5", 1_050_000),
+    ("gpt-5.5-pro", 1_050_000),
     // GPT-5.4 family [responses] — requires /v1/responses API
-    ("gpt-5.4", 1_047_576),
-    ("gpt-5.4-pro", 1_047_576),
-    ("gpt-5.4-mini", 1_047_576),
-    ("gpt-5.4-nano", 1_047_576),
-    // GPT-5 family
-    ("gpt-5", 1_047_576),
-    ("gpt-5-2025-08-07", 1_047_576),
-    ("gpt-5-mini", 1_047_576),
-    ("gpt-5-nano", 1_047_576),
-    ("gpt-5.1", 1_047_576),
-    ("gpt-5.1-codex", 400_000), // [responses]
-    ("gpt-5.2", 1_047_576),
+    ("gpt-5.4", 1_050_000),
+    ("gpt-5.4-pro", 1_050_000),
+    ("gpt-5.4-mini", 400_000),
+    ("gpt-5.4-nano", 400_000),
+    // Codex (agentic coding) [responses]
+    ("gpt-5.3-codex", 400_000),
+    // GPT-5 .. 5.2 family (previous generation, still active)
+    ("gpt-5.2", 400_000),
+    ("gpt-5.1", 400_000),
+    ("gpt-5", 400_000),
+    ("gpt-5-2025-08-07", 400_000),
+    ("gpt-5-mini", 400_000),
+    ("gpt-5-nano", 400_000),
     // GPT-4.1 family
     ("gpt-4.1", 1_047_576),
     ("gpt-4.1-mini", 1_047_576),
-    ("gpt-4.1-nano", 1_047_576),
-    // GPT-4o family
-    ("gpt-4o", 128_000),
+    // GPT-4o family (gpt-4o is deprecated; mini remains active)
     ("gpt-4o-mini", 128_000),
-    // o-series reasoning models
-    ("o4-mini", 200_000),
+    // o-series reasoning models (o3 still active)
     ("o3", 200_000),
-    ("o3-mini", 200_000),
-    ("o1", 200_000),
 ];
 
 pub const OPEN_AI_DOC_URL: &str = "https://platform.openai.com/docs/models";
@@ -210,6 +208,7 @@ impl OpenAiProvider {
     fn uses_responses_api(model_name: &str) -> bool {
         model_name.starts_with("gpt-5-codex")
             || model_name.starts_with("gpt-5.1-codex")
+            || model_name.starts_with("gpt-5.3-codex")
             || model_name.starts_with("gpt-5.4")
             || model_name.starts_with("gpt-5.5")
     }
@@ -235,8 +234,8 @@ impl OpenAiProvider {
 impl Provider for OpenAiProvider {
     fn metadata() -> ProviderMetadata {
         // Per OpenAI's published model docs, all GPT-4o, GPT-4.1, GPT-5.x, and
-        // most o-series models accept image inputs. Excluded: gpt-5.1-codex
-        // (codex variant, text-focused) and o3-mini (text-only per OpenAI docs).
+        // most o-series models accept image inputs. Excluded: codex variants
+        // (text-focused).
         const OPEN_AI_VISION_MODELS: &[&str] = &[
             "gpt-5.5",
             "gpt-5.5-pro",
@@ -252,12 +251,8 @@ impl Provider for OpenAiProvider {
             "gpt-5.2",
             "gpt-4.1",
             "gpt-4.1-mini",
-            "gpt-4.1-nano",
-            "gpt-4o",
             "gpt-4o-mini",
-            "o1",
             "o3",
-            "o4-mini",
         ];
         let models = OPEN_AI_KNOWN_MODELS
             .iter()

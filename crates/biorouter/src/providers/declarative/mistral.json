@@ -7,11 +7,27 @@
   "base_url": "https://api.mistral.ai/v1/chat/completions",
   "models": [
     {
-      "name": "mistral-medium-latest",
-      "context_limit": 128000
+      "name": "mistral-medium-3-5",
+      "context_limit": 262144
     },
     {
-      "name": "mistral-small-2506",
+      "name": "mistral-large-2512",
+      "context_limit": 262144
+    },
+    {
+      "name": "mistral-small-2603",
+      "context_limit": 262144
+    },
+    {
+      "name": "devstral-2512",
+      "context_limit": 262144
+    },
+    {
+      "name": "ministral-8b-2512",
+      "context_limit": 262144
+    },
+    {
+      "name": "mistral-medium-latest",
       "context_limit": 128000
     },
     {
@@ -24,22 +40,6 @@
     },
     {
       "name": "codestral-2508",
-      "context_limit": 256000
-    },
-    {
-      "name": "pixtral-large-2411",
-      "context_limit": 128000
-    },
-    {
-      "name": "ministral-8b-2410",
-      "context_limit": 128000
-    },
-    {
-      "name": "mistral-medium-2505",
-      "context_limit": 128000
-    },
-    {
-      "name": "ministral-3b-2410",
       "context_limit": 128000
     }
   ],

@@ -16,14 +16,18 @@ use crate::model::ModelConfig;
 use crate::providers::formats::openai::{create_request, get_usage, response_to_message};
 use rmcp::model::Tool;
 
-// Tetrate Agent Router Service can run many models, we suggest the default
+// Tetrate Agent Router Service can run many models; its full catalog is
+// auth-gated (router.tetrate.ai/models), so this static list is a fallback —
+// the provider's dynamic /v1/models fetch is authoritative. Removed models
+// retired upstream: claude-3-7-sonnet-latest (retired Feb 19, 2026),
+// claude-sonnet-4-20250514 (retires Jun 15, 2026), gemini-2.0-flash(-lite)
+// (shut down Jun 1, 2026).
 pub const TETRATE_KNOWN_MODELS: &[&str] = &[
     "claude-opus-4-1",
-    "claude-3-7-sonnet-latest",
-    "claude-sonnet-4-20250514",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5",
     "gemini-2.5-pro",
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-lite",
+    "gemini-2.5-flash",
     "gpt-5",
     "gpt-5-mini",
     "gpt-5-nano",

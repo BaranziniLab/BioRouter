@@ -21,12 +21,16 @@ use crate::subprocess::configure_command_no_window;
 use rmcp::model::Role;
 use rmcp::model::Tool;
 
-pub const CODEX_DEFAULT_MODEL: &str = "gpt-5.2-codex";
+// Per developers.openai.com/codex/models (June 2026). The previous lineup
+// (gpt-5.2-codex, gpt-5.1-codex-max/mini) is API-deprecated with shutdown
+// 2026-07-23; gpt-5.2 is deprecated inside Codex.
+pub const CODEX_DEFAULT_MODEL: &str = "gpt-5.5";
 pub const CODEX_KNOWN_MODELS: &[&str] = &[
-    "gpt-5.2-codex",
-    "gpt-5.2",
-    "gpt-5.1-codex-max",
-    "gpt-5.1-codex-mini",
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    // still available via API-key auth (deprecated for ChatGPT sign-in)
+    "gpt-5.3-codex",
 ];
 pub const CODEX_DOC_URL: &str = "https://developers.openai.com/codex/cli";
 
@@ -576,7 +580,7 @@ mod tests {
     fn test_messages_to_prompt_empty() {
         let provider = CodexProvider {
             command: PathBuf::from("codex"),
-            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
             name: "codex".to_string(),
             reasoning_effort: "high".to_string(),
             enable_skills: true,
@@ -591,7 +595,7 @@ mod tests {
     fn test_messages_to_prompt_with_system() {
         let provider = CodexProvider {
             command: PathBuf::from("codex"),
-            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
             name: "codex".to_string(),
             reasoning_effort: "high".to_string(),
             enable_skills: true,
@@ -607,7 +611,7 @@ mod tests {
     fn test_messages_to_prompt_with_messages() {
         let provider = CodexProvider {
             command: PathBuf::from("codex"),
-            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
             name: "codex".to_string(),
             reasoning_effort: "high".to_string(),
             enable_skills: true,
@@ -636,7 +640,7 @@ mod tests {
     fn test_parse_response_plain_text() {
         let provider = CodexProvider {
             command: PathBuf::from("codex"),
-            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
             name: "codex".to_string(),
             reasoning_effort: "high".to_string(),
             enable_skills: true,
@@ -656,7 +660,7 @@ mod tests {
     fn test_parse_response_json_events() {
         let provider = CodexProvider {
             command: PathBuf::from("codex"),
-            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
             name: "codex".to_string(),
             reasoning_effort: "high".to_string(),
             enable_skills: true,
@@ -689,7 +693,7 @@ mod tests {
     fn test_parse_response_empty() {
         let provider = CodexProvider {
             command: PathBuf::from("codex"),
-            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
             name: "codex".to_string(),
             reasoning_effort: "high".to_string(),
             enable_skills: true,
@@ -711,17 +715,17 @@ mod tests {
 
     #[test]
     fn test_known_models() {
-        assert!(CODEX_KNOWN_MODELS.contains(&"gpt-5.2-codex"));
-        assert!(CODEX_KNOWN_MODELS.contains(&"gpt-5.2"));
-        assert!(CODEX_KNOWN_MODELS.contains(&"gpt-5.1-codex-max"));
-        assert!(CODEX_KNOWN_MODELS.contains(&"gpt-5.1-codex-mini"));
+        assert!(CODEX_KNOWN_MODELS.contains(&"gpt-5.5"));
+        assert!(CODEX_KNOWN_MODELS.contains(&"gpt-5.4"));
+        assert!(CODEX_KNOWN_MODELS.contains(&"gpt-5.4-mini"));
+        assert!(CODEX_KNOWN_MODELS.contains(&"gpt-5.3-codex"));
     }
 
     #[test]
     fn test_parse_response_item_completed() {
         let provider = CodexProvider {
             command: PathBuf::from("codex"),
-            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
             name: "codex".to_string(),
             reasoning_effort: "high".to_string(),
             enable_skills: true,
@@ -746,7 +750,7 @@ mod tests {
     fn test_parse_response_turn_completed_usage() {
         let provider = CodexProvider {
             command: PathBuf::from("codex"),
-            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
             name: "codex".to_string(),
             reasoning_effort: "high".to_string(),
             enable_skills: true,
@@ -770,7 +774,7 @@ mod tests {
     fn test_parse_response_error_event() {
         let provider = CodexProvider {
             command: PathBuf::from("codex"),
-            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
             name: "codex".to_string(),
             reasoning_effort: "high".to_string(),
             enable_skills: true,
@@ -792,7 +796,7 @@ mod tests {
     fn test_parse_response_skips_reasoning() {
         let provider = CodexProvider {
             command: PathBuf::from("codex"),
-            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
             name: "codex".to_string(),
             reasoning_effort: "high".to_string(),
             enable_skills: true,
@@ -819,7 +823,7 @@ mod tests {
     fn test_session_description_generation() {
         let provider = CodexProvider {
             command: PathBuf::from("codex"),
-            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
             name: "codex".to_string(),
             reasoning_effort: "high".to_string(),
             enable_skills: true,
@@ -851,7 +855,7 @@ mod tests {
     fn test_session_description_empty_messages() {
         let provider = CodexProvider {
             command: PathBuf::from("codex"),
-            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
             name: "codex".to_string(),
             reasoning_effort: "high".to_string(),
             enable_skills: true,
@@ -898,7 +902,7 @@ mod tests {
     fn test_messages_to_prompt_filters_non_text() {
         let provider = CodexProvider {
             command: PathBuf::from("codex"),
-            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
             name: "codex".to_string(),
             reasoning_effort: "high".to_string(),
             enable_skills: true,
@@ -924,7 +928,7 @@ mod tests {
     fn test_parse_response_multiple_agent_messages() {
         let provider = CodexProvider {
             command: PathBuf::from("codex"),
-            model: ModelConfig::new("gpt-5.2-codex").unwrap(),
+            model: ModelConfig::new("gpt-5.5").unwrap(),
             name: "codex".to_string(),
             reasoning_effort: "high".to_string(),
             enable_skills: true,
@@ -954,6 +958,6 @@ mod tests {
 
     #[test]
     fn test_default_model() {
-        assert_eq!(CODEX_DEFAULT_MODEL, "gpt-5.2-codex");
+        assert_eq!(CODEX_DEFAULT_MODEL, "gpt-5.5");
     }
 }

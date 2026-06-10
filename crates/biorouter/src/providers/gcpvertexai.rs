@@ -788,7 +788,7 @@ mod tests {
     fn test_provider_metadata() {
         let metadata = GcpVertexAIProvider::metadata();
         assert!(!metadata.known_models.is_empty());
-        assert_eq!(metadata.default_model, "gemini-2.5-flash");
+        assert_eq!(metadata.default_model, "gemini-3.5-flash");
         assert_eq!(metadata.config_keys.len(), 6);
         assert!(metadata.allows_unlisted_models);
     }

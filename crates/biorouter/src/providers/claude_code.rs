@@ -19,7 +19,9 @@ use crate::model::ModelConfig;
 use crate::subprocess::configure_command_no_window;
 use rmcp::model::Tool;
 
-pub const CLAUDE_CODE_DEFAULT_MODEL: &str = "claude-sonnet-4-20250514";
+// "sonnet" is a claude CLI alias that resolves to the current Sonnet; the
+// previously pinned claude-sonnet-4-20250514 was retired June 15, 2026.
+pub const CLAUDE_CODE_DEFAULT_MODEL: &str = "sonnet";
 pub const CLAUDE_CODE_KNOWN_MODELS: &[&str] = &["sonnet", "opus"];
 pub const CLAUDE_CODE_DOC_URL: &str = "https://code.claude.com/docs/en/setup";
 

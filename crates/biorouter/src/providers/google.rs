@@ -25,35 +25,29 @@ use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::io::StreamReader;
 
 pub const GOOGLE_API_HOST: &str = "https://generativelanguage.googleapis.com";
-pub const GOOGLE_DEFAULT_MODEL: &str = "gemini-2.5-pro";
-pub const GOOGLE_DEFAULT_FAST_MODEL: &str = "gemini-2.5-flash";
+pub const GOOGLE_DEFAULT_MODEL: &str = "gemini-3.1-pro-preview";
+pub const GOOGLE_DEFAULT_FAST_MODEL: &str = "gemini-3.5-flash";
+// Verified against ai.google.dev/gemini-api/docs/models + deprecations
+// (June 2026). Removed shut-down models: gemini-3-pro-preview (Mar 9, 2026),
+// the entire gemini-2.0 family (Jun 1, 2026), and the 09-2025 / image /
+// native-audio 2.5 previews. The 2.5 stable family is deprecated with an
+// Oct 16, 2026 shutdown but still live.
 pub const GOOGLE_KNOWN_MODELS: &[&str] = &[
-    // Gemini 3 models (verified April 2026)
-    "gemini-3-pro-preview",
-    "gemini-3-pro-image-preview",
+    // Gemini 3.x models
+    "gemini-3.5-flash",
+    "gemini-3.1-pro-preview",
+    "gemini-3.1-flash-lite",
     "gemini-3-flash-preview",
-    // Gemini 2.5 Pro models
+    // Gemini 3.x image models
+    "gemini-3.1-flash-image",
+    "gemini-3-pro-image",
+    // Gemini 2.5 models (deprecated; shut down Oct 16, 2026)
     "gemini-2.5-pro",
-    "gemini-2.5-pro-preview-tts",
-    // Gemini 2.5 Flash models
     "gemini-2.5-flash",
-    "gemini-2.5-flash-preview-09-2025",
-    "gemini-2.5-flash-image",
-    "gemini-2.5-flash-image-preview",
-    "gemini-2.5-flash-native-audio-preview-09-2025",
-    "gemini-2.5-flash-preview-tts",
-    // Gemini 2.5 Flash-Lite models
     "gemini-2.5-flash-lite",
-    "gemini-2.5-flash-lite-preview-09-2025",
-    // Gemini 2.0 Flash models
-    "gemini-2.0-flash",
-    "gemini-2.0-flash-001",
-    "gemini-2.0-flash-exp",
-    "gemini-2.0-flash-preview-image-generation",
-    "gemini-2.0-flash-live-001",
-    // Gemini 2.0 Flash-Lite models
-    "gemini-2.0-flash-lite",
-    "gemini-2.0-flash-lite-001",
+    "gemini-2.5-flash-image",
+    "gemini-2.5-flash-preview-tts",
+    "gemini-2.5-pro-preview-tts",
 ];
 
 pub const GOOGLE_DOC_URL: &str = "https://ai.google.dev/gemini-api/docs/models";

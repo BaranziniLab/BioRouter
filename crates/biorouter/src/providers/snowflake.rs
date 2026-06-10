@@ -15,17 +15,21 @@ use crate::conversation::message::Message;
 use crate::model::ModelConfig;
 use rmcp::model::Tool;
 
-pub const SNOWFLAKE_DEFAULT_MODEL: &str = "claude-sonnet-4-5";
+// Verified against the Snowflake Cortex AISQL availability page (June 2026).
+// Removed models no longer listed there: claude-4-opus, claude-3-7-sonnet,
+// claude-3-5-sonnet.
+pub const SNOWFLAKE_DEFAULT_MODEL: &str = "claude-sonnet-4-6";
 pub const SNOWFLAKE_KNOWN_MODELS: &[&str] = &[
-    // Claude 4.5 series
+    // Claude 4.6+ series (1M context)
+    "claude-sonnet-4-6",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    // Claude 4.5 series (200K context)
     "claude-sonnet-4-5",
     "claude-haiku-4-5",
-    // Claude 4 series
+    // Claude 4 series (legacy, select regions only)
     "claude-4-sonnet",
-    "claude-4-opus",
-    // Claude 3 series
-    "claude-3-7-sonnet",
-    "claude-3-5-sonnet",
 ];
 
 pub const SNOWFLAKE_DOC_URL: &str =
