@@ -175,7 +175,7 @@ async fn offer_extension_debugging_help(
         return Ok(());
     }
 
-    println!("{}", style("🔧 Starting debugging session...").cyan());
+    println!("{}", style("Starting debugging session...").cyan());
 
     // Create a debugging prompt with context about the extension failure
     let debug_prompt = format!(
@@ -232,13 +232,13 @@ async fn offer_extension_debugging_help(
         Ok(_) => {
             println!(
                 "{}",
-                style("✅ Debugging session completed. Check the suggestions above.").green()
+                style("Debugging session completed. Check the suggestions above.").green()
             );
         }
         Err(e) => {
             eprintln!(
                 "{}",
-                style(format!("❌ Debugging session failed: {}", e)).red()
+                style(format!("Debugging session failed: {}", e)).red()
             );
         }
     }
@@ -447,12 +447,12 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     if let Some(lead_worker) = new_provider.as_lead_worker() {
         let (lead_model, worker_model) = lead_worker.get_model_info();
         tracing::info!(
-            "🤖 Lead/Worker Mode Enabled: Lead model (first 3 turns): {}, Worker model (turn 4+): {}, Auto-fallback on failures: Enabled",
+            "Lead/worker mode enabled: lead model (first 3 turns): {}, worker model (turn 4+): {}, auto-fallback on failures: enabled",
             lead_model,
             worker_model
         );
     } else {
-        tracing::info!("🤖 Using model: {}", model_name);
+        tracing::info!("Using model: {}", model_name);
     }
 
     let session_id: String = if session_config.no_session {

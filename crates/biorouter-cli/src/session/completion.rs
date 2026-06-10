@@ -8,6 +8,30 @@ use std::sync::Arc;
 
 use super::CompletionCache;
 
+/// Available in-session slash commands, in the order they should be offered.
+/// Keep in sync with `input::handle_slash_command`.
+pub(crate) const SLASH_COMMANDS: &[&str] = &[
+    "/help",
+    "/clear",
+    "/compact",
+    "/goal",
+    "/loop",
+    "/schedule",
+    "/mode",
+    "/plan",
+    "/endplan",
+    "/prompts",
+    "/prompt",
+    "/workflow",
+    "/extension",
+    "/builtin",
+    "/t",
+    "/r",
+    "/exit",
+    "/quit",
+    "/?",
+];
+
 /// Completer for biorouter CLI commands
 pub struct BioRouterCompleter {
     completion_cache: Arc<std::sync::RwLock<CompletionCache>>,
@@ -121,23 +145,8 @@ impl BioRouterCompleter {
 
     /// Complete slash commands
     fn complete_slash_commands(&self, line: &str) -> Result<(usize, Vec<Pair>)> {
-        // Define available slash commands
-        let commands = [
-            "/exit",
-            "/quit",
-            "/help",
-            "/?",
-            "/t",
-            "/extension",
-            "/builtin",
-            "/prompts",
-            "/prompt",
-            "/mode",
-            "/workflow",
-        ];
-
         // Find commands that match the prefix
-        let matching_commands: Vec<Pair> = commands
+        let matching_commands: Vec<Pair> = SLASH_COMMANDS
             .iter()
             .filter(|cmd| cmd.starts_with(line))
             .map(|cmd| Pair {
@@ -387,13 +396,17 @@ impl Helper for BioRouterCompleter {}
 impl Hinter for BioRouterCompleter {
     type Hint = String;
 
-    fn hint(&self, line: &str, _pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
-        // Only show hint when line is empty
-        if line.is_empty() {
-            Some("Press Enter to send, Ctrl-J for new line".to_string())
-        } else {
-            None
+    fn hint(&self, line: &str, pos: usize, _ctx: &Context<'_>) -> Option<Self::Hint> {
+        // Inline "ghost" autofill for slash commands: as the user types `/co`,
+        // show the dim remainder (`mpact`) of the first matching command. Tab
+        // still opens the full candidate list.
+        if pos != line.len() || !line.starts_with('/') || line.contains(' ') || line.len() < 2 {
+            return None;
         }
+        SLASH_COMMANDS
+            .iter()
+            .find(|cmd| cmd.starts_with(line) && **cmd != line)
+            .and_then(|cmd| cmd.get(line.len()..).map(str::to_string))
     }
 }
 

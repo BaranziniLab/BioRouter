@@ -3,16 +3,17 @@ mod completion;
 mod elicitation;
 mod export;
 mod input;
-mod output;
+pub mod output;
 mod prompt;
 mod task_execution_display;
 mod thinking;
+mod tui;
 
 use crate::session::task_execution_display::{
     format_task_execution_notification, TASK_EXECUTION_NOTIFICATION_TYPE,
 };
 use biorouter::conversation::Conversation;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::str::FromStr;
 use tokio::signal::ctrl_c;
 use tokio_util::task::AbortOnDropHandle;
@@ -423,6 +424,18 @@ impl CliSession {
 
     /// Start an interactive session, optionally with an initial message
     pub async fn interactive(&mut self, prompt: Option<String>) -> Result<()> {
+        // Default to the full-screen TUI on a real terminal; the classic
+        // readline REPL remains available via BIOROUTER_CLI_CLASSIC=1 (and is
+        // used automatically when stdout is not a TTY).
+        let use_classic =
+            std::env::var("BIOROUTER_CLI_CLASSIC").is_ok() || !std::io::stdout().is_terminal();
+        if !use_classic {
+            self.update_completion_cache().await?;
+            let result = tui::run(self, prompt).await;
+            self.fire_session_end_hooks("exit").await;
+            return result;
+        }
+
         if let Some(prompt) = prompt {
             let msg = Message::user().with_text(&prompt);
             self.process_message(msg, CancellationToken::default())
@@ -436,6 +449,7 @@ impl CliSession {
         history_manager.load(&mut editor);
 
         output::display_greeting();
+        print_startup_notices().await;
         loop {
             self.display_context_usage().await?;
 
@@ -447,6 +461,8 @@ impl CliSession {
                 .await?;
         }
 
+        self.fire_session_end_hooks("exit").await;
+
         println!(
             "Closing session. Session ID: {}",
             console::style(&self.session_id).cyan()
@@ -455,11 +471,32 @@ impl CliSession {
         Ok(())
     }
 
+    /// Run SessionEnd hooks before the process exits. Awaited (not
+    /// fire-and-forget) so hooks finish before shutdown; failure-open.
+    async fn fire_session_end_hooks(&self, reason: &str) {
+        if let Ok(session) = self.get_session().await {
+            let hooks = self.agent.hooks_manager();
+            let mut payload = biorouter::hooks::HookPayload::new(
+                biorouter::hooks::HookEvent::SessionEnd,
+                &session.id,
+                session.working_dir.to_string_lossy(),
+            );
+            payload.source = Some(reason.to_string());
+            hooks
+                .dispatch(
+                    biorouter::hooks::HookEvent::SessionEnd,
+                    Some(reason),
+                    &payload,
+                    &session.working_dir,
+                )
+                .await;
+        }
+    }
+
     fn create_editor(
         &self,
     ) -> Result<rustyline::Editor<BioRouterCompleter, rustyline::history::DefaultHistory>> {
-        let builder =
-            rustyline::Config::builder().completion_type(rustyline::CompletionType::Circular);
+        let builder = rustyline::Config::builder().completion_type(rustyline::CompletionType::List);
         let builder = match self.edit_mode {
             Some(mode) => builder.edit_mode(mode),
             None => builder.edit_mode(EditMode::Emacs),
@@ -583,7 +620,7 @@ impl CliSession {
                 let elapsed_str = format_elapsed_time(elapsed);
                 println!(
                     "\n{}",
-                    console::style(format!("⏱️  Elapsed time: {}", elapsed_str)).dim()
+                    console::style(format!("Elapsed time: {}", elapsed_str)).dim()
                 );
             }
             RunMode::Plan => {
@@ -688,20 +725,18 @@ impl CliSession {
         self.plan_with_reasoner_model(plan_messages, reasoner).await
     }
 
-    async fn handle_clear(&mut self) -> Result<()> {
-        if let Err(e) = self
-            .agent
+    /// Clear the conversation everywhere: the persisted SQLite conversation,
+    /// the DB token counts, and the in-memory `messages`. Shared by the classic
+    /// `/clear` and the TUI so neither desyncs the persisted session.
+    pub(crate) async fn clear_conversation(&mut self) -> Result<()> {
+        self.agent
             .config
             .session_manager
             .replace_conversation(&self.session_id, &Conversation::default())
             .await
-        {
-            output::render_error(&format!("Failed to clear session: {}", e));
-            return Ok(());
-        }
+            .map_err(|e| anyhow::anyhow!("Failed to clear session: {}", e))?;
 
-        if let Err(e) = self
-            .agent
+        self.agent
             .config
             .session_manager
             .update(&self.session_id)
@@ -710,13 +745,18 @@ impl CliSession {
             .output_tokens(Some(0))
             .apply()
             .await
-        {
-            output::render_error(&format!("Failed to reset token counts: {}", e));
-            return Ok(());
-        }
+            .map_err(|e| anyhow::anyhow!("Failed to reset token counts: {}", e))?;
 
         self.messages.clear();
         tracing::info!("Chat context cleared by user.");
+        Ok(())
+    }
+
+    async fn handle_clear(&mut self) -> Result<()> {
+        if let Err(e) = self.clear_conversation().await {
+            output::render_error(&e.to_string());
+            return Ok(());
+        }
         output::render_message(
             &Message::assistant().with_text("Chat context cleared.\n"),
             self.debug,
@@ -856,8 +896,11 @@ impl CliSession {
     /// Process a single message and exit
     pub async fn headless(&mut self, prompt: String) -> Result<()> {
         let message = Message::user().with_text(&prompt);
-        self.process_message(message, CancellationToken::default())
-            .await?;
+        let result = self
+            .process_message(message, CancellationToken::default())
+            .await;
+        self.fire_session_end_hooks("prompt_input_exit").await;
+        result?;
         Ok(())
     }
 
@@ -1144,7 +1187,11 @@ impl CliSession {
                                 self.debug,
                             );
                         }
-                        None => panic!("No content in last message"),
+                        None => {
+                            tracing::warn!(
+                                "Interrupted with an empty last message; nothing to roll back."
+                            );
+                        }
                     }
                 }
             }
@@ -1404,6 +1451,40 @@ fn emit_stream_event(event: &StreamEvent) {
     }
 }
 
+/// Print missing required prerequisites and an available update at session
+/// start, mirroring `biorouter doctor`. Best-effort; the update probe is
+/// bounded (2s) so it never stalls startup.
+async fn print_startup_notices() {
+    use console::style;
+    let missing: Vec<_> = biorouter::system::check_all()
+        .into_iter()
+        .filter(|d| d.required && !d.installed)
+        .collect();
+    for d in &missing {
+        println!(
+            "{} {} {}",
+            style("⚠").yellow(),
+            style(format!("{} not found", d.display_name)).yellow(),
+            style("— run `biorouter doctor` to set up prerequisites").dim()
+        );
+    }
+    if let Ok(Some(u)) = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        biorouter::system::check_for_update(),
+    )
+    .await
+    {
+        if u.update_available {
+            println!(
+                "{} {} {}",
+                style("↑").color256(137).bold(),
+                style(format!("Biorouter {} is available", u.latest)).color256(137),
+                style(format!("(you have {}) — run `biorouter update`", u.current)).dim()
+            );
+        }
+    }
+}
+
 /// Prompt user for tool call confirmation, returns the Permission selected
 fn prompt_tool_confirmation(security_prompt: &Option<String>) -> Result<Permission> {
     output::hide_thinking();
@@ -1553,13 +1634,13 @@ fn format_logging_notification(
 
                 let formatted = match notification_type {
                     Some("subagent_created") | Some("completed") | Some("terminated") => {
-                        format!("🤖 {}", msg)
+                        format!("subagent: {}", msg)
                     }
                     Some("tool_usage") | Some("tool_completed") | Some("tool_error") => {
-                        format!("🔧 {}", msg)
+                        format!("tool: {}", msg)
                     }
                     Some("message_processing") | Some("turn_progress") => {
-                        format!("💭 {}", msg)
+                        format!("status: {}", msg)
                     }
                     Some("response_generated") => {
                         let config = Config::global();
@@ -1570,12 +1651,12 @@ fn format_logging_notification(
 
                         if min_priority > 0.1 && !debug {
                             if let Some(response_content) = msg.strip_prefix("Responded: ") {
-                                format!("🤖 Responded: {}", safe_truncate(response_content, 100))
+                                format!("response: {}", safe_truncate(response_content, 100))
                             } else {
-                                format!("🤖 {}", msg)
+                                format!("response: {}", msg)
                             }
                         } else {
-                            format!("🤖 {}", msg)
+                            format!("response: {}", msg)
                         }
                     }
                     _ => msg.to_string(),

@@ -17,6 +17,63 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+/// BioRouter warm tan-brown accent (xterm-256 137 ≈ #af875f), Biorouter's light cream palette
+/// the closest 256-color match to the desktop brand coral `#cf6d47`).
+///
+/// Per the BioRouter design language the accent is used *sparingly* — the input
+/// prompt, section rules, and active indicators — never for general decoration.
+pub const ACCENT: Color = Color::Color256(137);
+
+/// Width of the terminal in columns, falling back to 80 when it can't be probed.
+fn term_width() -> usize {
+    Term::stdout()
+        .size_checked()
+        .map(|(_h, w)| w as usize)
+        .unwrap_or(80)
+}
+
+/// Format a token count compactly for status lines: `1234 → "1.2k"`, `2_000_000 → "2.0M"`.
+fn human_count(n: usize) -> String {
+    if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1_000_000.0)
+    } else if n >= 1_000 {
+        format!("{:.1}k", n as f64 / 1_000.0)
+    } else {
+        n.to_string()
+    }
+}
+
+/// Print a left-aligned section rule that fills the terminal width:
+///
+/// ```text
+/// ── name  namespace ──────────────────────────────
+/// ```
+///
+/// `name` is rendered bold and `namespace` (when present) dim. The leading
+/// `── ` ticks carry the brand accent. Width is clamped so it stays tidy on
+/// both narrow and ultra-wide terminals.
+fn print_section_rule(name: &str, namespace: &str) {
+    let width = term_width().clamp(24, 100);
+    let prefix = "── ";
+    // Track the visible (un-styled) width so the trailing dashes land flush.
+    let mut visible = measure_text_width(prefix) + measure_text_width(name) + 1;
+    let ns_segment = if namespace.is_empty() {
+        String::new()
+    } else {
+        visible += measure_text_width(namespace) + 1;
+        format!("{} ", style(namespace).dim())
+    };
+    let fill = width.saturating_sub(visible).max(3);
+    println!();
+    println!(
+        "{}{} {}{}",
+        style(prefix).fg(ACCENT),
+        style(name).bold(),
+        ns_segment,
+        style("─".repeat(fill)).dim(),
+    );
+}
+
 // Re-export theme for use in main
 #[derive(Clone, Copy)]
 pub enum Theme {
@@ -246,8 +303,6 @@ pub fn render_text_no_newlines(text: &str, color: Option<Color>, dim: bool) {
     }
     if let Some(color) = color {
         styled_text = styled_text.fg(color);
-    } else {
-        styled_text = styled_text.green();
     }
     print!("{}", styled_text);
 }
@@ -255,9 +310,9 @@ pub fn render_text_no_newlines(text: &str, color: Option<Color>, dim: bool) {
 pub fn render_enter_plan_mode() {
     println!(
         "\n{} {}\n",
-        style("Entering plan mode.").green().bold(),
+        style("Entering plan mode.").bold(),
         style("You can provide instructions to create a plan and then act on it. To exit early, type /endplan")
-            .green()
+
             .dim()
     );
 }
@@ -265,14 +320,12 @@ pub fn render_enter_plan_mode() {
 pub fn render_act_on_plan() {
     println!(
         "\n{}\n",
-        style("Exiting plan mode and acting on the above plan")
-            .green()
-            .bold(),
+        style("Exiting plan mode and acting on the above plan").bold(),
     );
 }
 
 pub fn render_exit_plan_mode() {
-    println!("\n{}\n", style("Exiting plan mode.").green().bold());
+    println!("\n{}\n", style("Exiting plan mode.").bold());
 }
 
 pub fn biorouter_mode_message(text: &str) {
@@ -336,7 +389,7 @@ pub fn render_error(message: &str) {
 pub fn render_prompts(prompts: &HashMap<String, Vec<String>>) {
     println!();
     for (extension, prompts) in prompts {
-        println!(" {}", style(extension).green());
+        println!(" {}", style(extension));
         for prompt in prompts {
             println!("  - {}", style(prompt).cyan());
         }
@@ -347,7 +400,7 @@ pub fn render_prompts(prompts: &HashMap<String, Vec<String>>) {
 pub fn render_prompt_info(info: &PromptInfo) {
     println!();
     if let Some(ext) = &info.extension {
-        println!(" {}: {}", style("Extension").green(), ext);
+        println!(" {}: {}", style("Extension"), ext);
     }
     println!(" Prompt: {}", style(&info.name).cyan().bold());
     if let Some(desc) = &info.description {
@@ -380,11 +433,7 @@ fn render_arguments(info: &PromptInfo) {
 
 pub fn render_extension_success(name: &str) {
     println!();
-    println!(
-        "  {} extension `{}`",
-        style("added").green(),
-        style(name).cyan(),
-    );
+    println!("  {} extension `{}`", style("added"), style(name).cyan(),);
     println!();
 }
 
@@ -404,7 +453,7 @@ pub fn render_builtin_success(names: &str) {
     println!();
     println!(
         "  {} builtin{}: {}",
-        style("added").green(),
+        style("added"),
         if names.contains(',') { "s" } else { "" },
         style(names).cyan()
     );
@@ -433,7 +482,7 @@ fn render_text_editor_request(call: &CallToolRequestParams, debug: bool) {
             println!(
                 "{}: {}",
                 style("path").dim(),
-                style(shorten_path(path, debug)).green()
+                style(shorten_path(path, debug))
             );
         }
 
@@ -473,13 +522,7 @@ fn render_execute_code_request(call: &CallToolRequestParams, debug: bool) {
 
     let count = tool_graph.len();
     let plural = if count == 1 { "" } else { "s" };
-    println!();
-    println!(
-        "─── {} tool call{} | {} ──────────────────────────",
-        style(count).cyan(),
-        plural,
-        style("execute_code").magenta().dim()
-    );
+    print_section_rule(&format!("{} tool call{}", count, plural), "execute_code");
 
     for (i, node) in tool_graph.iter().filter_map(Value::as_object).enumerate() {
         let tool = node
@@ -507,7 +550,7 @@ fn render_execute_code_request(call: &CallToolRequestParams, debug: bool) {
             "  {}. {}: {}{}",
             style(i + 1).dim(),
             style(tool).cyan(),
-            style(desc).green(),
+            style(desc),
             style(deps_str).dim()
         );
     }
@@ -532,11 +575,7 @@ fn render_subagent_request(call: &CallToolRequestParams, debug: bool) {
             } else {
                 instructions.clone()
             };
-            println!(
-                "{}: {}",
-                style("instructions").dim(),
-                style(display).green()
-            );
+            println!("{}: {}", style("instructions").dim(), style(display));
         }
 
         if let Some(Value::Object(params)) = args.get("parameters") {
@@ -564,7 +603,7 @@ fn render_todo_request(call: &CallToolRequestParams, _debug: bool) {
 
     if let Some(args) = &call.arguments {
         if let Some(Value::String(content)) = args.get("content") {
-            println!("{}: {}", style("content").dim(), style(content).green());
+            println!("{}: {}", style("content").dim(), style(content));
         }
     }
     println!();
@@ -580,20 +619,25 @@ fn render_default_request(call: &CallToolRequestParams, debug: bool) {
 
 fn print_tool_header(call: &CallToolRequestParams) {
     let parts: Vec<_> = call.name.rsplit("__").collect();
-    let tool_header = format!(
-        "─── {} | {} ──────────────────────────",
-        style(parts.first().unwrap_or(&"unknown")),
-        style(
-            parts
-                .split_first()
-                .map(|(_, s)| s.iter().rev().copied().collect::<Vec<_>>().join("__"))
-                .unwrap_or_else(|| "unknown".to_string())
-        )
-        .magenta()
-        .dim(),
-    );
+    let name = parts.first().copied().unwrap_or("unknown");
+    let namespace = parts
+        .split_first()
+        .map(|(_, s)| s.iter().rev().copied().collect::<Vec<_>>().join("__"))
+        .unwrap_or_default();
+    // A clear, accented "tool call" badge so it's unmistakable that the model is
+    // invoking a tool — simple but distinctly indicative.
     println!();
-    println!("{}", tool_header);
+    let ns = if namespace.is_empty() {
+        String::new()
+    } else {
+        format!("  {}", style(format!("· {}", namespace)).dim())
+    };
+    println!(
+        "{} {}{}",
+        style(" ▸ tool call ").black().on_color256(137).bold(),
+        style(name).fg(ACCENT).bold(),
+        ns,
+    );
 }
 
 // Respect NO_COLOR, as https://crates.io/crates/console already does
@@ -634,8 +678,7 @@ fn print_value(value: &Value, debug: bool, reserve_width: usize) {
         Value::String(s) => match (max_width, debug || show_full) {
             (Some(w), false) if s.len() > w => style(safe_truncate(s, w)),
             _ => style(s.to_string()),
-        }
-        .green(),
+        },
         Value::Number(n) => style(n.to_string()).yellow(),
         Value::Bool(b) => style(b.to_string()).yellow(),
         Value::Null => style("null".to_string()).dim(),
@@ -763,71 +806,87 @@ pub fn display_session_info(
     session_id: &Option<String>,
     provider_instance: Option<&Arc<dyn biorouter::providers::base::Provider>>,
 ) {
-    let start_session_msg = if resume {
-        "resuming session |"
+    let headline = if resume {
+        "resuming session"
     } else if session_id.is_none() {
-        "running without session |"
+        "running without session"
     } else {
-        "starting session |"
+        "starting session"
     };
 
-    // Check if we have lead/worker mode
-    if let Some(provider_inst) = provider_instance {
-        if let Some(lead_worker) = provider_inst.as_lead_worker() {
-            let (lead_model, worker_model) = lead_worker.get_model_info();
-            println!(
-                "{} {} {} {} {} {} {}",
-                style(start_session_msg).dim(),
-                style("provider:").dim(),
-                style(provider).cyan().dim(),
-                style("lead model:").dim(),
-                style(&lead_model).cyan().dim(),
-                style("worker model:").dim(),
-                style(&worker_model).cyan().dim(),
-            );
-        } else {
-            println!(
-                "{} {} {} {} {}",
-                style(start_session_msg).dim(),
-                style("provider:").dim(),
-                style(provider).cyan().dim(),
-                style("model:").dim(),
-                style(model).cyan().dim(),
-            );
-        }
-    } else {
-        // Fallback to original behavior if no provider instance
+    // Helper to print one aligned `label   value` row under the headline.
+    let row = |label: &str, value: String| {
         println!(
-            "{} {} {} {} {}",
-            style(start_session_msg).dim(),
-            style("provider:").dim(),
-            style(provider).cyan().dim(),
-            style("model:").dim(),
-            style(model).cyan().dim(),
+            "    {:<9} {}",
+            style(label).dim(),
+            style(value).cyan().dim()
         );
+    };
+
+    println!("  {} {}", style("▌").fg(ACCENT), style(headline).bold());
+
+    // Lead/worker mode shows both model tiers; otherwise a single model row.
+    match provider_instance.and_then(|p| p.as_lead_worker()) {
+        Some(lead_worker) => {
+            let (lead_model, worker_model) = lead_worker.get_model_info();
+            row("provider", provider.to_string());
+            row("lead", lead_model);
+            row("worker", worker_model);
+        }
+        None => {
+            row("provider", provider.to_string());
+            row("model", model.to_string());
+        }
     }
 
     if let Some(id) = session_id {
-        println!(
-            "    {} {}",
-            style("session id:").dim(),
-            style(id).cyan().dim()
-        );
+        row("session", id.clone());
     }
 
-    println!(
-        "    {} {}",
-        style("working directory:").dim(),
-        style(std::env::current_dir().unwrap().display())
-            .cyan()
-            .dim()
+    row(
+        "workdir",
+        std::env::current_dir().unwrap().display().to_string(),
     );
+
+    // Surface the active knowledge base (the CLI equivalent of the GUI's
+    // active-KB chip), so chat-side knowledge tools have visible context.
+    if let Ok(svc) = biorouter::knowledge::service::KnowledgeService::new_default() {
+        if let Ok(Some(kb)) = svc.get_active_persisted() {
+            row("knowledge", kb);
+        }
+    }
 }
 
+/// Small, simple "Biorouter" wordmark banner (3 lines), rendered in the brand
+/// coral at the top of the greeting.
+pub(crate) const BIOROUTER_ASCII: &[&str] = &[
+    "█▀▄ █ █▀█ █▀▄ █▀█ █ █ ▀█▀ █▀▀ █▀▄",
+    "█▀▄ █ █ █ █▀▄ █ █ █ █  █  █▀▀ █▀▄",
+    "▀▀  ▀ ▀▀▀ ▀ ▀ ▀▀▀ ▀▀▀  ▀  ▀▀▀ ▀ ▀",
+];
+
 pub fn display_greeting() {
+    if !std::io::stdout().is_terminal() {
+        println!(
+            "\nBiorouter is running! Enter your instructions, or try asking what Biorouter can do.\n"
+        );
+        return;
+    }
+
+    println!();
+    for line in BIOROUTER_ASCII {
+        println!("  {}", style(line).fg(ACCENT).bold());
+    }
+    println!();
     println!(
-        "\nbiorouter is running! Enter your instructions, or try asking what biorouter can do.\n"
+        "  {}",
+        style("Biorouter — integrated biomedical research environment").bold()
     );
+    println!(
+        "  {}",
+        style("Enter your instructions, or type /help for commands").dim()
+    );
+    println!();
 }
 
 /// Display context window usage with both current and session totals
@@ -843,29 +902,43 @@ pub fn display_context_usage(total_tokens: usize, context_limit: usize) {
     let percentage =
         (((total_tokens as f64 / context_limit as f64) * 100.0).round() as usize).min(100);
 
-    // Create dot visualization with safety bounds
-    let dot_count = 10;
-    let filled_dots =
-        (((percentage as f64 / 100.0) * dot_count as f64).round() as usize).min(dot_count);
-    let empty_dots = dot_count - filled_dots;
+    // Render a contiguous meter bar:  ████████░░░░░░░░░░░░
+    let bar_width = 20;
+    let filled_cells =
+        (((percentage as f64 / 100.0) * bar_width as f64).round() as usize).min(bar_width);
+    let empty_cells = bar_width - filled_cells;
 
-    let filled = "●".repeat(filled_dots);
-    let empty = "○".repeat(empty_dots);
-
-    // Combine dots and apply color
-    let dots = format!("{}{}", filled, empty);
-    let colored_dots = if percentage < 50 {
-        style(dots).green()
+    // The filled portion carries a load-based color (a usage gauge, so green→red
+    // semantics rather than the brand accent); the track stays dim.
+    let filled = "█".repeat(filled_cells);
+    let colored_fill = if percentage < 50 {
+        style(filled)
     } else if percentage < 85 {
-        style(dots).yellow()
+        style(filled).yellow()
     } else {
-        style(dots).red()
+        style(filled).red()
     };
+    let bar = format!(
+        "{}{}{}{}",
+        style("▕").dim(),
+        colored_fill,
+        style("░".repeat(empty_cells)).dim(),
+        style("▏").dim(),
+    );
 
-    // Print the status line
+    // Print a sparse, dim status line:  Context ▕████████░░░░░░░░░░░░▏ 37%  ·  74.2k / 200k
     println!(
-        "Context: {} {}% ({}/{} tokens)",
-        colored_dots, percentage, total_tokens, context_limit
+        "{}  {} {}  {}  {}",
+        style("Context").dim(),
+        bar,
+        style(format!("{}%", percentage)).dim(),
+        style("·").dim(),
+        style(format!(
+            "{} / {}",
+            human_count(total_tokens),
+            human_count(context_limit)
+        ))
+        .dim(),
     );
 }
 
@@ -904,6 +977,12 @@ pub struct McpSpinners {
     log_spinner: Option<ProgressBar>,
 
     multi_bar: MultiProgress,
+}
+
+impl Default for McpSpinners {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl McpSpinners {
@@ -961,6 +1040,45 @@ impl McpSpinners {
         }
         self.multi_bar.clear()
     }
+}
+
+/// Render a full sample of the CLI's visual surfaces to stdout. Used by the
+/// `preview_tui` example to eyeball the styling without a live session.
+pub fn preview() {
+    display_greeting();
+
+    // Session info (single-model variant; no provider instance needed).
+    let sid = Some("ab12cd34-ef56".to_string());
+    display_session_info(false, "versa_azure", "gpt-5.2", &sid, None);
+
+    // Section rules for a few representative tools.
+    print_section_rule("text_editor", "developer");
+    println!(
+        "{}: {}",
+        style("path").dim(),
+        style("~/Desktop/biorouter/crates/biorouter-cli/src/session/output.rs")
+    );
+    print_section_rule("shell", "developer");
+    println!(
+        "{}: {}",
+        style("command").dim(),
+        style("cargo test -p biorouter-cli")
+    );
+    print_section_rule("3 tool calls", "execute_code");
+
+    // Context meter at a few load levels.
+    println!();
+    display_context_usage(41_000, 200_000);
+    display_context_usage(128_000, 200_000);
+    display_context_usage(188_000, 200_000);
+
+    // Task execution block.
+    println!();
+    println!("{}", super::task_execution_display::preview_block());
+
+    // Status messages.
+    render_extension_success("knowledge");
+    render_error("could not reach provider endpoint (timeout)");
 }
 
 #[cfg(test)]
