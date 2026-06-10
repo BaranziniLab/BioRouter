@@ -133,10 +133,12 @@ function copyPlatformFiles(targetPlatform) {
 
 // Validate that required platform binaries are present before packaging
 function validateRequiredBinaries(targetPlatform) {
+    // Both the server (biorouterd) AND the CLI (biorouter) must ship, so the app
+    // can offer "install the Biorouter CLI" from its bundled binary.
     const required = {
-        win32: ['biorouterd.exe'],
-        darwin: ['biorouterd'],
-        linux:  ['biorouterd'],
+        win32: ['biorouterd.exe', 'biorouter.exe'],
+        darwin: ['biorouterd', 'biorouter'],
+        linux:  ['biorouterd', 'biorouter'],
     };
 
     const requiredForPlatform = required[targetPlatform];

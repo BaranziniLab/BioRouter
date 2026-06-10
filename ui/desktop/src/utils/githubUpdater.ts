@@ -96,35 +96,49 @@ export class GitHubUpdater {
       const platform = process.platform;
       const arch = process.arch;
       let downloadUrl: string | undefined;
-      let assetName: string;
 
       log.info(`GitHubUpdater: Looking for asset for platform: ${platform}, arch: ${arch}`);
 
+      // Real published release asset names (see CLAUDE.md "Release assets"):
+      //   BioRouter-{ver}-arm64.dmg, BioRouter-{ver}-x64.dmg,
+      //   BioRouter-win32-x64-{ver}.zip, biorouter_{ver}_amd64.deb,
+      //   BioRouter-{ver}-1.x86_64.rpm
+      const v = latestVersion;
+      let candidates: string[];
       if (platform === 'darwin') {
-        // macOS
-        if (arch === 'arm64') {
-          assetName = 'BioRouter.zip';
-        } else {
-          assetName = 'BioRouter_intel_mac.zip';
-        }
+        candidates = arch === 'arm64' ? [`BioRouter-${v}-arm64.dmg`] : [`BioRouter-${v}-x64.dmg`];
       } else if (platform === 'win32') {
-        // Windows - for future support
-        assetName = 'BioRouter-win32-x64.zip';
+        candidates = [`BioRouter-win32-x64-${v}.zip`];
       } else {
-        // Linux - for future support
-        assetName = `BioRouter-linux-${arch}.zip`;
+        // Linux: prefer .deb, then .rpm.
+        candidates = [`biorouter_${v}_amd64.deb`, `BioRouter-${v}-1.x86_64.rpm`];
       }
 
-      log.info(`GitHubUpdater: Looking for asset named: ${assetName}`);
+      log.info(`GitHubUpdater: Candidate assets: ${candidates.join(', ')}`);
       log.info(`GitHubUpdater: Available assets: ${release.assets.map((a) => a.name).join(', ')}`);
 
-      const asset = release.assets.find((a) => a.name.toLowerCase() === assetName.toLowerCase()); // keeping comparison to lower case because BioRouter vs biorouter
+      let asset = candidates
+        .map((name) => release.assets.find((a) => a.name.toLowerCase() === name.toLowerCase()))
+        .find(Boolean);
+      // Resilient fallback: match by OS/arch tokens + extension if exact names drift.
+      if (!asset) {
+        const tokens =
+          platform === 'darwin'
+            ? [arch === 'arm64' ? 'arm64' : 'x64', '.dmg']
+            : platform === 'win32'
+            ? ['win32', '.zip']
+            : ['.deb'];
+        asset = release.assets.find((a) => {
+          const n = a.name.toLowerCase();
+          return tokens.every((t) => n.includes(t.toLowerCase()));
+        });
+      }
+
       if (asset) {
         downloadUrl = asset.browser_download_url;
         log.info(`GitHubUpdater: Found matching asset: ${asset.name} (${asset.size} bytes)`);
-        log.info(`GitHubUpdater: Download URL: ${downloadUrl}`);
       } else {
-        log.warn(`GitHubUpdater: No matching asset found for ${assetName}`);
+        log.warn(`GitHubUpdater: No matching asset found for ${platform}/${arch}`);
       }
 
       if (!downloadUrl) {
@@ -254,7 +268,11 @@ export class GitHubUpdater {
 
       // Save to Downloads directory
       const downloadsDir = path.join(os.homedir(), 'Downloads');
-      const fileName = `biorouter-${latestVersion}.zip`;
+      // Preserve the real asset extension (.dmg/.zip/.deb/.rpm) from the URL so
+      // the file the user double-clicks is the actual installer.
+      const urlName = downloadUrl.split('/').pop() || '';
+      const ext = (urlName.match(/\.(dmg|zip|deb|rpm)$/i) || [, 'zip'])[1];
+      const fileName = `BioRouter-${latestVersion}.${ext}`;
       const downloadPath = path.join(downloadsDir, fileName);
 
       log.info(`GitHubUpdater: Writing file to ${downloadPath}...`);

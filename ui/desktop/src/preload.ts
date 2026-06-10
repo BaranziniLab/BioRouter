@@ -10,7 +10,7 @@ function warnOffDeprecated(channel: string): void {
   offDeprecationWarned.add(channel);
   console.warn(
     `[preload] window.electron.off('${channel}', ...) is a no-op. ` +
-      "Use the disposer returned by on(): `const dispose = electron.on(...); return dispose;`."
+      'Use the disposer returned by on(): `const dispose = electron.on(...); return dispose;`.'
   );
 }
 
@@ -166,13 +166,22 @@ type ElectronAPI = {
   launchApp: (app: BioRouterApp) => Promise<void>;
   addRecentDir: (dir: string) => Promise<boolean>;
   openBrxtFilePicker: () => Promise<string | null>;
-  validateBrxtBundle: (filePath: string) => Promise<{
-    manifest: import('./types/brxt').BrxtManifest;
-    skillsPreview: Array<{ slug: string; name: string; description: string }>;
-  } | { error: string }>;
+  validateBrxtBundle: (filePath: string) => Promise<
+    | {
+        manifest: import('./types/brxt').BrxtManifest;
+        skillsPreview: Array<{ slug: string; name: string; description: string }>;
+      }
+    | { error: string }
+  >;
   uninstallBrxtExtension: (extensionName: string) => Promise<{ success: true } | { error: string }>;
   extractSkillZip: (filePath: string) => Promise<
-    | { isBundle: false; files: [string, string][]; name: string; description: string; slug: string }
+    | {
+        isBundle: false;
+        files: [string, string][];
+        name: string;
+        description: string;
+        slug: string;
+      }
     | {
         isBundle: true;
         bundleName: string;
@@ -184,12 +193,25 @@ type ElectronAPI = {
       }
     | { error: string }
   >;
-  installBrxtBundle: (filePath: string, extensionName: string) => Promise<{ success: true; installDir: string } | { error: string }>;
+  installBrxtBundle: (
+    filePath: string,
+    extensionName: string
+  ) => Promise<{ success: true; installDir: string } | { error: string }>;
+  // BAAM registry (Browse Skills / Browse Extensions)
+  fetchRegistry: () => Promise<
+    { registry: import('./components/baam/registry').BaamRegistry } | { error: string }
+  >;
+  downloadRegistryAsset: (url: string) => Promise<{ path: string } | { error: string }>;
   // Dependency checker
   checkDependencies: () => Promise<import('./utils/dependencyChecker').DependencyInfo[]>;
   installDependency: (dep: string) => Promise<{ started: boolean } | { error: string }>;
+  // Biorouter CLI install (delegates to the bundled `biorouter setup-path`)
+  cliStatus: () => Promise<{ bundled: string | null; onPath: boolean; pathLocation: string | null }>;
+  installCli: () => Promise<{ success: true; output: string } | { success: false; error: string }>;
   // Extension updater (events pushed via 'extension-update-event' channel)
-  onExtensionUpdateEvent: (callback: (event: import('./utils/extensionUpdater').ExtensionUpdateEvent) => void) => void;
+  onExtensionUpdateEvent: (
+    callback: (event: import('./utils/extensionUpdater').ExtensionUpdateEvent) => void
+  ) => void;
 };
 
 type AppConfigAPI = {
@@ -349,10 +371,13 @@ const electronAPI: ElectronAPI = {
     ipcRenderer.invoke('brxt:install', { filePath, extensionName }),
   uninstallBrxtExtension: (extensionName: string) =>
     ipcRenderer.invoke('brxt:uninstall', { extensionName }),
-  extractSkillZip: (filePath: string) =>
-    ipcRenderer.invoke('skills:extract-zip', { filePath }),
+  extractSkillZip: (filePath: string) => ipcRenderer.invoke('skills:extract-zip', { filePath }),
+  fetchRegistry: () => ipcRenderer.invoke('registry:fetch'),
+  downloadRegistryAsset: (url: string) => ipcRenderer.invoke('registry:download', { url }),
   checkDependencies: () => ipcRenderer.invoke('dep:check'),
   installDependency: (dep: string) => ipcRenderer.invoke('dep:install', dep),
+  cliStatus: () => ipcRenderer.invoke('cli:status'),
+  installCli: () => ipcRenderer.invoke('cli:install'),
   onExtensionUpdateEvent: (callback) => {
     ipcRenderer.on('extension-update-event', (_event, data) => callback(data));
   },

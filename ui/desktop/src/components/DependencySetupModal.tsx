@@ -27,6 +27,45 @@ export default function DependencySetupModal() {
   const [visible, setVisible] = useState(false);
   const outputRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
+  // Biorouter CLI install state (the bundled `biorouter` onto PATH).
+  const [cli, setCli] = useState<{ bundled: string | null; onPath: boolean } | null>(null);
+  const [cliState, setCliState] = useState<InstallState>('idle');
+  const [cliOutput, setCliOutput] = useState('');
+  const [cliError, setCliError] = useState('');
+
+  // On startup, offer to install the CLI if it isn't already callable from a
+  // terminal (once per launch).
+  useEffect(() => {
+    let cancelled = false;
+    window.electron
+      .cliStatus()
+      .then((s) => {
+        if (cancelled || !s) return;
+        if (s.bundled && !s.onPath && !sessionStorage.getItem('cli-install-dismissed')) {
+          setCli({ bundled: s.bundled, onPath: s.onPath });
+          setVisible(true);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleInstallCli = async () => {
+    setCliState('running');
+    setCliError('');
+    const res = await window.electron.installCli();
+    if (res.success) {
+      setCliOutput(res.output);
+      setCliState('done');
+      setCli((c) => (c ? { ...c, onPath: true } : c));
+    } else {
+      setCliError(res.error);
+      setCliState('error');
+    }
+  };
+
   // Listen for the push event from main process
   useEffect(() => {
     const handler = (_event: Electron.IpcRendererEvent, ...args: unknown[]) => {
@@ -98,9 +137,10 @@ export default function DependencySetupModal() {
     if (url) window.electron.openExternal(url);
   };
 
-  if (!visible || deps.length === 0) return null;
+  const showCli = !!cli && !cli.onPath && cliState !== 'done';
+  if (!visible || (deps.length === 0 && !cli)) return null;
 
-  const allDone = deps.every((d) => d.installState === 'done' || d.info.installed);
+  const allDone = deps.length > 0 && deps.every((d) => d.installState === 'done' || d.info.installed);
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50">
@@ -119,7 +159,10 @@ export default function DependencySetupModal() {
               size="sm"
               className="h-7 w-7 p-0 shrink-0 ml-3"
               title="Dismiss (you can install later)"
-              onClick={() => setVisible(false)}
+              onClick={() => {
+                sessionStorage.setItem('cli-install-dismissed', '1');
+                setVisible(false);
+              }}
             >
               ✕
             </Button>
@@ -128,6 +171,51 @@ export default function DependencySetupModal() {
 
         {/* Dep list */}
         <div className="flex flex-col gap-3 p-6 overflow-y-auto">
+          {/* Biorouter CLI install card */}
+          {(showCli || cliState === 'done') && (
+            <div
+              className={`rounded-lg border px-4 py-3 ${
+                cliState === 'done'
+                  ? 'border-border-success/40 bg-background-success/10'
+                  : cliState === 'error'
+                  ? 'border-destructive/30 bg-destructive/5'
+                  : 'border-border-subtle bg-background-medium/20'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold flex items-center gap-1.5">
+                    {cliState === 'done' && <span className="text-text-success">✓</span>}
+                    {cliState === 'error' && <span className="text-destructive">✗</span>}
+                    {cliState === 'running' && (
+                      <span className="inline-block w-3 h-3 rounded-full border-2 border-text-muted border-t-transparent animate-spin" />
+                    )}
+                    Biorouter CLI
+                  </p>
+                  <p className="text-[11px] text-text-muted mt-0.5">
+                    {cliState === 'done'
+                      ? 'Installed — open a new terminal and run `biorouter`.'
+                      : 'Call `biorouter` from any terminal.'}
+                  </p>
+                </div>
+                {cliState !== 'running' && cliState !== 'done' && (
+                  <Button variant="default" size="sm" className="h-7 text-xs" onClick={handleInstallCli}>
+                    Install
+                  </Button>
+                )}
+                {cliState === 'running' && <span className="text-xs text-text-muted">Installing…</span>}
+              </div>
+              {cliOutput && (
+                <div className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap">
+                  {cliOutput}
+                </div>
+              )}
+              {cliState === 'error' && cliError && (
+                <p className="mt-2 text-xs text-destructive">{cliError}</p>
+              )}
+            </div>
+          )}
+
           {deps.map(({ info, installState, output, errorMsg }) => {
             const installed = installState === 'done' || info.installed;
             return (
@@ -135,7 +223,7 @@ export default function DependencySetupModal() {
                 key={info.name}
                 className={`rounded-lg border px-4 py-3 ${
                   installed
-                    ? 'border-green-500/30 bg-green-500/5'
+                    ? 'border-border-success/40 bg-background-success/10'
                     : installState === 'error'
                     ? 'border-destructive/30 bg-destructive/5'
                     : 'border-border-subtle bg-background-medium/20'
@@ -144,15 +232,15 @@ export default function DependencySetupModal() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm font-semibold flex items-center gap-1.5">
-                      {installed && <span className="text-green-500">✓</span>}
+                      {installed && <span className="text-text-success">✓</span>}
                       {installState === 'error' && <span className="text-destructive">✗</span>}
                       {installState === 'running' && (
-                        <span className="inline-block w-3 h-3 rounded-full border-2 border-blue-500 border-t-transparent animate-spin" />
+                        <span className="inline-block w-3 h-3 rounded-full border-2 border-text-muted border-t-transparent animate-spin" />
                       )}
                       {info.displayName}
                     </p>
                     {installed && info.version && (
-                      <p className="text-[11px] text-text-subtle mt-0.5">{info.version}</p>
+                      <p className="text-[11px] text-text-muted mt-0.5">{info.version}</p>
                     )}
                     {!installed && installState === 'idle' && (
                       <p className="text-[11px] text-text-muted font-mono mt-0.5 break-all">
@@ -192,7 +280,7 @@ export default function DependencySetupModal() {
                 {output && (
                   <div
                     ref={(el) => { outputRefs.current[info.name] = el; }}
-                    className="mt-2 font-mono text-[10px] text-text-subtle bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap"
+                    className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap"
                   >
                     {output}
                   </div>
@@ -205,7 +293,7 @@ export default function DependencySetupModal() {
 
                 {/* Linux sudo note */}
                 {info.requiresSudo && !installed && installState !== 'running' && (
-                  <p className="mt-1 text-[11px] text-amber-500">
+                  <p className="mt-1 text-[11px] text-text-warning">
                     Requires sudo — you may be prompted for your password in a terminal.
                   </p>
                 )}
@@ -216,7 +304,7 @@ export default function DependencySetupModal() {
 
         {/* Footer */}
         <div className="px-6 py-4 border-t border-border-subtle flex items-center justify-between">
-          <p className="text-xs text-text-subtle">
+          <p className="text-xs text-text-muted">
             {allDone
               ? 'All dependencies installed. ✓'
               : 'BioRouter features may be limited until these are installed.'}

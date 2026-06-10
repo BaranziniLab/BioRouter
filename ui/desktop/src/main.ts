@@ -29,7 +29,7 @@ import os from 'node:os';
 import { spawn, spawnSync } from 'child_process';
 import AdmZip from 'adm-zip';
 import 'dotenv/config';
-import { checkServerStatus, startBiorouterd } from './biorouterd';
+import { checkServerStatus, startBiorouterd, getBiorouterCliBinaryPath } from './biorouterd';
 import { expandTilde } from './utils/pathUtils';
 import log from './utils/logger';
 import { ensureWinShims } from './utils/winShims';
@@ -2097,6 +2097,82 @@ function parseFrontmatterFromSkillMd(
   return { name: nameMatch[1].trim(), description: descMatch[1].trim() };
 }
 
+// --- BAAM registry (Browse Skills / Browse Extensions) --------------------
+// The marketplace catalog is published at biorouter.ucsf.edu/registry.json
+// (generated from baam.html). We fetch it live so the in-app browser stays in
+// sync with the website; the renderer ships a bundled snapshot as a fallback.
+const REGISTRY_URL = 'https://biorouter.ucsf.edu/registry.json';
+
+// Only these hosts may be fetched/downloaded from for the Browse feature. The
+// registry's skill/extension assets all live on github.com or the site itself.
+const REGISTRY_DOWNLOAD_HOSTS = new Set([
+  'biorouter.ucsf.edu',
+  'github.com',
+  'objects.githubusercontent.com',
+  'raw.githubusercontent.com',
+  'codeload.github.com',
+]);
+
+function isAllowedRegistryUrl(rawUrl: string): URL | null {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'https:') return null;
+    if (!REGISTRY_DOWNLOAD_HOSTS.has(parsed.hostname)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+ipcMain.handle('registry:fetch', async () => {
+  try {
+    const response = await fetch(REGISTRY_URL, {
+      headers: { 'User-Agent': 'BioRouter', Accept: 'application/json' },
+    });
+    if (!response.ok) return { error: `HTTP ${response.status}` };
+    const json = await response.json();
+    return { registry: json };
+  } catch (err) {
+    return { error: (err as Error).message };
+  }
+});
+
+// Download a registry asset (.zip skill bundle or .brxt extension) to a temp
+// file and return its local path, for reuse by the existing install flows.
+ipcMain.handle('registry:download', async (_event, { url }: { url: string }) => {
+  const parsed = isAllowedRegistryUrl(url);
+  if (!parsed) return { error: 'Refusing to download from an untrusted URL.' };
+
+  const ext = parsed.pathname.toLowerCase().endsWith('.brxt') ? '.brxt' : '.zip';
+  if (!parsed.pathname.toLowerCase().endsWith('.zip') && ext !== '.brxt') {
+    return { error: 'Unsupported asset type.' };
+  }
+
+  try {
+    const response = await fetch(url, {
+      headers: { 'User-Agent': 'BioRouter' },
+      redirect: 'follow',
+    });
+    if (!response.ok) return { error: `Download failed: HTTP ${response.status}` };
+
+    const MAX_SIZE = 200 * 1024 * 1024; // 200MB ceiling
+    const buf = Buffer.from(await response.arrayBuffer());
+    if (buf.length > MAX_SIZE) return { error: 'Download too large.' };
+
+    const dir = path.join(os.tmpdir(), 'biorouter-registry');
+    fsSync.mkdirSync(dir, { recursive: true });
+    const safeName = (path.basename(parsed.pathname) || `asset${ext}`).replace(
+      /[^a-zA-Z0-9._-]/g,
+      '_'
+    );
+    const dest = path.join(dir, `${crypto.randomBytes(6).toString('hex')}-${safeName}`);
+    fsSync.writeFileSync(dest, buf);
+    return { path: dest };
+  } catch (err) {
+    return { error: `Download failed: ${(err as Error).message}` };
+  }
+});
+
 ipcMain.handle('brxt:open-file-dialog', async (event) => {
   // Allow automated tests to inject a file path without a native dialog
   if (process.env.PLAYWRIGHT_BRXT_FILE) {
@@ -2350,6 +2426,56 @@ function handleBrxtFileOpen(filePath: string) {
   }
 }
 
+/**
+ * IPC for the "Install Biorouter CLI" affordance. The actual install logic
+ * lives in the bundled CLI (`biorouter setup-path`) so the terminal and the
+ * desktop app share one implementation (Rust `biorouter::system::install_cli`).
+ */
+function registerCliInstallHandlers() {
+  // Is the `biorouter` command already callable from a terminal?
+  ipcMain.handle('cli:status', async () => {
+    let bundled: string | null = null;
+    try {
+      bundled = getBiorouterCliBinaryPath(app);
+    } catch {
+      bundled = null;
+    }
+    const probe = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['biorouter'], {
+      encoding: 'utf8',
+      env: SPAWN_ENV,
+      shell: process.platform === 'win32',
+    });
+    const onPath = probe.status === 0 && (probe.stdout || '').trim().length > 0;
+    return {
+      bundled,
+      onPath,
+      pathLocation: onPath ? (probe.stdout || '').trim().split('\n')[0] : null,
+    };
+  });
+
+  // Install the bundled CLI onto PATH by delegating to `biorouter setup-path`.
+  ipcMain.handle('cli:install', async () => {
+    let cli: string;
+    try {
+      cli = getBiorouterCliBinaryPath(app);
+    } catch (e) {
+      return { success: false, error: `Bundled CLI not found: ${(e as Error).message}` };
+    }
+    const res = spawnSync(cli, ['setup-path'], {
+      encoding: 'utf8',
+      env: SPAWN_ENV,
+      timeout: 60_000,
+    });
+    if (res.status === 0) {
+      return { success: true, output: (res.stdout || '').trim() };
+    }
+    return {
+      success: false,
+      error: (res.stderr || res.stdout || `setup-path exited with ${res.status}`).trim(),
+    };
+  });
+}
+
 const createNewWindow = async (app: App, dir?: string | null) => {
   const recentDirs = loadRecentDirs();
   const openDir = dir || (recentDirs.length > 0 ? recentDirs[0] : undefined);
@@ -2562,7 +2688,7 @@ function buildApplicationMenu() {
         {
           label: 'Browse Extensions',
           click() {
-            shell.openExternal('https://baranzinilab.github.io/biorouter-landing/baam.html');
+            shell.openExternal('http://biorouter.ucsf.edu/baam');
           },
         },
         {
@@ -2655,7 +2781,7 @@ function buildApplicationMenu() {
         {
           label: 'Biorouter Documentation',
           click() {
-            shell.openExternal('https://baranzinilab.github.io/biorouter-landing/docs.html');
+            shell.openExternal('http://biorouter.ucsf.edu/docs');
           },
         },
         { type: 'separator' as const },
@@ -2732,6 +2858,7 @@ async function appMain() {
 
   registerUpdateIpcHandlers();
   registerDependencyIpcHandlers();
+  registerCliInstallHandlers();
 
   // Handle microphone permission requests
   session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
