@@ -1,16 +1,18 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { useForm } from '@tanstack/react-form';
-import { Workflow } from '../../workflow';
+import { Workflow, WorkflowKnowledgeBases } from '../../workflow';
 import { X, Save, Play, Loader2 } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { WorkflowFormFields } from './shared/WorkflowFormFields';
 import { WorkflowFormData } from './shared/workflowFormSchema';
-import { createWorkflow, getSessionExtensions } from '../../api/sdk.gen';
+import { createWorkflow, getActive, getSessionExtensions, listBases } from '../../api/sdk.gen';
 import { WorkflowParameter } from './shared/workflowFormSchema';
 import { toastError } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
-import type { ExtensionConfig } from '../../api';
+import type { ExtensionConfig, Manifest } from '../../api';
+import { ALL_SKILL_DIRS, loadSkillsFromDirs } from '../skills/skillUtils';
+import type { WorkflowResourceItem } from './shared/WorkflowResourcePicker';
 
 interface CreateWorkflowFromSessionModalProps {
   isOpen: boolean;
@@ -30,6 +32,11 @@ export default function CreateWorkflowFromSessionModal({
   const [analysisStage, setAnalysisStage] = useState<string>('');
   const [hasAnalyzed, setHasAnalyzed] = useState(false);
   const [workflowExtensions, setWorkflowExtensions] = useState<ExtensionConfig[]>([]);
+  const [knowledgeBaseItems, setKnowledgeBaseItems] = useState<WorkflowResourceItem[]>([]);
+  const [workflowKnowledgeBaseIds, setWorkflowKnowledgeBaseIds] = useState<string[]>([]);
+  const [defaultKnowledgeBaseId, setDefaultKnowledgeBaseId] = useState<string | null>(null);
+  const [skillItems, setSkillItems] = useState<WorkflowResourceItem[]>([]);
+  const [workflowSkillIds, setWorkflowSkillIds] = useState<string[]>([]);
 
   // Initialize form with empty values for new workflow
   const form = useForm({
@@ -84,6 +91,49 @@ export default function CreateWorkflowFromSessionModal({
         }
       );
 
+      Promise.all([
+        listBases({ throwOnError: false }),
+        getActive({ query: { session_id: sessionId }, throwOnError: false }),
+      ]).then(([basesRes, activeRes]) => {
+        const bases: Manifest[] = basesRes.data ?? [];
+        const hidden = new Set(activeRes.data?.hidden_kbs ?? []);
+        const visible = bases.filter((base) => !hidden.has(base.id)).map((base) => base.id);
+        const defaultId =
+          activeRes.data?.active_kb && visible.includes(activeRes.data.active_kb)
+            ? activeRes.data.active_kb
+            : visible[0] ?? null;
+
+        setKnowledgeBaseItems(
+          bases.map((base) => ({
+            id: base.id,
+            label: base.name,
+            description: base.id,
+          }))
+        );
+        setWorkflowKnowledgeBaseIds(visible);
+        setDefaultKnowledgeBaseId(defaultId);
+      });
+
+      loadSkillsFromDirs(ALL_SKILL_DIRS)
+        .then(({ singles, bundles }) => {
+          const bundleItems: WorkflowResourceItem[] = bundles.map((bundle) => ({
+            id: bundle.bundleName,
+            label: bundle.bundleName,
+            description: bundle.skills.map((skill) => skill.name).join(', '),
+            badge: 'bundle',
+          }));
+          const singleItems: WorkflowResourceItem[] = singles.map((skill) => ({
+            id: skill.name,
+            label: skill.name,
+            description: skill.description,
+          }));
+          setSkillItems([...bundleItems, ...singleItems]);
+        })
+        .catch((error) => {
+          console.warn('Failed to load workflow skills:', error);
+          setSkillItems([]);
+        });
+
       // Analyze the conversation to generate a suggested workflow
       createWorkflow({
         body: { session_id: sessionId },
@@ -136,6 +186,11 @@ export default function CreateWorkflowFromSessionModal({
       setIsAnalyzing(false);
       setAnalysisStage('');
       setWorkflowExtensions([]);
+      setKnowledgeBaseItems([]);
+      setWorkflowKnowledgeBaseIds([]);
+      setDefaultKnowledgeBaseId(null);
+      setSkillItems([]);
+      setWorkflowSkillIds([]);
     }
   }, [isOpen]);
 
@@ -180,6 +235,14 @@ export default function CreateWorkflowFromSessionModal({
           : undefined;
 
       // Create the workflow object from form data
+      const knowledgeBases: WorkflowKnowledgeBases | undefined =
+        knowledgeBaseItems.length > 0
+          ? {
+              default: defaultKnowledgeBaseId,
+              visible: workflowKnowledgeBaseIds,
+            }
+          : undefined;
+
       const workflow: Workflow = {
         title: formData.title,
         description: formData.description,
@@ -210,6 +273,8 @@ export default function CreateWorkflowFromSessionModal({
               'envs' in ext ? { ...ext, envs: undefined } : ext
             ) as ExtensionConfig[]
           : undefined,
+        knowledge_bases: knowledgeBases,
+        skills: workflowSkillIds.length > 0 ? workflowSkillIds : undefined,
       };
 
       let workflowId = await saveWorkflow(workflow, null);
@@ -265,10 +330,10 @@ export default function CreateWorkflowFromSessionModal({
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-background-default border border-border-subtle rounded-lg w-full max-w-4xl h-full max-h-[90vh] flex flex-col shadow-xl">
+      <div className="flex h-full max-h-[90vh] w-full max-w-4xl flex-col rounded-xl bg-background-default shadow-2xl">
         {/* Header */}
         <div
-          className="flex items-center justify-between px-6 py-5 border-b border-border-subtle shrink-0"
+          className="flex shrink-0 items-center justify-between px-6 pb-3 pt-5"
           data-testid="modal-header"
         >
           <div>
@@ -283,7 +348,7 @@ export default function CreateWorkflowFromSessionModal({
             onClick={onClose}
             variant="ghost"
             size="sm"
-            className="p-1.5 hover:bg-background-medium rounded-lg transition-colors"
+            className="rounded-md p-1.5 transition-colors hover:bg-background-medium"
             data-testid="close-button"
           >
             <X className="w-4 h-4" />
@@ -291,7 +356,7 @@ export default function CreateWorkflowFromSessionModal({
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto px-6 py-4 min-h-0" data-testid="modal-content">
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4" data-testid="modal-content">
           {isAnalyzing ? (
             <div
               className="flex flex-col items-center justify-center h-full min-h-[300px] gap-3"
@@ -319,6 +384,21 @@ export default function CreateWorkflowFromSessionModal({
                 form={form}
                 extensions={workflowExtensions}
                 onExtensionsChange={setWorkflowExtensions}
+                knowledgeBaseItems={knowledgeBaseItems}
+                selectedKnowledgeBaseIds={workflowKnowledgeBaseIds}
+                onKnowledgeBaseIdsChange={(ids) => {
+                  setWorkflowKnowledgeBaseIds(ids);
+                  if (defaultKnowledgeBaseId && !ids.includes(defaultKnowledgeBaseId)) {
+                    setDefaultKnowledgeBaseId(ids[0] ?? null);
+                  } else if (!defaultKnowledgeBaseId && ids.length > 0) {
+                    setDefaultKnowledgeBaseId(ids[0]);
+                  }
+                }}
+                defaultKnowledgeBaseId={defaultKnowledgeBaseId}
+                onDefaultKnowledgeBaseIdChange={setDefaultKnowledgeBaseId}
+                skillItems={skillItems}
+                selectedSkillIds={workflowSkillIds}
+                onSkillIdsChange={setWorkflowSkillIds}
               />
             </div>
           )}
@@ -326,13 +406,13 @@ export default function CreateWorkflowFromSessionModal({
 
         {/* Footer */}
         <div
-          className="flex items-center justify-between px-6 py-4 border-t border-border-subtle shrink-0"
+          className="flex shrink-0 items-center justify-between px-6 pb-5 pt-3"
           data-testid="modal-footer"
         >
           <Button
             onClick={onClose}
             variant="ghost"
-            className="px-4 py-2 text-text-muted rounded-lg hover:bg-background-medium transition-colors"
+            className="rounded-md px-4 py-2 text-text-muted transition-colors hover:bg-background-medium"
             data-testid="cancel-button"
           >
             Cancel
@@ -343,9 +423,9 @@ export default function CreateWorkflowFromSessionModal({
               <Button
                 onClick={() => form.handleSubmit()}
                 disabled={!isFormValid || isCreating}
-                variant="outline"
+                variant="ghost"
                 size="default"
-                className="inline-flex items-center justify-center gap-2 px-4 py-2"
+                className="inline-flex items-center justify-center gap-2 rounded-md bg-background-medium px-4 py-2 hover:bg-background-muted"
                 data-testid="create-workflow-button"
               >
                 <Save className="w-4 h-4" />

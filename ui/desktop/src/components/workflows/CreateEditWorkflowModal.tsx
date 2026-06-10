@@ -384,10 +384,10 @@ export default function CreateEditWorkflowModal({
                 ? 'Define agent behavior and capabilities for reusable chat sessions.'
                 : "Edit the workflow to change agent behavior."}{' '}
               <a
-                href="https://baranzinilab.github.io/biorouter-landing/docs.html"
+                href="http://biorouter.ucsf.edu/docs"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-0.5 text-[#cf6d47] hover:underline"
+                className="inline-flex items-center gap-0.5 text-block-teal hover:underline"
               >
                 Learn more
                 <ExternalLink className="w-3 h-3" />
@@ -429,7 +429,7 @@ export default function CreateEditWorkflowModal({
                   className="ml-4 p-2 hover:bg-background-default rounded-lg transition-colors flex items-center disabled:opacity-50 disabled:hover:bg-transparent"
                 >
                   {copied ? (
-                    <Check className="w-4 h-4 text-green-500" />
+                    <Check className="w-4 h-4 text-text-success" />
                   ) : (
                     <Copy className="w-4 h-4 text-iconSubtle" />
                   )}

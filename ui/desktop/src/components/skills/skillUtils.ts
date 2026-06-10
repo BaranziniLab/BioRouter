@@ -1,24 +1,30 @@
 export interface Skill {
-  folderPath: string;   // absolute path to the skill folder  e.g. ~/.config/biorouter/skills/my-skill
-  sourceDir: string;    // parent directory (one of the watched dirs)
-  name: string;         // from SKILL.md frontmatter
-  description: string;  // from SKILL.md frontmatter
-  content: string;      // raw SKILL.md content
-  bundleName?: string;  // optional: parent bundle name if part of a bundle
+  folderPath: string; // absolute path to the skill folder  e.g. ~/.config/biorouter/skills/my-skill
+  sourceDir: string; // parent directory (one of the watched dirs)
+  name: string; // from SKILL.md frontmatter
+  description: string; // from SKILL.md frontmatter
+  content: string; // raw SKILL.md content
+  bundleName?: string; // optional: parent bundle name if part of a bundle
 }
 
 export interface SkillBundle {
-  bundleName: string;   // folder name of the bundle
-  folderPath: string;   // absolute path to the bundle folder
-  sourceDir: string;    // parent directory (one of the watched dirs)
-  skills: Skill[];      // array of skills in this bundle
+  bundleName: string; // folder name of the bundle
+  folderPath: string; // absolute path to the bundle folder
+  sourceDir: string; // parent directory (one of the watched dirs)
+  skills: Skill[]; // array of skills in this bundle
 }
 
 export const BIOROUTER_SKILLS_DIR = '~/.config/biorouter/skills';
-export const OTHER_SKILL_DIRS = [
-  '~/.claude/skills',
-  '~/.config/agents/skills',
-];
+
+// Skills that ship with Biorouter. The backend re-seeds them on every session
+// start, so deleting their folder has no lasting effect — the UI therefore
+// offers only the enable/disable toggle for them, not deletion.
+export const BUILTIN_SKILL_NAMES = ['about-biorouter'];
+
+export function isBuiltinSkill(name: string): boolean {
+  return BUILTIN_SKILL_NAMES.includes(name);
+}
+export const OTHER_SKILL_DIRS = ['~/.claude/skills', '~/.config/agents/skills'];
 export const ALL_SKILL_DIRS = [BIOROUTER_SKILLS_DIR, ...OTHER_SKILL_DIRS];
 
 /**

@@ -283,12 +283,12 @@ export function KBSelectorPalette({ onClose }: Props) {
             </div>
           )}
 
-          {error && <div className="mt-3 text-sm text-red-500">{error}</div>}
+          {error && <div className="mt-3 text-sm text-text-danger">{error}</div>}
         </div>
 
         <div className="max-h-[420px] overflow-y-auto px-4 py-4">
           {filtered.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-border-subtle px-4 py-10 text-center text-sm text-text-muted">
+            <div className="rounded-xl border border-border-subtle bg-background-muted px-4 py-10 text-center text-sm text-text-muted">
               No knowledge bases match this search.
             </div>
           ) : (
@@ -325,7 +325,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                             {base.name}
                           </div>
                           {hidden && (
-                            <span className="rounded-full bg-background-default px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-text-muted">
+                            <span className="rounded-md bg-background-default px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-text-muted">
                               Hidden from chat
                             </span>
                           )}
@@ -335,14 +335,14 @@ export function KBSelectorPalette({ onClose }: Props) {
                         </div>
                       </div>
                       {isActive && (
-                        <span className="rounded-full bg-background-default px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-text-muted">
+                        <span className="rounded-md bg-background-default px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-text-muted">
                           Focused
                         </span>
                       )}
                     </button>
 
                     <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-2 rounded-full border border-border-subtle px-2 py-1">
+                      <div className="flex items-center gap-2 rounded-md border border-border-subtle px-2 py-1">
                         <EyeOff className="h-3.5 w-3.5 text-text-muted" />
                         <Switch
                           checked={!hidden}
@@ -377,7 +377,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                         type="button"
                         variant="ghost"
                         size="sm"
-                        className="h-8 px-2 text-red-500 hover:text-red-600"
+                        className="h-8 px-2 text-text-danger hover:text-text-danger/80"
                         onClick={() => void handleRemove(base)}
                         disabled={isBusy}
                         title="Delete knowledge base"

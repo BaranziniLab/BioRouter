@@ -34,8 +34,8 @@ export default function WorkflowExpandableInfo({
   return (
     <>
       <div className="flex justify-between items-center mb-2">
-        <label className="block text-md text-textProminent font-bold">
-          {infoLabel} {required && <span className="text-red-500">*</span>}
+        <label className="block text-sm text-text-default font-semibold">
+          {infoLabel} {required && <span className="text-text-danger">*</span>}
         </label>
       </div>
 
@@ -68,7 +68,7 @@ export default function WorkflowExpandableInfo({
               setValueExpanded(true);
               onClickEdit();
             }}
-            className="w-36 px-3 py-3 bg-background-defaultInverse text-sm text-textProminentInverse rounded-xl hover:bg-bgStandardInverse transition-colors"
+            className="w-36 px-3 py-3 bg-background-accent text-sm text-text-on-accent rounded-xl hover:bg-background-accent/90 transition-colors"
           >
             {infoValue ? 'Edit' : 'Add'} {infoLabel.toLowerCase()}
           </Button>

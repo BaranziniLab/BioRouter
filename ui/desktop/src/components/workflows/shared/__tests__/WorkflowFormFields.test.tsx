@@ -565,7 +565,7 @@ describe('WorkflowFormFields', () => {
       // Check that each parameter container has an unused indicator with orange text
       let unusedIndicatorsFound = 0;
       parameterContainers.forEach((container) => {
-        const unusedIndicator = container.querySelector('.text-orange-500');
+        const unusedIndicator = container.querySelector('.text-text-warning');
         if (unusedIndicator) {
           unusedIndicatorsFound++;
         }
@@ -574,7 +574,7 @@ describe('WorkflowFormFields', () => {
 
       // Verify the unused text appears with the warning styling
       unusedTexts.forEach((unusedText) => {
-        expect(unusedText).toHaveClass('text-orange-500');
+        expect(unusedText).toHaveClass('text-text-warning');
       });
     });
 
@@ -635,14 +635,14 @@ describe('WorkflowFormFields', () => {
         container.textContent?.includes('count')
       );
 
-      expect(usernameContainer?.querySelector('.text-orange-500')).not.toBeInTheDocument();
-      expect(countContainer?.querySelector('.text-orange-500')).not.toBeInTheDocument();
+      expect(usernameContainer?.querySelector('.text-text-warning')).not.toBeInTheDocument();
+      expect(countContainer?.querySelector('.text-text-warning')).not.toBeInTheDocument();
 
       // But unused_param should have the unused indicator
       const unusedContainer = Array.from(parameterContainers).find((container) =>
         container.textContent?.includes('unused_param')
       );
-      expect(unusedContainer?.querySelector('.text-orange-500')).toBeInTheDocument();
+      expect(unusedContainer?.querySelector('.text-text-warning')).toBeInTheDocument();
     });
 
     it('shows delete button for parameters', async () => {

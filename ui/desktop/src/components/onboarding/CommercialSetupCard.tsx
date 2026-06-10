@@ -96,11 +96,11 @@ export default function CommercialSetupCard({
       )}
 
       {result && (
-        <div className="mt-3 text-sm p-3 rounded-md bg-green-50 dark:bg-green-900/20 text-green-800 dark:text-green-300 border border-green-200 dark:border-green-800/50 flex items-center gap-2">
+        <div className="mt-3 text-sm p-3 rounded-md bg-background-success/10 text-text-success border border-border-success/40 flex items-center gap-2">
           <span className="flex-shrink-0">✓</span>
           <div className="flex-1 min-w-0">
             <div className="font-medium">Detected {result.provider}</div>
-            <div className="text-green-700 dark:text-green-400 text-xs mt-0.5">
+            <div className="text-text-success text-xs mt-0.5">
               {result.model} · {result.totalModels} models available
             </div>
           </div>
@@ -109,11 +109,11 @@ export default function CommercialSetupCard({
 
       {error && (
         <div className="mt-3 space-y-2">
-          <div className="text-sm p-3 rounded-md bg-red-50 dark:bg-red-900/20 text-red-800 dark:text-red-300 border border-red-200 dark:border-red-800/50 flex items-center gap-2">
+          <div className="text-sm p-3 rounded-md bg-background-danger/10 text-text-danger border border-border-danger/40 flex items-center gap-2">
             <span className="flex-shrink-0">✕</span>
             <div className="flex-1">
               <div className="font-medium">Could not detect provider</div>
-              <div className="text-red-700 dark:text-red-400 text-xs mt-0.5">
+              <div className="text-text-danger text-xs mt-0.5">
                 Check that the key is complete and valid
               </div>
             </div>

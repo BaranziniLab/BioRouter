@@ -123,12 +123,12 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
           className="px-6 py-5 space-y-5 flex-grow overflow-y-auto"
         >
           {apiErrorExternally && (
-            <p className="text-red-600 dark:text-red-400 text-sm mb-3 p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-md">
+            <p className="text-text-danger text-sm mb-3 p-2 bg-background-danger/10 border border-border-danger/40 rounded-md">
               {apiErrorExternally}
             </p>
           )}
           {internalValidationError && (
-            <p className="text-red-600 dark:text-red-400 text-sm mb-3 p-2 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800/50 rounded-md">
+            <p className="text-text-danger text-sm mb-3 p-2 bg-background-danger/10 border border-border-danger/40 rounded-md">
               {internalValidationError}
             </p>
           )}

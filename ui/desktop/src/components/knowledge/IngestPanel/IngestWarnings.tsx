@@ -60,8 +60,8 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
                 key={warning.id}
                 className={`rounded-lg border px-3 py-2 ${
                   isError
-                    ? 'border-red-200/70 bg-red-50/70 text-red-900 dark:border-red-900/40 dark:bg-red-950/30 dark:text-red-100'
-                    : 'border-amber-200/70 bg-amber-50/70 text-amber-900 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-100'
+                    ? 'border-border-danger/40 bg-background-danger/10 text-text-danger'
+                    : 'border-border-warning/40 bg-background-warning/10 text-text-warning'
                 }`}
               >
                 <div className="flex items-start gap-2">

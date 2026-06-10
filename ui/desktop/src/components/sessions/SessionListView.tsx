@@ -148,7 +148,7 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
                 type="text"
                 value={description}
                 onChange={handleInputChange}
-                className="w-full p-3 border border-border-subtle rounded-lg bg-background-default text-text-default focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full p-3 border border-border-subtle rounded-lg bg-background-default text-text-default focus:outline-none focus:ring-2 focus:ring-border-strong"
                 placeholder="Enter session description"
                 autoFocus
                 maxLength={200}
@@ -598,7 +598,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       return (
         <div
           onClick={handleCardClick}
-          className="session-item flex items-center gap-3 py-3 px-3 rounded-lg cursor-pointer transition-colors duration-150 relative group hover:bg-background-medium"
+          className="session-item flex items-center gap-3 py-3 px-3 rounded-xl cursor-pointer transition-colors duration-150 relative group hover:bg-background-medium"
           ref={(el) => setSessionRefs(session.id, el)}
         >
           {/* Title + metadata */}
@@ -683,10 +683,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
               </button>
               <button
                 onClick={handleDeleteClick}
-                className="p-1.5 rounded hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+                className="p-1.5 rounded text-text-danger hover:bg-background-danger/10 transition-colors"
                 title="Delete session"
               >
-                <Trash2 className="w-3 h-3 text-red-500" />
+                <Trash2 className="w-3 h-3" />
               </button>
               <button
                 onClick={handleExportClick}
@@ -729,7 +729,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       if (error) {
         return (
           <div className="flex flex-col items-center justify-center h-full text-text-muted">
-            <AlertCircle className="h-12 w-12 text-red-500 mb-4" />
+            <AlertCircle className="h-12 w-12 text-text-danger mb-4" />
             <p className="text-lg mb-2">Error Loading Sessions</p>
             <p className="text-sm text-center mb-4">{error}</p>
             <Button onClick={loadSessions} variant="default">

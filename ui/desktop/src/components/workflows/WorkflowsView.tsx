@@ -499,13 +499,13 @@ export default function WorkflowsView() {
             {(schedule_cron || slash_command) && (
               <div className="flex items-center gap-3">
                 {schedule_cron && (
-                  <div className="flex items-center text-blue-600 dark:text-blue-400">
+                  <div className="flex items-center text-text-info">
                     <Clock className="w-3 h-3 mr-1" />
                     Runs {getReadableCron(schedule_cron)}
                   </div>
                 )}
                 {slash_command && (
-                  <div className="flex items-center text-purple-600 dark:text-purple-400">
+                  <div className="flex items-center text-text-info">
                     /{slash_command}
                   </div>
                 )}
@@ -630,7 +630,7 @@ export default function WorkflowsView() {
             }}
             variant="ghost"
             size="sm"
-            className="h-8 w-8 p-0 text-red-500 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/20"
+            className="h-8 w-8 p-0 text-text-danger hover:bg-background-danger/10"
             title="Delete workflow"
           >
             <Trash2 className="w-4 h-4" />
@@ -678,7 +678,7 @@ export default function WorkflowsView() {
     if (error) {
       return (
         <div className="flex flex-col items-center justify-center h-full text-text-muted">
-          <AlertCircle className="h-12 w-12 text-red-500 mb-4" />
+          <AlertCircle className="h-12 w-12 text-text-danger mb-4" />
           <p className="text-lg mb-2">Error Loading Workflows</p>
           <p className="text-sm text-center mb-4">{error}</p>
           <Button onClick={loadSavedWorkflows} variant="default">

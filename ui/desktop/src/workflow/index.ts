@@ -7,7 +7,13 @@ import type { WorkflowParameter } from '../api';
 
 // Re-export OpenAPI types with frontend-specific additions
 export type Parameter = WorkflowParameter;
+export interface WorkflowKnowledgeBases {
+  default?: string | null;
+  visible?: string[];
+}
 export type Workflow = import('../api').Workflow & {
+  knowledge_bases?: WorkflowKnowledgeBases | null;
+  skills?: string[] | null;
   // TODO: Separate these from the raw workflow type
   // Properties added for scheduled execution
   scheduledJobId?: string;

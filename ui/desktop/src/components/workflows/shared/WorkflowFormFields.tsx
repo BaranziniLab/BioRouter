@@ -11,6 +11,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../ui/co
 import { WorkflowFormApi, WorkflowFormData } from './workflowFormSchema';
 import { getExtensions } from '../../../api';
 import type { ExtensionConfig } from '../../../api';
+import { WorkflowResourceItem, WorkflowResourcePicker } from './WorkflowResourcePicker';
 
 // Type for field API to avoid linting issues - use any to bypass complex type constraints
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -23,6 +24,14 @@ interface WorkflowFormFieldsProps {
   // Extensions state managed by parent
   extensions?: ExtensionConfig[];
   onExtensionsChange?: (exts: ExtensionConfig[]) => void;
+  knowledgeBaseItems?: WorkflowResourceItem[];
+  selectedKnowledgeBaseIds?: string[];
+  onKnowledgeBaseIdsChange?: (ids: string[]) => void;
+  defaultKnowledgeBaseId?: string | null;
+  onDefaultKnowledgeBaseIdChange?: (id: string | null) => void;
+  skillItems?: WorkflowResourceItem[];
+  selectedSkillIds?: string[];
+  onSkillIdsChange?: (ids: string[]) => void;
 
   // Event handlers
   onTitleChange?: (value: string) => void;
@@ -57,6 +66,14 @@ export function WorkflowFormFields({
   form,
   extensions = [],
   onExtensionsChange,
+  knowledgeBaseItems = [],
+  selectedKnowledgeBaseIds = [],
+  onKnowledgeBaseIdsChange,
+  defaultKnowledgeBaseId,
+  onDefaultKnowledgeBaseIdChange,
+  skillItems = [],
+  selectedSkillIds = [],
+  onSkillIdsChange,
   onTitleChange,
   onDescriptionChange,
   onInstructionsChange,
@@ -68,6 +85,10 @@ export function WorkflowFormFields({
   const [newParameterName, setNewParameterName] = useState('');
   const [expandedParameters, setExpandedParameters] = useState<Set<string>>(new Set());
   const [availableExtensions, setAvailableExtensions] = useState<ExtensionConfig[]>([]);
+  const inputClass =
+    'w-full h-9 rounded-md border-0 bg-background-default px-3 text-sm text-text-default placeholder:text-text-muted ring-1 ring-border-input transition-colors hover:bg-background-muted focus:bg-background-default focus:outline-none focus:ring-2 focus:ring-border-strong';
+  const textareaClass =
+    'w-full rounded-md border-0 bg-background-default px-3 py-2 text-sm text-text-default placeholder:text-text-muted ring-1 ring-border-input transition-colors hover:bg-background-muted focus:bg-background-default focus:outline-none focus:ring-2 focus:ring-border-strong resize-none';
 
   useEffect(() => {
     getExtensions({ throwOnError: false }).then((res) => {
@@ -173,9 +194,19 @@ export function WorkflowFormFields({
           values.settings?.temperature !== undefined
       );
       const hasExtensions = extensions.length > 0;
-      return hasActivities || hasParameters || hasJsonSchema || hasSettings || hasExtensions;
+      const hasKnowledgeBases = selectedKnowledgeBaseIds.length > 0;
+      const hasSkills = selectedSkillIds.length > 0;
+      return (
+        hasActivities ||
+        hasParameters ||
+        hasJsonSchema ||
+        hasSettings ||
+        hasExtensions ||
+        hasKnowledgeBases ||
+        hasSkills
+      );
     },
-    [extensions]
+    [extensions, selectedKnowledgeBaseIds.length, selectedSkillIds.length]
   );
 
   const [advancedOpen, setAdvancedOpen] = useState(() => checkHasAdvancedData(form.state.values));
@@ -183,11 +214,14 @@ export function WorkflowFormFields({
 
   // Auto-open Advanced Options when pre-loaded extensions arrive (e.g. from session)
   useEffect(() => {
-    if (extensions.length > 0 && !hasAutoOpenedForExtensions.current) {
+    if (
+      (extensions.length > 0 || selectedKnowledgeBaseIds.length > 0 || selectedSkillIds.length > 0) &&
+      !hasAutoOpenedForExtensions.current
+    ) {
       hasAutoOpenedForExtensions.current = true;
       setAdvancedOpen(true);
     }
-  }, [extensions]);
+  }, [extensions, selectedKnowledgeBaseIds.length, selectedSkillIds.length]);
 
   useEffect(() => {
     const parameterKeys = form.state.values.parameters
@@ -226,7 +260,7 @@ export function WorkflowFormFields({
               htmlFor="workflow-title"
               className="block text-sm font-medium text-text-default mb-2"
             >
-              Title <span className="text-red-500 dark:text-red-400">*</span>
+              Title <span className="text-text-danger">*</span>
             </label>
             <input
               id="workflow-title"
@@ -237,14 +271,14 @@ export function WorkflowFormFields({
                 onTitleChange?.(e.target.value);
               }}
               onBlur={field.handleBlur}
-              className={`w-full h-9 px-3 text-sm border rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 ${
-                field.state.meta.errors.length > 0 ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
+              className={`${inputClass} ${
+                field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''
               }`}
               placeholder="Workflow title"
               data-testid="title-input"
             />
             {field.state.meta.errors.length > 0 && (
-              <p className="text-red-500 dark:text-red-400 text-sm mt-1">{field.state.meta.errors[0]}</p>
+              <p className="text-text-danger text-sm mt-1">{field.state.meta.errors[0]}</p>
             )}
           </div>
         )}
@@ -258,7 +292,7 @@ export function WorkflowFormFields({
               htmlFor="workflow-description"
               className="block text-sm font-medium text-text-default mb-2"
             >
-              Description <span className="text-red-500 dark:text-red-400">*</span>
+              Description <span className="text-text-danger">*</span>
             </label>
             <input
               id="workflow-description"
@@ -269,14 +303,14 @@ export function WorkflowFormFields({
                 onDescriptionChange?.(e.target.value);
               }}
               onBlur={field.handleBlur}
-              className={`w-full h-9 px-3 text-sm border rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 ${
-                field.state.meta.errors.length > 0 ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
+              className={`${inputClass} ${
+                field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''
               }`}
               placeholder="Brief description of what this workflow does"
               data-testid="description-input"
             />
             {field.state.meta.errors.length > 0 && (
-              <p className="text-red-500 dark:text-red-400 text-sm mt-1">{field.state.meta.errors[0]}</p>
+              <p className="text-text-danger text-sm mt-1">{field.state.meta.errors[0]}</p>
             )}
           </div>
         )}
@@ -291,14 +325,14 @@ export function WorkflowFormFields({
                 htmlFor="workflow-instructions"
                 className="block text-sm font-medium text-text-default"
               >
-                Instructions <span className="text-red-500 dark:text-red-400">*</span>
+                Instructions <span className="text-text-danger">*</span>
               </label>
               <Button
                 type="button"
                 onClick={() => setShowInstructionsEditor(true)}
-                variant="outline"
+                variant="ghost"
                 size="sm"
-                className="text-xs"
+                className="h-7 rounded-md bg-background-medium px-2 text-xs hover:bg-background-muted"
               >
                 Open Editor
               </Button>
@@ -314,8 +348,8 @@ export function WorkflowFormFields({
                 field.handleBlur();
                 updateParametersFromFields();
               }}
-              className={`w-full px-3 py-2 text-sm border rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 resize-none font-mono ${
-                field.state.meta.errors.length > 0 ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
+              className={`${textareaClass} ${
+                field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''
               }`}
               placeholder="Detailed instructions for the AI, hidden from the user"
               rows={8}
@@ -326,7 +360,7 @@ export function WorkflowFormFields({
               workflow.
             </p>
             {field.state.meta.errors.length > 0 && (
-              <p className="text-red-500 dark:text-red-400 text-sm mt-1">{field.state.meta.errors[0]}</p>
+              <p className="text-text-danger text-sm mt-1">{field.state.meta.errors[0]}</p>
             )}
 
             {/* Instructions Editor Modal */}
@@ -369,7 +403,7 @@ export function WorkflowFormFields({
                 field.handleBlur();
                 updateParametersFromFields();
               }}
-              className="w-full px-3 py-2 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 resize-none"
+              className={textareaClass}
               placeholder="Pre-filled prompt when the workflow starts"
               rows={3}
               data-testid="prompt-input"
@@ -380,17 +414,17 @@ export function WorkflowFormFields({
 
       {/* Advanced Section - Collapsible */}
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen} className="mt-6">
-        <CollapsibleTrigger className="flex items-baseline gap-2 w-full py-3 px-4 bg-background-medium hover:bg-background-medium/80 rounded-lg transition-colors border border-border-subtle">
+        <CollapsibleTrigger className="flex w-full items-baseline gap-2 rounded-md bg-background-medium px-3 py-2.5 transition-colors hover:bg-background-muted">
           <ChevronDown
             className={`w-4 h-4 text-text-muted transition-transform duration-200 flex-shrink-0 relative top-0.5 ${
               advancedOpen ? 'rotate-0' : '-rotate-90'
             }`}
           />
           <span className="text-sm font-medium text-text-default">Advanced Options</span>
-          <span className="text-xs text-text-muted">Activities, parameters, model, extensions</span>
+          <span className="text-xs text-text-muted">Activities, parameters, model, resources</span>
         </CollapsibleTrigger>
 
-        <CollapsibleContent className="mt-4 space-y-4 pl-6 border-l-2 border-border-subtle ml-2">
+        <CollapsibleContent className="mt-4 space-y-5">
           {/* Activities Field */}
           <form.Field name="activities">
             {(field: FormFieldApi<string[]>) => (
@@ -476,14 +510,15 @@ export function WorkflowFormFields({
                       onChange={(e) => setNewParameterName(e.target.value)}
                       onKeyPress={handleKeyPress}
                       placeholder="Enter parameter name..."
-                      className="flex-1 h-9 px-3 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150"
+                      className={inputClass}
                     />
                     <Button
                       type="button"
                       onClick={handleAddParameter}
                       disabled={!newParameterName.trim()}
-                      variant="outline"
+                      variant="ghost"
                       size="sm"
+                      className="rounded-md bg-background-medium hover:bg-background-muted"
                     >
                       Add parameter
                     </Button>
@@ -537,9 +572,9 @@ export function WorkflowFormFields({
                   <Button
                     type="button"
                     onClick={() => setShowJsonSchemaEditor(true)}
-                    variant="outline"
+                    variant="ghost"
                     size="sm"
-                    className="text-xs"
+                    className="h-7 rounded-md bg-background-medium px-2 text-xs hover:bg-background-muted"
                   >
                     Open Editor
                   </Button>
@@ -547,8 +582,8 @@ export function WorkflowFormFields({
 
                 {field.state.value && field.state.value.trim() && (
                   <div
-                    className={`border rounded-lg p-3 bg-background-muted ${
-                      field.state.meta.errors.length > 0 ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
+                    className={`rounded-md bg-background-medium p-3 ${
+                      field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''
                     }`}
                   >
                     <pre className="text-xs font-mono text-text-default whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
@@ -558,7 +593,7 @@ export function WorkflowFormFields({
                 )}
 
                 {field.state.meta.errors.length > 0 && (
-                  <p className="text-red-500 dark:text-red-400 text-sm mt-1">{field.state.meta.errors[0]}</p>
+                  <p className="text-text-danger text-sm mt-1">{field.state.meta.errors[0]}</p>
                 )}
 
                 {/* JSON Schema Editor Modal */}
@@ -579,13 +614,18 @@ export function WorkflowFormFields({
           </form.Field>
 
           {/* Model Settings */}
-          <div>
-            <label className="block text-sm font-medium text-text-default mb-1">
-              Model Settings
-            </label>
-            <p className="text-xs text-text-muted mb-3">
-              Override the default LLM for this workflow. Leave blank to use the global default.
-            </p>
+          <div className="space-y-3 rounded-md bg-background-muted/60 p-3">
+            <div className="flex items-baseline justify-between gap-3">
+              <div>
+                <label className="block text-sm font-medium text-text-default">
+                  Model settings
+                </label>
+                <p className="mt-0.5 text-xs text-text-muted">
+                  Optional workflow-specific provider, model, and temperature.
+                </p>
+              </div>
+              <span className="shrink-0 text-[11px] text-text-muted">Global default if blank</span>
+            </div>
             <div className="grid grid-cols-2 gap-3">
               <form.Field name="settings.biorouter_provider">
                 {(field: FormFieldApi<string | undefined>) => (
@@ -598,7 +638,7 @@ export function WorkflowFormFields({
                       value={field.state.value || ''}
                       onChange={(e) => field.handleChange(e.target.value || undefined)}
                       placeholder="e.g. anthropic, openai"
-                      className="w-full h-9 px-3 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150"
+                      className={inputClass}
                     />
                   </div>
                 )}
@@ -613,8 +653,8 @@ export function WorkflowFormFields({
                       type="text"
                       value={field.state.value || ''}
                       onChange={(e) => field.handleChange(e.target.value || undefined)}
-                      placeholder="e.g. claude-opus-4-5"
-                      className="w-full h-9 px-3 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150"
+                      placeholder="e.g. claude-opus-4-8"
+                      className={inputClass}
                     />
                   </div>
                 )}
@@ -622,7 +662,7 @@ export function WorkflowFormFields({
             </div>
             <form.Field name="settings.temperature">
               {(field: FormFieldApi<number | undefined>) => (
-                <div className="mt-3">
+                <div>
                   <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
                     Temperature{' '}
                     <span className="normal-case font-normal">(0–2, blank = default)</span>
@@ -638,58 +678,61 @@ export function WorkflowFormFields({
                       field.handleChange(v === '' ? undefined : parseFloat(v));
                     }}
                     placeholder="e.g. 0.7"
-                    className="w-full h-9 px-3 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150"
+                    className={inputClass}
                   />
                 </div>
               )}
             </form.Field>
           </div>
 
-          {/* Extensions */}
-          {onExtensionsChange && (
-            <div>
-              <label className="block text-sm font-medium text-text-default mb-1">
-                Extensions
-              </label>
-              <p className="text-xs text-text-muted mb-3">
-                Select which extensions are active for this workflow. Unchecked extensions are
-                disabled regardless of global settings.
-              </p>
-              {availableExtensions.length === 0 ? (
-                <p className="text-xs text-text-muted italic">No extensions configured.</p>
-              ) : (
-                <div className="space-y-2">
-                  {availableExtensions.map((ext) => {
-                    const isSelected = extensions.some((e) => e.name === ext.name);
-                    return (
-                      <label
-                        key={ext.name}
-                        className="flex items-start gap-3 py-2.5 px-3 rounded-lg border border-border-subtle bg-background-default hover:bg-background-muted cursor-pointer transition-colors duration-150"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              onExtensionsChange([...extensions, ext]);
-                            } else {
-                              onExtensionsChange(extensions.filter((x) => x.name !== ext.name));
-                            }
-                          }}
-                          className="mt-0.5 accent-[#cf6d47] flex-shrink-0"
-                        />
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium text-text-default">{ext.name}</p>
-                          {ext.description && (
-                            <p className="text-xs text-text-muted mt-0.5 truncate">
-                              {ext.description}
-                            </p>
-                          )}
-                        </div>
-                      </label>
-                    );
-                  })}
-                </div>
+          {(onKnowledgeBaseIdsChange || onSkillIdsChange || onExtensionsChange) && (
+            <div className="space-y-4">
+              {onKnowledgeBaseIdsChange && (
+                <WorkflowResourcePicker
+                  label="Knowledge bases"
+                  description="Choose which knowledge bases this workflow can search and which one is focused by default."
+                  items={knowledgeBaseItems}
+                  selectedIds={selectedKnowledgeBaseIds}
+                  onSelectedIdsChange={onKnowledgeBaseIdsChange}
+                  defaultId={defaultKnowledgeBaseId}
+                  onDefaultIdChange={onDefaultKnowledgeBaseIdChange}
+                  emptyText="No knowledge bases found"
+                  searchPlaceholder="Search knowledge bases..."
+                  noun="KB"
+                />
+              )}
+
+              {onSkillIdsChange && (
+                <WorkflowResourcePicker
+                  label="Skills"
+                  description="Choose the skills this workflow should prefer when the skills extension is enabled."
+                  items={skillItems}
+                  selectedIds={selectedSkillIds}
+                  onSelectedIdsChange={onSkillIdsChange}
+                  emptyText="No skills found"
+                  searchPlaceholder="Search skills..."
+                  noun="skill"
+                />
+              )}
+
+              {onExtensionsChange && (
+                <WorkflowResourcePicker
+                  label="Extensions"
+                  description="Choose which extensions are active for this workflow. Empty means BioRouter uses the global default."
+                  items={availableExtensions.map((ext) => ({
+                    id: ext.name,
+                    label: ext.name,
+                    description: ext.description,
+                  }))}
+                  selectedIds={extensions.map((ext) => ext.name)}
+                  onSelectedIdsChange={(ids) => {
+                    const selected = availableExtensions.filter((ext) => ids.includes(ext.name));
+                    onExtensionsChange(selected);
+                  }}
+                  emptyText="No extensions configured"
+                  searchPlaceholder="Search extensions..."
+                  noun="extension"
+                />
               )}
             </div>
           )}

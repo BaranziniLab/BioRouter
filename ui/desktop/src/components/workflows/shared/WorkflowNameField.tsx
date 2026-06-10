@@ -24,7 +24,7 @@ export function WorkflowNameField({
   return (
     <div>
       <label htmlFor={id} className="block text-sm font-medium text-text-default mb-2">
-        {label} {required && <span className="text-red-500 dark:text-red-400">*</span>}
+        {label} {required && <span className="text-text-danger">*</span>}
       </label>
       <input
         id={id}
@@ -50,8 +50,8 @@ export function WorkflowNameField({
           onBlur();
         }}
         disabled={disabled}
-        className={`w-full p-3 border rounded-lg bg-background-default text-text-default focus:outline-none focus:ring-2 focus:ring-blue-500 ${
-          errors.length > 0 ? 'border-red-500 dark:border-red-400' : 'border-border-subtle'
+        className={`w-full p-3 border rounded-lg bg-background-default text-text-default focus:outline-none focus:ring-2 focus:ring-border-strong ${
+          errors.length > 0 ? 'border-border-danger' : 'border-border-subtle'
         } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
         placeholder={WORKFLOW_NAME_PLACEHOLDER}
         data-testid="workflow-name-input"
@@ -59,7 +59,7 @@ export function WorkflowNameField({
       <p className="text-xs text-text-muted mt-1">
         Will be automatically formatted (lowercase, dashes for spaces)
       </p>
-      {errors.length > 0 && <p className="text-red-500 dark:text-red-400 text-sm mt-1">{errors[0]}</p>}
+      {errors.length > 0 && <p className="text-text-danger text-sm mt-1">{errors[0]}</p>}
     </div>
   );
 }

@@ -324,9 +324,9 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
                   <div className="flex-1 min-w-0 pr-2">
                     <div className="text-sm font-medium text-text-default">
                       {bundle.bundleName}
-                      <span className="ml-1 text-[10px] text-text-subtle font-normal">bundle</span>
+                      <span className="ml-1 text-[11px] text-text-subtle font-normal">bundle</span>
                     </div>
-                    <div className="text-[10px] text-text-subtle truncate">{subNames}</div>
+                    <div className="text-[11px] text-text-subtle truncate">{subNames}</div>
                   </div>
                   <div onClick={(e) => e.stopPropagation()} className="flex-shrink-0 mt-0.5">
                     <Switch
