@@ -391,7 +391,7 @@ npm install
 
 ### `401 Unauthorized` during notarization
 
-The app-specific password must be generated for `<apple-id>` (not the UCSF email). See `APPLE_DEVELOPER_NOTES.md` for how to generate a replacement if needed.
+The app-specific password must be generated for the personal Apple ID used for notarization (not the UCSF email). See `APPLE_DEVELOPER_NOTES.md` (gitignored, kept local) for the account details and how to generate a replacement if needed.
 
 ### `cannot find -lxcb` or `cannot find -lbz2` in Linux Docker build
 
