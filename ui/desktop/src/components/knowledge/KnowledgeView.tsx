@@ -5,6 +5,7 @@ import { KBSelectorTrigger } from './KBSelector/KBSelectorTrigger';
 import { IngestPanel } from './IngestPanel/IngestPanel';
 import { KnowledgeGraphPanel } from './graph/KnowledgeGraphPanel';
 import { ChangeLogDrawer } from './changelog/ChangeLogDrawer';
+import { useKnowledge } from './KnowledgeContext';
 
 export default function KnowledgeView() {
   return <KnowledgeViewInner />;
@@ -14,6 +15,15 @@ function KnowledgeViewInner() {
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [changeLogOpen, setChangeLogOpen] = useState(false);
   const [previewSha, setPreviewSha] = useState<string | null>(null);
+  const { refresh } = useKnowledge();
+
+  // The KnowledgeProvider only fetches the base list once at app start, so a
+  // knowledge base created elsewhere (e.g. via chat / the knowledge MCP tools)
+  // would not appear here until a full reload. Re-fetch whenever the Knowledge
+  // view mounts so navigating to this tab always reflects the current bases.
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
