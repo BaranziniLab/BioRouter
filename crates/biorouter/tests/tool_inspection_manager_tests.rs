@@ -28,6 +28,7 @@ impl ToolInspector for MockInspectorOk {
         _tool_requests: &[ToolRequest],
         _messages: &[Message],
         _biorouter_mode: BioRouterMode,
+        _session: &biorouter::session::Session,
     ) -> Result<Vec<InspectionResult>> {
         Ok(self.results.clone())
     }
@@ -46,6 +47,7 @@ impl ToolInspector for MockInspectorErr {
         _tool_requests: &[ToolRequest],
         _messages: &[Message],
         _biorouter_mode: BioRouterMode,
+        _session: &biorouter::session::Session,
     ) -> Result<Vec<InspectionResult>> {
         Err(anyhow!("simulated failure"))
     }
@@ -86,7 +88,12 @@ async fn test_inspect_tools_aggregates_and_handles_errors() {
 
     // Act
     let results = manager
-        .inspect_tools(&tool_requests, &messages, BioRouterMode::Approve)
+        .inspect_tools(
+            &tool_requests,
+            &messages,
+            BioRouterMode::Approve,
+            &biorouter::session::Session::default(),
+        )
         .await
         .expect("inspect_tools should not fail when one inspector errors");
 
