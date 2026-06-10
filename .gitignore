@@ -64,3 +64,4 @@ result
 .codex/
 # Playwright accessibility snapshot dump (runtime artifact)
 knowledge-state.yml
+dist/
