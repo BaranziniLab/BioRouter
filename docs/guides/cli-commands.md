@@ -50,6 +50,27 @@ biorouter info
 
 ---
 
+#### models
+Inspect and update model/provider configuration from the CLI.
+
+**Usage:**
+```bash
+# Show the configured provider and model
+biorouter models current
+
+# List available providers
+biorouter models providers
+
+# List known models for a provider
+biorouter models list openai
+biorouter models list ollama --format json
+
+# Set the default provider and model
+biorouter models set --provider openai --model gpt-5.5
+```
+
+---
+
 #### version
 Check the current biorouter version you have installed.
 

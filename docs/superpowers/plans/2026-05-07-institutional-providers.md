@@ -53,7 +53,7 @@ pub const VERSA_AZURE_ENDPOINT: &str = "https://unified-api.ucsf.edu/general";
 pub const VERSA_AZURE_DEPLOYMENT: &str = "gpt-5.2-2025-12-11";
 pub const VERSA_AZURE_API_VERSION: &str = "2024-10-21";
 pub const VERSA_AZURE_DOC_URL: &str =
-    "https://baranzinilab.github.io/biorouter-landing/docs.html";
+    "http://biorouter.ucsf.edu/docs";
 
 pub const VERSA_AZURE_KNOWN_MODELS: &[&str] = &[
     "gpt-5.2-2025-12-11",
@@ -261,7 +261,7 @@ use super::formats::bedrock::{
 };
 
 pub const VERSA_BEDROCK_DOC_LINK: &str =
-    "https://baranzinilab.github.io/biorouter-landing/docs.html";
+    "http://biorouter.ucsf.edu/docs";
 pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-sonnet-4-6";
 pub const VERSA_BEDROCK_KNOWN_MODELS: &[&str] = &[
     "us.anthropic.claude-sonnet-4-6",
@@ -842,7 +842,7 @@ case 'aws':
   return {
     cmd: 'brew install awscli',
     requiresSudo: false,
-    downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html',
+    downloadUrl: 'http://biorouter.ucsf.edu/docs',
   };
 ```
 
@@ -853,7 +853,7 @@ case 'aws':
   return {
     cmd: 'winget install Amazon.AWSCLI',
     requiresSudo: false,
-    downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html',
+    downloadUrl: 'http://biorouter.ucsf.edu/docs',
   };
 ```
 
@@ -862,12 +862,12 @@ After the `if (dep === 'uv')` block for Linux, add:
 ```typescript
 if (dep === 'aws') {
   if (distro === 'deb') {
-    return { cmd: 'sudo apt-get install -y awscli', requiresSudo: true, downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html' };
+    return { cmd: 'sudo apt-get install -y awscli', requiresSudo: true, downloadUrl: 'http://biorouter.ucsf.edu/docs' };
   }
   if (distro === 'rpm') {
-    return { cmd: 'sudo dnf install -y awscli', requiresSudo: true, downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html' };
+    return { cmd: 'sudo dnf install -y awscli', requiresSudo: true, downloadUrl: 'http://biorouter.ucsf.edu/docs' };
   }
-  return { cmd: 'pip install awscli', requiresSudo: false, downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html' };
+  return { cmd: 'pip install awscli', requiresSudo: false, downloadUrl: 'http://biorouter.ucsf.edu/docs' };
 }
 ```
 

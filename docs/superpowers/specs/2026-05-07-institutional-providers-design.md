@@ -159,7 +159,7 @@ Add one non-blocking AWS CLI entry:
     linux:   'pip install awscli  OR  sudo apt install awscli',
     windows: 'winget install Amazon.AWSCLI',
   },
-  learnMoreUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html',
+  learnMoreUrl: 'http://biorouter.ucsf.edu/docs',
   reason: 'Required for Bedrock SSO profile auth. Not needed for access-key auth.',
 }
 ```

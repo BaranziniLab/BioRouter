@@ -142,7 +142,7 @@ You can turn your current biorouter session into a reusable workflow that includ
     
 
   
-    Use the online [Workflow Generator](https://baranzinilab.github.io/BioRouter/workflow-generator) tool to create a workflow. First choose your preferred format:
+    Use the online [Workflow Generator](http://biorouter.ucsf.edu/workflow-generator) tool to create a workflow. First choose your preferred format:
 
     - **URL Format**: Generates a shareable link that opens a session in biorouter Desktop
     - **YAML Format**: Generates YAML content that you can save to file and then run in biorouter CLI

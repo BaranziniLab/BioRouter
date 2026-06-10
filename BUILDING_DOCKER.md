@@ -318,5 +318,5 @@ When contributing Docker-related changes:
 ## Related Documentation
 
 - [BioRouter in Docker Tutorial](documentation/docs/tutorials/biorouter-in-docker.md) - Step-by-step tutorial
-- [Installation Guide](https://baranzinilab.github.io/BioRouter/docs/getting-started/installation) - All installation methods
-- [Configuration Guide](https://baranzinilab.github.io/BioRouter/docs/guides/config-files) - Detailed configuration options
+- [Installation Guide](http://biorouter.ucsf.edu/docs/getting-started/installation) - All installation methods
+- [Configuration Guide](http://biorouter.ucsf.edu/docs/guides/config-files) - Detailed configuration options
