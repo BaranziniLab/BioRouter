@@ -58,3 +58,9 @@ crates/biorouter/tests/mcp_replays/*errors.txt
 # Nix build output
 result
 /node_modules/
+.codegraph
+
+# Local agent tooling config (not product source)
+.codex/
+# Playwright accessibility snapshot dump (runtime artifact)
+knowledge-state.yml
