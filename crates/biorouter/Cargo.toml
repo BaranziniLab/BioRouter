@@ -118,6 +118,8 @@ winapi = { version = "0.3", features = ["wincred"] }
 
 [dev-dependencies]
 agent-client-protocol-schema = "0.10.5"
+tempfile = "3.15.0"
+serde_yaml = "0.9.34"
 criterion = "0.5"
 serial_test = { workspace = true }
 mockall = "0.13.1"

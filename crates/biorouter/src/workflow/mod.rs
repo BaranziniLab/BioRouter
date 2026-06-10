@@ -54,6 +54,12 @@ pub struct Workflow {
     pub extensions: Option<Vec<ExtensionConfig>>, // a list of extensions to enable
 
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub knowledge_bases: Option<WorkflowKnowledgeBases>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<Settings>, // settings for the workflow
 
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -94,6 +100,14 @@ pub struct Settings {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub temperature: Option<f32>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, ToSchema, PartialEq, Eq)]
+pub struct WorkflowKnowledgeBases {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub visible: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, ToSchema)]
@@ -203,6 +217,8 @@ pub struct WorkflowBuilder {
     // Optional fields
     prompt: Option<String>,
     extensions: Option<Vec<ExtensionConfig>>,
+    knowledge_bases: Option<WorkflowKnowledgeBases>,
+    skills: Option<Vec<String>>,
     settings: Option<Settings>,
     activities: Option<Vec<String>>,
     author: Option<Author>,
@@ -248,6 +264,8 @@ impl Workflow {
             instructions: None,
             prompt: None,
             extensions: None,
+            knowledge_bases: None,
+            skills: None,
             settings: None,
             activities: None,
             author: None,
@@ -322,6 +340,16 @@ impl WorkflowBuilder {
         self
     }
 
+    pub fn knowledge_bases(mut self, knowledge_bases: WorkflowKnowledgeBases) -> Self {
+        self.knowledge_bases = Some(knowledge_bases);
+        self
+    }
+
+    pub fn skills(mut self, skills: Vec<String>) -> Self {
+        self.skills = Some(skills);
+        self
+    }
+
     pub fn settings(mut self, settings: Settings) -> Self {
         self.settings = Some(settings);
         self
@@ -372,6 +400,8 @@ impl WorkflowBuilder {
             instructions: self.instructions,
             prompt: self.prompt,
             extensions: self.extensions,
+            knowledge_bases: self.knowledge_bases,
+            skills: self.skills,
             settings: self.settings,
             activities: self.activities,
             author: self.author,
@@ -713,6 +743,8 @@ isGlobal: true"#;
             instructions: Some("clean instructions".to_string()),
             prompt: Some("clean prompt".to_string()),
             extensions: None,
+            knowledge_bases: None,
+            skills: None,
             settings: None,
             activities: Some(vec!["clean activity 1".to_string()]),
             author: None,

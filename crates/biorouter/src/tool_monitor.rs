@@ -28,6 +28,14 @@ impl InternalToolCall {
             .unwrap_or(Value::Null);
         Self { name, parameters }
     }
+
+    fn from_request(tool_request: &ToolRequest) -> Option<Self> {
+        tool_request
+            .tool_call
+            .as_ref()
+            .ok()
+            .map(Self::from_tool_call)
+    }
 }
 
 #[derive(Debug)]
@@ -99,28 +107,51 @@ impl ToolInspector for RepetitionInspector {
     async fn inspect(
         &self,
         tool_requests: &[ToolRequest],
-        _messages: &[Message],
+        messages: &[Message],
         _biorouter_mode: BioRouterMode,
+        _session: &crate::session::Session,
     ) -> Result<Vec<InspectionResult>> {
         let mut results = Vec::new();
+        let Some(max_repetitions) = self.max_repetitions else {
+            return Ok(results);
+        };
 
-        // Check repetition limits for each tool request
+        let mut last_call: Option<InternalToolCall> = None;
+        let mut repeat_count = 0u32;
+
+        for call in messages
+            .iter()
+            .flat_map(|message| message.content.iter())
+            .filter_map(|content| content.as_tool_request())
+            .filter_map(InternalToolCall::from_request)
+        {
+            if last_call.as_ref().is_some_and(|last| last.matches(&call)) {
+                repeat_count += 1;
+            } else {
+                repeat_count = 1;
+                last_call = Some(call);
+            }
+        }
+
         for tool_request in tool_requests {
-            if let Ok(tool_call) = &tool_request.tool_call {
-                // Create a temporary clone to check without modifying state
-                let mut temp_inspector = RepetitionInspector::new(self.max_repetitions);
-                temp_inspector.last_call = self.last_call.clone();
-                temp_inspector.repeat_count = self.repeat_count;
-                temp_inspector.call_counts = self.call_counts.clone();
+            if let Some(call) = InternalToolCall::from_request(tool_request) {
+                if last_call.as_ref().is_some_and(|last| last.matches(&call)) {
+                    repeat_count += 1;
+                } else {
+                    repeat_count = 1;
+                    last_call = Some(call);
+                }
 
-                if !temp_inspector.check_tool_call(tool_call.clone()) {
+                if repeat_count > max_repetitions {
+                    let tool_name = tool_request
+                        .tool_call
+                        .as_ref()
+                        .map(|tool_call| tool_call.name.to_string())
+                        .unwrap_or_else(|_| "unknown".to_string());
                     results.push(InspectionResult {
                         tool_request_id: tool_request.id.clone(),
                         action: InspectionAction::Deny,
-                        reason: format!(
-                            "Tool '{}' has exceeded maximum repetitions",
-                            tool_call.name
-                        ),
+                        reason: format!("Tool '{}' has exceeded maximum repetitions", tool_name),
                         confidence: 1.0,
                         inspector_name: "repetition".to_string(),
                         finding_id: Some("REP-001".to_string()),

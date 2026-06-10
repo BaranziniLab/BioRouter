@@ -66,6 +66,7 @@ impl ToolInspector for SecurityInspector {
         tool_requests: &[ToolRequest],
         messages: &[Message],
         _biorouter_mode: BioRouterMode,
+        _session: &crate::session::Session,
     ) -> Result<Vec<InspectionResult>> {
         let security_results = self
             .security_manager
@@ -122,7 +123,12 @@ mod tests {
         }];
 
         let results = inspector
-            .inspect(&tool_requests, &[], BioRouterMode::Approve)
+            .inspect(
+                &tool_requests,
+                &[],
+                BioRouterMode::Approve,
+                &crate::session::Session::default(),
+            )
             .await
             .unwrap();
 

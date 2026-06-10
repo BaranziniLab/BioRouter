@@ -333,6 +333,7 @@ impl SessionManager {
     pub async fn maybe_update_name(&self, id: &str, provider: Arc<dyn Provider>) -> Result<()> {
         let session = self.get_session(id, true).await?;
 
+        // The user explicitly named the session — never override.
         if session.user_set_name {
             return Ok(());
         }
@@ -347,12 +348,70 @@ impl SessionManager {
             .filter(|m| matches!(m.role, Role::User))
             .count();
 
-        if user_message_count <= MSG_COUNT_FOR_SESSION_NAME_GENERATION {
-            let name = provider.generate_session_name(&conversation).await?;
-            self.update(id).system_generated_name(name).apply().await
-        } else {
-            Ok(())
+        // No real exchange yet — nothing to name from.
+        if user_message_count == 0 {
+            return Ok(());
         }
+
+        // After the first few exchanges the name has settled; stop regenerating
+        // it so later turns don't churn the title.
+        if user_message_count > MSG_COUNT_FOR_SESSION_NAME_GENERATION {
+            return Ok(());
+        }
+
+        // Prefer the LLM-generated, content-derived name. The naming call is
+        // best-effort: if the provider errors (rate limit, auth, model issue)
+        // or hands back an empty/whitespace string, fall back to a
+        // deterministic title derived from the first user message so a session
+        // is NEVER left as "New Session" after a real exchange.
+        let name = match provider.generate_session_name(&conversation).await {
+            Ok(name) if !name.trim().is_empty() => name,
+            Ok(_) => {
+                warn!(
+                    "Session name generation for {} returned an empty name; using fallback",
+                    id
+                );
+                Self::fallback_session_name(&conversation)
+            }
+            Err(e) => {
+                warn!(
+                    "Session name generation for {} failed ({}); using fallback",
+                    id, e
+                );
+                Self::fallback_session_name(&conversation)
+            }
+        };
+
+        // Both the LLM and the fallback produced nothing usable (e.g. the first
+        // user message was only attachments). Leave the placeholder rather than
+        // blanking the name.
+        if name.trim().is_empty() {
+            return Ok(());
+        }
+
+        self.update(id).system_generated_name(name).apply().await
+    }
+
+    /// Derive a short, deterministic session title from the first user message.
+    /// Used as a fallback when the LLM-based namer is unavailable so a session
+    /// with a real exchange never stays as the "New Session" placeholder.
+    fn fallback_session_name(conversation: &Conversation) -> String {
+        let first_user_text = conversation
+            .messages()
+            .iter()
+            .find(|m| matches!(m.role, Role::User))
+            .map(|m| m.as_concat_text())
+            .unwrap_or_default();
+
+        // Collapse whitespace and keep the leading words so the title fits the
+        // limited UI space (mirrors the LLM namer's "4 words or less" intent).
+        let snippet = first_user_text
+            .split_whitespace()
+            .take(8)
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        crate::utils::safe_truncate(&snippet, 60)
     }
 
     pub async fn search_chat_history(
