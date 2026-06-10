@@ -54,10 +54,7 @@ export function GreenCheckButton({ tooltip, className = '', ...props }: ActionBu
       tooltip={tooltip}
       variant="ghost"
       size="sm"
-      className={clsx(
-        'text-green-600 dark:text-green-500 hover:text-green-600 cursor-default',
-        className
-      )}
+      className={clsx('text-text-success hover:text-text-success cursor-default', className)}
       onClick={() => {}}
       {...props}
     />

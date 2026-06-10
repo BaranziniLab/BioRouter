@@ -43,13 +43,13 @@ export const InterruptionHandler: React.FC<InterruptionHandlerProps> = ({
   const getIcon = () => {
     switch (match.keyword.action) {
       case 'stop':
-        return <StopCircle className="w-6 h-6 text-red-500" />;
+        return <StopCircle className="w-6 h-6 text-text-danger" />;
       case 'pause':
-        return <PauseCircle className="w-6 h-6 text-amber-500" />;
+        return <PauseCircle className="w-6 h-6 text-text-warning" />;
       case 'redirect':
-        return <RotateCcw className="w-6 h-6 text-blue-500" />;
+        return <RotateCcw className="w-6 h-6 text-text-info" />;
       default:
-        return <AlertTriangle className="w-6 h-6 text-orange-500" />;
+        return <AlertTriangle className="w-6 h-6 text-text-warning" />;
     }
   };
 
@@ -57,31 +57,31 @@ export const InterruptionHandler: React.FC<InterruptionHandlerProps> = ({
     switch (match.keyword.action) {
       case 'stop':
         return {
-          bg: 'bg-red-50 dark:bg-red-950/20',
-          border: 'border-red-200 dark:border-red-800/50',
-          text: 'text-red-800 dark:text-red-200',
-          accent: 'text-red-600 dark:text-red-400',
+          bg: 'bg-background-danger/10',
+          border: 'border-border-danger/40',
+          text: 'text-text-danger',
+          accent: 'text-text-danger',
         };
       case 'pause':
         return {
-          bg: 'bg-amber-50 dark:bg-amber-950/20',
-          border: 'border-amber-200 dark:border-amber-800/50',
-          text: 'text-amber-800 dark:text-amber-200',
-          accent: 'text-amber-600 dark:text-amber-400',
+          bg: 'bg-background-warning/10',
+          border: 'border-border-warning/40',
+          text: 'text-text-warning',
+          accent: 'text-text-warning',
         };
       case 'redirect':
         return {
-          bg: 'bg-blue-50 dark:bg-blue-950/20',
-          border: 'border-blue-200 dark:border-blue-800/50',
-          text: 'text-blue-800 dark:text-blue-200',
-          accent: 'text-blue-600 dark:text-blue-400',
+          bg: 'bg-background-info/10',
+          border: 'border-border-info/40',
+          text: 'text-text-info',
+          accent: 'text-text-info',
         };
       default:
         return {
-          bg: 'bg-orange-50 dark:bg-orange-950/20',
-          border: 'border-orange-200 dark:border-orange-800/50',
-          text: 'text-orange-800 dark:text-orange-200',
-          accent: 'text-orange-600 dark:text-orange-400',
+          bg: 'bg-background-warning/10',
+          border: 'border-border-warning/40',
+          text: 'text-text-warning',
+          accent: 'text-text-warning',
         };
     }
   };
@@ -138,7 +138,7 @@ export const InterruptionHandler: React.FC<InterruptionHandlerProps> = ({
           {/* Header */}
           <div className="p-6 border-b border-current/10">
             <div className="flex items-start gap-4">
-              <div className="flex-shrink-0 p-2 rounded-full bg-white/50 dark:bg-black/20">
+              <div className="flex-shrink-0 p-2 rounded-lg bg-white/50 dark:bg-black/20">
                 {getIcon()}
               </div>
               <div className="flex-1">
@@ -146,7 +146,7 @@ export const InterruptionHandler: React.FC<InterruptionHandlerProps> = ({
                 <p className={`text-sm mt-1 ${colors.accent}`}>Detected: "{match.matchedText}"</p>
               </div>
               <div
-                className={`text-xs px-2 py-1 rounded-full bg-white/30 dark:bg-black/20 ${colors.text}`}
+                className={`text-xs px-2 py-1 rounded-md bg-white/30 dark:bg-black/20 ${colors.text}`}
               >
                 {Math.round(match.confidence * 100)}% confident
               </div>
@@ -187,10 +187,10 @@ export const InterruptionHandler: React.FC<InterruptionHandlerProps> = ({
                 <div
                   className={`h-2 rounded-full transition-all duration-500 ${
                     match.confidence > 0.8
-                      ? 'bg-green-500'
+                      ? 'bg-background-success'
                       : match.confidence > 0.6
-                        ? 'bg-amber-500'
-                        : 'bg-red-500'
+                        ? 'bg-background-warning'
+                        : 'bg-background-danger'
                   }`}
                   style={{ width: `${match.confidence * 100}%` }}
                 />
@@ -210,7 +210,7 @@ export const InterruptionHandler: React.FC<InterruptionHandlerProps> = ({
             <Button
               onClick={handleConfirm}
               disabled={showRedirectInput && !redirectMessage.trim()}
-              className={`flex-1 bg-white/80 hover:bg-white dark:bg-white/10 dark:hover:bg-white/20 ${colors.text} font-medium shadow-md hover:shadow-lg transition-all duration-200`}
+              className={`flex-1 bg-white/80 hover:bg-white dark:bg-white/10 dark:hover:bg-white/20 ${colors.text} font-medium transition-all duration-200`}
             >
               <Zap className="w-4 h-4 mr-2" />
               {showRedirectInput

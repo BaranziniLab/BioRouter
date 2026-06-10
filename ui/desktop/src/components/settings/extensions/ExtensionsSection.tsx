@@ -16,6 +16,7 @@ import { activateExtensionDefault, deleteExtension, toggleExtensionDefault } fro
 import { toastService } from '../../../toasts';
 import type { ExtensionConfig } from '../../../api/types.gen';
 import { BrxtInstallModal } from '../../BrxtInstallModal';
+import BrowseExtensionsModal from '../../baam/BrowseExtensionsModal';
 
 interface ExtensionSectionProps {
   deepLinkConfig?: ExtensionConfig;
@@ -43,6 +44,7 @@ export default function ExtensionsSection({
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isBrxtModalOpen, setIsBrxtModalOpen] = useState(false);
+  const [isBrowseModalOpen, setIsBrowseModalOpen] = useState(false);
   const [deepLinkConfigStateVar, setDeepLinkConfigStateVar] = useState<
     ExtensionConfig | undefined | null
   >(deepLinkConfig);
@@ -246,9 +248,7 @@ export default function ExtensionsSection({
             <Button
               className="flex items-center gap-2 justify-center"
               variant="outline"
-              onClick={() =>
-                window.open('https://baranzinilab.github.io/biorouter-landing/baam.html', '_blank')
-              }
+              onClick={() => setIsBrowseModalOpen(true)}
             >
               <GPSIcon size={12} />
               Browse Extensions
@@ -305,9 +305,13 @@ export default function ExtensionsSection({
         )}
       </div>
       {isBrxtModalOpen && (
-        <BrxtInstallModal
-          onClose={() => setIsBrxtModalOpen(false)}
+        <BrxtInstallModal onClose={() => setIsBrxtModalOpen(false)} onInstalled={fetchExtensions} />
+      )}
+      {isBrowseModalOpen && (
+        <BrowseExtensionsModal
+          onClose={() => setIsBrowseModalOpen(false)}
           onInstalled={fetchExtensions}
+          installedNames={new Set(extensions.map((e) => e.name.toLowerCase()))}
         />
       )}
     </section>

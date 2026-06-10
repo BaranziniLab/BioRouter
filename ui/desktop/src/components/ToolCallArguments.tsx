@@ -31,7 +31,7 @@ export function ToolCallArguments({ args }: ToolCallArgumentsProps) {
           <div className="font-sans text-sm mb-2">
             <div className="flex flex-row">
               <span className="text-text-muted min-w-[140px]">{key}</span>
-              <span className="text-textPlaceholder">{value}</span>
+              <span className="text-text-muted">{value}</span>
             </div>
           </div>
         );
@@ -49,22 +49,19 @@ export function ToolCallArguments({ args }: ToolCallArgumentsProps) {
             <div className={`w-full flex items-stretch ${isExpanded ? '' : 'truncate min-w-0'}`}>
               {isExpanded ? (
                 <div>
-                  <MarkdownContent
-                    content={value}
-                    className="font-sans text-sm text-textPlaceholder"
-                  />
+                  <MarkdownContent content={value} className="font-sans text-sm text-text-muted" />
                 </div>
               ) : (
                 <button
                   onClick={() => toggleKey(key)}
-                  className={`text-left text-textPlaceholder ${isExpanded ? '' : 'truncate min-w-0'}`}
+                  className={`text-left text-text-muted ${isExpanded ? '' : 'truncate min-w-0'}`}
                 >
                   {value}
                 </button>
               )}
               <button
                 onClick={() => toggleKey(key)}
-                className="flex flex-row items-stretch grow text-textPlaceholder pr-2"
+                className="flex flex-row items-stretch grow text-text-muted pr-2"
               >
                 <div className="min-w-2 grow" />
                 <Expand size={5} isExpanded={isExpanded} />
@@ -86,7 +83,7 @@ export function ToolCallArguments({ args }: ToolCallArgumentsProps) {
       <div className="mb-2">
         <div className="flex flex-row font-sans text-sm">
           <span className="text-text-muted min-w-[140px]">{key}</span>
-          <pre className="whitespace-pre-wrap text-textPlaceholder overflow-x-auto max-w-full">
+          <pre className="whitespace-pre-wrap text-text-muted overflow-x-auto max-w-full">
             {content}
           </pre>
         </div>

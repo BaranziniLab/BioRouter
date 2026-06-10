@@ -140,7 +140,7 @@ export default function ProviderConfigurationModal({
     if (showDeleteConfirmation) {
       return (
         <AlertTriangle
-          className={isActiveProvider ? "text-yellow-500 dark:text-yellow-400" : "text-red-500 dark:text-red-400"}
+          className={isActiveProvider ? 'text-text-warning' : 'text-text-danger'}
           size={24}
         />
       );

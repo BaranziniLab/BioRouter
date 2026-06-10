@@ -70,8 +70,8 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
               className="flex items-center gap-1"
               title="This parameter is not referenced in instructions, prompt, or activities."
             >
-              <AlertTriangle className="w-3.5 h-3.5 text-orange-500" />
-              <span className="text-xs text-orange-500">Unused</span>
+              <AlertTriangle className="w-3.5 h-3.5 text-text-warning" />
+              <span className="text-xs text-text-warning">Unused</span>
             </div>
           )}
         </div>
@@ -83,7 +83,7 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
               e.stopPropagation();
               onDelete(key);
             }}
-            className="p-1 text-text-muted hover:text-red-500 dark:hover:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 rounded transition-colors flex-shrink-0"
+            className="p-1 text-text-muted hover:text-text-danger hover:bg-background-danger/10 rounded transition-colors flex-shrink-0"
             title={`Delete parameter ${key}`}
           >
             <Trash2 className="w-3.5 h-3.5" />

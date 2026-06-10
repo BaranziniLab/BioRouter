@@ -36,7 +36,7 @@ function RuleItem({ title, description }: { title: string; description: string }
 function RulesSection({ title, rules }: { title: string; rules: React.ReactNode }) {
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-medium text-text-default">{title}</h2>
+      <h2 className="text-base font-semibold text-text-default">{title}</h2>
       {rules}
     </div>
   );
@@ -86,7 +86,7 @@ export default function PermissionSettingsView({ onClose }: { onClose: () => voi
         <div className="flex flex-col pb-24">
           <div className="px-8 pt-6 pb-4">
             <BackButton onClick={() => onClose()} className="mb-4" />
-            <div className="rounded-full bg-background-inverse w-16 h-16 flex items-center justify-center mb-4">
+            <div className="rounded-lg bg-background-inverse w-16 h-16 flex items-center justify-center mb-4">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 width="24"
@@ -102,7 +102,7 @@ export default function PermissionSettingsView({ onClose }: { onClose: () => voi
                 <circle cx="7.5" cy="15.5" r="5.5" />
               </svg>
             </div>
-            <h1 className="text-3xl font-medium text-text-default mt-4">Permission Rules</h1>
+            <h1 className="text-2xl font-semibold tracking-tight text-text-default mt-4">Permission Rules</h1>
             <p className="text-text-muted">
               Hidden instructions that will be passed to the provider to help direct and add context
               to your responses.

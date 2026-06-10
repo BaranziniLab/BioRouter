@@ -6,7 +6,6 @@ interface CardContainerProps {
   onClick: () => void;
   grayedOut: boolean;
   testId?: string;
-  borderStyle?: 'solid' | 'dashed';
 }
 
 export default function CardContainer({
@@ -15,19 +14,17 @@ export default function CardContainer({
   onClick,
   grayedOut = false,
   testId,
-  borderStyle = 'solid',
 }: CardContainerProps) {
   return (
     <div
       data-testid={testId}
       className={[
         'rounded-xl p-3 flex flex-col transition-all duration-200 h-[160px]',
-        'bg-background-card text-text-default [box-shadow:var(--shadow-default)]',
+        'bg-background-card text-text-default border border-border-subtle',
         header ? 'justify-between' : 'justify-center',
-        borderStyle === 'dashed' ? 'border-2 border-dashed border-border-default' : '',
         grayedOut
           ? 'opacity-50 cursor-default'
-          : 'cursor-pointer hover:ring-1 hover:ring-border-strong',
+          : 'cursor-pointer hover:bg-background-muted hover:border-border-strong',
       ]
         .filter(Boolean)
         .join(' ')}

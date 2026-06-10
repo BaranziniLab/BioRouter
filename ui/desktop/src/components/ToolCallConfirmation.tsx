@@ -132,7 +132,7 @@ export default function ToolConfirmation({
     <>
       {/* Display security message if present */}
       {prompt && (
-        <div className="biorouter-message-content bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-2xl px-4 py-2 mb-2 text-yellow-800 dark:text-gray-200">
+        <div className="biorouter-message-content bg-background-warning/10 border border-border-warning/40 rounded-2xl px-4 py-2 mb-2 text-text-warning">
           {prompt}
         </div>
       )}
@@ -143,11 +143,11 @@ export default function ToolConfirmation({
           : 'BioRouter would like to call the above tool. Allow?'}
       </div>
       {clicked ? (
-        <div className="biorouter-message-tool bg-background-default border border-border-subtle dark:border-gray-700 rounded-b-2xl px-4 pt-2 pb-2 flex items-center justify-between">
+        <div className="biorouter-message-tool bg-background-default border border-border-subtle rounded-b-2xl px-4 pt-2 pb-2 flex items-center justify-between">
           <div className="flex items-center">
             {(status === 'allow_once' || status === 'always_allow') && (
               <svg
-                className="w-5 h-5 text-gray-500"
+                className="w-5 h-5 text-text-muted"
                 xmlns="http://www.w3.org/2000/svg"
                 fill="none"
                 viewBox="0 0 24 24"
@@ -159,7 +159,7 @@ export default function ToolConfirmation({
             )}
             {status === 'deny' && (
               <svg
-                className="w-5 h-5 text-gray-500"
+                className="w-5 h-5 text-text-muted"
                 xmlns="http://www.w3.org/2000/svg"
                 fill="none"
                 viewBox="0 0 24 24"
@@ -171,7 +171,7 @@ export default function ToolConfirmation({
             )}
             {status === 'confirmed' && (
               <svg
-                className="w-5 h-5 text-gray-500"
+                className="w-5 h-5 text-text-muted"
                 xmlns="http://www.w3.org/2000/svg"
                 fill="none"
                 viewBox="0 0 24 24"
@@ -194,9 +194,9 @@ export default function ToolConfirmation({
           </div>
         </div>
       ) : (
-        <div className="biorouter-message-tool bg-background-default border border-border-subtle dark:border-gray-700 rounded-b-2xl px-4 pt-2 pb-2 flex gap-2 items-center">
+        <div className="biorouter-message-tool bg-background-default border border-border-subtle rounded-b-2xl px-4 pt-2 pb-2 flex gap-2 items-center">
           <Button
-            className="rounded-full"
+            className="rounded-md"
             variant="secondary"
             onClick={() => handleButtonClick(ALLOW_ONCE)}
           >
@@ -205,18 +205,14 @@ export default function ToolConfirmation({
           {/* Only show "Always Allow" if there's no security message (no security finding) */}
           {!prompt && (
             <Button
-              className="rounded-full"
+              className="rounded-md"
               variant="secondary"
               onClick={() => handleButtonClick(ALWAYS_ALLOW)}
             >
               Always Allow
             </Button>
           )}
-          <Button
-            className="rounded-full"
-            variant="outline"
-            onClick={() => handleButtonClick(DENY)}
-          >
+          <Button className="rounded-md" variant="outline" onClick={() => handleButtonClick(DENY)}>
             Deny
           </Button>
         </div>

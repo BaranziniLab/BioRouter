@@ -18,6 +18,7 @@ import { useConfig } from '../ConfigContext';
 import { SearchView } from '../conversation/SearchView';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { BrxtInstallModal } from '../BrxtInstallModal';
+import BrowseExtensionsModal from '../baam/BrowseExtensionsModal';
 
 export type ExtensionsViewOptions = {
   deepLinkConfig?: ExtensionConfig;
@@ -34,10 +35,26 @@ export default function ExtensionsView({
 }) {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [isBrxtModalOpen, setIsBrxtModalOpen] = useState(false);
+  const [isBrowseModalOpen, setIsBrowseModalOpen] = useState(false);
+  const [installedExtNames, setInstalledExtNames] = useState<Set<string>>(new Set());
   const [brxtPreloadedPath, setBrxtPreloadedPath] = useState<string | undefined>(undefined);
   const [refreshKey, setRefreshKey] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
-  const { addExtension } = useConfig();
+  const { addExtension, getExtensions } = useConfig();
+
+  // Track configured extension names so Browse can flag what's already installed.
+  useEffect(() => {
+    let cancelled = false;
+    getExtensions(false)
+      .then((exts) => {
+        if (cancelled) return;
+        setInstalledExtNames(new Set(exts.map((e) => e.name.toLowerCase())));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [getExtensions, refreshKey, isBrowseModalOpen]);
 
   // Only trigger refresh when deep link config changes AND we don't need to show env vars
   useEffect(() => {
@@ -128,9 +145,7 @@ export default function ExtensionsView({
             <Button
               className="flex items-center gap-2"
               variant="outline"
-              onClick={() =>
-                window.open('https://baranzinilab.github.io/biorouter-landing/baam.html', '_blank')
-              }
+              onClick={() => setIsBrowseModalOpen(true)}
             >
               <GPSIcon size={12} />
               Browse Extensions
@@ -175,9 +190,21 @@ export default function ExtensionsView({
       )}
       {isBrxtModalOpen && (
         <BrxtInstallModal
-          onClose={() => { setIsBrxtModalOpen(false); setBrxtPreloadedPath(undefined); }}
-          onInstalled={() => { setRefreshKey((prev) => prev + 1); }}
+          onClose={() => {
+            setIsBrxtModalOpen(false);
+            setBrxtPreloadedPath(undefined);
+          }}
+          onInstalled={() => {
+            setRefreshKey((prev) => prev + 1);
+          }}
           preloadedFilePath={brxtPreloadedPath}
+        />
+      )}
+      {isBrowseModalOpen && (
+        <BrowseExtensionsModal
+          onClose={() => setIsBrowseModalOpen(false)}
+          onInstalled={() => setRefreshKey((prev) => prev + 1)}
+          installedNames={installedExtNames}
         />
       )}
     </MainPanelLayout>

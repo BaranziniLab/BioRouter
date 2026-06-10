@@ -37,7 +37,7 @@ describe('AlertBox', () => {
       };
 
       const { container } = render(<AlertBox alert={alert} />);
-      const alertElement = container.querySelector('.bg-\\[\\#cc4b03\\]');
+      const alertElement = container.querySelector('.bg-background-warning');
 
       expect(alertElement).toBeInTheDocument();
       expect(screen.getByText('Test warning message')).toBeInTheDocument();
@@ -50,7 +50,7 @@ describe('AlertBox', () => {
       };
 
       const { container } = render(<AlertBox alert={alert} />);
-      const alertElement = container.querySelector('.bg-\\[\\#d7040e\\]');
+      const alertElement = container.querySelector('.bg-background-danger');
 
       expect(alertElement).toBeInTheDocument();
       expect(screen.getByText('Test error message')).toBeInTheDocument();

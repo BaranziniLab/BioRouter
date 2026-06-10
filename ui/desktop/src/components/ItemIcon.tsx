@@ -15,6 +15,7 @@ import {
   Zap,
   BookOpen,
   Wrench,
+  Layers,
 } from './icons/app-icons';
 import { DisplayItem } from './MentionPopover';
 
@@ -33,6 +34,12 @@ export const getItemIcon = (item: DisplayItem): IconInfo => {
       return { Icon: Zap, color: '#3b82f6' }; // Blue
     case 'Workflow':
       return { Icon: BookOpen, color: '#10b981' }; // Green
+    case 'KnowledgeBase':
+      return { Icon: Database, color: '#0f766e' };
+    case 'Skill':
+      return { Icon: Layers, color: '#7c3aed' };
+    case 'Extension':
+      return { Icon: Wrench, color: '#2563eb' };
     case 'Directory':
       return { Icon: Folder, color: '#f59e0b' }; // Amber
     default: {

@@ -74,7 +74,7 @@ export const ElevenLabsKeyInput = () => {
         <h4 className="text-text-default text-sm">ElevenLabs API Key</h4>
         <p className="text-xs text-text-muted mt-[2px]">
           Required for ElevenLabs voice recognition
-          {hasElevenLabsKey && <span className="text-green-600 ml-2">(Configured)</span>}
+          {hasElevenLabsKey && <span className="text-text-success ml-2">(Configured)</span>}
         </p>
       </div>
       <Input

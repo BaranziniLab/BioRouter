@@ -91,7 +91,7 @@ export default function CustomProviderForm({
               className="flex items-center text-sm font-medium text-text-default mb-2"
             >
               Provider Type
-              <span className="text-red-500 dark:text-red-400 ml-1">*</span>
+              <span className="text-text-danger ml-1">*</span>
             </label>
             <Select
               id="provider-select"
@@ -118,7 +118,7 @@ export default function CustomProviderForm({
               isSearchable={false}
             />
             {validationErrors.providerType && (
-              <p id="provider-select-error" className="text-red-500 dark:text-red-400 text-sm mt-1">
+              <p id="provider-select-error" className="text-text-danger text-sm mt-1">
                 {validationErrors.providerType}
               </p>
             )}
@@ -129,7 +129,7 @@ export default function CustomProviderForm({
               className="flex items-center text-sm font-medium text-text-default mb-2"
             >
               Display Name
-              <span className="text-red-500 dark:text-red-400 ml-1">*</span>
+              <span className="text-text-danger ml-1">*</span>
             </label>
             <Input
               id="display-name"
@@ -138,10 +138,10 @@ export default function CustomProviderForm({
               placeholder="Your Provider Name"
               aria-invalid={!!validationErrors.displayName}
               aria-describedby={validationErrors.displayName ? 'display-name-error' : undefined}
-              className={validationErrors.displayName ? 'border-red-500 dark:border-red-400' : ''}
+              className={validationErrors.displayName ? 'border-border-danger' : ''}
             />
             {validationErrors.displayName && (
-              <p id="display-name-error" className="text-red-500 dark:text-red-400 text-sm mt-1">
+              <p id="display-name-error" className="text-text-danger text-sm mt-1">
                 {validationErrors.displayName}
               </p>
             )}
@@ -152,7 +152,7 @@ export default function CustomProviderForm({
               className="flex items-center text-sm font-medium text-text-default mb-2"
             >
               API URL
-              <span className="text-red-500 dark:text-red-400 ml-1">*</span>
+              <span className="text-text-danger ml-1">*</span>
             </label>
             <Input
               id="api-url"
@@ -161,10 +161,10 @@ export default function CustomProviderForm({
               placeholder="https://api.example.com/v1"
               aria-invalid={!!validationErrors.apiUrl}
               aria-describedby={validationErrors.apiUrl ? 'api-url-error' : undefined}
-              className={validationErrors.apiUrl ? 'border-red-500 dark:border-red-400' : ''}
+              className={validationErrors.apiUrl ? 'border-border-danger' : ''}
             />
             {validationErrors.apiUrl && (
-              <p id="api-url-error" className="text-red-500 dark:text-red-400 text-sm mt-1">
+              <p id="api-url-error" className="text-text-danger text-sm mt-1">
                 {validationErrors.apiUrl}
               </p>
             )}
@@ -178,7 +178,7 @@ export default function CustomProviderForm({
           className="flex items-center text-sm font-medium text-text-default mb-2"
         >
           API Key
-          {!isLocalModel && !initialData && <span className="text-red-500 dark:text-red-400 ml-1">*</span>}
+          {!isLocalModel && !initialData && <span className="text-text-danger ml-1">*</span>}
         </label>
         <Input
           id="api-key"
@@ -188,11 +188,11 @@ export default function CustomProviderForm({
           placeholder={initialData ? 'Leave blank to keep existing key' : 'Your API key'}
           aria-invalid={!!validationErrors.apiKey}
           aria-describedby={validationErrors.apiKey ? 'api-key-error' : undefined}
-          className={validationErrors.apiKey ? 'border-red-500 dark:border-red-400' : ''}
+          className={validationErrors.apiKey ? 'border-border-danger' : ''}
           disabled={isLocalModel}
         />
         {validationErrors.apiKey && (
-          <p id="api-key-error" className="text-red-500 dark:text-red-400 text-sm mt-1">
+          <p id="api-key-error" className="text-text-danger text-sm mt-1">
             {validationErrors.apiKey}
           </p>
         )}
@@ -217,7 +217,7 @@ export default function CustomProviderForm({
               className="flex items-center text-sm font-medium text-text-default mb-2"
             >
               Available Models (comma-separated)
-              <span className="text-red-500 dark:text-red-400 ml-1">*</span>
+              <span className="text-text-danger ml-1">*</span>
             </label>
             <Input
               id="available-models"
@@ -226,10 +226,10 @@ export default function CustomProviderForm({
               placeholder="model-a, model-b, model-c"
               aria-invalid={!!validationErrors.models}
               aria-describedby={validationErrors.models ? 'available-models-error' : undefined}
-              className={validationErrors.models ? 'border-red-500 dark:border-red-400' : ''}
+              className={validationErrors.models ? 'border-border-danger' : ''}
             />
             {validationErrors.models && (
-              <p id="available-models-error" className="text-red-500 dark:text-red-400 text-sm mt-1">
+              <p id="available-models-error" className="text-text-danger text-sm mt-1">
                 {validationErrors.models}
               </p>
             )}

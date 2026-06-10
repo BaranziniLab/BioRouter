@@ -217,8 +217,8 @@ export default function McpAppRenderer({
 
   if (error) {
     return (
-      <div className="p-4 border border-red-500 rounded-lg bg-red-50 dark:bg-red-900/20">
-        <div className="text-red-700 dark:text-red-300">Failed to load MCP app: {error}</div>
+      <div className="p-4 border border-border-danger rounded-xl bg-background-danger/10">
+        <div className="text-text-danger">Failed to load MCP app: {error}</div>
       </div>
     );
   }

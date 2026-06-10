@@ -129,11 +129,11 @@ export default function TunnelSection() {
         <CardHeader className="pb-0">
           <CardTitle className="mb-1">Remote Access</CardTitle>
           <CardDescription className="flex flex-col gap-2">
-            <div className="flex items-start gap-2 p-2 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded">
-              <Info className="h-4 w-4 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
-              <div className="text-xs text-blue-800 dark:text-blue-200">
-                <strong>Preview feature:</strong> Enable remote access to biorouter from mobile devices
-                using secure tunneling.{' '}
+            <div className="flex items-start gap-2 p-2 bg-background-info/10 border border-border-info/40 rounded">
+              <Info className="h-4 w-4 text-text-info flex-shrink-0 mt-0.5" />
+              <div className="text-xs text-text-info">
+                <strong>Preview feature:</strong> Enable remote access to biorouter from mobile
+                devices using secure tunneling.{' '}
                 <a
                   href={IOS_APP_STORE_URL}
                   target="_blank"
@@ -157,7 +157,7 @@ export default function TunnelSection() {
         </CardHeader>
         <CardContent className="pt-4 px-4 space-y-4">
           {error && (
-            <div className="p-3 bg-red-100 dark:bg-red-900/20 border border-red-300 dark:border-red-800 rounded text-sm text-red-800 dark:text-red-200">
+            <div className="p-3 bg-background-danger/10 border border-border-danger/40 rounded text-sm text-text-danger">
               {error}
             </div>
           )}
@@ -193,8 +193,8 @@ export default function TunnelSection() {
           </div>
 
           {tunnelInfo.state === 'running' && (
-            <div className="p-3 bg-green-100 dark:bg-green-900/20 border border-green-300 dark:border-green-800 rounded">
-              <p className="text-xs text-green-800 dark:text-green-200">
+            <div className="p-3 bg-background-success/10 border border-border-success/40 rounded">
+              <p className="text-xs text-text-success">
                 <strong>URL:</strong> {tunnelInfo.url}
               </p>
             </div>
@@ -217,8 +217,8 @@ export default function TunnelSection() {
               </div>
 
               <div className="text-center text-sm text-text-muted">
-                Scan this QR code with the biorouter mobile app. Do not share this code with anyone else
-                as it is for your personal access.
+                Scan this QR code with the biorouter mobile app. Do not share this code with anyone
+                else as it is for your personal access.
               </div>
 
               <div className="border-t pt-4">
@@ -239,7 +239,7 @@ export default function TunnelSection() {
                     <div>
                       <h3 className="text-xs font-medium mb-1 text-text-muted">Tunnel URL</h3>
                       <div className="flex items-center gap-2">
-                        <code className="flex-1 p-2 bg-gray-100 dark:bg-gray-800 rounded text-xs break-all overflow-hidden">
+                        <code className="flex-1 p-2 bg-background-medium rounded text-xs break-all overflow-hidden">
                           {tunnelInfo.url}
                         </code>
                         <Button
@@ -256,7 +256,7 @@ export default function TunnelSection() {
                     <div>
                       <h3 className="text-xs font-medium mb-1 text-text-muted">Secret Key</h3>
                       <div className="flex items-center gap-2">
-                        <code className="flex-1 p-2 bg-gray-100 dark:bg-gray-800 rounded text-xs break-all overflow-hidden">
+                        <code className="flex-1 p-2 bg-background-medium rounded text-xs break-all overflow-hidden">
                           {tunnelInfo.secret}
                         </code>
                         <Button
@@ -306,8 +306,8 @@ export default function TunnelSection() {
             </div>
 
             <div className="text-center text-sm text-text-muted">
-              Scan this QR code with your iPhone camera to install the biorouter mobile app from the App
-              Store
+              Scan this QR code with your iPhone camera to install the biorouter mobile app from the
+              App Store
             </div>
 
             <div className="text-center">
@@ -315,7 +315,7 @@ export default function TunnelSection() {
                 href={IOS_APP_STORE_URL}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="inline-flex items-center gap-2 text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                className="inline-flex items-center gap-2 text-sm text-text-info hover:underline"
               >
                 <ExternalLink className="h-4 w-4" />
                 Open in App Store

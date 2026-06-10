@@ -73,10 +73,7 @@ export default function TelemetrySettings({ isWelcome = false }: TelemetrySettin
   const toggleDescription = 'Help improve biorouter by sharing anonymous usage statistics.';
 
   const learnMoreLink = (
-    <button
-      onClick={() => setShowModal(true)}
-      className="text-blue-600 dark:text-blue-400 hover:underline"
-    >
+    <button onClick={() => setShowModal(true)} className="text-text-info hover:underline">
       Learn more
     </button>
   );

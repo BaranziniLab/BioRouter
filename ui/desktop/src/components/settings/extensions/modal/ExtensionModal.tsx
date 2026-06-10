@@ -203,7 +203,7 @@ export default function ExtensionModal({
   // Function to determine which icon to display with proper styling
   const getModalIcon = () => {
     if (showDeleteConfirmation) {
-      return <AlertTriangle className="text-red-500 dark:text-red-400" size={24} />;
+      return <AlertTriangle className="text-text-danger" size={24} />;
     }
     return modalType === 'add' ? (
       <PlusIcon className="text-iconStandard" size={24} />
@@ -339,7 +339,7 @@ export default function ExtensionModal({
               {formData.installation_notes && (
                 <div className="bg-background-medium border border-border-subtle rounded-lg p-4">
                   <div className="flex items-start gap-2">
-                    <Info className="h-5 w-5 text-blue-400 shrink-0 mt-0.5" />
+                    <Info className="h-5 w-5 text-text-info shrink-0 mt-0.5" />
                     <div>
                       <h4 className="text-sm font-medium text-text-default mb-1">
                         Installation Notes
@@ -360,9 +360,7 @@ export default function ExtensionModal({
                     </div>
                     {formData.description && (
                       <div>
-                        <label className="text-sm font-medium text-text-default">
-                          Description
-                        </label>
+                        <label className="text-sm font-medium text-text-default">Description</label>
                         <p className="text-sm text-text-muted mt-1">{formData.description}</p>
                       </div>
                     )}
@@ -471,7 +469,7 @@ export default function ExtensionModal({
                   <Button
                     onClick={() => setShowDeleteConfirmation(true)}
                     variant="outline"
-                    className="text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300"
+                    className="text-text-danger hover:bg-background-danger/10"
                   >
                     <Trash2 className="h-4 w-4 mr-2" />
                     Remove extension

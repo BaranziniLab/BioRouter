@@ -44,11 +44,11 @@ export function ErrorUI({ error }: { error: string }) {
   return (
     <div className="fixed inset-0 w-full h-full flex flex-col items-center justify-center gap-6 bg-background">
       <div className="flex flex-col items-center gap-4 max-w-[600px] text-center px-6">
-        <div className="w-16 h-16 rounded-full bg-destructive/10 flex items-center justify-center mb-2">
+        <div className="w-16 h-16 rounded-lg bg-destructive/10 flex items-center justify-center mb-2">
           <AlertTriangle className="w-8 h-8 text-destructive" />
         </div>
 
-        <h1 className="text-2xl font-semibold text-foreground dark:text-white">Honk!</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-text-default">Honk!</h1>
 
         {window?.appConfig?.get('BIOROUTER_VERSION') !== undefined ? (
           <p className="text-base text-text-muted dark:text-muted-foreground mb-2">

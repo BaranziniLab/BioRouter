@@ -75,7 +75,7 @@ export function InlineImage(props: InlineImageProps) {
   // For temp-path, validate it is a safe file path
   if (props.kind === 'temp-path' && !props.path.includes('biorouter-pasted-images')) {
     return (
-      <div className="text-red-500 text-xs italic mt-1 mb-1">
+      <div className="text-text-danger text-xs italic mt-1 mb-1">
         Invalid image path: {props.path}
       </div>
     );
@@ -84,15 +84,15 @@ export function InlineImage(props: InlineImageProps) {
   if (error) {
     const label = props.kind === 'temp-path' ? props.path : `${props.mimeType} image`;
     return (
-      <div className="text-red-500 text-xs italic mt-1 mb-1">Unable to load image: {label}</div>
+      <div className="text-text-danger text-xs italic mt-1 mb-1">Unable to load image: {label}</div>
     );
   }
 
   return (
     <div className={`image-preview mt-2 mb-2 ${className}`}>
       {isLoading && (
-        <div className="animate-pulse bg-gray-200 rounded w-40 h-40 flex items-center justify-center">
-          <span className="text-gray-500 text-xs">Loading...</span>
+        <div className="animate-pulse bg-background-medium rounded w-40 h-40 flex items-center justify-center">
+          <span className="text-text-muted text-xs">Loading...</span>
         </div>
       )}
       {imageData && (

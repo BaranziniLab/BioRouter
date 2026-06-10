@@ -32,7 +32,7 @@ export default function ProviderSetupActions({
     if (isActiveProvider) {
       return (
         <div className="flex items-start gap-3 w-full">
-          <div className="flex-1 flex items-start gap-2 text-sm text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800/50 rounded-lg px-3 py-2.5">
+          <div className="flex-1 flex items-start gap-2 text-sm text-text-warning bg-background-warning/10 border border-border-warning/40 rounded-lg px-3 py-2.5">
             <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
             <span>
               Switch to a different model before removing <strong>{providerName}</strong>.
@@ -55,11 +55,7 @@ export default function ProviderSetupActions({
           <Button variant="ghost" size="sm" onClick={onCancelDelete}>
             Cancel
           </Button>
-          <Button
-            size="sm"
-            onClick={onConfirmDelete}
-            className="bg-red-600 hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600 text-white border-0"
-          >
+          <Button size="sm" variant="destructive" onClick={onConfirmDelete}>
             <Trash2 className="w-3.5 h-3.5" />
             Delete
           </Button>
@@ -77,7 +73,7 @@ export default function ProviderSetupActions({
           variant="ghost"
           size="sm"
           onClick={onDelete}
-          className="text-red-500 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 hover:bg-red-50 dark:hover:bg-red-900/20 mr-auto"
+          className="text-text-danger hover:bg-background-danger/10 mr-auto"
         >
           <Trash2 className="w-3.5 h-3.5" />
           Remove

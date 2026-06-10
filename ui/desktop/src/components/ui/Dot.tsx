@@ -7,15 +7,15 @@ export default function Dot({
   loadingStatus: LoadingStatus;
 }) {
   const backgroundColorClasses = {
-    loading: 'bg-blue-500',
-    success: 'bg-green-600',
-    error: 'bg-red-600',
+    loading: 'bg-background-info',
+    success: 'bg-background-success',
+    error: 'bg-background-danger',
   };
 
   return (
     <div className={`${loadingStatus === 'loading' ? '' : ''} flex items-center justify-center`}>
       <div
-        className={`rounded-full ${backgroundColorClasses[loadingStatus] || 'bg-icon-extra-subtle'}`}
+        className={`rounded-full ${backgroundColorClasses[loadingStatus] || 'bg-background-strong'}`}
         style={{
           width: `${size * 2}px`,
           height: `${size * 2}px`,

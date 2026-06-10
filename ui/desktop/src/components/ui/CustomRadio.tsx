@@ -53,26 +53,22 @@ const CustomRadio = ({
           className="peer sr-only"
         />
         <div
-          className="h-4 w-4 rounded-full border border-gray-400 dark:border-gray-500 mr-4
-                    peer-checked:border-[6px] peer-checked:border-black dark:peer-checked:border-white
-                    peer-checked:bg-white dark:peer-checked:bg-black
+          className="h-4 w-4 rounded-full border border-text-muted mr-4
+                    peer-checked:border-[6px] peer-checked:border-text-default
+                    peer-checked:bg-background-default
                     transition-all duration-200 ease-in-out"
         ></div>
 
         {(label || secondaryLabel) && (
           <div>
-            {label && <p className="text-sm text-gray-900 dark:text-gray-100">{label}</p>}
-            {secondaryLabel && (
-              <p className="text-xs text-gray-500 dark:text-gray-400">{secondaryLabel}</p>
-            )}
+            {label && <p className="text-sm text-text-default">{label}</p>}
+            {secondaryLabel && <p className="text-xs text-text-muted">{secondaryLabel}</p>}
           </div>
         )}
       </div>
 
       {rightContent && (
-        <div className="flex items-center text-sm text-gray-500 dark:text-gray-400">
-          {rightContent}
-        </div>
+        <div className="flex items-center text-sm text-text-muted">{rightContent}</div>
       )}
     </label>
   );

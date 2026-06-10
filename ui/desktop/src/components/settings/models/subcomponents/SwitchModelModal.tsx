@@ -209,20 +209,24 @@ export const SwitchModelModal = ({
 
         results.forEach(({ provider: p, models, error }) => {
           const modelList = error
-            ? (p.metadata.known_models?.map(({ name }) => name) || [])
-            : (models || []);
+            ? p.metadata.known_models?.map(({ name }) => name) || []
+            : models || [];
 
           if (error) {
             errors.push(error);
           }
 
-          const options: { value: string; label: string; provider: string; providerType: ProviderType }[] =
-            modelList.map((m) => ({
-              value: m,
-              label: m,
-              provider: p.name,
-              providerType: p.provider_type,
-            }));
+          const options: {
+            value: string;
+            label: string;
+            provider: string;
+            providerType: ProviderType;
+          }[] = modelList.map((m) => ({
+            value: m,
+            label: m,
+            provider: p.name,
+            providerType: p.provider_type,
+          }));
 
           if (p.metadata.allows_unlisted_models && p.provider_type !== 'Custom') {
             options.push({
@@ -259,16 +263,12 @@ export const SwitchModelModal = ({
   // ClearIndicator (the X button), which the user sees as a flicker while
   // interacting with the model dropdown.
   const filteredModelOptions = useMemo(
-    () =>
-      provider ? modelOptions.filter((group) => group.options[0]?.provider === provider) : [],
+    () => (provider ? modelOptions.filter((group) => group.options[0]?.provider === provider) : []),
     [provider, modelOptions]
   );
 
   // Same reason — a stable value object keeps the ClearIndicator stable.
-  const modelSelectValue = useMemo(
-    () => (model ? { value: model, label: model } : null),
-    [model]
-  );
+  const modelSelectValue = useMemo(() => (model ? { value: model, label: model } : null), [model]);
   const providerSelectValue = useMemo(
     () => providerOptions.find((option) => option.value === provider) || null,
     [providerOptions, provider]
@@ -416,7 +416,7 @@ export const SwitchModelModal = ({
                             {model.alias || model.name}
                           </span>
                           {model.alias?.toLowerCase().includes('recommended') && (
-                            <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted border border-border-subtle px-1.5 py-0.5 rounded-md">
+                            <span className="text-[11px] font-medium uppercase tracking-wider text-text-muted border border-border-subtle px-1.5 py-0.5 rounded-md">
                               Recommended
                             </span>
                           )}
@@ -440,7 +440,7 @@ export const SwitchModelModal = ({
               </div>
 
               {attemptedSubmit && validationErrors.model && (
-                <div className="text-red-500 dark:text-red-400 text-sm mt-1">{validationErrors.model}</div>
+                <div className="text-text-danger text-sm mt-1">{validationErrors.model}</div>
               )}
             </div>
           ) : (
@@ -467,7 +467,7 @@ export const SwitchModelModal = ({
                   isClearable
                 />
                 {attemptedSubmit && validationErrors.provider && (
-                  <div className="text-red-500 dark:text-red-400 text-sm mt-1">{validationErrors.provider}</div>
+                  <div className="text-text-danger text-sm mt-1">{validationErrors.provider}</div>
                 )}
               </div>
 
@@ -488,7 +488,9 @@ export const SwitchModelModal = ({
                       />
 
                       {attemptedSubmit && validationErrors.model && (
-                        <div className="text-red-500 dark:text-red-400 text-sm mt-1">{validationErrors.model}</div>
+                        <div className="text-text-danger text-sm mt-1">
+                          {validationErrors.model}
+                        </div>
                       )}
                     </div>
                   ) : (
@@ -509,7 +511,9 @@ export const SwitchModelModal = ({
                         value={model}
                       />
                       {attemptedSubmit && validationErrors.model && (
-                        <div className="text-red-500 dark:text-red-400 text-sm mt-1">{validationErrors.model}</div>
+                        <div className="text-text-danger text-sm mt-1">
+                          {validationErrors.model}
+                        </div>
                       )}
                     </div>
                   )}

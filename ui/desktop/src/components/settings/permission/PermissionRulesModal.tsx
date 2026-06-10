@@ -34,7 +34,7 @@ function RuleItem({ title, description }: { title: string; description: string }
 function RulesSection({ title, rules }: { title: string; rules: React.ReactNode }) {
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-medium text-text-default">{title}</h2>
+      <h2 className="text-base font-semibold text-text-default">{title}</h2>
       {rules}
     </div>
   );
@@ -89,7 +89,7 @@ export default function PermissionRulesModal({ isOpen, onClose }: PermissionRule
       <DialogContent className="sm:max-w-[800px] max-h-[80vh] p-0 flex flex-col overflow-hidden">
         <DialogHeader className="px-8 pt-6 pb-4 flex-shrink-0">
           <div className="flex items-center gap-4">
-            <div className="rounded-full bg-background-inverse w-16 h-16 flex items-center justify-center">
+            <div className="rounded-lg bg-background-inverse w-16 h-16 flex items-center justify-center">
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 width="24"
@@ -106,7 +106,7 @@ export default function PermissionRulesModal({ isOpen, onClose }: PermissionRule
               </svg>
             </div>
             <div>
-              <DialogTitle className="text-3xl font-medium text-text-default">
+              <DialogTitle className="text-base font-semibold text-text-default">
                 Permission Rules
               </DialogTitle>
               <p className="text-text-muted">

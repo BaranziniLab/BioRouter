@@ -54,7 +54,7 @@ export function ConfigureApproveMode({
         <div className="px-4 pb-0 space-y-6">
           {/* Header */}
           <div className="flex">
-            <h2 className="text-2xl font-regular text-text-default">Configure approve mode</h2>
+            <h2 className="text-base font-semibold text-text-default">Configure approve mode</h2>
           </div>
 
           <div className="mt-[24px]">
@@ -85,7 +85,7 @@ export function ConfigureApproveMode({
               variant="ghost"
               disabled={isSubmitting}
               onClick={handleModeSubmit}
-              className="w-full h-[60px] rounded-none border-t border-border-subtle hover:bg-background-medium text-text-default dark:border-gray-600 text-base font-regular"
+              className="w-full h-[60px] rounded-none border-t border-border-subtle hover:bg-background-medium text-text-default text-base font-normal"
             >
               {isSubmitting ? 'Saving...' : 'Save'}
             </Button>
@@ -94,7 +94,7 @@ export function ConfigureApproveMode({
               variant="ghost"
               disabled={isSubmitting}
               onClick={onClose}
-              className="w-full h-[60px] rounded-none border-t border-border-subtle text-text-muted hover:bg-background-medium dark:border-gray-600 text-base font-regular"
+              className="w-full h-[60px] rounded-none border-t border-border-subtle text-text-muted hover:bg-background-medium text-base font-normal"
             >
               Cancel
             </Button>

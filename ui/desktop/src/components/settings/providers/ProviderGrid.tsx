@@ -166,14 +166,14 @@ function ProviderCards({
 
     const makeCards = (subset: ProviderDetails[]) =>
       subset.map((provider) => (
-          <ProviderCard
-            key={provider.name}
-            provider={provider}
-            onConfigure={() => configureProviderViaModal(provider)}
-            onLaunch={() => handleProviderLaunchWithModelSelection(provider)}
-            isOnboarding={isOnboarding}
-          />
-        ));
+        <ProviderCard
+          key={provider.name}
+          provider={provider}
+          onConfigure={() => configureProviderViaModal(provider)}
+          onLaunch={() => handleProviderLaunchWithModelSelection(provider)}
+          isOnboarding={isOnboarding}
+        />
+      ));
 
     const groups = getOrderedProviderGroups(providersArray);
     const institutional = groups.find((group) => group.key === 'institutional')?.providers ?? [];
@@ -204,30 +204,26 @@ function ProviderCards({
         {institutionalCards.length > 0 && (
           <div>
             <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 bg-indigo-500 rounded-full flex-shrink-0" />
+              <span className="w-1.5 h-1.5 bg-background-info rounded-full flex-shrink-0" />
               Institutional Models
             </h2>
-            <div className="divide-y divide-border-subtle">
-              {institutionalCards}
-            </div>
+            <div className="divide-y divide-border-subtle">{institutionalCards}</div>
           </div>
         )}
 
         {localCards.length > 0 && (
           <div>
             <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 bg-green-500 rounded-full flex-shrink-0" />
+              <span className="w-1.5 h-1.5 bg-background-success rounded-full flex-shrink-0" />
               Local Models
             </h2>
-            <div className="divide-y divide-border-subtle">
-              {localCards}
-            </div>
+            <div className="divide-y divide-border-subtle">{localCards}</div>
           </div>
         )}
 
         <div>
           <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-            <span className="w-1.5 h-1.5 bg-amber-500 rounded-full flex-shrink-0" />
+            <span className="w-1.5 h-1.5 bg-background-warning rounded-full flex-shrink-0" />
             Commercial Models
           </h2>
           <div className="divide-y divide-border-subtle">
@@ -236,7 +232,6 @@ function ProviderCards({
           </div>
         </div>
       </div>
-
       <Dialog open={showCustomProviderModal} onOpenChange={handleCloseModal}>
         <DialogContent className="sm:max-w-[600px]">
           <DialogHeader>

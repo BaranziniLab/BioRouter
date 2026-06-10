@@ -109,7 +109,7 @@ export default function AppsView() {
     return (
       <MainPanelLayout>
         <div className="flex flex-col items-center justify-center h-64 text-center">
-          <p className="text-red-500 mb-4">Error loading apps: {error}</p>
+          <p className="text-text-danger mb-4">Error loading apps: {error}</p>
           <Button onClick={loadApps}>Retry</Button>
         </div>
       </MainPanelLayout>
@@ -122,7 +122,7 @@ export default function AppsView() {
         <div className="bg-background-default px-8 pb-8 pt-16">
           <div className="flex flex-col page-transition">
             <div className="flex justify-between items-center mb-1">
-              <h1 className="text-4xl font-light">Apps</h1>
+              <h1 className="text-2xl font-semibold tracking-tight">Apps</h1>
             </div>
             <p className="text-sm text-text-muted mb-4">
               Applications from your MCP servers that can run in standalone windows.
@@ -130,7 +130,7 @@ export default function AppsView() {
           </div>
         </div>
 
-        <div className="flex-1 overflow-y-auto bg-background-subtle px-8 pb-8">
+        <div className="flex-1 overflow-y-auto bg-background-muted px-8 pb-8">
           {loading ? (
             <div className="flex items-center justify-center h-64">
               <p className="text-text-muted">Loading apps...</p>
@@ -149,7 +149,7 @@ export default function AppsView() {
               {apps.map((app) => (
                 <div
                   key={`${app.uri}-${app.mcpServer}`}
-                  className="flex flex-col p-4 border border-border-muted rounded-lg bg-background-panel hover:border-border-default transition-colors"
+                  className="flex flex-col p-4 border border-border-subtle rounded-xl bg-background-default hover:border-border-strong transition-colors"
                 >
                   <div className="flex-1 mb-4">
                     <h3 className="font-medium text-text-default mb-2">{app.name}</h3>
@@ -157,7 +157,7 @@ export default function AppsView() {
                       <p className="text-sm text-text-muted mb-2">{app.description}</p>
                     )}
                     {app.mcpServer && (
-                      <span className="inline-block px-2 py-1 text-xs bg-background-subtle text-text-muted rounded">
+                      <span className="inline-block px-2 py-1 text-xs bg-background-medium text-text-muted rounded-md">
                         {app.mcpServer}
                       </span>
                     )}

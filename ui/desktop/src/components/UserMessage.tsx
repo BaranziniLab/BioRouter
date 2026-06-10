@@ -156,13 +156,13 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
       <div className="flex flex-col group">
         {isEditing ? (
           // Truly wide, centered, in-place edit box replacing the bubble
-          <div className="w-full max-w-4xl mx-auto bg-background-default text-text-default rounded-xl border border-border-subtle shadow-lg py-4 px-4 my-2 transition-all duration-200 ease-in-out">
+          <div className="w-full max-w-4xl mx-auto bg-background-default text-text-default rounded-xl border border-border-subtle py-4 px-4 my-2 transition-all duration-200 ease-in-out">
             <textarea
               ref={textareaRef}
               value={editContent}
               onChange={handleContentChange}
               onKeyDown={handleKeyDown}
-              className="w-full resize-none bg-transparent text-text-default placeholder:text-text-muted border border-border-subtle rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-400 focus:border-blue-400 transition-all duration-200 text-base leading-relaxed"
+              className="w-full resize-none bg-transparent text-text-default placeholder:text-text-muted border border-border-subtle rounded-lg focus:outline-none focus:ring-2 focus:ring-ring focus:border-border-strong transition-all duration-200 text-base leading-relaxed"
               style={{
                 minHeight: '120px',
                 maxHeight: '300px',
@@ -180,7 +180,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
             {error && (
               <div
                 id={`error-${message.id}`}
-                className="text-red-400 text-xs mt-2 mb-2"
+                className="text-text-danger text-xs mt-2 mb-2"
                 role="alert"
                 aria-live="polite"
               >
@@ -263,7 +263,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                           handleEditClick();
                         }
                       }}
-                      className="flex items-center gap-1 text-xs text-text-muted hover:cursor-pointer hover:text-text-default transition-all duration-200 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-opacity-50 rounded"
+                      className="flex items-center gap-1 text-xs text-text-muted hover:cursor-pointer hover:text-text-default transition-all duration-200 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-opacity-50 rounded"
                       aria-label={`Edit message: ${displayText.substring(0, 50)}${displayText.length > 50 ? '...' : ''}`}
                       aria-expanded={isEditing}
                       title="Edit message"

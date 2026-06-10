@@ -152,7 +152,7 @@ Add any other context about the problem here.
     >
       <div className="bg-background-default border border-border-subtle rounded-lg p-6 max-w-md mx-4">
         <div className="flex items-start gap-3 mb-4">
-          <AlertTriangle className="text-orange-500 flex-shrink-0 mt-1" size={20} />
+          <AlertTriangle className="text-text-warning flex-shrink-0 mt-1" size={20} />
           <div>
             <h3 className="text-lg font-semibold text-text-default mb-2">Report a Problem</h3>
             <p className="text-sm text-text-muted mb-3">
@@ -198,7 +198,7 @@ Add any other context about the problem here.
             variant="outline"
             size="sm"
             disabled={isDownloading || isFilingBug}
-            className="bg-slate-600 text-white hover:bg-slate-700"
+            className="bg-background-accent text-text-on-accent hover:bg-background-accent/90"
           >
             <Github size={16} className="mr-1" />
             {isFilingBug ? 'Opening...' : 'File Bug on GitHub'}

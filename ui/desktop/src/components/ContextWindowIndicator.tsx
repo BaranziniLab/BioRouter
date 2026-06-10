@@ -178,12 +178,12 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   const pct = Math.round(ratio * 100);
   const overThreshold = pct >= thresholdPct;
   const barColor = overThreshold
-    ? 'bg-red-500'
+    ? 'bg-background-danger'
     : ratio <= 0.5
-      ? 'bg-green-500'
+      ? 'bg-background-success'
       : ratio <= 0.75
-        ? 'bg-yellow-500'
-        : 'bg-orange-500';
+        ? 'bg-background-warning'
+        : 'bg-background-warning';
   return (
     <div className="flex items-center gap-2 px-2 py-1.5 rounded">
       <span className="flex items-center justify-center w-4 h-4 flex-shrink-0 text-text-default/70">

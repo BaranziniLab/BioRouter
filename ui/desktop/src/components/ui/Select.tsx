@@ -13,7 +13,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         container: () => 'w-full cursor-pointer relative',
         indicatorSeparator: () => 'h-0',
         control: ({ isFocused }) =>
-          `border ${isFocused ? 'border-border-subtle' : 'border-border-subtle'} focus:border-border-subtle hover:border-border-subtle rounded-md w-full px-4 py-2 text-sm text-text-muted hover:cursor-pointer`,
+          `border-0 rounded-md w-full bg-background-default px-3 py-2 text-sm text-text-muted ring-1 ${isFocused ? 'ring-2 ring-border-strong' : 'ring-border-input'} transition-colors hover:bg-background-muted hover:cursor-pointer`,
         // text-sm on the menu pins the dropdown font to 14px. react-select sets
         // `fontSize: inherit` on options even when `unstyled`, and Emotion injects
         // that rule after Tailwind so the `text-sm` we put on the option itself
@@ -21,7 +21,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         // which is visibly larger than the 14px control. Setting text-sm on the
         // menu makes the inherit chain resolve to 14px.
         menu: () =>
-          'mt-1 bg-background-default border border-border-subtle rounded-md text-text-muted text-sm shadow-lg select__menu z-[9999] absolute',
+          'mt-1 bg-background-default rounded-md text-text-muted text-sm shadow-lg ring-1 ring-border-input select__menu z-[9999] absolute',
         menuList: () => 'max-h-60 overflow-y-auto py-1',
         option: ({ isFocused, isSelected, isDisabled }) => {
           let classes = 'py-2 px-4 cursor-pointer';

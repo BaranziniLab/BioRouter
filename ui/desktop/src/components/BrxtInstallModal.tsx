@@ -198,12 +198,12 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
             {/* Drop zone */}
             <div
               className={[
-                'border-2 border-dashed rounded-xl p-10 text-center transition-colors cursor-pointer select-none',
+                'border rounded-xl p-10 text-center transition-colors cursor-pointer select-none',
                 isDragging
-                  ? 'border-blue-400 bg-blue-50 dark:bg-blue-900/10'
+                  ? 'border-block-teal bg-block-teal/5'
                   : error
-                  ? 'border-red-400 bg-red-50 dark:bg-red-900/10'
-                  : 'border-border-subtle hover:border-border-strong',
+                  ? 'border-border-danger bg-background-danger/10'
+                  : 'border-border-subtle bg-background-muted hover:bg-background-medium',
               ].join(' ')}
               onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
               onDragLeave={() => setIsDragging(false)}
@@ -241,8 +241,8 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
 
             {/* Error banner */}
             {error && (
-              <div className="bg-red-50 dark:bg-red-900/10 border border-red-300 dark:border-red-700 rounded-lg p-3">
-                <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+              <div className="bg-background-danger/10 border border-border-danger/40 rounded-lg p-3">
+                <p className="text-sm text-text-danger">{error}</p>
               </div>
             )}
 
@@ -307,11 +307,11 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
                 {requiredVars.map((entry) => (
                   <div key={entry.key}>
                     <label className="block text-xs font-semibold mb-1">
-                      {entry.key} <span className="text-red-500">*</span>
+                      {entry.key} <span className="text-text-danger">*</span>
                     </label>
                     <input
                       type={entry.secret ? 'password' : 'text'}
-                      className="w-full border border-border-subtle rounded-md px-3 py-2 text-sm bg-background-default focus:outline-none focus:ring-2 focus:ring-blue-400"
+                      className="w-full border border-border-subtle rounded-md px-3 py-2 text-sm bg-background-default focus:outline-none focus:ring-2 focus:ring-ring"
                       placeholder={entry.description}
                       value={entry.value}
                       onChange={(e) => setEnvValue(entry.key, e.target.value)}
@@ -344,7 +344,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
                         </label>
                         <input
                           type={entry.secret ? 'password' : 'text'}
-                          className="w-full border border-border-subtle rounded-md px-3 py-2 text-sm bg-background-subtle focus:outline-none focus:ring-2 focus:ring-blue-400"
+                          className="w-full border border-border-subtle rounded-md px-3 py-2 text-sm bg-background-muted focus:outline-none focus:ring-2 focus:ring-ring"
                           placeholder={entry.description}
                           value={entry.value}
                           onChange={(e) => setEnvValue(entry.key, e.target.value)}
@@ -358,8 +358,8 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
             )}
 
             {error && (
-              <div className="bg-red-50 dark:bg-red-900/10 border border-red-300 dark:border-red-700 rounded-lg p-3">
-                <p className="text-sm text-red-600 dark:text-red-400">{error}</p>
+              <div className="bg-background-danger/10 border border-border-danger/40 rounded-lg p-3">
+                <p className="text-sm text-text-danger">{error}</p>
               </div>
             )}
 

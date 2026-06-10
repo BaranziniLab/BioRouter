@@ -7,17 +7,23 @@ import {
   useRef,
   useState,
 } from 'react';
+import { createPortal } from 'react-dom';
 import { ItemIcon } from './ItemIcon';
-import { CommandType, getSlashCommands } from '../api';
+import { CommandType, getActive, getSessionExtensions, getSlashCommands, listBases } from '../api';
 import { getInitialWorkingDir } from '../utils/workingDir';
+import { useConfig } from './ConfigContext';
+import { ALL_SKILL_DIRS, loadSkillsFromDirs } from './skills/skillUtils';
 
-type DisplayItemType = CommandType | 'Directory' | 'File';
+type DisplayItemType = CommandType | 'Directory' | 'File' | 'KnowledgeBase' | 'Skill' | 'Extension';
 
 const typeOrder: Record<DisplayItemType, number> = {
   Directory: 0,
   File: 1,
   Builtin: 2,
   Workflow: 3,
+  KnowledgeBase: 4,
+  Skill: 5,
+  Extension: 6,
 };
 
 // Slash commands that are purely a UI convenience: selecting them inserts a
@@ -25,9 +31,23 @@ const typeOrder: Record<DisplayItemType, number> = {
 // handler. Keyed by the command name (no leading '/').
 const CLIENT_INSERT_COMMANDS: Record<string, { description: string; insert: string }> = {
   knowledge: {
-    description: 'Use the visible knowledge bases, prioritizing the focused one — inserts a templated prompt',
+    description: 'Use the visible knowledge bases, prioritizing the focused one - inserts a templated prompt',
     insert: 'Using the Knowledge extension, search the visible knowledge bases and prioritize the focused knowledge base, ',
   },
+};
+
+const referenceInsert = (item: DisplayItem) => {
+  const label = item.name.replace(/^(kb|skill|ext):/, '');
+  switch (item.itemType) {
+    case 'KnowledgeBase':
+      return `Using the Knowledge extension, focus knowledge base "${label}" (kb_id: ${item.relativePath}) for this request, `;
+    case 'Skill':
+      return `Use the "${label}" skill for this request, `;
+    case 'Extension':
+      return `Use the "${label}" extension for this request, `;
+    default:
+      return null;
+  }
 };
 
 export interface DisplayItem {
@@ -43,6 +63,16 @@ export interface DisplayItemWithMatch extends DisplayItem {
   matchedText: string;
 }
 
+const uniqueDisplayItems = (displayItems: DisplayItem[]) => {
+  const seen = new Set<string>();
+  return displayItems.filter((item) => {
+    const key = `${item.itemType}\0${item.relativePath}\0${item.name}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
 interface MentionPopoverProps {
   isOpen: boolean;
   onClose: () => void;
@@ -53,6 +83,7 @@ interface MentionPopoverProps {
   selectedIndex: number;
   onSelectedIndexChange: (index: number) => void;
   workingDir?: string;
+  sessionId?: string | null;
 }
 
 // Enhanced fuzzy matching algorithm
@@ -134,6 +165,7 @@ const MentionPopover = forwardRef<
       selectedIndex,
       onSelectedIndexChange,
       workingDir,
+      sessionId,
     },
     ref
   ) => {
@@ -142,6 +174,7 @@ const MentionPopover = forwardRef<
     const popoverRef = useRef<HTMLDivElement>(null);
     const listRef = useRef<HTMLDivElement>(null);
     const currentWorkingDir = workingDir ?? getInitialWorkingDir();
+    const { extensionsList } = useConfig();
 
     const scanDirectoryFromRoot = useCallback(
       async (dirPath: string, relativePath = '', depth = 0): Promise<DisplayItem[]> => {
@@ -463,7 +496,12 @@ const MentionPopover = forwardRef<
           if (clientInsert) {
             onSelect(clientInsert.insert);
           } else {
-            onSelect(item.extra);
+            const insertedReference = referenceInsert(item);
+            if (insertedReference) {
+              onSelect(insertedReference);
+            } else {
+              onSelect(item.extra);
+            }
           }
           onClose();
         },
@@ -474,27 +512,96 @@ const MentionPopover = forwardRef<
     useEffect(() => {
       const loadData = async () => {
         if (isSlashCommand) {
-          const response = await getSlashCommands({ throwOnError: true });
-          const commandItems: DisplayItem[] = (response.data?.commands || []).map((cmd) => ({
-            name: cmd.command,
-            extra: cmd.help,
-            itemType: cmd.command_type,
-            relativePath: cmd.command,
-          }));
-          // Inject client-side insert commands (e.g. /knowledge) that exist
-          // purely to drop a templated prompt into the chat input. Skip any
-          // that the backend already advertises so we don't duplicate.
-          const existingNames = new Set(commandItems.map((c) => c.name));
-          for (const [name, def] of Object.entries(CLIENT_INSERT_COMMANDS)) {
-            if (existingNames.has(name)) continue;
-            commandItems.push({
-              name,
-              extra: def.description,
-              itemType: 'Builtin',
-              relativePath: name,
-            });
+          setIsLoading(true);
+          try {
+            const [
+              commandsResponse,
+              basesResponse,
+              activeResponse,
+              skillsResult,
+              sessionExtensions,
+            ] = await Promise.all([
+              getSlashCommands({ throwOnError: true }),
+              listBases({ throwOnError: false }),
+              getActive({
+                query: sessionId ? { session_id: sessionId } : undefined,
+                throwOnError: false,
+              }),
+              loadSkillsFromDirs(ALL_SKILL_DIRS).catch(() => ({ singles: [], bundles: [] })),
+              sessionId
+                ? getSessionExtensions({ path: { session_id: sessionId } }).catch(() => null)
+                : Promise.resolve(null),
+            ]);
+            const commandItems: DisplayItem[] = (commandsResponse.data?.commands || []).map(
+              (cmd) => ({
+                name: cmd.command,
+                extra: cmd.help,
+                itemType: cmd.command_type,
+                relativePath: cmd.command,
+              })
+            );
+            // Inject client-side insert commands (e.g. /knowledge) that exist
+            // purely to drop a templated prompt into the chat input. Skip any
+            // that the backend already advertises so we don't duplicate.
+            const existingNames = new Set(commandItems.map((c) => c.name));
+            for (const [name, def] of Object.entries(CLIENT_INSERT_COMMANDS)) {
+              if (existingNames.has(name)) continue;
+              commandItems.push({
+                name,
+                extra: def.description,
+                itemType: 'Builtin',
+                relativePath: name,
+              });
+            }
+            const hiddenKbIds = new Set(activeResponse.data?.hidden_kbs ?? []);
+            const activeKbId = activeResponse.data?.active_kb ?? null;
+            for (const base of basesResponse.data ?? []) {
+              if (hiddenKbIds.has(base.id)) continue;
+              commandItems.push({
+                name: `kb:${base.name}`,
+                extra: `${activeKbId === base.id ? 'Focused knowledge base' : 'Visible knowledge base'} · ${base.id}`,
+                itemType: 'KnowledgeBase',
+                relativePath: base.id,
+              });
+            }
+            for (const bundle of skillsResult.bundles) {
+              commandItems.push({
+                name: `skill:${bundle.bundleName}`,
+                extra: `${bundle.skills.length} skill${bundle.skills.length === 1 ? '' : 's'} in bundle`,
+                itemType: 'Skill',
+                relativePath: bundle.bundleName,
+              });
+            }
+            for (const skill of skillsResult.singles) {
+              commandItems.push({
+                name: `skill:${skill.name}`,
+                extra: skill.description,
+                itemType: 'Skill',
+                relativePath: skill.name,
+              });
+            }
+            const enabledSessionExtensions = new Set(
+              sessionExtensions?.data?.extensions?.map((extension) => extension.name) ?? []
+            );
+            for (const extension of extensionsList) {
+              const enabled = sessionId
+                ? enabledSessionExtensions.has(extension.name)
+                : extension.enabled;
+              if (!enabled) continue;
+              commandItems.push({
+                name: `ext:${extension.name}`,
+                extra: extension.description || 'Enabled extension',
+                itemType: 'Extension',
+                relativePath: extension.name,
+              });
+            }
+            setItems(uniqueDisplayItems(commandItems));
+          } catch (error) {
+            console.error('Error loading slash commands:', error);
+            setItems([]);
+          } finally {
+            setIsLoading(false);
           }
-          setItems(commandItems);
         } else {
           await scanFilesFromRoot();
         }
@@ -503,7 +610,7 @@ const MentionPopover = forwardRef<
       if (isOpen) {
         loadData();
       }
-    }, [isOpen, isSlashCommand, scanFilesFromRoot]);
+    }, [extensionsList, isOpen, isSlashCommand, scanFilesFromRoot, sessionId]);
 
     useEffect(() => {
       const handleClickOutside = (event: MouseEvent) => {
@@ -541,6 +648,8 @@ const MentionPopover = forwardRef<
         const clientInsert = CLIENT_INSERT_COMMANDS[displayItem.name];
         if (clientInsert) {
           onSelect(clientInsert.insert);
+        } else if (referenceInsert(displayItem)) {
+          onSelect(referenceInsert(displayItem) as string);
         } else {
           onSelect(
             ['Builtin', 'Workflow'].includes(displayItem.itemType)
@@ -554,50 +663,61 @@ const MentionPopover = forwardRef<
 
     if (!isOpen) return null;
 
-    return (
+    const menuWidth = Math.max(320, Math.min(448, window.innerWidth - 16));
+    const menuLeft = Math.min(
+      Math.max(8, position.x),
+      Math.max(8, window.innerWidth - menuWidth - 8)
+    );
+
+    const menu = (
       <div
         ref={popoverRef}
-        className="fixed z-50 bg-background-default border border-border-subtle rounded-lg shadow-lg min-w-96 max-w-lg max-h-80"
+        className="fixed z-50 bg-background-default border border-border-subtle rounded-md shadow-lg max-h-72 overflow-hidden"
         style={{
-          left: position.x,
-          top: position.y - 10, // Position above the chat input
+          left: menuLeft,
+          top: position.y - 8,
+          width: menuWidth,
           transform: 'translateY(-100%)', // Move it fully above
         }}
       >
-        <div className="p-3 flex flex-col max-h-80">
+        <div className="p-1.5 flex flex-col max-h-72">
           {isLoading ? (
-            <div className="flex items-center justify-center py-4">
-              <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-textSubtle"></div>
+            <div className="flex items-center justify-center py-3">
+              <div className="animate-spin rounded-full h-4 w-4 border-t-2 border-b-2 border-text-muted"></div>
               <span className="ml-2 text-sm text-text-muted">Scanning files...</span>
             </div>
           ) : (
             <>
               {displayItems.length > 0 && (
-                <div className="text-xs text-text-muted mb-2 px-1">
+                <div className="text-[11px] leading-3 text-text-muted mb-1 px-1">
                   {displayItems.length} item{displayItems.length !== 1 ? 's' : ''} found
                 </div>
               )}
               <div
                 ref={listRef}
-                className="space-y-1 overflow-y-auto flex-1 scrollbar-thin scrollbar-thumb-borderStandard scrollbar-track-transparent"
-                style={{ maxHeight: '280px' }}
+                className="overflow-y-auto flex-1 scrollbar-thin scrollbar-thumb-borderStandard scrollbar-track-transparent"
+                style={{ maxHeight: '244px' }}
               >
                 {displayItems.map((item, index) => (
                   <div
-                    key={item.extra}
+                    key={`${item.itemType}-${item.relativePath}-${item.name}`}
                     onClick={() => handleItemClick(index)}
-                    className={`flex items-center gap-3 p-2 rounded-md cursor-pointer transition-colors ${
+                    className={`flex items-center gap-1.5 px-1.5 py-1 rounded ring-1 ring-inset cursor-pointer transition-colors ${
                       index === selectedIndex
-                        ? 'bg-bgProminent text-textProminentInverse'
-                        : 'hover:bg-background-medium'
+                        ? 'ring-border-subtle bg-background-strong/70'
+                        : 'ring-transparent hover:ring-border-subtle hover:bg-background-medium'
                     }`}
                   >
                     <div className="flex-shrink-0 text-text-muted">
                       <ItemIcon item={item} />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="text-sm truncate text-text-default">{item.name}</div>
-                      <div className="text-xs text-text-muted truncate">{item.extra}</div>
+                      <div className="text-xs leading-4 truncate text-text-default">
+                        {item.name}
+                      </div>
+                      <div className="text-[11px] leading-3 truncate text-text-muted">
+                        {item.extra}
+                      </div>
                     </div>
                   </div>
                 ))}
@@ -613,6 +733,8 @@ const MentionPopover = forwardRef<
         </div>
       </div>
     );
+
+    return createPortal(menu, document.body);
   }
 );
 

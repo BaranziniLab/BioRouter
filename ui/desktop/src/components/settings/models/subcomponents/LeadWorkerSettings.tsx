@@ -4,6 +4,7 @@ import { useModelAndProvider } from '../../../ModelAndProviderContext';
 import { Button } from '../../../ui/button';
 import { Select } from '../../../ui/Select';
 import { Input } from '../../../ui/input';
+import { Switch } from '../../../ui/switch';
 import { getPredefinedModelsFromEnv, shouldShowPredefinedModels } from '../predefinedModelsUtils';
 import { fetchModelsForProviders } from '../modelInterface';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../../ui/dialog';
@@ -185,11 +186,11 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
   if (isLoading) {
     return (
       <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-        <DialogContent className="sm:max-w-[500px]">
-          <DialogHeader>
+        <DialogContent className="p-0 sm:max-w-[560px]">
+          <DialogHeader className="px-5 pb-2 pt-5">
             <DialogTitle>Lead/Worker Mode</DialogTitle>
           </DialogHeader>
-          <div className="p-4">Loading...</div>
+          <div className="px-5 pb-5 text-sm text-text-muted">Loading...</div>
         </DialogContent>
       </Dialog>
     );
@@ -197,40 +198,42 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
 
   return (
     <Dialog open={isOpen} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-[500px]">
-        <DialogHeader>
+      <DialogContent className="max-h-[min(720px,calc(100vh-2rem))] overflow-y-auto p-0 sm:max-w-[620px]">
+        <DialogHeader className="px-5 pb-2 pt-5">
           <DialogTitle>Lead/Worker Mode</DialogTitle>
         </DialogHeader>
-        <div className="p-4 space-y-4">
-          <div className="space-y-2">
-            <p className="text-sm text-text-muted">
-              Configure a lead model for planning and a worker model for execution
-            </p>
-          </div>
+        <div className="space-y-5 px-5 pb-5">
+          <p className="text-sm text-text-muted">
+            Configure a lead model for planning and a worker model for execution.
+          </p>
 
-          <div className="flex items-center space-x-2">
-            <input
-              type="checkbox"
+          <div className="flex items-center justify-between gap-4 rounded-md bg-background-muted/60 px-3 py-2.5">
+            <div>
+              <label htmlFor="enable-lead-worker" className="text-sm font-medium text-text-default">
+                Lead/worker mode
+              </label>
+              <p className="mt-0.5 text-xs text-text-muted">
+                Route planning to a lead model and routine work to a worker model.
+              </p>
+            </div>
+            <Switch
               id="enable-lead-worker"
               checked={isEnabled}
-              onChange={(e) => setIsEnabled(e.target.checked)}
-              className="rounded border-border-subtle"
+              onCheckedChange={setIsEnabled}
+              variant="mono"
             />
-            <label htmlFor="enable-lead-worker" className="text-sm text-text-default">
-              Enable lead/worker mode
-            </label>
           </div>
 
-          <div className="space-y-4">
+          <div className={`space-y-4 ${!isEnabled ? 'opacity-60' : ''}`}>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className={`text-sm ${!isEnabled ? 'text-text-muted' : 'text-text-muted'}`}>
+                <label className="text-sm font-medium text-text-default">
                   Lead Model
                 </label>
                 {isLeadCustomModel && (
                   <button
                     onClick={() => setIsLeadCustomModel(false)}
-                    className={`text-xs ${!isEnabled ? 'text-text-muted' : 'text-text-muted'} hover:underline`}
+                    className="rounded px-1.5 py-1 text-xs text-text-muted transition-colors hover:bg-background-muted hover:text-text-default"
                     type="button"
                   >
                     Back to model list
@@ -258,31 +261,30 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                   }}
                   placeholder="Select lead model..."
                   isDisabled={!isEnabled}
-                  className={!isEnabled ? 'opacity-50' : ''}
                 />
               ) : (
                 <Input
-                  className="h-[38px] mb-2"
+                  className="mb-2 h-[38px]"
                   placeholder="Type model name here"
                   onChange={(event) => setLeadModel(event.target.value)}
                   value={leadModel}
                   disabled={!isEnabled}
                 />
               )}
-              <p className={`text-xs ${!isEnabled ? 'text-text-muted' : 'text-text-muted'}`}>
+              <p className="text-xs text-text-muted">
                 Strong model for initial planning and fallback recovery
               </p>
             </div>
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className={`text-sm ${!isEnabled ? 'text-text-muted' : 'text-text-muted'}`}>
+                <label className="text-sm font-medium text-text-default">
                   Worker Model
                 </label>
                 {isWorkerCustomModel && (
                   <button
                     onClick={() => setIsWorkerCustomModel(false)}
-                    className={`text-xs ${!isEnabled ? 'text-text-muted' : 'text-text-muted'} hover:underline`}
+                    className="rounded px-1.5 py-1 text-xs text-text-muted transition-colors hover:bg-background-muted hover:text-text-default"
                     type="button"
                   >
                     Back to model list
@@ -312,29 +314,24 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                   }}
                   placeholder="Select worker model..."
                   isDisabled={!isEnabled}
-                  className={!isEnabled ? 'opacity-50' : ''}
                 />
               ) : (
                 <Input
-                  className="h-[38px] mb-2"
+                  className="mb-2 h-[38px]"
                   placeholder="Type model name here"
                   onChange={(event) => setWorkerModel(event.target.value)}
                   value={workerModel}
                   disabled={!isEnabled}
                 />
               )}
-              <p className={`text-xs ${!isEnabled ? 'text-text-muted' : 'text-text-muted'}`}>
+              <p className="text-xs text-text-muted">
                 Fast model for routine execution tasks
               </p>
             </div>
 
-            <div
-              className={`space-y-4 pt-4 border-t border-border-subtle ${!isEnabled ? 'opacity-50' : ''}`}
-            >
+            <div className="grid grid-cols-3 gap-3 rounded-md bg-background-muted/60 p-3">
               <div className="space-y-2">
-                <label
-                  className={`text-sm flex items-center gap-1 ${!isEnabled ? 'text-text-muted' : 'text-text-muted'}`}
-                >
+                <label className="flex items-center gap-1 text-sm font-medium text-text-default">
                   Initial Lead Turns
                 </label>
                 <Input
@@ -343,18 +340,16 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                   max={10}
                   value={leadTurns}
                   onChange={(e) => setLeadTurns(Number(e.target.value))}
-                  className={`w-20 ${!isEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  className="w-full"
                   disabled={!isEnabled}
                 />
-                <p className={`text-xs ${!isEnabled ? 'text-text-muted' : 'text-text-muted'}`}>
-                  Number of turns to use the lead model at the start
+                <p className="text-xs text-text-muted">
+                  Lead turns at start
                 </p>
               </div>
 
               <div className="space-y-2">
-                <label
-                  className={`text-sm flex items-center gap-1 ${!isEnabled ? 'text-text-muted' : 'text-text-muted'}`}
-                >
+                <label className="flex items-center gap-1 text-sm font-medium text-text-default">
                   Failure Threshold
                 </label>
                 <Input
@@ -363,18 +358,16 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                   max={5}
                   value={failureThreshold}
                   onChange={(e) => setFailureThreshold(Number(e.target.value))}
-                  className={`w-20 ${!isEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  className="w-full"
                   disabled={!isEnabled}
                 />
-                <p className={`text-xs ${!isEnabled ? 'text-text-muted' : 'text-text-muted'}`}>
-                  Consecutive failures before switching back to lead
+                <p className="text-xs text-text-muted">
+                  Failures before fallback
                 </p>
               </div>
 
               <div className="space-y-2">
-                <label
-                  className={`text-sm flex items-center gap-1 ${!isEnabled ? 'text-text-muted' : 'text-text-muted'}`}
-                >
+                <label className="flex items-center gap-1 text-sm font-medium text-text-default">
                   Fallback Turns
                 </label>
                 <Input
@@ -383,17 +376,17 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                   max={5}
                   value={fallbackTurns}
                   onChange={(e) => setFallbackTurns(Number(e.target.value))}
-                  className={`w-20 ${!isEnabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+                  className="w-full"
                   disabled={!isEnabled}
                 />
-                <p className={`text-xs ${!isEnabled ? 'text-text-muted' : 'text-text-muted'}`}>
-                  Turns to use lead model during fallback
+                <p className="text-xs text-text-muted">
+                  Lead turns during fallback
                 </p>
               </div>
             </div>
           </div>
 
-          <div className="flex justify-end space-x-2 pt-4 border-t border-border-subtle">
+          <div className="flex justify-end gap-2 pt-1">
             <Button variant="ghost" onClick={onClose}>
               Cancel
             </Button>

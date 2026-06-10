@@ -915,6 +915,7 @@ export default function ChatInput({
 
     if (interruptionMatch && interruptionMatch.shouldInterrupt) {
       setLastInterruption(interruptionMatch.matchedText);
+      setChatState?.(ChatState.Idle);
       if (onStop) onStop();
       queuePausedRef.current = true;
 
@@ -1341,7 +1342,7 @@ export default function ChatInput({
               maxHeight: `${maxHeight}px`,
               overflowY: 'auto',
             }}
-            className="w-full outline-none border-none focus:ring-0 bg-transparent px-3 pt-3 pb-1.5 pr-3 text-sm resize-none text-text-default placeholder:text-textPlaceholder"
+            className="w-full outline-none border-none focus:ring-0 bg-transparent px-3 pt-3 pb-1.5 pr-3 text-sm resize-none text-text-default placeholder:text-text-muted"
           />
         </div>
       </form>
@@ -1356,7 +1357,7 @@ export default function ChatInput({
                 <img
                   src={img.dataUrl}
                   alt={`Pasted image ${img.id}`}
-                  className={`w-full h-full object-cover rounded border ${img.error ? 'border-red-500' : 'border-border-subtle'}`}
+                  className={`w-full h-full object-cover rounded border ${img.error ? 'border-border-danger' : 'border-border-subtle'}`}
                 />
               )}
               {img.isLoading && (
@@ -1366,7 +1367,7 @@ export default function ChatInput({
               )}
               {img.error && !img.isLoading && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-75 rounded p-1 text-center">
-                  <p className="text-red-400 text-[10px] leading-tight break-all mb-1">
+                  <p className="text-text-danger text-[11px] leading-tight break-all mb-1">
                     {img.error.substring(0, 50)}
                   </p>
                   {img.dataUrl && (
@@ -1408,7 +1409,7 @@ export default function ChatInput({
                     <img
                       src={file.dataUrl}
                       alt={file.name}
-                      className={`w-full h-full object-cover rounded border ${file.error ? 'border-red-500' : 'border-border-subtle'}`}
+                      className={`w-full h-full object-cover rounded border ${file.error ? 'border-border-danger' : 'border-border-subtle'}`}
                     />
                   )}
                   {file.isLoading && (
@@ -1418,7 +1419,7 @@ export default function ChatInput({
                   )}
                   {file.error && !file.isLoading && (
                     <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-75 rounded p-1 text-center">
-                      <p className="text-red-400 text-[10px] leading-tight break-all">
+                      <p className="text-text-danger text-[11px] leading-tight break-all">
                         {file.error.substring(0, 30)}
                       </p>
                     </div>
@@ -1720,7 +1721,7 @@ export default function ChatInput({
               size="sm"
               shape="round"
               variant="outline"
-              className="bg-slate-600 text-white hover:bg-slate-700 border-slate-600 rounded-full px-3 py-1.5"
+              className="bg-background-accent text-text-on-accent hover:bg-background-accent/90 rounded-md px-3 py-1.5"
             >
               <Stop />
             </Button>
@@ -1735,10 +1736,10 @@ export default function ChatInput({
                     shape="pill"
                     variant="outline"
                     disabled={isSubmitButtonDisabled}
-                    className={`px-3 py-1.5 flex items-center gap-1 ${
+                    className={`rounded-md px-3 py-1.5 flex items-center gap-1 ${
                       isSubmitButtonDisabled
-                        ? 'bg-slate-600 text-white cursor-not-allowed opacity-50 border-slate-600'
-                        : 'bg-slate-600 text-white hover:bg-slate-700 border-slate-600 hover:cursor-pointer'
+                        ? 'bg-background-accent text-text-on-accent cursor-not-allowed opacity-50'
+                        : 'bg-background-accent text-text-on-accent hover:bg-background-accent/90 hover:cursor-pointer'
                     }`}
                   >
                     <Send className="w-3.5 h-3.5" />
@@ -1780,6 +1781,7 @@ export default function ChatInput({
             setMentionPopover((prev) => ({ ...prev, selectedIndex: index }))
           }
           workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
+          sessionId={sessionId}
         />
 
         {sessionId && showCreateWorkflowModal && (
