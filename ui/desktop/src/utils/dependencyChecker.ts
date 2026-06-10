@@ -10,23 +10,25 @@
  * cargo, or pyenv won't be on that PATH, so we probe known install locations.
  */
 
-import { ipcMain, BrowserWindow } from 'electron';
+import { app, ipcMain, BrowserWindow } from 'electron';
 import { spawnSync, spawn } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import log from './logger';
+import { getBiorouterCliBinaryPath } from '../biorouterd';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface DependencyInfo {
-  name: 'git' | 'python' | 'uv' | 'npm' | 'aws';
+  name: string;
   displayName: string;
   version: string | null;
   installed: boolean;
   installCmd: string;
   requiresSudo: boolean;
   downloadUrl: string;
+  required?: boolean;
 }
 
 export interface DependencyEvent {
@@ -184,7 +186,7 @@ function buildInstallInfo(
         return {
           cmd: 'brew install awscli',
           requiresSudo: false,
-          downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html',
+          downloadUrl: 'http://biorouter.ucsf.edu/docs',
         };
     }
   }
@@ -219,7 +221,7 @@ function buildInstallInfo(
         return {
           cmd: 'winget install Amazon.AWSCLI',
           requiresSudo: false,
-          downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html',
+          downloadUrl: 'http://biorouter.ucsf.edu/docs',
         };
     }
   }
@@ -235,12 +237,12 @@ function buildInstallInfo(
 
   if (dep === 'aws') {
     if (distro === 'deb') {
-      return { cmd: 'sudo apt-get install -y awscli', requiresSudo: true, downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html' };
+      return { cmd: 'sudo apt-get install -y awscli', requiresSudo: true, downloadUrl: 'http://biorouter.ucsf.edu/docs' };
     }
     if (distro === 'rpm') {
-      return { cmd: 'sudo dnf install -y awscli', requiresSudo: true, downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html' };
+      return { cmd: 'sudo dnf install -y awscli', requiresSudo: true, downloadUrl: 'http://biorouter.ucsf.edu/docs' };
     }
-    return { cmd: 'pip install awscli', requiresSudo: false, downloadUrl: 'https://baranzinilab.github.io/biorouter-landing/docs.html' };
+    return { cmd: 'pip install awscli', requiresSudo: false, downloadUrl: 'http://biorouter.ucsf.edu/docs' };
   }
 
   if (distro === 'deb') {
@@ -276,7 +278,56 @@ function getLinuxDistro(): LinuxDistro {
   return _distro;
 }
 
+/**
+ * Single source of truth: ask the bundled `biorouter` CLI (which reads the Rust
+ * `biorouter::system` spec) for the dependency status. Falls back to the native
+ * probes below if the CLI isn't available (e.g. dev build) or errors, so the
+ * desktop never loses its dependency check.
+ */
 export function checkAllDependencies(): DependencyInfo[] {
+  return checkViaBundledCli() ?? checkNativeDependencies();
+}
+
+function checkViaBundledCli(): DependencyInfo[] | null {
+  try {
+    const cli = getBiorouterCliBinaryPath(app);
+    const res = spawnSync(cli, ['doctor', '--format', 'json', '--no-update'], {
+      encoding: 'utf8',
+      timeout: 15000,
+      env: SPAWN_ENV,
+    });
+    if (res.status !== 0 || !res.stdout) return null;
+    const parsed = JSON.parse(res.stdout) as {
+      dependencies?: Array<{
+        name: string;
+        display_name?: string;
+        version?: string | null;
+        installed?: boolean;
+        install_command?: string | null;
+        requires_sudo?: boolean;
+        download_url?: string | null;
+        required?: boolean;
+      }>;
+    };
+    const deps = parsed?.dependencies;
+    if (!Array.isArray(deps) || deps.length === 0) return null;
+    return deps.map((d) => ({
+      name: String(d.name),
+      displayName: String(d.display_name ?? d.name),
+      version: d.version ?? null,
+      installed: !!d.installed,
+      installCmd: d.install_command ?? '',
+      requiresSudo: !!d.requires_sudo,
+      downloadUrl: d.download_url ?? '',
+      required: d.required ?? true,
+    }));
+  } catch (err) {
+    log.warn('[DependencyChecker] bundled CLI check unavailable, using native probes:', err);
+    return null;
+  }
+}
+
+function checkNativeDependencies(): DependencyInfo[] {
   const distro = getLinuxDistro();
 
   const checks: Array<{
@@ -341,11 +392,11 @@ export function checkAllDependencies(): DependencyInfo[] {
 
 type SendFn = (event: DependencyEvent) => void;
 
-function runInstallCommand(
-  dep: 'git' | 'python' | 'uv' | 'npm',
-  cmd: string,
-  send: SendFn,
-): void {
+function runInstallCommand(dep: string, cmd: string, send: SendFn): void {
+  if (!cmd || !cmd.trim()) {
+    send({ type: 'install-error', dep, error: 'No automated installer — use the Download link.' });
+    return;
+  }
   send({ type: 'install-start', dep });
 
   let child: ReturnType<typeof spawn>;
@@ -414,7 +465,7 @@ export function registerDependencyIpcHandlers(): void {
       if (!win.isDestroyed()) win.webContents.send('dependency-event', payload);
     };
 
-    runInstallCommand(dep as 'git' | 'python' | 'uv' | 'npm', info.installCmd, send);
+    runInstallCommand(dep, info.installCmd, send);
     return { started: true };
   });
 }

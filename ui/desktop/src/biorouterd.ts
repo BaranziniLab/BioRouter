@@ -237,6 +237,31 @@ export const startBiorouterd = async (options: StartBiorouterdOptions): Promise<
   };
 };
 
+/**
+ * Resolve the bundled `biorouter` CLI binary (sibling of biorouterd). Used to
+ * offer "install the Biorouter CLI onto PATH" and to run `biorouter doctor`
+ * from the desktop app, so the dependency/install logic lives in one place
+ * (the Rust `biorouter::system` module) shared by the CLI and the GUI.
+ */
+export const getBiorouterCliBinaryPath = (app: Electron.App): string => {
+  const executableName = process.platform === 'win32' ? 'biorouter.exe' : 'biorouter';
+  const possiblePaths = app.isPackaged
+    ? [path.join(process.resourcesPath, 'bin', executableName)]
+    : [
+        path.join(process.cwd(), '..', '..', 'target', 'debug', executableName),
+        path.join(process.cwd(), '..', '..', 'target', 'release', executableName),
+        path.join(process.cwd(), 'src', 'bin', executableName),
+        path.join(process.cwd(), 'bin', executableName),
+      ];
+  for (const binPath of possiblePaths) {
+    const resolved = path.resolve(binPath);
+    if (fs.existsSync(resolved) && fs.statSync(resolved).isFile()) {
+      return resolved;
+    }
+  }
+  throw new Error(`Could not find ${executableName} in: ${possiblePaths.join(', ')}`);
+};
+
 const getBiorouterdBinaryPath = (app: Electron.App): string => {
   let executableName = process.platform === 'win32' ? 'biorouterd.exe' : 'biorouterd';
 
