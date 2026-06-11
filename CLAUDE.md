@@ -77,10 +77,12 @@ scripts/release.sh all 1.80.1          # whole release end-to-end
 # or one phase at a time (resumable):
 scripts/release.sh bump 1.80.1
 scripts/release.sh backends 1.80.1     # mac arm64/x64 + windows + linux (docker)
+scripts/release.sh linux-backend 1.80.1 # just the linux x86_64 backend (re-runnable)
 scripts/release.sh mac-arm64 1.80.1    # sign + notarize
 scripts/release.sh mac-intel 1.80.1
 scripts/release.sh windows 1.80.1
-scripts/release.sh linux 1.80.1        # deb + rpm; run LAST (corrupts node_modules)
+scripts/release.sh linux 1.80.1        # GUI deb + rpm; run LAST (corrupts node_modules)
+scripts/release.sh cli-linux 1.80.1    # headless CLI-only deb + rpm (biorouter + biorouterd)
 scripts/release.sh verify 1.80.1
 scripts/release.sh publish 1.80.1
 ```
@@ -103,7 +105,8 @@ The detailed manual steps and the reasoning behind each invariant follow.
 - **`macos-alias` `NODE_MODULE_VERSION` mismatch** during forge `make`: `cd ui/desktop && npm rebuild macos-alias`.
 - **Unmount any stale `/Volumes/BioRouter*` mounts before the dmg step** — leftover mounts cause `cp: Operation not permitted` and abort `electron-forge maker-dmg`.
 - **Do not hand-roll the dmg via `hdiutil create`** — it skips the `Applications` symlink and the background-image layout that `electron-forge maker-dmg` adds. If `bundle:default` fails at the dmg step, fix the underlying cause (usually a stale `/Volumes` mount) and re-run, don't `hdiutil` over it.
-- **Release assets — exactly 5**: `BioRouter-{ver}-arm64.dmg`, `BioRouter-{ver}-x64.dmg`, `biorouter_{ver}_amd64.deb`, `BioRouter-{ver}-1.x86_64.rpm`, `BioRouter-win32-x64-{ver}.zip`. Don't also upload the unversioned `BioRouter.zip` / `BioRouter_intel_mac.zip` from `out/<platform>/` — they're build intermediates, not release artifacts.
+- **Release assets — exactly 7**: the 5 GUI artifacts `BioRouter-{ver}-arm64.dmg`, `BioRouter-{ver}-x64.dmg`, `biorouter_{ver}_amd64.deb`, `BioRouter-{ver}-1.x86_64.rpm`, `BioRouter-win32-x64-{ver}.zip`, plus the 2 **headless CLI-only** Linux packages `biorouter-cli_{ver}_amd64.deb` and `biorouter-cli-{ver}-1.x86_64.rpm` (just `biorouter` + `biorouterd`, built by `scripts/build-cli-linux-packages.sh` → `dist/cli/`, smoke-tested in clean Debian/Rocky containers). Don't also upload the unversioned `BioRouter.zip` / `BioRouter_intel_mac.zip` from `out/<platform>/` — they're build intermediates, not release artifacts.
+- **Linux glibc baseline**: the linux backend is cross-compiled on `rust:1.92-bullseye` (glibc 2.31), NOT rolling `rust:latest` (now trixie, glibc 2.39, which yields binaries that fail to start on Debian 12 / Ubuntu 22.04 / RHEL-Rocky 9). The pin lives in `LINUX_RUST_IMG` in `scripts/release.sh`; `cli-linux`'s smoke test is what catches a regression here. `linux-backend` `rm -rf`s the target dir first to force a from-scratch compile against the pinned glibc (cached objects keep stale symbol versions).
 - **Publish**: `gh release create v{ver} --notes-file docs/release-notes/v{ver}.md <5 assets>`. Verify macOS with `xcrun stapler validate <app>` and `codesign -dv <app>` before publishing.
 - **Release notes** live at `docs/release-notes/v{ver}.md`, one file per version.
 
