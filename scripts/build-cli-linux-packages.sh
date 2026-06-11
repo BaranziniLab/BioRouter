@@ -54,7 +54,7 @@ log "smoke-testing .deb on debian:bookworm-slim"
 docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg debian:bookworm-slim bash -euxc '
   apt-get update -q
   apt-get install -y --no-install-recommends "/pkg/'"$(basename "$DEB")"'"
-  which biorouter biorouterd
+  command -v biorouter && command -v biorouterd
   biorouter --version
   biorouterd --version
   biorouter doctor --no-update --format json >/dev/null
@@ -66,7 +66,7 @@ log "deb smoke test passed ✓"
 log "smoke-testing .rpm on rockylinux:9"
 docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg rockylinux:9 bash -euxc '
   dnf install -y "/pkg/'"$(basename "$RPM")"'"
-  which biorouter biorouterd
+  command -v biorouter && command -v biorouterd
   biorouter --version
   biorouterd --version
   biorouter doctor --no-update --format json >/dev/null

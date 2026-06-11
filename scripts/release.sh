@@ -117,6 +117,36 @@ PY
 # ── backends ──────────────────────────────────────────────────────────────────
 WIN_LINKER_WRAP='printf "#!/bin/sh\nexec x86_64-w64-mingw32-gcc \"\$@\" -lpthread -lwinpthread\n" > /usr/local/bin/winpthread-gcc && chmod +x /usr/local/bin/winpthread-gcc'
 
+# Pin the Linux cross-compile to an OLD-glibc base (Debian 11 "bullseye",
+# glibc 2.31) so the produced binaries run on mainstream distros — Ubuntu
+# 20.04+/22.04/24.04, Debian 11/12, and RHEL/Rocky 8/9 (glibc 2.34). Using the
+# rolling `rust:latest` (now trixie, glibc 2.39) yields binaries that fail to
+# start on anything older than bleeding-edge — caught by the cli-linux smoke
+# test. Windows (mingw) has no glibc concern and stays on rust:latest.
+LINUX_RUST_IMG="rust:1.92-bullseye"
+
+# Linux x86_64 backend (biorouterd + biorouter). Extracted so it can be re-run
+# on its own. Cleans the target dir first to force a from-scratch compile
+# against the pinned glibc (cached objects would keep stale symbol versions).
+cmd_linux-backend() {
+  ensure_docker
+  log "cross-compiling linux-gnu backend (docker, $LINUX_RUST_IMG)"
+  rm -rf "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter" \
+         "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd"
+  docker volume create biorouter-linux-bullseye-cache >/dev/null 2>&1 || true
+  docker run --rm -v "$ROOT":/usr/src/myapp -v biorouter-linux-bullseye-cache:/usr/local/cargo/registry \
+    -w /usr/src/myapp "$LINUX_RUST_IMG" sh -c '
+      rustup target add x86_64-unknown-linux-gnu && dpkg --add-architecture amd64 && apt-get update -q &&
+      apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu g++-x86-64-linux-gnu protobuf-compiler cmake libxcb1-dev:amd64 libbz2-dev:amd64 &&
+      export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++ \
+             AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar \
+             CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
+             LZMA_API_STATIC=1 PKG_CONFIG_ALLOW_CROSS=1 \
+             PKG_CONFIG_PATH_x86_64_unknown_linux_gnu=/usr/lib/x86_64-linux-gnu/pkgconfig PROTOC=/usr/bin/protoc &&
+      cargo build --release --target x86_64-unknown-linux-gnu --bin biorouterd --bin biorouter'
+  log "linux backend compiled"
+}
+
 cmd_backends() {
   local v="$1"
   activate_hermit
@@ -143,18 +173,7 @@ cmd_backends() {
          /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll \
          /usr/src/myapp/target/x86_64-pc-windows-gnu/release/"
 
-  log "cross-compiling linux-gnu backend (docker)"
-  docker volume create biorouter-linux-cache >/dev/null 2>&1 || true
-  docker run --rm -v "$ROOT":/usr/src/myapp -v biorouter-linux-cache:/usr/local/cargo/registry \
-    -w /usr/src/myapp rust:latest sh -c '
-      rustup target add x86_64-unknown-linux-gnu && dpkg --add-architecture amd64 && apt-get update -q &&
-      apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu g++-x86-64-linux-gnu protobuf-compiler cmake libxcb1-dev:amd64 libbz2-dev:amd64 &&
-      export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++ \
-             AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar \
-             CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
-             LZMA_API_STATIC=1 PKG_CONFIG_ALLOW_CROSS=1 \
-             PKG_CONFIG_PATH_x86_64_unknown_linux_gnu=/usr/lib/x86_64-linux-gnu/pkgconfig PROTOC=/usr/bin/protoc &&
-      cargo build --release --target x86_64-unknown-linux-gnu --bin biorouterd --bin biorouter'
+  cmd_linux-backend
   log "all 4 backends compiled"
 }
 
@@ -272,7 +291,7 @@ cmd_all() {
 
 CMD="${1:-}"; VER="${2:-}"
 case "$CMD" in
-  bump|backends|mac-arm64|mac-intel|windows|linux|cli-linux|verify|publish|all)
+  bump|backends|linux-backend|mac-arm64|mac-intel|windows|linux|cli-linux|verify|publish|all)
     need_version "$VER"; "cmd_${CMD}" "$VER" ;;
-  *) die "usage: scripts/release.sh {bump|backends|mac-arm64|mac-intel|windows|linux|cli-linux|verify|publish|all} <version>" ;;
+  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|windows|linux|cli-linux|verify|publish|all} <version>" ;;
 esac
