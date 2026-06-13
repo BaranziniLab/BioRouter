@@ -83,7 +83,7 @@ pub enum Theme {
 }
 
 impl Theme {
-    fn as_str(&self) -> &'static str {
+    pub(crate) fn as_str(&self) -> &'static str {
         match self {
             Theme::Light => "GitHub",
             Theme::Dark => "zenburn",
@@ -342,7 +342,7 @@ fn render_tool_request(req: &ToolRequest, theme: Theme, debug: bool) {
             "todo__write" => render_todo_request(call, debug),
             _ => render_default_request(call, debug),
         },
-        Err(e) => print_markdown(&e.to_string(), theme),
+        Err(e) => print_markdown_source(&e.to_string(), theme),
     }
 }
 
@@ -374,11 +374,11 @@ fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
                 if debug {
                     println!("{:#?}", content);
                 } else if let Some(text) = content.as_text() {
-                    print_markdown(&text.text, theme);
+                    print_markdown_source(&text.text, theme);
                 }
             }
         }
-        Err(e) => print_markdown(&e.to_string(), theme),
+        Err(e) => print_markdown_source(&e.to_string(), theme),
     }
 }
 
@@ -646,7 +646,25 @@ pub fn env_no_color() -> bool {
     std::env::var_os("NO_COLOR").is_none()
 }
 
+/// Render assistant markdown into styled terminal output: headings, bold,
+/// tables, blockquotes, lists, links, and syntax-highlighted code blocks
+/// (see `session::markdown`). Falls back to raw text when not on a TTY.
 fn print_markdown(content: &str, theme: Theme) {
+    if std::io::stdout().is_terminal() {
+        let width = term_width().clamp(40, 100);
+        print!(
+            "{}",
+            super::markdown::render_markdown(content, theme, width)
+        );
+    } else {
+        print!("{}", content);
+    }
+}
+
+/// Print text as syntax-highlighted *markdown source* via bat. Used for tool
+/// output, which is data — re-flowing or re-styling it the way assistant
+/// prose is rendered could distort file contents, paths, or logs.
+fn print_markdown_source(content: &str, theme: Theme) {
     if std::io::stdout().is_terminal() {
         bat::PrettyPrinter::new()
             .input(bat::Input::from_bytes(content.as_bytes()))

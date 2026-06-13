@@ -10,7 +10,7 @@
     "license": {
       "name": "Apache-2.0"
     },
-    "version": "1.85.0"
+    "version": "1.85.1"
   },
   "paths": {
     "/action-required/tool-confirmation": {
@@ -1676,6 +1676,43 @@
         }
       }
     },
+    "/knowledge/bases/{id}/ingest-conversation": {
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "ingest_conversation",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IngestConversationBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream of sub-agent events (text/event-stream)"
+          },
+          "400": {
+            "description": "Invalid model or no sessions"
+          }
+        }
+      }
+    },
     "/knowledge/bases/{id}/lint": {
       "post": {
         "tags": [
@@ -1709,6 +1746,40 @@
           },
           "400": {
             "description": "Invalid model"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/location": {
+      "get": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "operationId": "get_location",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Knowledge base on-disk location",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocationResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
           }
         }
       }
@@ -2186,6 +2257,79 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/CheckModelResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/llamacpp/ensure": {
+      "post": {
+        "tags": [
+          "super::routes::llamacpp"
+        ],
+        "operationId": "llamacpp_ensure",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LlamaCppEnsureRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Sidecar start initiated (poll /llamacpp/status)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlamaCppStatusResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown model name"
+          }
+        }
+      }
+    },
+    "/llamacpp/status": {
+      "get": {
+        "tags": [
+          "super::routes::llamacpp"
+        ],
+        "operationId": "llamacpp_status",
+        "responses": {
+          "200": {
+            "description": "Sidecar status and curated model catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlamaCppStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/llamacpp/stop": {
+      "post": {
+        "tags": [
+          "super::routes::llamacpp"
+        ],
+        "operationId": "llamacpp_stop",
+        "responses": {
+          "200": {
+            "description": "Sidecar stopped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlamaCppStatusResponse"
                 }
               }
             }
@@ -5074,6 +5218,29 @@
           "source": {}
         }
       },
+      "IngestConversationBody": {
+        "type": "object",
+        "required": [
+          "session_ids",
+          "model"
+        ],
+        "properties": {
+          "focus": {
+            "type": "string",
+            "nullable": true
+          },
+          "model": {
+            "$ref": "#/components/schemas/ModelRef"
+          },
+          "session_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Session ids to digest. At least one is required."
+          }
+        }
+      },
       "InspectJobResponse": {
         "type": "object",
         "properties": {
@@ -5182,6 +5349,69 @@
           }
         }
       },
+      "LlamaCppEnsureRequest": {
+        "type": "object",
+        "required": [
+          "model"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Catalog model name (e.g. `qwen3.5-4b`) or raw Hugging Face spec."
+          }
+        }
+      },
+      "LlamaCppModel": {
+        "type": "object",
+        "description": "One curated local model, as shown in the GUI/TUI pickers.",
+        "required": [
+          "name",
+          "display_name",
+          "hf_spec",
+          "download_size",
+          "description",
+          "is_default"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "display_name": {
+            "type": "string"
+          },
+          "download_size": {
+            "type": "string"
+          },
+          "hf_spec": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean",
+            "description": "True for the model Biorouter preselects."
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "LlamaCppStatusResponse": {
+        "type": "object",
+        "required": [
+          "sidecar",
+          "catalog"
+        ],
+        "properties": {
+          "catalog": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LlamaCppModel"
+            }
+          },
+          "sidecar": {
+            "$ref": "#/components/schemas/SidecarStatus"
+          }
+        }
+      },
       "LoadedProvider": {
         "type": "object",
         "required": [
@@ -5194,6 +5424,18 @@
           },
           "is_editable": {
             "type": "boolean"
+          }
+        }
+      },
+      "LocationResponse": {
+        "type": "object",
+        "required": [
+          "path"
+        ],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Absolute on-disk path to the knowledge base directory (the folder that\nholds `knowledge/`, `raw/`, `index.md`, \u2026). Clients use this to open the\nfolder in the OS file explorer so users can inspect raw markdown."
           }
         }
       },
@@ -6976,6 +7218,59 @@
           },
           "success": {
             "type": "boolean"
+          }
+        }
+      },
+      "SidecarState": {
+        "type": "string",
+        "description": "Lifecycle state of the managed llama-server process.",
+        "enum": [
+          "no_binary",
+          "stopped",
+          "starting",
+          "ready",
+          "error"
+        ]
+      },
+      "SidecarStatus": {
+        "type": "object",
+        "description": "Snapshot of the sidecar consumed by the GUI onboarding card, settings and\n`biorouter doctor`.",
+        "required": [
+          "state",
+          "build"
+        ],
+        "properties": {
+          "binary_path": {
+            "type": "string",
+            "nullable": true
+          },
+          "build": {
+            "type": "string",
+            "description": "Pinned llama.cpp build."
+          },
+          "detail": {
+            "type": "string",
+            "description": "Most recent log line (download progress, load stage) or error tail.",
+            "nullable": true
+          },
+          "hf_spec": {
+            "type": "string",
+            "description": "Hugging Face `repo:quant` spec backing `model`.",
+            "nullable": true
+          },
+          "model": {
+            "type": "string",
+            "description": "Friendly model name (catalog name or raw HF spec) currently requested.",
+            "nullable": true
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "nullable": true,
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/SidecarState"
           }
         }
       },

@@ -119,6 +119,9 @@ module.exports = {
         options: {
           icon: 'src/images/icon.png',
           prefix: '/opt',
+          // Runtime deps of the bundled llama-server (Llama Server provider):
+          // OpenSSL 3 and OpenMP. Implies Debian 12+ / Ubuntu 22.04+.
+          depends: ['libssl3', 'libgomp1'],
         },
       },
     },
@@ -135,6 +138,8 @@ module.exports = {
         options: {
           icon: 'src/images/icon.png',
           prefix: '/opt',
+          // openssl-libs ships libssl.so.3 on EL9+/Fedora; libgomp for llama-server.
+          requires: ['openssl-libs', 'libgomp'],
           fpm: ['--rpm-rpmbuild-define', '_build_id_links none'],
         },
       },

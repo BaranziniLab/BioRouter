@@ -59,6 +59,9 @@ module.exports = [
         document: 'readonly',
         navigator: 'readonly',
         localStorage: 'readonly',
+        sessionStorage: 'readonly',
+        // Electron type namespace (used in type positions; TS validates the rest)
+        Electron: 'readonly',
         fetch: 'readonly',
         console: 'readonly',
         setTimeout: 'readonly',

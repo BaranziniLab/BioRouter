@@ -90,7 +90,10 @@ pub async fn handle_install(
 
     // 0. Gate on `uv`: installing a .brxt builds a Python venv with `uv sync`,
     // so refuse up front (with an actionable message) rather than failing late.
-    if biorouter::system::status_of("uv").map(|d| !d.installed).unwrap_or(true) {
+    if biorouter::system::status_of("uv")
+        .map(|d| !d.installed)
+        .unwrap_or(true)
+    {
         let cmd = biorouter::system::install_command("uv").unwrap_or_default();
         bail!(
             "`uv` is required to install .brxt extensions, but it was not found.\n  \
@@ -275,15 +278,18 @@ fn run_uv_sync(dir: &Path) -> Result<()> {
         Ok(out) if out.status.success() => Ok(()),
         Ok(out) => {
             let detail = String::from_utf8_lossy(&out.stderr);
-            bail!(
-                "uv sync failed:\n{}",
-                detail
-                    .trim()
-                    .lines()
-                    .take(10)
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            )
+            // uv puts the root cause and its `help:` dependency-chain line at
+            // the END of stderr, so keep the tail, not the head.
+            let lines: Vec<&str> = detail.trim().lines().collect();
+            let tail = if lines.len() > 15 {
+                format!("…\n{}", lines[lines.len() - 15..].join("\n"))
+            } else {
+                lines.join("\n")
+            };
+            let hint = uv_sync_hint(&detail)
+                .map(|h| format!("\n\nhint: {h}"))
+                .unwrap_or_default();
+            bail!("uv sync failed:\n{}{}", tail, hint)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             bail!(
@@ -292,6 +298,32 @@ fn run_uv_sync(dir: &Path) -> Result<()> {
             )
         }
         Err(e) => bail!("Failed to run uv sync: {}", e),
+    }
+}
+
+/// Map well-known `uv sync` failure signatures to an actionable hint appended
+/// below the raw output. Checks run most-specific first.
+fn uv_sync_hint(stderr: &str) -> Option<&'static str> {
+    if stderr.contains("Symbol not found") && stderr.contains("librustc_driver") {
+        Some(
+            "your Homebrew Rust installation appears broken (its LLVM library was \
+             upgraded out from under it). Run `brew upgrade rust` or `brew reinstall rust`, \
+             then retry.",
+        )
+    } else if stderr.contains("maturin") || stderr.contains("rustc") {
+        Some(
+            "a dependency has no prebuilt package for your platform, so it was compiled \
+             from source, which needs a working Rust toolchain. Install one via \
+             https://rustup.rs (or repair your existing install) and retry.",
+        )
+    } else if stderr.contains("Failed to build") {
+        Some(
+            "a dependency has no prebuilt package for your platform, so uv tried to \
+             compile it from source. Make sure a compiler toolchain is installed, or ask \
+             the extension author to pin versions that ship prebuilt wheels.",
+        )
+    } else {
+        None
     }
 }
 
@@ -378,4 +410,35 @@ pub async fn handle_remove(name: String, purge: bool) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::uv_sync_hint;
+
+    #[test]
+    fn hint_broken_homebrew_rust() {
+        let stderr = "dyld[28466]: Symbol not found: __ZN4llvm10PGOOptionsC1E...\n\
+                      Referenced from: /usr/local/Cellar/rust/1.89.0_3/lib/librustc_driver-bccb51ff.dylib";
+        assert!(uv_sync_hint(stderr).unwrap().contains("brew upgrade rust"));
+    }
+
+    #[test]
+    fn hint_rust_toolchain_needed() {
+        let stderr = "error: process didn't exit successfully: `rustc -vV`\n💥 maturin failed";
+        assert!(uv_sync_hint(stderr).unwrap().contains("Rust toolchain"));
+    }
+
+    #[test]
+    fn hint_generic_source_build() {
+        let stderr = "× Failed to build `pymssql==2.3.13`\n├─▶ The build backend returned an error";
+        assert!(uv_sync_hint(stderr)
+            .unwrap()
+            .contains("compile it from source"));
+    }
+
+    #[test]
+    fn no_hint_for_unrelated_failure() {
+        assert!(uv_sync_hint("No solution found when resolving dependencies").is_none());
+    }
 }

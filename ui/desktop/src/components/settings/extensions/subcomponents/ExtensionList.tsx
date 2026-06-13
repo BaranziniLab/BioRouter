@@ -108,6 +108,13 @@ export function getFriendlyTitle(extension: FixedExtensionEntry): string {
   return formatExtensionName(name);
 }
 
+// 'builtin' extensions are the bundled MCP servers; 'platform' extensions
+// (todo, chatrecall, code_execution, skills, extensionmanager, ...) are
+// compiled into the agent itself. Both ship with Biorouter.
+export function isBuiltInExtension(extension: ExtensionConfig): boolean {
+  return extension.type === 'builtin' || extension.type === 'platform';
+}
+
 function normalizeExtensionName(name: string): string {
   return name.toLowerCase().replace(/\s+/g, '');
 }

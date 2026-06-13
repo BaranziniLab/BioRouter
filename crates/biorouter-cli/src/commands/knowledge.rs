@@ -46,6 +46,12 @@ async fn build_completer(
     provider: Option<String>,
     model: Option<String>,
 ) -> Result<Box<dyn Completer>> {
+    // Honour the same offline test-mode switch the server uses, so CLI knowledge
+    // macros (ingest / query / ingest-conversation) can be exercised without a
+    // reachable LLM provider.
+    if biorouter::knowledge::test_mode::env_enabled() {
+        return Ok(Box::new(biorouter::knowledge::test_mode::TestModeCompleter));
+    }
     let config = Config::global();
     let provider = provider
         .or_else(|| config.get_biorouter_provider().ok())
@@ -329,6 +335,119 @@ pub async fn handle_ingest(
             Ok(())
         }
         Err(e) => Err(anyhow!("Ingest failed: {}", e)),
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// ingest-conversation
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Digest one or more chat sessions into a knowledge base.
+pub async fn handle_ingest_conversation(
+    kb: Option<String>,
+    sessions: Vec<String>,
+    new_kb: Option<String>,
+    focus: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<()> {
+    use biorouter::knowledge::conversation_ingest::{ingest_conversation, ConversationIngestArgs};
+    use biorouter::session::session_manager::SessionManager;
+
+    let svc = service()?;
+
+    // Resolve the target KB: --new-kb creates one, else --kb, else active.
+    let kb_id = if let Some(name) = new_kb {
+        let id = biorouter::agents::knowledge_tool::slugify_kb_name(&name);
+        if id.is_empty() {
+            bail!("--new-kb must contain letters or numbers");
+        }
+        if !svc.list_bases()?.iter().any(|b| b.id == id) {
+            svc.create_base(&id, name.trim(), None)?;
+            println!(
+                "  {} created knowledge base {}",
+                style("✓").green(),
+                style(&id).fg(ACCENT).bold()
+            );
+        }
+        id
+    } else {
+        resolve_kb(&svc, kb)?
+    };
+
+    // Resolve which sessions to ingest. Default: the most recent session.
+    let manager = SessionManager::instance();
+    let session_ids: Vec<String> = if sessions.is_empty() {
+        let mut all = manager.list_sessions().await?;
+        all.sort_by_key(|s| s.updated_at);
+        match all.last() {
+            Some(s) => {
+                println!(
+                    "  {} no --session given, using most recent session {}",
+                    style("·").dim(),
+                    style(&s.id).dim()
+                );
+                vec![s.id.clone()]
+            }
+            None => bail!("No sessions found to ingest."),
+        }
+    } else {
+        sessions
+    };
+
+    let mut loaded = Vec::new();
+    for sid in &session_ids {
+        loaded.push(
+            manager
+                .get_session(sid, true)
+                .await
+                .map_err(|e| anyhow!("session '{sid}' not found: {e}"))?,
+        );
+    }
+
+    let completer = build_completer(provider, model).await?;
+
+    let spinner = cliclack::spinner();
+    spinner.start(format!("digesting {} conversation(s)...", loaded.len()));
+
+    let result = ingest_conversation(
+        &svc,
+        ConversationIngestArgs {
+            kb_id: kb_id.clone(),
+            sessions: loaded,
+            completer,
+            focus,
+            bounds: ingest_bounds(),
+            event_sink: None,
+            cancel: None,
+        },
+    )
+    .await;
+
+    spinner.stop("");
+
+    match result {
+        Ok(res) => {
+            println!(
+                "  {} {} conversation(s) ingested into {} {}",
+                style("✓").green(),
+                session_ids.len(),
+                style(&kb_id).fg(ACCENT).bold(),
+                style(format!("({} steps)", res.steps)).dim()
+            );
+            println!(
+                "    {} {}",
+                style("source:").dim(),
+                style(&res.source_id).dim()
+            );
+            println!(
+                "    {} {}",
+                style("commit:").dim(),
+                style(short_sha(&res.commit_sha)).dim()
+            );
+            Ok(())
+        }
+        Err(e) => Err(anyhow!("Conversation ingest failed: {}", e)),
     }
 }
 

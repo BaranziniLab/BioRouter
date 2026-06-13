@@ -4,6 +4,7 @@ import { useConfig } from './ConfigContext';
 import WelcomeBioRouterLogo from './WelcomeBioRouterLogo';
 import { toastService } from '../toasts';
 import InstitutionalSetupCard from './onboarding/InstitutionalSetupCard';
+import LlamaServerInlineCard from './onboarding/LlamaServerInlineCard';
 import OllamaInlineCard from './onboarding/OllamaInlineCard';
 import CommercialSetupCard from './onboarding/CommercialSetupCard';
 import { SwitchModelModal } from './settings/models/subcomponents/SwitchModelModal';
@@ -87,6 +88,15 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
     navigate('/', { replace: true });
   };
 
+  const handleLlamaServerComplete = () => {
+    trackOnboardingProviderSelected('llamacpp');
+    trackOnboardingCompleted('llamacpp');
+    setUserInActiveSetup(false);
+    setShowFirstTimeSetup(false);
+    setHasProvider(true);
+    navigate('/', { replace: true });
+  };
+
   useEffect(() => {
     const checkProvider = async () => {
       try {
@@ -156,8 +166,8 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
               Welcome to BioRouter
             </h1>
             <p className="text-sm text-text-muted mt-1.5 leading-relaxed">
-              An integrated research environment that connects commercial, institution-hosted, and
-              local AI models in one interface — built for biomedical discovery.
+              An integrated research environment that connects local, institution-hosted, and
+              commercial AI models in one interface — built for biomedical discovery.
             </p>
           </div>
         </div>
@@ -169,11 +179,12 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
           className="flex-1 min-h-0 overflow-y-auto bg-background-muted"
         >
           <div className="max-w-2xl mx-auto px-6 sm:px-8">
+            <LlamaServerInlineCard onSuccess={handleLlamaServerComplete} />
+            <OllamaInlineCard onSuccess={handleOllamaComplete} />
             <InstitutionalSetupCard
               onSuccess={handleInstitutionalSuccess}
               onStartTesting={() => setUserInActiveSetup(true)}
             />
-            <OllamaInlineCard onSuccess={handleOllamaComplete} />
             <CommercialSetupCard
               onSuccess={handleCommercialSuccess}
               onStartTesting={() => setUserInActiveSetup(true)}

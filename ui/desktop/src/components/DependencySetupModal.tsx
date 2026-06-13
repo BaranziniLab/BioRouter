@@ -28,21 +28,44 @@ export default function DependencySetupModal() {
   const outputRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   // Biorouter CLI install state (the bundled `biorouter` onto PATH).
-  const [cli, setCli] = useState<{ bundled: string | null; onPath: boolean } | null>(null);
+  type CliStatus = {
+    bundled: string | null;
+    onPath: boolean;
+    bundledVersion: string | null;
+    pathVersion: string | null;
+    needsUpdate: boolean;
+    brokenOnPath: boolean;
+  };
+  const [cli, setCli] = useState<CliStatus | null>(null);
   const [cliState, setCliState] = useState<InstallState>('idle');
   const [cliOutput, setCliOutput] = useState('');
   const [cliError, setCliError] = useState('');
 
-  // On startup, offer to install the CLI if it isn't already callable from a
-  // terminal (once per launch).
+  // Whether a given status warrants showing the card: not installed at all, a
+  // stale (older) install after an app upgrade, or a broken/dangling entry.
+  const cliNeedsAttention = (s: CliStatus | null): boolean =>
+    !!s && !!s.bundled && (!s.onPath || s.needsUpdate || s.brokenOnPath);
+
+  // Dismissing a specific version-pair upgrade prompt persists across app
+  // launches (localStorage) — a *new* app version prompts again, and the
+  // toolbar CLI button can always re-open the card explicitly.
+  const cliDismissKey = (s: CliStatus | null): string =>
+    `cli-update-dismissed:${s?.pathVersion ?? 'none'}->${s?.bundledVersion ?? 'unknown'}`;
+
+  // On startup, offer to install/upgrade the CLI if it isn't callable from a
+  // terminal or is older than what this app ships (once per launch).
   useEffect(() => {
     let cancelled = false;
     window.electron
       .cliStatus()
       .then((s) => {
         if (cancelled || !s) return;
-        if (s.bundled && !s.onPath && !sessionStorage.getItem('cli-install-dismissed')) {
-          setCli({ bundled: s.bundled, onPath: s.onPath });
+        if (
+          cliNeedsAttention(s) &&
+          !sessionStorage.getItem('cli-install-dismissed') &&
+          !localStorage.getItem(cliDismissKey(s))
+        ) {
+          setCli(s);
           setVisible(true);
         }
       })
@@ -50,6 +73,29 @@ export default function DependencySetupModal() {
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // The toolbar CLI button dispatches this event when the CLI isn't installed
+  // (or is stale) — re-open the modal with the install/update card even if it
+  // was dismissed earlier this session.
+  useEffect(() => {
+    const handler = () => {
+      window.electron
+        .cliStatus()
+        .then((s) => {
+          if (!s) return;
+          if (cliNeedsAttention(s)) {
+            setCli(s);
+            setCliState('idle');
+            setVisible(true);
+          }
+        })
+        .catch(() => {});
+    };
+    window.addEventListener('biorouter:open-cli-install', handler);
+    return () => window.removeEventListener('biorouter:open-cli-install', handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleInstallCli = async () => {
@@ -59,7 +105,18 @@ export default function DependencySetupModal() {
     if (res.success) {
       setCliOutput(res.output);
       setCliState('done');
-      setCli((c) => (c ? { ...c, onPath: true } : c));
+      // After install/update the on-PATH binary now matches the bundled one.
+      setCli((c) =>
+        c
+          ? {
+              ...c,
+              onPath: true,
+              needsUpdate: false,
+              brokenOnPath: false,
+              pathVersion: c.bundledVersion,
+            }
+          : c
+      );
     } else {
       setCliError(res.error);
       setCliState('error');
@@ -74,22 +131,31 @@ export default function DependencySetupModal() {
         const missing = payload.deps.filter((d) => !d.installed);
         if (missing.length === 0) return;
         setDeps(
-          missing.map((info) => ({ info, installState: 'idle' as InstallState, output: '', errorMsg: '' })),
+          missing.map((info) => ({
+            info,
+            installState: 'idle' as InstallState,
+            output: '',
+            errorMsg: '',
+          }))
         );
         setVisible(true);
       }
 
       if (payload.type === 'install-start' && payload.dep) {
         setDeps((prev) =>
-          prev.map((d) => (d.info.name === payload.dep ? { ...d, installState: 'running' as InstallState, output: '', errorMsg: '' } : d)),
+          prev.map((d) =>
+            d.info.name === payload.dep
+              ? { ...d, installState: 'running' as InstallState, output: '', errorMsg: '' }
+              : d
+          )
         );
       }
 
       if (payload.type === 'install-output' && payload.dep) {
         setDeps((prev) =>
           prev.map((d) =>
-            d.info.name === payload.dep ? { ...d, output: d.output + (payload.output ?? '') } : d,
-          ),
+            d.info.name === payload.dep ? { ...d, output: d.output + (payload.output ?? '') } : d
+          )
         );
         // Auto-scroll
         const el = outputRefs.current[payload.dep];
@@ -101,18 +167,33 @@ export default function DependencySetupModal() {
           prev.map((d) => {
             if (d.info.name !== payload.dep) return d;
             if (payload.installed) {
-              return { ...d, installState: 'done' as InstallState, info: { ...d.info, installed: true, version: payload.version ?? null } };
+              return {
+                ...d,
+                installState: 'done' as InstallState,
+                info: { ...d.info, installed: true, version: payload.version ?? null },
+              };
             }
-            return { ...d, installState: 'error' as InstallState, errorMsg: 'Install completed but tool still not detected. Try opening a new terminal and re-running BioRouter.' };
-          }),
+            return {
+              ...d,
+              installState: 'error' as InstallState,
+              errorMsg:
+                'Install completed but tool still not detected. Try opening a new terminal and re-running BioRouter.',
+            };
+          })
         );
       }
 
       if (payload.type === 'install-error' && payload.dep) {
         setDeps((prev) =>
           prev.map((d) =>
-            d.info.name === payload.dep ? { ...d, installState: 'error' as InstallState, errorMsg: payload.error ?? 'Unknown error' } : d,
-          ),
+            d.info.name === payload.dep
+              ? {
+                  ...d,
+                  installState: 'error' as InstallState,
+                  errorMsg: payload.error ?? 'Unknown error',
+                }
+              : d
+          )
         );
       }
     };
@@ -137,10 +218,21 @@ export default function DependencySetupModal() {
     if (url) window.electron.openExternal(url);
   };
 
-  const showCli = !!cli && !cli.onPath && cliState !== 'done';
+  const showCli = cliNeedsAttention(cli) && cliState !== 'done';
+  // Fixing an existing entry (stale version or broken/dangling) vs a first
+  // install. `needsUpdate` implies it's on PATH; `brokenOnPath` means an entry
+  // exists but won't run.
+  const cliIsUpdate = !!cli && (cli.needsUpdate || cli.brokenOnPath);
+  const cliButtonLabel = cli?.brokenOnPath ? 'Reinstall' : cliIsUpdate ? 'Update' : 'Install';
+  const cliProgressLabel = cli?.brokenOnPath
+    ? 'Reinstalling…'
+    : cliIsUpdate
+      ? 'Updating…'
+      : 'Installing…';
   if (!visible || (deps.length === 0 && !cli)) return null;
 
-  const allDone = deps.length > 0 && deps.every((d) => d.installState === 'done' || d.info.installed);
+  const allDone =
+    deps.length > 0 && deps.every((d) => d.installState === 'done' || d.info.installed);
 
   return (
     <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50">
@@ -148,9 +240,19 @@ export default function DependencySetupModal() {
         {/* Header */}
         <div className="px-6 pt-5 pb-4 border-b border-border-subtle flex items-start justify-between">
           <div>
-            <h2 className="text-base font-semibold">Missing Dependencies</h2>
+            <h2 className="text-base font-semibold">
+              {deps.length === 0 && cliIsUpdate
+                ? cli?.brokenOnPath
+                  ? 'Biorouter CLI Needs Repair'
+                  : 'Biorouter CLI Update'
+                : 'Missing Dependencies'}
+            </h2>
             <p className="text-xs text-text-muted mt-0.5">
-              The following tools are required for BioRouter features. Install them to continue.
+              {deps.length === 0 && cliIsUpdate
+                ? cli?.brokenOnPath
+                  ? 'The `biorouter` on your PATH no longer runs. Reinstall it from this app.'
+                  : 'Your terminal `biorouter` is older than this app. Update it to match.'
+                : 'The following tools are required for BioRouter features. Install them to continue.'}
             </p>
           </div>
           {allDone ? null : (
@@ -161,6 +263,11 @@ export default function DependencySetupModal() {
               title="Dismiss (you can install later)"
               onClick={() => {
                 sessionStorage.setItem('cli-install-dismissed', '1');
+                // Don't re-prompt for this same version pair on future
+                // launches; missing required deps still re-open the modal.
+                if (cliIsUpdate) {
+                  localStorage.setItem(cliDismissKey(cli), '1');
+                }
                 setVisible(false);
               }}
             >
@@ -178,8 +285,8 @@ export default function DependencySetupModal() {
                 cliState === 'done'
                   ? 'border-border-success/40 bg-background-success/10'
                   : cliState === 'error'
-                  ? 'border-destructive/30 bg-destructive/5'
-                  : 'border-border-subtle bg-background-medium/20'
+                    ? 'border-destructive/30 bg-destructive/5'
+                    : 'border-border-subtle bg-background-medium/20'
               }`}
             >
               <div className="flex items-center justify-between">
@@ -195,15 +302,26 @@ export default function DependencySetupModal() {
                   <p className="text-[11px] text-text-muted mt-0.5">
                     {cliState === 'done'
                       ? 'Installed — open a new terminal and run `biorouter`.'
-                      : 'Call `biorouter` from any terminal.'}
+                      : cli?.brokenOnPath
+                        ? 'The `biorouter` on your PATH won’t run — reinstall it.'
+                        : cliIsUpdate
+                          ? `Update ${cli?.pathVersion ?? 'older'} → ${cli?.bundledVersion ?? 'latest'} to match this app.`
+                          : 'Call `biorouter` from any terminal.'}
                   </p>
                 </div>
                 {cliState !== 'running' && cliState !== 'done' && (
-                  <Button variant="default" size="sm" className="h-7 text-xs" onClick={handleInstallCli}>
-                    Install
+                  <Button
+                    variant="default"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={handleInstallCli}
+                  >
+                    {cliButtonLabel}
                   </Button>
                 )}
-                {cliState === 'running' && <span className="text-xs text-text-muted">Installing…</span>}
+                {cliState === 'running' && (
+                  <span className="text-xs text-text-muted">{cliProgressLabel}</span>
+                )}
               </div>
               {cliOutput && (
                 <div className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap">
@@ -225,8 +343,8 @@ export default function DependencySetupModal() {
                   installed
                     ? 'border-border-success/40 bg-background-success/10'
                     : installState === 'error'
-                    ? 'border-destructive/30 bg-destructive/5'
-                    : 'border-border-subtle bg-background-medium/20'
+                      ? 'border-destructive/30 bg-destructive/5'
+                      : 'border-border-subtle bg-background-medium/20'
                 }`}
               >
                 <div className="flex items-center justify-between">
@@ -279,7 +397,9 @@ export default function DependencySetupModal() {
                 {/* Live output */}
                 {output && (
                   <div
-                    ref={(el) => { outputRefs.current[info.name] = el; }}
+                    ref={(el) => {
+                      outputRefs.current[info.name] = el;
+                    }}
                     className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap"
                   >
                     {output}
@@ -307,7 +427,11 @@ export default function DependencySetupModal() {
           <p className="text-xs text-text-muted">
             {allDone
               ? 'All dependencies installed. ✓'
-              : 'BioRouter features may be limited until these are installed.'}
+              : deps.length === 0 && cliIsUpdate
+                ? 'Updating keeps the terminal CLI in sync with the desktop app.'
+                : deps.length === 0
+                  ? 'Install the CLI to use `biorouter` from any terminal.'
+                  : 'BioRouter features may be limited until these are installed.'}
           </p>
           <Button variant="outline" size="sm" onClick={() => setVisible(false)}>
             {allDone ? 'Done' : 'Dismiss'}

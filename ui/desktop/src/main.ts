@@ -2239,6 +2239,37 @@ ipcMain.handle('brxt:validate-and-read', async (_event, { filePath }: { filePath
   }
 });
 
+// Generous cap: when a dependency has no prebuilt wheel, uv compiles it from
+// source, which can take several minutes on its own.
+const UV_SYNC_TIMEOUT_MS = 600_000;
+
+/** Map well-known `uv sync` failure signatures to an actionable hint appended
+ *  below the raw output. Checks run most-specific first. Mirrors
+ *  `uv_sync_hint` in crates/biorouter-cli/src/commands/extension.rs. */
+function uvSyncHint(detail: string): string | null {
+  if (detail.includes('Symbol not found') && detail.includes('librustc_driver')) {
+    return (
+      'Your Homebrew Rust installation appears broken (its LLVM library was upgraded ' +
+      'out from under it). Run `brew upgrade rust` or `brew reinstall rust`, then retry.'
+    );
+  }
+  if (detail.includes('maturin') || detail.includes('rustc')) {
+    return (
+      'A dependency has no prebuilt package for your platform, so it was compiled from ' +
+      'source, which needs a working Rust toolchain. Install one via https://rustup.rs ' +
+      '(or repair your existing install) and retry.'
+    );
+  }
+  if (detail.includes('Failed to build')) {
+    return (
+      'A dependency has no prebuilt package for your platform, so uv tried to compile it ' +
+      'from source. Make sure a compiler toolchain is installed, or ask the extension ' +
+      'author to pin versions that ship prebuilt wheels.'
+    );
+  }
+  return null;
+}
+
 ipcMain.handle(
   'brxt:install',
   async (_event, { filePath, extensionName }: { filePath: string; extensionName: string }) => {
@@ -2262,17 +2293,28 @@ ipcMain.handle(
       const uvResult = spawnSync('uv', ['sync'], {
         cwd: installDir,
         encoding: 'utf8',
-        timeout: 120_000,
+        timeout: UV_SYNC_TIMEOUT_MS,
         env: SPAWN_ENV,
       });
 
       if (uvResult.status !== 0) {
+        const timedOut =
+          (uvResult.error as (Error & { code?: string }) | undefined)?.code === 'ETIMEDOUT';
+        if (timedOut) {
+          throw new Error(
+            `uv sync timed out after ${UV_SYNC_TIMEOUT_MS / 60_000} minutes. ` +
+              'A dependency may be compiling from source on a slow connection or machine. ' +
+              'Try again, or build manually with `uv sync` in ' +
+              installDir
+          );
+        }
         const detail =
           uvResult.error?.message ||
           uvResult.stderr ||
           uvResult.stdout ||
           `exited with status ${uvResult.status}`;
-        throw new Error(`uv sync failed: ${detail}`);
+        const hint = uvSyncHint(detail);
+        throw new Error(`uv sync failed: ${detail}${hint ? `\n\nHint: ${hint}` : ''}`);
       }
 
       return { success: true, installDir };
@@ -2431,13 +2473,61 @@ function handleBrxtFileOpen(filePath: string) {
  * lives in the bundled CLI (`biorouter setup-path`) so the terminal and the
  * desktop app share one implementation (Rust `biorouter::system::install_cli`).
  */
+// Run `<binary> --version` and return the parsed dotted version, or null if it
+// can't be determined (missing binary, broken symlink, non-zero exit). The CLI
+// prints just the version (e.g. " 1.85.0") thanks to its empty display name.
+function cliVersionOf(binary: string): string | null {
+  try {
+    const res = spawnSync(binary, ['--version'], {
+      encoding: 'utf8',
+      env: SPAWN_ENV,
+      timeout: 10_000,
+    });
+    if (res.status !== 0) return null;
+    const m = (res.stdout || res.stderr || '').match(/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?)/);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
+// True if dotted version `a` is strictly older than `b` (segment-wise numeric;
+// mirrors the Rust `version_newer` used by `biorouter::system`).
+function isVersionOlder(a: string, b: string): boolean {
+  const parse = (s: string) =>
+    s
+      .replace(/^v/, '')
+      .split(/[.\-+]/)
+      .map((p) => parseInt(p, 10) || 0);
+  const va = parse(a);
+  const vb = parse(b);
+  for (let i = 0; i < Math.max(va.length, vb.length); i++) {
+    const x = va[i] ?? 0;
+    const y = vb[i] ?? 0;
+    if (x !== y) return x < y;
+  }
+  return false;
+}
+
 function registerCliInstallHandlers() {
-  // Is the `biorouter` command already callable from a terminal?
+  // Is the `biorouter` command callable from a terminal, and is it current?
+  //
+  // Reports both the bundled version (what this app ships) and the on-PATH
+  // version (what `biorouter` resolves to in a terminal). They can differ:
+  //   • macOS/Linux GUI installs symlink into the app bundle, so they usually
+  //     auto-upgrade when the app is replaced in place;
+  //   • Windows installs *copy* the binary, so they go stale on upgrade;
+  //   • a standalone .deb/.rpm CLI is a real binary in /usr/bin that a GUI
+  //     upgrade can never touch;
+  //   • a symlink can dangle if the old app bundle was moved/removed.
+  // `needsUpdate` is what the renderer uses to offer an upgrade in all of these
+  // cases — re-running the installer (`cli:install`) overwrites the entry.
   ipcMain.handle('cli:status', async () => {
     let bundled: string | null = null;
     try {
       bundled = getBiorouterCliBinaryPath(app);
-    } catch {
+    } catch (e) {
+      log.warn('[cli:status] bundled CLI not found:', (e as Error).message);
       bundled = null;
     }
     const probe = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['biorouter'], {
@@ -2445,12 +2535,95 @@ function registerCliInstallHandlers() {
       env: SPAWN_ENV,
       shell: process.platform === 'win32',
     });
-    const onPath = probe.status === 0 && (probe.stdout || '').trim().length > 0;
+    const pathLocation =
+      probe.status === 0 && (probe.stdout || '').trim().length > 0
+        ? (probe.stdout || '').trim().split(/\r?\n/)[0].trim()
+        : null;
+
+    const bundledVersion = bundled ? cliVersionOf(bundled) : null;
+    // Resolve the on-PATH binary's version. A dangling symlink / broken binary
+    // yields null here even though `which` found a name — treat that as "not
+    // really installed" so the user is still offered the install.
+    const pathVersion = pathLocation ? cliVersionOf('biorouter') : null;
+    const onPath = pathVersion !== null;
+
+    const needsUpdate =
+      onPath &&
+      bundledVersion !== null &&
+      pathVersion !== null &&
+      isVersionOlder(pathVersion, bundledVersion);
+
     return {
       bundled,
       onPath,
-      pathLocation: onPath ? (probe.stdout || '').trim().split('\n')[0] : null,
+      pathLocation,
+      bundledVersion,
+      pathVersion,
+      needsUpdate,
+      // `which` found a name but it won't run — a broken/dangling install.
+      brokenOnPath: pathLocation !== null && pathVersion === null,
     };
+  });
+
+  // Launch the installed CLI in the user's terminal app. Assumes `biorouter`
+  // is already on PATH (the renderer checks `cli:status` first and offers the
+  // install flow otherwise).
+  ipcMain.handle('cli:launch', async () => {
+    try {
+      if (process.platform === 'darwin') {
+        // Terminal.app `do script` opens a new window running the command.
+        const res = spawnSync(
+          'osascript',
+          [
+            '-e',
+            'tell application "Terminal" to do script "biorouter"',
+            '-e',
+            'tell application "Terminal" to activate',
+          ],
+          { encoding: 'utf8', env: SPAWN_ENV, timeout: 15_000 }
+        );
+        if (res.status !== 0) {
+          return { success: false, error: (res.stderr || 'Failed to open Terminal').trim() };
+        }
+        return { success: true };
+      }
+
+      if (process.platform === 'win32') {
+        // `start` opens a new console window that keeps running the CLI.
+        const child = spawn('cmd.exe', ['/c', 'start', 'Biorouter CLI', 'cmd', '/k', 'biorouter'], {
+          env: SPAWN_ENV,
+          detached: true,
+          stdio: 'ignore',
+        });
+        child.unref();
+        return { success: true };
+      }
+
+      // Linux: walk the common terminal emulators and use the first available.
+      const candidates: [string, string[]][] = [
+        ['x-terminal-emulator', ['-e', 'biorouter']],
+        ['gnome-terminal', ['--', 'biorouter']],
+        ['konsole', ['-e', 'biorouter']],
+        ['xfce4-terminal', ['-e', 'biorouter']],
+        ['kitty', ['biorouter']],
+        ['alacritty', ['-e', 'biorouter']],
+        ['xterm', ['-e', 'biorouter']],
+      ];
+      for (const [term, args] of candidates) {
+        const found = spawnSync('which', [term], { encoding: 'utf8', env: SPAWN_ENV });
+        if (found.status === 0 && (found.stdout || '').trim()) {
+          const child = spawn(term, args, { env: SPAWN_ENV, detached: true, stdio: 'ignore' });
+          child.unref();
+          return { success: true };
+        }
+      }
+      return {
+        success: false,
+        error: 'No terminal emulator found. Run `biorouter` from your terminal instead.',
+      };
+    } catch (e) {
+      return { success: false, error: (e as Error).message };
+    }
   });
 
   // Install the bundled CLI onto PATH by delegating to `biorouter setup-path`.

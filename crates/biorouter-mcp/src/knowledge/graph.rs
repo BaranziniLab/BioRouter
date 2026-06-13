@@ -9,7 +9,17 @@ use std::path::Path;
 const KNOWLEDGE_LINK_RE: &str = r"\[\[([^\]]+)\]\]";
 
 pub fn derive(kb_root: &Path) -> Result<Graph> {
-    let pages = store::list_pages(kb_root, None)?;
+    // `list_pages` walks the whole `knowledge/` tree, which includes the
+    // scaffold pages `index.md` and `log.md`. The index page links to (or is
+    // linked from) virtually every other page, so as a graph node it becomes a
+    // giant hub connected to everything — visually redundant and it crowds out
+    // the real structure. Exclude scaffold pages from the graph entirely; any
+    // `[[…]]` link pointing at them is then silently dropped because they never
+    // enter `label_to_id`.
+    let pages: Vec<PageRef> = store::list_pages(kb_root, None)?
+        .into_iter()
+        .filter(|p| !is_scaffold_page(&p.path))
+        .collect();
     let mut nodes = Vec::new();
     let mut id_for_path = std::collections::HashMap::new();
     let mut label_to_id = std::collections::HashMap::new();
@@ -101,6 +111,16 @@ pub fn read_cache(kb_root: &Path) -> Result<Option<Graph>> {
     Ok(Some(serde_json::from_str(&s)?))
 }
 
+/// Scaffold pages that exist in every KB and should never appear as graph
+/// nodes: the auto-maintained index and the change log. Matched on the logical
+/// path so a real page that merely contains the word "index" is unaffected.
+fn is_scaffold_page(logical: &str) -> bool {
+    matches!(
+        logical,
+        "knowledge/index.md" | "knowledge/log.md" | "index.md" | "log.md"
+    )
+}
+
 fn path_to_node_id(logical: &str) -> String {
     logical
         .strip_prefix("knowledge/")
@@ -185,6 +205,68 @@ mod tests {
         let labels: Vec<_> = g.nodes.iter().map(|n| n.label.as_str()).collect();
         assert!(labels.contains(&"HRV"));
         assert!(labels.contains(&"Zone-2 base"));
+    }
+
+    #[test]
+    fn excludes_index_and_log_scaffold_pages() {
+        let (_d, kb) = build_sample();
+        // Simulate the auto-maintained scaffold pages that the sub-agent keeps
+        // up to date; they link to everything and must not become nodes.
+        write_page(
+            &kb,
+            "knowledge/index.md",
+            "---\ntitle: Index\nkind: hub\n---\nLinks [[hrv]] and [[zone-2 base]].",
+            "add index",
+            None,
+        )
+        .unwrap();
+        write_page(
+            &kb,
+            "knowledge/log.md",
+            "---\ntitle: Log\nkind: hub\n---\nchange log",
+            "add log",
+            None,
+        )
+        .unwrap();
+        let g = derive(&kb).unwrap();
+        assert!(
+            g.nodes.iter().all(|n| n.id != "index" && n.id != "log"),
+            "scaffold pages must be excluded, got {:?}",
+            g.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
+        );
+        assert_eq!(g.nodes.len(), 2, "only the two real pages remain");
+        // Edges pointing at the excluded index must be dropped.
+        assert!(g.edges.iter().all(|e| e.to != "index" && e.from != "index"));
+    }
+
+    #[test]
+    fn get_graph_self_heals_stale_cache_with_scaffold_nodes() {
+        use crate::knowledge::types::{Graph, GraphNode, PageKind};
+        let (_d, kb) = build_sample();
+        // Simulate an old cache that still contains the scaffold `index` hub.
+        let stale = Graph {
+            nodes: vec![GraphNode {
+                id: "index".into(),
+                label: "Index".into(),
+                kind: PageKind::Hub,
+                credibility_tier: None,
+                retracted: false,
+                path: "knowledge/index.md".into(),
+            }],
+            edges: vec![],
+        };
+        write_cache(&kb, &stale).unwrap();
+
+        let svc = KnowledgeService::new(_d.path().to_path_buf());
+        let g = svc.get_graph("k").unwrap();
+        assert!(
+            g.nodes.iter().all(|n| n.id != "index"),
+            "stale scaffold cache must be re-derived, got {:?}",
+            g.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
+        );
+        // And the cache on disk is now healed.
+        let healed = read_cache(&kb).unwrap().unwrap();
+        assert!(healed.nodes.iter().all(|n| n.id != "index"));
     }
 
     #[test]

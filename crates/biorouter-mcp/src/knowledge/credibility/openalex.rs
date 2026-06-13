@@ -33,19 +33,24 @@ pub async fn classify_with(
         .unwrap_or_default();
     let venue = w.host_venue.as_ref().and_then(|v| v.display_name.clone());
     let retracted = w.is_retracted.unwrap_or(false);
+    let known_publisher = is_peer_reviewed_publisher(&publisher);
+    // See crossref.rs: a journal-article registration is itself peer-review
+    // evidence, so don't gate the tier on our publisher allowlist — only use it
+    // to raise confidence.
     let tier = match w.r#type.as_deref() {
-        Some("journal-article") if is_peer_reviewed_publisher(&publisher) => {
-            CredibilityTier::PeerReviewed
-        }
-        Some("journal-article") => CredibilityTier::Web,
+        Some("journal-article")
+        | Some("article")
+        | Some("proceedings-article")
+        | Some("review-article") => CredibilityTier::PeerReviewed,
         Some("posted-content") | Some("preprint") => CredibilityTier::Preprint,
         Some("book") | Some("book-chapter") | Some("monograph") => CredibilityTier::Book,
         _ => return Ok(None),
     };
-    let confidence = if matches!(tier, CredibilityTier::PeerReviewed | CredibilityTier::Book) {
-        0.93
-    } else {
-        0.83
+    let confidence = match tier {
+        CredibilityTier::PeerReviewed if known_publisher => 0.93,
+        CredibilityTier::PeerReviewed => 0.83,
+        CredibilityTier::Book => 0.93,
+        _ => 0.83,
     };
     Ok(Some(Credibility {
         tier,

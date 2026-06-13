@@ -201,16 +201,6 @@ function ProviderCards({
   return (
     <>
       <div className="space-y-8">
-        {institutionalCards.length > 0 && (
-          <div>
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 bg-background-info rounded-full flex-shrink-0" />
-              Institutional Models
-            </h2>
-            <div className="divide-y divide-border-subtle">{institutionalCards}</div>
-          </div>
-        )}
-
         {localCards.length > 0 && (
           <div>
             <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
@@ -218,6 +208,16 @@ function ProviderCards({
               Local Models
             </h2>
             <div className="divide-y divide-border-subtle">{localCards}</div>
+          </div>
+        )}
+
+        {institutionalCards.length > 0 && (
+          <div>
+            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+              <span className="w-1.5 h-1.5 bg-background-info rounded-full flex-shrink-0" />
+              Institutional Models
+            </h2>
+            <div className="divide-y divide-border-subtle">{institutionalCards}</div>
           </div>
         )}
 

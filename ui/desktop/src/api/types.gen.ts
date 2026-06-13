@@ -476,6 +476,15 @@ export type IngestBody = {
     source: unknown;
 };
 
+export type IngestConversationBody = {
+    focus?: string | null;
+    model: ModelRef;
+    /**
+     * Session ids to digest. At least one is required.
+     */
+    session_ids: Array<string>;
+};
+
 export type InspectJobResponse = {
     processStartTime?: string | null;
     runningDurationSeconds?: number | null;
@@ -515,9 +524,45 @@ export type ListWorkflowResponse = {
     manifests: Array<WorkflowManifest>;
 };
 
+export type LlamaCppEnsureRequest = {
+    /**
+     * Catalog model name (e.g. `qwen3.5-4b`) or raw Hugging Face spec.
+     */
+    model: string;
+};
+
+/**
+ * One curated local model, as shown in the GUI/TUI pickers.
+ */
+export type LlamaCppModel = {
+    description: string;
+    display_name: string;
+    download_size: string;
+    hf_spec: string;
+    /**
+     * True for the model Biorouter preselects.
+     */
+    is_default: boolean;
+    name: string;
+};
+
+export type LlamaCppStatusResponse = {
+    catalog: Array<LlamaCppModel>;
+    sidecar: SidecarStatus;
+};
+
 export type LoadedProvider = {
     config: DeclarativeProviderConfig;
     is_editable: boolean;
+};
+
+export type LocationResponse = {
+    /**
+     * Absolute on-disk path to the knowledge base directory (the folder that
+     * holds `knowledge/`, `raw/`, `index.md`, …). Clients use this to open the
+     * folder in the OS file explorer so users can inspect raw markdown.
+     */
+    path: string;
 };
 
 export type Manifest = {
@@ -1106,6 +1151,37 @@ export type Settings = {
 export type SetupResponse = {
     message: string;
     success: boolean;
+};
+
+/**
+ * Lifecycle state of the managed llama-server process.
+ */
+export type SidecarState = 'no_binary' | 'stopped' | 'starting' | 'ready' | 'error';
+
+/**
+ * Snapshot of the sidecar consumed by the GUI onboarding card, settings and
+ * `biorouter doctor`.
+ */
+export type SidecarStatus = {
+    binary_path?: string | null;
+    /**
+     * Pinned llama.cpp build.
+     */
+    build: string;
+    /**
+     * Most recent log line (download progress, load stage) or error tail.
+     */
+    detail?: string | null;
+    /**
+     * Hugging Face `repo:quant` spec backing `model`.
+     */
+    hf_spec?: string | null;
+    /**
+     * Friendly model name (catalog name or raw HF spec) currently requested.
+     */
+    model?: string | null;
+    port?: number | null;
+    state: SidecarState;
 };
 
 export type SlashCommand = {
@@ -2719,6 +2795,32 @@ export type IngestResponses = {
     200: unknown;
 };
 
+export type IngestConversationData = {
+    body: IngestConversationBody;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/ingest-conversation';
+};
+
+export type IngestConversationErrors = {
+    /**
+     * Invalid model or no sessions
+     */
+    400: unknown;
+};
+
+export type IngestConversationResponses = {
+    /**
+     * SSE stream of sub-agent events (text/event-stream)
+     */
+    200: unknown;
+};
+
 export type LintData = {
     body: LintBody;
     path: {
@@ -2744,6 +2846,34 @@ export type LintResponses = {
      */
     200: unknown;
 };
+
+export type GetLocationData = {
+    body?: never;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/location';
+};
+
+export type GetLocationErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+};
+
+export type GetLocationResponses = {
+    /**
+     * Knowledge base on-disk location
+     */
+    200: LocationResponse;
+};
+
+export type GetLocationResponse = GetLocationResponses[keyof GetLocationResponses];
 
 export type GetPageBodyData = {
     body?: never;
@@ -3081,6 +3211,61 @@ export type CheckModelResponses = {
 };
 
 export type CheckModelResponse2 = CheckModelResponses[keyof CheckModelResponses];
+
+export type LlamacppEnsureData = {
+    body: LlamaCppEnsureRequest;
+    path?: never;
+    query?: never;
+    url: '/llamacpp/ensure';
+};
+
+export type LlamacppEnsureErrors = {
+    /**
+     * Unknown model name
+     */
+    400: unknown;
+};
+
+export type LlamacppEnsureResponses = {
+    /**
+     * Sidecar start initiated (poll /llamacpp/status)
+     */
+    200: LlamaCppStatusResponse;
+};
+
+export type LlamacppEnsureResponse = LlamacppEnsureResponses[keyof LlamacppEnsureResponses];
+
+export type LlamacppStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/llamacpp/status';
+};
+
+export type LlamacppStatusResponses = {
+    /**
+     * Sidecar status and curated model catalog
+     */
+    200: LlamaCppStatusResponse;
+};
+
+export type LlamacppStatusResponse = LlamacppStatusResponses[keyof LlamacppStatusResponses];
+
+export type LlamacppStopData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/llamacpp/stop';
+};
+
+export type LlamacppStopResponses = {
+    /**
+     * Sidecar stopped
+     */
+    200: LlamaCppStatusResponse;
+};
+
+export type LlamacppStopResponse = LlamacppStopResponses[keyof LlamacppStopResponses];
 
 export type McpUiProxyData = {
     body?: never;

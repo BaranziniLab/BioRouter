@@ -35,6 +35,7 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
             get(get_base).put(update_base).delete(delete_base),
         )
         .route("/bases/{id}/graph", get(get_graph))
+        .route("/bases/{id}/location", get(get_location))
         .route("/bases/{id}/page", get(get_page_body))
         .route("/bases/{id}/pages", get(list_pages))
         .route(
@@ -47,6 +48,7 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
         .route("/expand-path", post(expand_path))
         .route("/bases/{id}/raw", post(add_raw_source))
         .route("/bases/{id}/ingest", post(ingest))
+        .route("/bases/{id}/ingest-conversation", post(ingest_conversation))
         .route("/bases/{id}/query", post(query_kb))
         .route("/bases/{id}/lint", post(lint))
         .route("/bases/{id}/export", get(export_brkb))
@@ -305,6 +307,15 @@ pub struct QueryBody {
 }
 
 #[derive(Deserialize, ToSchema)]
+pub struct IngestConversationBody {
+    /// Session ids to digest. At least one is required.
+    pub session_ids: Vec<String>,
+    pub model: ModelRef,
+    #[serde(default)]
+    pub focus: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
 pub struct LintBody {
     pub model: ModelRef,
     #[serde(default)]
@@ -432,6 +443,35 @@ pub async fn get_graph(
         .get_graph(&id)
         .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
     Ok(Json(g))
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct LocationResponse {
+    /// Absolute on-disk path to the knowledge base directory (the folder that
+    /// holds `knowledge/`, `raw/`, `index.md`, …). Clients use this to open the
+    /// folder in the OS file explorer so users can inspect raw markdown.
+    pub path: String,
+}
+
+#[utoipa::path(
+    get, path = "/knowledge/bases/{id}/location",
+    params(("id" = String, Path, description = "Knowledge base ID")),
+    responses(
+        (status = 200, description = "Knowledge base on-disk location", body = LocationResponse),
+        (status = 404, description = "Not found"),
+    )
+)]
+pub async fn get_location(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+) -> Result<Json<LocationResponse>, (StatusCode, String)> {
+    let kb_root = paths::kb_root(svc.root(), &id);
+    if !kb_root.exists() {
+        return Err((StatusCode::NOT_FOUND, format!("kb '{id}' not found")));
+    }
+    Ok(Json(LocationResponse {
+        path: kb_root.to_string_lossy().into_owned(),
+    }))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -997,6 +1037,88 @@ pub async fn ingest(
     // ordering), then emits the terminal done/error frame from the macro result.
     // This eliminates the race where `done` could arrive before the last data events.
     // If the client disconnects (sse_tx.send returns Err), signal cancellation.
+    let cancel_for_forwarder = cancel.clone();
+    tokio::spawn(async move {
+        while let Some(ev) = event_rx.recv().await {
+            if let Ok(j) = serde_json::to_string(&ev) {
+                if sse_tx.send(format!("data: {j}\n\n")).await.is_err() {
+                    cancel_for_forwarder.notify_one();
+                    return;
+                }
+            }
+        }
+        finish_macro_stream(sse_tx, result_rx, macro_handle).await;
+    });
+
+    Ok(crate::routes::reply::SseResponse::from_rx(sse_rx))
+}
+
+#[utoipa::path(
+    post, path = "/knowledge/bases/{id}/ingest-conversation",
+    request_body = IngestConversationBody,
+    params(("id" = String, Path, description = "Knowledge base ID")),
+    responses(
+        (status = 200, description = "SSE stream of sub-agent events (text/event-stream)"),
+        (status = 400, description = "Invalid model or no sessions"),
+    )
+)]
+pub async fn ingest_conversation(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+    Json(body): Json<IngestConversationBody>,
+) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
+    if body.session_ids.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "session_ids cannot be empty".into(),
+        ));
+    }
+
+    // Load the requested sessions (with messages) from the global session store.
+    let session_manager = biorouter::session::session_manager::SessionManager::instance();
+    let mut sessions = Vec::new();
+    for sid in &body.session_ids {
+        match session_manager.get_session(sid, true).await {
+            Ok(s) => sessions.push(s),
+            Err(e) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("session '{sid}' not found: {e}"),
+                ));
+            }
+        }
+    }
+
+    let completer = build_completer(&body.model).await?;
+    let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
+
+    let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<SubAgentEvent>();
+    let (result_tx, result_rx) = mpsc::channel::<Result<serde_json::Value, String>>(1);
+
+    let focus = body.focus.clone();
+    let cancel_for_macro = cancel.clone();
+    let macro_handle = tokio::spawn(async move {
+        let args = biorouter::knowledge::conversation_ingest::ConversationIngestArgs {
+            kb_id: id,
+            sessions,
+            completer,
+            focus,
+            bounds: ingest_bounds(),
+            event_sink: Some(event_tx),
+            cancel: Some(cancel_for_macro),
+        };
+        let outcome = match biorouter::knowledge::conversation_ingest::ingest_conversation(
+            &svc, args,
+        )
+        .await
+        {
+            Ok(r) => Ok(serde_json::to_value(&r).unwrap_or_default()),
+            Err(e) => Err(e.to_string()),
+        };
+        let _ = result_tx.send(outcome).await;
+    });
+
     let cancel_for_forwarder = cancel.clone();
     tokio::spawn(async move {
         while let Some(ev) = event_rx.recv().await {

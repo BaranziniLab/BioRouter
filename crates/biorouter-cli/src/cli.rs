@@ -863,6 +863,39 @@ enum KnowledgeCommand {
         model: Option<String>,
     },
 
+    /// Digest one or more chat sessions into a knowledge base
+    #[command(
+        name = "ingest-conversation",
+        about = "Digest chat/session history into a knowledge base"
+    )]
+    IngestConversation {
+        #[arg(
+            long = "kb",
+            value_name = "ID",
+            help = "Target base (defaults to active)"
+        )]
+        kb: Option<String>,
+        #[arg(
+            long = "session",
+            value_name = "SESSION_ID",
+            help = "Session id to ingest (repeatable). Defaults to the most recent session.",
+            num_args = 1..,
+        )]
+        session: Vec<String>,
+        #[arg(
+            long = "new-kb",
+            value_name = "NAME",
+            help = "Create a new knowledge base with this display name and ingest into it"
+        )]
+        new_kb: Option<String>,
+        #[arg(long = "focus", value_name = "HINTS", help = "Optional focus hints")]
+        focus: Option<String>,
+        #[arg(long = "provider", value_name = "PROVIDER")]
+        provider: Option<String>,
+        #[arg(long = "model", value_name = "MODEL")]
+        model: Option<String>,
+    },
+
     /// Lint a knowledge base for orphans, contradictions, and stale sources
     #[command(about = "Lint a knowledge base")]
     Lint {
@@ -1076,7 +1109,10 @@ enum Command {
     },
 
     /// Install the `biorouter` command onto your PATH
-    #[command(about = "Install the biorouter command onto your PATH", visible_alias = "install-cli")]
+    #[command(
+        about = "Install the biorouter command onto your PATH",
+        visible_alias = "install-cli"
+    )]
     SetupPath {},
 
     /// Update the Biorouter CLI version
@@ -1703,6 +1739,11 @@ async fn handle_models_subcommand(command: ModelsCommand) -> Result<()> {
 
 async fn handle_knowledge_subcommand(command: KnowledgeCommand) -> Result<()> {
     use crate::commands::knowledge;
+    // Ensure the built-in Soul KB / Meditation workflow / soul-writer skill
+    // exist so CLI-only users see and can use them. Best-effort; the Daily
+    // Meditation schedule is registered by the agent runtime where a scheduler
+    // is available.
+    biorouter::knowledge::soul::install_assets();
     match command {
         KnowledgeCommand::List { format } => knowledge::handle_list(&format).await,
         KnowledgeCommand::Active { set, clear } => knowledge::handle_active(set, clear).await,
@@ -1718,6 +1759,16 @@ async fn handle_knowledge_subcommand(command: KnowledgeCommand) -> Result<()> {
             provider,
             model,
         } => knowledge::handle_ingest(kb, url, file, text, focus, provider, model).await,
+        KnowledgeCommand::IngestConversation {
+            kb,
+            session,
+            new_kb,
+            focus,
+            provider,
+            model,
+        } => {
+            knowledge::handle_ingest_conversation(kb, session, new_kb, focus, provider, model).await
+        }
         KnowledgeCommand::Lint {
             kb,
             fix,

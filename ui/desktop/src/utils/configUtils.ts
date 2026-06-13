@@ -46,6 +46,13 @@ export const configLabels: Record<string, string> = {
   // ollama
   OLLAMA_HOST: 'Ollama Host',
 
+  // llama server (llama.cpp sidecar)
+  LLAMACPP_PORT: 'Llama Server Port',
+  LLAMACPP_CONTEXT_SIZE: 'Llama Server Context Size',
+  LLAMACPP_TIMEOUT: 'Llama Server Timeout',
+  LLAMACPP_ENABLE_THINKING: 'Llama Server Thinking Mode',
+  LLAMACPP_EXTERNAL_HOST: 'Llama Server External Host',
+
   // azure openai
   AZURE_OPENAI_API_KEY: 'Azure OpenAI API Key',
   AZURE_OPENAI_ENDPOINT: 'Azure OpenAI Endpoint',
@@ -69,6 +76,7 @@ export const providerPrefixes: Record<string, string[]> = {
   databricks: ['DATABRICKS_'],
   openrouter: ['OPENROUTER_'],
   ollama: ['OLLAMA_'],
+  llamacpp: ['LLAMACPP_'],
   azure_openai: ['AZURE_'],
   gcp_vertex_ai: ['GCP_'],
   snowflake: ['SNOWFLAKE_'],

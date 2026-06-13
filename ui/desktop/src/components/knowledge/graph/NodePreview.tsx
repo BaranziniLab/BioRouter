@@ -6,6 +6,7 @@ import MarkdownContent from '../../MarkdownContent';
 import { Button } from '../../ui/button';
 import { usePagePreview } from '../hooks/usePagePreview';
 import { nodeFill } from './credColors';
+import { prettyLabel } from './labelText';
 
 interface Props {
   kbId: string;
@@ -47,7 +48,9 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
             style={{ background: nodeFill(node) }}
           />
           <div className="flex flex-col min-w-0">
-            <div className="text-sm font-medium truncate">{node.label}</div>
+            <div className="text-sm font-medium truncate">
+              {prettyLabel(node.label, node.kind)}
+            </div>
             <div className="text-xs text-text-muted truncate">
               {node.kind}
               {node.credibility_tier ? ` · ${node.credibility_tier.replace('_', ' ')}` : ''}
@@ -65,12 +68,12 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
         {!loading && !error && content && (
           <div className="space-y-4">
             {parsed.frontmatter && (
-              <div className="overflow-hidden rounded-2xl border border-border-warning/40 bg-background-warning/10">
-                <div className="flex items-center gap-2 border-b border-border-warning/40 px-3 py-2 text-[11px] font-medium uppercase tracking-wider text-text-warning">
-                  <FileCode2 className="h-3.5 w-3.5" />
+              <div className="overflow-hidden rounded-xl border border-border-subtle bg-background-muted/40">
+                <div className="flex items-center gap-2 border-b border-border-subtle px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+                  <FileCode2 className="h-3 w-3" />
                   Overview
                 </div>
-                <pre className="overflow-x-auto px-3 py-3 font-mono text-[11px] leading-5 text-text-warning whitespace-pre-wrap">
+                <pre className="overflow-x-auto px-3 py-2.5 font-mono text-[11px] leading-5 text-text-default/80 whitespace-pre-wrap">
                   {parsed.frontmatter}
                 </pre>
               </div>

@@ -62,8 +62,10 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
     // Actionable next steps for anything missing.
     let missing_required: Vec<&DependencyStatus> =
         deps.iter().filter(|d| d.required && !d.installed).collect();
-    let missing_optional: Vec<&DependencyStatus> =
-        deps.iter().filter(|d| !d.required && !d.installed).collect();
+    let missing_optional: Vec<&DependencyStatus> = deps
+        .iter()
+        .filter(|d| !d.required && !d.installed)
+        .collect();
 
     if !missing_required.is_empty() || !missing_optional.is_empty() {
         println!();
@@ -99,7 +101,10 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
                 style(&u.latest).fg(ACCENT).bold(),
                 style(format!("(you have {})", u.current)).dim()
             );
-            println!("      run {} to update", style("biorouter update").fg(ACCENT));
+            println!(
+                "      run {} to update",
+                style("biorouter update").fg(ACCENT)
+            );
         }
         Some(u) => println!(
             "    {} up to date {}",
@@ -153,7 +158,11 @@ pub async fn handle_setup_path() -> Result<()> {
         );
         println!(
             "      {}",
-            style(format!("export PATH=\"{}:$PATH\"", result.target_dir.display())).fg(ACCENT)
+            style(format!(
+                "export PATH=\"{}:$PATH\"",
+                result.target_dir.display()
+            ))
+            .fg(ACCENT)
         );
     } else {
         println!(

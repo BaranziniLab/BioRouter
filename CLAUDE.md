@@ -179,6 +179,50 @@ When working on the Knowledge feature:
 - After touching `routes/knowledge.rs`, regenerate the TS client with `just generate-openapi && cd ui/desktop && npm run generate-api`.
 - Graph derivation lives in `graph.rs` and depends on the sub-agent emitting `[[knowledge-link]]` markers in page bodies; the default `schema_default.md` reinforces this. If a graph has nodes but no edges, the underlying pages likely lack `[[…]]` cross-references.
 
+### Llama Server (bundled llama.cpp local models)
+
+The "Llama Server" provider (`llamacpp`) gives zero-setup local models: the
+desktop app bundles a pinned llama.cpp `llama-server` binary and manages it as
+a sidecar process. It is ranked first among Local Models (before Ollama), and
+Local ranks before Institutional/Commercial everywhere (GUI onboarding,
+settings provider grid, `biorouter configure`).
+
+- **Provider:** `crates/biorouter/src/providers/llamacpp.rs` — OpenAI-compat
+  HTTP to the sidecar; curated `MODEL_CATALOG` (Qwen3.5 + Gemma 4 families,
+  Q4_K_M from verified `unsloth/*-GGUF` HF repos; default `qwen3.5-4b`).
+  Unlisted models accepted as raw `owner/repo:QUANT` HF specs.
+- **Sidecar manager:** `crates/biorouter/src/providers/llamacpp_sidecar.rs` —
+  binary discovery (`BIOROUTER_LLAMACPP_BIN` → `<exe dir>/llamacpp/` → dev
+  repo path → PATH), spawn with `-hf` (models download from Hugging Face into
+  the data dir on first use), `/health` readiness, status snapshots, restart
+  on model switch. Defaults: port 11543, 32k context + q8_0 KV cache
+  (Biorouter's agent system prompt overflows 8k!), thinking disabled
+  (`LLAMACPP_ENABLE_THINKING=true` to re-enable), `LLAMACPP_EXTRA_ARGS` for
+  anything else, `LLAMACPP_EXTERNAL_HOST` to use an unmanaged server.
+  **Orphan reaping:** statics never drop, so `kill_on_drop` cannot cover
+  process exit; spawns are recorded in `<data>/llamacpp/run/<ppid>.pid` and
+  the next `ensure()` in any Biorouter process kills children of dead parents.
+- **Pinned build:** `LLAMA_SERVER_BUILD` in the sidecar must match
+  `LLAMA_BUILD` in `ui/desktop/scripts/fetch-llama-server.js`, which downloads
+  per-platform archives at package time into `src/bin/llamacpp/` (mac = Metal
+  ~10 MB, win = Vulkan ~37 MB with CPU fallback via ggml dynamic backends,
+  linux = CPU ~15 MB; CUDA stays opt-in via `BIOROUTER_LLAMACPP_BIN`). Bump
+  the pin deliberately and smoke-test — llama.cpp releases multiple times a
+  day with no semver.
+- **Linux floor:** llama-server needs glibc ≥ 2.35-ish plus `libssl3` and
+  `libgomp1` (declared in the deb/rpm maker configs in `forge.config.ts`) —
+  i.e. Debian 12+/Ubuntu 22.04+. Debian 11 runs the app but not local models.
+- **HTTP routes:** `/llamacpp/status|ensure|stop` in
+  `crates/biorouter-server/src/routes/llamacpp.rs` (status includes the
+  catalog; ensure is async — poll status for download progress).
+- **Frontend:** onboarding card `LlamaServerInlineCard.tsx` (first card),
+  provider ordering in `providerOrdering.ts` + section order in
+  `ProviderGrid.tsx`.
+- **Tests:** unit tests in both modules; route tests
+  `cargo test -p biorouter-server --test llamacpp_routes`; live end-to-end
+  (real server + tiny Qwen3.5 0.8B, ~0.5 GB one-time download):
+  `BIOROUTER_LLAMACPP_BIN=ui/desktop/src/bin/llamacpp/llama-server cargo test -p biorouter --test llamacpp_integration -- --ignored --test-threads=1`
+
 ### Communication Flow
 
 ```

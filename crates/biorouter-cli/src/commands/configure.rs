@@ -124,8 +124,13 @@ async fn handle_first_time_setup(config: &Config) -> anyhow::Result<()> {
 
     let setup_method = cliclack::select("How would you like to set up your provider?")
         .item(
+            "local",
+            "Local Model (Llama Server)",
+            "Run a private model on this computer — free, no account or API key needed",
+        )
+        .item(
             "openrouter",
-            "OpenRouter Login (Recommended)",
+            "OpenRouter Login",
             "Sign in with OpenRouter to automatically configure models",
         )
         .item(
@@ -141,6 +146,15 @@ async fn handle_first_time_setup(config: &Config) -> anyhow::Result<()> {
         .interact()?;
 
     match setup_method {
+        "local" => {
+            if let Err(e) = handle_local_llamacpp_setup(config).await {
+                println!(
+                    "\n  {} Local model setup failed: {} \n  Please try again or use manual configuration",
+                    style("Error").red().italic(),
+                    e,
+                );
+            }
+        }
         "openrouter" => {
             if let Err(e) = handle_openrouter_auth().await {
                 let _ = config.clear();
@@ -165,6 +179,47 @@ async fn handle_first_time_setup(config: &Config) -> anyhow::Result<()> {
         _ => unreachable!(),
     }
     Ok(())
+}
+
+/// First-time "just give me a local model" path: pick from the curated
+/// Llama Server catalog, then start the bundled llama-server (the first run
+/// downloads the model from Hugging Face).
+async fn handle_local_llamacpp_setup(config: &Config) -> anyhow::Result<()> {
+    use biorouter::providers::llamacpp::{LLAMACPP_DEFAULT_MODEL, MODEL_CATALOG};
+    use biorouter::providers::llamacpp_sidecar::LLAMACPP_DEFAULT_PORT;
+
+    let labels: Vec<String> = MODEL_CATALOG
+        .iter()
+        .map(|e| format!("{} · {} download", e.display_name, e.download_size))
+        .collect();
+    let mut select = cliclack::select("Choose a local model (downloaded on first use)")
+        .initial_value(LLAMACPP_DEFAULT_MODEL);
+    for (entry, label) in MODEL_CATALOG.iter().zip(&labels) {
+        select = select.item(entry.name, label, entry.description);
+    }
+    let model = select.interact()?;
+
+    // Explicitly persisting the (defaulted) port marks the provider configured.
+    config.set_param("LLAMACPP_PORT", LLAMACPP_DEFAULT_PORT.to_string())?;
+
+    let _ = cliclack::log::info(
+        "The first run downloads the model from Hugging Face — this can take several minutes.",
+    );
+    let spin = spinner();
+    spin.start("Starting Llama Server and testing the model...");
+    match test_provider_configuration("llamacpp", model, false, None).await {
+        Ok(()) => {
+            spin.stop(style("Llama Server is ready").green());
+            config.set_biorouter_provider("llamacpp")?;
+            config.set_biorouter_model(model)?;
+            print_config_file_saved()?;
+            Ok(())
+        }
+        Err(e) => {
+            spin.stop(style(e.to_string()).red());
+            anyhow::bail!("local model test did not succeed")
+        }
+    }
 }
 
 async fn handle_manual_provider_setup(config: &Config) {
@@ -555,8 +610,19 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
     // Get all available providers and their metadata
     let mut available_providers = providers().await;
 
-    // Sort providers alphabetically by display name
-    available_providers.sort_by(|a, b| a.0.display_name.cmp(&b.0.display_name));
+    // Order as the GUI does: local models first (Llama Server, then Ollama),
+    // institutional second, everything else alphabetically by display name.
+    fn provider_sort_key(meta: &biorouter::providers::base::ProviderMetadata) -> (u8, u8, String) {
+        let (group, priority) = match meta.name.as_str() {
+            "llamacpp" => (0u8, 0u8),
+            "ollama" => (0, 1),
+            "versa_azure" => (1, 0),
+            "versa_bedrock" => (1, 1),
+            _ => (2, 0),
+        };
+        (group, priority, meta.display_name.clone())
+    }
+    available_providers.sort_by_key(|(meta, _)| provider_sort_key(meta));
 
     // Create selection items from provider metadata
     let provider_items: Vec<(&String, &str, &str)> = available_providers
@@ -681,6 +747,67 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // Offer the provider's optional settings too — the GUI renders every
+    // config key for a provider, so mirror that here without forcing users
+    // through fields they don't need.
+    let optional_keys: Vec<_> = provider_meta
+        .config_keys
+        .iter()
+        .filter(|k| !k.required)
+        .collect();
+    if !optional_keys.is_empty() {
+        let mut select = cliclack::multiselect(format!(
+            "Optional {} settings to configure (space to toggle, enter to skip/continue)",
+            provider_meta.display_name
+        ))
+        .required(false);
+        for key in &optional_keys {
+            let hint = if key.secret {
+                if config.get_secret::<String>(&key.name).is_ok() {
+                    "configured".to_string()
+                } else {
+                    "not set".to_string()
+                }
+            } else {
+                config
+                    .get_param::<String>(&key.name)
+                    .ok()
+                    .or_else(|| key.default.clone())
+                    .unwrap_or_else(|| "not set".to_string())
+            };
+            select = select.item(key.name.clone(), key.name.clone(), hint);
+        }
+        let chosen: Vec<String> = select.interact()?;
+        for key_name in chosen {
+            let key = optional_keys
+                .iter()
+                .find(|k| k.name == key_name)
+                .expect("chosen key must exist");
+            let value: String = if key.secret {
+                cliclack::password(format!("Enter value for {}", key.name))
+                    .mask('▪')
+                    .interact()?
+            } else {
+                let mut input = cliclack::input(format!("Enter value for {}", key.name));
+                let prefill = config
+                    .get_param::<String>(&key.name)
+                    .ok()
+                    .or_else(|| key.default.clone());
+                if let Some(prefill) = prefill {
+                    input = input.default_input(&prefill);
+                }
+                input.interact()?
+            };
+            if key.secret {
+                if !try_store_secret(config, &key.name, value)? {
+                    return Ok(false);
+                }
+            } else {
+                config.set_param(&key.name, &value)?;
             }
         }
     }
@@ -1162,6 +1289,11 @@ pub async fn configure_settings_dialog() -> anyhow::Result<()> {
             "Set maximum number of turns without user input",
         )
         .item(
+            "lead_worker",
+            "Lead/Worker Model",
+            "Use a stronger lead model for planning and a worker model for execution",
+        )
+        .item(
             "keyring",
             "Secret Storage",
             "Configure how secrets are stored (keyring vs file)",
@@ -1198,6 +1330,9 @@ pub async fn configure_settings_dialog() -> anyhow::Result<()> {
         "max_turns" => {
             configure_max_turns_dialog()?;
         }
+        "lead_worker" => {
+            configure_lead_worker_dialog().await?;
+        }
         "keyring" => {
             configure_keyring_dialog()?;
         }
@@ -1214,6 +1349,150 @@ pub async fn configure_settings_dialog() -> anyhow::Result<()> {
         print_config_file_saved()?;
     }
 
+    Ok(())
+}
+
+/// Configure lead/worker mode: a stronger "lead" model handles the first
+/// turns of a session (and failure recovery), then the default (worker)
+/// model takes over. Mirrors the GUI's Lead/Worker settings; previously this
+/// was only reachable through BIOROUTER_LEAD_* environment variables.
+pub async fn configure_lead_worker_dialog() -> anyhow::Result<()> {
+    let config = Config::global();
+
+    let current_lead_model: Option<String> = config.get_param("BIOROUTER_LEAD_MODEL").ok();
+    let enabled = current_lead_model.is_some();
+
+    if enabled {
+        let _ = cliclack::log::info(format!(
+            "Lead/worker mode is currently ON (lead model: {})",
+            current_lead_model.as_deref().unwrap_or("unknown")
+        ));
+    } else {
+        let _ = cliclack::log::info(
+            "Lead/worker mode runs a stronger lead model for the first turns of a session, then switches to your default (worker) model.",
+        );
+    }
+
+    let action = cliclack::select("What would you like to do?")
+        .item(
+            "configure",
+            if enabled {
+                "Update lead/worker settings"
+            } else {
+                "Enable lead/worker mode"
+            },
+            "",
+        )
+        .item(
+            "disable",
+            "Disable lead/worker mode",
+            if enabled { "" } else { "(already off)" },
+        )
+        .interact()?;
+
+    if action == "disable" {
+        for key in [
+            "BIOROUTER_LEAD_MODEL",
+            "BIOROUTER_LEAD_PROVIDER",
+            "BIOROUTER_LEAD_TURNS",
+            "BIOROUTER_LEAD_FAILURE_THRESHOLD",
+            "BIOROUTER_LEAD_FALLBACK_TURNS",
+        ] {
+            let _ = config.delete(key);
+        }
+        let _ = cliclack::log::success("Lead/worker mode disabled.");
+        return Ok(());
+    }
+
+    // Pick the lead provider, defaulting to the configured lead provider or
+    // the main provider.
+    let mut available_providers = providers().await;
+    available_providers.sort_by(|a, b| a.0.display_name.cmp(&b.0.display_name));
+    let provider_items: Vec<(&String, &str, &str)> = available_providers
+        .iter()
+        .map(|(p, _)| (&p.name, p.display_name.as_str(), p.description.as_str()))
+        .collect();
+    let default_provider: String = config
+        .get_param("BIOROUTER_LEAD_PROVIDER")
+        .ok()
+        .or_else(|| config.get_biorouter_provider().ok())
+        .unwrap_or_default();
+    let provider_name = cliclack::select("Which provider should the lead model use?")
+        .initial_value(&default_provider)
+        .items(&provider_items)
+        .interact()?;
+    let (provider_meta, _) = available_providers
+        .iter()
+        .find(|(p, _)| &p.name == provider_name)
+        .expect("Selected provider must exist in metadata");
+
+    // Pick the lead model, fetching the provider's model list when possible.
+    let spin = spinner();
+    spin.start("Fetching models for the lead provider...");
+    let models_res = {
+        let temp_model_config = ModelConfig::new(&provider_meta.default_model)?;
+        let temp_provider = create(provider_name, temp_model_config).await?;
+        retry_operation(&RetryConfig::default(), || async {
+            temp_provider.fetch_recommended_models().await
+        })
+        .await
+    };
+    spin.stop(style("Model fetch complete").green());
+    let model: String = match models_res {
+        Ok(Some(models)) if !models.is_empty() => select_model_from_list(&models, provider_meta)?,
+        _ => {
+            let default_model =
+                current_lead_model.unwrap_or_else(|| provider_meta.default_model.clone());
+            cliclack::input("Enter the lead model name:")
+                .default_input(&default_model)
+                .interact()?
+        }
+    };
+
+    let prompt_turns = |question: &str, key: &str, default: u32| -> anyhow::Result<u32> {
+        let current: u32 = config.get_param(key).unwrap_or(default);
+        let value: String = cliclack::input(question)
+            .default_input(&current.to_string())
+            .validate(|input: &String| {
+                if input.trim().parse::<u32>().is_ok() {
+                    Ok(())
+                } else {
+                    Err("Please enter a positive whole number")
+                }
+            })
+            .interact()?;
+        Ok(value.trim().parse::<u32>().expect("validated above"))
+    };
+
+    let lead_turns = prompt_turns(
+        "Initial turns handled by the lead model:",
+        "BIOROUTER_LEAD_TURNS",
+        3,
+    )?;
+    let failure_threshold = prompt_turns(
+        "Consecutive worker failures before falling back to the lead model:",
+        "BIOROUTER_LEAD_FAILURE_THRESHOLD",
+        2,
+    )?;
+    let fallback_turns = prompt_turns(
+        "Turns the lead model handles during a fallback:",
+        "BIOROUTER_LEAD_FALLBACK_TURNS",
+        2,
+    )?;
+
+    config.set_param("BIOROUTER_LEAD_MODEL", &model)?;
+    config.set_param("BIOROUTER_LEAD_PROVIDER", provider_name)?;
+    config.set_param("BIOROUTER_LEAD_TURNS", lead_turns)?;
+    config.set_param("BIOROUTER_LEAD_FAILURE_THRESHOLD", failure_threshold)?;
+    config.set_param("BIOROUTER_LEAD_FALLBACK_TURNS", fallback_turns)?;
+
+    let worker_model: String = config
+        .get_biorouter_model()
+        .unwrap_or_else(|_| "your default model".to_string());
+    let _ = cliclack::log::success(format!(
+        "Lead/worker mode enabled — {} ({}) leads, {} handles the rest.",
+        model, provider_meta.display_name, worker_model
+    ));
     Ok(())
 }
 

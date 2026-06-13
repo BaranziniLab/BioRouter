@@ -11,6 +11,7 @@ use super::{
     google::GoogleProvider,
     lead_worker::LeadWorkerProvider,
     litellm::LiteLLMProvider,
+    llamacpp::LlamaCppProvider,
     ollama::OllamaProvider,
     openai::OpenAiProvider,
     openrouter::OpenRouterProvider,
@@ -64,6 +65,7 @@ async fn init_registry() -> RwLock<ProviderRegistry> {
         );
         registry.register::<GoogleProvider, _>(|m| Box::pin(GoogleProvider::from_env(m)), true);
         registry.register::<LiteLLMProvider, _>(|m| Box::pin(LiteLLMProvider::from_env(m)), false);
+        registry.register::<LlamaCppProvider, _>(|m| Box::pin(LlamaCppProvider::from_env(m)), true);
         registry.register::<OllamaProvider, _>(|m| Box::pin(OllamaProvider::from_env(m)), true);
         registry.register::<OpenAiProvider, _>(|m| Box::pin(OpenAiProvider::from_env(m)), true);
         registry

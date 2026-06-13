@@ -1,13 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import {
-  Download,
-  EyeOff,
-  FolderInput,
-  FolderPlus,
-  Pencil,
-  Search,
-  Trash2,
-} from 'lucide-react';
+import { Download, EyeOff, FolderInput, FolderPlus, Pencil, Search, Trash2 } from 'lucide-react';
 import type { Manifest } from '../../../api/types.gen';
 import { Button } from '../../ui/button';
 import {
@@ -19,6 +11,8 @@ import {
   DialogTitle,
 } from '../../ui/dialog';
 import { Switch } from '../../ui/switch';
+import BuiltInBadge from '../../ui/BuiltInBadge';
+import { BUILTIN_RECREATED_TITLE, isBuiltinKnowledgeBase } from '../../../utils/builtins';
 import { useKnowledge } from '../KnowledgeContext';
 import { useKnowledgeBases } from '../hooks/useKnowledgeBases';
 
@@ -26,14 +20,10 @@ interface Props {
   onClose: () => void;
 }
 
-type DraftMode =
-  | { kind: 'create' }
-  | { kind: 'rename'; base: Manifest }
-  | null;
+type DraftMode = { kind: 'create' } | { kind: 'rename'; base: Manifest } | null;
 
 export function KBSelectorPalette({ onClose }: Props) {
-  const { bases, activeKbId, hiddenKbIds, refresh, setActiveKbId, toggleKbHidden } =
-    useKnowledge();
+  const { bases, activeKbId, hiddenKbIds, refresh, setActiveKbId, toggleKbHidden } = useKnowledge();
   const { create, exportArchive, importArchive, remove, rename } = useKnowledgeBases();
   const [query, setQuery] = useState('');
   const [draft, setDraft] = useState('');
@@ -57,8 +47,7 @@ export function KBSelectorPalette({ onClose }: Props) {
       return bases;
     }
     return bases.filter(
-      (base) =>
-        base.name.toLowerCase().includes(value) || base.id.toLowerCase().includes(value)
+      (base) => base.name.toLowerCase().includes(value) || base.id.toLowerCase().includes(value)
     );
   }, [bases, query]);
 
@@ -190,8 +179,8 @@ export function KBSelectorPalette({ onClose }: Props) {
         <DialogHeader className="px-6 pt-6 pb-0">
           <DialogTitle>Knowledge Bases</DialogTitle>
           <DialogDescription>
-            Focus one knowledge base for graphing and ingest while choosing which ones stay
-            visible to chat discovery.
+            Focus one knowledge base for graphing and ingest while choosing which ones stay visible
+            to chat discovery.
           </DialogDescription>
         </DialogHeader>
 
@@ -324,6 +313,9 @@ export function KBSelectorPalette({ onClose }: Props) {
                           <div className="truncate text-sm font-medium text-text-default">
                             {base.name}
                           </div>
+                          {isBuiltinKnowledgeBase(base.id) && (
+                            <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
+                          )}
                           {hidden && (
                             <span className="rounded-md bg-background-default px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-text-muted">
                               Hidden from chat

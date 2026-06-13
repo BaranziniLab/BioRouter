@@ -132,7 +132,7 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
     (costInfo.input_token_cost === undefined && costInfo.output_token_cost === undefined)
   ) {
     // If it's a known free/local provider, show $0.000000 without "not available" message
-    const freeProviders = ['ollama', 'local', 'localhost'];
+    const freeProviders = ['llamacpp', 'ollama', 'local', 'localhost'];
     if (freeProviders.includes(currentProvider.toLowerCase())) {
       return (
         <Tooltip>
