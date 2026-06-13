@@ -1,6 +1,7 @@
 import { Skill, BIOROUTER_SKILLS_DIR, isBuiltinSkill } from './skillUtils';
 import { Button } from '../ui/button';
 import { Switch } from '../ui/switch';
+import BuiltInBadge from '../ui/BuiltInBadge';
 import { Share2, Trash2, FolderDot } from '../icons/app-icons';
 
 interface SkillItemProps {
@@ -29,14 +30,7 @@ export default function SkillItem({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           <p className="text-sm text-text-default">{skill.name}</p>
-          {builtin && (
-            <span
-              className="text-[11px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-background-info/20 text-text-muted flex-shrink-0"
-              title="Ships with Biorouter. Can be toggled off but not deleted."
-            >
-              Built-in
-            </span>
-          )}
+          {builtin && <BuiltInBadge />}
         </div>
         <p className="text-xs text-text-muted mt-0.5 line-clamp-1">{skill.description}</p>
         {skill.sourceDir !== BIOROUTER_SKILLS_DIR && (

@@ -33,19 +33,27 @@ pub async fn classify_with(
         .update_to
         .map(|u| u.iter().any(|i| i.r#type == "retraction"))
         .unwrap_or(false);
+    let known_publisher = is_peer_reviewed_publisher(&publisher);
+    // A work Crossref classifies as a `journal-article` has, by definition, been
+    // registered by a journal — that is itself peer-review evidence. The old
+    // rule downgraded every unrecognised publisher to `web`, which silently
+    // mislabelled the long tail of legitimate journals (society journals, smaller
+    // university presses, open-access venues) not in our ~60-entry allowlist.
+    // Treat journal-articles as peer-reviewed regardless; reserve the allowlist
+    // for boosting confidence rather than gating the tier.
     let tier = match w.r#type.as_str() {
-        "journal-article" if is_peer_reviewed_publisher(&publisher) => {
+        "journal-article" | "proceedings-article" | "review-article" => {
             CredibilityTier::PeerReviewed
         }
-        "journal-article" => CredibilityTier::Web, // recognized type, but unknown publisher
         "posted-content" => CredibilityTier::Preprint,
         "book" | "book-chapter" | "monograph" | "edited-book" => CredibilityTier::Book,
         _ => return Ok(None),
     };
-    let confidence = if matches!(tier, CredibilityTier::PeerReviewed | CredibilityTier::Book) {
-        0.95
-    } else {
-        0.85
+    let confidence = match tier {
+        CredibilityTier::PeerReviewed if known_publisher => 0.95,
+        CredibilityTier::PeerReviewed => 0.85,
+        CredibilityTier::Book => 0.95,
+        _ => 0.85,
     };
     let reasoning = format!(
         "Crossref returned type={:?}, publisher='{}'.",

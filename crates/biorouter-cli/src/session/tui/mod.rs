@@ -954,7 +954,10 @@ async fn push_startup_notices(app: &mut App) {
         for d in &missing {
             app.push_line(Line::from(vec![
                 Span::styled("⚠ ", Style::new().fg(Color::Yellow)),
-                Span::styled(format!("{} not found", d.display_name), Style::new().fg(Color::Yellow)),
+                Span::styled(
+                    format!("{} not found", d.display_name),
+                    Style::new().fg(Color::Yellow),
+                ),
                 Span::styled(
                     "  — run `biorouter doctor` to set up prerequisites".to_string(),
                     Style::new().add_modifier(Modifier::DIM),

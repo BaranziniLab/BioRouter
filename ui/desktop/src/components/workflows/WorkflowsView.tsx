@@ -59,6 +59,8 @@ import {
   DropdownMenuSeparator,
 } from '../ui/dropdown-menu';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
+import BuiltInBadge from '../ui/BuiltInBadge';
+import { BUILTIN_RECREATED_TITLE, isBuiltinWorkflow } from '../../utils/builtins';
 
 export default function WorkflowsView() {
   const setView = useNavigation();
@@ -76,7 +78,9 @@ export default function WorkflowsView() {
   const [showImportDialog, setShowImportDialog] = useState(false);
 
   const [showScheduleDialog, setShowScheduleDialog] = useState(false);
-  const [scheduleWorkflowManifest, setScheduleWorkflowManifest] = useState<WorkflowManifest | null>(null);
+  const [scheduleWorkflowManifest, setScheduleWorkflowManifest] = useState<WorkflowManifest | null>(
+    null
+  );
   const [scheduleCron, setScheduleCron] = useState<string>('');
 
   const [showSlashCommandDialog, setShowSlashCommandDialog] = useState(false);
@@ -181,10 +185,7 @@ export default function WorkflowsView() {
     }
   };
 
-  const handleStartWorkflowChatInDashboard = async (
-    workflowId: string,
-    workflowTitle?: string
-  ) => {
+  const handleStartWorkflowChatInDashboard = async (workflowId: string, workflowTitle?: string) => {
     try {
       await dashboard.spawnWindow({
         workflowId,
@@ -480,7 +481,12 @@ export default function WorkflowsView() {
 
   const WorkflowItem = ({
     workflowManifestResponse,
-    workflowManifestResponse: { workflow, last_modified: lastModified, schedule_cron, slash_command },
+    workflowManifestResponse: {
+      workflow,
+      last_modified: lastModified,
+      schedule_cron,
+      slash_command,
+    },
   }: {
     workflowManifestResponse: WorkflowManifest;
   }) => (
@@ -489,6 +495,9 @@ export default function WorkflowsView() {
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-1">
             <h3 className="text-base truncate max-w-[50vw]">{workflow.title}</h3>
+            {isBuiltinWorkflow(workflowManifestResponse.file_path) && (
+              <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
+            )}
           </div>
           <p className="text-text-muted text-sm mb-2 line-clamp-2">{workflow.description}</p>
           <div className="flex flex-col gap-1 text-xs text-text-muted">
@@ -505,9 +514,7 @@ export default function WorkflowsView() {
                   </div>
                 )}
                 {slash_command && (
-                  <div className="flex items-center text-text-info">
-                    /{slash_command}
-                  </div>
+                  <div className="flex items-center text-text-info">/{slash_command}</div>
                 )}
               </div>
             )}
@@ -560,10 +567,7 @@ export default function WorkflowsView() {
               </DropdownMenuItem>
               <DropdownMenuItem
                 onClick={() =>
-                  handleStartWorkflowChatInDashboard(
-                    workflowManifestResponse.id,
-                    workflow.title
-                  )
+                  handleStartWorkflowChatInDashboard(workflowManifestResponse.id, workflow.title)
                 }
               >
                 <LayoutDashboard className="w-4 h-4" />
@@ -725,7 +729,9 @@ export default function WorkflowsView() {
         <div className="flex-1 flex flex-col min-h-0">
           {/* Flat page header */}
           <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
-            <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">Workflows</h1>
+            <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">
+              Workflows
+            </h1>
             <p className="text-sm text-text-muted mb-0">
               View and manage your saved workflows to quickly start new sessions with predefined
               configurations. {getSearchShortcutText()} to search.
@@ -745,7 +751,10 @@ export default function WorkflowsView() {
 
           <div className="flex-1 min-h-0 relative px-8 pt-6">
             <ScrollArea className="h-full">
-              <SearchView onSearch={(term) => setSearchTerm(term)} placeholder="Search workflows...">
+              <SearchView
+                onSearch={(term) => setSearchTerm(term)}
+                placeholder="Search workflows..."
+              >
                 <div
                   className={`h-full relative transition-all duration-300 ${
                     showContent ? 'opacity-100 animate-in fade-in ' : 'opacity-0'

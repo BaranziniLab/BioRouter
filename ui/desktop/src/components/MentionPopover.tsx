@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { ItemIcon } from './ItemIcon';
+import BuiltInBadge from './ui/BuiltInBadge';
 import { CommandType, getActive, getSessionExtensions, getSlashCommands, listBases } from '../api';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
@@ -31,8 +32,10 @@ const typeOrder: Record<DisplayItemType, number> = {
 // handler. Keyed by the command name (no leading '/').
 const CLIENT_INSERT_COMMANDS: Record<string, { description: string; insert: string }> = {
   knowledge: {
-    description: 'Use the visible knowledge bases, prioritizing the focused one - inserts a templated prompt',
-    insert: 'Using the Knowledge extension, search the visible knowledge bases and prioritize the focused knowledge base, ',
+    description:
+      'Use the visible knowledge bases, prioritizing the focused one - inserts a templated prompt',
+    insert:
+      'Using the Knowledge extension, search the visible knowledge bases and prioritize the focused knowledge base, ',
   },
 };
 
@@ -712,8 +715,13 @@ const MentionPopover = forwardRef<
                       <ItemIcon item={item} />
                     </div>
                     <div className="flex-1 min-w-0">
-                      <div className="text-xs leading-4 truncate text-text-default">
-                        {item.name}
+                      <div className="flex items-center gap-1.5">
+                        <div className="text-xs leading-4 truncate text-text-default">
+                          {item.name}
+                        </div>
+                        {item.itemType === 'Builtin' && (
+                          <BuiltInBadge title="Built-in command. Ships with Biorouter." />
+                        )}
                       </div>
                       <div className="text-[11px] leading-3 truncate text-text-muted">
                         {item.extra}

@@ -8,6 +8,7 @@ pub mod extension_manager;
 pub mod extension_manager_extension;
 pub mod final_output_tool;
 pub mod goal;
+pub mod knowledge_tool;
 mod large_response_handler;
 pub mod mcp_client;
 pub mod moim;

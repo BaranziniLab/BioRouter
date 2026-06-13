@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import { BookOpen } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { Switch } from '../ui/switch';
+import BuiltInBadge from '../ui/BuiltInBadge';
+import { BUILTIN_RECREATED_TITLE, isBuiltinKnowledgeBase } from '../../utils/builtins';
 import { useKnowledge } from '../knowledge/KnowledgeContext';
 
 function labelForVisibleCount(count: number): string {
@@ -39,7 +41,9 @@ export function BottomMenuKnowledgeSelection() {
           title="Knowledge bases visible to chat discovery"
         >
           <BookOpen className="mr-1 h-4 w-4 flex-shrink-0" />
-          <span className="max-w-[160px] truncate">{labelForVisibleCount(visibleBases.length)}</span>
+          <span className="max-w-[160px] truncate">
+            {labelForVisibleCount(visibleBases.length)}
+          </span>
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" align="center" className="w-80 p-0">
@@ -83,7 +87,12 @@ export function BottomMenuKnowledgeSelection() {
                     className="flex items-center gap-3 rounded-lg px-2 py-2 hover:bg-background-medium/40"
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm text-text-default">{base.name}</div>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <div className="truncate text-sm text-text-default">{base.name}</div>
+                        {isBuiltinKnowledgeBase(base.id) && (
+                          <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
+                        )}
+                      </div>
                       <div className="truncate text-[11px] text-text-muted">
                         {hidden
                           ? 'Hidden from chat discovery'

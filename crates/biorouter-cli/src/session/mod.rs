@@ -3,6 +3,7 @@ mod completion;
 mod elicitation;
 mod export;
 mod input;
+pub mod markdown;
 pub mod output;
 mod prompt;
 mod task_execution_display;

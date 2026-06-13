@@ -1,6 +1,7 @@
 // ui/desktop/src/components/knowledge/graph/KnowledgeGraphPanel.tsx
 import { useEffect, useState } from 'react';
-import { Download, History, RefreshCw } from 'lucide-react';
+import { Download, FolderOpen, History, RefreshCw } from 'lucide-react';
+import { getLocation } from '../../../api';
 import type { GraphNode } from '../../../api/types.gen';
 import { Button } from '../../ui/button';
 import { useKnowledge } from '../KnowledgeContext';
@@ -25,6 +26,19 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
   const { exportArchive } = useKnowledgeBases();
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selected, setSelected] = useState<GraphNode | null>(null);
+
+  // Open the active KB's folder in the OS file explorer so the user can inspect
+  // the raw markdown sources and on-disk knowledge graph directly.
+  const openKbFolder = async () => {
+    if (!activeKbId) return;
+    try {
+      const res = await getLocation({ path: { id: activeKbId }, throwOnError: true });
+      const path = res.data?.path;
+      if (path) await window.electron.openDirectoryInExplorer(path);
+    } catch (err) {
+      window.electron.logInfo(`Failed to open knowledge base folder: ${String(err)}`);
+    }
+  };
 
   // Expose refresh() to KnowledgeContext so IngestPanel can call it after each ingest.
   useEffect(() => {
@@ -78,6 +92,16 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
           >
             <History className="h-4 w-4 mr-1" />
             Change log
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void openKbFolder()}
+            disabled={!activeKbId}
+            title="Open the knowledge base folder (raw sources + markdown) in your file explorer"
+          >
+            <FolderOpen className="h-4 w-4 mr-1" />
+            Open folder
           </Button>
         </div>
       </div>

@@ -39,16 +39,21 @@ export const ProviderCard = function ProviderCard({
       className={[
         'flex items-center gap-3 py-3 px-4 rounded-xl',
         'transition-colors duration-150 group',
-        isGrayedOut ? 'opacity-50 cursor-default' : 'cursor-pointer hover:bg-background-medium',
+        isGrayedOut ? 'cursor-default' : 'cursor-pointer hover:bg-background-medium',
       ].join(' ')}
     >
-      {/* Provider initial avatar */}
-      <div className="w-8 h-8 rounded-lg bg-background-medium flex items-center justify-center flex-shrink-0 text-sm font-semibold text-text-muted select-none">
+      {/* Provider initial avatar (dimmed when unconfigured, but not the action buttons) */}
+      <div
+        className={[
+          'w-8 h-8 rounded-lg bg-background-medium flex items-center justify-center flex-shrink-0 text-sm font-semibold text-text-muted select-none',
+          isGrayedOut ? 'opacity-50' : '',
+        ].join(' ')}
+      >
         {initial}
       </div>
 
       {/* Name + description */}
-      <div className="flex-1 min-w-0">
+      <div className={['flex-1 min-w-0', isGrayedOut ? 'opacity-50' : ''].join(' ')}>
         <p className="text-sm font-medium text-text-default truncate">{displayName}</p>
         {metadata.description && (
           <Tooltip>

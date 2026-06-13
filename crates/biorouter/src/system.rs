@@ -64,6 +64,14 @@ fn specs() -> &'static [Spec] {
             doc_url: "https://aws.amazon.com/cli/",
             purpose: "Optional — UCSF Bedrock / Amazon Bedrock credentials",
         },
+        Spec {
+            name: "llama-server",
+            display_name: "llama-server (local models)",
+            probes: &[("llama-server", &["--version"])],
+            required: false,
+            doc_url: "https://github.com/ggml-org/llama.cpp/releases",
+            purpose: "Run built-in local models (bundled with the desktop app)",
+        },
     ]
 }
 
@@ -99,7 +107,10 @@ fn linux_distro() -> LinuxDistro {
         if c.contains("ubuntu") || c.contains("debian") {
             return LinuxDistro::Deb;
         }
-        if ["fedora", "rhel", "centos", "rocky", "alma"].iter().any(|d| c.contains(d)) {
+        if ["fedora", "rhel", "centos", "rocky", "alma"]
+            .iter()
+            .any(|d| c.contains(d))
+        {
             return LinuxDistro::Rpm;
         }
     }
@@ -133,12 +144,23 @@ fn install_info(name: &str) -> InstallInfo {
         let (cmd, url) = match name {
             "git" => ("xcode-select --install", "https://git-scm.com/download/mac"),
             "python" => ("brew install python3", "https://www.python.org/downloads/"),
-            "uv" => ("curl -LsSf https://astral.sh/uv/install.sh | sh", "https://docs.astral.sh/uv/"),
+            "uv" => (
+                "curl -LsSf https://astral.sh/uv/install.sh | sh",
+                "https://docs.astral.sh/uv/",
+            ),
             "node" => ("brew install node", "https://nodejs.org/en/download"),
             "aws" => ("brew install awscli", "https://aws.amazon.com/cli/"),
+            "llama-server" => (
+                "brew install llama.cpp",
+                "https://github.com/ggml-org/llama.cpp/releases",
+            ),
             _ => return none,
         };
-        InstallInfo { command: s(cmd), requires_sudo: false, download_url: s(url) }
+        InstallInfo {
+            command: s(cmd),
+            requires_sudo: false,
+            download_url: s(url),
+        }
     } else if cfg!(target_os = "windows") {
         let (cmd, url) = match name {
             "git" => ("winget install --id Git.Git -e --source winget", "https://git-scm.com/download/win"),
@@ -149,9 +171,17 @@ fn install_info(name: &str) -> InstallInfo {
             ),
             "node" => ("winget install --id OpenJS.NodeJS -e --source winget", "https://nodejs.org/en/download"),
             "aws" => ("winget install Amazon.AWSCLI", "https://aws.amazon.com/cli/"),
+            "llama-server" => (
+                "winget install --id ggml.llamacpp -e --source winget",
+                "https://github.com/ggml-org/llama.cpp/releases",
+            ),
             _ => return none,
         };
-        InstallInfo { command: s(cmd), requires_sudo: false, download_url: s(url) }
+        InstallInfo {
+            command: s(cmd),
+            requires_sudo: false,
+            download_url: s(url),
+        }
     } else {
         // Linux
         if name == "uv" {
@@ -159,6 +189,14 @@ fn install_info(name: &str) -> InstallInfo {
                 command: s("curl -LsSf https://astral.sh/uv/install.sh | sh"),
                 requires_sudo: false,
                 download_url: s("https://docs.astral.sh/uv/"),
+            };
+        }
+        if name == "llama-server" {
+            // No standard distro package; prebuilt binaries on GitHub releases.
+            return InstallInfo {
+                command: None,
+                requires_sudo: false,
+                download_url: s("https://github.com/ggml-org/llama.cpp/releases"),
             };
         }
         let pkg = match name {
@@ -205,7 +243,9 @@ fn probe(cmd: &str, args: &[&str]) -> Option<String> {
             .map(|l| l.trim().to_string())
             .filter(|l| !l.is_empty())
     };
-    pick(&output.stdout).or_else(|| pick(&output.stderr)).or(Some(String::new()))
+    pick(&output.stdout)
+        .or_else(|| pick(&output.stderr))
+        .or(Some(String::new()))
 }
 
 /// A known per-OS install command for a prerequisite, if any.
@@ -215,7 +255,14 @@ pub fn install_command(name: &str) -> Option<String> {
 
 /// Check a prerequisite by trying each probe in turn.
 fn check_spec(spec: &Spec) -> DependencyStatus {
-    let version = spec.probes.iter().find_map(|(cmd, args)| probe(cmd, args));
+    let mut version = spec.probes.iter().find_map(|(cmd, args)| probe(cmd, args));
+    // llama-server usually isn't on PATH: the desktop app bundles it next to
+    // the Biorouter binaries. Fall back to the sidecar's resolution logic.
+    if version.is_none() && spec.name == "llama-server" {
+        if let Some(bin) = crate::providers::llamacpp_sidecar::find_binary() {
+            version = probe(&bin.display().to_string(), &["--version"]);
+        }
+    }
     let install = install_info(spec.name);
     DependencyStatus {
         name: spec.name.to_string(),
@@ -265,7 +312,10 @@ fn version_newer(a: &str, b: &str) -> bool {
     };
     let (va, vb) = (parse(a), parse(b));
     for i in 0..va.len().max(vb.len()) {
-        let (x, y) = (va.get(i).copied().unwrap_or(0), vb.get(i).copied().unwrap_or(0));
+        let (x, y) = (
+            va.get(i).copied().unwrap_or(0),
+            vb.get(i).copied().unwrap_or(0),
+        );
         if x != y {
             return x > y;
         }
@@ -291,7 +341,11 @@ pub async fn check_for_update() -> Option<UpdateInfo> {
         return None;
     }
     let json: serde_json::Value = resp.json().await.ok()?;
-    let latest = json.get("tag_name")?.as_str()?.trim_start_matches('v').to_string();
+    let latest = json
+        .get("tag_name")?
+        .as_str()?
+        .trim_start_matches('v')
+        .to_string();
     let url = json
         .get("html_url")
         .and_then(|v| v.as_str())
@@ -368,7 +422,9 @@ fn is_writable(dir: &Path) -> bool {
 /// `biorouter` is callable from any terminal. `source` is normally the running
 /// executable (CLI) or the bundled binary (desktop). Returns where it landed.
 pub fn install_cli(source: &Path) -> anyhow::Result<CliInstall> {
-    let source = source.canonicalize().unwrap_or_else(|_| source.to_path_buf());
+    let source = source
+        .canonicalize()
+        .unwrap_or_else(|_| source.to_path_buf());
     let exe_name = if cfg!(target_os = "windows") {
         "biorouter.exe"
     } else {
@@ -401,12 +457,23 @@ pub fn install_cli(source: &Path) -> anyhow::Result<CliInstall> {
     }
 
     #[cfg(unix)]
-    std::os::unix::fs::symlink(&source, &link)
-        .map_err(|e| anyhow::anyhow!("Failed to link {} -> {}: {}", link.display(), source.display(), e))?;
+    std::os::unix::fs::symlink(&source, &link).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to link {} -> {}: {}",
+            link.display(),
+            source.display(),
+            e
+        )
+    })?;
     #[cfg(not(unix))]
-    std::fs::copy(&source, &link)
-        .map(|_| ())
-        .map_err(|e| anyhow::anyhow!("Failed to copy {} -> {}: {}", source.display(), link.display(), e))?;
+    std::fs::copy(&source, &link).map(|_| ()).map_err(|e| {
+        anyhow::anyhow!(
+            "Failed to copy {} -> {}: {}",
+            source.display(),
+            link.display(),
+            e
+        )
+    })?;
 
     Ok(CliInstall {
         on_path: dir_on_path(&target_dir),

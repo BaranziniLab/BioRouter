@@ -1,8 +1,10 @@
 // ui/desktop/src/components/knowledge/graph/ForceGraphCanvas.tsx
 import { useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph2D, { ForceGraphMethods } from 'react-force-graph-2d';
+import { forceX, forceY } from 'd3-force';
 import type { Graph, GraphNode } from '../../../api/types.gen';
 import { nodeFill, retractedColor } from './credColors';
+import { prettyLabel, wrapLabel } from './labelText';
 import {
   DIMMED_OPACITY,
   edgeStyle,
@@ -127,9 +129,21 @@ export function ForceGraphCanvas({
     const spread = nodeCount > 80 ? 155 : nodeCount > 35 ? 135 : 115;
 
     fg.d3Force?.('charge')?.strength?.(-spread);
-    fg.d3Force?.('charge')?.distanceMax?.(360);
+    // Cap the range of charge repulsion so a disconnected node is not flung to
+    // the far edge of the canvas by the cumulative push of the whole cluster.
+    fg.d3Force?.('charge')?.distanceMax?.(260);
     fg.d3Force?.('link')?.distance?.(nodeCount > 80 ? 92 : 108);
     fg.d3Force?.('link')?.strength?.(0.22);
+
+    // Gentle centering pull toward the origin. Linked nodes are held in place
+    // by link tension, so this barely moves the connected hub — but an isolated
+    // node (no incoming/outgoing edges) feels only this force and drifts back
+    // toward the cluster instead of being pushed off-screen by charge repulsion.
+    const fgWithForce = fg as typeof fg & {
+      d3Force: (name: string, force?: unknown) => unknown;
+    };
+    fgWithForce.d3Force('x', forceX(0).strength(0.07));
+    fgWithForce.d3Force('y', forceY(0).strength(0.07));
 
     const timeout = window.setTimeout(() => {
       fg.zoomToFit?.(500, 84);
@@ -190,7 +204,9 @@ export function ForceGraphCanvas({
             ctx.textBaseline = 'middle';
             ctx.fillText('!', bx, by + 0.5);
           }
-          // Label
+          // Label — prettified (machine ids → readable) and folded across up to
+          // three lines so a long title never paints one very long horizontal
+          // string off the side of its node.
           const shouldShowLabel = isFocused || isNeighbour || isHub || globalScale >= 1.75;
           if (shouldShowLabel) {
             const fs = (isHub ? LABEL_FONT_PX_HUB : LABEL_FONT_PX) / globalScale;
@@ -198,7 +214,14 @@ export function ForceGraphCanvas({
             ctx.fillStyle = '#1f242c';
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
-            ctx.fillText(' ' + n.label, n.x + r + 1, n.y);
+            const text = prettyLabel(n.label, n.kind);
+            const maxWidth = 132 / globalScale;
+            const lines = wrapLabel(text, maxWidth, 3, (s) => ctx.measureText(s).width);
+            const lineHeight = fs * 1.18;
+            const startY = n.y - (lineHeight * (lines.length - 1)) / 2;
+            for (let i = 0; i < lines.length; i++) {
+              ctx.fillText(' ' + lines[i], n.x + r + 1, startY + i * lineHeight);
+            }
           }
           ctx.globalAlpha = 1.0;
         }}

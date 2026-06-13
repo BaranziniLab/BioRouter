@@ -546,20 +546,12 @@ impl KnowledgeService {
         }
 
         let converted = convert::convert(&input).await?;
-        let credibility = credibility::classify(&input, None).await?;
+        // Classify against the *converted* text, not just the raw input bytes,
+        // so a paper's DOI / journal markers in the body are actually seen.
+        let credibility =
+            credibility::classify_with_text(&input, Some(&converted.markdown), None).await?;
 
-        let title = converted.title.clone().unwrap_or_else(|| match &input {
-            convert::SourceInput::Text { title, .. } => {
-                title.clone().unwrap_or_else(|| "Untitled note".into())
-            }
-            convert::SourceInput::Url(u) => u.clone(),
-            convert::SourceInput::File { filename, .. } => filename.clone(),
-            convert::SourceInput::Path(path) => path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("source")
-                .to_string(),
-        });
+        let title = humanize_source_title(&input, &converted);
 
         let (original_bytes, original_filename, url) = match &input {
             convert::SourceInput::File {
@@ -648,6 +640,186 @@ impl KnowledgeService {
     }
 }
 
+/// Derive a human-readable title for a source, never a hash or UUID filename.
+///
+/// Order of preference:
+///   1. The title extracted by the converter (PDF metadata title, HTML
+///      `<title>`, explicit note title) — unless it itself looks machine
+///      generated (e.g. `a64e171e-….pdf`).
+///   2. The first usable heading / line of the converted markdown body.
+///   3. The URL or filename as a last resort, cleaned of obvious noise.
+fn humanize_source_title(input: &convert::SourceInput, converted: &convert::Converted) -> String {
+    if let Some(t) = converted.title.as_ref() {
+        let t = t.trim();
+        if !t.is_empty() && !looks_machine_generated(t) {
+            return t.to_string();
+        }
+    }
+
+    // Explicit note titles always win when provided by the caller.
+    if let convert::SourceInput::Text { title: Some(t), .. } = input {
+        let t = t.trim();
+        if !t.is_empty() && !looks_machine_generated(t) {
+            return t.to_string();
+        }
+    }
+
+    if let Some(t) = title_from_markdown(&converted.markdown) {
+        return t;
+    }
+
+    // Fall back to the source locator, cleaned up.
+    let fallback = match input {
+        convert::SourceInput::Url(u) => u.clone(),
+        convert::SourceInput::File { filename, .. } => filename.clone(),
+        convert::SourceInput::Path(path) => path
+            .file_name()
+            .and_then(|v| v.to_str())
+            .unwrap_or("source")
+            .to_string(),
+        convert::SourceInput::Text { .. } => String::new(),
+    };
+    if !fallback.is_empty() && !looks_machine_generated(&fallback) {
+        return fallback;
+    }
+    let noun = match input {
+        convert::SourceInput::Text { .. } => "note",
+        _ => "source",
+    };
+    format!("Untitled {noun}")
+}
+
+/// Pull a plausible title out of converted markdown: the first markdown heading
+/// (`# …`), or failing that the first reasonably-sized line of prose.
+fn title_from_markdown(markdown: &str) -> Option<String> {
+    // Skip a leading quality-warning blockquote if present.
+    for line in markdown.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('>') {
+            continue;
+        }
+        if let Some(h) = line.strip_prefix('#') {
+            let h = h.trim_start_matches('#').trim();
+            if h.len() >= 3 && !looks_machine_generated(h) {
+                return Some(truncate_title(h));
+            }
+        }
+    }
+    // No heading — use the first substantial, sentence-like line.
+    for line in markdown.lines() {
+        let line = line.trim().trim_start_matches(['#', '>', '*', '-', ' ']);
+        if line.len() >= 12
+            && line.split_whitespace().count() >= 3
+            && !looks_machine_generated(line)
+        {
+            return Some(truncate_title(line));
+        }
+    }
+    None
+}
+
+fn truncate_title(s: &str) -> String {
+    const MAX: usize = 160;
+    if s.chars().count() <= MAX {
+        return s.to_string();
+    }
+    let truncated: String = s.chars().take(MAX).collect();
+    match truncated.rsplit_once(' ') {
+        Some((head, _)) => format!("{}…", head.trim_end()),
+        None => format!("{truncated}…"),
+    }
+}
+
+/// True when a string reads like a machine identifier (UUID, long hex hash, or
+/// such with a file extension) rather than a human title. Mirrors the
+/// frontend `looksMachineGenerated` guard so titles are clean at the source.
+fn looks_machine_generated(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() {
+        return true;
+    }
+    let stripped = t
+        .rsplit_once('.')
+        .map(|(stem, ext)| {
+            if matches!(
+                ext.to_ascii_lowercase().as_str(),
+                "pdf" | "doc" | "docx" | "html" | "htm" | "txt" | "md" | "csv" | "pptx" | "ppt"
+            ) {
+                stem
+            } else {
+                t
+            }
+        })
+        .unwrap_or(t);
+    let compact: String = stripped
+        .chars()
+        .filter(|c| !matches!(c, '-' | '_' | ' ' | '.'))
+        .collect();
+    if compact.len() >= 12 && compact.chars().all(|c| c.is_ascii_hexdigit()) {
+        return true;
+    }
+    // UUID anywhere, with only noise (digits / "pdf" / separators) around it.
+    if let Some(m) = find_uuid(t) {
+        let remainder: String = t
+            .replacen(m, " ", 1)
+            .chars()
+            .map(|c| if c.is_ascii_alphabetic() { c } else { ' ' })
+            .collect();
+        let words: Vec<&str> = remainder
+            .split_whitespace()
+            .filter(|w| {
+                w.len() >= 3
+                    && !matches!(
+                        w.to_ascii_lowercase().as_str(),
+                        "pdf" | "doc" | "docx" | "html"
+                    )
+            })
+            .collect();
+        if words.is_empty() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Return the first UUID substring (8-4-4-4-12 hex) in `s`, if any.
+fn find_uuid(s: &str) -> Option<&str> {
+    let bytes = s.as_bytes();
+    let is_hex = |b: u8| b.is_ascii_hexdigit();
+    let pattern = [8usize, 4, 4, 4, 12];
+    let mut i = 0;
+    while i + 36 <= bytes.len() {
+        let mut ok = true;
+        let mut pos = i;
+        for (gi, &group) in pattern.iter().enumerate() {
+            for _ in 0..group {
+                if pos >= bytes.len() || !is_hex(bytes[pos]) {
+                    ok = false;
+                    break;
+                }
+                pos += 1;
+            }
+            if !ok {
+                break;
+            }
+            if gi < pattern.len() - 1 {
+                if pos >= bytes.len() || bytes[pos] != b'-' {
+                    ok = false;
+                    break;
+                }
+                pos += 1;
+            }
+        }
+        if ok {
+            // `i`/`pos` only ever land on ASCII hex / '-' bytes, so this is a
+            // valid char boundary; `get` keeps clippy happy and is panic-free.
+            return s.get(i..pos);
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Surface poor extraction (scanned / image-based sources) instead of silently
 /// storing an empty source.md: the banner is visible in the raw-source preview
 /// and tells the digestion sub-agent the content is incomplete. Applied after
@@ -734,7 +906,17 @@ impl KnowledgeService {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         if let Some(g) = crate::knowledge::graph::read_cache(&kb_root)? {
-            return Ok(g);
+            // Self-heal caches written by an older deriver: if the cache still
+            // contains the scaffold `index`/`log` hub nodes (which the current
+            // deriver excludes), re-derive once and rewrite the cache so existing
+            // KBs pick up the fix without needing a fresh ingest.
+            let has_scaffold = g.nodes.iter().any(|n| n.id == "index" || n.id == "log");
+            if !has_scaffold {
+                return Ok(g);
+            }
+            let fresh = crate::knowledge::graph::derive(&kb_root)?;
+            let _ = crate::knowledge::graph::write_cache(&kb_root, &fresh);
+            return Ok(fresh);
         }
         crate::knowledge::graph::derive(&kb_root)
     }
@@ -891,20 +1073,26 @@ impl KnowledgeService {
         let kb_root = paths::kb_root(&self.root, kb_id);
         let mut meta = raw::read_meta(&kb_root, source_id)?;
 
+        // The stored, already-extracted text is our best probe for identifiers
+        // (DOI / journal markers) — read it once and feed it to the classifier
+        // regardless of source kind so re-running classification on an old,
+        // mislabelled source can now recover its true peer-reviewed tier.
+        let stored_body =
+            std::fs::read_to_string(kb_root.join("raw").join(source_id).join("source.md")).ok();
+
         // Reconstruct a SourceInput from what was stored.  URL-based sources keep the url;
         // everything else falls back to the derived markdown (source.md).
         let input = if let Some(url) = meta.url.clone() {
             convert::SourceInput::Url(url)
         } else {
-            let body =
-                std::fs::read_to_string(kb_root.join("raw").join(source_id).join("source.md"))?;
             convert::SourceInput::Text {
-                text: body,
+                text: stored_body.clone().unwrap_or_default(),
                 title: Some(meta.title.clone()),
             }
         };
 
-        let new_cred = credibility::classify(&input, None).await?;
+        let new_cred =
+            credibility::classify_with_text(&input, stored_body.as_deref(), None).await?;
         meta.credibility = new_cred.clone();
         let yaml = serde_yaml::to_string(&meta)?;
         std::fs::write(kb_root.join("raw").join(source_id).join("meta.yaml"), yaml)?;
@@ -1079,6 +1267,64 @@ mod tests {
         let md =
             std::fs::read_to_string(kb.join(format!("raw/{}/source.md", res.source_id))).unwrap();
         assert!(md.contains("# H"));
+    }
+
+    #[test]
+    fn looks_machine_generated_detects_uuids_and_hashes() {
+        assert!(looks_machine_generated(
+            "a64e171e-f161-4615-9299-839c8a066049.pdf"
+        ));
+        assert!(looks_machine_generated(
+            "a64e171e-f161-4615-9299-839c8a066049-pdf-48f040"
+        ));
+        assert!(looks_machine_generated("deadbeefdeadbeefdeadbeef"));
+        assert!(!looks_machine_generated(
+            "Effects of e-cigarette aerosol inhalation in mice"
+        ));
+        assert!(!looks_machine_generated("RNA-seq"));
+    }
+
+    #[test]
+    fn title_from_markdown_prefers_first_heading() {
+        let md =
+            "> **Warning — poor extraction quality.**\n\n# A Study of Airway Deposition\n\nbody";
+        assert_eq!(
+            title_from_markdown(md).as_deref(),
+            Some("A Study of Airway Deposition")
+        );
+    }
+
+    #[tokio::test]
+    async fn add_raw_source_rescues_uuid_filename_title_from_body() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        // An HTML upload whose filename is a UUID but whose body has a real title.
+        let html = b"<html><body><h1>Intersubject Variability in Aerosol Deposition</h1>\
+                     <p>Long body text describing the study in detail.</p></body></html>";
+        let res = svc
+            .add_raw_source(
+                "k",
+                SourceInput::File {
+                    bytes: html.to_vec(),
+                    filename: "a64e171e-f161-4615-9299-839c8a066049.html".into(),
+                    mime: Some("text/html".into()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let kb = svc.root().join("k");
+        let meta = raw::read_meta(&kb, &res.source_id).unwrap();
+        assert!(
+            !meta.title.contains("a64e171e"),
+            "title should not be the UUID filename, got {}",
+            meta.title
+        );
+        assert!(
+            meta.title.to_lowercase().contains("aerosol"),
+            "got {}",
+            meta.title
+        );
     }
 
     #[tokio::test]

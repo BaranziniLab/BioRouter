@@ -10,8 +10,15 @@ import {
   isSkillEnabled,
   getSkillOverrides,
 } from '../../store/skillOverrides';
-import { Skill, SkillBundle, ALL_SKILL_DIRS, loadSkillsFromDirs } from '../skills/skillUtils';
+import {
+  Skill,
+  SkillBundle,
+  ALL_SKILL_DIRS,
+  loadSkillsFromDirs,
+  isBuiltinSkill,
+} from '../skills/skillUtils';
 import { toastService } from '../../toasts';
+import BuiltInBadge from '../ui/BuiltInBadge';
 
 interface BottomMenuSkillSelectionProps {
   sessionId: string | null;
@@ -294,7 +301,12 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
                     onClick={() => !rowDisabled && handleToggle(skill.name, skill.name)}
                     title={skill.description || skill.name}
                   >
-                    <div className="text-sm font-medium text-text-default">{skill.name}</div>
+                    <div className="flex items-center gap-1.5 min-w-0 pr-2">
+                      <div className="text-sm font-medium text-text-default truncate">
+                        {skill.name}
+                      </div>
+                      {isBuiltinSkill(skill.name) && <BuiltInBadge />}
+                    </div>
                     <div onClick={(e) => e.stopPropagation()}>
                       <Switch
                         checked={enabled}

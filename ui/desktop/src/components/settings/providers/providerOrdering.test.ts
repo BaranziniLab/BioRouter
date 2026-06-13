@@ -2,10 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { ProviderDetails } from '../../../api';
 import { getOrderedProviderGroups } from './providerOrdering';
 
-function provider(
-  name: string,
-  displayName = name
-): ProviderDetails {
+function provider(name: string, displayName = name): ProviderDetails {
   return {
     name,
     is_configured: true,
@@ -23,29 +20,26 @@ function provider(
 }
 
 describe('getOrderedProviderGroups', () => {
-  it('groups providers in settings-page order', () => {
+  it('groups providers in settings-page order (local first)', () => {
     const groups = getOrderedProviderGroups([
       provider('openai'),
       provider('ollama'),
       provider('versa_bedrock'),
+      provider('llamacpp'),
       provider('anthropic'),
       provider('versa_azure'),
     ]);
 
-    expect(groups.map((group) => group.key)).toEqual([
-      'institutional',
-      'local',
-      'commercial',
-    ]);
-    expect(groups[0]?.providers.map((item) => item.name)).toEqual([
-      'versa_azure',
-      'versa_bedrock',
-    ]);
-    expect(groups[1]?.providers.map((item) => item.name)).toEqual(['ollama']);
-    expect(groups[2]?.providers.map((item) => item.name)).toEqual([
-      'anthropic',
-      'openai',
-    ]);
+    expect(groups.map((group) => group.key)).toEqual(['local', 'institutional', 'commercial']);
+    expect(groups[0]?.providers.map((item) => item.name)).toEqual(['llamacpp', 'ollama']);
+    expect(groups[1]?.providers.map((item) => item.name)).toEqual(['versa_azure', 'versa_bedrock']);
+    expect(groups[2]?.providers.map((item) => item.name)).toEqual(['anthropic', 'openai']);
+  });
+
+  it('ranks Llama Server before Ollama within local models', () => {
+    const groups = getOrderedProviderGroups([provider('ollama'), provider('llamacpp')]);
+    expect(groups[0]?.key).toBe('local');
+    expect(groups[0]?.providers.map((item) => item.name)).toEqual(['llamacpp', 'ollama']);
   });
 
   it('filters hidden providers from all groups', () => {

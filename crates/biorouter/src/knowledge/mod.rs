@@ -4,3 +4,6 @@ pub use biorouter_mcp::knowledge::*;
 
 pub mod provider_completer;
 pub use provider_completer::ProviderCompleter;
+
+pub mod conversation_ingest;
+pub mod soul;

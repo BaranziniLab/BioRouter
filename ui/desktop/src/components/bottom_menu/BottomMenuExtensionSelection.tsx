@@ -3,9 +3,13 @@ import { Puzzle } from '../icons/app-icons';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../ui/dropdown-menu';
 import { Input } from '../ui/input';
 import { Switch } from '../ui/switch';
+import BuiltInBadge from '../ui/BuiltInBadge';
 import { FixedExtensionEntry, useConfig } from '../ConfigContext';
 import { toastService } from '../../toasts';
-import { formatExtensionName } from '../settings/extensions/subcomponents/ExtensionList';
+import {
+  formatExtensionName,
+  isBuiltInExtension,
+} from '../settings/extensions/subcomponents/ExtensionList';
 import { ExtensionConfig, getSessionExtensions } from '../../api';
 import { addToAgent, removeFromAgent } from '../settings/extensions/agent-api';
 import {
@@ -379,8 +383,11 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
                   onClick={() => !rowDisabled && handleToggle(ext)}
                   title={ext.description || ext.name}
                 >
-                  <div className="text-sm font-medium text-text-default">
-                    {formatExtensionName(ext.name)}
+                  <div className="flex items-center gap-1.5 min-w-0 pr-2">
+                    <div className="text-sm font-medium text-text-default truncate">
+                      {formatExtensionName(ext.name)}
+                    </div>
+                    {isBuiltInExtension(ext) && <BuiltInBadge />}
                   </div>
                   <div onClick={(e) => e.stopPropagation()}>
                     <Switch

@@ -4,6 +4,7 @@ pub mod audio;
 pub mod config_management;
 pub mod errors;
 pub mod knowledge;
+pub mod llamacpp;
 pub mod mcp_app_proxy;
 pub mod mcp_ui_proxy;
 pub mod reply;
@@ -34,6 +35,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(session::routes(state.clone()))
         .merge(schedule::routes(state.clone()))
         .merge(setup::routes(state.clone()))
+        .merge(llamacpp::routes(state.clone()))
         .merge(telemetry::routes(state.clone()))
         .merge(tunnel::routes(state.clone()))
         .merge(mcp_ui_proxy::routes(secret_key.clone()))

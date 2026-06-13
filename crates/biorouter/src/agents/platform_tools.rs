@@ -2,6 +2,53 @@ use indoc::indoc;
 use rmcp::model::{Tool, ToolAnnotations};
 use rmcp::object;
 pub const PLATFORM_MANAGE_SCHEDULE_TOOL_NAME: &str = "platform__manage_schedule";
+pub const PLATFORM_INGEST_CONVERSATION_TOOL_NAME: &str = "platform__ingest_conversation";
+
+/// Tool that lets the user, mid-chat, fold conversation history (this session
+/// and/or other sessions) into a knowledge base — "remember this chat".
+pub fn ingest_conversation_tool() -> Tool {
+    Tool::new(
+        PLATFORM_INGEST_CONVERSATION_TOOL_NAME.to_string(),
+        indoc! {r#"
+            Digest BioRouter conversation/chat history into a knowledge base.
+
+            Use this when the user asks to "save", "remember", "ingest", or
+            "add this conversation to my knowledge base". It captures the full
+            transcript — user input, model output, every tool call with its
+            arguments, and every tool response — renders it to markdown, and runs
+            the standard knowledge ingestion pipeline so it becomes wiki pages
+            with credibility, links and git history.
+
+            By default it ingests the CURRENT session. Pass `session_ids` to
+            ingest specific (or multiple) sessions instead. Choose a target with
+            exactly one of:
+              - `kb_id`: ingest into an existing knowledge base, or
+              - `new_kb_name`: create a new knowledge base with this display name
+                and ingest into it.
+            If neither is given, the currently active knowledge base is used.
+        "#}
+        .to_string(),
+        object!({
+            "type": "object",
+            "properties": {
+                "kb_id": {"type": "string", "description": "Existing knowledge base id to ingest into"},
+                "new_kb_name": {"type": "string", "description": "Display name for a new knowledge base to create and ingest into"},
+                "session_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Session ids to ingest. Defaults to the current session when omitted."
+                },
+                "focus": {"type": "string", "description": "Optional guidance on what to emphasise while digesting"}
+            }
+        }),
+    ).annotate(ToolAnnotations {
+        title: Some("Ingest conversation into knowledge base".to_string()),
+        read_only_hint: Some(false),
+        destructive_hint: Some(false),
+        idempotent_hint: Some(false),
+        open_world_hint: Some(false),
+    })
+}
 
 pub fn manage_schedule_tool() -> Tool {
     Tool::new(

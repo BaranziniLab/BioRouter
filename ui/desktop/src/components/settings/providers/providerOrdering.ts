@@ -2,12 +2,13 @@ import type { ProviderDetails } from '../../../api';
 
 const HIDDEN_PROVIDERS = new Set(['claude-code', 'codex', 'cursor-agent']);
 const INSTITUTIONAL = new Set(['versa_azure', 'versa_bedrock']);
-const LOCAL = new Set(['ollama']);
+const LOCAL = new Set(['llamacpp', 'ollama']);
 
 const PRIORITY_ORDER: Record<string, number> = {
   versa_azure: 0,
   versa_bedrock: 1,
-  ollama: 0,
+  llamacpp: 0,
+  ollama: 1,
   azure_openai: 0,
   aws_bedrock: 1,
   anthropic: 2,
@@ -61,16 +62,16 @@ export function getOrderedProviderGroups(providers: ProviderDetails[]): OrderedP
 
   return [
     {
-      key: 'institutional',
-      label: 'Institutional Models',
-      accentClassName: 'bg-indigo-500',
-      providers: grouped.institutional,
-    },
-    {
       key: 'local',
       label: 'Local Models',
       accentClassName: 'bg-green-500',
       providers: grouped.local,
+    },
+    {
+      key: 'institutional',
+      label: 'Institutional Models',
+      accentClassName: 'bg-indigo-500',
+      providers: grouped.institutional,
     },
     {
       key: 'commercial',

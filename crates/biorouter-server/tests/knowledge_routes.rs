@@ -26,6 +26,63 @@ fn build_test_router_with_root() -> (tempfile::TempDir, std::path::PathBuf, Rout
     (dir, root, router)
 }
 
+#[tokio::test]
+async fn get_location_returns_kb_path() {
+    let (_d, root, app) = build_test_router_with_root();
+    // Create a KB so the directory exists.
+    let create_body = serde_json::to_vec(&serde_json::json!({"id": "loc", "name": "Loc"})).unwrap();
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/bases/loc/location")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let path = v.get("path").and_then(|p| p.as_str()).unwrap();
+    assert!(
+        path.contains("loc"),
+        "path should point at the KB dir: {path}"
+    );
+    assert!(
+        path.starts_with(&root.to_string_lossy().into_owned()),
+        "path should be under the test root"
+    );
+}
+
+#[tokio::test]
+async fn get_location_404_for_unknown_kb() {
+    let (_d, app) = build_test_router();
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/bases/nope/location")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Task 5: read-only routes
 // ──────────────────────────────────────────────────────────────────────────────

@@ -3,7 +3,8 @@ import kebabCase from 'lodash/kebabCase';
 import { Switch } from '../../../ui/switch';
 import { Gear } from '../../../icons';
 import { FixedExtensionEntry } from '../../../ConfigContext';
-import { getSubtitle, getFriendlyTitle } from './ExtensionList';
+import BuiltInBadge from '../../../ui/BuiltInBadge';
+import { getSubtitle, getFriendlyTitle, isBuiltInExtension } from './ExtensionList';
 
 interface ExtensionItemProps {
   extension: FixedExtensionEntry;
@@ -44,9 +45,7 @@ export default function ExtensionItem({
   const { description, command } = getSubtitle(extension);
 
   const editable =
-    !isStatic &&
-    (extension.type === 'builtin' ||
-      !('bundled' in extension && extension.bundled));
+    !isStatic && (extension.type === 'builtin' || !('bundled' in extension && extension.bundled));
 
   return (
     <div
@@ -54,15 +53,16 @@ export default function ExtensionItem({
       className="flex items-center gap-4 py-3 px-3 -mx-3 rounded-lg hover:bg-background-medium transition-colors duration-150 group"
     >
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-medium text-text-default leading-snug">
-          {getFriendlyTitle(extension)}
-        </p>
+        <div className="flex items-center gap-1.5">
+          <p className="text-sm font-medium text-text-default leading-snug">
+            {getFriendlyTitle(extension)}
+          </p>
+          {isBuiltInExtension(extension) && <BuiltInBadge />}
+        </div>
         {description && (
           <p className="text-xs text-text-muted mt-0.5 line-clamp-1">{description}</p>
         )}
-        {command && (
-          <p className="text-xs font-mono text-text-muted mt-0.5 truncate">{command}</p>
-        )}
+        {command && <p className="text-xs font-mono text-text-muted mt-0.5 truncate">{command}</p>}
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
         {editable && (

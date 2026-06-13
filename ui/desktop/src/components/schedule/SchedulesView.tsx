@@ -14,7 +14,16 @@ import {
 import { ScrollArea } from '../ui/scroll-area';
 import { Button } from '../ui/button';
 import { TrashIcon } from '../icons/TrashIcon';
-import { Plus, RefreshCw, Pause, Play, Edit, Square, Eye, CircleDotDashed } from '../icons/app-icons';
+import {
+  Plus,
+  RefreshCw,
+  Pause,
+  Play,
+  Edit,
+  Square,
+  Eye,
+  CircleDotDashed,
+} from '../icons/app-icons';
 import { NewSchedulePayload, ScheduleModal } from './ScheduleModal';
 import ScheduleDetailView from './ScheduleDetailView';
 import { toastError, toastSuccess } from '../../toasts';
@@ -23,6 +32,12 @@ import { formatToLocalDateWithTimezone } from '../../utils/date';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { ViewOptions } from '../../utils/navigationUtils';
 import { trackScheduleCreated, trackScheduleDeleted, getErrorType } from '../../utils/analytics';
+import BuiltInBadge from '../ui/BuiltInBadge';
+import {
+  BUILTIN_RECREATED_TITLE,
+  isBuiltinSchedule,
+  scheduleDisplayName,
+} from '../../utils/builtins';
 
 interface SchedulesViewProps {
   onClose?: () => void;
@@ -67,8 +82,9 @@ const ScheduleCard: React.FC<{
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2 mb-1">
             <h3 className="text-base truncate max-w-[50vw]" title={job.id}>
-              {job.id}
+              {scheduleDisplayName(job.id)}
             </h3>
+            {isBuiltinSchedule(job.id) && <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />}
             {job.currently_running && (
               <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-background-success/15 text-text-success">
                 <span className="inline-block w-2 h-2 bg-background-success rounded-full mr-1 animate-pulse"></span>
@@ -444,7 +460,9 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
         <div className="flex-1 flex flex-col min-h-0">
           {/* Flat page header */}
           <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
-            <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">Scheduler</h1>
+            <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">
+              Scheduler
+            </h1>
             <p className="text-sm text-text-muted mb-0">
               Create and manage scheduled tasks to run workflows automatically at specified times.
             </p>

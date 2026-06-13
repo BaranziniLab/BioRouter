@@ -69,7 +69,9 @@ export type AnalyticsEvent =
   | { name: 'onboarding_started'; properties: Record<string, never> }
   | {
       name: 'onboarding_provider_selected';
-      properties: { method: 'api_key' | 'openrouter' | 'tetrate' | 'ollama' | 'other' };
+      properties: {
+        method: 'api_key' | 'openrouter' | 'tetrate' | 'llamacpp' | 'ollama' | 'other';
+      };
     }
   | {
       name: 'onboarding_completed';
@@ -282,7 +284,7 @@ export function trackOnboardingStarted(): void {
 }
 
 export function trackOnboardingProviderSelected(
-  method: 'api_key' | 'openrouter' | 'tetrate' | 'ollama' | 'other'
+  method: 'api_key' | 'openrouter' | 'tetrate' | 'llamacpp' | 'ollama' | 'other'
 ): void {
   trackEvent({
     name: 'onboarding_provider_selected',

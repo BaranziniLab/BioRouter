@@ -2,7 +2,7 @@ import React from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import AppSidebar from '../BioRouterSidebar/AppSidebar';
 import { View, ViewOptions } from '../../utils/navigationUtils';
-import { Plus, LayoutDashboard } from '../icons/app-icons';
+import { Plus, LayoutDashboard, Terminal } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from '../ui/sidebar';
 import { getInitialWorkingDir } from '../../utils/workingDir';
@@ -71,6 +71,24 @@ const AppLayoutContent: React.FC = () => {
     window.electron.createChatWindow(undefined, getInitialWorkingDir());
   };
 
+  const handleLaunchCli = async () => {
+    try {
+      const status = await window.electron.cliStatus();
+      if (status?.onPath) {
+        const res = await window.electron.launchCli();
+        if (!res.success) {
+          window.dispatchEvent(new CustomEvent('biorouter:open-cli-install'));
+        }
+      } else {
+        // Not installed yet — surface the same install card the startup
+        // check shows. Once installed, this button launches the CLI.
+        window.dispatchEvent(new CustomEvent('biorouter:open-cli-install'));
+      }
+    } catch {
+      window.dispatchEvent(new CustomEvent('biorouter:open-cli-install'));
+    }
+  };
+
   return (
     <div className="flex flex-1 w-full relative animate-fade-in">
       {!shouldHideButtons && (
@@ -103,6 +121,15 @@ const AppLayoutContent: React.FC = () => {
             }
           >
             <LayoutDashboard className="w-4 h-4" />
+          </Button>
+          <Button
+            onClick={handleLaunchCli}
+            className="no-drag hover:!bg-background-medium"
+            variant="ghost"
+            size="xs"
+            title="Launch the Biorouter CLI in a terminal"
+          >
+            <Terminal className="w-4 h-4" />
           </Button>
         </div>
       )}
