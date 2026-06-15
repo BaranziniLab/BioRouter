@@ -8,7 +8,6 @@ import {
 import { useConfig } from '../../ConfigContext';
 import { ProviderSelector } from './ProviderSelector';
 import { VOICE_DICTATION_ELEVENLABS_ENABLED } from '../../../updates';
-import { trackSettingToggled } from '../../../utils/analytics';
 
 export const VoiceDictationToggle = () => {
   const [settings, setSettings] = useState<DictationSettings>({
@@ -57,7 +56,6 @@ export const VoiceDictationToggle = () => {
       enabled,
       provider: settings.provider === null ? 'openai' : settings.provider,
     });
-    trackSettingToggled('voice_dictation', enabled);
   };
 
   const handleProviderChange = (provider: DictationProvider) => {

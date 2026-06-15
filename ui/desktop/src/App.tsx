@@ -14,7 +14,6 @@ import { ErrorUI } from './components/ErrorBoundary';
 import { ExtensionInstallModal } from './components/ExtensionInstallModal';
 import { ToastContainer } from 'react-toastify';
 import AnnouncementModal from './components/AnnouncementModal';
-import TelemetryOptOutModal from './components/TelemetryOptOutModal';
 import UpdateAvailableModal from './components/UpdateAvailableModal';
 import ProviderGuard from './components/ProviderGuard';
 import { createSession } from './sessions';
@@ -52,13 +51,6 @@ import { DashboardProvider } from './components/Dashboard/DashboardProvider';
 import { DashboardRoute } from './components/Dashboard/DashboardRoute';
 import { errorMessage } from './utils/conversionUtils';
 import { getInitialWorkingDir } from './utils/workingDir';
-import { usePageViewTracking } from './hooks/useAnalytics';
-import { trackOnboardingCompleted, trackErrorWithContext } from './utils/analytics';
-
-function PageViewTracker() {
-  usePageViewTracking();
-  return null;
-}
 
 // Route Components
 const HubRouteWrapper = () => {
@@ -139,11 +131,6 @@ const PairRouteWrapper = ({
           });
         } catch (error) {
           console.error('Failed to create session:', error);
-          trackErrorWithContext(error, {
-            component: 'PairRouteWrapper',
-            action: 'create_session',
-            recoverable: true,
-          });
         } finally {
           setIsCreatingSession(false);
         }
@@ -290,8 +277,7 @@ const WelcomeRoute = ({ onSelectProvider }: WelcomeRouteProps) => {
           navigate('/', { replace: true });
         }}
         isOnboarding={true}
-        onProviderLaunched={(model?: string) => {
-          trackOnboardingCompleted('other', model);
+        onProviderLaunched={() => {
           onSelectProvider();
           navigate('/', { replace: true });
         }}
@@ -416,11 +402,6 @@ export function AppInner() {
         });
       } catch (error) {
         console.error('Unexpected error opening shared session:', error);
-        trackErrorWithContext(error, {
-          component: 'AppInner',
-          action: 'open_shared_session',
-          recoverable: true,
-        });
         // Navigate to shared session view with error
         const shareToken = link.replace('biorouter://sessions/', '');
         const options = {
@@ -574,7 +555,6 @@ export function AppInner() {
 
   return (
     <>
-      <PageViewTracker />
       <ToastContainer
         aria-label="Toast notifications"
         toastClassName={() =>
@@ -660,7 +640,6 @@ export default function App() {
           <AppInner />
         </HashRouter>
         <AnnouncementModal />
-        <TelemetryOptOutModal controlled={false} />
         <UpdateAvailableModal />
       </ModelAndProviderProvider>
     </ThemeProvider>

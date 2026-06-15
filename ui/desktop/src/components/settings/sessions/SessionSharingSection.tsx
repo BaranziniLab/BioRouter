@@ -4,7 +4,6 @@ import { Check, Lock, Loader2, AlertCircle } from '../../icons/app-icons';
 import { Switch } from '../../ui/switch';
 import { Button } from '../../ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../ui/card';
-import { trackSettingToggled } from '../../../utils/analytics';
 
 export default function SessionSharingSection() {
   const envBaseUrlShare = window.appConfig.get('BIOROUTER_BASE_URL_SHARE');
@@ -68,7 +67,6 @@ export default function SessionSharingSection() {
     setSessionSharingConfig((prev) => {
       const updated = { ...prev, enabled: !prev.enabled };
       localStorage.setItem('session_sharing_config', JSON.stringify(updated));
-      trackSettingToggled('session_sharing', updated.enabled);
       return updated;
     });
   };

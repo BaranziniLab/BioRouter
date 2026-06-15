@@ -1,6 +1,5 @@
 use anyhow::Result;
 use biorouter::config::Config;
-use biorouter::posthog::get_telemetry_choice;
 use biorouter::workflow::Workflow;
 use biorouter_mcp::mcp_server_runner::{serve, McpCommand};
 use biorouter_mcp::{
@@ -10,7 +9,7 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::{generate, Shell as ClapShell};
 
 use crate::commands::bench::agent_generator;
-use crate::commands::configure::{configure_telemetry_consent_dialog, handle_configure};
+use crate::commands::configure::handle_configure;
 use crate::commands::info::handle_info;
 use crate::commands::models::{
     handle_models_current, handle_models_list, handle_models_providers, handle_models_set,
@@ -1392,10 +1391,6 @@ async fn handle_interactive_session(
     session_opts: SessionOptions,
     extension_opts: ExtensionOptions,
 ) -> Result<()> {
-    if get_telemetry_choice().is_none() {
-        configure_telemetry_consent_dialog()?;
-    }
-
     let session_start = std::time::Instant::now();
     let session_type = if resume { "resumed" } else { "new" };
 
@@ -1599,10 +1594,6 @@ async fn handle_run_command(
     output_opts: OutputOptions,
     model_opts: ModelOptions,
 ) -> Result<()> {
-    if run_behavior.interactive && get_telemetry_choice().is_none() {
-        configure_telemetry_consent_dialog()?;
-    }
-
     let parsed = parse_run_input(&input_opts, output_opts.quiet)?;
 
     let Some((input_config, workflow)) = parsed else {
@@ -1826,10 +1817,6 @@ async fn handle_term_subcommand(command: TermCommand) -> Result<()> {
 async fn handle_default_session() -> Result<()> {
     if !Config::global().exists() {
         return handle_configure().await;
-    }
-
-    if get_telemetry_choice().is_none() {
-        configure_telemetry_consent_dialog()?;
     }
 
     let session_id = get_or_create_session_id(None, false, false).await?;

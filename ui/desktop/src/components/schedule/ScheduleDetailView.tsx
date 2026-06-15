@@ -21,7 +21,6 @@ import { Loader2, Pause, Play, Edit, Square, Eye } from '../icons/app-icons';
 import cronstrue from 'cronstrue';
 import { formatToLocalDateWithTimezone } from '../../utils/date';
 import { getSession, Session } from '../../api';
-import { trackScheduleRunNow, getErrorType } from '../../utils/analytics';
 
 interface ScheduleSessionMeta {
   id: string;
@@ -103,7 +102,6 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
     setIsActionLoading(true);
     try {
       const newSessionId = await runScheduleNow(scheduleId);
-      trackScheduleRunNow(true);
       if (newSessionId === 'CANCELLED') {
         toastSuccess({ title: 'Job Cancelled', msg: 'The job was cancelled while starting up.' });
       } else {
@@ -113,7 +111,6 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
       await fetchSchedule(scheduleId);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to trigger schedule';
-      trackScheduleRunNow(false, getErrorType(err));
       toastError({
         title: 'Run Schedule Error',
         msg: errorMsg,

@@ -9,12 +9,6 @@ import OllamaInlineCard from './onboarding/OllamaInlineCard';
 import CommercialSetupCard from './onboarding/CommercialSetupCard';
 import { SwitchModelModal } from './settings/models/subcomponents/SwitchModelModal';
 import { createNavigationHandler } from '../utils/navigationUtils';
-import TelemetrySettings from './settings/app/TelemetrySettings';
-import {
-  trackOnboardingStarted,
-  trackOnboardingProviderSelected,
-  trackOnboardingCompleted,
-} from '../utils/analytics';
 
 import { BioRouter } from './icons';
 
@@ -32,7 +26,6 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   const [userInActiveSetup, setUserInActiveSetup] = useState(false);
   const [showSwitchModelModal, setShowSwitchModelModal] = useState(false);
   const [switchModelProvider, setSwitchModelProvider] = useState<string | null>(null);
-  const onboardingTracked = useRef(false);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollIndicator, setShowScrollIndicator] = useState(true);
 
@@ -50,7 +43,6 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   const setView = useMemo(() => createNavigationHandler(navigate), [navigate]);
 
   const handleCommercialSuccess = async (provider: string, _model: string, apiKey: string) => {
-    trackOnboardingProviderSelected('api_key');
     const keyName = `${provider.toUpperCase()}_API_KEY`;
     await upsert(keyName, apiKey, true);
     await upsert('BIOROUTER_PROVIDER', provider, false);
@@ -59,15 +51,11 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   };
 
   const handleInstitutionalSuccess = (provider: string) => {
-    trackOnboardingProviderSelected('other');
     setSwitchModelProvider(provider);
     setShowSwitchModelModal(true);
   };
 
-  const handleModelSelected = (model: string) => {
-    if (switchModelProvider) {
-      trackOnboardingCompleted(switchModelProvider, model);
-    }
+  const handleModelSelected = (_model: string) => {
     setShowSwitchModelModal(false);
     setUserInActiveSetup(false);
     setShowFirstTimeSetup(false);
@@ -80,8 +68,6 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   };
 
   const handleOllamaComplete = () => {
-    trackOnboardingProviderSelected('ollama');
-    trackOnboardingCompleted('ollama');
     setUserInActiveSetup(false);
     setShowFirstTimeSetup(false);
     setHasProvider(true);
@@ -89,8 +75,6 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   };
 
   const handleLlamaServerComplete = () => {
-    trackOnboardingProviderSelected('llamacpp');
-    trackOnboardingCompleted('llamacpp');
     setUserInActiveSetup(false);
     setShowFirstTimeSetup(false);
     setHasProvider(true);
@@ -129,13 +113,6 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
     checkProvider();
   }, [read, didSelectProvider, userInActiveSetup]);
-
-  useEffect(() => {
-    if (!isChecking && !hasProvider && showFirstTimeSetup && !onboardingTracked.current) {
-      trackOnboardingStarted();
-      onboardingTracked.current = true;
-    }
-  }, [isChecking, hasProvider, showFirstTimeSetup]);
 
   useEffect(() => {
     if (!isChecking && !hasProvider && showFirstTimeSetup) {
@@ -189,9 +166,6 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
               onSuccess={handleCommercialSuccess}
               onStartTesting={() => setUserInActiveSetup(true)}
             />
-            <div className="py-6 border-t border-border-default">
-              <TelemetrySettings isWelcome />
-            </div>
           </div>
         </div>
 

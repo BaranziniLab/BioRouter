@@ -365,8 +365,6 @@ fn check_missing_extensions_or_exit(saved_extensions: &[ExtensionConfig], intera
 
 #[allow(clippy::too_many_lines)]
 pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
-    biorouter::posthog::set_session_context("cli", session_config.resume);
-
     let config = Config::global();
     let agent: Agent = Agent::new();
     let session_manager = agent.config.session_manager.clone();

@@ -42,16 +42,6 @@ import { SearchView } from '../conversation/SearchView';
 import cronstrue from 'cronstrue';
 import { getInitialWorkingDir } from '../../utils/workingDir';
 import {
-  trackWorkflowDeleted,
-  trackWorkflowStarted,
-  trackWorkflowDeeplinkCopied,
-  trackWorkflowYamlCopied,
-  trackWorkflowExportedToFile,
-  trackWorkflowScheduled,
-  trackWorkflowSlashCommandSet,
-  getErrorType,
-} from '../../utils/analytics';
-import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -155,7 +145,6 @@ export default function WorkflowsView() {
         throwOnError: true,
       });
       const session = newAgent.data;
-      trackWorkflowStarted(true, undefined, false);
       setView('pair', {
         disableAnimation: true,
         resumeSessionId: session.id,
@@ -163,7 +152,6 @@ export default function WorkflowsView() {
     } catch (error) {
       console.error('Failed to load workflow:', error);
       const errorMsg = error instanceof Error ? error.message : 'Failed to load workflow';
-      trackWorkflowStarted(false, getErrorType(error), false);
       setError(errorMsg);
     }
   };
@@ -178,10 +166,8 @@ export default function WorkflowsView() {
         'pair',
         workflowId
       );
-      trackWorkflowStarted(true, undefined, true);
     } catch (error) {
       console.error('Failed to open workflow in new window:', error);
-      trackWorkflowStarted(false, getErrorType(error), true);
     }
   };
 
@@ -192,11 +178,9 @@ export default function WorkflowsView() {
         cwd: getInitialWorkingDir(),
         name: workflowTitle,
       });
-      trackWorkflowStarted(true, undefined, true);
       navigate('/dashboard');
     } catch (error) {
       console.error('Failed to add workflow to dashboard:', error);
-      trackWorkflowStarted(false, getErrorType(error), true);
       toastError({
         title: 'Failed to add workflow to dashboard',
         msg: error instanceof Error ? error.message : String(error),
@@ -220,7 +204,6 @@ export default function WorkflowsView() {
 
     try {
       await deleteWorkflow({ body: { id: workflowManifest.id } });
-      trackWorkflowDeleted(true);
       await loadSavedWorkflows();
       toastSuccess({
         title: workflowManifest.workflow.title,
@@ -229,7 +212,6 @@ export default function WorkflowsView() {
     } catch (err) {
       console.error('Failed to delete workflow:', err);
       const errorMsg = err instanceof Error ? err.message : 'Failed to delete workflow';
-      trackWorkflowDeleted(false, getErrorType(err));
       setError(errorMsg);
     }
   };
@@ -251,14 +233,12 @@ export default function WorkflowsView() {
     try {
       const deeplink = await generateDeepLink(workflowManifest.workflow);
       await navigator.clipboard.writeText(deeplink);
-      trackWorkflowDeeplinkCopied(true);
       toastSuccess({
         title: 'Deeplink copied',
         msg: 'Workflow deeplink has been copied to clipboard',
       });
     } catch (error) {
       console.error('Failed to copy deeplink:', error);
-      trackWorkflowDeeplinkCopied(false, getErrorType(error));
       toastError({
         title: 'Copy failed',
         msg: 'Failed to copy deeplink to clipboard',
@@ -278,14 +258,12 @@ export default function WorkflowsView() {
       }
 
       await navigator.clipboard.writeText(response.data.yaml);
-      trackWorkflowYamlCopied(true);
       toastSuccess({
         title: 'YAML copied',
         msg: 'Workflow YAML has been copied to clipboard',
       });
     } catch (error) {
       console.error('Failed to copy YAML:', error);
-      trackWorkflowYamlCopied(false, getErrorType(error));
       toastError({
         title: 'Copy failed',
         msg: 'Failed to copy workflow YAML to clipboard',
@@ -322,7 +300,6 @@ export default function WorkflowsView() {
 
       if (!result.canceled && result.filePath) {
         await window.electron.writeFile(result.filePath, response.data.yaml);
-        trackWorkflowExportedToFile(true);
         toastSuccess({
           title: 'Workflow exported',
           msg: `Workflow saved to ${result.filePath}`,
@@ -330,7 +307,6 @@ export default function WorkflowsView() {
       }
     } catch (error) {
       console.error('Failed to export workflow:', error);
-      trackWorkflowExportedToFile(false, getErrorType(error));
       toastError({
         title: 'Export failed',
         msg: 'Failed to export workflow to file',
@@ -347,8 +323,6 @@ export default function WorkflowsView() {
   const handleSaveSchedule = async () => {
     if (!scheduleWorkflowManifest) return;
 
-    const action = scheduleWorkflowManifest.schedule_cron ? 'edit' : 'add';
-
     try {
       await scheduleWorkflow({
         body: {
@@ -357,7 +331,6 @@ export default function WorkflowsView() {
         },
       });
 
-      trackWorkflowScheduled(true, action);
       toastSuccess({
         title: 'Schedule saved',
         msg: `Workflow will run ${getReadableCron(scheduleCron)}`,
@@ -369,7 +342,6 @@ export default function WorkflowsView() {
     } catch (error) {
       console.error('Failed to save schedule:', error);
       const errorMsg = error instanceof Error ? error.message : 'Failed to save schedule';
-      trackWorkflowScheduled(false, action, getErrorType(error));
       setError(errorMsg);
     }
   };
@@ -385,7 +357,6 @@ export default function WorkflowsView() {
         },
       });
 
-      trackWorkflowScheduled(true, 'remove');
       toastSuccess({
         title: 'Schedule removed',
         msg: 'Workflow will no longer run automatically',
@@ -397,7 +368,6 @@ export default function WorkflowsView() {
     } catch (error) {
       console.error('Failed to remove schedule:', error);
       const errorMsg = error instanceof Error ? error.message : 'Failed to remove schedule';
-      trackWorkflowScheduled(false, 'remove', getErrorType(error));
       setError(errorMsg);
     }
   };
@@ -411,12 +381,6 @@ export default function WorkflowsView() {
   const handleSaveSlashCommand = async () => {
     if (!slashCommandWorkflowManifest) return;
 
-    const action = slashCommand
-      ? slashCommandWorkflowManifest.slash_command
-        ? 'edit'
-        : 'add'
-      : 'remove';
-
     try {
       await setWorkflowSlashCommand({
         body: {
@@ -425,7 +389,6 @@ export default function WorkflowsView() {
         },
       });
 
-      trackWorkflowSlashCommandSet(true, action);
       toastSuccess({
         title: 'Slash command saved',
         msg: slashCommand ? `Use /${slashCommand} to run this workflow` : 'Slash command removed',
@@ -437,7 +400,6 @@ export default function WorkflowsView() {
     } catch (error) {
       console.error('Failed to save slash command:', error);
       const errorMsg = error instanceof Error ? error.message : 'Failed to save slash command';
-      trackWorkflowSlashCommandSet(false, action, getErrorType(error));
       setError(errorMsg);
     }
   };
@@ -453,7 +415,6 @@ export default function WorkflowsView() {
         },
       });
 
-      trackWorkflowSlashCommandSet(true, 'remove');
       toastSuccess({
         title: 'Slash command removed',
         msg: 'Workflow slash command has been removed',
@@ -465,7 +426,6 @@ export default function WorkflowsView() {
     } catch (error) {
       console.error('Failed to remove slash command:', error);
       const errorMsg = error instanceof Error ? error.message : 'Failed to remove slash command';
-      trackWorkflowSlashCommandSet(false, 'remove', getErrorType(error));
       setError(errorMsg);
     }
   };
@@ -490,58 +450,53 @@ export default function WorkflowsView() {
   }: {
     workflowManifestResponse: WorkflowManifest;
   }) => (
-    <div className="py-4 px-2 border-b border-border-subtle last:border-b-0 hover:bg-background-medium/40 transition-colors duration-150 group">
-      <div className="flex justify-between items-start gap-4">
+    <div className="py-3 px-2 border-b border-border-subtle last:border-b-0 hover:bg-background-medium/30 transition-colors duration-150 group">
+      <div className="flex justify-between items-start gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 mb-1">
-            <h3 className="text-base truncate max-w-[50vw]">{workflow.title}</h3>
+          <div className="flex items-center gap-1.5">
+            <h3 className="text-sm text-text-default truncate max-w-[50vw]">{workflow.title}</h3>
             {isBuiltinWorkflow(workflowManifestResponse.file_path) && (
               <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
             )}
           </div>
-          <p className="text-text-muted text-sm mb-2 line-clamp-2">{workflow.description}</p>
-          <div className="flex flex-col gap-1 text-xs text-text-muted">
-            <div className="flex items-center">
+          <p className="text-xs text-text-muted mt-0.5 line-clamp-1">{workflow.description}</p>
+          <div className="flex items-center gap-3 mt-1 text-[11px] text-text-subtle">
+            <span className="flex items-center">
               <Calendar className="w-3 h-3 mr-1" />
               {convertToLocaleDateString(lastModified)}
-            </div>
-            {(schedule_cron || slash_command) && (
-              <div className="flex items-center gap-3">
-                {schedule_cron && (
-                  <div className="flex items-center text-text-info">
-                    <Clock className="w-3 h-3 mr-1" />
-                    Runs {getReadableCron(schedule_cron)}
-                  </div>
-                )}
-                {slash_command && (
-                  <div className="flex items-center text-text-info">/{slash_command}</div>
-                )}
-              </div>
+            </span>
+            {schedule_cron && (
+              <span className="flex items-center text-text-info">
+                <Clock className="w-3 h-3 mr-1" />
+                Runs {getReadableCron(schedule_cron)}
+              </span>
+            )}
+            {slash_command && (
+              <span className="flex items-center text-text-info">/{slash_command}</span>
             )}
           </div>
         </div>
 
-        <Button
-          onClick={(e) => {
-            e.stopPropagation();
-            handleOpenSlashCommandDialog(workflowManifestResponse);
-          }}
-          variant={slash_command ? 'default' : 'outline'}
-          size="sm"
-          className="h-8 w-8 p-0"
-          title={slash_command ? 'Edit slash command' : 'Add slash command'}
-        >
-          <Terminal className="w-4 h-4" />
-        </Button>
-
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleOpenSlashCommandDialog(workflowManifestResponse);
+            }}
+            variant={slash_command ? 'default' : 'outline'}
+            size="sm"
+            className="h-7 w-7 p-0"
+            title={slash_command ? 'Edit slash command' : 'Add slash command'}
+          >
+            <Terminal className="w-4 h-4" />
+          </Button>
           <Button
             onClick={(e) => {
               e.stopPropagation();
               handleStartWorkflowChat(workflow, workflowManifestResponse.id);
             }}
             size="sm"
-            className="h-8 w-8 p-0"
+            className="h-7 w-7 p-0"
             title="Use workflow"
           >
             <Play className="w-4 h-4" />
@@ -552,7 +507,7 @@ export default function WorkflowsView() {
                 onClick={(e) => e.stopPropagation()}
                 variant="outline"
                 size="sm"
-                className="h-8 w-8 p-0"
+                className="h-7 w-7 p-0"
                 title="Launch workflow"
               >
                 <ExternalLink className="w-4 h-4" />
@@ -582,7 +537,7 @@ export default function WorkflowsView() {
             }}
             variant="outline"
             size="sm"
-            className="h-8 w-8 p-0"
+            className="h-7 w-7 p-0"
             title="Edit workflow"
           >
             <Edit className="w-4 h-4" />
@@ -593,7 +548,7 @@ export default function WorkflowsView() {
                 onClick={(e) => e.stopPropagation()}
                 variant="outline"
                 size="sm"
-                className="h-8 w-8 p-0"
+                className="h-7 w-7 p-0"
                 title="Share workflow"
               >
                 <Share2 className="w-4 h-4" />
@@ -622,7 +577,7 @@ export default function WorkflowsView() {
             }}
             variant={schedule_cron ? 'default' : 'outline'}
             size="sm"
-            className="h-8 w-8 p-0"
+            className="h-7 w-7 p-0"
             title={schedule_cron ? 'Edit schedule' : 'Add schedule'}
           >
             <Clock className="w-4 h-4" />
@@ -712,7 +667,7 @@ export default function WorkflowsView() {
     }
 
     return (
-      <div className="space-y-2">
+      <div>
         {filteredWorkflows.map((workflowManifestResponse: WorkflowManifest) => (
           <WorkflowItem
             key={workflowManifestResponse.id}

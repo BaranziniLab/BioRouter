@@ -18,7 +18,6 @@ use crate::config::paths::Paths;
 use crate::config::{resolve_extensions_for_new_session, Config};
 use crate::conversation::message::Message;
 use crate::conversation::Conversation;
-use crate::posthog;
 use crate::providers::create;
 use crate::scheduler_trait::SchedulerTrait;
 use crate::session::session_manager::SessionType;
@@ -267,7 +266,6 @@ impl Scheduler {
                     Ok(_) => tracing::info!("Job '{}' completed", task_job_id),
                     Err(ref e) => {
                         tracing::error!("Job '{}' failed: {}", task_job_id, e);
-                        crate::posthog::emit_error("scheduler_job_failed", &e.to_string());
                     }
                 }
             })
@@ -766,18 +764,6 @@ async fn execute_job(
     }
     drop(jobs_guard);
 
-    let start_time = std::time::Instant::now();
-    tokio::spawn(async move {
-        let mut props = HashMap::new();
-        props.insert(
-            "trigger".to_string(),
-            serde_json::Value::String("automated".to_string()),
-        );
-        if let Err(e) = posthog::emit_event("schedule_job_started", props).await {
-            tracing::debug!("Failed to send schedule telemetry: {}", e);
-        }
-    });
-
     let prompt_text = workflow
         .prompt
         .as_ref()
@@ -850,26 +836,6 @@ async fn execute_job(
         .workflow(Some(workflow))
         .apply()
         .await?;
-
-    let duration_secs = start_time.elapsed().as_secs();
-    tokio::spawn(async move {
-        let mut props = HashMap::new();
-        props.insert(
-            "trigger".to_string(),
-            serde_json::Value::String("automated".to_string()),
-        );
-        props.insert(
-            "status".to_string(),
-            serde_json::Value::String("completed".to_string()),
-        );
-        props.insert(
-            "duration_seconds".to_string(),
-            serde_json::Value::Number(serde_json::Number::from(duration_secs)),
-        );
-        if let Err(e) = posthog::emit_event("schedule_job_completed", props).await {
-            tracing::debug!("Failed to send schedule telemetry: {}", e);
-        }
-    });
 
     Ok(session.id)
 }

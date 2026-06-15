@@ -211,7 +211,6 @@ async fn create_workflow(
         }
         Err(e) => {
             tracing::error!("Error details: {:?}", e);
-            biorouter::posthog::emit_error("workflow_create_failed", &e.to_string());
             let error_response = CreateWorkflowResponse {
                 workflow: None,
                 error: Some(format!("Failed to create workflow: {}", e)),
@@ -238,7 +237,6 @@ async fn encode_workflow(
         Ok(encoded) => Ok(Json(EncodeWorkflowResponse { deeplink: encoded })),
         Err(err) => {
             tracing::error!("Failed to encode workflow: {}", err);
-            biorouter::posthog::emit_error("workflow_encode_failed", &err.to_string());
             Err(StatusCode::BAD_REQUEST)
         }
     }
@@ -264,7 +262,6 @@ async fn decode_workflow(
         },
         Err(err) => {
             tracing::error!("Failed to decode deeplink: {}", err);
-            biorouter::posthog::emit_error("workflow_decode_failed", &err.to_string());
             Err(StatusCode::BAD_REQUEST)
         }
     }
@@ -392,7 +389,6 @@ async fn schedule_workflow(
         Ok(_) => Ok(StatusCode::OK),
         Err(e) => {
             tracing::error!("Failed to schedule workflow: {}", e);
-            biorouter::posthog::emit_error("workflow_schedule_failed", &e.to_string());
             Err(StatusCode::INTERNAL_SERVER_ERROR)
         }
     }

@@ -977,7 +977,6 @@ impl SessionStorage {
             .await?;
 
         tx.commit().await?;
-        crate::posthog::emit_session_started();
         Ok(session)
     }
 
