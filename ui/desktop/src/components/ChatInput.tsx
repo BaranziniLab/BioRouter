@@ -38,12 +38,6 @@ import CreateWorkflowFromSessionModal from './workflows/CreateWorkflowFromSessio
 import CreateEditWorkflowModal from './workflows/CreateEditWorkflowModal';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
-import {
-  trackFileAttached,
-  trackDiagnosticsOpened,
-  trackCreateWorkflowOpened,
-  trackEditWorkflowOpened,
-} from '../utils/analytics';
 import { getNavigationShortcutText } from '../utils/keyboardShortcuts';
 import type { UserAttachment } from '../types/message';
 
@@ -1142,9 +1136,6 @@ export default function ChatInput({
     try {
       const path = await window.electron.selectFileOrDirectory();
       if (path) {
-        const isDirectory = !path.includes('.') || path.endsWith('/');
-        trackFileAttached(isDirectory ? 'directory' : 'file');
-
         const newValue = displayValue.trim() ? `${displayValue.trim()} ${path}` : path;
         setDisplayValue(newValue);
         setValue(newValue);
@@ -1584,10 +1575,8 @@ export default function ChatInput({
                     type="button"
                     onClick={() => {
                       if (workflow) {
-                        trackEditWorkflowOpened();
                         setShowEditWorkflowModal(true);
                       } else {
-                        trackCreateWorkflowOpened();
                         setShowCreateWorkflowModal(true);
                       }
                       setPickerExpanded(false);
@@ -1606,7 +1595,6 @@ export default function ChatInput({
                   <button
                     type="button"
                     onClick={() => {
-                      trackDiagnosticsOpened();
                       setDiagnosticsOpen(true);
                       setPickerExpanded(false);
                     }}
@@ -1667,10 +1655,8 @@ export default function ChatInput({
                     <Button
                       onClick={() => {
                         if (workflow) {
-                          trackEditWorkflowOpened();
                           setShowEditWorkflowModal(true);
                         } else {
-                          trackCreateWorkflowOpened();
                           setShowCreateWorkflowModal(true);
                         }
                       }}
@@ -1695,7 +1681,6 @@ export default function ChatInput({
                     <Button
                       type="button"
                       onClick={() => {
-                        trackDiagnosticsOpened();
                         setDiagnosticsOpen(true);
                       }}
                       variant="ghost"

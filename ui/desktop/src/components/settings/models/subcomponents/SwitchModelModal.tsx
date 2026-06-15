@@ -19,7 +19,6 @@ import type { View } from '../../../../utils/navigationUtils';
 import Model, { getProviderMetadata, fetchModelsForProviders } from '../modelInterface';
 import { getPredefinedModelsFromEnv, shouldShowPredefinedModels } from '../predefinedModelsUtils';
 import { ProviderType } from '../../../../api';
-import { trackModelChanged } from '../../../../utils/analytics';
 
 // Return the first concrete model from the provider's list. The list is
 // authored in priority order in the Rust provider definition (typically newest
@@ -131,8 +130,6 @@ export const SwitchModelModal = ({
       }
 
       await changeModel(sessionId, modelObj);
-
-      trackModelChanged(modelObj.provider || '', modelObj.name);
 
       if (onModelSelected) {
         onModelSelected(modelObj.name);

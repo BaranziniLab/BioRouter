@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Switch } from '../../ui/switch';
 import { useConfig } from '../../ConfigContext';
-import { trackSettingToggled } from '../../../utils/analytics';
 
 interface SecurityConfig {
   SECURITY_PROMPT_ENABLED?: boolean;
@@ -65,7 +64,6 @@ export const SecurityToggle = () => {
 
   const handleToggle = async (enabled: boolean) => {
     await upsert('SECURITY_PROMPT_ENABLED', enabled, false);
-    trackSettingToggled('prompt_injection_detection', enabled);
   };
 
   const handleThresholdChange = async (threshold: number) => {

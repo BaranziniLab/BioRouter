@@ -646,10 +646,6 @@ impl Agent {
                 )
                 .await;
             result.unwrap_or_else(|e| {
-                crate::posthog::emit_error(
-                    "tool_execution_failed",
-                    &format!("{}: {}", tool_call.name, e),
-                );
                 // Try to downcast to ErrorData to avoid double wrapping
                 let error_data = e.downcast::<ErrorData>().unwrap_or_else(|e| {
                     ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None)
@@ -1017,7 +1013,7 @@ impl Agent {
             let command = message_text.split_whitespace().next();
             if let Some(cmd) = command {
                 if crate::slash_commands::get_workflow_for_command(cmd).is_some() {
-                    crate::posthog::emit_custom_slash_command_used();
+                    // (telemetry for custom slash command usage removed)
                 }
             }
         }
@@ -1613,8 +1609,7 @@ impl Agent {
                                 no_tools_called = false;
                             }
                         }
-                        Err(ref provider_err @ ProviderError::ContextLengthExceeded(_)) => {
-                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
+                        Err(ProviderError::ContextLengthExceeded(_)) => {
                             compaction_attempts += 1;
 
                             if compaction_attempts >= 2 {
@@ -1665,14 +1660,12 @@ impl Agent {
                                     break;
                                 }
                                 Err(e) => {
-                                    crate::posthog::emit_error("compaction_failed", &e.to_string());
                                     error!("Compaction failed: {}", e);
                                     break;
                                 }
                             }
                         }
                         Err(ref provider_err) => {
-                            crate::posthog::emit_error(provider_err.telemetry_type(), &provider_err.to_string());
                             error!("Error: {}", provider_err);
                             yield AgentEvent::Message(
                                 Message::assistant().with_text(
@@ -1796,8 +1789,42 @@ impl Agent {
                             break;
                         }
                         crate::hooks::StopHookVerdict::Blocked { reason } => {
+                            // For goal loops, account the block against the goal's
+                            // own iteration/stall budget (which, unlike the generic
+                            // Stop-hook cap, does not reset when tools run). On
+                            // give-up, clear the goal and have the agent deliver a
+                            // best-effort answer instead of looping forever.
+                            let goal_outcome = if active_goal.is_some() {
+                                self.record_goal_block(&session_config.id, &reason).await
+                            } else {
+                                None
+                            };
+
+                            let (feedback_text, notice) = match goal_outcome {
+                                Some(crate::agents::goal::GoalOutcome::GiveUp { attempts, stalled }) => {
+                                    self.clear_goal(&session_config.id).await;
+                                    let why = if stalled {
+                                        "it stopped making progress"
+                                    } else {
+                                        "it hit the attempt limit"
+                                    };
+                                    (
+                                        crate::agents::goal::giveup_instruction(&reason),
+                                        format!(
+                                            "🎯 Goal stopped after {attempts} attempt(s) — {why}. \
+                                             Wrapping up with a best-effort answer; refine with a \
+                                             narrower /goal if needed."
+                                        ),
+                                    )
+                                }
+                                _ => (
+                                    format!("Stop hook feedback: {reason}"),
+                                    format!("Stop hook blocked completion: {reason}"),
+                                ),
+                            };
+
                             let feedback = Message::user()
-                                .with_text(format!("Stop hook feedback: {reason}"))
+                                .with_text(feedback_text)
                                 .with_visibility(false, true);
                             session_manager.add_message(&session_config.id, &feedback).await?;
                             conversation.push(feedback);
@@ -1805,11 +1832,13 @@ impl Agent {
                                 Message::assistant()
                                     .with_system_notification(
                                         SystemNotificationType::InlineMessage,
-                                        format!("Stop hook blocked completion: {reason}"),
+                                        notice,
                                     )
                                     .user_only(),
                             );
                             // Keep looping: the model sees the feedback next turn.
+                            // After a give-up the goal is cleared, so the next stop
+                            // proceeds once the agent delivers its wrap-up.
                         }
                     }
                 }

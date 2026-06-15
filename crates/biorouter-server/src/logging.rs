@@ -5,13 +5,10 @@ use tracing_subscriber::{
     Registry,
 };
 
-use biorouter::tracing::{langfuse_layer, otlp_layer};
-
 /// Sets up the logging infrastructure for the application.
 /// This includes:
 /// - File-based logging with JSON formatting (DEBUG level)
 /// - Console output for development (INFO level)
-/// - Optional Langfuse integration (DEBUG level)
 pub fn setup_logging(name: Option<&str>) -> Result<()> {
     let log_dir = biorouter::logging::prepare_log_directory("server", true)?;
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S").to_string();
@@ -49,32 +46,10 @@ pub fn setup_logging(name: Option<&str>) -> Result<()> {
         .with_line_number(true)
         .pretty();
 
-    let mut layers = vec![
+    let layers = vec![
         file_layer.with_filter(base_env_filter.clone()).boxed(),
         console_layer.with_filter(base_env_filter).boxed(),
     ];
-
-    if let Ok((otlp_tracing_layer, otlp_metrics_layer, otlp_logs_layer)) = otlp_layer::init_otlp() {
-        layers.push(
-            otlp_tracing_layer
-                .with_filter(otlp_layer::create_otlp_tracing_filter())
-                .boxed(),
-        );
-        layers.push(
-            otlp_metrics_layer
-                .with_filter(otlp_layer::create_otlp_metrics_filter())
-                .boxed(),
-        );
-        layers.push(
-            otlp_logs_layer
-                .with_filter(otlp_layer::create_otlp_logs_filter())
-                .boxed(),
-        );
-    }
-
-    if let Some(langfuse) = langfuse_layer::create_langfuse_observer() {
-        layers.push(langfuse.with_filter(LevelFilter::DEBUG).boxed());
-    }
 
     let subscriber = Registry::default().with(layers);
 

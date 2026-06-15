@@ -217,8 +217,6 @@ async fn start_agent(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<StartAgentRequest>,
 ) -> Result<Json<Session>, ErrorResponse> {
-    biorouter::posthog::set_session_context("desktop", false);
-
     let StartAgentRequest {
         working_dir,
         workflow,
@@ -232,7 +230,6 @@ async fn start_agent(
             Ok(workflow) => Some(workflow),
             Err(err) => {
                 error!("Failed to decode workflow deeplink: {}", err);
-                biorouter::posthog::emit_error("workflow_deeplink_decode_failed", &err.to_string());
                 return Err(ErrorResponse {
                     message: err.to_string(),
                     status: StatusCode::BAD_REQUEST,
@@ -271,7 +268,6 @@ async fn start_agent(
         .await
         .map_err(|err| {
             error!("Failed to create session: {}", err);
-            biorouter::posthog::emit_error("session_create_failed", &err.to_string());
             ErrorResponse {
                 message: format!("Failed to create session: {}", err),
                 status: StatusCode::BAD_REQUEST,
@@ -382,15 +378,12 @@ async fn resume_agent(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ResumeAgentRequest>,
 ) -> Result<Json<ResumeAgentResponse>, ErrorResponse> {
-    biorouter::posthog::set_session_context("desktop", true);
-
     let session = state
         .session_manager()
         .get_session(&payload.session_id, true)
         .await
         .map_err(|err| {
             error!("Failed to resume session {}: {}", payload.session_id, err);
-            biorouter::posthog::emit_error("session_resume_failed", &err.to_string());
             ErrorResponse {
                 message: format!("Failed to resume session: {}", err),
                 status: StatusCode::NOT_FOUND,
@@ -635,14 +628,9 @@ async fn agent_add_extension(
     State(state): State<Arc<AppState>>,
     Json(request): Json<AddExtensionRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
-    let extension_name = request.config.name();
     let agent = state.get_agent(request.session_id.clone()).await?;
 
     agent.add_extension(request.config).await.map_err(|e| {
-        biorouter::posthog::emit_error(
-            "extension_add_failed",
-            &format!("{}: {}", extension_name, e),
-        );
         ErrorResponse::internal(format!("Failed to add extension: {}", e))
     })?;
 

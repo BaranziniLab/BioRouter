@@ -8,7 +8,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
-import { trackModeChanged } from '../../utils/analytics';
 
 export const BottomMenuModeSelection = () => {
   const [currentMode, setCurrentMode] = useState('auto');
@@ -37,7 +36,6 @@ export const BottomMenuModeSelection = () => {
     try {
       await upsert('BIOROUTER_MODE', newMode, false);
       setCurrentMode(newMode);
-      trackModeChanged(currentMode, newMode);
     } catch (error) {
       console.error('Error updating biorouter mode:', error);
       throw new Error(`Failed to store new biorouter mode: ${newMode}`);

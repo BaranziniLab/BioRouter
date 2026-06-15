@@ -31,7 +31,6 @@ import cronstrue from 'cronstrue';
 import { formatToLocalDateWithTimezone } from '../../utils/date';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { ViewOptions } from '../../utils/navigationUtils';
-import { trackScheduleCreated, trackScheduleDeleted, getErrorType } from '../../utils/analytics';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import {
   BUILTIN_RECREATED_TITLE,
@@ -75,13 +74,13 @@ const ScheduleCard: React.FC<{
 
   return (
     <div
-      className="py-4 px-2 border-b border-border-subtle last:border-b-0 cursor-pointer hover:bg-background-medium/40 transition-colors duration-150"
+      className="group py-3 px-2 border-b border-border-subtle last:border-b-0 cursor-pointer hover:bg-background-medium/30 transition-colors duration-150"
       onClick={() => onNavigateToDetail(job.id)}
     >
-      <div className="flex justify-between items-start gap-4">
+      <div className="flex justify-between items-start gap-3">
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 mb-1">
-            <h3 className="text-base truncate max-w-[50vw]" title={job.id}>
+          <div className="flex items-center gap-1.5">
+            <h3 className="text-sm text-text-default truncate max-w-[50vw]" title={job.id}>
               {scheduleDisplayName(job.id)}
             </h3>
             {isBuiltinSchedule(job.id) && <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />}
@@ -98,15 +97,15 @@ const ScheduleCard: React.FC<{
               </span>
             )}
           </div>
-          <p className="text-text-muted text-sm mb-2 line-clamp-2" title={readableCron}>
+          <p className="text-xs text-text-muted mt-0.5 line-clamp-1" title={readableCron}>
             {readableCron}
           </p>
-          <div className="flex items-center text-xs text-text-muted">
+          <div className="flex items-center text-[11px] text-text-subtle mt-1">
             <span>Last run: {formattedLastRun}</span>
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
           {!job.currently_running && (
             <>
               <Button
@@ -117,10 +116,10 @@ const ScheduleCard: React.FC<{
                 disabled={actionInProgress}
                 variant="outline"
                 size="sm"
-                className="h-8"
+                className="h-7 w-7 p-0"
+                title="Edit"
               >
-                <Edit className="w-4 h-4 mr-1" />
-                Edit
+                <Edit className="w-3.5 h-3.5" />
               </Button>
               <Button
                 onClick={(e) => {
@@ -134,19 +133,10 @@ const ScheduleCard: React.FC<{
                 disabled={actionInProgress}
                 variant="outline"
                 size="sm"
-                className="h-8"
+                className="h-7 w-7 p-0"
+                title={job.paused ? 'Resume' : 'Pause'}
               >
-                {job.paused ? (
-                  <>
-                    <Play className="w-4 h-4 mr-1" />
-                    Resume
-                  </>
-                ) : (
-                  <>
-                    <Pause className="w-4 h-4 mr-1" />
-                    Pause
-                  </>
-                )}
+                {job.paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
               </Button>
             </>
           )}
@@ -160,10 +150,10 @@ const ScheduleCard: React.FC<{
                 disabled={actionInProgress}
                 variant="outline"
                 size="sm"
-                className="h-8"
+                className="h-7 w-7 p-0"
+                title="Inspect"
               >
-                <Eye className="w-4 h-4 mr-1" />
-                Inspect
+                <Eye className="w-3.5 h-3.5" />
               </Button>
               <Button
                 onClick={(e) => {
@@ -173,10 +163,10 @@ const ScheduleCard: React.FC<{
                 disabled={actionInProgress}
                 variant="outline"
                 size="sm"
-                className="h-8"
+                className="h-7 w-7 p-0"
+                title="Kill"
               >
-                <Square className="w-4 h-4 mr-1" />
-                Kill
+                <Square className="w-3.5 h-3.5" />
               </Button>
             </>
           )}
@@ -188,9 +178,10 @@ const ScheduleCard: React.FC<{
             disabled={actionInProgress}
             variant="ghost"
             size="sm"
-            className="h-8 text-text-danger hover:bg-background-danger/10"
+            className="h-7 w-7 p-0 text-text-danger hover:bg-background-danger/10"
+            title="Delete"
           >
-            <TrashIcon className="w-4 h-4" />
+            <TrashIcon className="w-3.5 h-3.5" />
           </Button>
         </div>
       </div>
@@ -275,7 +266,6 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       } else {
         const newPayload = payload as NewSchedulePayload;
         await createSchedule(newPayload);
-        trackScheduleCreated('file', true);
       }
       await fetchSchedules();
       setIsModalOpen(false);
@@ -284,10 +274,6 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       console.error('Failed to save schedule:', error);
       const errorMsg = error instanceof Error ? error.message : 'Unknown error saving schedule.';
       setSubmitApiError(errorMsg);
-
-      if (!editingSchedule) {
-        trackScheduleCreated('file', false, getErrorType(error));
-      }
     } finally {
       setIsSubmitting(false);
     }
@@ -302,13 +288,11 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
 
     try {
       await deleteSchedule(id);
-      trackScheduleDeleted(true);
       await fetchSchedules();
     } catch (error) {
       console.error(`Failed to delete schedule "${id}":`, error);
       const errorMsg = error instanceof Error ? error.message : `Unknown error deleting "${id}".`;
       setApiError(errorMsg);
-      trackScheduleDeleted(false, getErrorType(error));
     } finally {
       setActionsInProgress((prev) => {
         const newSet = new Set(prev);
@@ -513,7 +497,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
                 )}
 
                 {!isLoading && schedules.length > 0 && (
-                  <div className="space-y-2 pb-8">
+                  <div className="pb-8">
                     {schedules.map((job) => (
                       <ScheduleCard
                         key={job.id}

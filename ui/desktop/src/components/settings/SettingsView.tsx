@@ -7,10 +7,9 @@ import ConfigSettings from './config/ConfigSettings';
 import { ExtensionConfig } from '../../api';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Brain, Monitor, MessageSquare } from '../icons/app-icons';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import ChatSettingsSection from './chat/ChatSettingsSection';
 import { CONFIGURATION_ENABLED } from '../../updates';
-import { trackSettingsTabViewed } from '../../utils/analytics';
 
 export type SettingsViewOptions = {
   deepLinkConfig?: ExtensionConfig;
@@ -28,11 +27,9 @@ export default function SettingsView({
   viewOptions: SettingsViewOptions;
 }) {
   const [activeTab, setActiveTab] = useState('models');
-  const hasTrackedInitialTab = useRef(false);
 
   const handleTabChange = (tab: string) => {
     setActiveTab(tab);
-    trackSettingsTabViewed(tab);
   };
 
   // Determine initial tab based on section prop
@@ -55,13 +52,6 @@ export default function SettingsView({
       }
     }
   }, [viewOptions.section]);
-
-  useEffect(() => {
-    if (!hasTrackedInitialTab.current) {
-      trackSettingsTabViewed(activeTab);
-      hasTrackedInitialTab.current = true;
-    }
-  }, [activeTab]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {

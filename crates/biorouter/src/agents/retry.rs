@@ -138,10 +138,6 @@ impl RetryManager {
                 "Maximum retry attempts ({}) exceeded",
                 retry_config.max_retries
             );
-            crate::posthog::emit_error(
-                "retry_max_exceeded",
-                &format!("Max retries ({}) exceeded", retry_config.max_retries),
-            );
             return Ok(RetryResult::MaxAttemptsReached);
         }
 

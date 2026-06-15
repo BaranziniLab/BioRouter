@@ -8,7 +8,6 @@ use tracing_subscriber::{
     Registry,
 };
 
-use biorouter::tracing::{langfuse_layer, otlp_layer};
 use biorouter_bench::bench_session::BenchAgentError;
 use biorouter_bench::error_capture::ErrorCaptureLayer;
 
@@ -19,7 +18,6 @@ static INIT: Once = Once::new();
 /// This includes:
 /// - File-based logging with JSON formatting (DEBUG level)
 /// - No console output (all logs go to files only)
-/// - Optional Langfuse integration (DEBUG level)
 /// - Optional error capture layer for benchmarking
 pub fn setup_logging(
     name: Option<&str>,
@@ -89,32 +87,6 @@ fn setup_logging_internal(
                 layers.push(ErrorCaptureLayer::new().boxed());
             }
 
-            if !force {
-                if let Ok((otlp_tracing_layer, otlp_metrics_layer, otlp_logs_layer)) =
-                    otlp_layer::init_otlp()
-                {
-                    layers.push(
-                        otlp_tracing_layer
-                            .with_filter(otlp_layer::create_otlp_tracing_filter())
-                            .boxed(),
-                    );
-                    layers.push(
-                        otlp_metrics_layer
-                            .with_filter(otlp_layer::create_otlp_metrics_filter())
-                            .boxed(),
-                    );
-                    layers.push(
-                        otlp_logs_layer
-                            .with_filter(otlp_layer::create_otlp_logs_filter())
-                            .boxed(),
-                    );
-                }
-            }
-
-            if let Some(langfuse) = langfuse_layer::create_langfuse_observer() {
-                layers.push(langfuse.with_filter(LevelFilter::DEBUG).boxed());
-            }
-
             // Build the subscriber
             let subscriber = Registry::default().with(layers);
 
@@ -148,7 +120,6 @@ fn setup_logging_internal(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::env;
     use tempfile::TempDir;
 
@@ -174,57 +145,5 @@ mod tests {
         assert!(path_components.iter().any(|c| c.as_os_str() == "biorouter"));
         assert!(path_components.iter().any(|c| c.as_os_str() == "logs"));
         assert!(path_components.iter().any(|c| c.as_os_str() == "cli"));
-    }
-
-    #[tokio::test]
-    async fn test_langfuse_layer_creation() {
-        let _temp_dir = setup_temp_home();
-
-        // Store original environment variables (both sets)
-        let original_vars = [
-            ("LANGFUSE_PUBLIC_KEY", env::var("LANGFUSE_PUBLIC_KEY").ok()),
-            ("LANGFUSE_SECRET_KEY", env::var("LANGFUSE_SECRET_KEY").ok()),
-            ("LANGFUSE_URL", env::var("LANGFUSE_URL").ok()),
-            (
-                "LANGFUSE_INIT_PROJECT_PUBLIC_KEY",
-                env::var("LANGFUSE_INIT_PROJECT_PUBLIC_KEY").ok(),
-            ),
-            (
-                "LANGFUSE_INIT_PROJECT_SECRET_KEY",
-                env::var("LANGFUSE_INIT_PROJECT_SECRET_KEY").ok(),
-            ),
-        ];
-
-        // Clear all Langfuse environment variables
-        for (var, _) in &original_vars {
-            env::remove_var(var);
-        }
-
-        // Test without any environment variables
-        assert!(langfuse_layer::create_langfuse_observer().is_none());
-
-        // Test with standard Langfuse variables
-        env::set_var("LANGFUSE_PUBLIC_KEY", "test_public_key");
-        env::set_var("LANGFUSE_SECRET_KEY", "test_secret_key");
-        assert!(langfuse_layer::create_langfuse_observer().is_some());
-
-        // Clear and test with init project variables
-        env::remove_var("LANGFUSE_PUBLIC_KEY");
-        env::remove_var("LANGFUSE_SECRET_KEY");
-        env::set_var("LANGFUSE_INIT_PROJECT_PUBLIC_KEY", "test_public_key");
-        env::set_var("LANGFUSE_INIT_PROJECT_SECRET_KEY", "test_secret_key");
-        assert!(langfuse_layer::create_langfuse_observer().is_some());
-
-        // Test fallback behavior
-        env::remove_var("LANGFUSE_INIT_PROJECT_PUBLIC_KEY");
-        assert!(langfuse_layer::create_langfuse_observer().is_none());
-
-        // Restore original environment variables
-        for (var, value) in original_vars {
-            match value {
-                Some(val) => env::set_var(var, val),
-                None => env::remove_var(var),
-            }
-        }
     }
 }
