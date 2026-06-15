@@ -55,16 +55,21 @@ function buildAugmentedPath(): string {
 
   if (process.platform === 'darwin') {
     extra.push(
+      // rustup (~/.cargo/bin) must precede the Homebrew prefixes: source builds
+      // (e.g. cryptography ≥49, which no longer ships Intel-Mac wheels) invoke
+      // whichever `rustc` is first on PATH, and a self-contained rustup toolchain
+      // is reliable whereas Homebrew's `rust` dynamically links `libLLVM.dylib`
+      // and breaks whenever `llvm` is upgraded out from under it.
+      path.join(home, '.cargo', 'bin'),
       '/usr/local/bin',
       '/opt/homebrew/bin',
       '/opt/homebrew/sbin',
       '/usr/bin',
       '/bin',
-      path.join(home, '.cargo', 'bin'),
       path.join(home, '.local', 'bin'),
       path.join(home, 'Library', 'Python', '3.12', 'bin'),
       path.join(home, 'Library', 'Python', '3.11', 'bin'),
-      path.join(home, 'Library', 'Python', '3.10', 'bin'),
+      path.join(home, 'Library', 'Python', '3.10', 'bin')
     );
   } else if (process.platform === 'win32') {
     const localAppData = process.env.LOCALAPPDATA || '';
@@ -74,6 +79,8 @@ function buildAugmentedPath(): string {
       // BioRouter's own bundled shims (uv.exe, uvx.exe, npx.cmd, git shim if added)
       // — must be first so bundled tools take priority over stale system installs
       path.join(localAppData, 'BioRouter', 'bin'),
+      // rustup ahead of system tooling so source builds prefer it (see darwin note)
+      path.join(home, '.cargo', 'bin'),
       path.join(programFiles, 'Git', 'bin'),
       path.join(programFilesX86, 'Git', 'bin'),
       path.join(localAppData, 'Programs', 'Python', 'Python312'),
@@ -81,19 +88,21 @@ function buildAugmentedPath(): string {
       path.join(localAppData, 'Programs', 'Python', 'Python310'),
       path.join(programFiles, 'nodejs'),
       path.join(localAppData, 'Programs', 'nodejs'),
-      path.join(home, '.cargo', 'bin'),
       path.join(localAppData, 'uv', 'bin'),
       // Bundled git fallback — appended last so system git always takes priority
-      path.join(localAppData, 'BioRouter', 'git', 'cmd'),
+      path.join(localAppData, 'BioRouter', 'git', 'cmd')
     );
   } else {
     // Linux
     extra.push(
+      // rustup ahead of the system dirs, so source builds use the rustup
+      // toolchain rather than a distro `rustc` that may be too old to compile
+      // modern Rust-backed wheels.
+      path.join(home, '.cargo', 'bin'),
       '/usr/bin',
       '/usr/local/bin',
       '/bin',
-      path.join(home, '.cargo', 'bin'),
-      path.join(home, '.local', 'bin'),
+      path.join(home, '.local', 'bin')
     );
   }
 
@@ -152,7 +161,7 @@ function probeVersion(cmd: string, args: string[]): string | null {
 
 function buildInstallInfo(
   dep: 'git' | 'python' | 'uv' | 'npm' | 'aws',
-  distro: LinuxDistro,
+  distro: LinuxDistro
 ): { cmd: string; requiresSudo: boolean; downloadUrl: string } {
   const platform = process.platform;
 
@@ -237,12 +246,24 @@ function buildInstallInfo(
 
   if (dep === 'aws') {
     if (distro === 'deb') {
-      return { cmd: 'sudo apt-get install -y awscli', requiresSudo: true, downloadUrl: 'http://biorouter.ucsf.edu/docs' };
+      return {
+        cmd: 'sudo apt-get install -y awscli',
+        requiresSudo: true,
+        downloadUrl: 'http://biorouter.ucsf.edu/docs',
+      };
     }
     if (distro === 'rpm') {
-      return { cmd: 'sudo dnf install -y awscli', requiresSudo: true, downloadUrl: 'http://biorouter.ucsf.edu/docs' };
+      return {
+        cmd: 'sudo dnf install -y awscli',
+        requiresSudo: true,
+        downloadUrl: 'http://biorouter.ucsf.edu/docs',
+      };
     }
-    return { cmd: 'pip install awscli', requiresSudo: false, downloadUrl: 'http://biorouter.ucsf.edu/docs' };
+    return {
+      cmd: 'pip install awscli',
+      requiresSudo: false,
+      downloadUrl: 'http://biorouter.ucsf.edu/docs',
+    };
   }
 
   if (distro === 'deb') {
@@ -384,7 +405,15 @@ function checkNativeDependencies(): DependencyInfo[] {
     }
 
     const { cmd, requiresSudo, downloadUrl } = buildInstallInfo(name, distro);
-    return { name, displayName, version, installed: version !== null, installCmd: cmd, requiresSudo, downloadUrl };
+    return {
+      name,
+      displayName,
+      version,
+      installed: version !== null,
+      installCmd: cmd,
+      requiresSudo,
+      downloadUrl,
+    };
   });
 }
 
@@ -426,7 +455,12 @@ function runInstallCommand(dep: string, cmd: string, send: SendFn): void {
     if (code === 0) {
       // Re-probe to get the version
       const info = checkAllDependencies().find((d) => d.name === dep);
-      send({ type: 'install-done', dep, installed: info?.installed ?? false, version: info?.version ?? null });
+      send({
+        type: 'install-done',
+        dep,
+        installed: info?.installed ?? false,
+        version: info?.version ?? null,
+      });
     } else {
       send({ type: 'install-error', dep, error: `Process exited with code ${code}` });
     }
@@ -482,7 +516,10 @@ export function setupDependencyChecker(): void {
         log.info('[DependencyChecker] All dependencies present.');
         return;
       }
-      log.warn('[DependencyChecker] Missing deps:', missing.map((d) => d.name));
+      log.warn(
+        '[DependencyChecker] Missing deps:',
+        missing.map((d) => d.name)
+      );
 
       // Notify all open windows
       const payload: DependencyEvent = { type: 'check-results', deps };
