@@ -358,4 +358,82 @@ mod tests {
 
         assert_snapshot!(system_prompt)
     }
+
+    /// Contract test for the agentic-behavior clauses added to `system.md`.
+    /// Each assertion guards one intentional instruction against silent
+    /// removal/regression. These are the table-stakes behaviors the prompt
+    /// review found missing; if any of these strings disappears, the agent
+    /// quietly loses the behavior.
+    #[test]
+    fn test_system_prompt_has_behavior_clauses() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let p = manager.builder().build();
+
+        // Date is actually rendered (was computed-but-unused before).
+        assert!(
+            p.contains("The current date and time is 1970-01-01 00:00:00"),
+            "current_date_time must render so the agent can judge what is 'recent'"
+        );
+        // Conciseness budget.
+        assert!(p.contains("Be concise."), "missing conciseness clause");
+        assert!(
+            p.to_lowercase().contains("preamble"),
+            "missing preamble/postamble ban"
+        );
+        // Tool-use discipline.
+        assert!(
+            p.contains("run in parallel"),
+            "missing parallel-tool-call guidance"
+        );
+        assert!(
+            p.contains("don't expose internal tool names"),
+            "missing never-name-tools rule"
+        );
+        // Working-on-tasks discipline.
+        assert!(
+            p.contains("Before editing a file, read the relevant parts"),
+            "missing read-before-edit rule"
+        );
+        assert!(
+            p.contains("not surprising the user"),
+            "missing proactiveness/don't-surprise balance"
+        );
+        // Safety posture (including the biomedical-accuracy clause).
+        assert!(
+            p.contains("Never expose, log, or commit secrets"),
+            "missing secrets rule"
+        );
+        assert!(
+            p.contains("biomedical and scientific claims"),
+            "missing biomedical-accuracy/anti-fabrication clause"
+        );
+        // Output conventions.
+        assert!(
+            p.contains("file_path:line_number"),
+            "missing code-reference citation convention"
+        );
+    }
+
+    /// The pillar-awareness paragraph (about-biorouter + Soul) must render only
+    /// when extensions are present, since it points at the skills/knowledge
+    /// tools. With no extensions it must NOT appear (those tools aren't there).
+    #[test]
+    fn test_pillar_awareness_is_conditional_on_extensions() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+
+        let with_ext = manager
+            .builder()
+            .with_extension(ExtensionInfo::new("developer", "dev instructions", false))
+            .build();
+        assert!(
+            with_ext.contains("about-biorouter") && with_ext.contains("Soul"),
+            "pillar/Soul awareness must appear when extensions are loaded"
+        );
+
+        let without_ext = manager.builder().build();
+        assert!(
+            !without_ext.contains("about-biorouter"),
+            "pillar awareness must not appear when no extensions are loaded"
+        );
+    }
 }

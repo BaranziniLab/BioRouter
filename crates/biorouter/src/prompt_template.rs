@@ -9,6 +9,25 @@ use std::sync::{Arc, RwLock};
 /// Typically used to store "core" or "system" prompts.
 static CORE_PROMPTS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/src/prompts");
 
+/// `include_dir!` does not register the embedded files for change-tracking, so
+/// editing a `*.md` prompt does not force this crate to recompile on an
+/// incremental build — the stale embedded copy is silently reused (release
+/// builds are clean, so they are unaffected). `include_str!` *is* tracked by
+/// the compiler, so referencing every prompt here makes any prompt edit
+/// re-expand the `include_dir!` above. Keep this list in sync with
+/// `src/prompts/`.
+const _PROMPT_RECOMPILE_TRACKERS: &[&str] = &[
+    include_str!("prompts/system.md"),
+    include_str!("prompts/subagent_system.md"),
+    include_str!("prompts/plan.md"),
+    include_str!("prompts/workflow.md"),
+    include_str!("prompts/desktop_prompt.md"),
+    include_str!("prompts/desktop_workflow_instruction.md"),
+    include_str!("prompts/summarize_oneshot.md"),
+    include_str!("prompts/permission_judge.md"),
+    include_str!("prompts/mock.md"),
+];
+
 /// A global MiniJinja environment storing the "core" prompts.
 ///
 /// - Loaded at startup from the `CORE_PROMPTS_DIR`.

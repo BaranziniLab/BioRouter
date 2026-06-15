@@ -772,6 +772,23 @@ fn into_err(e: anyhow::Error) -> ErrorData {
 mod tests {
     use super::*;
 
+    /// The knowledge instructions must teach the agent to consult the built-in
+    /// Soul KB for personal context and that a hidden KB (which Soul may be) is
+    /// reachable only by explicit kb_id — otherwise the agent never personalises
+    /// from Soul because the default cross-base search skips hidden bases.
+    #[test]
+    fn instructions_cover_soul_and_hidden_kb_access() {
+        let instructions = include_str!("instructions.md");
+        assert!(
+            instructions.contains("Soul") && instructions.contains("kb_id=\"soul\""),
+            "instructions must name the Soul KB and how to search it"
+        );
+        assert!(
+            instructions.contains("hidden") && instructions.to_lowercase().contains("explicit"),
+            "instructions must explain searching a hidden KB by explicit kb_id"
+        );
+    }
+
     fn server_with_root(root: std::path::PathBuf) -> KnowledgeServer {
         let service = KnowledgeService::new(root);
         KnowledgeServer {
