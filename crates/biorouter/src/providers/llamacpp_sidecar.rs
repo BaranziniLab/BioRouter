@@ -29,12 +29,12 @@ use utoipa::ToSchema;
 pub const LLAMA_SERVER_BUILD: &str = "b9611";
 /// Default port the managed sidecar listens on (loopback only).
 pub const LLAMACPP_DEFAULT_PORT: u16 = 11543;
-/// Default `--ctx-size` passed to llama-server; also used as the model's
-/// context limit so Biorouter's pruning matches the server's window.
-/// Biorouter's agent system prompt plus tool schemas alone can exceed 8k
-/// tokens, so this must be generous; q8_0 KV-cache quantization (see
-/// [`build_args`]) keeps the memory cost of 32k manageable (~2.4 GB for a
-/// 4B-class model).
+/// Fallback context limit Biorouter assumes only when the live model window
+/// cannot be read from the server (e.g. before it is ready) and the user has
+/// not pinned `LLAMACPP_CONTEXT_SIZE`. The real window now tracks the loaded
+/// model (read from `/props`; see [`current_context_size`]); this is just a
+/// conservative default. Biorouter's agent system prompt plus tool schemas
+/// alone can exceed 8k tokens, so it stays generous.
 pub const LLAMACPP_DEFAULT_CONTEXT_SIZE: usize = 32_768;
 
 const LOG_TAIL_LINES: usize = 60;
@@ -72,6 +72,10 @@ pub struct SidecarStatus {
     pub build: String,
     /// Most recent log line (download progress, load stage) or error tail.
     pub detail: Option<String>,
+    /// Context window the running model actually exposes (read live from the
+    /// server), or `None` until it is ready. Tracks the model, not a preset.
+    #[serde(default)]
+    pub context_size: Option<usize>,
 }
 
 struct Inner {
@@ -82,6 +86,8 @@ struct Inner {
     hf_spec: Option<String>,
     log_tail: Arc<StdMutex<VecDeque<String>>>,
     last_error: Option<String>,
+    /// Live context window of the running model, filled once ready.
+    context_size: Option<usize>,
 }
 
 /// Singleton manager for the llama-server sidecar.
@@ -101,6 +107,7 @@ pub fn global() -> &'static LlamaSidecar {
             hf_spec: None,
             log_tail: Arc::new(StdMutex::new(VecDeque::new())),
             last_error: None,
+            context_size: None,
         }),
     })
 }
@@ -168,10 +175,55 @@ fn configured_port() -> u16 {
         .unwrap_or(LLAMACPP_DEFAULT_PORT)
 }
 
+/// The `--ctx-size` passed to llama-server. When `LLAMACPP_CONTEXT_SIZE` is set
+/// it pins an explicit window (and caps memory); otherwise we pass `0`, which
+/// tells llama-server to use the loaded model's own trained context length, so
+/// the window tracks whichever model is running instead of a fixed preset. The
+/// actual size the server allocates is then read back from `/props` (see
+/// [`live_context_size`]) and reported to Biorouter's token accounting, so the
+/// context limit is a live property of the model, not a constant. q8_0 KV-cache
+/// quantization keeps the memory cost affordable; on a very large-context model
+/// and a memory-constrained machine, pin a smaller window via
+/// `LLAMACPP_CONTEXT_SIZE`.
 fn configured_context_size() -> usize {
     crate::config::Config::global()
         .get_param::<usize>("LLAMACPP_CONTEXT_SIZE")
-        .unwrap_or(LLAMACPP_DEFAULT_CONTEXT_SIZE)
+        .unwrap_or(0)
+}
+
+/// Query a running llama-server's `/props` for the context window it actually
+/// allocated for the current model. Returns `None` if the server isn't
+/// reachable or doesn't report it.
+/// Best-effort live context window of the managed sidecar, for callers (e.g.
+/// token accounting) that want the running model's real window rather than a
+/// fixed default. Returns the value recorded when the server became ready, or
+/// probes `/props` directly if a server is up but not yet recorded. `None` when
+/// no server is reachable.
+pub async fn current_context_size() -> Option<usize> {
+    let (recorded, port) = {
+        let inner = global().inner.lock().await;
+        (inner.context_size, inner.port)
+    };
+    if recorded.is_some() {
+        return recorded;
+    }
+    live_context_size(port?).await
+}
+
+async fn live_context_size(port: u16) -> Option<usize> {
+    let url = format!("http://127.0.0.1:{port}/props");
+    let client = reqwest::Client::builder()
+        .timeout(STATUS_PROBE_TIMEOUT)
+        .build()
+        .ok()?;
+    let body: serde_json::Value = client.get(&url).send().await.ok()?.json().await.ok()?;
+    // llama-server reports the live window under
+    // default_generation_settings.n_ctx; fall back to a top-level n_ctx.
+    body.get("default_generation_settings")
+        .and_then(|g| g.get("n_ctx"))
+        .or_else(|| body.get("n_ctx"))
+        .and_then(|v| v.as_u64())
+        .map(|n| n as usize)
 }
 
 /// Build the llama-server argv (without the program itself). Factored out for
@@ -199,21 +251,73 @@ fn build_args(hf_spec: &str, alias: &str, port: u16, ctx_size: usize) -> Vec<Str
         "--cache-type-v".to_string(),
         "q8_0".to_string(),
     ];
-    // Thinking-mode models (Qwen3.5) otherwise burn most of their token
-    // budget on reasoning before answering — far too slow for an everyday
-    // local assistant, and small models can ramble in <think> indefinitely.
-    // Set LLAMACPP_ENABLE_THINKING=true to opt back in.
+    // Thinking is enabled by default so reasoning-capable models (Qwen3.5,
+    // Gemma 4) can reason before answering. Set LLAMACPP_ENABLE_THINKING=false
+    // to turn it off (faster, but weaker on multi-step and tool-use tasks).
+    // Uses the current `--reasoning on|off` flag, not the deprecated
+    // `--chat-template-kwargs {"enable_thinking":...}` form.
     let thinking = config
         .get_param::<bool>("LLAMACPP_ENABLE_THINKING")
-        .unwrap_or(false);
-    if !thinking {
-        args.push("--chat-template-kwargs".to_string());
-        args.push(r#"{"enable_thinking":false}"#.to_string());
-    }
+        .unwrap_or(true);
+    args.push("--reasoning".to_string());
+    args.push(if thinking { "on" } else { "off" }.to_string());
     if let Ok(extra) = config.get_param::<String>("LLAMACPP_EXTRA_ARGS") {
-        args.extend(extra.split_whitespace().map(str::to_string));
+        args.extend(sanitize_extra_args(&extra));
     }
+    // Belt-and-suspenders: re-assert the loopback bind as the LAST `--host`/
+    // `--port` on the line. llama-server's arg parser honors the last value, so
+    // even if a dangerous flag slipped past the filter above it cannot move the
+    // server off 127.0.0.1 or onto a different port.
+    args.push("--host".to_string());
+    args.push("127.0.0.1".to_string());
+    args.push("--port".to_string());
+    args.push(port.to_string());
     args
+}
+
+/// Flags a user must not be able to inject via `LLAMACPP_EXTRA_ARGS`: anything
+/// that changes the network bind or the server's auth/file-serving posture. The
+/// managed sidecar is a loopback-only, no-auth server *by design* (the only
+/// access control is the 127.0.0.1 bind), so letting config re-bind it to
+/// `0.0.0.0` would silently expose an unauthenticated inference server on the
+/// LAN. `--port` is owned by `LLAMACPP_PORT`; the rest change file serving.
+const FORBIDDEN_EXTRA_FLAGS: &[&str] = &[
+    "--host",
+    "--port",
+    "--api-key",
+    "--api-key-file",
+    "--path",
+    "--rpc",
+];
+
+/// Whitespace-split `LLAMACPP_EXTRA_ARGS` and drop any forbidden flag together
+/// with the token that follows it (its value). Emits a warning so the dropped
+/// flag is visible in logs rather than silently ignored.
+fn sanitize_extra_args(extra: &str) -> Vec<String> {
+    let tokens: Vec<&str> = extra.split_whitespace().collect();
+    let mut out = Vec::with_capacity(tokens.len());
+    let mut i = 0;
+    while i < tokens.len() {
+        let tok = tokens[i];
+        // Match `--flag` and `--flag=value` forms.
+        let flag_name = tok.split('=').next().unwrap_or(tok);
+        if FORBIDDEN_EXTRA_FLAGS.contains(&flag_name) {
+            tracing::warn!(
+                "Ignoring forbidden flag '{tok}' in LLAMACPP_EXTRA_ARGS: the managed \
+                 llama-server is loopback-only and cannot be re-bound or have its auth/path changed"
+            );
+            // Skip a following value token if this was the separate-arg form
+            // (`--host 0.0.0.0`) rather than the `--host=0.0.0.0` form.
+            if !tok.contains('=') && i + 1 < tokens.len() && !tokens[i + 1].starts_with('-') {
+                i += 1;
+            }
+            i += 1;
+            continue;
+        }
+        out.push(tok.to_string());
+        i += 1;
+    }
+    out
 }
 
 async fn health_ok(port: u16, timeout: Duration) -> bool {
@@ -488,6 +592,9 @@ impl LlamaSidecar {
         inner.port = Some(port);
         inner.model = Some(model.to_string());
         inner.hf_spec = Some(hf_spec.to_string());
+        // New model: the previous model's window no longer applies; it is
+        // re-read from /props once this one is ready.
+        inner.context_size = None;
         Ok(port)
     }
 
@@ -514,6 +621,11 @@ impl LlamaSidecar {
                 return Err(anyhow!("llama-server exited during startup:\n{tail}"));
             }
             if health_ok(port, STATUS_PROBE_TIMEOUT).await {
+                // Record the live context window now that the model is loaded,
+                // so callers report the model's real window, not a preset.
+                if let Some(ctx) = live_context_size(port).await {
+                    self.inner.lock().await.context_size = Some(ctx);
+                }
                 return Ok(port);
             }
             if tokio::time::Instant::now() >= deadline {
@@ -540,6 +652,7 @@ impl LlamaSidecar {
             binary_path: binary.as_ref().map(|p| p.display().to_string()),
             build: LLAMA_SERVER_BUILD.to_string(),
             detail: None,
+            context_size: inner.context_size,
         };
 
         if binary.is_none() {
@@ -571,6 +684,13 @@ impl LlamaSidecar {
         let port = inner.port.expect("running sidecar always has a port");
         if health_ok(port, STATUS_PROBE_TIMEOUT).await {
             status.state = SidecarState::Ready;
+            // Fill the live window if we haven't yet (e.g. an adopted server).
+            if status.context_size.is_none() {
+                if let Some(ctx) = live_context_size(port).await {
+                    inner.context_size = Some(ctx);
+                    status.context_size = Some(ctx);
+                }
+            }
         } else {
             status.state = SidecarState::Starting;
             status.detail = last_log(&inner.log_tail);
@@ -598,19 +718,77 @@ mod tests {
 
     #[test]
     fn build_args_includes_model_port_and_jinja() {
-        let args = build_args("unsloth/Qwen3.5-4B-GGUF:Q4_K_M", "qwen3.5-4b", 12345, 32768);
+        // ctx_size 0 means "use the model's own trained context".
+        let args = build_args("unsloth/Qwen3.5-4B-GGUF:Q4_K_M", "qwen3.5-4b", 12345, 0);
         let joined = args.join(" ");
         assert!(joined.contains("-hf unsloth/Qwen3.5-4B-GGUF:Q4_K_M"));
         assert!(joined.contains("--alias qwen3.5-4b"));
         assert!(joined.contains("--port 12345"));
-        assert!(joined.contains("--ctx-size 32768"));
+        // Model-native context window (tracks the model, not a fixed preset).
+        assert!(joined.contains("--ctx-size 0"));
         assert!(joined.contains("--cache-type-k q8_0"));
         assert!(joined.contains("--cache-type-v q8_0"));
         assert!(joined.contains("--jinja"));
         assert!(joined.contains("--host 127.0.0.1"));
         assert!(joined.contains("--no-webui"));
-        // Thinking disabled by default for responsive local chat.
-        assert!(joined.contains(r#"--chat-template-kwargs {"enable_thinking":false}"#));
+        // Thinking is enabled by default via the current --reasoning flag.
+        assert!(joined.contains("--reasoning on"));
+        assert!(!joined.contains("enable_thinking"));
+    }
+
+    #[test]
+    fn build_args_explicit_ctx_size_is_passed_through() {
+        let args = build_args("owner/repo:Q4_K_M", "m", 11543, 16384);
+        assert!(args.join(" ").contains("--ctx-size 16384"));
+    }
+
+    #[test]
+    fn build_args_reasoning_off_when_disabled() {
+        let _guard = env_lock::lock_env([("LLAMACPP_ENABLE_THINKING", Some("false"))]);
+        let args = build_args("owner/repo:Q4_K_M", "m", 11543, 0);
+        assert!(args.join(" ").contains("--reasoning off"));
+    }
+
+    #[test]
+    fn sanitize_extra_args_drops_forbidden_flags() {
+        // Separate-arg form: flag and its value are both dropped.
+        assert_eq!(
+            sanitize_extra_args("--host 0.0.0.0 --threads 8"),
+            vec!["--threads", "8"]
+        );
+        // `--flag=value` form is dropped (no following value to skip).
+        assert_eq!(
+            sanitize_extra_args("--host=0.0.0.0 --threads 8"),
+            vec!["--threads", "8"]
+        );
+        // api-key / path / rpc are also forbidden.
+        assert_eq!(
+            sanitize_extra_args("--api-key secret"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            sanitize_extra_args("--rpc 1.2.3.4:50052"),
+            Vec::<String>::new()
+        );
+        // Benign flags pass through untouched.
+        assert_eq!(
+            sanitize_extra_args("--flash-attn --parallel 4"),
+            vec!["--flash-attn", "--parallel", "4"]
+        );
+    }
+
+    #[test]
+    fn build_args_reasserts_loopback_last_even_with_injected_host() {
+        let _guard =
+            env_lock::lock_env([("LLAMACPP_EXTRA_ARGS", Some("--host 0.0.0.0 --port 9999"))]);
+        let args = build_args("owner/repo:Q4_K_M", "m", 11543, 32768);
+        // The injected 0.0.0.0 must not survive, and the final --host/--port
+        // (last-wins for llama-server) must be the loopback bind on our port.
+        assert!(!args.iter().any(|a| a == "0.0.0.0"));
+        let last_host = args.iter().rposition(|a| a == "--host").unwrap();
+        assert_eq!(args[last_host + 1], "127.0.0.1");
+        let last_port = args.iter().rposition(|a| a == "--port").unwrap();
+        assert_eq!(args[last_port + 1], "11543");
     }
 
     #[test]

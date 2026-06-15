@@ -64,7 +64,7 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         display_name: "Qwen3.5 4B (recommended)",
         hf_spec: "unsloth/Qwen3.5-4B-GGUF:Q4_K_M",
         download_size: "2.7 GB",
-        description: "Best everyday default — strong tool calling, fast on 8 GB+ machines",
+        description: "Best everyday default with strong tool calling; fast on 8 GB+ machines",
         context_limit: 32_768,
     },
     CatalogEntry {
@@ -125,6 +125,12 @@ pub fn resolve_hf_spec(model_name: &str) -> Result<String, ProviderError> {
         return Ok(entry.hf_spec.to_string());
     }
     if model_name.contains('/') {
+        // A raw `owner/repo[:quant]` Hugging Face spec. This value is passed
+        // verbatim to `llama-server -hf` (which builds cache file paths from it
+        // under LLAMA_CACHE) and can reach the sidecar from recipes/config, so
+        // validate it strictly: reject whitespace/flag-shaped/path-traversal
+        // inputs before they hit argv or the on-disk cache layout.
+        validate_raw_hf_spec(model_name)?;
         return Ok(model_name.to_string());
     }
     Err(ProviderError::RequestFailed(format!(
@@ -136,6 +142,50 @@ pub fn resolve_hf_spec(model_name: &str) -> Result<String, ProviderError> {
             .collect::<Vec<_>>()
             .join(", ")
     )))
+}
+
+/// Validate a raw `owner/repo[:quant]` Hugging Face spec. Each path component
+/// (`owner`, `repo`, optional `quant`) must be non-empty and contain only
+/// `[A-Za-z0-9._-]`; no component may be `.` or `..`. This blocks path
+/// traversal into the model cache, embedded whitespace/newlines, and
+/// flag-shaped values like `repo --host`.
+fn validate_raw_hf_spec(spec: &str) -> Result<(), ProviderError> {
+    let reject = |why: &str| {
+        Err(ProviderError::RequestFailed(format!(
+            "Invalid Hugging Face model spec '{spec}': {why}. Expected 'owner/repo' or \
+             'owner/repo:QUANT' using only letters, digits, '.', '_' and '-'."
+        )))
+    };
+
+    // Split off an optional `:quant` suffix, then require exactly owner/repo.
+    let (repo_part, quant) = match spec.split_once(':') {
+        Some((r, q)) => (r, Some(q)),
+        None => (spec, None),
+    };
+    let mut path = repo_part.split('/');
+    let (Some(owner), Some(repo), None) = (path.next(), path.next(), path.next()) else {
+        return reject("expected a single 'owner/repo'");
+    };
+
+    let valid_component = |c: &str| {
+        !c.is_empty()
+            && c != "."
+            && c != ".."
+            && c.chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    };
+
+    for (component, what) in [(owner, "owner"), (repo, "repo")] {
+        if !valid_component(component) {
+            return reject(&format!("invalid {what} segment"));
+        }
+    }
+    if let Some(q) = quant {
+        if !valid_component(q) {
+            return reject("invalid quant suffix");
+        }
+    }
+    Ok(())
 }
 
 struct NoAuth;
@@ -163,12 +213,17 @@ impl LlamaCppProvider {
     pub async fn from_env(mut model: ModelConfig) -> Result<Self> {
         let config = crate::config::Config::global();
 
-        // Align Biorouter's context accounting with the sidecar's --ctx-size
-        // unless the user set an explicit context limit.
+        // Align Biorouter's context accounting with the running model's real
+        // window. Preference order (unless the user pinned an explicit limit on
+        // the model): the live window the sidecar read from the loaded model,
+        // then an explicit LLAMACPP_CONTEXT_SIZE, then the conservative default.
         if model.context_limit.is_none() {
-            let ctx = config
-                .get_param::<usize>("LLAMACPP_CONTEXT_SIZE")
-                .unwrap_or(LLAMACPP_DEFAULT_CONTEXT_SIZE);
+            let ctx = match llamacpp_sidecar::current_context_size().await {
+                Some(live) => live,
+                None => config
+                    .get_param::<usize>("LLAMACPP_CONTEXT_SIZE")
+                    .unwrap_or(LLAMACPP_DEFAULT_CONTEXT_SIZE),
+            };
             model = model.with_context_limit(Some(ctx));
         }
 
@@ -182,9 +237,30 @@ impl LlamaCppProvider {
                 } else {
                     format!("http://{host}")
                 };
-                Url::parse(&base)
-                    .map(|u| u.to_string())
-                    .map_err(|e| anyhow::anyhow!("Invalid LLAMACPP_EXTERNAL_HOST: {e}"))
+                let url = Url::parse(&base)
+                    .map_err(|e| anyhow::anyhow!("Invalid LLAMACPP_EXTERNAL_HOST: {e}"))?;
+                // Only http(s) is meaningful here; reject file://, ftp://, etc.
+                // so a malformed value fails loudly instead of being handed to
+                // the HTTP client.
+                if !matches!(url.scheme(), "http" | "https") {
+                    return Err(anyhow::anyhow!(
+                        "Invalid LLAMACPP_EXTERNAL_HOST: scheme '{}' is not http/https",
+                        url.scheme()
+                    ));
+                }
+                // Setting this bypasses the managed, loopback-only sidecar and
+                // sends full prompts (system + messages + tool schemas) to an
+                // unmanaged endpoint with no auth. Warn so a config-injected or
+                // non-loopback host is visible rather than a silent exfil path.
+                let is_loopback = matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "::1"));
+                if !is_loopback {
+                    tracing::warn!(
+                        "LLAMACPP_EXTERNAL_HOST points at a non-loopback host ({}); \
+                         conversation contents will be sent there unauthenticated",
+                        url.host_str().unwrap_or("?")
+                    );
+                }
+                Ok::<String, anyhow::Error>(url.to_string())
             })
             .transpose()?;
 
@@ -265,7 +341,7 @@ impl Provider for LlamaCppProvider {
         ProviderMetadata::new(
             "llamacpp",
             "Llama Server",
-            "Built-in local models (llama.cpp) — private, free, no setup required",
+            "Built-in local models (llama.cpp): private, free, no setup required",
             LLAMACPP_DEFAULT_MODEL,
             MODEL_CATALOG.iter().map(|e| e.name).collect(),
             LLAMACPP_DOC_URL,
@@ -473,6 +549,42 @@ mod tests {
     fn resolve_unknown_name_errors_with_catalog_hint() {
         let err = resolve_hf_spec("gpt-4o").unwrap_err().to_string();
         assert!(err.contains("qwen3.5-4b"));
+    }
+
+    #[test]
+    fn raw_hf_spec_accepts_valid_forms() {
+        for ok in [
+            "owner/repo",
+            "owner/repo:Q4_K_M",
+            "bartowski/some-model-GGUF:UD-Q4_K_M",
+            "a.b_c-d/e.f_g-h:Q8_0",
+        ] {
+            assert!(validate_raw_hf_spec(ok).is_ok(), "should accept {ok}");
+        }
+    }
+
+    #[test]
+    fn raw_hf_spec_rejects_traversal_flags_and_whitespace() {
+        for bad in [
+            "../../etc/passwd",    // path traversal
+            "owner/../repo",       // dot-dot component
+            "owner/repo extra",    // embedded whitespace / extra token
+            "owner/repo --host",   // flag-shaped value
+            "owner/repo/extra:Q4", // too many path components
+            "owner/repo:Q4 K_M",   // whitespace in quant
+            "owner/",              // empty repo
+            "/repo",               // empty owner
+            "owner/repo:",         // empty quant
+        ] {
+            assert!(validate_raw_hf_spec(bad).is_err(), "should reject {bad:?}");
+            // And the public entrypoint rejects it too (raw specs contain '/').
+            if bad.contains('/') {
+                assert!(
+                    resolve_hf_spec(bad).is_err(),
+                    "resolve should reject {bad:?}"
+                );
+            }
+        }
     }
 
     #[test]
