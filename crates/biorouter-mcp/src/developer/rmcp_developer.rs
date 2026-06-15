@@ -93,6 +93,36 @@ pub struct TextEditorParams {
 pub struct ShellParams {
     /// The command string to execute in the shell
     pub command: String,
+    /// Run the command in the background instead of waiting for it to finish.
+    /// Use this for long-lived commands (dev servers, builds, test suites,
+    /// training runs) you need to keep running and observe. Returns a job_id
+    /// immediately; then use shell_wait / shell_output / shell_kill. Do NOT
+    /// append `&` yourself for this — set background=true.
+    #[serde(default)]
+    pub background: Option<bool>,
+    /// Optional short label for a background job, shown by shell_output/wait.
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+/// Parameters for tools that act on a background job by id.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct JobIdParams {
+    /// The job_id returned by `shell` when run with background=true.
+    pub job_id: String,
+}
+
+/// Parameters for the shell_wait tool.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+pub struct ShellWaitParams {
+    /// The job_id returned by `shell` when run with background=true.
+    pub job_id: String,
+    /// Maximum seconds to watch before returning. Returns earlier the moment
+    /// the job exits. Default 120, capped at 600. If the job is still running
+    /// when the timeout elapses, the result says so; call shell_wait again to
+    /// keep watching. The job is never killed by waiting.
+    #[serde(default)]
+    pub timeout_secs: Option<u64>,
 }
 
 /// Parameters for the image_processor tool
@@ -183,6 +213,8 @@ pub struct DeveloperServer {
     pub running_processes: Arc<RwLock<HashMap<String, CancellationToken>>>,
     #[cfg(not(test))]
     running_processes: Arc<RwLock<HashMap<String, CancellationToken>>>,
+    /// Long-lived background jobs started by `shell` with background=true.
+    background_jobs: Arc<super::background::BackgroundJobs>,
     bash_env_file: Option<PathBuf>,
     extend_path_with_shell: bool,
 }
@@ -352,8 +384,12 @@ impl ServerHandler for DeveloperServer {
         "#};
 
         let unix_specific = indoc! {r#"
-            If you need to run a long lived command, background it - e.g. `uvicorn main:app &` so that
-            this tool does not run indefinitely.
+            For a long-lived command (dev server, build, test suite, training run) that you need to
+            keep running and observe, run shell with `background=true` rather than appending `&`. That
+            returns a job_id and keeps the process alive across tool calls; then call `shell_wait` to
+            wait for it to finish (it returns the moment it exits, or after a timeout still running, so
+            it never blocks your turn or kills the job), `shell_output` to peek at new output, and
+            `shell_kill` to stop it. Completion is decided by the command's exit status.
 
             **Important**: Use ripgrep - `rg` - exclusively when you need to locate a file or a code reference,
             other solutions may produce too large output because of hidden files! For example *do not* use `find` or `ls -r`
@@ -559,6 +595,7 @@ impl DeveloperServer {
             prompts: load_prompt_files(),
             code_analyzer: CodeAnalyzer::new(),
             running_processes: Arc::new(RwLock::new(HashMap::new())),
+            background_jobs: Arc::new(super::background::BackgroundJobs::new()),
             extend_path_with_shell: false,
             bash_env_file: None,
         }
@@ -850,11 +887,11 @@ impl DeveloperServer {
     /// of if the command succeeded or failed.
     ///
     /// Avoid commands that produce a large amount of output, and consider piping those outputs to files.
-    /// If you need to run a long lived command, background it - e.g. `uvicorn main:app &` so that
-    /// this tool does not run indefinitely.
+    /// For long-lived commands (dev servers, builds, test suites), set `background=true` instead of
+    /// appending `&`; this returns a job_id you can watch with shell_wait / shell_output / shell_kill.
     #[tool(
         name = "shell",
-        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. If you need to run a long lived command, background it - e.g. `uvicorn main:app &` so that this tool does not run indefinitely."
+        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id immediately, and you then use shell_wait to wait for it, shell_output to peek, or shell_kill to stop it."
     )]
     pub async fn shell(
         &self,
@@ -868,6 +905,19 @@ impl DeveloperServer {
 
         // Validate the shell command
         self.validate_shell_command(command)?;
+
+        // Background mode: start the command in its own process group, register
+        // it, and return a job_id immediately instead of waiting for it.
+        if params.background.unwrap_or(false) {
+            let id = self
+                .background_jobs
+                .spawn(command, params.label.clone())
+                .await
+                .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e, None))?;
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Started background job {id}. It keeps running across tool calls. Use shell_wait with this job_id to watch for completion, shell_output to peek, or shell_kill to stop it."
+            ))]));
+        }
 
         let cancellation_token = CancellationToken::new();
         // Track the process using the request ID
@@ -909,6 +959,59 @@ impl DeveloperServer {
                 .with_audience(vec![Role::User])
                 .with_priority(0.0),
         ]))
+    }
+
+    #[tool(
+        name = "shell_wait",
+        description = "Wait for a background shell job (started by shell with background=true) for up to timeout_secs (default 120, max 600). Returns the moment the job exits, or at the timeout with status: running (the job is NOT killed — call again to keep watching). Use this to wait for background work without ending your turn or busy-looping."
+    )]
+    pub async fn shell_wait(
+        &self,
+        params: Parameters<ShellWaitParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let dur = p
+            .timeout_secs
+            .unwrap_or(super::background::DEFAULT_WAIT_SECS)
+            .min(super::background::MAX_WAIT_SECS);
+        let out = self
+            .background_jobs
+            .wait(&p.job_id, dur)
+            .await
+            .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
+        Ok(CallToolResult::success(vec![Content::text(out)]))
+    }
+
+    #[tool(
+        name = "shell_output",
+        description = "Non-blocking peek at a background shell job: returns its status and only the output produced since the last check. Omit to wait; use shell_wait instead when you want to block until it finishes."
+    )]
+    pub async fn shell_output(
+        &self,
+        params: Parameters<JobIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let out = self
+            .background_jobs
+            .snapshot(&params.0.job_id)
+            .await
+            .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
+        Ok(CallToolResult::success(vec![Content::text(out)]))
+    }
+
+    #[tool(
+        name = "shell_kill",
+        description = "Stop a background shell job by killing its whole process group (SIGTERM then SIGKILL). Its status becomes killed."
+    )]
+    pub async fn shell_kill(
+        &self,
+        params: Parameters<JobIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let out = self
+            .background_jobs
+            .kill(&params.0.job_id)
+            .await
+            .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
+        Ok(CallToolResult::success(vec![Content::text(out)]))
     }
 
     /// Validate a shell command before execution.
@@ -1582,6 +1685,8 @@ mod tests {
                 .shell(
                     Parameters(ShellParams {
                         command: "".to_string(),
+                        background: None,
+                        label: None,
                     }),
                     RequestContext {
                         ct: Default::default(),
@@ -1617,6 +1722,8 @@ mod tests {
             // Test PowerShell command
             let shell_params = Parameters(ShellParams {
                 command: "Get-ChildItem".to_string(),
+                background: None,
+                label: None,
             });
 
             let result = server
@@ -2000,6 +2107,8 @@ mod tests {
                 .shell(
                     Parameters(ShellParams {
                         command: format!("cat {}", secret_file_path.to_str().unwrap()),
+                        background: None,
+                        label: None,
                     }),
                     RequestContext {
                         ct: Default::default(),
@@ -2022,6 +2131,8 @@ mod tests {
                 .shell(
                     Parameters(ShellParams {
                         command: format!("cat {}", allowed_file_path.to_str().unwrap()),
+                        background: None,
+                        label: None,
                     }),
                     RequestContext {
                         ct: Default::default(),
@@ -3066,6 +3177,8 @@ mod tests {
                 .shell(
                     Parameters(ShellParams {
                         command: command.to_string(),
+                        background: None,
+                        label: None,
                     }),
                     RequestContext {
                         ct: Default::default(),
@@ -3215,6 +3328,8 @@ mod tests {
                 .shell(
                     Parameters(ShellParams {
                         command: command.to_string(),
+                        background: None,
+                        label: None,
                     }),
                     RequestContext {
                         ct: Default::default(),
@@ -3425,6 +3540,8 @@ mod tests {
                     .shell(
                         Parameters(ShellParams {
                             command: "sleep 30".to_string(),
+                            background: None,
+                            label: None,
                         }),
                         context,
                     )
@@ -3513,6 +3630,8 @@ mod tests {
                     .shell(
                         Parameters(ShellParams {
                             command: "bash -c 'sleep 60 & wait'".to_string(),
+                            background: None,
+                            label: None,
                         }),
                         context,
                     )
@@ -3610,6 +3729,8 @@ mod tests {
                 .shell(
                     Parameters(ShellParams {
                         command: "echo 'Hello, World!'".to_string(),
+                        background: None,
+                        label: None,
                     }),
                     context,
                 )
