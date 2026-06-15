@@ -1,4 +1,5 @@
 pub mod analyze;
+mod background;
 mod editor_models;
 mod lang;
 pub mod paths;
