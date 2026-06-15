@@ -15,8 +15,16 @@ check-everything:
     cd ui/desktop && npm run lint:check
     @echo "  → Validating OpenAPI schema..."
     ./scripts/check-openapi-schema.sh
+    @echo "  → Checking CLI/daemon/GUI version consistency..."
+    ./scripts/check-version-consistency.sh
     @echo ""
     @echo "✅ All style checks passed!"
+
+# Assert the CLI, daemon, and GUI all report the same version (source of truth:
+# Cargo [workspace.package].version). Guards against hand edits drifting one of
+# the desktop JSON files out of sync with the Rust workspace version.
+check-versions:
+    ./scripts/check-version-consistency.sh
 
 # Default release command
 release-binary:

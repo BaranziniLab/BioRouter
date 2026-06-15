@@ -96,6 +96,8 @@ restore a mac-native node_modules: `cd ui/desktop && rm -rf node_modules && npm 
 The detailed manual steps and the reasoning behind each invariant follow.
 
 - **Version bump**: edit 5 files — `Cargo.toml`, `ui/desktop/package.json`, `ui/desktop/package-lock.json` (2 occurrences), `ui/desktop/openapi.json`. Then `cargo check` to refresh `Cargo.lock`. (`scripts/release.sh bump <ver>` does this.)
+- **One version, three binaries (CLI = daemon = GUI)**: the version lives in exactly one source of truth — `[workspace.package].version` in `Cargo.toml`. The CLI (`biorouter`), the daemon (`biorouterd`), and the core library all use `version.workspace = true`, so the three Rust binaries can **never** disagree at build time — they are compiled from the same workspace version (surfaced via `env!("CARGO_PKG_VERSION")`). The desktop GUI keeps its own copy in `ui/desktop/package.json` (+ two in `package-lock.json`, one in `openapi.json`); `release.sh bump` rewrites all of them in lockstep. `scripts/check-version-consistency.sh` (run by `just check-everything` / `just check-versions`) is the guard that fails CI if any desktop JSON drifts from the Cargo version, or if a crate ever hardcodes its own `version` instead of inheriting the workspace one. **Do not hand-edit a single version file** — always use `scripts/release.sh bump <ver>` so all five stay in sync.
+- **Runtime CLI-vs-app drift** (the "Biorouter CLI Update 1.20.0 → 1.85.1" prompt): the GUI bundles a `biorouterd` that always matches the app, but the user's terminal `biorouter` is a *separately installed* binary that can lag. This is an install-state mismatch, not a source-version bug — the in-app "Biorouter CLI Update" card re-installs/symlinks the matching CLI (in a dev tree it points `~/.local/bin/biorouter` at `target/debug/biorouter`). The source versions are already linked; only the on-PATH install can be stale.
 - **macOS dmg maker needs Node 24**: the `macos-alias` / `appdmg` native modules only build under hermit's Node (v24), not a newer Homebrew Node — run all packaging under `source bin/activate-hermit`. If the dmg maker dies with `Cannot find module 'appdmg'` or a `NODE_MODULE_VERSION` mismatch, `(cd ui/desktop && npm install && npm rebuild macos-alias ds-store)`.
 - **Cross-compile link fixes** (windows-gnu / linux-gnu, in the Justfile + `release.sh`): `aws-lc-sys` needs winpthread appended *after* the rlibs on the mingw link line (linker wrapper); `lzma-sys` (via `xz2`, the `.brkb` path) needs `LZMA_API_STATIC=1` so it statically builds bundled liblzma instead of the host one. Run the docker cross builds with the system docker (hermit does **not** shadow it).
 - **macOS sign + notarize**: set `APPLE_ID` and `APPLE_APP_SPECIFIC_PASSWORD` on the `npm run bundle:default` / `bundle:intel` invocation. Signing identity is the UCSF Developer ID Application (team `F3YYBXAFJ8`).
@@ -195,10 +197,15 @@ settings provider grid, `biorouter configure`).
   binary discovery (`BIOROUTER_LLAMACPP_BIN` → `<exe dir>/llamacpp/` → dev
   repo path → PATH), spawn with `-hf` (models download from Hugging Face into
   the data dir on first use), `/health` readiness, status snapshots, restart
-  on model switch. Defaults: port 11543, 32k context + q8_0 KV cache
-  (Biorouter's agent system prompt overflows 8k!), thinking disabled
-  (`LLAMACPP_ENABLE_THINKING=true` to re-enable), `LLAMACPP_EXTRA_ARGS` for
-  anything else, `LLAMACPP_EXTERNAL_HOST` to use an unmanaged server.
+  on model switch. Defaults: port 11543, q8_0 KV cache, and a **model-native
+  context window** (`--ctx-size 0`, so it tracks the loaded model; the live
+  window is read back from `/props` and reported for token accounting —
+  `LLAMACPP_CONTEXT_SIZE` pins/caps it, e.g. on memory-constrained machines
+  where a large native window like qwen3.5-4b's 262k is too heavy; 32k is only
+  a fallback when the live value is unreadable). Thinking is **enabled** by
+  default via `--reasoning on` (`LLAMACPP_ENABLE_THINKING=false` → `--reasoning
+  off`). `LLAMACPP_EXTRA_ARGS` for anything else, `LLAMACPP_EXTERNAL_HOST` to
+  use an unmanaged server.
   **Orphan reaping:** statics never drop, so `kill_on_drop` cannot cover
   process exit; spawns are recorded in `<data>/llamacpp/run/<ppid>.pid` and
   the next `ensure()` in any Biorouter process kills children of dead parents.
