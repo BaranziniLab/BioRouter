@@ -1,6 +1,6 @@
 ---
 name: about-biorouter
-description: Built-in self-knowledge about Biorouter. Load this skill whenever the user asks about Biorouter itself — what it is, how it works, who built it, or how to use or configure any of its features (extensions, skills, workflows, scheduler, knowledge bases, models and providers, secrets, CLI, or the desktop app).
+description: Built-in self-knowledge about Biorouter. Load this skill whenever the user asks about Biorouter itself: what it is, how it works, who built it, or how to use or configure any of its features (extensions, skills, workflows, scheduler, knowledge bases, models and providers, secrets, CLI, or the desktop app).
 ---
 
 # About Biorouter
@@ -118,6 +118,12 @@ that steer the ingestion sub-agent).
 - A graph view visualizes pages as nodes connected by their `[[…]]`
   cross-references. An "active KB" can be selected per session from the chat
   composer.
+- **Soul** is a built-in personal KB (`kb_id` "soul") installed on first run. It
+  holds durable facts about the user (how they work, tools/commands they prefer,
+  personal details) and is grown automatically by a "Meditation" workflow and a
+  daily 3:00 AM "Daily Meditation" scheduled job, guided by the built-in
+  `soul-writer` skill. Consult it (`kb_search` with `kb_id="soul"`) to
+  personalise answers; it may be hidden, so search it by explicit id.
 
 ### Models & providers
 

@@ -88,12 +88,19 @@ pub fn ensure_meditation_workflow() -> anyhow::Result<PathBuf> {
 pub fn ensure_soul_skill() -> anyhow::Result<()> {
     let dir = Paths::config_dir().join("skills").join(SOUL_SKILL_DIR);
     let skill_file = dir.join("SKILL.md");
-    if skill_file.exists() {
+    // Refresh the shipped skill when it is missing or out of date so updates to
+    // its description and guidance propagate on the next launch (mirrors the
+    // built-in about-biorouter skill). This is a built-in instruction asset, not
+    // user data, so rewriting the shipped content is safe.
+    let up_to_date = std::fs::read_to_string(&skill_file)
+        .map(|existing| existing == SOUL_SKILL_MD)
+        .unwrap_or(false);
+    if up_to_date {
         return Ok(());
     }
     std::fs::create_dir_all(&dir)?;
     std::fs::write(&skill_file, SOUL_SKILL_MD)?;
-    tracing::info!("Soul: installed skill at {}", skill_file.display());
+    tracing::info!("Soul: installed/updated skill at {}", skill_file.display());
     Ok(())
 }
 
@@ -135,11 +142,11 @@ pub async fn ensure_meditation_schedule(
 pub const MEDITATION_WORKFLOW_YAML: &str = r#"version: 1.0.0
 title: Meditation
 description: >-
-  Reflect on the user's recent BioRouter interactions and digest them into the
-  built-in "Soul" knowledge base — capturing how they approach scientific
-  questions, the tools and commands they use, the tool responses they act on,
-  and durable personal details (name, occupation, preferences). Runs daily at
-  3:00 AM by default as "Daily Meditation".
+  Review the user's recent Biorouter sessions and save what matters about them
+  into the built-in "Soul" knowledge base: how they approach scientific
+  questions, the tools and commands they use, the tool responses they rely on,
+  and lasting personal details such as name, role, and preferences. Runs daily
+  at 3:00 AM by default as "Daily Meditation".
 instructions: |-
   You are maintaining the user's personal "Soul" knowledge base (id: soul).
   Follow the `soul-writer` skill exactly.
@@ -206,11 +213,11 @@ pub const SOUL_SKILL_MD: &str = r#"---
 name: soul-writer
 description: >-
   How to maintain the user's personal "Soul" knowledge base. Load this skill
-  whenever running a Meditation or digesting interaction history into
-  long-term, personalised knowledge about the user. It defines what is worth
-  remembering (approach to questions, tools/commands used, tool responses,
-  personal details) and what to discard (greetings, chit-chat, irrelevant
-  one-offs).
+  when running a Meditation or saving conversation history into lasting,
+  personal knowledge about the user. It explains what is worth keeping (how the
+  user approaches questions, the tools and commands they use, the tool responses
+  they rely on, and personal details) and what to leave out (greetings, small
+  talk, and one-off details).
 ---
 
 # Writing the Soul

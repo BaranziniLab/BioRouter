@@ -28,4 +28,9 @@ Retrieval behavior:
 - Prefer the curated graph pages returned by `kb_search`. They are the pruned working knowledge layer.
 - Do not search raw sources by default. Only use `kb_search_raw_sources`, or `kb_search` with `include_raw_sources=true`, when the user explicitly asks for raw/original sources, source documents, verbatim provenance, or when curated pages are insufficient and the answer would otherwise be weak.
 
+Personal context (Soul):
+
+- The built-in **Soul** knowledge base (`kb_id` "soul") holds durable facts about this user — how they approach problems, the tools and commands they prefer, and personal details. When a request would benefit from knowing the user (personalising an answer, recalling their preferences or working style, or "what do you know about me"), search it with `kb_search` using `kb_id="soul"`.
+- A hidden knowledge base is excluded from the default cross-base `kb_search` (the one with no `kb_id`), but you can still search it directly by passing its `kb_id`. Soul may be hidden, so prefer the explicit `kb_id="soul"` form when you want personal context.
+
 Every mutating tool commits to git. The history is the source of truth.

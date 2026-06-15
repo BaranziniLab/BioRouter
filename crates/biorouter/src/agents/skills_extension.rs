@@ -316,7 +316,7 @@ impl SkillsClient {
         }
 
         let mut instructions = String::from(
-            "You have these skills at your disposal, when it is clear they can help you solve a problem or you are asked to use them:\n\n"
+            "You have these skills at your disposal. When a skill's description matches the user's request, load it with the loadSkill tool before answering rather than guessing — for example, load about-biorouter for questions about Biorouter itself:\n\n"
         );
         skill_list.sort_by_key(|(name, _)| *name);
         for (name, skill) in skill_list {
@@ -883,6 +883,17 @@ Content
         let instructions = client.generate_instructions();
         assert!(!instructions.is_empty());
         assert!(instructions.contains("You have these skills at your disposal"));
+        // The instruction must actively nudge proactive loading via loadSkill
+        // and name about-biorouter as the example, so the agent loads
+        // self-knowledge instead of guessing about Biorouter.
+        assert!(
+            instructions.contains("loadSkill"),
+            "skills instructions must reference the loadSkill tool"
+        );
+        assert!(
+            instructions.contains("about-biorouter"),
+            "skills instructions must point at the about-biorouter skill"
+        );
         assert!(instructions.contains("alpha-skill: First skill alphabetically"));
         assert!(instructions.contains("beta-skill: Second skill alphabetically"));
 
@@ -1145,6 +1156,42 @@ Working dir biorouter content
             assert_eq!(&metadata.name, name, "frontmatter name must match slug");
             assert!(!metadata.description.is_empty());
             assert!(!body.is_empty());
+        }
+    }
+
+    /// The about-biorouter skill is the offload target for component self-
+    /// knowledge: it must cover every pillar (so the agent can answer "what is
+    /// Biorouter / how do I use X") and its description must trigger on
+    /// questions about Biorouter itself.
+    #[test]
+    fn test_about_biorouter_skill_covers_all_pillars() {
+        let content = BUILTIN_SKILLS
+            .iter()
+            .find(|(name, _)| *name == "about-biorouter")
+            .map(|(_, c)| *c)
+            .expect("about-biorouter skill must be built in");
+        let (metadata, body) = SkillsClient::parse_frontmatter(content).unwrap();
+
+        // Description is the trigger the model sees; it must mention Biorouter
+        // self-knowledge so the skill is loaded on the right questions.
+        let desc = metadata.description.to_lowercase();
+        assert!(
+            desc.contains("biorouter") && desc.contains("load this skill"),
+            "description must instruct loading on Biorouter questions"
+        );
+
+        for pillar in [
+            "Extensions",
+            "Skills",
+            "Workflows",
+            "Scheduler",
+            "Knowledge bases",
+            "Soul",
+        ] {
+            assert!(
+                body.contains(pillar),
+                "about-biorouter skill is missing pillar coverage: {pillar}"
+            );
         }
     }
 
