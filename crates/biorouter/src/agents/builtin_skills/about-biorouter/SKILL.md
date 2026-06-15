@@ -1,6 +1,6 @@
 ---
 name: about-biorouter
-description: Built-in self-knowledge about Biorouter. Load this skill whenever the user asks about Biorouter itself: what it is, how it works, who built it, or how to use or configure any of its features (extensions, skills, workflows, scheduler, knowledge bases, models and providers, secrets, CLI, or the desktop app).
+description: "Built-in self-knowledge about Biorouter. Load this skill whenever the user asks about Biorouter itself: what it is, how it works, who built it, or how to use or configure any of its features (extensions, skills, workflows, scheduler, knowledge bases, models and providers, secrets, CLI, or the desktop app)."
 ---
 
 # About Biorouter

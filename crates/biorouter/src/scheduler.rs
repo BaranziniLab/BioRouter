@@ -113,6 +113,49 @@ pub struct ScheduledJob {
     pub current_session_id: Option<String>,
     #[serde(default)]
     pub process_start_time: Option<DateTime<Utc>>,
+    /// Number of times this job has fired. Used to enforce `max_runs`.
+    #[serde(default)]
+    pub run_count: u32,
+    /// Optional cap on total firings. When `Some(n)`, the job auto-pauses once
+    /// `run_count` reaches `n` — the bound that keeps `/loop` from running
+    /// forever. `None` = unbounded (durable `/schedule` jobs).
+    #[serde(default)]
+    pub max_runs: Option<u32>,
+}
+
+/// Decide, under one lock, whether a fired cron job should actually run, and
+/// stamp its start state if so. Returns `true` when the caller should execute.
+///
+/// Skips when the job is gone, paused, still running from a previous firing
+/// (overlap guard — a slow run never stacks), or has hit its `max_runs` cap
+/// (which also auto-pauses it). On a real run it records `last_run`, marks the
+/// job running, and bumps `run_count`.
+async fn claim_run_slot(jobs: &Arc<Mutex<JobsMap>>, job_id: &str, now: DateTime<Utc>) -> bool {
+    let mut jobs_guard = jobs.lock().await;
+    match jobs_guard.get_mut(job_id) {
+        None => false,
+        Some((_, job)) if job.paused => false,
+        Some((_, job)) if job.currently_running => {
+            tracing::info!("Skipping job '{}': previous run still in progress", job_id);
+            false
+        }
+        Some((_, job)) if job.max_runs.is_some_and(|max| job.run_count >= max) => {
+            tracing::info!(
+                "Job '{}' reached its run cap ({:?}); auto-pausing",
+                job_id,
+                job.max_runs
+            );
+            job.paused = true;
+            false
+        }
+        Some((_, job)) => {
+            job.last_run = Some(now);
+            job.currently_running = true;
+            job.process_start_time = Some(now);
+            job.run_count = job.run_count.saturating_add(1);
+            true
+        }
+    }
 }
 
 async fn persist_jobs(
@@ -204,26 +247,15 @@ impl Scheduler {
             let running_tasks = running_tasks_arc.clone();
 
             Box::pin(async move {
-                let should_execute = {
-                    let jobs_guard = current_jobs_arc.lock().await;
-                    jobs_guard
-                        .get(&task_job_id)
-                        .map(|(_, j)| !j.paused)
-                        .unwrap_or(false)
-                };
+                let should_execute =
+                    claim_run_slot(&current_jobs_arc, &task_job_id, Utc::now()).await;
 
                 if !should_execute {
-                    return;
-                }
-
-                let current_time = Utc::now();
-                {
-                    let mut jobs_guard = current_jobs_arc.lock().await;
-                    if let Some((_, job)) = jobs_guard.get_mut(&task_job_id) {
-                        job.last_run = Some(current_time);
-                        job.currently_running = true;
-                        job.process_start_time = Some(current_time);
+                    // Persist the auto-pause (if any) so it survives restart.
+                    if let Err(e) = persist_jobs(&local_storage_path, &current_jobs_arc).await {
+                        tracing::error!("Failed to persist job status: {}", e);
                     }
+                    return;
                 }
 
                 if let Err(e) = persist_jobs(&local_storage_path, &current_jobs_arc).await {
@@ -357,6 +389,8 @@ impl Scheduler {
                         paused: false,
                         current_session_id: None,
                         process_start_time: None,
+                        run_count: 0,
+                        max_runs: None,
                     };
                     self.add_scheduled_job(job, false).await
                 }
@@ -939,6 +973,8 @@ mod tests {
             paused: false,
             current_session_id: None,
             process_start_time: None,
+            run_count: 0,
+            max_runs: None,
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();
@@ -965,6 +1001,8 @@ mod tests {
             paused: false,
             current_session_id: None,
             process_start_time: None,
+            run_count: 0,
+            max_runs: None,
         };
 
         scheduler.add_scheduled_job(job, true).await.unwrap();

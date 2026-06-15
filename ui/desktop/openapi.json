@@ -3243,29 +3243,6 @@
         }
       }
     },
-    "/telemetry/event": {
-      "post": {
-        "tags": [
-          "super::routes::telemetry"
-        ],
-        "operationId": "send_telemetry_event",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/TelemetryEventRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "description": "Event accepted for processing"
-          }
-        }
-      }
-    },
     "/tunnel/start": {
       "post": {
         "tags": [
@@ -5435,7 +5412,7 @@
         "properties": {
           "path": {
             "type": "string",
-            "description": "Absolute on-disk path to the knowledge base directory (the folder that\nholds `knowledge/`, `raw/`, `index.md`, \u2026). Clients use this to open the\nfolder in the OS file explorer so users can inspect raw markdown."
+            "description": "Absolute on-disk path to the knowledge base directory (the folder that\nholds `knowledge/`, `raw/`, `index.md`, …). Clients use this to open the\nfolder in the OS file explorer so users can inspect raw markdown."
           }
         }
       },
@@ -6861,6 +6838,13 @@
             "format": "date-time",
             "nullable": true
           },
+          "max_runs": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Optional cap on total firings. When `Some(n)`, the job auto-pauses once\n`run_count` reaches `n` — the bound that keeps `/loop` from running\nforever. `None` = unbounded (durable `/schedule` jobs).",
+            "nullable": true,
+            "minimum": 0
+          },
           "paused": {
             "type": "boolean"
           },
@@ -6868,6 +6852,12 @@
             "type": "string",
             "format": "date-time",
             "nullable": true
+          },
+          "run_count": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Number of times this job has fired. Used to enforce `max_runs`.",
+            "minimum": 0
           },
           "source": {
             "type": "string"
@@ -7248,6 +7238,12 @@
             "type": "string",
             "description": "Pinned llama.cpp build."
           },
+          "context_size": {
+            "type": "integer",
+            "description": "Context window the running model actually exposes (read live from the\nserver), or `None` until it is ready. Tracks the model, not a preset.",
+            "nullable": true,
+            "minimum": 0
+          },
           "detail": {
             "type": "string",
             "description": "Most recent log line (download progress, load stage) or error tail.",
@@ -7508,21 +7504,6 @@
           "thinkingMessage",
           "inlineMessage"
         ]
-      },
-      "TelemetryEventRequest": {
-        "type": "object",
-        "required": [
-          "event_name"
-        ],
-        "properties": {
-          "event_name": {
-            "type": "string"
-          },
-          "properties": {
-            "type": "object",
-            "additionalProperties": {}
-          }
-        }
       },
       "TextContent": {
         "type": "object",

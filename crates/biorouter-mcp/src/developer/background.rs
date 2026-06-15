@@ -66,6 +66,9 @@ struct Output {
 
 struct Job {
     label: String,
+    // Read by `list()` (exercised in tests); the listing isn't wired into the
+    // tool surface yet, so the lib build sees it as unused.
+    #[allow(dead_code)]
     command: String,
     started: Instant,
     /// Process-group leader pid (== child pid because we spawn it in its own
@@ -176,7 +179,7 @@ impl BackgroundJobs {
     /// truncation note if the buffer cap was hit.
     async fn drain_new_output(job: &Job) -> String {
         let mut out = job.output.lock().await;
-        let new: String = out.buf[out.cursor..].to_string();
+        let new: String = out.buf.get(out.cursor..).unwrap_or("").to_string();
         out.cursor = out.buf.len();
         let mut s = new;
         if out.truncated {
@@ -237,7 +240,9 @@ impl BackgroundJobs {
         Ok(format!("sent kill signal to job {id}"))
     }
 
-    /// One-line summary of every job.
+    /// One-line summary of every job. Covered by tests; not yet surfaced as a
+    /// tool, so the non-test build sees it as unused.
+    #[allow(dead_code)]
     pub async fn list(&self) -> String {
         let jobs = self.jobs.lock().await;
         if jobs.is_empty() {

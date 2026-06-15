@@ -266,7 +266,8 @@ impl Agent {
 
     /// Set (or replace) the session goal and install its Stop-hook evaluator.
     pub async fn set_goal(&self, session_id: &str, condition: String) {
-        self.install_goal_hook(session_id, &condition, 1, None).await;
+        self.install_goal_hook(session_id, &condition, 1, None)
+            .await;
         self.hooks_manager.reset_stop_blocks(session_id).await;
         self.goals
             .goals

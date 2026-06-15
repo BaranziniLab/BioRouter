@@ -126,6 +126,8 @@ pub async fn ensure_meditation_schedule(
         paused: false,
         current_session_id: None,
         process_start_time: None,
+        run_count: 0,
+        max_runs: None,
     };
     scheduler
         .add_scheduled_job(job, true)
