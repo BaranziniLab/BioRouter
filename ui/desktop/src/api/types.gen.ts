@@ -1051,8 +1051,18 @@ export type ScheduledJob = {
     currently_running?: boolean;
     id: string;
     last_run?: string | null;
+    /**
+     * Optional cap on total firings. When `Some(n)`, the job auto-pauses once
+     * `run_count` reaches `n` — the bound that keeps `/loop` from running
+     * forever. `None` = unbounded (durable `/schedule` jobs).
+     */
+    max_runs?: number | null;
     paused?: boolean;
     process_start_time?: string | null;
+    /**
+     * Number of times this job has fired. Used to enforce `max_runs`.
+     */
+    run_count?: number;
     source: string;
 };
 
@@ -1169,6 +1179,11 @@ export type SidecarStatus = {
      */
     build: string;
     /**
+     * Context window the running model actually exposes (read live from the
+     * server), or `None` until it is ready. Tracks the model, not a preset.
+     */
+    context_size?: number | null;
+    /**
      * Most recent log line (download progress, load stage) or error tail.
      */
     detail?: string | null;
@@ -1254,13 +1269,6 @@ export type SystemNotificationContent = {
 };
 
 export type SystemNotificationType = 'thinkingMessage' | 'inlineMessage';
-
-export type TelemetryEventRequest = {
-    event_name: string;
-    properties?: {
-        [key: string]: unknown;
-    };
-};
 
 export type TextContent = {
     _meta?: {
@@ -3994,20 +4002,6 @@ export type SystemInfoResponses = {
 };
 
 export type SystemInfoResponse = SystemInfoResponses[keyof SystemInfoResponses];
-
-export type SendTelemetryEventData = {
-    body: TelemetryEventRequest;
-    path?: never;
-    query?: never;
-    url: '/telemetry/event';
-};
-
-export type SendTelemetryEventResponses = {
-    /**
-     * Event accepted for processing
-     */
-    202: unknown;
-};
 
 export type StartTunnelData = {
     body?: never;

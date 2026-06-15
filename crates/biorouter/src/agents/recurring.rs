@@ -25,6 +25,21 @@ use super::Agent;
 pub(crate) const LOOP_ID_PREFIX: &str = "loop-";
 pub(crate) const SCHEDULE_ID_PREFIX: &str = "task-";
 
+/// Default firing cap for `/loop` jobs — the backstop that keeps a loop from
+/// running forever. Overridable with `BIOROUTER_LOOP_MAX_RUNS`. Durable
+/// `/schedule` jobs are unbounded by design. (`/schedule` is the tool for
+/// long-lived recurrence; `/loop` is bounded quick polling.)
+const LOOP_DEFAULT_MAX_RUNS: u32 = 100;
+
+/// Resolve the `/loop` firing cap, honoring `BIOROUTER_LOOP_MAX_RUNS`.
+fn loop_max_runs() -> u32 {
+    std::env::var("BIOROUTER_LOOP_MAX_RUNS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|n| *n > 0)
+        .unwrap_or(LOOP_DEFAULT_MAX_RUNS)
+}
+
 const SCHEDULE_USAGE: &str = "Usage: `/schedule <spec> <prompt>` — spec is an interval \
                               (`5m`, `2h`, `1d`), a shorthand (`@hourly`, `@daily`, \
                               `@weekly`, `@monthly`), or a quoted cron expression \
@@ -130,7 +145,13 @@ fn format_job_line(job: &ScheduledJob) -> String {
         .last_run
         .map(|t| format!(" · last run {}", t.format("%Y-%m-%d %H:%M UTC")))
         .unwrap_or_default();
-    format!("- `{}` — cron `{}`{state}{last}", job.id, job.cron)
+    let runs = match job.max_runs {
+        Some(max) => format!(" · {}/{} runs", job.run_count, max),
+        None if job.run_count > 0 => format!(" · {} runs", job.run_count),
+        None => String::new(),
+    };
+
+    format!("- `{}` — cron `{}`{state}{runs}{last}", job.id, job.cron)
 }
 
 impl Agent {
@@ -156,12 +177,15 @@ impl Agent {
     }
 
     /// Write a one-prompt workflow file and register it as a cron job.
+    /// `max_runs` bounds total firings (`Some` for `/loop`, `None` for durable
+    /// `/schedule`).
     async fn create_recurring_job(
         &self,
         id_prefix: &str,
         cron: &str,
         prompt: &str,
         session_id: &str,
+        max_runs: Option<u32>,
     ) -> Result<String> {
         let scheduler = self.scheduler().await?;
         let suffix: String = uuid::Uuid::new_v4()
@@ -196,6 +220,8 @@ impl Agent {
             paused: false,
             current_session_id: None,
             process_start_time: None,
+            run_count: 0,
+            max_runs,
         };
         if let Err(e) = scheduler.add_scheduled_job(job, false).await {
             let _ = tokio::fs::remove_file(&path).await;
@@ -297,8 +323,9 @@ impl Agent {
             ));
         }
 
+        let max_runs = loop_max_runs();
         let id = self
-            .create_recurring_job(LOOP_ID_PREFIX, &cron, prompt, session_id)
+            .create_recurring_job(LOOP_ID_PREFIX, &cron, prompt, session_id, Some(max_runs))
             .await?;
         Ok(Some(Message::assistant().with_text(format!(
             "🔁 Loop `{id}` created — runs {human} (cron `{cron}`).\n\
@@ -306,7 +333,9 @@ impl Agent {
              Each iteration runs as its own scheduled session: view them with \
              `/schedule sessions {id}`, stop with `/loop stop {id}`. Iterations fire \
              while a Biorouter process (the GUI's server or an open CLI session) is \
-             running.",
+             running. Overlapping runs are skipped (a slow iteration won't stack), and \
+             the loop auto-stops after {max_runs} runs — for durable, unbounded \
+             recurrence use `/schedule` instead.",
             ellipsize(prompt, 200)
         ))))
     }
@@ -358,7 +387,7 @@ impl Agent {
             ));
         }
         let id = self
-            .create_recurring_job(SCHEDULE_ID_PREFIX, &cron, &prompt, session_id)
+            .create_recurring_job(SCHEDULE_ID_PREFIX, &cron, &prompt, session_id, None)
             .await?;
         Ok(Some(Message::assistant().with_text(format!(
             "📅 Schedule `{id}` created — runs {human} (cron `{cron}`).\n\
@@ -496,6 +525,31 @@ mod tests {
         for bad in ["0m", "60m", "24h", "weekly", "5x", "", "m"] {
             assert!(interval_to_cron(bad).is_none(), "should reject {bad}");
         }
+    }
+
+    #[test]
+    fn loop_jobs_are_bounded_and_format_shows_progress() {
+        // A /loop default cap exists and is positive (the never-finishes guard).
+        assert!(loop_max_runs() > 0);
+
+        let mut job = ScheduledJob {
+            id: "loop-abc".to_string(),
+            source: "/tmp/loop-abc.yaml".to_string(),
+            cron: "0 */5 * * * *".to_string(),
+            last_run: None,
+            currently_running: false,
+            paused: false,
+            current_session_id: None,
+            process_start_time: None,
+            run_count: 3,
+            max_runs: Some(100),
+        };
+        assert!(format_job_line(&job).contains("3/100 runs"));
+
+        // Durable /schedule jobs are unbounded; no "x/y runs" until they run.
+        job.max_runs = None;
+        job.run_count = 0;
+        assert!(!format_job_line(&job).contains("runs"));
     }
 
     #[test]

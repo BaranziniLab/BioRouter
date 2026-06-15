@@ -101,7 +101,7 @@ fn weather_tool() -> Tool {
 
 async fn provider_for(name: &str, max_tokens: usize) -> anyhow::Result<LlamaCppProvider> {
     let model = ModelConfig::new(name)?.with_max_tokens(Some(max_tokens as i32));
-    Ok(LlamaCppProvider::from_env(model).await?)
+    LlamaCppProvider::from_env(model).await
 }
 
 /// Run the full battery against one already-Ready model.
@@ -247,11 +247,11 @@ fn report_path() -> std::path::PathBuf {
 fn write_report(reports: &[ModelReport], in_progress: Option<&str>) {
     let mut md = String::new();
     md.push_str("# Llama Server — Embedded llama.cpp Model Survey\n\n");
-    md.push_str(&format!(
+    md.push_str(
         "Engine: Biorouter managed `llama-server` sidecar (build pinned). \
          Host: Apple M4 Max / 128 GB. Each model tested through the real \
-         `LlamaCppProvider` (thinking-off, q8_0 KV, 32k ctx).\n\n"
-    ));
+         `LlamaCppProvider` (thinking-off, q8_0 KV, 32k ctx).\n\n",
+    );
     if let Some(m) = in_progress {
         md.push_str(&format!("> ⏳ Currently testing: **{m}** …\n\n"));
     }

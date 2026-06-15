@@ -83,6 +83,8 @@ pub async fn handle_schedule_add(
         paused: false,
         current_session_id: None,
         process_start_time: None,
+        run_count: 0,
+        max_runs: None,
     };
 
     let scheduler_storage_path =

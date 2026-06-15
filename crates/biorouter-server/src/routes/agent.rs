@@ -630,9 +630,10 @@ async fn agent_add_extension(
 ) -> Result<StatusCode, ErrorResponse> {
     let agent = state.get_agent(request.session_id.clone()).await?;
 
-    agent.add_extension(request.config).await.map_err(|e| {
-        ErrorResponse::internal(format!("Failed to add extension: {}", e))
-    })?;
+    agent
+        .add_extension(request.config)
+        .await
+        .map_err(|e| ErrorResponse::internal(format!("Failed to add extension: {}", e)))?;
 
     // Persist here rather than in add_extension to ensure we only save state
     // after the extension successfully loads. This prevents failed extensions

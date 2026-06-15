@@ -1,2 +1,5 @@
+crates/biorouter-cli/src/commands/configure.rs::configure_lead_worker_dialog
 crates/biorouter-cli/src/commands/extension.rs::handle_install
 crates/biorouter-cli/src/session/input.rs::print_help
+crates/biorouter-cli/src/session/markdown.rs::start_tag
+crates/biorouter/src/system.rs::install_info
