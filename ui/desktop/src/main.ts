@@ -2248,9 +2248,26 @@ const UV_SYNC_TIMEOUT_MS = 600_000;
  *  `uv_sync_hint` in crates/biorouter-cli/src/commands/extension.rs. */
 function uvSyncHint(detail: string): string | null {
   if (detail.includes('Symbol not found') && detail.includes('librustc_driver')) {
+    // Homebrew rust links libLLVM.dylib dynamically and breaks when llvm is
+    // upgraded; `brew upgrade rust` does not reliably fix it, so steer to the
+    // self-contained rustup toolchain and removing the Homebrew one.
     return (
-      'Your Homebrew Rust installation appears broken (its LLVM library was upgraded ' +
-      'out from under it). Run `brew upgrade rust` or `brew reinstall rust`, then retry.'
+      'Your Homebrew Rust toolchain is broken — rustc aborts because Homebrew’s llvm was ' +
+      'upgraded out from under it (a known Homebrew issue). `brew upgrade rust` usually ' +
+      'does NOT fix this. Install the self-contained rustup toolchain and remove the ' +
+      'Homebrew one so it takes priority:\n' +
+      '    brew uninstall rust\n' +
+      "    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh\n" +
+      'then fully restart Biorouter and retry.'
+    );
+  }
+  if (detail.includes('cryptography') && cryptographyBuiltFromSource(detail)) {
+    // cryptography ≥49 (2026-06-12) dropped x86_64 macOS wheels.
+    return (
+      '`cryptography` ≥49 no longer ships x86_64 (Intel) macOS wheels, so on an Intel Mac ' +
+      'it must be compiled from source, which needs a Rust toolchain. Install rustup ' +
+      '(https://rustup.rs) and retry, or ask the extension author to cap `cryptography<49` ' +
+      '(the last series with Intel-Mac wheels).'
     );
   }
   if (detail.includes('maturin') || detail.includes('rustc')) {
@@ -2268,6 +2285,16 @@ function uvSyncHint(detail: string): string | null {
     );
   }
   return null;
+}
+
+/** True when stderr indicates `cryptography` was being built from source.
+ *  Mirrors `cryptography_built_from_source` in the CLI crate. */
+function cryptographyBuiltFromSource(detail: string): boolean {
+  return (
+    detail.includes('Failed to build `cryptography') ||
+    detail.includes('Building cryptography') ||
+    (detail.includes('cryptography') && detail.includes('maturin'))
+  );
 }
 
 ipcMain.handle(
@@ -2571,6 +2598,40 @@ function registerCliInstallHandlers() {
   ipcMain.handle('cli:launch', async () => {
     try {
       if (process.platform === 'darwin') {
+        // Prefer the user's third-party terminal over the built-in Terminal.app.
+        // We probe a priority list of common terminals and use the first one
+        // that's installed; if none are, we fall back to Terminal.app. App
+        // existence is checked with `id of app "X"`, which prints a bundle id
+        // when the app is registered with Launch Services and errors otherwise.
+        const PREFERRED_TERMINALS = ['Warp', 'iTerm', 'Ghostty', 'WezTerm', 'kitty', 'Hyper'];
+        const isInstalled = (name: string) =>
+          spawnSync('osascript', ['-e', `id of app "${name}"`], {
+            encoding: 'utf8',
+            env: SPAWN_ENV,
+            timeout: 5_000,
+          }).status === 0;
+
+        const preferred = PREFERRED_TERMINALS.find(isInstalled);
+
+        if (preferred) {
+          // These terminals have no uniform AppleScript `do script`, but each
+          // runs a `.command` file passed to `open -a`. Use a self-deleting temp
+          // script so the chosen terminal launches the CLI in a new window.
+          const scriptPath = path.join(os.tmpdir(), `biorouter-cli-${Date.now()}.command`);
+          fsSync.writeFileSync(scriptPath, `#!/bin/bash\nrm -f "${scriptPath}"\nexec biorouter\n`, {
+            mode: 0o755,
+          });
+          const res = spawnSync('open', ['-a', preferred, scriptPath], {
+            encoding: 'utf8',
+            env: SPAWN_ENV,
+            timeout: 15_000,
+          });
+          if (res.status === 0) {
+            return { success: true };
+          }
+          // Fall through to Terminal.app if the preferred terminal failed to open.
+        }
+
         // Terminal.app `do script` opens a new window running the command.
         const res = spawnSync(
           'osascript',

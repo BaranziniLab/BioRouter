@@ -72,6 +72,19 @@ fn specs() -> &'static [Spec] {
             doc_url: "https://github.com/ggml-org/llama.cpp/releases",
             purpose: "Run built-in local models (bundled with the desktop app)",
         },
+        // `rustc -vV` is a *health* probe, not just a presence probe: a broken
+        // Homebrew rust (whose `rustc` aborts after an `llvm` upgrade) exits
+        // non-zero here and is correctly reported as unavailable, steering the
+        // user to rustup. Some Python extension deps (e.g. cryptography ≥49,
+        // which dropped Intel-Mac wheels) are compiled from source and need it.
+        Spec {
+            name: "rust",
+            display_name: "Rust toolchain (rustc)",
+            probes: &[("rustc", &["-vV"])],
+            required: false,
+            doc_url: "https://rustup.rs",
+            purpose: "Compile source-only Python extension deps (e.g. cryptography on Intel Macs)",
+        },
     ]
 }
 
@@ -154,6 +167,12 @@ fn install_info(name: &str) -> InstallInfo {
                 "brew install llama.cpp",
                 "https://github.com/ggml-org/llama.cpp/releases",
             ),
+            // rustup, NOT `brew install rust` — Homebrew's rust links libLLVM
+            // dynamically and breaks on llvm upgrades; rustup is self-contained.
+            "rust" => (
+                "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+                "https://rustup.rs",
+            ),
             _ => return none,
         };
         InstallInfo {
@@ -175,6 +194,7 @@ fn install_info(name: &str) -> InstallInfo {
                 "winget install --id ggml.llamacpp -e --source winget",
                 "https://github.com/ggml-org/llama.cpp/releases",
             ),
+            "rust" => ("winget install --id Rustlang.Rustup -e --source winget", "https://rustup.rs"),
             _ => return none,
         };
         InstallInfo {
@@ -197,6 +217,15 @@ fn install_info(name: &str) -> InstallInfo {
                 command: None,
                 requires_sudo: false,
                 download_url: s("https://github.com/ggml-org/llama.cpp/releases"),
+            };
+        }
+        if name == "rust" {
+            // rustup over the distro `rustc`, which is often too old for modern
+            // Rust-backed wheels.
+            return InstallInfo {
+                command: s("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"),
+                requires_sudo: false,
+                download_url: s("https://rustup.rs"),
             };
         }
         let pkg = match name {
@@ -480,4 +509,37 @@ pub fn install_cli(source: &Path) -> anyhow::Result<CliInstall> {
         link,
         target_dir,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{install_command, specs, status_of};
+
+    #[test]
+    fn rust_spec_exists_and_is_optional() {
+        let spec = specs()
+            .iter()
+            .find(|s| s.name == "rust")
+            .expect("rust spec");
+        assert!(
+            !spec.required,
+            "rust must be optional, not a blocking prereq"
+        );
+        // Health probe, not a presence probe: -vV exits non-zero on a broken
+        // toolchain so it reads as unavailable.
+        assert_eq!(spec.probes[0], ("rustc", &["-vV"][..]));
+    }
+
+    #[test]
+    fn rust_install_command_uses_rustup_not_brew() {
+        let cmd = install_command("rust").expect("rust install command on this OS");
+        assert!(cmd.contains("rustup") || cmd.contains("Rustup"));
+        assert!(!cmd.contains("brew install rust"));
+    }
+
+    #[test]
+    fn status_of_rust_resolves() {
+        // Should return a status (installed or not) rather than None.
+        assert!(status_of("rust").is_some());
+    }
 }

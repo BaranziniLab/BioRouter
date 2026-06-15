@@ -305,10 +305,29 @@ fn run_uv_sync(dir: &Path) -> Result<()> {
 /// below the raw output. Checks run most-specific first.
 fn uv_sync_hint(stderr: &str) -> Option<&'static str> {
     if stderr.contains("Symbol not found") && stderr.contains("librustc_driver") {
+        // Homebrew's `rust` dynamically links `libLLVM.dylib`; when `llvm` is
+        // upgraded the ABI mismatches and `rustc` aborts. `brew upgrade rust`
+        // does NOT reliably fix this (there may be no rebuilt bottle yet), so
+        // steer users to the self-contained rustup toolchain and tell them to
+        // remove the Homebrew one so it wins on PATH.
         Some(
-            "your Homebrew Rust installation appears broken (its LLVM library was \
-             upgraded out from under it). Run `brew upgrade rust` or `brew reinstall rust`, \
-             then retry.",
+            "your Homebrew Rust toolchain is broken — `rustc` aborts because Homebrew's \
+             `llvm` was upgraded out from under it (a known Homebrew issue). \
+             `brew upgrade rust` usually does NOT fix this. Install the self-contained \
+             rustup toolchain and remove the Homebrew one so it takes priority:\n    \
+             brew uninstall rust\n    \
+             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh\n  \
+             then fully restart Biorouter and retry.",
+        )
+    } else if stderr.contains("cryptography") && cryptography_built_from_source(stderr) {
+        // cryptography ≥49 (2026-06-12) dropped x86_64 macOS wheels, so Intel
+        // Macs must compile it (it is a Rust/maturin project) instead of
+        // downloading a wheel.
+        Some(
+            "`cryptography` ≥49 no longer ships x86_64 (Intel) macOS wheels, so on an \
+             Intel Mac it must be compiled from source — which needs a Rust toolchain. \
+             Install rustup (https://rustup.rs) and retry, or ask the extension author \
+             to cap `cryptography<49` (the last series with Intel-Mac wheels).",
         )
     } else if stderr.contains("maturin") || stderr.contains("rustc") {
         Some(
@@ -325,6 +344,14 @@ fn uv_sync_hint(stderr: &str) -> Option<&'static str> {
     } else {
         None
     }
+}
+
+/// True when stderr indicates `cryptography` was being built from source
+/// (rather than failing for some unrelated reason that merely mentions it).
+fn cryptography_built_from_source(stderr: &str) -> bool {
+    stderr.contains("Failed to build `cryptography")
+        || stderr.contains("Building cryptography")
+        || (stderr.contains("cryptography") && stderr.contains("maturin"))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -420,7 +447,21 @@ mod tests {
     fn hint_broken_homebrew_rust() {
         let stderr = "dyld[28466]: Symbol not found: __ZN4llvm10PGOOptionsC1E...\n\
                       Referenced from: /usr/local/Cellar/rust/1.89.0_3/lib/librustc_driver-bccb51ff.dylib";
-        assert!(uv_sync_hint(stderr).unwrap().contains("brew upgrade rust"));
+        let hint = uv_sync_hint(stderr).unwrap();
+        // Must steer to rustup + removing Homebrew rust, since field-testing
+        // showed `brew upgrade rust` does not fix this.
+        assert!(hint.contains("rustup"));
+        assert!(hint.contains("brew uninstall rust"));
+        assert!(hint.contains("does NOT fix"));
+    }
+
+    #[test]
+    fn hint_cryptography_intel_wheel_removed() {
+        let stderr = "× Failed to build `cryptography==49.0.0`\n\
+                      ├─▶ Call to `maturin.build_wheel` failed";
+        let hint = uv_sync_hint(stderr).unwrap();
+        assert!(hint.contains("cryptography<49"));
+        assert!(hint.contains("Intel"));
     }
 
     #[test]
