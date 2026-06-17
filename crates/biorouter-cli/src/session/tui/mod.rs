@@ -17,8 +17,8 @@ use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::permission::{Permission, PermissionConfirmation};
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, Event, EventStream, KeyCode,
+    KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -76,10 +76,15 @@ impl Tui {
         // A blinking vertical bar (I-beam) cursor at the insertion point, plus
         // bracketed paste so multi-line pastes arrive as one chunk instead of a
         // flood of keystrokes (which would submit prematurely on embedded \n).
+        //
+        // We deliberately do NOT enable mouse capture: capturing the mouse
+        // routes drag/selection to the app, which disables the terminal's own
+        // text selection — so users can't select and copy CLI output. Leaving it
+        // off keeps native copy/paste working everywhere. Scrolling is handled by
+        // the keyboard (PageUp/PageDown); see the event loop.
         execute!(
             out,
             EnterAlternateScreen,
-            EnableMouseCapture,
             EnableBracketedPaste,
             SetCursorStyle::BlinkingBar
         )?;
@@ -273,10 +278,13 @@ async fn drive_response(
     let cancel = CancellationToken::new();
     app.thinking = Some(super::thinking::get_random_thinking_message().to_string());
 
-    let mut stream = session
+    let reply_stream = session
         .agent
         .reply(user_message, config, Some(cancel.clone()))
         .await?;
+    // Merge per-token assistant text deltas into whole messages so Markdown
+    // (tables, lists, code) renders correctly instead of one fragment per line.
+    let mut stream = super::stream_coalesce::coalesce_text_deltas(reply_stream);
     let mut tick = tokio::time::interval(Duration::from_millis(110));
 
     loop {

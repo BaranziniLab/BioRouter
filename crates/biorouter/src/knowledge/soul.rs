@@ -5,12 +5,16 @@
 //! user — how they approach scientific questions, which tools and commands they
 //! reach for, the shape of their tool calls and the responses they act on, and
 //! personal details they reveal (name, occupation, preferences). A built-in
-//! **"Meditation"** workflow, a **soul-writer** skill, and a daily 3:00 AM
+//! **"Meditation"** workflow, an **update-soul** skill, and a daily 3:00 AM
 //! scheduled job ("Daily Meditation") keep it growing from the user's
 //! conversation history.
 //!
 //! [`install`] is idempotent and safe to call on every startup: it only creates
 //! what is missing and never overwrites user edits.
+//!
+//! The skill is named `update-soul` (it was previously `soul-writer`);
+//! [`ensure_soul_skill`] removes the stale `soul-writer` folder on startup so
+//! users don't see a duplicate after upgrading.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -26,7 +30,10 @@ pub const MEDITATION_WORKFLOW_FILE: &str = "meditation.yaml";
 /// Job ids double as on-disk filenames in the scheduler, so the id stays a
 /// slug; the UI renders it as "Daily Meditation".
 pub const MEDITATION_SCHEDULE_ID: &str = "daily-meditation";
-pub const SOUL_SKILL_DIR: &str = "soul-writer";
+pub const SOUL_SKILL_DIR: &str = "update-soul";
+/// The skill's previous directory name, removed on startup so upgraded users
+/// don't see a stale duplicate alongside the renamed `update-soul` skill.
+pub const SOUL_SKILL_DIR_LEGACY: &str = "soul-writer";
 /// 6-field cron (sec min hour dom mon dow) — every day at 03:00 local time.
 pub const MEDITATION_CRON: &str = "0 0 3 * * *";
 
@@ -84,8 +91,21 @@ pub fn ensure_meditation_workflow() -> anyhow::Result<PathBuf> {
     Ok(path)
 }
 
-/// Write the soul-writer skill if it is not already present.
+/// Write the update-soul skill if it is not already present.
 pub fn ensure_soul_skill() -> anyhow::Result<()> {
+    // Drop the skill's former directory (`soul-writer`) so upgraded users don't
+    // see a stale duplicate next to the renamed `update-soul` skill. It is a
+    // built-in instruction asset, never user data, so removing it is safe.
+    let legacy = Paths::config_dir()
+        .join("skills")
+        .join(SOUL_SKILL_DIR_LEGACY);
+    if legacy.exists() {
+        if let Err(e) = std::fs::remove_dir_all(&legacy) {
+            tracing::warn!("Soul: failed to remove legacy skill at {}: {e}", legacy.display());
+        } else {
+            tracing::info!("Soul: removed legacy skill at {}", legacy.display());
+        }
+    }
     let dir = Paths::config_dir().join("skills").join(SOUL_SKILL_DIR);
     let skill_file = dir.join("SKILL.md");
     // Refresh the shipped skill when it is missing or out of date so updates to
@@ -138,7 +158,7 @@ pub async fn ensure_meditation_schedule(
 }
 
 /// The "Meditation" workflow definition. It uses the user's configured
-/// default provider/model (no `settings` override), loads the soul-writer
+/// default provider/model (no `settings` override), loads the update-soul
 /// skill, focuses on the Soul KB, and instructs the agent to digest recent
 /// user interactions into durable, personalised knowledge.
 pub const MEDITATION_WORKFLOW_YAML: &str = r#"version: 1.0.0
@@ -151,7 +171,7 @@ description: >-
   at 3:00 AM by default as "Daily Meditation".
 instructions: |-
   You are maintaining the user's personal "Soul" knowledge base (id: soul).
-  Follow the `soul-writer` skill exactly.
+  Follow the `update-soul` skill exactly.
 
   Goal: turn the user's recent interaction history into durable, high-signal,
   personalised knowledge about THE USER — not a summary of every chat.
@@ -202,7 +222,7 @@ knowledge_bases:
   visible:
   - soul
 skills:
-- soul-writer
+- update-soul
 activities:
 - Update my Soul from recent interactions
 - Learn my preferences and working style
@@ -210,16 +230,19 @@ activities:
 parameters: []
 "#;
 
-/// The soul-writer skill — guidance the agent loads when writing the Soul.
+/// The update-soul skill — guidance the agent loads when writing the Soul.
 pub const SOUL_SKILL_MD: &str = r#"---
-name: soul-writer
+name: update-soul
 description: >-
-  How to maintain the user's personal "Soul" knowledge base. Load this skill
-  when running a Meditation or saving conversation history into lasting,
-  personal knowledge about the user. It explains what is worth keeping (how the
-  user approaches questions, the tools and commands they use, the tool responses
-  they rely on, and personal details) and what to leave out (greetings, small
-  talk, and one-off details).
+  Update the user's personal "Soul" knowledge base from their conversation
+  history. Load this skill when running a Meditation, or whenever asked to learn
+  about, remember, or record durable facts about the user. It defines what to
+  keep — how the user approaches scientific questions, the tools and commands
+  they use, the tool responses they rely on, and personal details such as name,
+  role, affiliation, and stated preferences — and what to leave out (greetings,
+  small talk, and one-off transient details). It also covers how to write Soul
+  pages: which page kinds to use, how to cross-link with [[wiki-links]], and to
+  prefer a few durable facts over many shallow ones.
 ---
 
 # Writing the Soul
@@ -281,13 +304,13 @@ mod tests {
             .skills
             .unwrap_or_default()
             .iter()
-            .any(|s| s == "soul-writer"));
+            .any(|s| s == "update-soul"));
     }
 
     #[test]
     fn skill_md_has_frontmatter_name() {
         assert!(SOUL_SKILL_MD.starts_with("---\n"));
-        assert!(SOUL_SKILL_MD.contains("name: soul-writer"));
+        assert!(SOUL_SKILL_MD.contains("name: update-soul"));
     }
 
     #[tokio::test]

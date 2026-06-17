@@ -42,7 +42,7 @@ impl AgentManager {
         };
 
         // First-run install of the built-in Soul KB, its Meditation workflow +
-        // soul-writer skill, and the Daily Meditation 3:00 AM schedule.
+        // update-soul skill, and the Daily Meditation 3:00 AM schedule.
         // Idempotent and best-effort: it must never block agent startup.
         crate::knowledge::soul::install(&manager.scheduler).await;
 

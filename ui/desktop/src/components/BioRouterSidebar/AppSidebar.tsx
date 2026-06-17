@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Clock, Home, Layers, Puzzle, History, AppWindow, MessageSquare, Pipeline, Settings, KnowledgeIcon, Terminal } from '../icons/app-icons';
+import { Clock, Home, Layers, Puzzle, History, AppWindow, MessageSquare, Pipeline, Settings, KnowledgeIcon } from '../icons/app-icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   SidebarContent,
@@ -34,19 +34,11 @@ interface NavigationItem {
   tooltip: string;
 }
 
-interface NavigationAction {
-  type: 'action';
-  action: 'launch-cli';
-  label: string;
-  icon: React.ComponentType<{ className?: string }>;
-  tooltip: string;
-}
-
 interface NavigationSeparator {
   type: 'separator';
 }
 
-type NavigationEntry = NavigationItem | NavigationAction | NavigationSeparator;
+type NavigationEntry = NavigationItem | NavigationSeparator;
 
 const menuItems: NavigationEntry[] = [
   {
@@ -63,13 +55,6 @@ const menuItems: NavigationEntry[] = [
     label: 'Chat',
     icon: MessageSquare,
     tooltip: 'Start pairing with BioRouter',
-  },
-  {
-    type: 'action',
-    action: 'launch-cli',
-    label: 'Terminal',
-    icon: Terminal,
-    tooltip: 'Launch the Biorouter CLI in a terminal',
   },
   {
     type: 'item',
@@ -195,52 +180,12 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     }
   };
 
-  const handleLaunchCli = async () => {
-    try {
-      const status = await window.electron.cliStatus();
-      if (status?.onPath) {
-        const res = await window.electron.launchCli();
-        if (!res.success) {
-          window.dispatchEvent(new CustomEvent('biorouter:open-cli-install'));
-        }
-      } else {
-        // Not installed yet — surface the same install card the startup
-        // check shows. Once installed, this button launches the CLI.
-        window.dispatchEvent(new CustomEvent('biorouter:open-cli-install'));
-      }
-    } catch {
-      window.dispatchEvent(new CustomEvent('biorouter:open-cli-install'));
-    }
-  };
-
   const renderMenuItem = (entry: NavigationEntry, index: number) => {
     if (entry.type === 'separator') {
       return <SidebarSeparator key={index} />;
     }
 
     const IconComponent = entry.icon;
-
-    if (entry.type === 'action') {
-      return (
-        <SidebarGroup key={entry.action}>
-          <SidebarGroupContent className="space-y-1">
-            <div className="sidebar-item">
-              <SidebarMenuItem>
-                <SidebarMenuButton
-                  data-testid={`sidebar-${entry.label.toLowerCase()}-button`}
-                  onClick={handleLaunchCli}
-                  tooltip={entry.tooltip}
-                  className="w-full justify-start px-3 py-2 rounded-lg text-sm hover:bg-background-medium transition-colors duration-150"
-                >
-                  <IconComponent className="w-4 h-4" />
-                  <span>{entry.label}</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            </div>
-          </SidebarGroupContent>
-        </SidebarGroup>
-      );
-    }
 
     return (
       <SidebarGroup key={entry.path}>

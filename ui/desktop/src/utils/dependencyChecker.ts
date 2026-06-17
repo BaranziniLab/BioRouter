@@ -159,11 +159,16 @@ function probeVersion(cmd: string, args: string[]): string | null {
 
 // ─── Install command builders ─────────────────────────────────────────────────
 
+type NativeDep = 'git' | 'python' | 'uv' | 'npm' | 'aws' | 'llama-server' | 'rust';
+
 function buildInstallInfo(
-  dep: 'git' | 'python' | 'uv' | 'npm' | 'aws',
+  dep: NativeDep,
   distro: LinuxDistro
 ): { cmd: string; requiresSudo: boolean; downloadUrl: string } {
   const platform = process.platform;
+  // Non-interactive winget flags — without them winget blocks on its first-run
+  // source/package agreement prompt, which fails in this non-interactive shell.
+  const WG = '--accept-package-agreements --accept-source-agreements --disable-interactivity';
 
   if (platform === 'darwin') {
     switch (dep) {
@@ -197,6 +202,19 @@ function buildInstallInfo(
           requiresSudo: false,
           downloadUrl: 'http://biorouter.ucsf.edu/docs',
         };
+      case 'llama-server':
+        return {
+          cmd: 'brew install llama.cpp',
+          requiresSudo: false,
+          downloadUrl: 'https://github.com/ggml-org/llama.cpp/releases',
+        };
+      case 'rust':
+        // `sh -s -- -y`: the piped installer has no TTY and aborts without -y.
+        return {
+          cmd: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
+          requiresSudo: false,
+          downloadUrl: 'https://rustup.rs',
+        };
     }
   }
 
@@ -204,13 +222,13 @@ function buildInstallInfo(
     switch (dep) {
       case 'git':
         return {
-          cmd: 'winget install --id Git.Git -e --source winget',
+          cmd: `winget install --id Git.Git -e --source winget ${WG}`,
           requiresSudo: false,
           downloadUrl: 'https://git-scm.com/download/win',
         };
       case 'python':
         return {
-          cmd: 'winget install --id Python.Python.3 -e --source winget',
+          cmd: `winget install --id Python.Python.3 -e --source winget ${WG}`,
           requiresSudo: false,
           downloadUrl: 'https://www.python.org/downloads/',
         };
@@ -222,20 +240,49 @@ function buildInstallInfo(
         };
       case 'npm':
         return {
-          cmd: 'winget install --id OpenJS.NodeJS -e --source winget',
+          cmd: `winget install --id OpenJS.NodeJS -e --source winget ${WG}`,
           requiresSudo: false,
           downloadUrl: 'https://nodejs.org/en/download',
         };
       case 'aws':
         return {
-          cmd: 'winget install Amazon.AWSCLI',
+          cmd: `winget install Amazon.AWSCLI ${WG}`,
           requiresSudo: false,
           downloadUrl: 'http://biorouter.ucsf.edu/docs',
+        };
+      case 'llama-server':
+        return {
+          cmd: `winget install --id ggml.llamacpp -e --source winget ${WG}`,
+          requiresSudo: false,
+          downloadUrl: 'https://github.com/ggml-org/llama.cpp/releases',
+        };
+      case 'rust':
+        return {
+          cmd: `winget install --id Rustlang.Rustup -e --source winget ${WG}`,
+          requiresSudo: false,
+          downloadUrl: 'https://rustup.rs',
         };
     }
   }
 
   // Linux
+  if (dep === 'llama-server') {
+    // No standard distro package; prebuilt binaries on GitHub releases.
+    return {
+      cmd: '',
+      requiresSudo: false,
+      downloadUrl: 'https://github.com/ggml-org/llama.cpp/releases',
+    };
+  }
+
+  if (dep === 'rust') {
+    return {
+      cmd: "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
+      requiresSudo: false,
+      downloadUrl: 'https://rustup.rs',
+    };
+  }
+
   if (dep === 'uv') {
     return {
       cmd: 'curl -LsSf https://astral.sh/uv/install.sh | sh',
@@ -348,13 +395,29 @@ function checkViaBundledCli(): DependencyInfo[] | null {
   }
 }
 
+// Resolve the bundled llama-server that ships next to the CLI binary, mirroring
+// the Rust sidecar's `find_binary` (`<bin dir>/llamacpp/llama-server`). Used so
+// the native fallback agrees with `biorouter doctor` that a bundled server
+// counts as installed even when nothing is on PATH.
+function bundledLlamaServerPath(): string | null {
+  try {
+    const exeName = process.platform === 'win32' ? 'llama-server.exe' : 'llama-server';
+    const dir = path.dirname(getBiorouterCliBinaryPath(app));
+    const candidate = path.join(dir, 'llamacpp', exeName);
+    return fs.existsSync(candidate) ? candidate : null;
+  } catch {
+    return null;
+  }
+}
+
 function checkNativeDependencies(): DependencyInfo[] {
   const distro = getLinuxDistro();
 
   const checks: Array<{
-    name: 'git' | 'python' | 'uv' | 'npm' | 'aws';
+    name: NativeDep;
     displayName: string;
     probes: Array<[string, string[]]>;
+    required?: boolean;
   }> = [
     {
       name: 'git',
@@ -385,13 +448,27 @@ function checkNativeDependencies(): DependencyInfo[] {
       displayName: 'AWS CLI (optional)',
       probes: [['aws', ['--version']]],
     },
+    {
+      name: 'llama-server',
+      displayName: 'llama-server (local models)',
+      probes: [['llama-server', ['--version']]],
+      required: false,
+    },
+    {
+      name: 'rust',
+      displayName: 'Rust toolchain (rustc)',
+      // Health probe (-vV), matching the Rust spec: exits non-zero on a broken
+      // toolchain so it reads as unavailable rather than merely "present".
+      probes: [['rustc', ['-vV']]],
+      required: false,
+    },
   ];
 
   // On Windows, uv manages its own Python runtime via uvx — system Python is not
   // required for extensions. If uv is present, mark Python as satisfied.
   const uvVersion = process.platform === 'win32' ? probeVersion('uv', ['--version']) : null;
 
-  return checks.map(({ name, displayName, probes }) => {
+  return checks.map(({ name, displayName, probes, required }) => {
     let version: string | null = null;
 
     if (name === 'python' && uvVersion !== null) {
@@ -404,6 +481,13 @@ function checkNativeDependencies(): DependencyInfo[] {
       }
     }
 
+    // llama-server usually isn't on PATH — the desktop app bundles it next to
+    // the CLI. Fall back to probing the bundled copy (matches `biorouter doctor`).
+    if (version === null && name === 'llama-server') {
+      const bundled = bundledLlamaServerPath();
+      if (bundled) version = probeVersion(bundled, ['--version']);
+    }
+
     const { cmd, requiresSudo, downloadUrl } = buildInstallInfo(name, distro);
     return {
       name,
@@ -413,6 +497,7 @@ function checkNativeDependencies(): DependencyInfo[] {
       installCmd: cmd,
       requiresSudo,
       downloadUrl,
+      required: required ?? true,
     };
   });
 }
