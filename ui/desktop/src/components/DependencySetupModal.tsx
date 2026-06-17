@@ -31,6 +31,7 @@ export default function DependencySetupModal() {
   type CliStatus = {
     bundled: string | null;
     onPath: boolean;
+    pathLocation: string | null;
     bundledVersion: string | null;
     pathVersion: string | null;
     needsUpdate: boolean;
@@ -102,25 +103,44 @@ export default function DependencySetupModal() {
     setCliState('running');
     setCliError('');
     const res = await window.electron.installCli();
-    if (res.success) {
-      setCliOutput(res.output);
-      setCliState('done');
-      // After install/update the on-PATH binary now matches the bundled one.
-      setCli((c) =>
-        c
-          ? {
-              ...c,
-              onPath: true,
-              needsUpdate: false,
-              brokenOnPath: false,
-              pathVersion: c.bundledVersion,
-            }
-          : c
-      );
-    } else {
+    if (!res.success) {
       setCliError(res.error);
       setCliState('error');
+      return;
     }
+    setCliOutput(res.output);
+    // Verify with a fresh probe rather than assuming success: if a stale
+    // `biorouter` sits earlier on PATH than where we just installed, it keeps
+    // shadowing the update and the version won't actually change. Tell the user
+    // exactly which file to remove instead of falsely reporting success.
+    const fresh = (await window.electron.cliStatus().catch(() => null)) as CliStatus | null;
+    if (fresh && cliNeedsAttention(fresh)) {
+      setCli(fresh);
+      setCliState('error');
+      setCliError(
+        fresh.pathLocation && fresh.needsUpdate
+          ? `Updated the bundled copy, but an older \`biorouter\` (${
+              fresh.pathVersion ?? 'unknown'
+            }) still takes priority on your PATH at ${fresh.pathLocation}. Remove it (e.g. \`rm ${
+              fresh.pathLocation
+            }\`), then reopen this app.`
+          : 'Installed, but the CLI is not resolving on PATH yet. Open a new terminal and try again.'
+      );
+      return;
+    }
+    // Success — reflect the now-matching on-PATH binary.
+    setCli((c) =>
+      c
+        ? {
+            ...c,
+            onPath: true,
+            needsUpdate: false,
+            brokenOnPath: false,
+            pathVersion: c.bundledVersion,
+          }
+        : c
+    );
+    setCliState('done');
   };
 
   // Listen for the push event from main process

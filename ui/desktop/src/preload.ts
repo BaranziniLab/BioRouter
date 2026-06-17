@@ -216,7 +216,9 @@ type ElectronAPI = {
     brokenOnPath: boolean;
   }>;
   installCli: () => Promise<{ success: true; output: string } | { success: false; error: string }>;
-  launchCli: () => Promise<{ success: true } | { success: false; error: string }>;
+  launchCli: (
+    workingDir?: string
+  ) => Promise<{ success: true } | { success: false; error: string }>;
   // Extension updater (events pushed via 'extension-update-event' channel)
   onExtensionUpdateEvent: (
     callback: (event: import('./utils/extensionUpdater').ExtensionUpdateEvent) => void
@@ -387,7 +389,7 @@ const electronAPI: ElectronAPI = {
   installDependency: (dep: string) => ipcRenderer.invoke('dep:install', dep),
   cliStatus: () => ipcRenderer.invoke('cli:status'),
   installCli: () => ipcRenderer.invoke('cli:install'),
-  launchCli: () => ipcRenderer.invoke('cli:launch'),
+  launchCli: (workingDir?: string) => ipcRenderer.invoke('cli:launch', workingDir),
   onExtensionUpdateEvent: (callback) => {
     ipcRenderer.on('extension-update-event', (_event, data) => callback(data));
   },

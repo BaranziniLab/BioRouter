@@ -2595,49 +2595,38 @@ function registerCliInstallHandlers() {
   // Launch the installed CLI in the user's terminal app. Assumes `biorouter`
   // is already on PATH (the renderer checks `cli:status` first and offers the
   // install flow otherwise).
-  ipcMain.handle('cli:launch', async () => {
+  ipcMain.handle('cli:launch', async (_event, workingDir?: string) => {
+    // Launch the CLI in `workingDir` when supplied (the chat's working
+    // directory) so the terminal opens in the exact folder the user is
+    // working in, rather than the terminal's default/home directory. Only
+    // honor an existing directory; fall back to no `cd` otherwise.
+    let cwd: string | undefined;
+    if (workingDir && typeof workingDir === 'string') {
+      try {
+        if (fsSync.statSync(workingDir).isDirectory()) {
+          cwd = workingDir;
+        }
+      } catch {
+        // Not a usable directory — leave cwd undefined.
+      }
+    }
+    // Single-quote the path for safe interpolation into shell command strings.
+    const shQuote = (p: string) => `'${p.replace(/'/g, `'\\''`)}'`;
     try {
       if (process.platform === 'darwin') {
-        // Prefer the user's third-party terminal over the built-in Terminal.app.
-        // We probe a priority list of common terminals and use the first one
-        // that's installed; if none are, we fall back to Terminal.app. App
-        // existence is checked with `id of app "X"`, which prints a bundle id
-        // when the app is registered with Launch Services and errors otherwise.
-        const PREFERRED_TERMINALS = ['Warp', 'iTerm', 'Ghostty', 'WezTerm', 'kitty', 'Hyper'];
-        const isInstalled = (name: string) =>
-          spawnSync('osascript', ['-e', `id of app "${name}"`], {
-            encoding: 'utf8',
-            env: SPAWN_ENV,
-            timeout: 5_000,
-          }).status === 0;
-
-        const preferred = PREFERRED_TERMINALS.find(isInstalled);
-
-        if (preferred) {
-          // These terminals have no uniform AppleScript `do script`, but each
-          // runs a `.command` file passed to `open -a`. Use a self-deleting temp
-          // script so the chosen terminal launches the CLI in a new window.
-          const scriptPath = path.join(os.tmpdir(), `biorouter-cli-${Date.now()}.command`);
-          fsSync.writeFileSync(scriptPath, `#!/bin/bash\nrm -f "${scriptPath}"\nexec biorouter\n`, {
-            mode: 0o755,
-          });
-          const res = spawnSync('open', ['-a', preferred, scriptPath], {
-            encoding: 'utf8',
-            env: SPAWN_ENV,
-            timeout: 15_000,
-          });
-          if (res.status === 0) {
-            return { success: true };
-          }
-          // Fall through to Terminal.app if the preferred terminal failed to open.
-        }
-
-        // Terminal.app `do script` opens a new window running the command.
+        // Open Terminal.app with `do script`, which runs the literal `biorouter`
+        // command in a new window (prefixed with a `cd` into the working
+        // directory). This is transparent — the user sees `biorouter` run, not a
+        // generated helper script — and relies on the CLI already being on PATH.
+        const doScript = cwd ? `cd ${shQuote(cwd)} && biorouter` : 'biorouter';
+        // Escape for the AppleScript string literal: backslashes first, then
+        // double quotes.
+        const asLiteral = doScript.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
         const res = spawnSync(
           'osascript',
           [
             '-e',
-            'tell application "Terminal" to do script "biorouter"',
+            `tell application "Terminal" to do script "${asLiteral}"`,
             '-e',
             'tell application "Terminal" to activate',
           ],
@@ -2651,7 +2640,13 @@ function registerCliInstallHandlers() {
 
       if (process.platform === 'win32') {
         // `start` opens a new console window that keeps running the CLI.
-        const child = spawn('cmd.exe', ['/c', 'start', 'Biorouter CLI', 'cmd', '/k', 'biorouter'], {
+        // `/d <dir>` sets that window's starting directory.
+        const startArgs = ['/c', 'start', 'Biorouter CLI'];
+        if (cwd) {
+          startArgs.push('/d', cwd);
+        }
+        startArgs.push('cmd', '/k', 'biorouter');
+        const child = spawn('cmd.exe', startArgs, {
           env: SPAWN_ENV,
           detached: true,
           stdio: 'ignore',
@@ -2673,7 +2668,12 @@ function registerCliInstallHandlers() {
       for (const [term, args] of candidates) {
         const found = spawnSync('which', [term], { encoding: 'utf8', env: SPAWN_ENV });
         if (found.status === 0 && (found.stdout || '').trim()) {
-          const child = spawn(term, args, { env: SPAWN_ENV, detached: true, stdio: 'ignore' });
+          const child = spawn(term, args, {
+            env: SPAWN_ENV,
+            detached: true,
+            stdio: 'ignore',
+            ...(cwd ? { cwd } : {}),
+          });
           child.unref();
           return { success: true };
         }

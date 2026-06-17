@@ -122,7 +122,7 @@ that steer the ingestion sub-agent).
   holds durable facts about the user (how they work, tools/commands they prefer,
   personal details) and is grown automatically by a "Meditation" workflow and a
   daily 3:00 AM "Daily Meditation" scheduled job, guided by the built-in
-  `soul-writer` skill. Consult it (`kb_search` with `kb_id="soul"`) to
+  `update-soul` skill. Consult it (`kb_search` with `kb_id="soul"`) to
   personalise answers; it may be hidden, so search it by explicit id.
 
 ### Models & providers

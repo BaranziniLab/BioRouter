@@ -169,8 +169,11 @@ fn install_info(name: &str) -> InstallInfo {
             ),
             // rustup, NOT `brew install rust` — Homebrew's rust links libLLVM
             // dynamically and breaks on llvm upgrades; rustup is self-contained.
+            // `sh -s -- -y`: the installer is piped (no controlling TTY), so
+            // rustup-init aborts with "Unable to run interactively. Run with -y
+            // to accept defaults" unless we pass `-y` through to it.
             "rust" => (
-                "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+                "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
                 "https://rustup.rs",
             ),
             _ => return none,
@@ -181,24 +184,29 @@ fn install_info(name: &str) -> InstallInfo {
             download_url: s(url),
         }
     } else if cfg!(target_os = "windows") {
-        let (cmd, url) = match name {
-            "git" => ("winget install --id Git.Git -e --source winget", "https://git-scm.com/download/win"),
-            "python" => ("winget install --id Python.Python.3 -e --source winget", "https://www.python.org/downloads/"),
+        // Run unattended: without these flags winget blocks on the source/package
+        // agreement prompt the first time it's used, which fails in the app's
+        // non-interactive shell (the same class of failure as rustup needing -y).
+        const WG: &str =
+            "--accept-package-agreements --accept-source-agreements --disable-interactivity";
+        let (cmd, url): (String, &str) = match name {
+            "git" => (format!("winget install --id Git.Git -e --source winget {WG}"), "https://git-scm.com/download/win"),
+            "python" => (format!("winget install --id Python.Python.3 -e --source winget {WG}"), "https://www.python.org/downloads/"),
             "uv" => (
-                "powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\"",
+                "powershell -ExecutionPolicy ByPass -c \"irm https://astral.sh/uv/install.ps1 | iex\"".to_string(),
                 "https://docs.astral.sh/uv/",
             ),
-            "node" => ("winget install --id OpenJS.NodeJS -e --source winget", "https://nodejs.org/en/download"),
-            "aws" => ("winget install Amazon.AWSCLI", "https://aws.amazon.com/cli/"),
+            "node" => (format!("winget install --id OpenJS.NodeJS -e --source winget {WG}"), "https://nodejs.org/en/download"),
+            "aws" => (format!("winget install Amazon.AWSCLI {WG}"), "https://aws.amazon.com/cli/"),
             "llama-server" => (
-                "winget install --id ggml.llamacpp -e --source winget",
+                format!("winget install --id ggml.llamacpp -e --source winget {WG}"),
                 "https://github.com/ggml-org/llama.cpp/releases",
             ),
-            "rust" => ("winget install --id Rustlang.Rustup -e --source winget", "https://rustup.rs"),
+            "rust" => (format!("winget install --id Rustlang.Rustup -e --source winget {WG}"), "https://rustup.rs"),
             _ => return none,
         };
         InstallInfo {
-            command: s(cmd),
+            command: Some(cmd),
             requires_sudo: false,
             download_url: s(url),
         }
@@ -221,9 +229,10 @@ fn install_info(name: &str) -> InstallInfo {
         }
         if name == "rust" {
             // rustup over the distro `rustc`, which is often too old for modern
-            // Rust-backed wheels.
+            // Rust-backed wheels. `sh -s -- -y` runs it non-interactively (the
+            // installer is piped, so it has no TTY and would otherwise abort).
             return InstallInfo {
-                command: s("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"),
+                command: s("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"),
                 requires_sudo: false,
                 download_url: s("https://rustup.rs"),
             };
@@ -460,14 +469,28 @@ pub fn install_cli(source: &Path) -> anyhow::Result<CliInstall> {
         "biorouter"
     };
 
+    // If a `biorouter` already resolves on PATH, that's the binary the user's
+    // shell actually runs — overwrite *it* so an update/reinstall takes effect.
+    // Otherwise a stale copy that sits earlier on PATH (e.g. an old 1.x in
+    // /usr/local/bin or a user dir) keeps shadowing a fresh symlink we'd drop in
+    // ~/.local/bin, and the "update" silently never applies. Only do this when
+    // the existing location is writable and isn't the source itself.
+    let existing_on_path = biorouter_on_path().and_then(|p| {
+        let dir = p.parent()?.to_path_buf();
+        let canon = p.canonicalize().unwrap_or(p);
+        (dir.is_dir() && is_writable(&dir) && canon != source).then_some(dir)
+    });
+
     // Prefer a writable, already-on-PATH dir; else the first writable dir; else
     // the first candidate (creating it if needed).
     let dirs = install_dirs();
-    let target_dir = dirs
-        .iter()
-        .find(|d| d.is_dir() && is_writable(d) && dir_on_path(d))
-        .or_else(|| dirs.iter().find(|d| d.is_dir() && is_writable(d)))
-        .cloned()
+    let target_dir = existing_on_path
+        .or_else(|| {
+            dirs.iter()
+                .find(|d| d.is_dir() && is_writable(d) && dir_on_path(d))
+                .or_else(|| dirs.iter().find(|d| d.is_dir() && is_writable(d)))
+                .cloned()
+        })
         .or_else(|| dirs.first().cloned())
         .ok_or_else(|| anyhow::anyhow!("No suitable install directory found"))?;
 
@@ -535,6 +558,26 @@ mod tests {
         let cmd = install_command("rust").expect("rust install command on this OS");
         assert!(cmd.contains("rustup") || cmd.contains("Rustup"));
         assert!(!cmd.contains("brew install rust"));
+    }
+
+    #[test]
+    fn rust_install_command_is_non_interactive() {
+        // The app runs installers without a TTY, so the rustup-init pipe must
+        // accept defaults (`-y`) and winget must not block on its agreement
+        // prompts — otherwise the install aborts with "Unable to run
+        // interactively" (Unix) / a hung agreement prompt (Windows).
+        let cmd = install_command("rust").expect("rust install command on this OS");
+        if cmd.contains("rustup.rs") {
+            assert!(
+                cmd.contains("-y"),
+                "piped rustup install must pass -y: {cmd}"
+            );
+        } else {
+            assert!(
+                cmd.contains("--accept-source-agreements"),
+                "winget install must accept agreements non-interactively: {cmd}"
+            );
+        }
     }
 
     #[test]

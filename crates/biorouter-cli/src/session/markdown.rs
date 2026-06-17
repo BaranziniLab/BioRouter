@@ -16,6 +16,65 @@ use pulldown_cmark::{
 };
 
 use super::output::{env_no_color, Theme, ACCENT};
+use unicode_width::UnicodeWidthChar;
+
+/// Split a (possibly ANSI-styled) string at the largest prefix whose *visible*
+/// width is `<= max`, returning `(head, head_width, tail)`. ANSI escape
+/// sequences carry zero width and are copied verbatim into whichever side the
+/// scan is on, so styling survives the break. Used to hard-wrap words that are
+/// individually wider than the terminal (long URLs, paths, hashes) instead of
+/// letting them overflow and wrap into broken layout.
+fn split_styled_at_width(s: &str, max: usize) -> (String, usize, String) {
+    let mut head = String::new();
+    let mut head_w = 0usize;
+    let mut chars = s.char_indices().peekable();
+    let mut split_at = s.len();
+
+    while let Some(&(i, c)) = chars.peek() {
+        if c == '\u{1b}' {
+            // Copy a full escape sequence verbatim (zero visible width).
+            // ESC [ <params> <final 0x40..=0x7E>, or ESC <single byte>.
+            head.push(c);
+            chars.next();
+            if let Some(&(_, '[')) = chars.peek() {
+                head.push('[');
+                chars.next();
+                while let Some(&(_, pc)) = chars.peek() {
+                    head.push(pc);
+                    chars.next();
+                    if ('\u{40}'..='\u{7e}').contains(&pc) {
+                        break;
+                    }
+                }
+            } else if let Some(&(_, pc)) = chars.peek() {
+                head.push(pc);
+                chars.next();
+            }
+            continue;
+        }
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        if head_w + cw > max {
+            split_at = i;
+            break;
+        }
+        head.push(c);
+        head_w += cw;
+        chars.next();
+    }
+
+    // `split_at` is always a char boundary (a `char_indices` index or `len`).
+    let tail = s.get(split_at..).unwrap_or("").to_string();
+    (head, head_w, tail)
+}
+
+/// Heuristic: does this (possibly ANSI-styled) word look like a URL we should
+/// keep intact rather than hard-wrap? Covers `scheme://…`, `www.…`, and the
+/// `(https://…)` form the link renderer emits after the link text.
+fn is_url_like(word: &str) -> bool {
+    let bare = console::strip_ansi_codes(word);
+    let bare = bare.trim_start_matches('(');
+    bare.contains("://") || bare.starts_with("www.")
+}
 
 /// Bullet glyphs by nesting depth (cycles past the end).
 const BULLETS: [&str; 3] = ["•", "◦", "▪"];
@@ -217,22 +276,73 @@ impl Renderer {
             self.word_w = 0;
             return;
         }
-        let fits = self.line_w + 1 + self.word_w <= self.width;
-        if self.line_has_content && !fits {
+        let word = std::mem::take(&mut self.word);
+        let word_w = self.word_w;
+        self.word_w = 0;
+
+        let sep = usize::from(self.line_has_content);
+        // Fits on the current line as-is.
+        if self.line_w + sep + word_w <= self.width {
+            if self.line.is_empty() {
+                self.start_line();
+            }
+            if self.line_has_content {
+                self.line.push(' ');
+                self.line_w += 1;
+            }
+            self.line.push_str(&word);
+            self.line_w += word_w;
+            self.line_has_content = true;
+            return;
+        }
+        // Doesn't fit: move to a fresh line first.
+        if self.line_has_content {
             self.write_line();
         }
         if self.line.is_empty() {
             self.start_line();
         }
-        if self.line_has_content {
-            self.line.push(' ');
-            self.line_w += 1;
+        // Fits on the fresh line.
+        if self.line_w + word_w <= self.width {
+            self.line.push_str(&word);
+            self.line_w += word_w;
+            self.line_has_content = true;
+            return;
         }
-        let word = std::mem::take(&mut self.word);
-        self.line.push_str(&word);
-        self.line_w += self.word_w;
-        self.word_w = 0;
-        self.line_has_content = true;
+        // Still too wide even on its own line. URLs are left intact so they
+        // stay clickable / copyable as a single unit (the terminal soft-wraps
+        // them); any other unbreakable token (long hashes, paths, base64) is
+        // hard-broken so it can't wrap into broken layout.
+        if is_url_like(&word) {
+            self.line.push_str(&word);
+            self.line_w += word_w;
+            self.line_has_content = true;
+            return;
+        }
+        let mut rest = word;
+        loop {
+            if self.line.is_empty() {
+                self.start_line();
+            }
+            let budget = self.width.saturating_sub(self.line_w).max(1);
+            let (head, head_w, tail) = split_styled_at_width(&rest, budget);
+            // Degenerate guard: if nothing was consumed (budget too small for
+            // even one glyph), emit the remainder whole rather than spin.
+            if head.is_empty() {
+                self.line.push_str(&rest);
+                self.line_w += measure_text_width(&rest);
+                self.line_has_content = true;
+                break;
+            }
+            self.line.push_str(&head);
+            self.line_w += head_w;
+            self.line_has_content = true;
+            if tail.is_empty() {
+                break;
+            }
+            self.write_line();
+            rest = tail;
+        }
     }
 
     /// Build the prefix for a fresh line: blockquote bars, list indentation,
@@ -368,13 +478,19 @@ impl Renderer {
             }
         }
         let total = |colw: &[usize]| colw.iter().sum::<usize>() + 3 * colw.len() + 1;
+        // Shrink the widest column repeatedly until the table fits the terminal.
+        // Columns may be squeezed all the way down to a single character: a
+        // heavily-truncated cell is far better than a table whose borders are
+        // wider than the terminal and wrap into garbage. The shrink targets the
+        // widest column each step so widths stay as balanced (and readable) as
+        // the available space allows.
         let mut guard = 0;
         while total(&colw) > self.width && guard < 10_000 {
             guard += 1;
             if let Some((idx, _)) = colw
                 .iter()
                 .enumerate()
-                .filter(|(_, w)| **w > 4)
+                .filter(|(_, w)| **w > 1)
                 .max_by_key(|(_, w)| **w)
             {
                 colw[idx] -= 1;
@@ -1087,10 +1203,83 @@ mod tests {
 
     #[test]
     #[serial]
-    fn unbreakable_word_longer_than_width_is_kept() {
+    fn unbreakable_url_longer_than_width_is_kept() {
+        // URLs stay intact (one clickable/copyable unit) even when over-width.
         let url = "https://example.com/very/long/path/that/exceeds/width";
         let out = plain_w(url, 20);
-        assert!(out.contains(url));
+        assert!(out.contains(url), "got: {:?}", out);
+    }
+
+    #[test]
+    #[serial]
+    fn unbreakable_non_url_token_is_hard_broken_to_width() {
+        // A long non-URL token (e.g. a hash) must hard-wrap so no line overflows.
+        let token = "a".repeat(120);
+        let out = plain_w(&token, 20);
+        for line in out.lines() {
+            assert!(
+                measure_text_width(line) <= 20,
+                "line wider than terminal: {:?}",
+                line
+            );
+        }
+        assert!(out.lines().count() >= 6, "should span several lines: {:?}", out);
+        // The content survives the break (concatenating the lines restores it).
+        let joined: String = out.lines().collect();
+        assert_eq!(joined, token);
+    }
+
+    #[test]
+    #[serial]
+    fn hard_break_preserves_inline_style_across_lines() {
+        // A long styled (code) token must hard-break without leaking raw ANSI
+        // onto the visible width.
+        console::set_colors_enabled(false);
+        let out = render_markdown(&format!("`{}`", "x".repeat(60)), Theme::Ansi, 20);
+        for line in out.lines() {
+            assert!(measure_text_width(line) <= 20, "too wide: {:?}", line);
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn many_column_table_fits_narrow_terminal() {
+        // Regression: an 8-column table in a 40-col terminal used to overflow
+        // (min column width floor of 4) and wrap its borders into garbage.
+        let header = "| c1 | c2 | c3 | c4 | c5 | c6 | c7 | c8 |";
+        let sep = "|----|----|----|----|----|----|----|----|";
+        let row = "| alpha | beta | gamma | delta | epsilon | zeta | eta | theta |";
+        let out = plain_w(&format!("{header}\n{sep}\n{row}"), 40);
+        for line in out.lines() {
+            assert!(
+                measure_text_width(line) <= 40,
+                "table line wider than terminal: {:?} ({})",
+                line,
+                measure_text_width(line)
+            );
+        }
+        // All table border/content lines share one width (borders line up).
+        let widths: Vec<usize> = out
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                t.starts_with('╭') || t.starts_with('│') || t.starts_with('├') || t.starts_with('╰')
+            })
+            .map(measure_text_width)
+            .collect();
+        assert!(widths.windows(2).all(|w| w[0] == w[1]), "ragged table: {widths:?}");
+    }
+
+    #[test]
+    #[serial]
+    fn split_styled_at_width_counts_visible_width_only() {
+        let styled = format!("{}", style("hello").bold());
+        let (head, w, tail) = split_styled_at_width(&styled, 3);
+        assert_eq!(w, 3, "visible width should be 3");
+        assert_eq!(measure_text_width(&head), 3);
+        // Concatenating head+tail loses no visible characters.
+        let round = format!("{head}{tail}");
+        assert_eq!(console::strip_ansi_codes(&round), "hello");
     }
 
     // ----- regressions found via tmux PTY debugging ---------------------------

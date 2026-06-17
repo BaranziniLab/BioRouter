@@ -1730,7 +1730,7 @@ async fn handle_models_subcommand(command: ModelsCommand) -> Result<()> {
 
 async fn handle_knowledge_subcommand(command: KnowledgeCommand) -> Result<()> {
     use crate::commands::knowledge;
-    // Ensure the built-in Soul KB / Meditation workflow / soul-writer skill
+    // Ensure the built-in Soul KB / Meditation workflow / update-soul skill
     // exist so CLI-only users see and can use them. Best-effort; the Daily
     // Meditation schedule is registered by the agent runtime where a scheduler
     // is available.

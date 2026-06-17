@@ -17,16 +17,63 @@ export interface SkillBundle {
 export const BIOROUTER_SKILLS_DIR = '~/.config/biorouter/skills';
 
 // Skills that ship with Biorouter. The backend re-seeds them on every session
-// start ('about-biorouter' via skills_extension.rs, 'soul-writer' via
+// start ('about-biorouter' via skills_extension.rs, 'update-soul' via
 // knowledge/soul.rs), so deleting their folder has no lasting effect — the
 // UI therefore offers only the enable/disable toggle for them, not deletion.
-export const BUILTIN_SKILL_NAMES = ['about-biorouter', 'soul-writer'];
+export const BUILTIN_SKILL_NAMES = ['about-biorouter', 'update-soul'];
 
 export function isBuiltinSkill(name: string): boolean {
   return BUILTIN_SKILL_NAMES.includes(name);
 }
 export const OTHER_SKILL_DIRS = ['~/.claude/skills', '~/.config/agents/skills'];
 export const ALL_SKILL_DIRS = [BIOROUTER_SKILLS_DIR, ...OTHER_SKILL_DIRS];
+
+/**
+ * Read a single top-level frontmatter field, supporting both inline values
+ * (`key: value`, optionally quoted) and YAML block scalars
+ * (`key: >-` / `|` followed by indented continuation lines). The built-in
+ * skills use a folded block scalar for `description`, so a naive
+ * same-line-only parse would surface the literal `>-` indicator instead of the
+ * text. Folded (`>`) blocks join lines with spaces (blank line → newline);
+ * literal (`|`) blocks keep their newlines.
+ */
+function readFrontmatterField(fm: string, key: string): string | null {
+  const lines = fm.split(/\r?\n/);
+  const idx = lines.findIndex((l) => new RegExp(`^${key}:`).test(l));
+  if (idx === -1) return null;
+
+  const head = (lines[idx].match(new RegExp(`^${key}:\\s*(.*)$`))?.[1] ?? '').trim();
+
+  // Block scalar indicator: `|` or `>`, optional chomping (+/-) / indent digit,
+  // optional trailing comment.
+  const block = head.match(/^([|>])[+-]?\d*\s*(#.*)?$/);
+  if (block) {
+    const folded = block[1] === '>';
+    const body: string[] = [];
+    for (let i = idx + 1; i < lines.length; i++) {
+      const line = lines[i];
+      if (line.trim() === '') {
+        body.push('');
+        continue;
+      }
+      // Continuation lines are indented; a column-0 line starts the next key.
+      if (!/^\s/.test(line)) break;
+      body.push(line.replace(/^\s+/, ''));
+    }
+    while (body.length && body[body.length - 1] === '') body.pop();
+    if (!folded) return body.join('\n').trim() || null;
+    let out = '';
+    for (const l of body) {
+      if (l === '') out += '\n';
+      else out += (out && !out.endsWith('\n') ? ' ' : '') + l;
+    }
+    return out.trim() || null;
+  }
+
+  // Inline value — strip a single layer of matching surrounding quotes.
+  const unquoted = head.replace(/^"([\s\S]*)"$/, '$1').replace(/^'([\s\S]*)'$/, '$1');
+  return unquoted.trim() || null;
+}
 
 /**
  * Parse YAML frontmatter from a SKILL.md file.
@@ -38,10 +85,10 @@ export function parseSkillFrontmatter(
   const match = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
   if (!match) return null;
   const fm = match[1];
-  const nameMatch = fm.match(/^name:\s*([^\n]+)$/m);
-  const descMatch = fm.match(/^description:\s*([^\n]+)$/m);
-  if (!nameMatch?.[1]?.trim() || !descMatch?.[1]?.trim()) return null;
-  return { name: nameMatch[1].trim(), description: descMatch[1].trim() };
+  const name = readFrontmatterField(fm, 'name');
+  const description = readFrontmatterField(fm, 'description');
+  if (!name || !description) return null;
+  return { name, description };
 }
 
 /**

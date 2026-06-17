@@ -18,7 +18,7 @@ import debounce from 'lodash/debounce';
 import { LocalMessageStorage } from '../utils/localMessageStorage';
 import { DirSwitcher } from './bottom_menu/DirSwitcher';
 import ModelsBottomBar from './settings/models/bottom_bar/ModelsBottomBar';
-import { BottomMenuModeSelection } from './bottom_menu/BottomMenuModeSelection';
+import { LaunchTerminalButton } from './bottom_menu/LaunchTerminalButton';
 import { BottomMenuExtensionSelection } from './bottom_menu/BottomMenuExtensionSelection';
 import { BottomMenuSkillSelection } from './bottom_menu/BottomMenuSkillSelection';
 import { BottomMenuKnowledgeSelection } from './bottom_menu/BottomMenuKnowledgeSelection';
@@ -1454,7 +1454,10 @@ export default function ChatInput({
           Model, Mode, Workflow, Diagnostics — letting the picker row stay narrow
           enough for compact dashboard windows. Send button sits on the far right. */}
       <div className="flex flex-row flex-nowrap items-center gap-1 p-2 relative overflow-x-auto">
-        {/* Always-visible group */}
+        {/* Always-visible group. The terminal launcher sits to the left of the
+            working-directory switcher so users can pop open the CLI rooted in
+            that exact folder. */}
+        <LaunchTerminalButton workingDir={sessionWorkingDir ?? getInitialWorkingDir()} />
         <DirSwitcher
           className="mr-0"
           sessionId={sessionId ?? undefined}
@@ -1566,9 +1569,6 @@ export default function ChatInput({
                   hideAlertPopover
                 />
               </PickerRow>
-              <PickerRow>
-                <BottomMenuModeSelection />
-              </PickerRow>
               {sessionId && (
                 <PickerRow>
                   <button
@@ -1645,8 +1645,9 @@ export default function ChatInput({
                 />
               </div>
             </Tooltip>
-            <div className="w-px h-4 bg-border-default mx-2" />
-            <BottomMenuModeSelection />
+            {/* Workflow + diagnostics sit immediately to the right of the
+                model selector as a single grouped pair (one divider before
+                the group, none between the two buttons). */}
             {sessionId && (
               <>
                 <div className="w-px h-4 bg-border-default mx-2" />
@@ -1671,11 +1672,6 @@ export default function ChatInput({
                     {workflow ? 'View/Edit Workflow' : 'Create Workflow from Session'}
                   </TooltipContent>
                 </Tooltip>
-              </>
-            )}
-            {sessionId && (
-              <>
-                <div className="w-px h-4 bg-border-default mx-2" />
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button

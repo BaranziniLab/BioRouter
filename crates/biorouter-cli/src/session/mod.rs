@@ -6,6 +6,7 @@ mod input;
 pub mod markdown;
 pub mod output;
 mod prompt;
+mod stream_coalesce;
 mod task_execution_display;
 mod thinking;
 mod tui;
@@ -933,7 +934,7 @@ impl CliSession {
         });
         let _drop_handle = AbortOnDropHandle::new(handle);
 
-        let mut stream = self
+        let reply_stream = self
             .agent
             .reply(
                 user_message.clone(),
@@ -941,6 +942,14 @@ impl CliSession {
                 Some(cancel_token.clone()),
             )
             .await?;
+        // Merge per-token assistant text deltas into whole messages before
+        // rendering. `stream-json` consumers want the raw event granularity,
+        // so only coalesce for human-facing output.
+        let mut stream = if is_stream_json_mode {
+            reply_stream
+        } else {
+            stream_coalesce::coalesce_text_deltas(reply_stream)
+        };
 
         let mut progress_bars = output::McpSpinners::new();
         let cancel_token_clone = cancel_token.clone();
