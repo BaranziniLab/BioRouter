@@ -33,7 +33,7 @@ import { Workflow } from '../workflow';
 import MessageQueue from './MessageQueue';
 import { detectInterruption } from '../utils/interruptionDetector';
 import { DiagnosticsModal } from './ui/Diagnostics';
-import { getSession, Message } from '../api';
+import { getSession, llamacppStatus, Message } from '../api';
 import CreateWorkflowFromSessionModal from './workflows/CreateWorkflowFromSessionModal';
 import CreateEditWorkflowModal from './workflows/CreateEditWorkflowModal';
 import { getInitialWorkingDir } from '../utils/workingDir';
@@ -470,6 +470,25 @@ export default function ChatInput({
         console.log('No model or provider found');
         setIsTokenLimitLoaded(true);
         return;
+      }
+
+      // Llama Server (local models): the real context window is a live property
+      // of the loaded model, read from the running server's /props. Prefer it
+      // over any static catalog/default so the gauge matches the CLI/backend
+      // (e.g. a 262k model instead of the 128k fallback). Only when the sidecar
+      // has reported a window; otherwise fall through to the static logic.
+      if (provider === 'llamacpp') {
+        try {
+          const status = await llamacppStatus();
+          const ctx = status.data?.sidecar?.context_size;
+          if (typeof ctx === 'number' && ctx > 0) {
+            setTokenLimit(ctx);
+            setIsTokenLimitLoaded(true);
+            return;
+          }
+        } catch (e) {
+          console.warn('Failed to read llama-server context window, using fallback:', e);
+        }
       }
 
       // First, check predefined models from environment (highest priority)
