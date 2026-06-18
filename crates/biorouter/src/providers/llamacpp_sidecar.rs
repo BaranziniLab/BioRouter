@@ -29,14 +29,6 @@ use utoipa::ToSchema;
 pub const LLAMA_SERVER_BUILD: &str = "b9611";
 /// Default port the managed sidecar listens on (loopback only).
 pub const LLAMACPP_DEFAULT_PORT: u16 = 11543;
-/// Fallback context limit Biorouter assumes only when the live model window
-/// cannot be read from the server (e.g. before it is ready) and the user has
-/// not pinned `LLAMACPP_CONTEXT_SIZE`. The real window now tracks the loaded
-/// model (read from `/props`; see [`current_context_size`]); this is just a
-/// conservative default. Biorouter's agent system prompt plus tool schemas
-/// alone can exceed 8k tokens, so it stays generous.
-pub const LLAMACPP_DEFAULT_CONTEXT_SIZE: usize = 32_768;
-
 const LOG_TAIL_LINES: usize = 60;
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const STATUS_PROBE_TIMEOUT: Duration = Duration::from_millis(800);
@@ -175,20 +167,48 @@ fn configured_port() -> u16 {
         .unwrap_or(LLAMACPP_DEFAULT_PORT)
 }
 
-/// The `--ctx-size` passed to llama-server. When `LLAMACPP_CONTEXT_SIZE` is set
-/// it pins an explicit window (and caps memory); otherwise we pass `0`, which
-/// tells llama-server to use the loaded model's own trained context length, so
-/// the window tracks whichever model is running instead of a fixed preset. The
-/// actual size the server allocates is then read back from `/props` (see
-/// [`live_context_size`]) and reported to Biorouter's token accounting, so the
-/// context limit is a live property of the model, not a constant. q8_0 KV-cache
-/// quantization keeps the memory cost affordable; on a very large-context model
-/// and a memory-constrained machine, pin a smaller window via
-/// `LLAMACPP_CONTEXT_SIZE`.
+/// Total physical memory in GiB (best-effort; 0 when it can't be read). On
+/// Apple Silicon this is unified memory, which doubles as the GPU/Metal budget,
+/// so it's a good proxy for how much KV cache we can afford.
+fn total_memory_gib() -> u64 {
+    // `sys_info::mem_info().total` is in KiB.
+    sys_info::mem_info()
+        .map(|m| m.total / (1024 * 1024))
+        .unwrap_or(0)
+}
+
+/// The default context window when the user hasn't pinned `LLAMACPP_CONTEXT_SIZE`.
+///
+/// A model's *trained* window (read later from `/props`) can be huge — Qwen3.5
+/// is 262k — but the KV cache for it scales with both the window and the model
+/// size, and allocating tens of GB at startup is slow-to-impossible on a
+/// laptop. So instead of the model's full native window we pick a memory-tiered
+/// cap: generous on a workstation, conservative on a 16 GB machine. 128k is the
+/// ceiling. Users can still pin any explicit `LLAMACPP_CONTEXT_SIZE`, and the
+/// real allocated window is always read back from `/props` for accounting.
+pub fn default_context_size() -> usize {
+    match total_memory_gib() {
+        gib if gib >= 64 => 131_072, // 128k — workstations / Apple Silicon Max/Ultra
+        gib if gib >= 32 => 65_536,  // 64k
+        gib if gib >= 16 => 32_768,  // 32k — typical 16 GB laptop
+        _ => 16_384,                 // 16k — small or unknown
+    }
+}
+
+/// The `--ctx-size` passed to llama-server. An explicit positive
+/// `LLAMACPP_CONTEXT_SIZE` pins the window (and caps memory); otherwise (unset
+/// or `0` = "auto") we use a memory-tiered default ([`default_context_size`])
+/// rather than the model's full native window, so large models don't hang
+/// allocating a giant KV cache on startup. The size the server actually
+/// allocates is read back from `/props` ([`live_context_size`]) and reported to
+/// token accounting, so the gauge always matches reality. q8_0 KV-cache
+/// quantization keeps the memory cost affordable.
 fn configured_context_size() -> usize {
     crate::config::Config::global()
         .get_param::<usize>("LLAMACPP_CONTEXT_SIZE")
-        .unwrap_or(0)
+        .ok()
+        .filter(|&n| n > 0)
+        .unwrap_or_else(default_context_size)
 }
 
 /// Query a running llama-server's `/props` for the context window it actually
@@ -207,7 +227,12 @@ pub async fn current_context_size() -> Option<usize> {
     if recorded.is_some() {
         return recorded;
     }
-    live_context_size(port?).await
+    // Not recorded by this process. Probe the recorded port if we have one,
+    // otherwise the configured port — so an already-running server (started by
+    // another Biorouter process, or before this one recorded it) still yields
+    // the real window. Keeps the CLI gauge and GUI status consistent instead of
+    // falling back to a fixed default.
+    live_context_size(port.unwrap_or_else(configured_port)).await
 }
 
 async fn live_context_size(port: u16) -> Option<usize> {
@@ -243,9 +268,9 @@ fn build_args(hf_spec: &str, alias: &str, port: u16, ctx_size: usize) -> Vec<Str
         ctx_size.to_string(),
         "--jinja".to_string(),
         "--no-webui".to_string(),
-        // Halve KV-cache memory so the 32k default context stays affordable.
-        // q8_0 is considered lossless in practice; it's q4 KV that degrades
-        // tool calling. Overridable via LLAMACPP_EXTRA_ARGS.
+        // Halve KV-cache memory so the (memory-tiered) default context stays
+        // affordable. q8_0 is considered lossless in practice; it's q4 KV that
+        // degrades tool calling. Overridable via LLAMACPP_EXTRA_ARGS.
         "--cache-type-k".to_string(),
         "q8_0".to_string(),
         "--cache-type-v".to_string(),
@@ -678,6 +703,21 @@ impl LlamaSidecar {
         };
 
         if !running {
+            // No process managed by this instance. A server may still be
+            // running on the configured port — started by another Biorouter
+            // process and not yet adopted here. Probe it so callers (the GUI's
+            // context gauge, token accounting) see a real, ready window instead
+            // of a "stopped"/default fallback. We don't take ownership of the
+            // child; we just report what's reachable.
+            let probe_port = inner.port.unwrap_or_else(configured_port);
+            if health_ok(probe_port, STATUS_PROBE_TIMEOUT).await {
+                status.state = SidecarState::Ready;
+                status.port = Some(probe_port);
+                if let Some(ctx) = live_context_size(probe_port).await {
+                    inner.context_size = Some(ctx);
+                    status.context_size = Some(ctx);
+                }
+            }
             return status;
         }
 
@@ -715,6 +755,31 @@ impl LlamaSidecar {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_context_size_is_memory_tiered_and_capped() {
+        // Whatever this machine reports, the default must be one of the tiers,
+        // never exceed the 128k cap, and never be absurdly small.
+        let d = default_context_size();
+        assert!(
+            [16_384usize, 32_768, 65_536, 131_072].contains(&d),
+            "unexpected tier: {d}"
+        );
+        assert!(d <= 131_072, "must not exceed the 128k cap: {d}");
+        assert!(d >= 16_384, "must stay usable: {d}");
+        // The tier must agree with the measured memory (guards the thresholds).
+        let gib = total_memory_gib();
+        let expected = if gib >= 64 {
+            131_072
+        } else if gib >= 32 {
+            65_536
+        } else if gib >= 16 {
+            32_768
+        } else {
+            16_384
+        };
+        assert_eq!(d, expected, "tier disagrees with {gib} GiB");
+    }
 
     #[test]
     fn build_args_includes_model_port_and_jinja() {

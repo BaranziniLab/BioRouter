@@ -8,6 +8,7 @@
 //! talks to an already-running llama-server (or any OpenAI-compatible
 //! llama.cpp endpoint) instead.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -19,7 +20,7 @@ use url::Url;
 use super::api_client::{ApiClient, AuthMethod, AuthProvider};
 use super::base::{ConfigKey, MessageStream, Provider, ProviderMetadata, ProviderUsage, Usage};
 use super::errors::ProviderError;
-use super::llamacpp_sidecar::{self, LLAMACPP_DEFAULT_CONTEXT_SIZE, LLAMACPP_DEFAULT_PORT};
+use super::llamacpp_sidecar::{self, LLAMACPP_DEFAULT_PORT};
 use super::retry::ProviderRetry;
 use super::utils::{
     get_model, handle_response_openai_compat, handle_status_openai_compat, stream_openai_compat,
@@ -204,6 +205,15 @@ pub struct LlamaCppProvider {
     external_base: Option<String>,
     #[serde(skip)]
     client: tokio::sync::Mutex<Option<(String, Arc<ApiClient>)>>,
+    /// The running model's real context window, read from the server's `/props`
+    /// once it is up (0 until known). The window is a live property of the
+    /// loaded model — not a fixed catalog/config constant — so we cannot know it
+    /// at construction (the sidecar starts lazily on first use). It is refreshed
+    /// in `ensure_client` and overrides the construction-time fallback in
+    /// `get_model_config`, keeping token accounting in sync with the model the
+    /// server actually loaded.
+    #[serde(skip)]
+    live_context_limit: AtomicUsize,
     request_timeout: Duration,
     startup_timeout: Duration,
     name: String,
@@ -213,16 +223,24 @@ impl LlamaCppProvider {
     pub async fn from_env(mut model: ModelConfig) -> Result<Self> {
         let config = crate::config::Config::global();
 
-        // Align Biorouter's context accounting with the running model's real
-        // window. Preference order (unless the user pinned an explicit limit on
-        // the model): the live window the sidecar read from the loaded model,
-        // then an explicit LLAMACPP_CONTEXT_SIZE, then the conservative default.
+        // Construction-time context window for token accounting. This is only a
+        // fallback used until the sidecar reports the loaded model's real window
+        // (see `live_context_limit`, refreshed in `ensure_client`), since the
+        // server starts lazily and isn't up yet here. Preference: a window the
+        // sidecar already recorded, then an explicit positive LLAMACPP_CONTEXT_SIZE
+        // pin, then the memory-tiered default. A configured `0` means "auto" — it
+        // is not a real accounting limit, so the tiered default stands until the
+        // live window is known. This matches the `--ctx-size` the sidecar will
+        // actually pass (see `configured_context_size`), keeping the pre-server
+        // gauge close to the real window.
         if model.context_limit.is_none() {
             let ctx = match llamacpp_sidecar::current_context_size().await {
                 Some(live) => live,
                 None => config
                     .get_param::<usize>("LLAMACPP_CONTEXT_SIZE")
-                    .unwrap_or(LLAMACPP_DEFAULT_CONTEXT_SIZE),
+                    .ok()
+                    .filter(|&n| n > 0)
+                    .unwrap_or_else(llamacpp_sidecar::default_context_size),
             };
             model = model.with_context_limit(Some(ctx));
         }
@@ -279,6 +297,7 @@ impl LlamaCppProvider {
             model,
             external_base,
             client: tokio::sync::Mutex::new(None),
+            live_context_limit: AtomicUsize::new(0),
             request_timeout,
             startup_timeout,
             name: Self::metadata().name,
@@ -303,6 +322,13 @@ impl LlamaCppProvider {
                 .map_err(|e| {
                     ProviderError::ExecutionError(format!("llama-server not ready: {e}"))
                 })?;
+            // The server is up: capture the model's real context window so token
+            // accounting reflects the loaded model rather than the
+            // construction-time fallback. Best-effort — leave the fallback if
+            // the window can't be read.
+            if let Some(n) = llamacpp_sidecar::current_context_size().await {
+                self.live_context_limit.store(n, Ordering::Relaxed);
+            }
             format!("http://127.0.0.1:{port}/")
         };
 
@@ -352,12 +378,12 @@ impl Provider for LlamaCppProvider {
                     false,
                     Some(&LLAMACPP_DEFAULT_PORT.to_string()),
                 ),
-                ConfigKey::new(
-                    "LLAMACPP_CONTEXT_SIZE",
-                    false,
-                    false,
-                    Some(&LLAMACPP_DEFAULT_CONTEXT_SIZE.to_string()),
-                ),
+                // Default "0" = use the loaded model's native context window
+                // (llama-server `--ctx-size 0`). Pre-filling a small fixed
+                // number here previously led users to pin e.g. 32k and cap a
+                // model that supports far more. Set a positive value only to cap
+                // the window for memory reasons.
+                ConfigKey::new("LLAMACPP_CONTEXT_SIZE", false, false, Some("0")),
                 ConfigKey::new(
                     "LLAMACPP_TIMEOUT",
                     false,
@@ -376,7 +402,17 @@ impl Provider for LlamaCppProvider {
     }
 
     fn get_model_config(&self) -> ModelConfig {
-        self.model.clone()
+        // Prefer the running model's real context window (read from `/props`)
+        // over the construction-time fallback, so callers (token accounting,
+        // context gauges) see the actual window — e.g. a 262k model instead of
+        // the conservative 32k default. Falls back to the stored value until the
+        // server has been contacted at least once.
+        let live = self.live_context_limit.load(Ordering::Relaxed);
+        if live > 0 {
+            self.model.clone().with_context_limit(Some(live))
+        } else {
+            self.model.clone()
+        }
     }
 
     #[tracing::instrument(
