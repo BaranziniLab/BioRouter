@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use futures::{StreamExt, TryStreamExt};
 use reqwest::StatusCode;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io;
 use tokio::pin;
@@ -66,6 +67,30 @@ pub const OPEN_AI_KNOWN_MODELS: &[(&str, usize)] = &[
 
 pub const OPEN_AI_DOC_URL: &str = "https://platform.openai.com/docs/models";
 
+/// Built-in model-id aliases for OpenAI-compatible hosts that are retiring a
+/// model name, so a user's saved config keeps working after the vendor removes
+/// the old id. Keyed by the API host; returns `old id -> live id`.
+///
+/// DeepSeek retires `deepseek-chat` / `deepseek-reasoner` on 2026-07-24 (both
+/// have been aliases of V4-Flash since the V4 launch). Rewriting them on the
+/// wire makes the transition seamless for anyone still selecting the old ids —
+/// including custom providers pointed at a `deepseek.com` host. Mapping both to
+/// `deepseek-v4-flash` (not `-pro`) is faithful: Flash has thinking enabled by
+/// default, so `deepseek-reasoner` behaviour is preserved with no cost jump.
+fn builtin_model_aliases(host: &str) -> Option<HashMap<String, String>> {
+    let host = host.trim().to_ascii_lowercase();
+    if host == "deepseek.com" || host == "api.deepseek.com" || host.ends_with(".deepseek.com") {
+        return Some(HashMap::from([
+            ("deepseek-chat".to_string(), "deepseek-v4-flash".to_string()),
+            (
+                "deepseek-reasoner".to_string(),
+                "deepseek-v4-flash".to_string(),
+            ),
+        ]));
+    }
+    None
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct OpenAiProvider {
     #[serde(skip)]
@@ -77,6 +102,9 @@ pub struct OpenAiProvider {
     custom_headers: Option<HashMap<String, String>>,
     supports_streaming: bool,
     name: String,
+    /// `old model id -> live model id` rewrites applied just before a request is
+    /// sent, so retired upstream ids keep working. See [`builtin_model_aliases`].
+    model_aliases: Option<HashMap<String, String>>,
 }
 
 impl OpenAiProvider {
@@ -131,6 +159,7 @@ impl OpenAiProvider {
             custom_headers,
             supports_streaming: true,
             name: Self::metadata().name,
+            model_aliases: None,
         })
     }
 
@@ -145,6 +174,7 @@ impl OpenAiProvider {
             custom_headers: None,
             supports_streaming: true,
             name: Self::metadata().name,
+            model_aliases: None,
         }
     }
 
@@ -159,6 +189,8 @@ impl OpenAiProvider {
 
         let url = url::Url::parse(&config.base_url)
             .map_err(|e| anyhow::anyhow!("Invalid base URL '{}': {}", config.base_url, e))?;
+
+        let model_aliases = builtin_model_aliases(url.host_str().unwrap_or(""));
 
         let host = if let Some(port) = url.port() {
             format!(
@@ -202,7 +234,30 @@ impl OpenAiProvider {
             custom_headers: config.headers,
             supports_streaming: config.supports_streaming.unwrap_or(true),
             name: config.name.clone(),
+            model_aliases,
         })
+    }
+
+    /// Rewrite a retired model id to its live replacement just before sending a
+    /// request. Returns the input untouched when no alias applies, so the common
+    /// path allocates nothing.
+    fn resolve_model<'a>(&self, model_config: &'a ModelConfig) -> Cow<'a, ModelConfig> {
+        if let Some(target) = self
+            .model_aliases
+            .as_ref()
+            .and_then(|aliases| aliases.get(&model_config.model_name))
+            .filter(|target| *target != &model_config.model_name)
+        {
+            tracing::debug!(
+                from = %model_config.model_name,
+                to = %target,
+                "remapping retired model id to its live replacement"
+            );
+            let mut remapped = model_config.clone();
+            remapped.model_name = target.clone();
+            return Cow::Owned(remapped);
+        }
+        Cow::Borrowed(model_config)
     }
 
     fn uses_responses_api(model_name: &str) -> bool {
@@ -304,6 +359,8 @@ impl Provider for OpenAiProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<(Message, ProviderUsage), ProviderError> {
+        let resolved = self.resolve_model(model_config);
+        let model_config = resolved.as_ref();
         if Self::uses_responses_api(&model_config.model_name) {
             let payload = create_responses_request(model_config, system, messages, tools)?;
             let mut log = RequestLog::start(&self.model, &payload)?;
@@ -411,11 +468,13 @@ impl Provider for OpenAiProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
-        if Self::uses_responses_api(&self.model.model_name) {
-            let mut payload = create_responses_request(&self.model, system, messages, tools)?;
+        let resolved = self.resolve_model(&self.model);
+        let model = resolved.as_ref();
+        if Self::uses_responses_api(&model.model_name) {
+            let mut payload = create_responses_request(model, system, messages, tools)?;
             payload["stream"] = serde_json::Value::Bool(true);
 
-            let mut log = RequestLog::start(&self.model, &payload)?;
+            let mut log = RequestLog::start(model, &payload)?;
 
             let response = self
                 .with_retry(|| async {
@@ -446,15 +505,9 @@ impl Provider for OpenAiProvider {
                 }
             }))
         } else {
-            let payload = create_request(
-                &self.model,
-                system,
-                messages,
-                tools,
-                &ImageFormat::OpenAi,
-                true,
-            )?;
-            let mut log = RequestLog::start(&self.model, &payload)?;
+            let payload =
+                create_request(model, system, messages, tools, &ImageFormat::OpenAi, true)?;
+            let mut log = RequestLog::start(model, &payload)?;
 
             let response = self
                 .with_retry(|| async {
@@ -483,6 +536,88 @@ fn parse_custom_headers(s: String) -> HashMap<String, String> {
             Some((key, value))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod alias_tests {
+    use super::*;
+    use crate::providers::api_client::{ApiClient, AuthMethod};
+
+    fn model(name: &str) -> ModelConfig {
+        ModelConfig::new(name).unwrap()
+    }
+
+    fn provider_for_host(host: &str) -> OpenAiProvider {
+        let api_client = ApiClient::new(
+            host.to_string(),
+            AuthMethod::BearerToken("test".to_string()),
+        )
+        .unwrap();
+        let mut p = OpenAiProvider::new(api_client, model("deepseek-chat"));
+        p.model_aliases = builtin_model_aliases(
+            url::Url::parse(host)
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .unwrap_or_default()
+                .as_str(),
+        );
+        p
+    }
+
+    #[test]
+    fn deepseek_host_aliases_retired_ids() {
+        let aliases = builtin_model_aliases("api.deepseek.com").expect("deepseek host has aliases");
+        assert_eq!(
+            aliases.get("deepseek-chat").map(String::as_str),
+            Some("deepseek-v4-flash")
+        );
+        assert_eq!(
+            aliases.get("deepseek-reasoner").map(String::as_str),
+            Some("deepseek-v4-flash")
+        );
+    }
+
+    #[test]
+    fn deepseek_host_matching_is_case_insensitive_and_covers_subdomains() {
+        assert!(builtin_model_aliases("API.DeepSeek.com").is_some());
+        assert!(builtin_model_aliases("eu.deepseek.com").is_some());
+        assert!(builtin_model_aliases("deepseek.com").is_some());
+    }
+
+    #[test]
+    fn non_deepseek_hosts_have_no_aliases() {
+        assert!(builtin_model_aliases("api.openai.com").is_none());
+        assert!(builtin_model_aliases("api.deepseek.com.evil.example").is_none());
+        assert!(builtin_model_aliases("").is_none());
+    }
+
+    #[test]
+    fn resolve_model_rewrites_retired_id_only() {
+        let p = provider_for_host("https://api.deepseek.com");
+
+        let chat = model("deepseek-chat");
+        assert_eq!(p.resolve_model(&chat).model_name, "deepseek-v4-flash");
+
+        let reasoner = model("deepseek-reasoner");
+        assert_eq!(p.resolve_model(&reasoner).model_name, "deepseek-v4-flash");
+
+        // A live id is passed through untouched (no allocation/rewrite).
+        let v4 = model("deepseek-v4-pro");
+        assert_eq!(p.resolve_model(&v4).model_name, "deepseek-v4-pro");
+    }
+
+    #[test]
+    fn resolve_model_is_noop_without_aliases() {
+        let api_client = ApiClient::new(
+            "https://api.openai.com".to_string(),
+            AuthMethod::BearerToken("test".to_string()),
+        )
+        .unwrap();
+        let p = OpenAiProvider::new(api_client, model("deepseek-chat"));
+        // No alias table → the (now-retired) id is left as-is.
+        let chat = model("deepseek-chat");
+        assert_eq!(p.resolve_model(&chat).model_name, "deepseek-chat");
+    }
 }
 
 #[async_trait]

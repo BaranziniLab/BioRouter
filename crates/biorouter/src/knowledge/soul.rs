@@ -101,7 +101,10 @@ pub fn ensure_soul_skill() -> anyhow::Result<()> {
         .join(SOUL_SKILL_DIR_LEGACY);
     if legacy.exists() {
         if let Err(e) = std::fs::remove_dir_all(&legacy) {
-            tracing::warn!("Soul: failed to remove legacy skill at {}: {e}", legacy.display());
+            tracing::warn!(
+                "Soul: failed to remove legacy skill at {}: {e}",
+                legacy.display()
+            );
         } else {
             tracing::info!("Soul: removed legacy skill at {}", legacy.display());
         }
