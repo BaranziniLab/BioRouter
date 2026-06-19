@@ -327,11 +327,19 @@ async fn get_or_create_session_id(
     let Some(id) = identifier else {
         return if resume {
             let sessions = session_manager.list_sessions().await?;
-            let session_id = sessions
-                .first()
-                .map(|s| s.id.clone())
-                .ok_or_else(|| anyhow::anyhow!("No session found to resume"))?;
-            Ok(Some(session_id))
+            if let Some(latest) = sessions.first() {
+                Ok(Some(latest.id.clone()))
+            } else {
+                eprintln!("No previous session to resume; starting a new session.");
+                let session = session_manager
+                    .create_session(
+                        std::env::current_dir()?,
+                        "CLI Session".to_string(),
+                        SessionType::User,
+                    )
+                    .await?;
+                Ok(Some(session.id))
+            }
         } else {
             let session = session_manager
                 .create_session(
@@ -347,27 +355,32 @@ async fn get_or_create_session_id(
     if let Some(session_id) = id.session_id {
         Ok(Some(session_id))
     } else if let Some(name) = id.name {
+        // Resume by name when possible; if `--resume` was requested but no such
+        // session exists, fall back to creating a fresh session with that name
+        // (with a warning) instead of erroring out — a missing/typo'd session
+        // name or a session originally started with `--no-session` should not be
+        // a dead end.
         if resume {
             let sessions = session_manager.list_sessions().await?;
-            let session_id = sessions
-                .into_iter()
-                .find(|s| s.name == name || s.id == name)
-                .map(|s| s.id)
-                .ok_or_else(|| anyhow::anyhow!("No session found with name '{}'", name))?;
-            Ok(Some(session_id))
-        } else {
-            let session = session_manager
-                .create_session(std::env::current_dir()?, name.clone(), SessionType::User)
-                .await?;
-
-            session_manager
-                .update(&session.id)
-                .user_provided_name(name)
-                .apply()
-                .await?;
-
-            Ok(Some(session.id))
+            if let Some(existing) = sessions.into_iter().find(|s| s.name == name || s.id == name) {
+                return Ok(Some(existing.id));
+            }
+            eprintln!(
+                "No existing session named '{name}' to resume; starting a new session with that name."
+            );
         }
+
+        let session = session_manager
+            .create_session(std::env::current_dir()?, name.clone(), SessionType::User)
+            .await?;
+
+        session_manager
+            .update(&session.id)
+            .user_provided_name(name)
+            .apply()
+            .await?;
+
+        Ok(Some(session.id))
     } else if let Some(path) = id.path {
         let session_id = path
             .file_stem()
