@@ -33,14 +33,19 @@ impl ParserManager {
         tracing::debug!("Creating new parser for {}", language);
         let mut parser = Parser::new();
         let language_config: Language = match language {
-            "python" => tree_sitter_python::language(),
-            "rust" => tree_sitter_rust::language(),
-            "javascript" | "typescript" => tree_sitter_javascript::language(),
-            "go" => tree_sitter_go::language(),
-            "java" => tree_sitter_java::language(),
-            "kotlin" => tree_sitter_kotlin::language(),
-            "swift" => devgen_tree_sitter_swift::language(),
-            "ruby" => tree_sitter_ruby::language(),
+            "python" => tree_sitter_python::LANGUAGE.into(),
+            "rust" => tree_sitter_rust::LANGUAGE.into(),
+            "javascript" | "typescript" => tree_sitter_javascript::LANGUAGE.into(),
+            "go" => tree_sitter_go::LANGUAGE.into(),
+            "java" => tree_sitter_java::LANGUAGE.into(),
+            "kotlin" => tree_sitter_kotlin_ng::LANGUAGE.into(),
+            "swift" => tree_sitter_swift::LANGUAGE.into(),
+            "ruby" => tree_sitter_ruby::LANGUAGE.into(),
+            "cpp" => tree_sitter_cpp::LANGUAGE.into(),
+            "c" => tree_sitter_c::LANGUAGE.into(),
+            "r" => tree_sitter_r::LANGUAGE.into(),
+            "julia" => tree_sitter_julia::LANGUAGE.into(),
+            "matlab" => tree_sitter_matlab::LANGUAGE.into(),
             _ => {
                 tracing::warn!("Unsupported language: {}", language);
                 return Err(ErrorData::new(
@@ -94,7 +99,7 @@ impl ElementExtractor {
         kinds: &[&str],
     ) -> Option<tree_sitter::Node<'a>> {
         (0..node.child_count())
-            .filter_map(|i| node.child(i))
+            .filter_map(|i| node.child(i as u32))
             .find(|child| kinds.contains(&child.kind()))
     }
 
@@ -196,6 +201,7 @@ impl ElementExtractor {
         source: &str,
         query_str: &str,
     ) -> Result<ElementQueryResult, ErrorData> {
+        use streaming_iterator::StreamingIterator;
         use tree_sitter::{Query, QueryCursor};
 
         let mut functions = Vec::new();
@@ -214,7 +220,7 @@ impl ElementExtractor {
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
 
-        for match_ in matches.by_ref() {
+        while let Some(match_) = matches.next() {
             for capture in match_.captures {
                 let node = capture.node;
                 let Some(text) = source.get(node.byte_range()) else {
@@ -264,6 +270,7 @@ impl ElementExtractor {
         language: &str,
     ) -> Result<Vec<CallInfo>, ErrorData> {
         use crate::developer::analyze::languages;
+        use streaming_iterator::StreamingIterator;
         use tree_sitter::{Query, QueryCursor};
 
         let mut calls = Vec::new();
@@ -287,7 +294,7 @@ impl ElementExtractor {
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
 
-        for match_ in matches.by_ref() {
+        while let Some(match_) = matches.next() {
             for capture in match_.captures {
                 let node = capture.node;
                 let Some(text) = source.get(node.byte_range()) else {
@@ -343,6 +350,7 @@ impl ElementExtractor {
         ast_recursion_limit: Option<usize>,
     ) -> Result<Vec<ReferenceInfo>, ErrorData> {
         use crate::developer::analyze::languages;
+        use streaming_iterator::StreamingIterator;
         use tree_sitter::{Query, QueryCursor};
 
         let mut references = Vec::new();
@@ -366,7 +374,7 @@ impl ElementExtractor {
         let mut cursor = QueryCursor::new();
         let mut matches = cursor.matches(&query, tree.root_node(), source.as_bytes());
 
-        for match_ in matches.by_ref() {
+        while let Some(match_) = matches.next() {
             for capture in match_.captures {
                 let node = capture.node;
                 let Some(text) = source.get(node.byte_range()) else {
