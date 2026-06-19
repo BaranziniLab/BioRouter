@@ -985,6 +985,11 @@ fn configure_builtin_extension() -> anyhow::Result<()> {
             "Tutorial",
             "Access interactive tutorials and guides",
         ),
+        (
+            "agent_drafter",
+            "Agent Drafter",
+            "Build interactive artifacts (static, or with an embedded BioRouter agent) and export them",
+        ),
     ];
 
     let mut select = cliclack::select("Which built-in extension would you like to enable?");

@@ -1,0 +1,90 @@
+/* Agent Drafter — BioRouter design system.
+ * Injected into every artifact preview/export so generated artifacts share a
+ * consistent, BioRouter-flavored aesthetic by default. Light/dark aware. */
+:root {
+  --br-bg: #fbfaf8;
+  --br-surface: #ffffff;
+  --br-surface-2: #f3f1ec;
+  --br-border: #e4e0d8;
+  --br-text: #1c1b19;
+  --br-text-muted: #6b6862;
+  --br-accent: #2f6f4f;        /* BioRouter green */
+  --br-accent-contrast: #ffffff;
+  --br-accent-soft: #e3f0e8;
+  --br-danger: #b3261e;
+  --br-radius: 12px;
+  --br-radius-sm: 8px;
+  --br-shadow: 0 1px 2px rgba(0,0,0,.06), 0 8px 24px rgba(0,0,0,.06);
+  --br-font: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --br-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --br-bg: #16150f;
+    --br-surface: #211f18;
+    --br-surface-2: #2b291f;
+    --br-border: #38352a;
+    --br-text: #f2efe6;
+    --br-text-muted: #a8a496;
+    --br-accent: #5fb88a;
+    --br-accent-contrast: #0c0b07;
+    --br-accent-soft: #1f3a2c;
+    --br-shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.4);
+  }
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  background: var(--br-bg);
+  color: var(--br-text);
+  font-family: var(--br-font);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+.br-container { max-width: 880px; margin: 0 auto; padding: 24px 20px 48px; }
+h1, h2, h3 { line-height: 1.25; font-weight: 650; }
+a { color: var(--br-accent); }
+.br-card {
+  background: var(--br-surface);
+  border: 1px solid var(--br-border);
+  border-radius: var(--br-radius);
+  box-shadow: var(--br-shadow);
+  padding: 20px;
+}
+.br-btn {
+  appearance: none; cursor: pointer;
+  font: inherit; font-weight: 600;
+  border: 1px solid var(--br-accent);
+  background: var(--br-accent); color: var(--br-accent-contrast);
+  border-radius: var(--br-radius-sm);
+  padding: 8px 16px;
+  transition: filter .15s ease;
+}
+.br-btn:hover { filter: brightness(1.05); }
+.br-btn:disabled { opacity: .5; cursor: default; }
+.br-btn--ghost { background: transparent; color: var(--br-accent); }
+.br-input, .br-textarea {
+  width: 100%; font: inherit;
+  color: var(--br-text); background: var(--br-surface);
+  border: 1px solid var(--br-border); border-radius: var(--br-radius-sm);
+  padding: 10px 12px;
+}
+.br-input:focus, .br-textarea:focus { outline: 2px solid var(--br-accent-soft); border-color: var(--br-accent); }
+
+/* Built-in chat panel for agent-enabled artifacts */
+.br-chat { display: flex; flex-direction: column; gap: 12px; height: 100%; }
+.br-chat__log { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; flex: 1; min-height: 120px; }
+.br-msg { padding: 10px 14px; border-radius: var(--br-radius-sm); max-width: 90%; white-space: pre-wrap; word-wrap: break-word; }
+.br-msg--user { align-self: flex-end; background: var(--br-accent); color: var(--br-accent-contrast); }
+.br-msg--agent { align-self: flex-start; background: var(--br-surface-2); color: var(--br-text); }
+.br-msg--thought { align-self: flex-start; background: transparent; color: var(--br-text-muted); font-style: italic; font-size: 13px; }
+.br-msg--tool { align-self: flex-start; background: transparent; color: var(--br-text-muted); font-family: var(--br-mono); font-size: 12px; }
+.br-chat__form { display: flex; gap: 8px; }
+.br-chat__form .br-input { flex: 1; }
+.br-badge {
+  display: inline-block; font-size: 11px; font-weight: 600;
+  padding: 2px 8px; border-radius: 999px;
+  background: var(--br-accent-soft); color: var(--br-accent);
+}
+.br-footer { margin-top: 24px; color: var(--br-text-muted); font-size: 12px; }
