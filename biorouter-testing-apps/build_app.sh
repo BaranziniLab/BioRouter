@@ -6,7 +6,7 @@
 set -uo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 
-ROOT="/Users/wanjun/Desktop/biorouter-testing-apps"
+ROOT="${BIOROUTER_TESTING_ROOT:-/Users/wanjun/Desktop/BioRouter/biorouter-testing-apps}"
 APP="$1"; LANG_="$2"; SPEC_FILE="$3"
 # Resolve spec to an ABSOLUTE path BEFORE any cd (harness bug fix #1).
 SPEC_FILE="$(cd "$(dirname "$SPEC_FILE")" && pwd)/$(basename "$SPEC_FILE")"

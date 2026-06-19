@@ -7,7 +7,7 @@
 set -uo pipefail
 export PATH="$HOME/.local/bin:$PATH"
 
-ROOT="/Users/wanjun/Desktop/biorouter-testing-apps"
+ROOT="${BIOROUTER_TESTING_ROOT:-/Users/wanjun/Desktop/BioRouter/biorouter-testing-apps}"
 APP="$1"; TURN="$2"; INSTRUCTION="$3"
 DIR="$ROOT/$APP"
 TIMEOUT_SECS="${TIMEOUT_SECS:-900}"
