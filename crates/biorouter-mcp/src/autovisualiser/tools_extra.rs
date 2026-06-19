@@ -76,6 +76,7 @@ pub struct FlowchartData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderFlowchartParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: FlowchartData,
 }
 
@@ -147,6 +148,7 @@ pub struct GanttData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderGanttParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: GanttData,
 }
 
@@ -179,6 +181,7 @@ pub struct SequenceData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderSequenceParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: SequenceData,
 }
 
@@ -213,6 +216,7 @@ pub struct MindmapData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderMindmapParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: MindmapData,
 }
 
@@ -254,6 +258,7 @@ pub struct TimelineData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderTimelineParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: TimelineData,
 }
 
@@ -308,6 +313,7 @@ pub struct ErData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderErParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: ErData,
 }
 
@@ -347,6 +353,7 @@ pub struct StateData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderStateParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: StateData,
 }
 
@@ -400,6 +407,7 @@ pub struct ClassData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderClassParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: ClassData,
 }
 

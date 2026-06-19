@@ -31,6 +31,7 @@ pub struct ChoroplethData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderChoroplethParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: ChoroplethData,
 }
 

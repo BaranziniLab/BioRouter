@@ -291,6 +291,31 @@ pub fn render(
 // (a primary cause of "visualization cannot be generated" on live generation).
 // ---------------------------------------------------------------------------
 
+/// Deserialize a `data` field that may arrive either as a real JSON object/array
+/// **or** as a JSON string containing that object (some models — e.g. Xiaomi
+/// MiMo — stringify nested tool-call arguments). Without this, a stringified
+/// `data` fails to deserialize into the typed struct and the tool is rejected at
+/// the rmcp layer ("interpreted as a string rather than a structured object").
+///
+/// Use via `#[serde(deserialize_with = "common::de_flexible")]` on `data` fields.
+pub fn de_flexible<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    use serde::Deserialize;
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::String(s) => serde_json::from_str(&s).map_err(|e| {
+            serde::de::Error::custom(format!(
+                "the 'data' argument was a JSON string that could not be parsed \
+                 into the expected structure: {e}. Pass it as a JSON object, not a string."
+            ))
+        }),
+        other => serde_json::from_value(other).map_err(serde::de::Error::custom),
+    }
+}
+
 /// Deserialize a string field leniently against a set of accepted lowercase
 /// keywords, returning the canonical form. Use from a manual `Deserialize` impl.
 pub fn parse_keyword<E: serde::de::Error>(raw: &str, accepted: &[&str]) -> Result<String, E> {

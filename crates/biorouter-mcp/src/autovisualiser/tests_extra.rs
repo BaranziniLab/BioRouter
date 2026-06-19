@@ -376,6 +376,46 @@ async fn generate_gallery() {
 }
 
 #[tokio::test]
+async fn test_data_accepts_stringified_json() {
+    // Some models (e.g. Xiaomi MiMo) stringify the nested `data` argument:
+    // {"data": "{...}"} instead of {"data": {...}}. Every tool must accept both.
+    let router = AutoVisualiserRouter::new();
+
+    let p: ShowChartParams = serde_json::from_value(serde_json::json!({
+        "data": "{\"type\":\"bar\",\"title\":\"S\",\"datasets\":[{\"label\":\"x\",\"data\":[1,2,3]}]}"
+    }))
+    .unwrap();
+    assert!(router.show_chart(Parameters(p)).await.is_ok());
+
+    let p: RenderNetworkParams = serde_json::from_value(serde_json::json!({
+        "data": "{\"nodes\":[{\"id\":\"A\"},{\"id\":\"B\"}],\"links\":[{\"source\":\"A\",\"target\":\"B\"}]}"
+    }))
+    .unwrap();
+    assert!(router.render_network(Parameters(p)).await.is_ok());
+
+    // Donut uses a flattened wrapper + untagged enum — the trickiest case.
+    let p: RenderDonutParams = serde_json::from_value(serde_json::json!({
+        "data": "{\"data\":[{\"label\":\"a\",\"value\":1},{\"label\":\"b\",\"value\":2}]}"
+    }))
+    .unwrap();
+    assert!(router.render_donut(Parameters(p)).await.is_ok());
+
+    // Mermaid wrapper with stringified data.
+    let p: RenderFlowchartParams = serde_json::from_value(serde_json::json!({
+        "data": "{\"edges\":[{\"from\":\"a\",\"to\":\"b\"}]}"
+    }))
+    .unwrap();
+    assert!(router.render_flowchart(Parameters(p)).await.is_ok());
+
+    // Object form still works (gpt-style).
+    let p: ShowChartParams = serde_json::from_value(serde_json::json!({
+        "data": {"type":"line","datasets":[{"label":"x","data":[1,2]}]}
+    }))
+    .unwrap();
+    assert!(router.show_chart(Parameters(p)).await.is_ok());
+}
+
+#[tokio::test]
 async fn test_every_render_returns_two_audience_tagged_items() {
     // Spot-check that a representative tool keeps the user-resource +
     // assistant-text contract that prevents retry loops.
