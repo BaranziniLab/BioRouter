@@ -14,6 +14,8 @@ use biorouter::providers::openai::OPEN_AI_DEFAULT_MODEL;
 use biorouter::providers::sagemaker_tgi::SAGEMAKER_TGI_DEFAULT_MODEL;
 use biorouter::providers::snowflake::SNOWFLAKE_DEFAULT_MODEL;
 use biorouter::providers::xai::XAI_DEFAULT_MODEL;
+use biorouter::providers::xiaomi_mimo::XIAOMI_MIMO_DEFAULT_MODEL;
+use biorouter::providers::zai::ZAI_DEFAULT_MODEL;
 use dotenvy::dotenv;
 use rmcp::model::{AnnotateAble, Content, RawImageContent};
 use rmcp::model::{CallToolRequestParams, Tool};
@@ -580,6 +582,22 @@ async fn test_litellm_provider() -> Result<()> {
 #[tokio::test]
 async fn test_xai_provider() -> Result<()> {
     test_provider("Xai", XAI_DEFAULT_MODEL, &["XAI_API_KEY"], None).await
+}
+
+#[tokio::test]
+async fn test_zai_provider() -> Result<()> {
+    test_provider("Zai", ZAI_DEFAULT_MODEL, &["ZAI_API_KEY"], None).await
+}
+
+#[tokio::test]
+async fn test_xiaomi_mimo_provider() -> Result<()> {
+    test_provider(
+        "XiaomiMimo",
+        XIAOMI_MIMO_DEFAULT_MODEL,
+        &["XIAOMI_MIMO_API_KEY"],
+        None,
+    )
+    .await
 }
 
 #[ctor::dtor]
