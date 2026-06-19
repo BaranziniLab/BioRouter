@@ -119,12 +119,21 @@ static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
         ("grok-code-fast-1", 256_000),
         ("grok-4", 1_000_000),
         ("grok", 131_072),
+        // zai (Zhipu GLM) — GLM-4.6/4.5 are 128k–200k; default to 128k
+        ("glm-4.7", 200_000),
+        ("glm-4.6", 200_000),
+        ("glm-5", 200_000),
+        ("glm", 131_072),
         // deepseek — V4 family is 1M
         ("deepseek-v4", 1_000_000),
         // moonshot — k2.5/k2.6 are 256k, original k2 is 128k
         ("kimi-k2.5", 262_144),
         ("kimi-k2.6", 262_144),
         ("kimi-k2", 131_072),
+        // xiaomi mimo — MiMo v2.5 family advertises ~1M; MiMo v2 family ~256k
+        ("mimo-v2.5", 1_000_000), // covers mimo-v2.5 and mimo-v2.5-pro
+        ("mimo-v2", 262_144),     // covers mimo-v2-pro and mimo-v2-omni
+        ("mimo", 131_072),        // any other mimo variant
     ]
 });
 

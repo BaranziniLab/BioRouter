@@ -30,6 +30,14 @@ export const configLabels: Record<string, string> = {
   // groq
   GROQ_API_KEY: 'Groq API Key',
 
+  // xiaomi mimo
+  XIAOMI_MIMO_API_KEY: 'Xiaomi MiMo API Key',
+  XIAOMI_MIMO_HOST: 'Xiaomi MiMo Host (region endpoint)',
+
+  // zai (Zhipu GLM)
+  ZAI_API_KEY: 'z.ai API Key',
+  ZAI_HOST: 'z.ai Host',
+
   // openrouter
   OPENROUTER_API_KEY: 'OpenRouter API Key',
 
@@ -73,6 +81,8 @@ export const providerPrefixes: Record<string, string[]> = {
   anthropic: ['ANTHROPIC_'],
   google: ['GOOGLE_'],
   groq: ['GROQ_'],
+  xiaomi_mimo: ['XIAOMI_MIMO_'],
+  zai: ['ZAI_'],
   databricks: ['DATABRICKS_'],
   openrouter: ['OPENROUTER_'],
   ollama: ['OLLAMA_'],

@@ -23,6 +23,8 @@ use super::{
     versa_azure::VersaAzureProvider,
     versa_bedrock::VersaBedrockProvider,
     xai::XaiProvider,
+    xiaomi_mimo::XiaomiMimoProvider,
+    zai::ZaiProvider,
 };
 use crate::model::ModelConfig;
 use crate::providers::base::ProviderType;
@@ -79,6 +81,11 @@ async fn init_registry() -> RwLock<ProviderRegistry> {
         registry.register::<TetrateProvider, _>(|m| Box::pin(TetrateProvider::from_env(m)), true);
         registry.register::<VeniceProvider, _>(|m| Box::pin(VeniceProvider::from_env(m)), false);
         registry.register::<XaiProvider, _>(|m| Box::pin(XaiProvider::from_env(m)), false);
+        registry.register::<XiaomiMimoProvider, _>(
+            |m| Box::pin(XiaomiMimoProvider::from_env(m)),
+            false,
+        );
+        registry.register::<ZaiProvider, _>(|m| Box::pin(ZaiProvider::from_env(m)), false);
     });
     if let Err(e) = load_custom_providers_into_registry(&mut registry) {
         tracing::warn!("Failed to load custom providers: {}", e);
@@ -315,6 +322,8 @@ mod tests {
             ("groq", "GROQ_API_KEY"),
             ("mistral", "MISTRAL_API_KEY"),
             ("custom_deepseek", "DEEPSEEK_API_KEY"),
+            ("xiaomi_mimo", "XIAOMI_MIMO_API_KEY"),
+            ("zai", "ZAI_API_KEY"),
         ];
         for (name, expected_key) in cases {
             if let Some((meta, _)) = providers_list.iter().find(|(m, _)| m.name == name) {
