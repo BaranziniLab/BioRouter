@@ -60,6 +60,10 @@ pub struct ScreenCaptureParams {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TextEditorParams {
     /// Absolute path to file or directory, e.g. `/repo/file.py` or `/repo`.
+    /// Accepts `file_path` as an alias: some models (e.g. Xiaomi MiMo) intermittently
+    /// emit the key as `file_path`, which previously caused an opaque
+    /// `-32602: missing field 'path'` deserialization failure and a wasted turn.
+    #[serde(alias = "file_path")]
     pub path: String,
 
     /// The operation to perform. Allowed options are: `view`, `write`, `str_replace`, `insert`, `undo_edit`.
@@ -1614,6 +1618,28 @@ impl DeveloperServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_text_editor_params_accepts_file_path_alias() {
+        // Some models (e.g. Xiaomi MiMo) intermittently emit `file_path` instead
+        // of `path`; the alias prevents an opaque -32602 deserialization failure.
+        let with_alias: TextEditorParams = serde_json::from_value(serde_json::json!({
+            "file_path": "/repo/src/lib.rs",
+            "command": "view"
+        }))
+        .expect("file_path alias should deserialize");
+        assert_eq!(with_alias.path, "/repo/src/lib.rs");
+        assert_eq!(with_alias.command, "view");
+
+        // Canonical `path` still works.
+        let canonical: TextEditorParams = serde_json::from_value(serde_json::json!({
+            "path": "/repo/src/lib.rs",
+            "command": "view"
+        }))
+        .expect("path should deserialize");
+        assert_eq!(canonical.path, "/repo/src/lib.rs");
+    }
+
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::{CancelledNotificationParam, NumberOrString};
     use rmcp::service::{serve_directly, NotificationContext};
