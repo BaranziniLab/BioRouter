@@ -2,15 +2,22 @@
 //! position, status line, and the helpers that turn agent messages into styled
 //! ratatui lines (with a lightweight markdown renderer).
 
+use std::collections::VecDeque;
+
 use biorouter::conversation::message::{Message, MessageContent};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::session::completion::SLASH_COMMANDS;
 
 /// Brand warm tan-brown accent (xterm-256 137 ≈ #af875f), Biorouter's light cream palette
 pub const ACCENT: Color = Color::Indexed(137);
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
+/// Subtle slate fill behind the user's own messages so a turn the *user* sent is
+/// instantly distinguishable from the agent's reply (Claude-Code-style block).
+const USER_BG: Color = Color::Indexed(237);
+const USER_FG: Color = Color::Indexed(252);
 
 /// A modal asking the user to approve a tool call.
 pub struct PermissionModal {
@@ -101,6 +108,16 @@ pub struct App {
     pub completion: Option<Completion>,
     /// Set when the user presses Esc; suppresses the popup until the next edit.
     pub completion_dismissed: bool,
+    /// Submissions typed while a response was streaming, sent in order once the
+    /// current turn finishes (lets the user keep typing instead of being locked
+    /// out while the agent works).
+    pub queued: VecDeque<String>,
+    /// Live token-streaming state: the in-progress assistant text, its response
+    /// id, and the scrollback index where its preview begins — so each delta
+    /// re-renders in place and the finished text commits as proper Markdown.
+    pub stream_text: String,
+    pub stream_id: Option<String>,
+    pub stream_start: Option<usize>,
 }
 
 impl App {
@@ -122,7 +139,52 @@ impl App {
             catalog: Vec::new(),
             completion: None,
             completion_dismissed: false,
+            queued: VecDeque::new(),
+            stream_text: String::new(),
+            stream_id: None,
+            stream_start: None,
         }
+    }
+
+    // ── live token streaming ─────────────────────────────────────────────────
+
+    /// Append a streamed assistant-text delta and re-render the live preview in
+    /// place (as Markdown, so a finished structure snaps into shape as it
+    /// completes). A new response id while one is in flight commits the prior.
+    pub fn stream_delta(&mut self, id: Option<String>, delta: &str) {
+        if self.stream_start.is_some() && id.is_some() && self.stream_id != id {
+            self.stream_commit();
+        }
+        if self.stream_start.is_none() {
+            self.push_blank();
+            self.stream_start = Some(self.scrollback.len());
+            self.stream_id = id;
+            self.stream_text.clear();
+        }
+        self.stream_text.push_str(delta);
+        if let Some(start) = self.stream_start {
+            self.scrollback.truncate(start);
+            for line in md_lines(&self.stream_text) {
+                self.scrollback.push(line);
+            }
+        }
+        self.scroll = 0; // follow the latest output
+    }
+
+    /// Finalize the streamed message into permanent scrollback. Returns the full
+    /// text when non-empty assistant text was streamed (for the session mirror).
+    pub fn stream_commit(&mut self) -> Option<String> {
+        let start = self.stream_start.take()?;
+        self.stream_id = None;
+        self.scrollback.truncate(start);
+        let text = std::mem::take(&mut self.stream_text);
+        if text.trim().is_empty() {
+            return None;
+        }
+        for line in md_lines(&text) {
+            self.push_line(line);
+        }
+        Some(text)
     }
 
     pub fn set_catalog(&mut self, items: Vec<CompletionItem>) {
@@ -221,14 +283,17 @@ impl App {
         self.push_line(Line::from(Span::styled(s.into(), style)));
     }
 
-    /// Append the user's submitted text as a coral-prefixed block.
+    /// Append the user's submitted text as a left-barred, softly-shaded block so
+    /// it reads as clearly the user's own turn (vs. the agent's plain reply).
     pub fn push_user(&mut self, text: &str) {
         self.push_blank();
-        for (i, raw) in text.lines().enumerate() {
-            let marker = if i == 0 { "❯ " } else { "  " };
+        let bar = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
+        let body = Style::new().fg(USER_FG).bg(USER_BG);
+        for raw in text.lines() {
             self.push_line(Line::from(vec![
-                Span::styled(marker, Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
-                Span::raw(raw.to_string()),
+                Span::styled("▌ ", bar),
+                // Trailing space extends the shading a touch past the text.
+                Span::styled(format!("{} ", raw), body),
             ]));
         }
         self.push_blank();
@@ -498,10 +563,14 @@ impl App {
 pub fn md_lines(text: &str) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let mut in_code = false;
-    for raw in text.lines() {
+    let rows: Vec<&str> = text.lines().collect();
+    let mut i = 0;
+    while i < rows.len() {
+        let raw = rows[i];
         let trimmed = raw.trim_start();
         if trimmed.starts_with("```") {
             in_code = !in_code;
+            i += 1;
             continue;
         }
         if in_code {
@@ -509,6 +578,21 @@ pub fn md_lines(text: &str) -> Vec<Line<'static>> {
                 format!("  {}", raw),
                 Style::new().fg(Color::Indexed(108)),
             )));
+            i += 1;
+            continue;
+        }
+        // GFM table: a `|`-delimited header row, a `|---|` delimiter, then body
+        // rows. Rendered as an aligned box-drawing table (like the GUI).
+        if raw.contains('|') && i + 1 < rows.len() && is_table_delim(rows[i + 1]) {
+            let mut end = i + 2;
+            while end < rows.len() && rows[end].contains('|') && !rows[end].trim().is_empty() {
+                end += 1;
+            }
+            let header = split_table_row(raw);
+            let body: Vec<Vec<String>> =
+                rows[i + 2..end].iter().map(|l| split_table_row(l)).collect();
+            out.extend(render_table(&header, &body));
+            i = end;
             continue;
         }
         if let Some(h) = trimmed
@@ -520,6 +604,7 @@ pub fn md_lines(text: &str) -> Vec<Line<'static>> {
                 h.to_string(),
                 Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
             )));
+            i += 1;
             continue;
         }
         if let Some(rest) = trimmed
@@ -529,10 +614,102 @@ pub fn md_lines(text: &str) -> Vec<Line<'static>> {
             let mut spans = vec![Span::styled("  • ", Style::new().fg(ACCENT))];
             spans.extend(inline_spans(rest, Style::default()));
             out.push(Line::from(spans));
+            i += 1;
             continue;
         }
         out.push(Line::from(inline_spans(raw, Style::default())));
+        i += 1;
     }
+    out
+}
+
+/// Split one `| a | b |` table row into trimmed cell strings.
+fn split_table_row(line: &str) -> Vec<String> {
+    let t = line.trim();
+    let t = t.strip_prefix('|').unwrap_or(t);
+    let t = t.strip_suffix('|').unwrap_or(t);
+    t.split('|').map(|c| c.trim().to_string()).collect()
+}
+
+/// True for a GFM delimiter row like `|---|:--:|` (only dashes, colons, pipes).
+fn is_table_delim(line: &str) -> bool {
+    let cells = split_table_row(line);
+    !cells.is_empty()
+        && cells.iter().all(|c| {
+            let t = c.trim();
+            !t.is_empty() && t.contains('-') && t.chars().all(|ch| ch == '-' || ch == ':')
+        })
+}
+
+/// Render a parsed table as aligned box-drawing rows. Columns are sized to their
+/// widest cell (capped) so the grid stays tidy; the header is accented.
+fn render_table(header: &[String], body: &[Vec<String>]) -> Vec<Line<'static>> {
+    let ncols = header
+        .len()
+        .max(body.iter().map(|r| r.len()).max().unwrap_or(0));
+    if ncols == 0 {
+        return Vec::new();
+    }
+    let mut widths = vec![0usize; ncols];
+    for (c, h) in header.iter().enumerate() {
+        widths[c] = widths[c].max(UnicodeWidthStr::width(h.as_str()));
+    }
+    for row in body {
+        for (c, cell) in row.iter().enumerate() {
+            if c < ncols {
+                widths[c] = widths[c].max(UnicodeWidthStr::width(cell.as_str()));
+            }
+        }
+    }
+    for w in widths.iter_mut() {
+        *w = (*w).clamp(1, 40);
+    }
+
+    let border = |left: &str, mid: &str, right: &str| -> Line<'static> {
+        let mut s = String::from(left);
+        for (c, w) in widths.iter().enumerate() {
+            s.push_str(&"─".repeat(w + 2));
+            s.push_str(if c + 1 < widths.len() { mid } else { right });
+        }
+        Line::from(Span::styled(s, DIM))
+    };
+    let pad = |s: &str, w: usize| -> String {
+        let mut acc = String::new();
+        let mut accw = 0usize;
+        for ch in s.chars() {
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if accw + cw > w {
+                break;
+            }
+            acc.push(ch);
+            accw += cw;
+        }
+        acc.push_str(&" ".repeat(w.saturating_sub(accw)));
+        acc
+    };
+    let row_line = |cells: &[String], style: Style| -> Line<'static> {
+        let mut spans = Vec::new();
+        for (c, w) in widths.iter().enumerate() {
+            spans.push(Span::styled("│ ", DIM));
+            let cell = cells.get(c).map(|s| s.as_str()).unwrap_or("");
+            spans.push(Span::styled(pad(cell, *w), style));
+            spans.push(Span::raw(" "));
+        }
+        spans.push(Span::styled("│", DIM));
+        Line::from(spans)
+    };
+
+    let mut out = Vec::new();
+    out.push(border("┌", "┬", "┐"));
+    out.push(row_line(
+        header,
+        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+    ));
+    out.push(border("├", "┼", "┤"));
+    for row in body {
+        out.push(row_line(row, Style::default()));
+    }
+    out.push(border("└", "┴", "┘"));
     out
 }
 
