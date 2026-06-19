@@ -81,7 +81,7 @@ pub fn extract_function_name_for_kind(
     if kind == "impl_item" {
         // For impl blocks, find the type being implemented
         for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
+            if let Some(child) = node.child(i as u32) {
                 if child.kind() == "type_identifier" {
                     return source
                         .get(child.byte_range())
@@ -109,7 +109,7 @@ pub fn find_method_for_receiver(
         if parent.kind() == "function_item" {
             // Found the function, get its name
             for i in 0..parent.child_count() {
-                if let Some(child) = parent.child(i) {
+                if let Some(child) = parent.child(i as u32) {
                     if child.kind() == "identifier" {
                         return source.get(child.byte_range()).map(|s| s.to_string());
                     }
@@ -133,7 +133,7 @@ pub fn find_receiver_type(node: &tree_sitter::Node, source: &str) -> Option<Stri
         if parent.kind() == "impl_item" {
             // Find the type_identifier in the impl block
             for i in 0..parent.child_count() {
-                if let Some(child) = parent.child(i) {
+                if let Some(child) = parent.child(i as u32) {
                     if child.kind() == "type_identifier" {
                         return source.get(child.byte_range()).map(|s| s.to_string());
                     }

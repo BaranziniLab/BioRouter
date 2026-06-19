@@ -37,6 +37,8 @@ pub mod venice;
 pub mod versa_azure;
 pub mod versa_bedrock;
 pub mod xai;
+pub mod xiaomi_mimo;
+pub mod zai;
 
 pub use factory::{
     create, create_with_default_model, create_with_named_model, providers, refresh_custom_providers,

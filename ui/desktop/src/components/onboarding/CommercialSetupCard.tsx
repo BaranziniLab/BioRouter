@@ -62,8 +62,8 @@ export default function CommercialSetupCard({
       <OnboardingSectionLabel category="commercial" label="Commercial APIs" />
       <h2 className="text-base font-medium text-text-default mt-2">Auto-detect from API key</h2>
       <p className="text-sm text-text-muted mt-1 mb-5 leading-relaxed">
-        Paste a key from OpenAI, Anthropic, Google, Groq, or xAI — we'll detect the provider for
-        you.
+        Paste a key from OpenAI, Anthropic, Google, Groq, xAI, z.ai, or Xiaomi MiMo — we'll detect
+        the provider for you.
       </p>
 
       <div className="flex gap-2">
@@ -119,7 +119,7 @@ export default function CommercialSetupCard({
             </div>
           </div>
           <ul className="text-xs text-text-muted space-y-1 pl-1">
-            <li>· Supported providers: OpenAI, Anthropic, Google, Groq, xAI</li>
+            <li>· Supported providers: OpenAI, Anthropic, Google, Groq, xAI, z.ai, Xiaomi MiMo</li>
             <li>· Verify the key is active and has sufficient credits</li>
             <li>· For local models, use the Local card above</li>
           </ul>
