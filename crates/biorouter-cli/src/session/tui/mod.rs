@@ -31,11 +31,13 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
-use rmcp::model::{ErrorCode, ErrorData};
+use rmcp::model::{ErrorCode, ErrorData, Role};
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::AbortOnDropHandle;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use biorouter::conversation::Conversation;
 
 use self::app::{App, PermissionModal, StatusInfo, ACCENT};
 use super::CliSession;
@@ -135,6 +137,7 @@ pub async fn run(session: &mut CliSession, initial_prompt: Option<String>) -> Re
 
     if let Some(prompt) = initial_prompt {
         submit(session, &mut app, &mut tui, &mut rx, prompt).await?;
+        drain_queue(session, &mut app, &mut tui, &mut rx).await?;
     }
 
     while !app.should_quit {
@@ -146,6 +149,8 @@ pub async fn run(session: &mut CliSession, initial_prompt: Option<String>) -> Re
             Event::Key(key) if key.kind == KeyEventKind::Press => {
                 if let Some(submission) = on_key(&mut app, key) {
                     submit(session, &mut app, &mut tui, &mut rx, submission).await?;
+                    // Anything typed while that turn streamed runs next, in order.
+                    drain_queue(session, &mut app, &mut tui, &mut rx).await?;
                 }
             }
             Event::Paste(s) => app.paste(&s),
@@ -176,7 +181,9 @@ fn on_key(app: &mut App, key: KeyEvent) -> Option<String> {
                 app.completion_move(1);
                 return None;
             }
-            KeyCode::Tab => {
+            KeyCode::Tab | KeyCode::Enter => {
+                // Accept the highlighted entry rather than submitting the raw
+                // half-typed token (so arrow-key selection actually applies).
                 app.completion_accept();
                 app.refresh_completion();
                 return None;
@@ -233,6 +240,77 @@ fn on_key(app: &mut App, key: KeyEvent) -> Option<String> {
     submit
 }
 
+/// Outcome of a keypress received *while a response is streaming*.
+enum StreamAction {
+    /// Buffer edited (or nothing to do) — keep streaming.
+    None,
+    /// Stop the in-flight response (Ctrl-C).
+    Cancel,
+    /// User submitted a line — queue it to run after the current turn.
+    Queue(String),
+}
+
+/// Handle a key while the agent is replying: full input editing stays live, so
+/// the user can compose the next message (or steer) instead of being locked
+/// out. Enter queues; Ctrl-C cancels the in-flight turn.
+fn on_key_streaming(app: &mut App, key: KeyEvent) -> StreamAction {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+    if app.completion_active() {
+        match key.code {
+            KeyCode::Up => {
+                app.completion_move(-1);
+                return StreamAction::None;
+            }
+            KeyCode::Down => {
+                app.completion_move(1);
+                return StreamAction::None;
+            }
+            KeyCode::Tab | KeyCode::Enter => {
+                app.completion_accept();
+                app.refresh_completion();
+                return StreamAction::None;
+            }
+            KeyCode::Esc => {
+                app.dismiss_completion();
+                return StreamAction::None;
+            }
+            _ => {}
+        }
+    }
+
+    match key.code {
+        KeyCode::Char('c') if ctrl => return StreamAction::Cancel,
+        KeyCode::Char('j') if ctrl => app.insert_newline(),
+        KeyCode::Enter
+            if key.modifiers.contains(KeyModifiers::SHIFT)
+                || key.modifiers.contains(KeyModifiers::ALT) =>
+        {
+            app.insert_newline()
+        }
+        KeyCode::Enter => {
+            let text = app.input.trim().to_string();
+            if !text.is_empty() {
+                app.history.push(text.clone());
+                app.clear_input();
+                return StreamAction::Queue(text);
+            }
+        }
+        KeyCode::Tab => app.accept_ghost(),
+        KeyCode::Backspace => app.backspace(),
+        KeyCode::Left => app.move_left(),
+        KeyCode::Right => app.move_right(),
+        KeyCode::Home => app.move_home(),
+        KeyCode::End => app.move_end(),
+        KeyCode::PageUp => app.scroll_up(10),
+        KeyCode::PageDown => app.scroll_down(10),
+        KeyCode::Char(c) => app.insert_char(c),
+        _ => {}
+    }
+    app.refresh_completion();
+    StreamAction::None
+}
+
 /// Submit a line: handle TUI-local slash commands, else send to the agent.
 async fn submit(
     session: &mut CliSession,
@@ -259,6 +337,20 @@ async fn submit(
     drive_response(session, app, tui, rx, user_message).await
 }
 
+/// Run any submissions the user queued (by typing + Enter) while the previous
+/// response was streaming, in the order they were entered.
+async fn drain_queue(
+    session: &mut CliSession,
+    app: &mut App,
+    tui: &mut Tui,
+    rx: &mut Events,
+) -> Result<()> {
+    while let Some(text) = app.queued.pop_front() {
+        submit(session, app, tui, rx, text).await?;
+    }
+    Ok(())
+}
+
 /// Consume the agent's streaming reply, rendering each event into the
 /// scrollback while keeping the UI responsive (spinner ticks, scroll, cancel).
 async fn drive_response(
@@ -278,13 +370,14 @@ async fn drive_response(
     let cancel = CancellationToken::new();
     app.thinking = Some(super::thinking::get_random_thinking_message().to_string());
 
-    let reply_stream = session
+    // Consume the raw reply stream so assistant text shows token-by-token: each
+    // delta is appended to a live preview (re-rendered as Markdown in place), and
+    // the completed text is committed once the run ends — so streaming is visible
+    // *and* tables/code/lists still render correctly when finished.
+    let mut stream = session
         .agent
         .reply(user_message, config, Some(cancel.clone()))
         .await?;
-    // Merge per-token assistant text deltas into whole messages so Markdown
-    // (tables, lists, code) renders correctly instead of one fragment per line.
-    let mut stream = super::stream_coalesce::coalesce_text_deltas(reply_stream);
     let mut tick = tokio::time::interval(Duration::from_millis(110));
 
     loop {
@@ -294,11 +387,18 @@ async fn drive_response(
             ev = rx.recv() => {
                 match ev {
                     Some(Event::Key(k)) if k.kind == KeyEventKind::Press => {
-                        if k.code == KeyCode::Char('c') && k.modifiers.contains(KeyModifiers::CONTROL) {
-                            cancel.cancel();
-                        } else if k.code == KeyCode::PageUp { app.scroll_up(10); }
-                        else if k.code == KeyCode::PageDown { app.scroll_down(10); }
+                        match on_key_streaming(app, k) {
+                            StreamAction::Cancel => cancel.cancel(),
+                            // Park it to run after the current turn. We do NOT
+                            // push to the scrollback here: the live stream preview
+                            // re-renders by truncating back to its start, which
+                            // would wipe the line. The count shows in the input
+                            // title instead (see draw_input).
+                            StreamAction::Queue(text) => app.queued.push_back(text),
+                            StreamAction::None => {}
+                        }
                     }
+                    Some(Event::Paste(s)) => app.paste(&s),
                     Some(Event::Mouse(m)) => match m.kind {
                         MouseEventKind::ScrollUp => app.scroll_up(3),
                         MouseEventKind::ScrollDown => app.scroll_down(3),
@@ -311,6 +411,7 @@ async fn drive_response(
                 match res {
                     Some(Ok(AgentEvent::Message(message))) => {
                         if let Some((id, prompt)) = super::find_tool_confirmation(&message) {
+                            commit_stream_to_session(app, &mut session.messages);
                             app.push_message(&message, debug);
                             app.thinking = None;
                             let permission = run_permission_modal(app, tui, rx, prompt).await?;
@@ -338,11 +439,22 @@ async fn drive_response(
                             }).await;
                             app.thinking = Some(super::thinking::get_random_thinking_message().to_string());
                         } else if super::find_elicitation_request(&message).is_some() {
+                            commit_stream_to_session(app, &mut session.messages);
                             app.push_note("This step needs an interactive form not yet supported in the TUI — cancelling. Use `BIOROUTER_CLI_CLASSIC=1` for that flow.");
                             cancel.cancel();
                             while stream.next().await.is_some() {}
                             break;
+                        } else if is_stream_text(&message) {
+                            // A streaming assistant-text delta: stop the spinner
+                            // and grow the live preview token-by-token.
+                            app.thinking = None;
+                            let id = message.id.clone();
+                            let delta = message.as_concat_text();
+                            app.stream_delta(id, &delta);
                         } else {
+                            // Any non-text event ends the streamed block: commit it
+                            // first so ordering is preserved, then render this one.
+                            commit_stream_to_session(app, &mut session.messages);
                             session.messages.push(message.clone());
                             app.push_message(&message, debug);
                         }
@@ -351,6 +463,9 @@ async fn drive_response(
                     Some(Ok(AgentEvent::HistoryReplaced(c))) => { session.messages = c; }
                     Some(Ok(AgentEvent::ModelChange { .. })) => {}
                     Some(Err(e)) => {
+                        // Commit any streamed text first so the error renders
+                        // *after* it (and isn't wiped by the preview truncation).
+                        commit_stream_to_session(app, &mut session.messages);
                         app.push_error(&e.to_string());
                         cancel.cancel();
                         break;
@@ -362,10 +477,32 @@ async fn drive_response(
     }
 
     drop(stream);
+    // Commit whatever streamed (including a partial reply if the user cancelled).
+    commit_stream_to_session(app, &mut session.messages);
     app.thinking = None;
     refresh_context(session, app).await;
     tui.draw(app)?;
     Ok(())
+}
+
+/// A message that is a streamable assistant-text delta (text only, no tool
+/// calls / thinking / notifications).
+fn is_stream_text(m: &Message) -> bool {
+    m.role == Role::Assistant
+        && !m.content.is_empty()
+        && m.content.iter().all(|c| matches!(c, MessageContent::Text(_)))
+}
+
+/// Commit any in-progress streamed assistant text into permanent scrollback and
+/// mirror it into the session's message list exactly once.
+///
+/// Takes `&mut Vec<Message>` (not `&mut CliSession`) on purpose: the reply
+/// `stream` holds an immutable borrow of `session.agent` for the whole loop, so
+/// only a *disjoint* field of the session may be borrowed mutably meanwhile.
+fn commit_stream_to_session(app: &mut App, messages: &mut Conversation) {
+    if let Some(text) = app.stream_commit() {
+        messages.push(Message::assistant().with_text(text));
+    }
 }
 
 /// Show the permission modal and block (within the response loop) until the
@@ -480,27 +617,25 @@ fn draw(f: &mut Frame, app: &mut App) {
     // Inset the whole UI so nothing renders edge-to-edge: 4 columns of left/right
     // padding and 1 row top/bottom.
     let area = f.area().inner(Margin::new(4, 1));
-    let input_lines = app.input.split('\n').count().clamp(1, 6) as u16;
-    let input_h = input_lines + 2;
+    // Height the input box to its *wrapped* row count (borders 2 + prompt 2 ⇒
+    // text width = area.width − 4), so long lines soft-wrap and the box grows
+    // like a textarea instead of clipping. Capped so it never eats the screen.
+    let input_text_w = area.width.saturating_sub(4).max(1);
+    let input_h = input_rows(&app.input, input_text_w).clamp(1, 10) + 2;
     let gap_h = 2u16; // blank rows separating the response from the input UI
     let status_h = 2u16; // model/provider on line 1; counts + context on line 2
     let hints_h = 1u16;
-    // The conversation block hugs the top and grows downward (Claude-style): the
-    // history pane is only as tall as its content until it fills the screen,
-    // after which it scrolls. A trailing flexible spacer holds it to the top.
-    let max_history = area
-        .height
-        .saturating_sub(gap_h + status_h + input_h + hints_h);
-    let history_h = wrapped_count(&app.scrollback, area.width).min(max_history);
+    // The input cluster (status + box + hints) is pinned to the bottom and never
+    // moves as the conversation grows; the history pane flexibly fills all the
+    // space above it and scrolls to keep the latest output in view (Claude-style).
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(history_h),
-            Constraint::Length(gap_h), // breathing room before the input UI
+            Constraint::Min(1), // history → all remaining space at the top
+            Constraint::Length(gap_h),
             Constraint::Length(status_h),
             Constraint::Length(input_h),
             Constraint::Length(hints_h),
-            Constraint::Min(0), // spacer → anchors the block to the top
         ])
         .split(area);
 
@@ -672,7 +807,7 @@ fn draw_hints(f: &mut Frame, area: Rect) {
     let dim = Style::new().add_modifier(Modifier::DIM);
     f.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "↵ send · ^J newline · / for commands · ↑↓ history · ^C quit",
+            "↵ send · ^J newline · / commands · ↑↓ history · ^C stop · type anytime",
             dim,
         ))),
         area,
@@ -680,7 +815,7 @@ fn draw_hints(f: &mut Frame, area: Rect) {
 }
 
 fn draw_input(f: &mut Frame, app: &App, area: Rect) {
-    let (border_color, title) = if let Some(t) = &app.thinking {
+    let (border_color, mut title) = if let Some(t) = &app.thinking {
         (
             ACCENT,
             format!(" {} {} ", SPINNER[app.spin % SPINNER.len()], t),
@@ -688,6 +823,10 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     } else {
         (Color::Indexed(240), String::new())
     };
+    // Surface messages typed while the agent is busy (they run next, in order).
+    if !app.queued.is_empty() {
+        title.push_str(&format!(" {} queued ↵ ", app.queued.len()));
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::new().fg(border_color))
@@ -695,32 +834,17 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Input text with the coral prompt and dim ghost autofill on the last line.
-    // (Suppressed while the completion popup is open — it shows the full list.)
+    // Soft-wrap each logical line to the inner text width (prompt = 2 cells) so
+    // overflowing text flows onto the next row instead of being clipped.
+    let text_w = inner.width.saturating_sub(2).max(1) as usize;
     let ghost = if app.completion.is_some() {
         None
     } else {
         app.ghost()
     };
     let mut lines: Vec<Line> = Vec::new();
-    for (i, raw) in app.input.split('\n').enumerate() {
-        let prefix = if i == 0 {
-            Span::styled("❯ ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD))
-        } else {
-            Span::raw("  ")
-        };
-        let mut spans = vec![prefix, Span::raw(raw.to_string())];
-        spans.push(Span::raw(String::new()));
-        lines.push(Line::from(spans));
-    }
-    if let (Some(g), Some(last)) = (ghost, lines.last_mut()) {
-        last.spans.push(Span::styled(
-            g.to_string(),
-            Style::new().add_modifier(Modifier::DIM),
-        ));
-    }
     if app.input.is_empty() {
-        lines = vec![Line::from(vec![
+        lines.push(Line::from(vec![
             Span::styled("❯ ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
             // A clearly-greyed placeholder so it doesn't read as real input.
             Span::styled(
@@ -729,22 +853,83 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
                     .fg(Color::Indexed(244))
                     .add_modifier(Modifier::DIM),
             ),
-        ])];
+        ]));
+    } else {
+        for (li, logical) in app.input.split('\n').enumerate() {
+            for (ri, row) in wrap_cells(logical, text_w).into_iter().enumerate() {
+                let prefix = if li == 0 && ri == 0 {
+                    Span::styled("❯ ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD))
+                } else {
+                    Span::raw("  ")
+                };
+                lines.push(Line::from(vec![prefix, Span::raw(row)]));
+            }
+        }
+        if let (Some(g), Some(last)) = (ghost, lines.last_mut()) {
+            last.spans.push(Span::styled(
+                g.to_string(),
+                Style::new().add_modifier(Modifier::DIM),
+            ));
+        }
     }
     f.render_widget(Paragraph::new(lines), inner);
 
-    // Place the hardware cursor. Use the unicode *display* width of the text
-    // before the cursor so wide glyphs (e.g. CJK, which occupy two cells) keep
-    // the caret exactly at the insertion point instead of drifting.
+    // Place the hardware cursor at its wrapped (row, col), walking the text the
+    // same way `wrap_cells` does so wide glyphs (CJK = 2 cells) don't drift it.
     if app.modal.is_none() {
         let before = app.input.get(..app.cursor).unwrap_or(&app.input);
-        let row = before.matches('\n').count() as u16;
-        let cur_line = before.rsplit('\n').next().unwrap_or("");
-        let col = UnicodeWidthStr::width(cur_line) as u16;
-        let x = inner.x + 2 + col; // 2 = "❯ " prompt width
+        let logical_idx = before.matches('\n').count();
+        let mut row: u16 = 0;
+        for l in app.input.split('\n').take(logical_idx) {
+            row = row.saturating_add(wrap_cells(l, text_w).len() as u16);
+        }
+        let cur_logical = before.rsplit('\n').next().unwrap_or("");
+        let mut col = 0usize;
+        for ch in cur_logical.chars() {
+            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if col + cw > text_w && col != 0 {
+                row = row.saturating_add(1);
+                col = 0;
+            }
+            col += cw;
+        }
+        let x = inner.x + 2 + col as u16; // 2 = "❯ " prompt width
         let y = inner.y + row;
-        f.set_cursor_position((x.min(inner.x + inner.width.saturating_sub(1)), y));
+        f.set_cursor_position((
+            x.min(inner.x + inner.width.saturating_sub(1)),
+            y.min(inner.y + inner.height.saturating_sub(1)),
+        ));
     }
+}
+
+/// Break a logical line into display rows at `width` cells, like a textarea
+/// (char wrap, not word wrap). Empty input yields one empty row.
+fn wrap_cells(s: &str, width: usize) -> Vec<String> {
+    let w = width.max(1);
+    let mut rows = Vec::new();
+    let mut cur = String::new();
+    let mut cur_w = 0usize;
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if cur_w + cw > w && !cur.is_empty() {
+            rows.push(std::mem::take(&mut cur));
+            cur_w = 0;
+        }
+        cur.push(ch);
+        cur_w += cw;
+    }
+    rows.push(cur);
+    rows
+}
+
+/// Total wrapped row count for the whole (multi-line) input buffer.
+fn input_rows(input: &str, text_w: u16) -> u16 {
+    let w = text_w.max(1) as usize;
+    let mut n = 0u16;
+    for logical in input.split('\n') {
+        n = n.saturating_add(wrap_cells(logical, w).len() as u16);
+    }
+    n.max(1)
 }
 
 fn draw_modal(f: &mut Frame, app: &App) {
@@ -1217,6 +1402,45 @@ mod tests {
             24,
         );
         assert!(text.contains("commands"));
+    }
+
+    #[test]
+    fn long_input_wraps_and_grows_the_box() {
+        // A single long line (no newlines) must wrap to multiple rows and the
+        // box must report >1 text row — i.e. overflow is shown, not clipped.
+        let long = "x".repeat(200);
+        assert!(input_rows(&long, 40) >= 5);
+        assert_eq!(wrap_cells(&long, 40).len(), 5);
+        // Empty/blank cases stay a single row.
+        assert_eq!(input_rows("", 40), 1);
+    }
+
+    #[test]
+    fn streaming_preview_renders_then_commits() {
+        let mut app = App::new(StatusInfo::default());
+        app.stream_delta(Some("r1".into()), "Hello ");
+        app.stream_delta(Some("r1".into()), "world");
+        // The in-progress preview is visible mid-stream.
+        let mid = buffer_text(&mut app, 80, 24);
+        assert!(mid.contains("Hello world"));
+        // Committing returns the whole text and leaves it in the scrollback.
+        assert_eq!(app.stream_commit(), Some("Hello world".to_string()));
+        assert!(app.stream_start.is_none() && app.stream_text.is_empty());
+        let after = buffer_text(&mut app, 80, 24);
+        assert!(after.contains("Hello world"));
+    }
+
+    #[test]
+    fn renders_markdown_table_as_box() {
+        let mut app = App::new(StatusInfo::default());
+        let msg = biorouter::conversation::message::Message::assistant().with_text(
+            "| Area | High |\n|------|------|\n| Bay | 72 |\n| Inland | 78 |",
+        );
+        app.push_message(&msg, false);
+        let text = buffer_text(&mut app, 80, 24);
+        // Box-drawing borders + header + cells present.
+        assert!(text.contains('┌') && text.contains('┼') && text.contains('└'));
+        assert!(text.contains("Area") && text.contains("Inland") && text.contains("78"));
     }
 
     #[test]

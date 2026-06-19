@@ -9,6 +9,7 @@ pub static APP_STRATEGY: Lazy<AppStrategyArgs> = Lazy::new(|| AppStrategyArgs {
     app_name: "biorouter".to_string(),
 });
 
+pub mod agent_drafter;
 pub mod autovisualiser;
 pub mod computercontroller;
 pub mod developer;
@@ -17,6 +18,7 @@ pub mod mcp_server_runner;
 mod memory;
 pub mod tutorial;
 
+pub use agent_drafter::AgentDrafterServer;
 pub use autovisualiser::AutoVisualiserRouter;
 pub use computercontroller::ComputerControllerServer;
 pub use developer::rmcp_developer::DeveloperServer;
@@ -70,6 +72,7 @@ pub static BUILTIN_EXTENSIONS: Lazy<HashMap<&'static str, BuiltinDef>> = Lazy::n
         builtin!(computercontroller, ComputerControllerServer),
         builtin!(memory, MemoryServer),
         builtin!(tutorial, TutorialServer),
+        builtin!(agent_drafter, AgentDrafterServer),
         (
             "knowledge",
             BuiltinDef {
