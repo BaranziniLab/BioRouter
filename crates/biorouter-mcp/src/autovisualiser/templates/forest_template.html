@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forest Plot</title>
+    {{ASSETS}}
+    <script>{{COMMON}}</script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: auto; }
+        .header { padding: 20px 30px 0; text-align: center; }
+        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
+        #chart { display: block; margin: 10px auto; }
+        text { fill: var(--text); }
+    </style>
+</head>
+<body>
+    <div class="viz-root">
+        <div class="container">
+            <div class="header"><h1 id="title">Forest Plot</h1></div>
+            <svg id="chart"></svg>
+        </div>
+    </div>
+    <script>
+        const forestData = {{FOREST_DATA}};
+        BioRouterViz.autoResize();
+        BioRouterViz.guard(function () {
+            BioRouterViz.applyPageTheme();
+            if (forestData.title) document.getElementById('title').textContent = forestData.title;
+
+            const rows = forestData.rows;
+            const logScale = !!forestData.logScale;
+            const refLine = (typeof forestData.referenceLine === 'number') ? forestData.referenceLine : (logScale ? 1 : 0);
+
+            const margin = { top: 20, right: 90, bottom: 50, left: 200 };
+            const rowH = 30;
+            const innerW = 520;
+            const innerH = rows.length * rowH;
+            const svg = d3.select('#chart').attr('width', margin.left + innerW + margin.right).attr('height', margin.top + innerH + margin.bottom);
+            const g = svg.append('g').attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+
+            const lo = d3.min(rows, function (r) { return r.lower; });
+            const hi = d3.max(rows, function (r) { return r.upper; });
+            let x;
+            if (logScale) {
+                x = d3.scaleLog().domain([Math.max(1e-6, lo * 0.9), hi * 1.1]).range([0, innerW]);
+            } else {
+                const pad = (hi - lo) * 0.1 || 1;
+                x = d3.scaleLinear().domain([lo - pad, hi + pad]).range([0, innerW]);
+            }
+            const maxW = d3.max(rows, function (r) { return r.weight || 1; }) || 1;
+
+            g.append('g').attr('transform', 'translate(0,' + innerH + ')').call(d3.axisBottom(x).ticks(6, '~g'));
+            if (forestData.xAxisLabel) {
+                g.append('text').attr('x', innerW / 2).attr('y', innerH + 40).attr('text-anchor', 'middle').text(forestData.xAxisLabel);
+            }
+            // Reference line.
+            if (refLine >= x.domain()[0] && refLine <= x.domain()[1]) {
+                g.append('line').attr('x1', x(refLine)).attr('x2', x(refLine)).attr('y1', 0).attr('y2', innerH)
+                    .attr('stroke', BioRouterViz.colors.muted).attr('stroke-dasharray', '5,4');
+            }
+
+            rows.forEach(function (r, i) {
+                const cy = i * rowH + rowH / 2;
+                g.append('text').attr('x', -margin.left + 4).attr('y', cy + 4).style('font-size', '12px').text(r.label);
+                g.append('line').attr('x1', x(r.lower)).attr('x2', x(r.upper)).attr('y1', cy).attr('y2', cy)
+                    .attr('stroke', BioRouterViz.colors.text).attr('stroke-width', 1.5);
+                [r.lower, r.upper].forEach(function (b) {
+                    g.append('line').attr('x1', x(b)).attr('x2', x(b)).attr('y1', cy - 4).attr('y2', cy + 4).attr('stroke', BioRouterViz.colors.text);
+                });
+                const sz = 5 + 8 * Math.sqrt((r.weight || 1) / maxW);
+                g.append('rect').attr('x', x(r.estimate) - sz / 2).attr('y', cy - sz / 2).attr('width', sz).attr('height', sz)
+                    .attr('fill', BioRouterViz.palette[0]);
+                g.append('text').attr('x', innerW + 8).attr('y', cy + 4).style('font-size', '11px')
+                    .text(r.estimate + ' (' + r.lower + '–' + r.upper + ')');
+            });
+            BioRouterViz.reportSize();
+        });
+    </script>
+</body>
+</html>

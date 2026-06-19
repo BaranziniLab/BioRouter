@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Box Plot</title>
+    {{ASSETS}}
+    <script>{{COMMON}}</script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
+        .container { max-width: 1100px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: auto; }
+        .header { padding: 20px 30px 0; text-align: center; }
+        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
+        #chart { display: block; margin: 10px auto; }
+        text { fill: var(--text); }
+        .tooltip { position: absolute; background: var(--text); color: var(--surface); padding: 6px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; opacity: 0; z-index: 10; }
+    </style>
+</head>
+<body>
+    <div class="viz-root">
+        <div class="container">
+            <div class="header"><h1 id="title">Box Plot</h1></div>
+            <svg id="chart"></svg>
+        </div>
+    </div>
+    <div class="tooltip" id="tooltip"></div>
+    <script>
+        const boxplotData = {{BOXPLOT_DATA}};
+        BioRouterViz.autoResize();
+        BioRouterViz.guard(function () {
+            BioRouterViz.applyPageTheme();
+            if (boxplotData.title) document.getElementById('title').textContent = boxplotData.title;
+
+            function quantile(sorted, q) {
+                const pos = (sorted.length - 1) * q;
+                const base = Math.floor(pos), rest = pos - base;
+                return sorted[base + 1] !== undefined ? sorted[base] + rest * (sorted[base + 1] - sorted[base]) : sorted[base];
+            }
+            const groups = boxplotData.groups.map(function (g) {
+                const s = g.values.filter(function (v) { return isFinite(v); }).slice().sort(d3.ascending);
+                const q1 = quantile(s, 0.25), med = quantile(s, 0.5), q3 = quantile(s, 0.75);
+                const iqr = q3 - q1;
+                const lo = q1 - 1.5 * iqr, hi = q3 + 1.5 * iqr;
+                const inliers = s.filter(function (v) { return v >= lo && v <= hi; });
+                const whiskLo = inliers.length ? d3.min(inliers) : q1;
+                const whiskHi = inliers.length ? d3.max(inliers) : q3;
+                const outliers = s.filter(function (v) { return v < lo || v > hi; });
+                return { label: g.label, q1: q1, med: med, q3: q3, whiskLo: whiskLo, whiskHi: whiskHi, outliers: outliers, all: s };
+            });
+
+            const margin = { top: 20, right: 30, bottom: 60, left: 60 };
+            const innerW = Math.max(360, groups.length * 110);
+            const innerH = 420;
+            const width = margin.left + innerW + margin.right;
+            const height = margin.top + innerH + margin.bottom;
+            const svg = d3.select('#chart').attr('width', width).attr('height', height);
+            const g = svg.append('g').attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+            const tooltip = d3.select('#tooltip');
+
+            const allV = [];
+            groups.forEach(function (gr) { allV.push(gr.whiskLo, gr.whiskHi); gr.outliers.forEach(function (o) { allV.push(o); }); });
+            const y = d3.scaleLinear().domain([d3.min(allV), d3.max(allV)]).nice().range([innerH, 0]);
+            const x = d3.scaleBand().domain(groups.map(function (gr) { return gr.label; })).range([0, innerW]).padding(0.4);
+
+            g.append('g').call(d3.axisLeft(y));
+            g.append('g').attr('transform', 'translate(0,' + innerH + ')').call(d3.axisBottom(x));
+            if (boxplotData.yAxisLabel) {
+                g.append('text').attr('transform', 'rotate(-90)').attr('x', -innerH / 2).attr('y', -44).attr('text-anchor', 'middle').text(boxplotData.yAxisLabel);
+            }
+
+            groups.forEach(function (gr, i) {
+                const cx = x(gr.label) + x.bandwidth() / 2;
+                const bw = x.bandwidth();
+                const col = BioRouterViz.palette[i % BioRouterViz.palette.length];
+                g.append('line').attr('x1', cx).attr('x2', cx).attr('y1', y(gr.whiskLo)).attr('y2', y(gr.whiskHi)).attr('stroke', BioRouterViz.colors.muted);
+                g.append('rect').attr('x', cx - bw / 2).attr('y', y(gr.q3)).attr('width', bw).attr('height', Math.max(1, y(gr.q1) - y(gr.q3)))
+                    .attr('fill', col + '99').attr('stroke', col)
+                    .on('mouseover', function (event) {
+                        tooltip.style('opacity', 1).html('<strong>' + gr.label + '</strong><br/>median: ' + gr.med.toFixed(2) + '<br/>Q1–Q3: ' + gr.q1.toFixed(2) + '–' + gr.q3.toFixed(2) + '<br/>n=' + gr.all.length)
+                            .style('left', (event.pageX + 12) + 'px').style('top', (event.pageY - 10) + 'px');
+                    })
+                    .on('mouseout', function () { tooltip.style('opacity', 0); });
+                g.append('line').attr('x1', cx - bw / 2).attr('x2', cx + bw / 2).attr('y1', y(gr.med)).attr('y2', y(gr.med)).attr('stroke', col).attr('stroke-width', 2);
+                [gr.whiskLo, gr.whiskHi].forEach(function (wv) {
+                    g.append('line').attr('x1', cx - bw / 4).attr('x2', cx + bw / 4).attr('y1', y(wv)).attr('y2', y(wv)).attr('stroke', BioRouterViz.colors.muted);
+                });
+                gr.outliers.forEach(function (o) {
+                    g.append('circle').attr('cx', cx).attr('cy', y(o)).attr('r', 3).attr('fill', 'none').attr('stroke', col);
+                });
+            });
+            BioRouterViz.reportSize();
+        });
+    </script>
+</body>
+</html>
