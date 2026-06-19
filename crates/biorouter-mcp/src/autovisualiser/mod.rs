@@ -1,54 +1,75 @@
-use base64::{engine::general_purpose::STANDARD, Engine as _};
-use etcetera::{choose_app_strategy, AppStrategy};
+//! Auto Visualiser MCP server.
+//!
+//! Each tool turns structured data into a self-contained interactive HTML figure
+//! and returns it as a `ui://…` resource for inline rendering. All tools share
+//! the pipeline in [`common`]: validate → JSON-encode (safely) → inject into a
+//! template with the libraries it needs → return a `CallToolResult`.
+
+mod common;
+
+use common::{
+    check_limit, html_escape, invalid, js_data, js_value, render, Asset, MAX_LABELS, MAX_LINKS,
+    MAX_MARKERS, MAX_MATRIX_DIM, MAX_MERMAID_LEN, MAX_NODES, MAX_TREE_DEPTH, MAX_VALUES,
+};
 use indoc::formatdoc;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{
-        CallToolResult, Content, ErrorCode, ErrorData, Implementation, ResourceContents, Role,
-        ServerCapabilities, ServerInfo,
-    },
+    model::{CallToolResult, ErrorData, Implementation, ServerCapabilities, ServerInfo},
     tool, tool_handler, tool_router, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 
-/// Validates that the data parameter is a proper JSON value and not a string
-fn validate_data_param(params: &Value, allow_array: bool) -> Result<Value, ErrorData> {
-    let data_value = params.get("data").ok_or_else(|| {
-        ErrorData::new(
-            ErrorCode::INVALID_PARAMS,
-            "Missing 'data' parameter".to_string(),
-            None,
-        )
-    })?;
+// ===========================================================================
+// Shared enums (lenient parsing: accept any case / surrounding whitespace).
+// ===========================================================================
 
-    if data_value.is_string() {
-        return Err(ErrorData::new(
-            ErrorCode::INVALID_PARAMS,
-            "The 'data' parameter must be a JSON object, not a JSON string. Please provide valid JSON without comments.".to_string(),
-            None,
-        ));
-    }
-
-    if allow_array {
-        if !data_value.is_object() && !data_value.is_array() {
-            return Err(ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                "The 'data' parameter must be a JSON object or array.".to_string(),
-                None,
-            ));
-        }
-    } else if !data_value.is_object() {
-        return Err(ErrorData::new(
-            ErrorCode::INVALID_PARAMS,
-            "The 'data' parameter must be a JSON object.".to_string(),
-            None,
-        ));
-    }
-
-    Ok(data_value.clone())
+/// Chart type for `show_chart`.
+#[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum ChartType {
+    Line,
+    Scatter,
+    Bar,
 }
+
+impl<'de> Deserialize<'de> for ChartType {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(
+            match common::parse_keyword::<D::Error>(&s, &["line", "scatter", "bar"])?.as_str() {
+                "scatter" => ChartType::Scatter,
+                "bar" => ChartType::Bar,
+                _ => ChartType::Line,
+            },
+        )
+    }
+}
+
+/// Chart type for `render_donut`.
+#[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DonutChartType {
+    Doughnut,
+    Pie,
+}
+
+impl<'de> Deserialize<'de> for DonutChartType {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        Ok(
+            match common::parse_keyword::<D::Error>(&s, &["doughnut", "pie", "donut"])?.as_str() {
+                "pie" => DonutChartType::Pie,
+                _ => DonutChartType::Doughnut,
+            },
+        )
+    }
+}
+
+// ===========================================================================
+// Parameter / data structs
+// ===========================================================================
 
 /// Sankey node structure
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
@@ -125,16 +146,6 @@ pub enum DonutDataItem {
         /// Numeric value
         value: f64,
     },
-}
-
-/// Chart type for donut/pie charts
-#[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum DonutChartType {
-    /// Doughnut chart (with hole in center)
-    Doughnut,
-    /// Pie chart (no hole)
-    Pie,
 }
 
 /// Single donut/pie chart data
@@ -341,18 +352,6 @@ pub enum ChartDataValues {
     Points(Vec<ChartPoint>),
 }
 
-/// Chart type enumeration
-#[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum ChartType {
-    /// Line chart
-    Line,
-    /// Scatter chart
-    Scatter,
-    /// Bar chart
-    Bar,
-}
-
 /// Chart data structure
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct ChartData {
@@ -394,6 +393,10 @@ pub struct RenderMermaidParams {
     pub mermaid_code: String,
 }
 
+// ===========================================================================
+// Router
+// ===========================================================================
+
 /// An extension for automatic data visualization and UI generation
 #[derive(Clone)]
 pub struct AutoVisualiserRouter {
@@ -430,37 +433,71 @@ impl ServerHandler for AutoVisualiserRouter {
 #[tool_router(router = tool_router)]
 impl AutoVisualiserRouter {
     pub fn new() -> Self {
-        // choose_app_strategy().cache_dir()
+        use etcetera::{choose_app_strategy, AppStrategy};
         // - macOS/Linux: ~/.cache/biorouter/autovisualiser/
         // - Windows:     ~\AppData\Local\BaranziniLab\BioRouter\cache\autovisualiser\
         let cache_dir = choose_app_strategy(crate::APP_STRATEGY.clone())
             .unwrap()
             .cache_dir()
             .join("autovisualiser");
-
-        // Create cache directory if it doesn't exist
         let _ = std::fs::create_dir_all(&cache_dir);
 
         let instructions = formatdoc! {r#"
-            This extension provides tools for automatic data visualization
-            Use these tools when you are presenting data to the user which could be complemented by a visual expression
-            Choose the most appropriate chart type based on the data you have and can provide
-            It is important you match the data format as appropriate with the chart type you have chosen
-            The user may specify a type of chart or you can pick one of the most appopriate that you can shape the data to
+            This extension provides tools for automatic data visualization.
+            Use these tools when you are presenting data to the user which could be complemented by a visual expression.
+            Choose the most appropriate chart type based on the data you have and can provide.
+            Match the data format to the chart type you have chosen. The user may request a specific
+            chart, or you can pick the most appropriate one and shape the data to fit it.
 
-            ## Available Tools:
-            - **render_sankey**: Creates interactive Sankey diagrams from flow data
-            - **render_radar**: Creates interactive radar charts for multi-dimensional data comparison
-            - **render_donut**: Creates interactive donut/pie charts for categorical data (supports multiple charts)
-            - **render_treemap**: Creates interactive treemap visualizations for hierarchical data
-            - **render_chord**: Creates interactive chord diagrams for relationship/flow visualization
-            - **render_map**: Creates interactive map visualizations with location markers
-            - **render_mermaid**: Creates interactive Mermaid diagrams from Mermaid syntax
-            - **show_chart**: Creates interactive line, scatter, or bar charts for data visualization
+            ## Statistical & comparison charts
+            - **show_chart**: line, scatter, or bar charts
+            - **render_histogram**: distribution of a single numeric variable (auto-binned)
+            - **render_boxplot**: distribution/spread comparison across groups (quartiles + outliers)
+            - **render_bubble**: 3-variable scatter (x, y, and size)
+            - **render_area**: line/area chart, optionally stacked, for composition over time
+            - **render_radar**: multi-dimensional comparison (spider chart)
+            - **render_donut**: pie/donut charts for categorical proportions (single or grid)
+            - **render_gauge**: a single KPI value against a range
+
+            ## Scientific / biomedical
+            - **render_volcano**: differential-expression volcano plot (log2 fold-change vs -log10 p)
+            - **render_manhattan**: GWAS Manhattan plot across chromosomes
+            - **render_kaplan_meier**: survival curves (step functions, optional censoring)
+            - **render_forest**: forest plot of effect sizes with confidence intervals
+
+            ## Relationships, flows & hierarchies
+            - **render_network**: force-directed node-link graph (knowledge graphs, PPI, gene networks)
+            - **render_sankey**: flow diagrams between stages
+            - **render_chord**: pairwise flows between entities (square matrix)
+            - **render_heatmap**: matrix as a colour grid (expression/correlation matrices)
+            - **render_treemap**: hierarchical proportional boxes
+            - **render_sunburst**: hierarchical radial chart
+            - **render_dendrogram**: hierarchical clustering / phylogenetic tree
+            - **render_wordcloud**: term-frequency word cloud
+            - **render_calendar_heatmap**: value-per-day calendar grid
+
+            ## Diagrams (Mermaid)
+            - **render_mermaid**: any raw Mermaid syntax
+            - **render_flowchart**: typed nodes/edges → flowchart
+            - **render_gantt**: project/experiment timelines
+            - **render_sequence**: sequence diagrams
+            - **render_mindmap**: mind maps
+            - **render_timeline**: chronological timelines
+            - **render_er_diagram**: entity-relationship diagrams
+            - **render_state_diagram**: state machines
+            - **render_class_diagram**: class/UML diagrams
+
+            ## Geographic
+            - **render_map**: interactive map with location markers
+            - **render_choropleth**: value-shaded regions from GeoJSON
         "#};
 
         Self {
-            tool_router: Self::tool_router(),
+            tool_router: Self::tool_router()
+                + Self::diagrams_router()
+                + Self::charts_router()
+                + Self::d3_router()
+                + Self::geo_router(),
             cache_dir,
             instructions,
         }
@@ -489,63 +526,41 @@ Example:
         &self,
         params: Parameters<RenderSankeyParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let data = validate_data_param(
-            &serde_json::to_value(params.0).map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INVALID_PARAMS,
-                    format!("Invalid parameters: {}", e),
-                    None,
-                )
-            })?,
-            false,
-        )?;
-
-        // Convert the data to JSON string
-        let data_json = serde_json::to_string(&data).map_err(|e| {
-            ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                format!("Invalid JSON data: {}", e),
-                None,
-            )
-        })?;
-
-        // Load all resources at compile time using include_str!
-        const TEMPLATE: &str = include_str!("templates/sankey_template.html");
-        const D3_MIN: &str = include_str!("templates/assets/d3.min.js");
-        const D3_SANKEY: &str = include_str!("templates/assets/d3.sankey.min.js");
-
-        // Replace all placeholders with actual content
-        let html_content = TEMPLATE
-            .replace("{{D3_MIN}}", D3_MIN)
-            .replace("{{D3_SANKY}}", D3_SANKEY) // Note: keeping the typo to match template
-            .replace("{{SANKEY_DATA}}", &data_json);
-
-        // Save to /tmp/vis.html for debugging
-        let debug_path = std::path::Path::new("/tmp/vis.html");
-        if let Err(e) = std::fs::write(debug_path, &html_content) {
-            tracing::warn!("Failed to write debug HTML to /tmp/vis.html: {}", e);
-        } else {
-            tracing::info!("Debug HTML saved to /tmp/vis.html");
+        let data = &params.0.data;
+        if data.nodes.is_empty() {
+            return Err(invalid("Sankey diagram requires at least one node."));
         }
-
-        // Use BlobResourceContents with base64 encoding to avoid JSON string escaping issues
-        let html_bytes = html_content.as_bytes();
-        let base64_encoded = STANDARD.encode(html_bytes);
-
-        let resource_contents = ResourceContents::BlobResourceContents {
-            uri: "ui://sankey/diagram".to_string(),
-            mime_type: Some("text/html".to_string()),
-            blob: base64_encoded,
-            meta: None,
-        };
-
-        // Pair the user-audience resource with an assistant-audience text so the
-        // model receives a non-empty tool result and doesn't loop retrying.
-        Ok(CallToolResult::success(vec![
-            Content::resource(resource_contents).with_audience(vec![Role::User]),
-            Content::text("Sankey diagram rendered inline for the user.")
-                .with_audience(vec![Role::Assistant]),
-        ]))
+        if data.links.is_empty() {
+            return Err(invalid("Sankey diagram requires at least one link."));
+        }
+        check_limit(data.nodes.len(), MAX_NODES, "nodes")?;
+        check_limit(data.links.len(), MAX_LINKS, "links")?;
+        // Every link must reference an existing node, else D3 sankey throws.
+        let names: std::collections::HashSet<&str> =
+            data.nodes.iter().map(|n| n.name.as_str()).collect();
+        for link in &data.links {
+            if !names.contains(link.source.as_str()) {
+                return Err(invalid(format!(
+                    "Sankey link references unknown source node '{}'. Add it to 'nodes'.",
+                    link.source
+                )));
+            }
+            if !names.contains(link.target.as_str()) {
+                return Err(invalid(format!(
+                    "Sankey link references unknown target node '{}'. Add it to 'nodes'.",
+                    link.target
+                )));
+            }
+        }
+        let data_json = js_value(data)?;
+        render(
+            "ui://sankey/diagram",
+            "sankey",
+            "Sankey diagram rendered inline for the user.",
+            include_str!("templates/sankey_template.html"),
+            &[Asset::D3, Asset::D3Sankey],
+            &[("{{SANKEY_DATA}}", &data_json)],
+        )
     }
 
     /// show a radar chart (spider chart) for multi-dimensional data comparison
@@ -561,14 +576,8 @@ Example:
 {
   "labels": ["Speed", "Strength", "Endurance", "Agility", "Intelligence"],
   "datasets": [
-    {
-      "label": "Player 1",
-      "data": [85, 70, 90, 75, 80]
-    },
-    {
-      "label": "Player 2",
-      "data": [75, 85, 80, 90, 70]
-    }
+    {"label": "Player 1", "data": [85, 70, 90, 75, 80]},
+    {"label": "Player 2", "data": [75, 85, 80, 90, 70]}
   ]
 }"#
     )]
@@ -576,59 +585,33 @@ Example:
         &self,
         params: Parameters<RenderRadarParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let data = validate_data_param(
-            &serde_json::to_value(params.0).map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INVALID_PARAMS,
-                    format!("Invalid parameters: {}", e),
-                    None,
-                )
-            })?,
-            false,
-        )?;
-
-        // Convert the data to JSON string
-        let data_json = serde_json::to_string(&data).map_err(|e| {
-            ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                format!("Invalid JSON data: {}", e),
-                None,
-            )
-        })?;
-
-        // Load all resources at compile time using include_str!
-        const TEMPLATE: &str = include_str!("templates/radar_template.html");
-        const CHART_MIN: &str = include_str!("templates/assets/chart.min.js");
-
-        // Replace all placeholders with actual content
-        let html_content = TEMPLATE
-            .replace("{{CHART_MIN}}", CHART_MIN)
-            .replace("{{RADAR_DATA}}", &data_json);
-
-        // Save to /tmp/radar.html for debugging
-        let debug_path = std::path::Path::new("/tmp/radar.html");
-        if let Err(e) = std::fs::write(debug_path, &html_content) {
-            tracing::warn!("Failed to write debug HTML to /tmp/radar.html: {}", e);
-        } else {
-            tracing::info!("Debug HTML saved to /tmp/radar.html");
+        let data = &params.0.data;
+        if data.labels.is_empty() {
+            return Err(invalid("Radar chart requires at least one axis label."));
         }
-
-        // Use BlobResourceContents with base64 encoding to avoid JSON string escaping issues
-        let html_bytes = html_content.as_bytes();
-        let base64_encoded = STANDARD.encode(html_bytes);
-
-        let resource_contents = ResourceContents::BlobResourceContents {
-            uri: "ui://radar/chart".to_string(),
-            mime_type: Some("text/html".to_string()),
-            blob: base64_encoded,
-            meta: None,
-        };
-
-        Ok(CallToolResult::success(vec![
-            Content::resource(resource_contents).with_audience(vec![Role::User]),
-            Content::text("Radar chart rendered inline for the user.")
-                .with_audience(vec![Role::Assistant]),
-        ]))
+        if data.datasets.is_empty() {
+            return Err(invalid("Radar chart requires at least one dataset."));
+        }
+        check_limit(data.labels.len(), MAX_LABELS, "axes")?;
+        for ds in &data.datasets {
+            if ds.data.len() != data.labels.len() {
+                return Err(invalid(format!(
+                    "Dataset '{}' has {} values but there are {} axis labels; they must match.",
+                    ds.label,
+                    ds.data.len(),
+                    data.labels.len()
+                )));
+            }
+        }
+        let data_json = js_value(data)?;
+        render(
+            "ui://radar/chart",
+            "radar",
+            "Radar chart rendered inline for the user.",
+            include_str!("templates/radar_template.html"),
+            &[Asset::ChartJs],
+            &[("{{RADAR_DATA}}", &data_json)],
+        )
     }
 
     /// show pie or donut charts for categorical data visualization
@@ -644,79 +627,43 @@ Each chart should contain:
 - labels: Optional array of labels (if data is just numbers)
 
 Example single chart:
-{
-  "title": "Budget",
-  "type": "doughnut",
-  "data": [
-    {"label": "Marketing", "value": 25000},
-    {"label": "Development", "value": 35000}
-  ]
-}
+{"title": "Budget", "type": "doughnut", "data": [
+  {"label": "Marketing", "value": 25000},
+  {"label": "Development", "value": 35000}
+]}
 
 Example multiple charts:
-[{
-  "title": "Q1 Sales",
-  "labels": ["Product A", "Product B"],
-  "data": [45000, 38000]
-}]"#
+[{"title": "Q1 Sales", "labels": ["Product A", "Product B"], "data": [45000, 38000]}]"#
     )]
     pub async fn render_donut(
         &self,
         params: Parameters<RenderDonutParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let data = validate_data_param(
-            &serde_json::to_value(params.0).map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INVALID_PARAMS,
-                    format!("Invalid parameters: {}", e),
-                    None,
-                )
-            })?,
-            true,
-        )?; // true because donut accepts arrays
-
-        // Convert the data to JSON string
-        let data_json = serde_json::to_string(&data).map_err(|e| {
-            ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                format!("Invalid JSON data: {}", e),
-                None,
-            )
-        })?;
-
-        // Load all resources at compile time using include_str!
-        const TEMPLATE: &str = include_str!("templates/donut_template.html");
-        const CHART_MIN: &str = include_str!("templates/assets/chart.min.js");
-
-        // Replace all placeholders with actual content
-        let html_content = TEMPLATE
-            .replace("{{CHART_MIN}}", CHART_MIN)
-            .replace("{{CHARTS_DATA}}", &data_json);
-
-        // Save to /tmp/donut.html for debugging
-        let debug_path = std::path::Path::new("/tmp/donut.html");
-        if let Err(e) = std::fs::write(debug_path, &html_content) {
-            tracing::warn!("Failed to write debug HTML to /tmp/donut.html: {}", e);
-        } else {
-            tracing::info!("Debug HTML saved to /tmp/donut.html");
-        }
-
-        // Use BlobResourceContents with base64 encoding to avoid JSON string escaping issues
-        let html_bytes = html_content.as_bytes();
-        let base64_encoded = STANDARD.encode(html_bytes);
-
-        let resource_contents = ResourceContents::BlobResourceContents {
-            uri: "ui://donut/chart".to_string(),
-            mime_type: Some("text/html".to_string()),
-            blob: base64_encoded,
-            meta: None,
+        let chart_data = &params.0.data.data;
+        let charts: Vec<&SingleDonutChart> = match chart_data {
+            DonutChartData::Single(c) => vec![c],
+            DonutChartData::Multiple(v) => v.iter().collect(),
         };
-
-        Ok(CallToolResult::success(vec![
-            Content::resource(resource_contents).with_audience(vec![Role::User]),
-            Content::text("Donut/pie chart rendered inline for the user.")
-                .with_audience(vec![Role::Assistant]),
-        ]))
+        if charts.is_empty() {
+            return Err(invalid("Donut chart requires at least one chart."));
+        }
+        for c in &charts {
+            if c.data.is_empty() {
+                return Err(invalid(
+                    "Each donut/pie chart requires at least one data value.",
+                ));
+            }
+            check_limit(c.data.len(), MAX_LABELS, "slices")?;
+        }
+        let data_json = js_value(chart_data)?;
+        render(
+            "ui://donut/chart",
+            "donut",
+            "Donut/pie chart rendered inline for the user.",
+            include_str!("templates/donut_template.html"),
+            &[Asset::ChartJs],
+            &[("{{CHARTS_DATA}}", &data_json)],
+        )
     }
 
     /// show a treemap visualization for hierarchical data
@@ -734,13 +681,10 @@ Example:
 {
   "name": "Root",
   "children": [
-    {
-      "name": "Group A",
-      "children": [
-        {"name": "Item 1", "value": 100, "category": "Type1"},
-        {"name": "Item 2", "value": 200, "category": "Type2"}
-      ]
-    },
+    {"name": "Group A", "children": [
+      {"name": "Item 1", "value": 100, "category": "Type1"},
+      {"name": "Item 2", "value": 200, "category": "Type2"}
+    ]},
     {"name": "Item 3", "value": 150, "category": "Type1"}
   ]
 }"#
@@ -749,59 +693,23 @@ Example:
         &self,
         params: Parameters<RenderTreemapParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let data = validate_data_param(
-            &serde_json::to_value(params.0).map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INVALID_PARAMS,
-                    format!("Invalid parameters: {}", e),
-                    None,
-                )
-            })?,
-            false,
-        )?;
-
-        // Convert the data to JSON string
-        let data_json = serde_json::to_string(&data).map_err(|e| {
-            ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                format!("Invalid JSON data: {}", e),
-                None,
-            )
-        })?;
-
-        // Load all resources at compile time using include_str!
-        const TEMPLATE: &str = include_str!("templates/treemap_template.html");
-        const D3_MIN: &str = include_str!("templates/assets/d3.min.js");
-
-        // Replace all placeholders with actual content
-        let html_content = TEMPLATE
-            .replace("{{D3_MIN}}", D3_MIN)
-            .replace("{{TREEMAP_DATA}}", &data_json);
-
-        // Save to /tmp/treemap.html for debugging
-        let debug_path = std::path::Path::new("/tmp/treemap.html");
-        if let Err(e) = std::fs::write(debug_path, &html_content) {
-            tracing::warn!("Failed to write debug HTML to /tmp/treemap.html: {}", e);
-        } else {
-            tracing::info!("Debug HTML saved to /tmp/treemap.html");
+        let data = &params.0.data;
+        let (count, depth) = treemap_stats(data, 1);
+        check_limit(count, MAX_NODES, "nodes")?;
+        if depth > MAX_TREE_DEPTH {
+            return Err(invalid(format!(
+                "Treemap nesting depth {depth} exceeds the maximum of {MAX_TREE_DEPTH}."
+            )));
         }
-
-        // Use BlobResourceContents with base64 encoding to avoid JSON string escaping issues
-        let html_bytes = html_content.as_bytes();
-        let base64_encoded = STANDARD.encode(html_bytes);
-
-        let resource_contents = ResourceContents::BlobResourceContents {
-            uri: "ui://treemap/visualization".to_string(),
-            mime_type: Some("text/html".to_string()),
-            blob: base64_encoded,
-            meta: None,
-        };
-
-        Ok(CallToolResult::success(vec![
-            Content::resource(resource_contents).with_audience(vec![Role::User]),
-            Content::text("Treemap rendered inline for the user.")
-                .with_audience(vec![Role::Assistant]),
-        ]))
+        let data_json = js_value(data)?;
+        render(
+            "ui://treemap/visualization",
+            "treemap",
+            "Treemap rendered inline for the user.",
+            include_str!("templates/treemap_template.html"),
+            &[Asset::D3],
+            &[("{{TREEMAP_DATA}}", &data_json)],
+        )
     }
 
     /// Show a chord diagram visualization for relationships and flows
@@ -828,59 +736,36 @@ Example:
         &self,
         params: Parameters<RenderChordParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let data = validate_data_param(
-            &serde_json::to_value(params.0).map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INVALID_PARAMS,
-                    format!("Invalid parameters: {}", e),
-                    None,
-                )
-            })?,
-            false,
-        )?;
-
-        // Convert the data to JSON string
-        let data_json = serde_json::to_string(&data).map_err(|e| {
-            ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                format!("Invalid JSON data: {}", e),
-                None,
-            )
-        })?;
-
-        // Load all resources at compile time using include_str!
-        const TEMPLATE: &str = include_str!("templates/chord_template.html");
-        const D3_MIN: &str = include_str!("templates/assets/d3.min.js");
-
-        // Replace all placeholders with actual content
-        let html_content = TEMPLATE
-            .replace("{{D3_MIN}}", D3_MIN)
-            .replace("{{CHORD_DATA}}", &data_json);
-
-        // Save to /tmp/chord.html for debugging
-        let debug_path = std::path::Path::new("/tmp/chord.html");
-        if let Err(e) = std::fs::write(debug_path, &html_content) {
-            tracing::warn!("Failed to write debug HTML to /tmp/chord.html: {}", e);
-        } else {
-            tracing::info!("Debug HTML saved to /tmp/chord.html");
+        let data = &params.0.data;
+        let n = data.labels.len();
+        if n == 0 {
+            return Err(invalid("Chord diagram requires at least one label."));
         }
-
-        // Use BlobResourceContents with base64 encoding to avoid JSON string escaping issues
-        let html_bytes = html_content.as_bytes();
-        let base64_encoded = STANDARD.encode(html_bytes);
-
-        let resource_contents = ResourceContents::BlobResourceContents {
-            uri: "ui://chord/diagram".to_string(),
-            mime_type: Some("text/html".to_string()),
-            blob: base64_encoded,
-            meta: None,
-        };
-
-        Ok(CallToolResult::success(vec![
-            Content::resource(resource_contents).with_audience(vec![Role::User]),
-            Content::text("Chord diagram rendered inline for the user.")
-                .with_audience(vec![Role::Assistant]),
-        ]))
+        check_limit(n, MAX_MATRIX_DIM, "labels")?;
+        if data.matrix.len() != n {
+            return Err(invalid(format!(
+                "Chord matrix must be square: {} rows for {} labels.",
+                data.matrix.len(),
+                n
+            )));
+        }
+        for (i, row) in data.matrix.iter().enumerate() {
+            if row.len() != n {
+                return Err(invalid(format!(
+                    "Chord matrix row {i} has {} entries but must have {n} (one per label).",
+                    row.len()
+                )));
+            }
+        }
+        let data_json = js_value(data)?;
+        render(
+            "ui://chord/diagram",
+            "chord",
+            "Chord diagram rendered inline for the user.",
+            include_str!("templates/chord_template.html"),
+            &[Asset::D3],
+            &[("{{CHORD_DATA}}", &data_json)],
+        )
     }
 
     /// show an interactive map visualization with location markers
@@ -890,114 +775,61 @@ Example:
 
 The data must contain:
 - markers: Array of objects with 'lat', 'lng', and optional properties
-- title: Optional title for the map (default: "Interactive Map")
-- subtitle: Optional subtitle (default: "Geographic data visualization")
-- center: Optional center point {lat, lng} (default: USA center)
-- zoom: Optional initial zoom level (default: 4)
-- clustering: Optional boolean to enable/disable clustering (default: true)
-- autoFit: Optional boolean to auto-fit map to markers (default: true)
+- title/subtitle: Optional strings
+- center: Optional center point {lat, lng}
+- zoom: Optional initial zoom level (default 4)
+- clustering: Optional boolean (default true)
+- autoFit: Optional boolean (default true)
 
-Marker properties:
-- lat: Latitude (required)
-- lng: Longitude (required)
-- name: Location name
-- value: Numeric value for sizing/coloring
-- description: Description text
-- popup: Custom popup HTML
-- color: Custom marker color
-- label: Custom marker label
-- useDefaultIcon: Use default Leaflet icon
+Marker properties: lat (required), lng (required), name, value, description, popup, color, label, useDefaultIcon
 
 Example:
-{
-  "title": "Store Locations",
-  "markers": [
-    {"lat": 37.7749, "lng": -122.4194, "name": "SF Store", "value": 150000},
-    {"lat": 40.7128, "lng": -74.0060, "name": "NYC Store", "value": 200000}
-  ]
-}"#
+{"title": "Store Locations", "markers": [
+  {"lat": 37.7749, "lng": -122.4194, "name": "SF Store", "value": 150000},
+  {"lat": 40.7128, "lng": -74.0060, "name": "NYC Store", "value": 200000}
+]}"#
     )]
     pub async fn render_map(
         &self,
         params: Parameters<RenderMapParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let data = validate_data_param(
-            &serde_json::to_value(params.0).map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INVALID_PARAMS,
-                    format!("Invalid parameters: {}", e),
-                    None,
-                )
-            })?,
-            false,
-        )?;
-
-        // Extract title and subtitle from data if provided
-        let title = data
-            .get("title")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Interactive Map");
-        let subtitle = data
-            .get("subtitle")
-            .and_then(|v| v.as_str())
-            .unwrap_or("Geographic data visualization");
-
-        // Convert the data to JSON string
-        let data_json = serde_json::to_string(&data).map_err(|e| {
-            ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                format!("Invalid JSON data: {}", e),
-                None,
-            )
-        })?;
-
-        // Load all resources at compile time using include_str!
-        const TEMPLATE: &str = include_str!("templates/map_template.html");
-        const LEAFLET_JS: &str = include_str!("templates/assets/leaflet.min.js");
-        const LEAFLET_CSS: &str = include_str!("templates/assets/leaflet.min.css");
-        const MARKERCLUSTER_JS: &str =
-            include_str!("templates/assets/leaflet.markercluster.min.js");
-
-        // Replace all placeholders with actual content
-        let html_content = TEMPLATE
-            .replace("{{LEAFLET_JS}}", LEAFLET_JS)
-            .replace("{{LEAFLET_CSS}}", LEAFLET_CSS)
-            .replace("{{MARKERCLUSTER_JS}}", MARKERCLUSTER_JS)
-            .replace("{{MAP_DATA}}", &data_json)
-            .replace("{{TITLE}}", title)
-            .replace("{{SUBTITLE}}", subtitle);
-
-        // Save to /tmp/map.html for debugging
-        let debug_path = std::path::Path::new("/tmp/map.html");
-        if let Err(e) = std::fs::write(debug_path, &html_content) {
-            tracing::warn!("Failed to write debug HTML to /tmp/map.html: {}", e);
-        } else {
-            tracing::info!("Debug HTML saved to /tmp/map.html");
+        let data = &params.0.data;
+        if data.markers.is_empty() {
+            return Err(invalid("Map requires at least one marker."));
         }
-
-        // Use BlobResourceContents with base64 encoding to avoid JSON string escaping issues
-        let html_bytes = html_content.as_bytes();
-        let base64_encoded = STANDARD.encode(html_bytes);
-
-        let resource_contents = ResourceContents::BlobResourceContents {
-            uri: "ui://map/visualization".to_string(),
-            mime_type: Some("text/html".to_string()),
-            blob: base64_encoded,
-            meta: None,
-        };
-
-        Ok(CallToolResult::success(vec![
-            Content::resource(resource_contents).with_audience(vec![Role::User]),
-            Content::text("Map rendered inline for the user.").with_audience(vec![Role::Assistant]),
-        ]))
+        check_limit(data.markers.len(), MAX_MARKERS, "markers")?;
+        for m in &data.markers {
+            if !m.lat.is_finite() || m.lat < -90.0 || m.lat > 90.0 {
+                return Err(invalid(format!(
+                    "Marker latitude {} is out of range (-90..90).",
+                    m.lat
+                )));
+            }
+            if !m.lng.is_finite() || m.lng < -180.0 || m.lng > 180.0 {
+                return Err(invalid(format!(
+                    "Marker longitude {} is out of range (-180..180).",
+                    m.lng
+                )));
+            }
+        }
+        let data_json = js_value(data)?;
+        render(
+            "ui://map/visualization",
+            "map",
+            "Map rendered inline for the user.",
+            include_str!("templates/map_template.html"),
+            &[Asset::Leaflet],
+            &[("{{MAP_DATA}}", &data_json)],
+        )
     }
 
     /// show a Mermaid diagram from Mermaid syntax
     #[tool(
         name = "render_mermaid",
-        description = r#"show a Mermaid diagram from Mermaid syntax
+        description = r#"show a Mermaid diagram from raw Mermaid syntax
 
 Provide the Mermaid code as a string. Supports flowcharts, sequence diagrams, Gantt charts, etc.
+For structured input, prefer the typed tools (render_flowchart, render_gantt, render_sequence, ...).
 
 Example:
 graph TD;
@@ -1011,41 +843,7 @@ graph TD;
         &self,
         params: Parameters<RenderMermaidParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let mermaid_code = params.0.mermaid_code;
-
-        // Load all resources at compile time using include_str!
-        const TEMPLATE: &str = include_str!("templates/mermaid_template.html");
-        const MERMAID_MIN: &str = include_str!("templates/assets/mermaid.min.js");
-
-        // Replace all placeholders with actual content
-        let html_content = TEMPLATE
-            .replace("{{MERMAID_MIN}}", MERMAID_MIN)
-            .replace("{{MERMAID_CODE}}", &mermaid_code);
-
-        // Save to /tmp/mermaid.html for debugging
-        let debug_path = std::path::Path::new("/tmp/mermaid.html");
-        if let Err(e) = std::fs::write(debug_path, &html_content) {
-            tracing::warn!("Failed to write debug HTML to /tmp/mermaid.html: {}", e);
-        } else {
-            tracing::info!("Debug HTML saved to /tmp/mermaid.html");
-        }
-
-        // Use BlobResourceContents with base64 encoding to avoid JSON string escaping issues
-        let html_bytes = html_content.as_bytes();
-        let base64_encoded = STANDARD.encode(html_bytes);
-
-        let resource_contents = ResourceContents::BlobResourceContents {
-            uri: "ui://mermaid/diagram".to_string(),
-            mime_type: Some("text/html".to_string()),
-            blob: base64_encoded,
-            meta: None,
-        };
-
-        Ok(CallToolResult::success(vec![
-            Content::resource(resource_contents).with_audience(vec![Role::User]),
-            Content::text("Mermaid diagram rendered inline for the user.")
-                .with_audience(vec![Role::Assistant]),
-        ]))
+        self.render_mermaid_source(&params.0.mermaid_code, "Mermaid Diagram")
     }
 
     /// show interactive line, scatter, or bar charts
@@ -1054,572 +852,84 @@ graph TD;
         description = r#"show interactive line, scatter, or bar charts
 
 Required: type ('line', 'scatter', or 'bar'), datasets array
-Optional: labels, title, subtitle, xAxisLabel, yAxisLabel, options
+Optional: labels, title, subtitle, xAxisLabel, yAxisLabel
 
 Example:
 {
   "type": "line",
   "title": "Monthly Sales",
   "labels": ["Jan", "Feb", "Mar"],
-  "datasets": [
-    {"label": "Product A", "data": [65, 59, 80]}
-  ]
+  "datasets": [{"label": "Product A", "data": [65, 59, 80]}]
 }"#
     )]
     pub async fn show_chart(
         &self,
         params: Parameters<ShowChartParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let data = validate_data_param(
-            &serde_json::to_value(params.0).map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INVALID_PARAMS,
-                    format!("Invalid parameters: {}", e),
-                    None,
-                )
-            })?,
-            false,
-        )?;
-
-        // Convert the data to JSON string
-        let data_json = serde_json::to_string(&data).map_err(|e| {
-            ErrorData::new(
-                ErrorCode::INVALID_PARAMS,
-                format!("Invalid JSON data: {}", e),
-                None,
-            )
-        })?;
-
-        // Load all resources at compile time using include_str!
-        const TEMPLATE: &str = include_str!("templates/chart_template.html");
-        const CHART_MIN: &str = include_str!("templates/assets/chart.min.js");
-
-        // Replace all placeholders with actual content
-        let html_content = TEMPLATE
-            .replace("{{CHART_MIN}}", CHART_MIN)
-            .replace("{{CHART_DATA}}", &data_json);
-
-        // Save to /tmp/chart.html for debugging
-        let debug_path = std::path::Path::new("/tmp/chart.html");
-        if let Err(e) = std::fs::write(debug_path, &html_content) {
-            tracing::warn!("Failed to write debug HTML to /tmp/chart.html: {}", e);
-        } else {
-            tracing::info!("Debug HTML saved to /tmp/chart.html");
+        let data = &params.0.data;
+        if data.datasets.is_empty() {
+            return Err(invalid("Chart requires at least one dataset."));
         }
+        let data_json = js_value(data)?;
+        render(
+            "ui://chart/interactive",
+            "chart",
+            "Chart rendered inline for the user.",
+            include_str!("templates/chart_template.html"),
+            &[Asset::ChartJs],
+            &[("{{CHART_DATA}}", &data_json)],
+        )
+    }
 
-        // Use BlobResourceContents with base64 encoding to avoid JSON string escaping issues
-        let html_bytes = html_content.as_bytes();
-        let base64_encoded = STANDARD.encode(html_bytes);
+    // -- internal helpers ---------------------------------------------------
 
-        let resource_contents = ResourceContents::BlobResourceContents {
-            uri: "ui://chart/interactive".to_string(),
-            mime_type: Some("text/html".to_string()),
-            blob: base64_encoded,
-            meta: None,
-        };
-
-        Ok(CallToolResult::success(vec![
-            Content::resource(resource_contents).with_audience(vec![Role::User]),
-            Content::text("Chart rendered inline for the user.")
-                .with_audience(vec![Role::Assistant]),
-        ]))
+    /// Render Mermaid source through the mermaid template (shared by every
+    /// Mermaid-backed tool). `source` is injected as a safely-escaped JS string.
+    fn render_mermaid_source(
+        &self,
+        source: &str,
+        title: &str,
+    ) -> Result<CallToolResult, ErrorData> {
+        let trimmed = source.trim();
+        if trimmed.is_empty() {
+            return Err(invalid("Mermaid diagram requires non-empty source."));
+        }
+        if trimmed.len() > MAX_MERMAID_LEN {
+            return Err(invalid(format!(
+                "Mermaid source is too large ({} bytes, max {MAX_MERMAID_LEN}).",
+                trimmed.len()
+            )));
+        }
+        let code_json = js_data(&Value::String(trimmed.to_string()))?;
+        render(
+            "ui://mermaid/diagram",
+            "mermaid",
+            "Diagram rendered inline for the user.",
+            include_str!("templates/mermaid_template.html"),
+            &[Asset::Mermaid],
+            &[
+                ("{{MERMAID_CODE}}", &code_json),
+                ("{{TITLE}}", &html_escape(title)),
+            ],
+        )
     }
 }
+
+/// Count nodes and maximum depth of a treemap tree.
+fn treemap_stats(node: &TreemapNode, depth: usize) -> (usize, usize) {
+    let mut count = 1;
+    let mut max_depth = depth;
+    if let Some(children) = &node.children {
+        for child in children {
+            let (c, d) = treemap_stats(child, depth + 1);
+            count += c;
+            max_depth = max_depth.max(d);
+        }
+    }
+    (count, max_depth)
+}
+
+include!("tools_extra.rs");
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use rmcp::handler::server::wrapper::Parameters;
-    use rmcp::model::RawContent;
-    use serde_json::json;
-
-    #[test]
-    fn test_validate_data_param_rejects_string() {
-        // Test that a string value for data is rejected
-        let params = json!({
-            "data": "{\"labels\": [\"A\", \"B\"], \"matrix\": [[0, 1], [1, 0]]}"
-        });
-
-        let result = validate_data_param(&params, false);
-        assert!(result.is_err());
-
-        let err = result.unwrap_err();
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-        assert!(err
-            .message
-            .contains("must be a JSON object, not a JSON string"));
-        assert!(err.message.contains("without comments"));
-    }
-
-    #[test]
-    fn test_validate_data_param_accepts_object() {
-        // Test that a proper object is accepted
-        let params = json!({
-            "data": {
-                "labels": ["A", "B"],
-                "matrix": [[0, 1], [1, 0]]
-            }
-        });
-
-        let result = validate_data_param(&params, false);
-        assert!(result.is_ok());
-
-        let data = result.unwrap();
-        assert!(data.is_object());
-        assert_eq!(data["labels"][0], "A");
-    }
-
-    #[test]
-    fn test_validate_data_param_rejects_array_when_not_allowed() {
-        // Test that an array is rejected when allow_array is false
-        let params = json!({
-            "data": [
-                {"label": "A", "value": 10},
-                {"label": "B", "value": 20}
-            ]
-        });
-
-        let result = validate_data_param(&params, false);
-        assert!(result.is_err());
-
-        let err = result.unwrap_err();
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-        assert!(err.message.contains("must be a JSON object"));
-    }
-
-    #[test]
-    fn test_validate_data_param_accepts_array_when_allowed() {
-        // Test that an array is accepted when allow_array is true
-        let params = json!({
-            "data": [
-                {"label": "A", "value": 10},
-                {"label": "B", "value": 20}
-            ]
-        });
-
-        let result = validate_data_param(&params, true);
-        assert!(result.is_ok());
-
-        let data = result.unwrap();
-        assert!(data.is_array());
-        assert_eq!(data[0]["label"], "A");
-    }
-
-    #[test]
-    fn test_validate_data_param_missing_data() {
-        // Test that missing data parameter is rejected
-        let params = json!({
-            "other": "value"
-        });
-
-        let result = validate_data_param(&params, false);
-        assert!(result.is_err());
-
-        let err = result.unwrap_err();
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-        assert!(err.message.contains("Missing 'data' parameter"));
-    }
-
-    #[test]
-    fn test_validate_data_param_rejects_primitive_values() {
-        // Test that primitive values (number, boolean) are rejected
-        let params_number = json!({
-            "data": 42
-        });
-
-        let result = validate_data_param(&params_number, false);
-        assert!(result.is_err());
-
-        let params_bool = json!({
-            "data": true
-        });
-
-        let result = validate_data_param(&params_bool, false);
-        assert!(result.is_err());
-
-        let params_null = json!({
-            "data": null
-        });
-
-        let result = validate_data_param(&params_null, false);
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_validate_data_param_with_json_containing_comments_as_string() {
-        // Test that JSON with comments passed as a string is rejected
-        let params = json!({
-            "data": r#"{
-                "labels": ["A", "B"],
-                "matrix": [
-                    [0, 1],  // This is a comment
-                    [1, 0]   /* Another comment */
-                ]
-            }"#
-        });
-
-        let result = validate_data_param(&params, false);
-        assert!(result.is_err());
-
-        let err = result.unwrap_err();
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-        assert!(err.message.contains("not a JSON string"));
-        assert!(err.message.contains("without comments"));
-    }
-
-    #[tokio::test]
-    async fn test_render_sankey() {
-        let router = AutoVisualiserRouter::new();
-        let params = Parameters(RenderSankeyParams {
-            data: SankeyData {
-                nodes: vec![
-                    SankeyNode {
-                        name: "A".to_string(),
-                        category: None,
-                    },
-                    SankeyNode {
-                        name: "B".to_string(),
-                        category: None,
-                    },
-                ],
-                links: vec![SankeyLink {
-                    source: "A".to_string(),
-                    target: "B".to_string(),
-                    value: 10.0,
-                }],
-            },
-        });
-
-        let result = router.render_sankey(params).await;
-        assert!(result.is_ok());
-        let tool_result = result.unwrap();
-        // Two items: user-audience resource for the UI + assistant-audience text for the model.
-        assert_eq!(tool_result.content.len(), 2);
-
-        // Check the audience is set to User
-        assert!(tool_result.content[0].audience().is_some());
-        assert_eq!(
-            tool_result.content[0].audience().unwrap(),
-            &vec![Role::User]
-        );
-
-        // Second item: assistant-audience confirmation text (prevents retry loops)
-        assert_eq!(
-            tool_result.content[1].audience().unwrap(),
-            &vec![Role::Assistant]
-        );
-        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
-
-        // Check it's a resource with HTML content
-        // Content is Annotated<RawContent>, access underlying RawContent via *
-        if let RawContent::Resource(resource) = &*tool_result.content[0] {
-            if let ResourceContents::BlobResourceContents { uri, mime_type, .. } =
-                &resource.resource
-            {
-                assert_eq!(uri, "ui://sankey/diagram");
-                assert_eq!(mime_type.as_ref().unwrap(), "text/html");
-            } else {
-                panic!("Expected BlobResourceContents");
-            }
-        } else {
-            panic!("Expected Resource content");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_render_radar() {
-        let router = AutoVisualiserRouter::new();
-        let params = Parameters(RenderRadarParams {
-            data: RadarData {
-                labels: vec![
-                    "Speed".to_string(),
-                    "Power".to_string(),
-                    "Agility".to_string(),
-                ],
-                datasets: vec![RadarDataset {
-                    label: "Player 1".to_string(),
-                    data: vec![80.0, 90.0, 85.0],
-                }],
-            },
-        });
-
-        let result = router.render_radar(params).await;
-        assert!(result.is_ok());
-        let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 2);
-
-        // Check the audience is set to User
-        assert!(tool_result.content[0].audience().is_some());
-        assert_eq!(
-            tool_result.content[0].audience().unwrap(),
-            &vec![Role::User]
-        );
-
-        assert_eq!(
-            tool_result.content[1].audience().unwrap(),
-            &vec![Role::Assistant]
-        );
-        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
-
-        // Check it's a resource with HTML content
-        // Content is Annotated<RawContent>, access underlying RawContent via *
-        if let RawContent::Resource(resource) = &*tool_result.content[0] {
-            if let ResourceContents::BlobResourceContents {
-                uri,
-                mime_type,
-                blob,
-                ..
-            } = &resource.resource
-            {
-                assert_eq!(uri, "ui://radar/chart");
-                assert_eq!(mime_type.as_ref().unwrap(), "text/html");
-                assert!(!blob.is_empty(), "HTML content should not be empty");
-            } else {
-                panic!("Expected BlobResourceContents");
-            }
-        } else {
-            panic!("Expected Resource content");
-        }
-    }
-
-    #[tokio::test]
-    async fn test_render_donut() {
-        let router = AutoVisualiserRouter::new();
-        let params = Parameters(RenderDonutParams {
-            data: DonutData {
-                data: DonutChartData::Single(SingleDonutChart {
-                    data: vec![
-                        DonutDataItem::Number(30.0),
-                        DonutDataItem::Number(40.0),
-                        DonutDataItem::Number(30.0),
-                    ],
-                    labels: Some(vec!["A".to_string(), "B".to_string(), "C".to_string()]),
-                    title: None,
-                    chart_type: None,
-                }),
-            },
-        });
-
-        let result = router.render_donut(params).await;
-        assert!(result.is_ok());
-        let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 2);
-
-        // Check the audience is set to User
-        assert!(tool_result.content[0].audience().is_some());
-        assert_eq!(
-            tool_result.content[0].audience().unwrap(),
-            &vec![Role::User]
-        );
-
-        assert_eq!(
-            tool_result.content[1].audience().unwrap(),
-            &vec![Role::Assistant]
-        );
-        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
-    }
-
-    #[tokio::test]
-    async fn test_render_treemap() {
-        let router = AutoVisualiserRouter::new();
-        let params = Parameters(RenderTreemapParams {
-            data: TreemapNode {
-                name: "root".to_string(),
-                value: None,
-                category: None,
-                children: Some(vec![
-                    TreemapNode {
-                        name: "A".to_string(),
-                        value: Some(100.0),
-                        category: Some("Type1".to_string()),
-                        children: None,
-                    },
-                    TreemapNode {
-                        name: "B".to_string(),
-                        value: Some(200.0),
-                        category: Some("Type2".to_string()),
-                        children: None,
-                    },
-                ]),
-            },
-        });
-
-        let result = router.render_treemap(params).await;
-        assert!(result.is_ok());
-        let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 2);
-
-        // Check the audience is set to User
-        assert!(tool_result.content[0].audience().is_some());
-        assert_eq!(
-            tool_result.content[0].audience().unwrap(),
-            &vec![Role::User]
-        );
-
-        assert_eq!(
-            tool_result.content[1].audience().unwrap(),
-            &vec![Role::Assistant]
-        );
-        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
-    }
-
-    #[tokio::test]
-    async fn test_render_chord() {
-        let router = AutoVisualiserRouter::new();
-        let params = Parameters(RenderChordParams {
-            data: ChordData {
-                labels: vec!["A".to_string(), "B".to_string(), "C".to_string()],
-                matrix: vec![
-                    vec![0.0, 10.0, 5.0],
-                    vec![10.0, 0.0, 15.0],
-                    vec![5.0, 15.0, 0.0],
-                ],
-            },
-        });
-
-        let result = router.render_chord(params).await;
-        assert!(result.is_ok());
-        let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 2);
-
-        // Check the audience is set to User
-        assert!(tool_result.content[0].audience().is_some());
-        assert_eq!(
-            tool_result.content[0].audience().unwrap(),
-            &vec![Role::User]
-        );
-
-        assert_eq!(
-            tool_result.content[1].audience().unwrap(),
-            &vec![Role::Assistant]
-        );
-        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
-    }
-
-    #[tokio::test]
-    async fn test_render_map() {
-        let router = AutoVisualiserRouter::new();
-        let params = Parameters(RenderMapParams {
-            data: MapData {
-                markers: vec![MapMarker {
-                    lat: 0.0,
-                    lng: 0.0,
-                    name: Some("Origin".to_string()),
-                    value: None,
-                    description: None,
-                    popup: None,
-                    color: None,
-                    label: None,
-                    use_default_icon: None,
-                }],
-                title: None,
-                subtitle: None,
-                center: None,
-                zoom: None,
-                clustering: None,
-                cluster_radius: None,
-                auto_fit: None,
-            },
-        });
-
-        let result = router.render_map(params).await;
-        assert!(result.is_ok());
-        let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 2);
-
-        // Check the audience is set to User
-        assert!(tool_result.content[0].audience().is_some());
-        assert_eq!(
-            tool_result.content[0].audience().unwrap(),
-            &vec![Role::User]
-        );
-
-        assert_eq!(
-            tool_result.content[1].audience().unwrap(),
-            &vec![Role::Assistant]
-        );
-        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
-    }
-
-    #[tokio::test]
-    async fn test_show_chart() {
-        let router = AutoVisualiserRouter::new();
-        let params = Parameters(ShowChartParams {
-            data: ChartData {
-                chart_type: ChartType::Scatter,
-                datasets: vec![ChartDataset {
-                    label: "Test Data".to_string(),
-                    data: ChartDataValues::Points(vec![
-                        ChartPoint { x: 1.0, y: 2.0 },
-                        ChartPoint { x: 2.0, y: 4.0 },
-                    ]),
-                    background_color: None,
-                    border_color: None,
-                    border_width: None,
-                    tension: None,
-                    fill: None,
-                }],
-                labels: None,
-                title: None,
-                subtitle: None,
-                x_axis_label: None,
-                y_axis_label: None,
-            },
-        });
-
-        let result = router.show_chart(params).await;
-        if let Err(e) = &result {
-            eprintln!("Error in test_show_chart: {:?}", e);
-        }
-        assert!(result.is_ok());
-        let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 2);
-
-        // Check the audience is set to User
-        assert!(tool_result.content[0].audience().is_some());
-        assert_eq!(
-            tool_result.content[0].audience().unwrap(),
-            &vec![Role::User]
-        );
-
-        assert_eq!(
-            tool_result.content[1].audience().unwrap(),
-            &vec![Role::Assistant]
-        );
-        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
-    }
-
-    #[tokio::test]
-    async fn test_render_mermaid() {
-        let router = AutoVisualiserRouter::new();
-        let params = Parameters(RenderMermaidParams {
-            mermaid_code: r#"graph TD;
-    A-->B;
-    A-->C;
-    B-->D;
-    C-->D;"#
-                .to_string(),
-        });
-
-        let result = router.render_mermaid(params).await;
-        if let Err(e) = &result {
-            eprintln!("Error in test_render_mermaid: {:?}", e);
-        }
-        assert!(result.is_ok());
-        let tool_result = result.unwrap();
-        assert_eq!(tool_result.content.len(), 2);
-
-        // Check the audience is set to User
-        assert!(tool_result.content[0].audience().is_some());
-        assert_eq!(
-            tool_result.content[0].audience().unwrap(),
-            &vec![Role::User]
-        );
-
-        assert_eq!(
-            tool_result.content[1].audience().unwrap(),
-            &vec![Role::Assistant]
-        );
-        assert!(matches!(&*tool_result.content[1], RawContent::Text(_)));
-    }
-}
+mod tests;

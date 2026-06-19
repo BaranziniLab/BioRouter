@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Interactive Map Visualization</title>
     
+    {{ASSETS}}
+    <script>{{COMMON}}</script>
     <style>
-        {{LEAFLET_CSS}}
         
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -114,14 +115,6 @@
     <div class="container">
         <div id="map"></div>
     </div>
-
-    <script>
-        {{LEAFLET_JS}}
-    </script>
-    
-    <script>
-        {{MARKERCLUSTER_JS}}
-    </script>
 
     <script>
         // Data from the tool

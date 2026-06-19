@@ -963,7 +963,7 @@ fn configure_builtin_extension() -> anyhow::Result<()> {
         (
             "autovisualiser",
             "Auto Visualiser",
-            "Data visualisation and UI generation tools",
+            "Interactive charts, diagrams, networks, maps & scientific plots",
         ),
         (
             "computercontroller",

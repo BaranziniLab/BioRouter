@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Volcano Plot</title>
+    {{ASSETS}}
+    <script>{{COMMON}}</script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
+        .container { max-width: 1000px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; }
+        .header { padding: 24px 30px 0; text-align: center; }
+        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
+        .chart-wrap { padding: 24px 30px 30px; position: relative; height: 520px; }
+    </style>
+</head>
+<body>
+    <div class="viz-root">
+        <div class="container">
+            <div class="header"><h1 id="title">Volcano Plot</h1></div>
+            <div class="chart-wrap"><canvas id="chart"></canvas></div>
+        </div>
+    </div>
+    <script>
+        const volcanoData = {{VOLCANO_DATA}};
+        BioRouterViz.autoResize();
+        BioRouterViz.guard(function () {
+            BioRouterViz.applyPageTheme();
+            BioRouterViz.applyChartDefaults();
+            if (volcanoData.title) document.getElementById('title').textContent = volcanoData.title;
+
+            const fcThr = (typeof volcanoData.fcThreshold === 'number') ? volcanoData.fcThreshold : 1.0;
+            const pThr = (typeof volcanoData.pThreshold === 'number') ? volcanoData.pThreshold : 1.301;
+            const UP = '#e74c3c', DOWN = '#3498db', NS = BioRouterViz.dark ? '#6b7280' : '#b9c0cc';
+
+            const pts = volcanoData.points.map(function (p) {
+                let cls = NS;
+                if (p.negLog10P >= pThr && p.log2fc >= fcThr) cls = UP;
+                else if (p.negLog10P >= pThr && p.log2fc <= -fcThr) cls = DOWN;
+                return { x: p.log2fc, y: p.negLog10P, _label: p.label, _c: cls };
+            });
+
+            const thresholdLines = {
+                id: 'thresholdLines',
+                afterDraw: function (chart) {
+                    const ctx = chart.ctx, xs = chart.scales.x, ys = chart.scales.y;
+                    ctx.save();
+                    ctx.strokeStyle = BioRouterViz.colors.muted;
+                    ctx.setLineDash([5, 4]);
+                    ctx.lineWidth = 1;
+                    [fcThr, -fcThr].forEach(function (v) {
+                        const px = xs.getPixelForValue(v);
+                        ctx.beginPath(); ctx.moveTo(px, ys.top); ctx.lineTo(px, ys.bottom); ctx.stroke();
+                    });
+                    const py = ys.getPixelForValue(pThr);
+                    ctx.beginPath(); ctx.moveTo(xs.left, py); ctx.lineTo(xs.right, py); ctx.stroke();
+                    ctx.restore();
+                }
+            };
+
+            new Chart(document.getElementById('chart').getContext('2d'), {
+                type: 'scatter',
+                data: { datasets: [{
+                    label: 'features',
+                    data: pts,
+                    pointBackgroundColor: pts.map(function (p) { return p._c; }),
+                    pointBorderColor: pts.map(function (p) { return p._c; }),
+                    pointRadius: 4, pointHoverRadius: 6
+                }] },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: { callbacks: { label: function (ctx) {
+                            const p = ctx.raw;
+                            return (p._label ? p._label + ' — ' : '') + 'log2FC=' + p.x + ', -log10p=' + p.y;
+                        } } }
+                    },
+                    scales: {
+                        x: { title: { display: true, text: 'log2 fold-change' }, grid: { color: BioRouterViz.colors.grid } },
+                        y: { title: { display: true, text: '-log10(p)' }, beginAtZero: true, grid: { color: BioRouterViz.colors.grid } }
+                    }
+                },
+                plugins: [thresholdLines]
+            });
+            BioRouterViz.reportSize();
+        });
+    </script>
+</body>
+</html>

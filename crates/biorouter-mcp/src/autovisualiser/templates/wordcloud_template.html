@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Word Cloud</title>
+    {{ASSETS}}
+    <script>{{COMMON}}</script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
+        .container { max-width: 960px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; }
+        .header { padding: 20px 30px 0; text-align: center; }
+        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
+        #chart { display: block; margin: 0 auto; }
+        .tooltip { position: absolute; background: var(--text); color: var(--surface); padding: 6px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; opacity: 0; z-index: 10; }
+    </style>
+</head>
+<body>
+    <div class="viz-root">
+        <div class="container">
+            <div class="header"><h1 id="title">Word Cloud</h1></div>
+            <svg id="chart"></svg>
+        </div>
+    </div>
+    <div class="tooltip" id="tooltip"></div>
+    <script>
+        // Self-contained spiral word-cloud layout (no external d3-cloud dependency).
+        const wordcloudData = {{WORDCLOUD_DATA}};
+        BioRouterViz.autoResize();
+        BioRouterViz.guard(function () {
+            BioRouterViz.applyPageTheme();
+            if (wordcloudData.title) document.getElementById('title').textContent = wordcloudData.title;
+
+            const W = 900, H = 520;
+            const svg = d3.select('#chart').attr('width', W).attr('height', H);
+            const g = svg.append('g').attr('transform', 'translate(' + W / 2 + ',' + H / 2 + ')');
+            const tooltip = d3.select('#tooltip');
+
+            const words = wordcloudData.words.filter(function (w) { return w.text && isFinite(w.weight); })
+                .slice().sort(function (a, b) { return b.weight - a.weight; });
+            if (!words.length) throw new Error('No valid words.');
+            const wmin = d3.min(words, function (w) { return w.weight; });
+            const wmax = d3.max(words, function (w) { return w.weight; });
+            const fs = d3.scaleSqrt().domain([wmin, wmax]).range([13, 64]);
+
+            const ctx = document.createElement('canvas').getContext('2d');
+            const placed = [];
+            function collides(box) {
+                for (let i = 0; i < placed.length; i++) {
+                    const p = placed[i];
+                    if (Math.abs(box.x - p.x) * 2 < (box.w + p.w) && Math.abs(box.y - p.y) * 2 < (box.h + p.h)) return true;
+                }
+                return false;
+            }
+            words.forEach(function (w, i) {
+                const size = fs(w.weight);
+                ctx.font = '600 ' + size + 'px sans-serif';
+                const tw = ctx.measureText(w.text).width + 6;
+                const th = size + 4;
+                // Archimedean spiral search for a non-overlapping spot.
+                let angle = 0, x = 0, y = 0, found = false;
+                for (let step = 0; step < 4000; step++) {
+                    const r = 2 + 4 * angle;
+                    x = r * Math.cos(angle);
+                    y = r * Math.sin(angle);
+                    angle += 0.18;
+                    const box = { x: x, y: y, w: tw, h: th };
+                    if (Math.abs(x) + tw / 2 > W / 2 || Math.abs(y) + th / 2 > H / 2) continue;
+                    if (!collides(box)) { placed.push(box); found = true; break; }
+                }
+                if (!found) return;
+                g.append('text')
+                    .attr('x', x).attr('y', y).attr('text-anchor', 'middle').attr('dy', '0.35em')
+                    .style('font-size', size + 'px').style('font-weight', 600)
+                    .style('fill', BioRouterViz.palette[i % BioRouterViz.palette.length])
+                    .style('cursor', 'default')
+                    .text(w.text)
+                    .on('mouseover', function (event) {
+                        tooltip.style('opacity', 1).html('<strong>' + w.text + '</strong>: ' + w.weight)
+                            .style('left', (event.pageX + 12) + 'px').style('top', (event.pageY - 10) + 'px');
+                    })
+                    .on('mouseout', function () { tooltip.style('opacity', 0); });
+            });
+            BioRouterViz.reportSize();
+        });
+    </script>
+</body>
+</html>
