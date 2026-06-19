@@ -18,7 +18,7 @@ export const SpellcheckToggle = () => {
   };
 
   return (
-    <div className="flex items-center justify-between py-4">
+    <div className="flex items-center justify-between py-3">
       <div>
         <p className="text-sm font-medium text-text-default">Enable Spellcheck</p>
         <p className="text-xs text-text-muted mt-0.5 max-w-md">

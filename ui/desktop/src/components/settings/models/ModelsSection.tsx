@@ -80,12 +80,12 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
   }, [currentModel, currentProvider, loadModelData]);
 
   return (
-    <section id="models" className="space-y-10 pb-8">
+    <section id="models" className="space-y-8 pb-8">
       <div>
         <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
           Current Model
         </h2>
-        <div className="border-t border-border-subtle pt-4">
+        <div className="border-t border-border-subtle pt-3">
           {isLoading ? (
             <>
               <div className="h-5 mb-1.5 bg-background-medium rounded w-48 animate-pulse"></div>
@@ -102,10 +102,8 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
       </div>
 
       <div>
-        <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
-          Reset
-        </h2>
-        <div className="border-t border-border-subtle pt-4">
+        <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">Reset</h2>
+        <div className="border-t border-border-subtle pt-3">
           <ResetProviderSection setView={setView} />
         </div>
       </div>

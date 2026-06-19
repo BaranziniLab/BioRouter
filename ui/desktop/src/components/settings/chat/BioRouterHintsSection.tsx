@@ -9,7 +9,7 @@ export const BioRouterHintsSection = () => {
 
   return (
     <>
-      <div className="flex items-center justify-between py-4">
+      <div className="flex items-center justify-between py-3">
         <div className="flex-1">
           <p className="text-sm font-medium text-text-default">Project Hints (.biorouterhints)</p>
           <p className="text-xs text-text-muted mt-0.5">

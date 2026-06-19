@@ -121,7 +121,7 @@ export default function SettingsView({
                     <ChatSettingsSection />
                   </TabsContent>
                   <TabsContent value="app" className="mt-0 focus-visible:outline-none">
-                    <div className="space-y-10">
+                    <div className="space-y-8">
                       {CONFIGURATION_ENABLED && <ConfigSettings />}
                       <AppSettingsSection scrollToSection={viewOptions.section} />
                     </div>

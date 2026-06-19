@@ -7,7 +7,7 @@ export default function BuiltInBadge({
 }) {
   return (
     <span
-      className="text-[11px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-background-info/20 text-text-muted flex-shrink-0"
+      className="text-[11px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-background-strong text-text-default flex-shrink-0"
       title={title}
     >
       Built-in
