@@ -105,6 +105,7 @@ pub struct SankeyData {
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderSankeyParams {
     /// The data for the Sankey diagram
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: SankeyData,
 }
 
@@ -130,6 +131,7 @@ pub struct RadarData {
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderRadarParams {
     /// The data for the radar chart
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: RadarData,
 }
 
@@ -179,6 +181,7 @@ pub enum DonutChartData {
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct DonutData {
     /// The chart data (single or multiple charts)
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: DonutChartData,
 }
 
@@ -210,6 +213,7 @@ pub struct TreemapNode {
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderTreemapParams {
     /// The hierarchical data for the treemap
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: TreemapNode,
 }
 
@@ -226,6 +230,7 @@ pub struct ChordData {
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderChordParams {
     /// The data for the chord diagram
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: ChordData,
 }
 
@@ -303,6 +308,7 @@ pub struct MapData {
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderMapParams {
     /// The data for the map visualization
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: MapData,
 }
 
@@ -383,6 +389,7 @@ pub struct ChartData {
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct ShowChartParams {
     /// The data for the chart
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: ChartData,
 }
 

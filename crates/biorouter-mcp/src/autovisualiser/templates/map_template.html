@@ -264,8 +264,17 @@
         
         // Initialize everything when page loads
         window.addEventListener('load', function() {
-            initMap();
-            renderMarkers();
+            BioRouterViz.autoResize();
+            BioRouterViz.guard(function () {
+                initMap();
+                renderMarkers();
+                // Leaflet needs a redraw once it knows its real size, and the
+                // iframe needs the reported height so its dimensions match the map.
+                setTimeout(function () {
+                    if (map) map.invalidateSize();
+                    BioRouterViz.reportSize();
+                }, 200);
+            });
         });
     </script>
 </body>

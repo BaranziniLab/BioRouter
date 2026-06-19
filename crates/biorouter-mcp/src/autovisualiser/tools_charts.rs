@@ -25,6 +25,7 @@ pub struct HistogramData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderHistogramParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: HistogramData,
 }
 
@@ -68,6 +69,7 @@ pub struct BubbleData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderBubbleParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: BubbleData,
 }
 
@@ -103,6 +105,7 @@ pub struct AreaData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderAreaParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: AreaData,
 }
 
@@ -138,6 +141,7 @@ pub struct GaugeData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderGaugeParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: GaugeData,
 }
 
@@ -172,6 +176,7 @@ pub struct VolcanoData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderVolcanoParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: VolcanoData,
 }
 
@@ -204,6 +209,7 @@ pub struct ManhattanData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderManhattanParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: ManhattanData,
 }
 

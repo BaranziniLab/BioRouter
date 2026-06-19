@@ -49,6 +49,7 @@ pub struct NetworkData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderNetworkParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: NetworkData,
 }
 
@@ -74,6 +75,7 @@ pub struct HeatmapData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderHeatmapParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: HeatmapData,
 }
 
@@ -82,12 +84,14 @@ pub struct RenderHeatmapParams {
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderSunburstParams {
     /// Hierarchical root: {name, value?, children?, category?}
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: TreemapNode,
 }
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderDendrogramParams {
     /// Hierarchical root: {name, value?, children?, category?}
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: TreemapNode,
 }
 
@@ -111,6 +115,7 @@ pub struct CalendarData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderCalendarParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: CalendarData,
 }
 
@@ -136,6 +141,7 @@ pub struct BoxplotData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderBoxplotParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: BoxplotData,
 }
 
@@ -159,6 +165,7 @@ pub struct WordCloudData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderWordcloudParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: WordCloudData,
 }
 
@@ -199,6 +206,7 @@ pub struct KaplanMeierData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderKaplanMeierParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: KaplanMeierData,
 }
 
@@ -237,6 +245,7 @@ pub struct ForestData {
 
 #[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
 pub struct RenderForestParams {
+    #[serde(deserialize_with = "common::de_flexible")]
     pub data: ForestData,
 }
 
