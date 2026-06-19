@@ -3442,6 +3442,88 @@ async function appMain() {
     }
   });
 
+  // A single shared `biorouter acp --ws` sidecar that standalone artifact
+  // windows connect to, so an agentic artifact's chat genuinely answers
+  // (instead of the in-chat preview's bridge mode, which routes to the host).
+  const ACP_WS_ADDR = '127.0.0.1:11577';
+  let acpWsSidecar: import('child_process').ChildProcess | null = null;
+  let acpWsCleanupRegistered = false;
+  const ensureAcpWsServer = () => {
+    if (acpWsSidecar && acpWsSidecar.exitCode === null) return;
+    try {
+      const cli = getBiorouterCliBinaryPath(app);
+      acpWsSidecar = spawn(cli, ['acp', '--ws', ACP_WS_ADDR], { stdio: 'ignore' });
+      acpWsSidecar.on('exit', () => {
+        acpWsSidecar = null;
+      });
+      if (!acpWsCleanupRegistered) {
+        acpWsCleanupRegistered = true;
+        app.on('before-quit', () => {
+          try {
+            acpWsSidecar?.kill();
+          } catch {
+            // best-effort
+          }
+        });
+      }
+      console.log('Started ACP WebSocket sidecar for artifacts on', ACP_WS_ADDR);
+    } catch (e) {
+      console.error('Failed to start ACP WebSocket sidecar:', e);
+    }
+  };
+
+  // Open an Agent Drafter artifact's HTML in a large standalone window so the
+  // user can view/interact with it full-size without exporting. The HTML is
+  // self-contained; it runs sandboxed (no node, isolated context). For agentic
+  // artifacts we start the ACP WebSocket sidecar and rewrite the runtime to use
+  // it, so the embedded agent actually responds inside the window.
+  ipcMain.handle(
+    'open-artifact-window',
+    async (
+      _event,
+      payload: { html: string; title?: string; width?: number; height?: number }
+    ) => {
+      try {
+        let html = payload.html;
+        const isAgentic = html.includes('"transport":"bridge"');
+        if (isAgentic) {
+          ensureAcpWsServer();
+          const endpoint = `ws://${ACP_WS_ADDR}/acp`;
+          html = html
+            .replace('"transport":"bridge"', '"transport":"acp-ws"')
+            .replace('"endpoint":null', `"endpoint":${JSON.stringify(endpoint)}`);
+        }
+
+        const win = new BrowserWindow({
+          title: payload.title || 'BioRouter Artifact',
+          width: Math.min(Math.max(payload.width || 1000, 480), 1600),
+          height: Math.min(Math.max(payload.height || 760, 360), 1200),
+          resizable: true,
+          backgroundColor: '#ffffff',
+          webPreferences: {
+            nodeIntegration: false,
+            contextIsolation: true,
+            sandbox: true,
+            webSecurity: true,
+          },
+        });
+        // Route external links to the system browser; keep the artifact in-window.
+        win.webContents.setWindowOpenHandler(({ url }) => {
+          if (/^https?:\/\//.test(url)) {
+            shell.openExternal(url);
+          }
+          return { action: 'deny' };
+        });
+        const dataUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
+        await win.loadURL(dataUrl);
+        return { ok: true };
+      } catch (error) {
+        console.error('Error opening artifact window:', error);
+        return { ok: false };
+      }
+    }
+  );
+
   ipcMain.handle('launch-app', async (event, biorouterApp: BioRouterApp) => {
     try {
       const launchingWindow = BrowserWindow.fromWebContents(event.sender);

@@ -263,6 +263,8 @@ mod tests {
             } else {
                 None
             },
+            width: None,
+            height: None,
         }
     }
 

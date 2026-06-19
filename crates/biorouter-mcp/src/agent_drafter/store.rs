@@ -57,6 +57,13 @@ pub struct Manifest {
     pub updated_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent: Option<AgentConfig>,
+    /// Preferred preview width in CSS px (None → fill the panel).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    /// Preferred preview height in CSS px (None → a comfortable default that
+    /// then auto-grows to fit content).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
 }
 
 fn now_secs() -> u64 {
@@ -182,6 +189,8 @@ impl ArtifactStore {
             } else {
                 None
             },
+            width: None,
+            height: None,
         };
         self.save_manifest(&manifest)?;
         for (path, content) in files {

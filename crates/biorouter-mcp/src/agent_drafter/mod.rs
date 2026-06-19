@@ -67,6 +67,18 @@ pub struct CreateArtifactParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetArtifactSizeParams {
+    /// Artifact id.
+    pub id: String,
+    /// Preferred preview width in CSS px. Omit/null to fill the panel.
+    #[serde(default)]
+    pub width: Option<u32>,
+    /// Preferred preview height in CSS px. Omit/null for the auto-growing default.
+    #[serde(default)]
+    pub height: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct UpdateArtifactParams {
     /// Artifact id.
     pub id: String,
@@ -211,9 +223,21 @@ impl AgentDrafterServer {
             Tech stack & conventions (keep artifacts consistent):
             - One entry file, "index.html", plus optional CSS/JS files.
             - The BioRouter design system is injected automatically at preview/export
-              time — use the provided classes (br-container, br-card, br-btn,
-              br-input, br-textarea, br-badge, br-chat) rather than reinventing
-              styling. Do NOT paste your own <style> theme; rely on the system.
+              time and mirrors the app's own look (warm neutral palette, white
+              cards with a soft shadow, a restrained near-black accent, thin
+              borders, 6px/12px radii, system font). ALWAYS compose with the
+              provided classes — `br-container` (page wrapper), `br-card`,
+              `br-btn` (+ `br-btn--secondary`, `br-btn--ghost`), `br-input`,
+              `br-textarea`, `br-label`, `br-field`, `br-row`, `br-badge`,
+              `br-chat` — and the CSS variables (`var(--br-text)`,
+              `var(--br-text-muted)`, `var(--br-accent)`, `var(--br-border)`,
+              etc.). Do NOT paste your own colors, fonts, or a <style> theme and
+              do NOT pull in external CSS frameworks — rely on the system so the
+              artifact looks native to BioRouter, not generic.
+            - Sizing: previews fill the panel width and auto-grow in height. For
+              wide layouts (dashboards, side-by-side panels) call
+              `set_artifact_size` with a larger width like 1000 so the user gets
+              room to work; omit a dimension to fill/auto-grow.
             - For agentic artifacts you do not need to write any networking code:
               call `add_agent_capability` and the runtime (`window.BioRouterAgent`)
               plus a chat panel are wired in for you. To place the chat yourself,
@@ -253,11 +277,29 @@ impl AgentDrafterServer {
             .map_err(|e| err(ErrorCode::INTERNAL_ERROR, format!("read entry: {e}")))?;
         let html = render::assemble_preview(manifest, &entry_html);
         let blob = STANDARD.encode(html.as_bytes());
+
+        // Tell the host (MCP-UI) the preferred frame size. Width fills the panel
+        // unless the agent pinned one; height defaults comfortably and then
+        // auto-grows (the runtime posts `ui-size-change`).
+        let width_css = manifest
+            .width
+            .map(|w| format!("{w}px"))
+            .unwrap_or_else(|| "100%".to_string());
+        let height_css = manifest
+            .height
+            .map(|h| format!("{h}px"))
+            .unwrap_or_else(|| "560px".to_string());
+        let mut meta_obj = serde_json::Map::new();
+        meta_obj.insert(
+            "mcpui.dev/ui-preferred-frame-size".to_string(),
+            serde_json::json!([width_css, height_css]),
+        );
+
         let resource = ResourceContents::BlobResourceContents {
             uri: format!("ui://agent-drafter/{}", manifest.id),
             mime_type: Some("text/html".to_string()),
             blob,
-            meta: None,
+            meta: Some(rmcp::model::Meta(meta_obj)),
         };
         Ok(CallToolResult::success(vec![
             Content::resource(resource).with_audience(vec![Role::User]),
@@ -308,6 +350,31 @@ impl AgentDrafterServer {
             &format!(
                 "Created {kind:?} artifact '{}' (id: {}). Preview shown to the user.",
                 manifest.title, manifest.id
+            ),
+        )
+    }
+
+    #[tool(
+        name = "set_artifact_size",
+        description = "Set an artifact's preferred preview size in CSS px (width/height). Use a larger size for dashboards or wide layouts; omit a value to fill the panel / auto-grow."
+    )]
+    pub async fn set_artifact_size(
+        &self,
+        params: Parameters<SetArtifactSizeParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let store = self.store();
+        let mut manifest = store
+            .load_manifest(&p.id)
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no artifact '{}'", p.id)))?;
+        manifest.width = p.width;
+        manifest.height = p.height;
+        store.save_manifest(&manifest).map_err(internal)?;
+        self.preview_result(
+            &manifest,
+            &format!(
+                "Set preview size for '{}' (width: {:?}, height: {:?}).",
+                p.id, p.width, p.height
             ),
         )
     }
@@ -622,6 +689,40 @@ mod tests {
         // Persisted entry uses the BioRouter starter (design-system classes).
         let html = s.store().read_file("dashboard", "index.html").unwrap();
         assert!(html.contains("br-container"));
+    }
+
+    #[tokio::test]
+    async fn set_artifact_size_persists_and_previews() {
+        let (_d, s) = server();
+        s.create_artifact(Parameters(CreateArtifactParams {
+            title: "Wide".into(),
+            description: String::new(),
+            kind: Some("agentic".into()),
+            html: None,
+            files: vec![],
+        }))
+        .await
+        .unwrap();
+        let res = s
+            .set_artifact_size(Parameters(SetArtifactSizeParams {
+                id: "wide".into(),
+                width: Some(1000),
+                height: None,
+            }))
+            .await
+            .unwrap();
+        assert!(has_ui_resource(&res));
+        let m = s.store().load_manifest("wide").unwrap();
+        assert_eq!(m.width, Some(1000));
+        assert_eq!(m.height, None);
+        assert!(s
+            .set_artifact_size(Parameters(SetArtifactSizeParams {
+                id: "nope".into(),
+                width: Some(1),
+                height: None,
+            }))
+            .await
+            .is_err());
     }
 
     #[tokio::test]

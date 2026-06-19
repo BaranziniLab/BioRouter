@@ -128,8 +128,27 @@
   };
   window.BioRouterAgent = Agent;
 
+  // --- Auto-resize: report content height to the BioRouter host iframe --------
+  function reportSize() {
+    var h = Math.max(
+      document.documentElement.scrollHeight,
+      document.body ? document.body.scrollHeight : 0
+    );
+    try {
+      window.parent.postMessage({ type: "ui-size-change", payload: { height: h } }, "*");
+    } catch (e) { /* not embedded */ }
+  }
+  Agent.reportSize = reportSize;
+
   // --- Optional auto-mounted chat panel ---------------------------------------
   function mountChat() {
+    if (typeof ResizeObserver !== "undefined") {
+      var ro = new ResizeObserver(function () { reportSize(); });
+      ro.observe(document.documentElement);
+    }
+    window.addEventListener("load", reportSize);
+    setTimeout(reportSize, 60);
+
     var host = document.querySelector("[data-br-chat]");
     if (!host) return;
     host.classList.add("br-chat");
@@ -142,21 +161,35 @@
 
     function add(cls, text) {
       var el = document.createElement("div"); el.className = "br-msg br-msg--" + cls; el.textContent = text;
-      log.appendChild(el); log.scrollTop = log.scrollHeight; return el;
+      log.appendChild(el); log.scrollTop = log.scrollHeight; reportSize(); return el;
     }
     if (cfg.greeting) add("agent", cfg.greeting);
 
-    var current = null;
-    Agent.on("message", function (m) { if (!current) current = add("agent", ""); current.textContent += (m.delta || m.note || ""); log.scrollTop = log.scrollHeight; });
+    var current = null, typing = null;
+    function clearTyping() { if (typing) { typing.remove(); typing = null; } }
+    function showTyping() {
+      clearTyping();
+      typing = document.createElement("div");
+      typing.className = "br-msg br-msg--agent";
+      typing.innerHTML = '<span class="br-typing"><span></span><span></span><span></span></span>';
+      log.appendChild(typing); log.scrollTop = log.scrollHeight; reportSize();
+    }
+
+    Agent.on("message", function (m) {
+      clearTyping();
+      if (!current) current = add("agent", "");
+      current.textContent += (m.delta || m.note || "");
+      log.scrollTop = log.scrollHeight; reportSize();
+    });
     Agent.on("thought", function (m) { add("thought", m.delta || ""); });
     Agent.on("tool", function (u) { add("tool", "⚙ " + (u.title || u.toolCallId || "tool")); });
-    Agent.on("error", function () { add("agent", "⚠ Could not reach the agent."); });
+    Agent.on("error", function () { clearTyping(); add("agent", "⚠ Could not reach the agent."); });
 
     form.addEventListener("submit", function (e) {
       e.preventDefault();
       var text = input.value.trim(); if (!text) return;
-      add("user", text); input.value = ""; current = null;
-      Agent.prompt(text).catch(function () { add("agent", "⚠ Failed to send."); });
+      add("user", text); input.value = ""; current = null; showTyping();
+      Agent.prompt(text).catch(function () { clearTyping(); add("agent", "⚠ Failed to send."); });
     });
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mountChat);
