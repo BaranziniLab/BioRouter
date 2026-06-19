@@ -1,0 +1,17 @@
+[package]
+name = "algo-graph-toolkit-rs"
+version = "0.1.0"
+edition = "2021"
+description = "A graph-algorithms toolkit library and CLI in Rust"
+license = "MIT"
+
+[[bench]]
+name = "graph_benchmarks"
+harness = false
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
