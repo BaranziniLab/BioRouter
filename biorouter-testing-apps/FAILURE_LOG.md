@@ -152,3 +152,16 @@ actionable issues every 5 apps (see `ISSUES/`).
   correctly extended them (compare subcommand + ANSI colors) with tests still
   green and coherent incremental commits. Iteration fidelity good despite no prior
   chat history — MiMo reorients from the codebase well.
+
+### Cross-cutting — Keychain/keyring transient failure (dev-workflow gotcha)
+- 🐛 Apps 14 & 15 failed instantly with `Configuration value not found:
+  XIAOMI_MIMO_API_KEY` (keyring read). Root: macOS **locks the keychain** after
+  inactivity, and rebuilding the CLI mid-loop (`cargo build`, ad-hoc signature)
+  can also invalidate the "Always Allow" ACL. A subsequent read then fails with no
+  GUI prompt to answer in headless mode → the whole build aborts at turn 0.
+- ✅ It recovered on its own once the keychain was accessible again (smoke test
+  passed). **Lessons:** (a) after any CLI rebuild, re-sign with the stable
+  Developer ID (`just sign-dev-binaries debug` / `just copy-binary`) so the grant
+  survives — CLAUDE.md documents this; (b) a headless keyring-read failure should
+  ideally degrade more gracefully (clear one-line cause + which env var to set),
+  and (c) it argues for `XIAOMI_MIMO_API_KEY` via env for long unattended runs.
