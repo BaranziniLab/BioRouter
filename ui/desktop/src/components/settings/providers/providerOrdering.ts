@@ -14,6 +14,8 @@ const PRIORITY_ORDER: Record<string, number> = {
   anthropic: 2,
   openai: 3,
   google: 4,
+  zai: 5,
+  xiaomi_mimo: 6,
 };
 
 export type ProviderGroupKey = 'institutional' | 'local' | 'commercial';

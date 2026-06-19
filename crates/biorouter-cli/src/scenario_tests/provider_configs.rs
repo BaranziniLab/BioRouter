@@ -97,6 +97,8 @@ static PROVIDER_CONFIGS: LazyLock<Vec<ProviderConfig>> = LazyLock::new(|| {
         ProviderConfig::simple_skip("snowflake", "claude-3-7-sonnet", Some("No keys available")),
         ProviderConfig::simple_skip("venice", "llama-3.3-70b", Some("No keys available")),
         ProviderConfig::simple_skip("xai", "grok-3", Some("No keys available")),
+        ProviderConfig::simple_skip("zai", "glm-4.6", Some("No keys available")),
+        ProviderConfig::simple_skip("xiaomi_mimo", "mimo-v2.5", Some("No keys available")),
     ]
 });
 
