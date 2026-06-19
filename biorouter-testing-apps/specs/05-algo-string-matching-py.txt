@@ -1,0 +1,12 @@
+Build a string-matching and text-indexing library + CLI in Python.
+
+Scope:
+- Exact matching: naive, Knuth-Morris-Pratt, Boyer-Moore (bad-char + good-suffix), Rabin-Karp (with rolling hash), and a finite-automaton matcher.
+- Multi-pattern: Aho-Corasick automaton.
+- Indexing: suffix array (with LCP) and a Z-algorithm; longest-common-substring and longest-repeated-substring utilities.
+- Approximate matching: edit-distance (Levenshtein) and a k-mismatch search.
+- A CLI: search a pattern (or pattern file) in a text file, choose the algorithm, and report match positions + a count + timing; plus a 'compare' mode benchmarking algorithms on the same input.
+- pytest suite with correctness tests (cross-checking algorithms against each other on random inputs) and edge cases (empty, no-match, overlapping matches, unicode).
+- pyproject.toml/requirements.txt, README with algorithm notes + complexity table.
+
+Modules: exact/, multi.py, index.py, approx.py, cli.py, bench.py. Run pytest yourself and ensure all tests pass.

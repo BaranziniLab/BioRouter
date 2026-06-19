@@ -1,0 +1,57 @@
+# bio-seq-align
+
+A pure-Python biological sequence alignment toolkit.
+
+## Features
+
+| Algorithm | Module | Gap model |
+|---|---|---|
+| Needleman-Wunsch (global) | `align.nw` | linear |
+| Smith-Waterman (local) | `align.sw` | linear |
+| Gotoh (affine gap) | `align.gotoh` | affine |
+| Banded alignment | `align.banded` | linear |
+| Semi-global / overlap | `align.semi_global` | linear |
+| Progressive MSA | `msa` | linear |
+
+Plus: BLOSUM62 & simple match/mismatch matrices, FASTA I/O,
+colored CLI output, identity/score stats, and a comprehensive
+pytest suite.
+
+## Quick start
+
+```bash
+pip install -e .
+bio-seq-align --seq1 ACDEFG --seq2 ACDEFG
+bio-seq-align --fasta sequences.fasta --algo nw
+```
+
+## Running tests
+
+```bash
+pip install -e .
+pytest -v
+```
+
+## Project layout
+
+```
+src/bio_seq_align/
+  align/
+    __init__.py
+    result.py        # AlignmentResult dataclass
+    nw.py            # Needleman-Wunsch
+    sw.py            # Smith-Waterman
+    gotoh.py         # Gotoh affine gap
+    banded.py        # Banded alignment
+    semi_global.py   # Semi-global / overlap
+  matrices.py        # Substitution matrices
+  fasta.py           # FASTA parser/writer
+  msa.py             # Progressive multiple sequence alignment
+  cli.py             # Command-line interface
+tests/
+  ...
+```
+
+## License
+
+MIT

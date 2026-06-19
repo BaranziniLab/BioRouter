@@ -1,0 +1,11 @@
+Build a balanced binary-search-tree library in modern C++ (C++17).
+
+Scope:
+- A generic BST interface and three implementations: unbalanced BST, AVL tree, and red-black tree, each supporting insert, delete, find, min/max, successor/predecessor, in-order iteration, height, and size.
+- Templated on key/value with a comparator.
+- A verification harness that checks invariants after every operation (BST order, AVL balance factor, red-black properties).
+- A benchmark comparing the three across random/sorted insertion and lookup workloads.
+- Unit tests (a small assertion-based test framework or Catch2-style header) covering rotations, rebalancing, deletion cases, and stress tests with thousands of random ops.
+- CMakeLists.txt building a library + test + benchmark executables. README explaining the structures and their guarantees.
+
+Split into headers/sources (bst.hpp, avl, rbtree, verify, bench). Ensure it builds with cmake and the tests pass.

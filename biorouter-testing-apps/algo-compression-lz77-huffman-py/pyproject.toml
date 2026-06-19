@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "deflate-lite"
+version = "0.1.0"
+description = "A compression toolkit implementing LZ77 + Huffman (DEFLATE-lite) in pure Python."
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+authors = [
+    {name = "Wanjun Gu", email = "wanjun.gu@ucsf.edu"},
+]
+keywords = ["compression", "lz77", "huffman", "deflate"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: System :: Archiving :: Compression",
+]
+
+[project.scripts]
+deflate-lite = "deflate_lite.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

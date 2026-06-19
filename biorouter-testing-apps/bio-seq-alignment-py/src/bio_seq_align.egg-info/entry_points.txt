@@ -1,0 +1,2 @@
+[console_scripts]
+bio-seq-align = bio_seq_align.cli:main
