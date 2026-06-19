@@ -114,7 +114,7 @@ fn find_first_method_in_class(
     max_depth: usize,
 ) -> Option<String> {
     for i in 0..class_node.child_count() {
-        if let Some(child) = class_node.child(i) {
+        if let Some(child) = class_node.child(i as u32) {
             if child.kind() == "body_statement" {
                 return find_method_in_body_with_depth(&child, source, 0, max_depth);
             }
@@ -135,10 +135,10 @@ fn find_method_in_body_with_depth(
     }
 
     for i in 0..node.child_count() {
-        if let Some(child) = node.child(i) {
+        if let Some(child) = node.child(i as u32) {
             if child.kind() == "method" {
                 for j in 0..child.child_count() {
-                    if let Some(name_node) = child.child(j) {
+                    if let Some(name_node) = child.child(j as u32) {
                         if name_node.kind() == "identifier" {
                             return source.get(name_node.byte_range()).map(|s| s.to_string());
                         }

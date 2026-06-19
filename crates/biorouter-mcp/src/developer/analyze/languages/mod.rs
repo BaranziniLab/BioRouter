@@ -25,11 +25,16 @@
 //! - Method receiver lookup: Implement `find_method_for_receiver()` to associate
 //!   methods with their containing types (see Go and Ruby)
 
+pub mod c;
+pub mod cpp;
 pub mod go;
 pub mod java;
 pub mod javascript;
+pub mod julia;
 pub mod kotlin;
+pub mod matlab;
 pub mod python;
+pub mod r;
 pub mod ruby;
 pub mod rust;
 pub mod swift;
@@ -132,7 +137,7 @@ pub fn get_language_info(language: &str) -> Option<LanguageInfo> {
             element_query: kotlin::ELEMENT_QUERY,
             call_query: kotlin::CALL_QUERY,
             reference_query: "",
-            function_node_kinds: &["function_declaration", "class_body"],
+            function_node_kinds: &["function_declaration"],
             function_name_kinds: &["identifier", "field_identifier", "property_identifier"],
             extract_function_name_handler: None,
             find_method_for_receiver_handler: None,
@@ -161,6 +166,56 @@ pub fn get_language_info(language: &str) -> Option<LanguageInfo> {
             function_name_kinds: &["identifier", "field_identifier", "property_identifier"],
             extract_function_name_handler: None,
             find_method_for_receiver_handler: Some(ruby::find_method_for_receiver),
+            find_receiver_type_handler: None,
+        }),
+        "cpp" => Some(LanguageInfo {
+            element_query: cpp::ELEMENT_QUERY,
+            call_query: cpp::CALL_QUERY,
+            reference_query: "",
+            function_node_kinds: &["function_definition"],
+            function_name_kinds: &["identifier", "field_identifier"],
+            extract_function_name_handler: Some(cpp::extract_function_name_for_kind),
+            find_method_for_receiver_handler: None,
+            find_receiver_type_handler: None,
+        }),
+        "c" => Some(LanguageInfo {
+            element_query: c::ELEMENT_QUERY,
+            call_query: c::CALL_QUERY,
+            reference_query: "",
+            function_node_kinds: &["function_definition"],
+            function_name_kinds: &["identifier", "field_identifier"],
+            extract_function_name_handler: Some(c::extract_function_name_for_kind),
+            find_method_for_receiver_handler: None,
+            find_receiver_type_handler: None,
+        }),
+        "r" => Some(LanguageInfo {
+            element_query: r::ELEMENT_QUERY,
+            call_query: r::CALL_QUERY,
+            reference_query: "",
+            function_node_kinds: &["function_definition"],
+            function_name_kinds: &["identifier"],
+            extract_function_name_handler: Some(r::extract_function_name_for_kind),
+            find_method_for_receiver_handler: None,
+            find_receiver_type_handler: None,
+        }),
+        "julia" => Some(LanguageInfo {
+            element_query: julia::ELEMENT_QUERY,
+            call_query: julia::CALL_QUERY,
+            reference_query: "",
+            function_node_kinds: &["function_definition"],
+            function_name_kinds: &["identifier"],
+            extract_function_name_handler: Some(julia::extract_function_name_for_kind),
+            find_method_for_receiver_handler: None,
+            find_receiver_type_handler: None,
+        }),
+        "matlab" => Some(LanguageInfo {
+            element_query: matlab::ELEMENT_QUERY,
+            call_query: matlab::CALL_QUERY,
+            reference_query: "",
+            function_node_kinds: &["function_definition"],
+            function_name_kinds: &["identifier"],
+            extract_function_name_handler: None,
+            find_method_for_receiver_handler: None,
             find_receiver_type_handler: None,
         }),
         _ => None,

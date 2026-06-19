@@ -8,6 +8,8 @@ pub async fn detect_provider_from_api_key(api_key: &str) -> Option<(String, Vec<
         ("google", "GOOGLE_API_KEY"),
         ("groq", "GROQ_API_KEY"),
         ("xai", "XAI_API_KEY"),
+        ("zai", "ZAI_API_KEY"),
+        ("xiaomi_mimo", "XIAOMI_MIMO_API_KEY"),
         // Ollama and OpenRouter don't validate keys, so they would match any input
     ];
 
