@@ -150,7 +150,7 @@ export default function ConfigSettings() {
         Edit your BioRouter configuration settings
         {currentProvider && ` (current settings for ${currentProvider})`}
       </p>
-      <div className="border-t border-border-subtle pt-4">
+      <div className="border-t border-border-subtle pt-3">
         <Dialog open={isModalOpen} onOpenChange={handleModalClose}>
           <DialogTrigger asChild>
             <Button className="flex items-center gap-2" variant="secondary">

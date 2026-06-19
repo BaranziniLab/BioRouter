@@ -5,7 +5,7 @@ import { SpellcheckToggle } from './SpellcheckToggle';
 
 export default function ChatSettingsSection() {
   return (
-    <div className="space-y-10 pb-8">
+    <div className="space-y-8 pb-8">
       <div>
         <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">Mode</h2>
         <p className="text-xs text-text-muted mb-4">
