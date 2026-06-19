@@ -237,7 +237,10 @@ impl ProviderTester {
         dbg!(&result);
         println!("===================");
 
-        if self.name.to_lowercase() == "ollama" {
+        // Ollama and Xiaomi MiMo silently truncate oversized input to their
+        // context window (MiMo caps at its ~1M window and returns Ok) rather
+        // than returning a context-length error.
+        if matches!(self.name.to_lowercase().as_str(), "ollama" | "xiaomi_mimo") {
             assert!(
                 result.is_ok(),
                 "Expected to succeed because of default truncation"
@@ -592,7 +595,7 @@ async fn test_zai_provider() -> Result<()> {
 #[tokio::test]
 async fn test_xiaomi_mimo_provider() -> Result<()> {
     test_provider(
-        "XiaomiMimo",
+        "xiaomi_mimo",
         XIAOMI_MIMO_DEFAULT_MODEL,
         &["XIAOMI_MIMO_API_KEY"],
         None,
