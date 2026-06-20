@@ -1,0 +1,99 @@
+code,description,parent_codes,active
+A00-B99,"Certain infectious and parasitic diseases",,true
+A00,"Cholera",A00-B99,true
+A00.0,"Cholera due to Vibrio cholerae 01, biovar cholerae",A00,true
+A00.1,"Cholera due to Vibrio cholerae 01, biovar eltor",A00,true
+A00.9,"Cholera, unspecified",A00,true
+B20,"Human immunodeficiency virus disease",A00-B99,true
+B20.0,"HIV disease resulting in Mycobacterial infection",B20,true
+C00-D49,"Neoplasms",,true
+C34,"Malignant neoplasm of bronchus and lung",C00-D49,true
+C34.0,"Malignant neoplasm of main bronchus",C34,true
+C34.1,"Malignant neoplasm of upper lobe, bronchus or lung",C34,true
+C34.2,"Malignant neoplasm of middle lobe, bronchus or lung",C34,true
+C34.3,"Malignant neoplasm of lower lobe, bronchus or lung",C34,true
+C50,"Malignant neoplasm of breast",C00-D49,true
+C50.0,"Malignant neoplasm of nipple and areola",C50,true
+C50.1,"Malignant neoplasm of central portion of breast",C50,true
+C50.9,"Malignant neoplasm of breast, unspecified",C50,true
+D50-D89,"Diseases of the blood and blood-forming organs",,true
+D50,"Iron deficiency anaemia",D50-D89,true
+D50.0,"Sideropenic dysphagia",D50,true
+D50.9,"Iron deficiency anaemia, unspecified",D50,true
+E00-E89,"Endocrine, nutritional and metabolic diseases",,true
+E10,"Type 1 diabetes mellitus",E00-E89,true
+E10.0,"Type 1 diabetes mellitus with coma",E10,true
+E10.1,"Type 1 diabetes mellitus with ketoacidosis",E10,true
+E10.9,"Type 1 diabetes mellitus without complications",E10,true
+E11,"Type 2 diabetes mellitus",E00-E89,true
+E11.0,"Type 2 diabetes mellitus with coma",E11,true
+E11.1,"Type 2 diabetes mellitus with ketoacidosis",E11,true
+E11.2,"Type 2 diabetes mellitus with kidney complications",E11,true
+E11.3,"Type 2 diabetes mellitus with eye complications",E11,true
+E11.9,"Type 2 diabetes mellitus without complications",E11,true
+E78,"Disorders of lipoprotein metabolism and other lipidaemias",E00-E89,true
+E78.0,"Pure hypercholesterolaemia",E78,true
+E78.5,"Hyperlipidaemia, unspecified",E78,true
+F00-F99,"Mental, Behavioural and Neurodevelopmental disorders",,true
+F32,"Major depressive disorder, single episode",F00-F99,true
+F32.0,"Major depressive disorder, single episode, mild",F32,true
+F32.1,"Major depressive disorder, single episode, moderate",F32,true
+F32.2,"Major depressive disorder, single episode, severe without psychotic features",F32,true
+F33,"Major depressive disorder, recurrent",F00-F99,true
+F33.0,"Major depressive disorder, recurrent, mild",F33,true
+F33.1,"Major depressive disorder, recurrent, moderate",F33,true
+G00-G99,"Diseases of the nervous system",,true
+G35,"Demyelinating diseases of the central nervous system",G00-G99,true
+G35.0,"Multiple sclerosis, relapsing remitting",G35,true
+G35.1,"Multiple sclerosis, progressive relapsing",G35,true
+G40,"Epilepsy and recurrent seizures",G00-G99,true
+G40.0,"Localization-related (focal) (partial) idiopathic epilepsy and epileptic syndromes with seizures of localized onset",G40,true
+G40.1,"Localization-related (focal) (partial) symptomatic epilepsy and epileptic syndromes with simple partial seizures",G40,true
+I00-I99,"Diseases of the circulatory system",,true
+I10,"Essential (primary) hypertension",I00-I99,true
+I11.0,"Hypertensive heart disease with heart failure",I10,true
+I21,"Acute myocardial infarction",I00-I99,true
+I21.0,"ST elevation (STEMI) myocardial infarction of anterior wall",I21,true
+I21.1,"ST elevation (STEMI) myocardial infarction of inferior wall",I21,true
+I21.4,"Non-ST elevation (NSTEMI) myocardial infarction",I21,true
+I50,"Heart failure",I00-I99,true
+I50.1,"Left ventricular failure",I50,true
+I50.2,"Right ventricular failure",I50,true
+I50.9,"Heart failure, unspecified",I50,true
+J00-J99,"Diseases of the respiratory system",,true
+J18,"Pneumonia, unspecified organism",J00-J99,true
+J18.0,"Bronchopneumonia, unspecified organism",J18,true
+J18.1,"Lobar pneumonia, unspecified organism",J18,true
+J44,"Other chronic obstructive pulmonary disease",J00-J99,true
+J44.0,"Chronic obstructive pulmonary disease with acute exacerbation",J44,true
+J44.1,"Chronic obstructive pulmonary disease with acute exacerbation",J44,true
+K00-K93,"Diseases of the digestive system",,true
+K21,"Gastro-esophageal reflux disease",K00-K93,true
+K21.0,"Gastro-esophageal reflux disease with esophagitis",K21,true
+K21.9,"Gastro-esophageal reflux disease without esophagitis",K21,true
+K80,"Cholelithiasis",K00-K93,true
+K80.0,"Calculus of gallbladder with acute cholecystitis",K80,true
+K80.2,"Calculus of gallbladder without cholecystitis",K80,true
+M00-M99,"Diseases of the musculoskeletal system and connective tissue",,true
+M05,"Rheumatoid arthritis with rheumatoid factor",M00-M99,true
+M05.79,"Rheumatoid arthritis with rheumatoid factor, multiple sites",M05,true
+M17,"Osteoarthritis of knee",M00-M99,true
+M17.0,"Primary osteoarthritis of knee",M17,true
+M17.1,"Primary osteoarthritis of knee",M17,true
+M54,"Dorsalgia",M00-M99,true
+M54.5,"Low back pain",M54,true
+N00-N99,"Diseases of the genitourinary system",,true
+N18,"Chronic kidney disease",N00-N99,true
+N18.1,"Chronic kidney disease, stage 1",N18,true
+N18.2,"Chronic kidney disease, stage 2",N18,true
+N18.3,"Chronic kidney disease, stage 3",N18,true
+N18.4,"Chronic kidney disease, stage 4",N18,true
+N18.5,"Chronic kidney disease, stage 5",N18,true
+N18.9,"Chronic kidney disease, unspecified",N18,true
+R00-R99,"Symptoms, signs and abnormal clinical and laboratory findings",,true
+R07.9,"Chest pain, unspecified",R00-R99,true
+R51,"Headache",R00-R99,true
+R55,"Syncope and collapse",R00-R99,true
+Z00-Z99,"Factors influencing health status and contact with health services",,true
+Z00.0,"Encounter for general adult medical examination without abnormal findings",Z00-Z99,true
+Z87.891,"Personal history of nicotine dependence",Z00-Z99,true

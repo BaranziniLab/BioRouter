@@ -1,0 +1,3 @@
+[
+  {"source_terminology": "ICD-10-CM", "source_code": "A00.0", "target_terminology": "SNOMED-CT", "target_code": "14375003", "map_group": 1, "map_rule": "", "map_priority": 1, "map_category": "equivalent"}
+]

@@ -203,3 +203,32 @@ actionable issues every 5 apps (see `ISSUES/`).
   clean checkout — the CLI analog of the app-5 src-layout issue. One fix turn did
   not resolve it (it should invoke `python -m <pkg>` with pythonpath, or call the
   CLI function directly, instead of a bare command name). Accepted at 94/97.
+
+### Cross-cutting — premature stream stop RECURRING (apps 17, 21)
+- 🐛 2nd occurrence: app21 (FHIR) stopped mid-sentence ("Now let me create the
+  synthetic FHIR bundle generator for tests:") after 10 tool calls, rc=0, no error
+  — same signature as app17. Both stops happen at the **transition from
+  implementing modules to writing the test suite**, suggesting either a stream
+  truncation or the model emitting a soft stop before the (large) test-writing
+  step. Both resumable. Watch frequency; if it keeps clustering at the
+  code→tests boundary it may be a MiMo response-length/stop-token issue worth a
+  provider-side mitigation (e.g. continue-on-truncation for non-final responses).
+
+### ESCALATION — premature stream stop is now the dominant batch failure (apps 17, 21, 23 — HIGH)
+- 3rd occurrence in the med/bio batch: app23 wrote all 7 modules then cut off at
+  "Now let me create the sample data files...". Pattern is consistent: rc=0, no
+  error, stops at a transition to a *new large block* (tests or data files).
+- Frequency (~3 of last 7 builds) makes this the #1 throughput drag of the batch.
+- **Strong round-5 improvement candidate:** provider-side continue-on-truncation —
+  if a streamed assistant turn ends without a stop reason indicating natural
+  completion (e.g. length/truncation, or ends mid-plan with pending tool intent),
+  automatically continue the turn instead of returning control. Mirrors how the
+  retry budget handles transient 429s. Would remove a whole class of resume turns.
+
+### App 23 — reinforces "scaffolding but no test functions" (cf app 17)
+- After a resume (modules+data complete) and an EXPLICIT file-by-file test request
+  (test_mapping.py, test_hierarchy.py, ...), the agent still produced no test_*.py
+  (the explicit turn also errored out, exit 1, cause unclear — binary OK). 2nd app
+  (with app17) where MiMo reliably writes everything EXCEPT the test suite. Pattern:
+  it treats tests/conftest.py + pyproject testpaths as "tests handled". Accepted as
+  partial (code+data complete, untested).
