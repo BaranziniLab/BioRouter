@@ -1045,6 +1045,84 @@ pub async fn run(builtins: Vec<String>) -> Result<()> {
     serve(agent, incoming, outgoing).await
 }
 
+/// Default address for the ACP WebSocket server. Matches the default endpoint
+/// baked into the Agent Drafter runtime (`agent.js`), so exported agentic
+/// artifacts connect with zero configuration.
+pub const DEFAULT_WS_ADDR: &str = "127.0.0.1:11577";
+
+/// Map a tungstenite error into `std::io::Error` for sacp's `Lines` transport.
+fn ws_io_err(e: tokio_tungstenite::tungstenite::Error) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, e)
+}
+
+/// Serve ACP over a single WebSocket connection.
+///
+/// Over stdio, ACP frames are newline-delimited JSON-RPC messages. A WebSocket
+/// already delivers discrete frames, so each text frame carries exactly one
+/// JSON-RPC message and we use sacp's message-based `Lines` transport rather
+/// than re-framing a byte stream.
+pub async fn serve_ws(
+    agent: Arc<BioRouterAcpAgent>,
+    ws: tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>,
+) -> Result<()> {
+    use futures::{SinkExt, StreamExt};
+    use tokio_tungstenite::tungstenite::Message;
+
+    let handler = BioRouterAcpHandler { agent };
+    let (ws_sink, ws_stream) = ws.split();
+
+    // Outgoing: one serialized JSON-RPC message -> one WS text frame.
+    let outgoing = ws_sink
+        .sink_map_err(ws_io_err)
+        .with(|line: String| async move { Ok::<Message, std::io::Error>(Message::text(line)) });
+
+    // Incoming: WS frames -> JSON-RPC message strings. Control frames (ping/
+    // pong) are dropped; a close frame ends the stream.
+    let incoming = ws_stream.filter_map(|msg| async move {
+        match msg {
+            Ok(Message::Text(t)) => Some(Ok(t.to_string())),
+            Ok(Message::Binary(b)) => Some(Ok(String::from_utf8_lossy(b.as_ref()).into_owned())),
+            Ok(Message::Close(_)) => None,
+            Ok(_) => None,
+            Err(e) => Some(Err(ws_io_err(e))),
+        }
+    });
+
+    AgentToClient::builder()
+        .name("biorouter-acp")
+        .with_handler(handler)
+        .serve(sacp::Lines::new(outgoing, incoming))
+        .await?;
+
+    Ok(())
+}
+
+/// Run the ACP agent as a WebSocket server, accepting many client connections.
+/// Each connection is served by the shared agent over its own ACP session.
+pub async fn run_ws(builtins: Vec<String>, addr: String) -> Result<()> {
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let local = listener.local_addr()?;
+    info!(address = %local, "ACP WebSocket server listening");
+
+    let agent = Arc::new(BioRouterAcpAgent::new(builtins).await?);
+
+    loop {
+        let (stream, peer) = listener.accept().await?;
+        let agent = agent.clone();
+        tokio::spawn(async move {
+            match tokio_tungstenite::accept_async(stream).await {
+                Ok(ws) => {
+                    info!(%peer, "ACP WebSocket client connected");
+                    if let Err(e) = serve_ws(agent, ws).await {
+                        warn!(%peer, error = %e, "ACP WebSocket session ended with error");
+                    }
+                }
+                Err(e) => warn!(%peer, error = %e, "WebSocket handshake failed"),
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -45,3 +45,8 @@ tmux. Model: **xiaomi_mimo / mimo-v2.5-pro**. Extensions: developer + todo.
 | 26 | med-risk-score-calculator-py | Python | ☑ built (resumed+fixed) | 3 | 18 | 3839 | **200 tests pass** (8 clinical scores); premature stop→resume created tests→validation fix |
 | 27 | med-cohort-builder-sql-py | Python | ☑ built | 3 | 17 | 4040 | **60 tests pass** out-of-box (synthetic EHR + SQL cohort compiler); clean one-shot |
 | 28 | med-biomarker-discovery-r | R | ☑ built (1-shot) | 3 | 29 | 2450 | **65 R tests pass** (LASSO/RFE/stability sel, BH-FDR, CV); 3rd clean R one-shot |
+| 31 | stat-bayesian-mcmc-py | Python | ☑ built | 5 | 26 | 4051 | **108 tests pass** out-of-box (MH/Gibbs/HMC/slice, R-hat/ESS/HPD); clean, no premature stop |
+| 32 | stat-glm-from-scratch-r | R | ☑ built (resumed+fixed) | 5 | 19 | 910 | tests pass on clean **R CMD INSTALL** (IRLS, gaussian/binomial/poisson); premature stop→resume→NAMESPACE fix |
+| 33 | stat-timeseries-arima-py | Python | ☑ built | 2 | 29 | 2701 | **70 tests pass** out-of-box (AR/MA/ARIMA/SARIMA/Holt-Winters, ACF/PACF, auto-order); clean |
+| 34 | stat-hypothesis-testing-suite-r | R | ☑ built (1-shot) | 2 | 24 | 3028 | **111 R tests pass** (parametric/nonparam/categorical/normality + corrections); installs clean |
+| 35 | stat-bootstrap-resampling-py | Python | ☑ built (undeclared dep) | 4 | 24 | 4345 | **90 tests pass** (w/ scipy) (BCa/block/jackknife/permutation); scipy used but NOT declared in pyproject |

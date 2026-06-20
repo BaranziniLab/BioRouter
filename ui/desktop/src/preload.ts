@@ -164,6 +164,12 @@ type ElectronAPI = {
   recordWorkflowHash: (workflow: Workflow) => Promise<boolean>;
   openDirectoryInExplorer: (directoryPath: string) => Promise<boolean>;
   launchApp: (app: BioRouterApp) => Promise<void>;
+  openArtifactWindow: (payload: {
+    html: string;
+    title?: string;
+    width?: number;
+    height?: number;
+  }) => Promise<{ ok: boolean }>;
   addRecentDir: (dir: string) => Promise<boolean>;
   openBrxtFilePicker: () => Promise<string | null>;
   validateBrxtBundle: (filePath: string) => Promise<
@@ -374,6 +380,8 @@ const electronAPI: ElectronAPI = {
   openDirectoryInExplorer: (directoryPath: string) =>
     ipcRenderer.invoke('open-directory-in-explorer', directoryPath),
   launchApp: (app: BioRouterApp) => ipcRenderer.invoke('launch-app', app),
+  openArtifactWindow: (payload: { html: string; title?: string; width?: number; height?: number }) =>
+    ipcRenderer.invoke('open-artifact-window', payload),
   addRecentDir: (dir: string) => ipcRenderer.invoke('add-recent-dir', dir),
   openBrxtFilePicker: () => ipcRenderer.invoke('brxt:open-file-dialog'),
   validateBrxtBundle: (filePath: string) =>

@@ -242,3 +242,9 @@ actionable issues every 5 apps (see `ISSUES/`).
   large code→tests transition where the stream truncates. (The provider-side
   continue-on-truncation remains the proper fix; the Plan-B Stop hook is the safe
   in-product mitigation.)
+
+### App 32 (R) — bad NAMESPACE import fails clean install (R reproducibility variant)
+- 🐛 `R CMD INSTALL .` fails: `object 'nulldev' is not exported by 'namespace:stats'` — a hallucinated/misnamed importFrom in NAMESPACE. The agent likely tested via `devtools::load_all()` (lenient on NAMESPACE), so tests "passed" in-session but the package will not install for anyone else. R analog of the Python src-layout / "works in my session" class. One fix turn.
+
+### App 35 — undeclared dependency (scipy) — reproducibility miss
+- 🐛 Uses `scipy` but never declares it (no pyproject dependency, no requirements.txt). Tests/code fail with `ModuleNotFoundError: scipy` on a clean install; pass once scipy is added. Another "works in my session" case — the agent had scipy available and never declared it. 90 tests pass with the dep present.

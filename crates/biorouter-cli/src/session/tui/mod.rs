@@ -997,10 +997,18 @@ fn greeting_into(app: &mut App) {
         app.push_raw(*line, Style::new().fg(ACCENT).add_modifier(Modifier::BOLD));
     }
     app.push_blank();
-    app.push_raw(
-        "Biorouter — integrated biomedical research environment",
-        Style::new().add_modifier(Modifier::BOLD),
-    );
+    // Tagline with the running version (CARGO_PKG_VERSION = the workspace
+    // version, so it tracks the release automatically).
+    app.push_line(Line::from(vec![
+        Span::styled(
+            "Biorouter — integrated biomedical research environment",
+            Style::new().add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            concat!("  ·  v", env!("CARGO_PKG_VERSION")),
+            Style::new().add_modifier(Modifier::DIM),
+        ),
+    ]));
     if !app.status.workdir.is_empty() {
         app.push_line(Line::from(vec![
             Span::styled(

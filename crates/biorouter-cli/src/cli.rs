@@ -981,7 +981,7 @@ enum Command {
     },
 
     /// Run Biorouter as an ACP (Agent Client Protocol) agent
-    #[command(about = "Run Biorouter as an ACP agent server on stdio")]
+    #[command(about = "Run Biorouter as an ACP agent server (stdio by default, or a WebSocket)")]
     Acp {
         /// Add builtin extensions by name
         #[arg(
@@ -992,6 +992,17 @@ enum Command {
             value_delimiter = ','
         )]
         builtins: Vec<String>,
+
+        /// Serve over a WebSocket instead of stdio (e.g. for agent-enabled
+        /// artifacts). Optional address; defaults to 127.0.0.1:11577.
+        #[arg(
+            long = "ws",
+            value_name = "ADDR",
+            num_args = 0..=1,
+            default_missing_value = biorouter_acp::server::DEFAULT_WS_ADDR,
+            help = "Serve ACP over a WebSocket at ADDR (default 127.0.0.1:11577) instead of stdio"
+        )]
+        ws: Option<String>,
     },
 
     /// Start or resume interactive chat sessions
@@ -1880,7 +1891,10 @@ pub async fn cli() -> anyhow::Result<()> {
         Some(Command::Configure {}) => handle_configure().await,
         Some(Command::Info { verbose }) => handle_info(verbose),
         Some(Command::Mcp { server }) => handle_mcp_command(server).await,
-        Some(Command::Acp { builtins }) => biorouter_acp::server::run(builtins).await,
+        Some(Command::Acp { builtins, ws }) => match ws {
+            Some(addr) => biorouter_acp::server::run_ws(builtins, addr).await,
+            None => biorouter_acp::server::run(builtins).await,
+        },
         Some(Command::Session {
             command: Some(cmd), ..
         }) => handle_session_subcommand(cmd).await,
