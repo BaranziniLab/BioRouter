@@ -1,0 +1,25 @@
+Package: biomarkerDiscovR
+Type: Package
+Title: Biomarker Discovery and Feature Selection Toolkit
+Version: 0.1.0
+Authors@R: c(
+    person("BioRouter", "Team", email = "team@ucsf.edu",
+           role = c("aut", "cre")))
+Description: A comprehensive R toolkit for biomarker discovery and
+    feature selection in high-dimensional biomedical data. Provides
+    preprocessing (low-variance filtering, normalization, missing-value
+    handling), univariate screening (t-test, Wilcoxon, correlation with
+    Bonferroni and Benjamini-Hochberg FDR correction), multivariate
+    feature selection (LASSO/elastic-net via coordinate descent,
+    recursive feature elimination, stability selection), cross-validated
+    model evaluation (AUC, accuracy), and reporting.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Imports:
+    stats,
+    utils,
+    graphics
+Suggests:
+    testthat (>= 3.0.0)
+Config/testthat/edition: 3
+RoxygenNote: 7.3.1
