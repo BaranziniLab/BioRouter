@@ -50,3 +50,4 @@ tmux. Model: **xiaomi_mimo / mimo-v2.5-pro**. Extensions: developer + todo.
 | 33 | stat-timeseries-arima-py | Python | ☑ built | 2 | 29 | 2701 | **70 tests pass** out-of-box (AR/MA/ARIMA/SARIMA/Holt-Winters, ACF/PACF, auto-order); clean |
 | 34 | stat-hypothesis-testing-suite-r | R | ☑ built (1-shot) | 2 | 24 | 3028 | **111 R tests pass** (parametric/nonparam/categorical/normality + corrections); installs clean |
 | 35 | stat-bootstrap-resampling-py | Python | ☑ built (undeclared dep) | 4 | 24 | 4345 | **90 tests pass** (w/ scipy) (BCa/block/jackknife/permutation); scipy used but NOT declared in pyproject |
+| 37 | stat-survival-power-r | R | ⚠️ partial (paused mid-build) | – | – | – | stopped when loop paused |

@@ -1,0 +1,10 @@
+.Rhistory
+.Rdata
+.Rproj.user
+*.Rproj
+*.Rcheck/
+*.tar.gz
+build.log
+src/*.o
+src/*.so
+src/*.dll
