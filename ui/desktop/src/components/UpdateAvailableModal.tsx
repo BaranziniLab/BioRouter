@@ -1,195 +1,218 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Button } from './ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from './ui/dialog';
-import { Download, ExternalLink } from './icons/app-icons';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
+import { Download, ExternalLink, Loader2, AlertCircle, Rocket } from './icons/app-icons';
 import { UPDATES_ENABLED } from '../updates';
+import {
+  initialUpdaterState,
+  reduceUpdaterEvent,
+  shouldShowUpdateModal,
+  stateFromSnapshot,
+  normalizeVersion,
+  type UpdaterState,
+} from '../utils/updaterState';
 
-const GITHUB_API_URL = 'https://api.github.com/repos/BaranziniLab/BioRouter/releases/latest';
-const GITHUB_RELEASES_URL = 'https://github.com/BaranziniLab/BioRouter/releases/latest';
-const BIOROUTER_DOWNLOAD_URL = 'http://biorouter.ucsf.edu/download';
+const DOWNLOAD_WEBSITE_URL = 'https://biorouter.ucsf.edu/download';
 const DISMISS_STORAGE_KEY = 'biorouter:update-modal-dismissed-version';
-const STARTUP_DELAY_MS = 3000;
-const RELEASE_NOTES_MAX_LEN = 600;
 
-function normalizeVersion(v: string): string {
-  return v.replace(/^v/, '').trim();
-}
-
-function isNewerVersion(latest: string, current: string): boolean {
-  const parts = (v: string) =>
-    normalizeVersion(v)
-      .split('.')
-      .map((p) => parseInt(p, 10))
-      .map((n) => (Number.isFinite(n) ? n : 0));
-  const lat = parts(latest);
-  const cur = parts(current);
-  const len = Math.max(lat.length, cur.length);
-  for (let i = 0; i < len; i++) {
-    const l = lat[i] ?? 0;
-    const c = cur[i] ?? 0;
-    if (l > c) return true;
-    if (l < c) return false;
-  }
-  return false;
-}
-
-interface ReleaseInfo {
-  currentVersion: string;
-  latestVersion: string;
-  releaseUrl: string;
-  releaseNotes: string | null;
-}
-
+/**
+ * One-click auto-update prompt.
+ *
+ * The Electron main process (`src/utils/autoUpdater.ts`) checks GitHub on
+ * startup and, when a newer release is found, downloads it in the background
+ * via `electron-updater`. This modal listens to those events and, once the
+ * update is fully downloaded, offers a single **Restart & Update** button that
+ * calls `installUpdate()` → `autoUpdater.quitAndInstall()`. The app quits,
+ * swaps in the new version (all bundled binaries included), and relaunches —
+ * no manual DMG download, drag-and-drop, or app restart required.
+ *
+ * User settings live in `~/.config/biorouter` and are untouched by the
+ * in-place app replacement, so nothing is lost across the update.
+ */
 export default function UpdateAvailableModal() {
+  const [state, setState] = useState<UpdaterState>(initialUpdaterState);
   const [open, setOpen] = useState(false);
-  const [release, setRelease] = useState<ReleaseInfo | null>(null);
+  const releaseUrlRef = useRef<string>(DOWNLOAD_WEBSITE_URL);
+  const currentVersion = normalizeVersion(window.electron?.getVersion?.() || '');
 
   useEffect(() => {
     if (!UPDATES_ENABLED) return;
+    if (!window.electron?.onUpdaterEvent) return;
 
     let cancelled = false;
-    const timer = setTimeout(async () => {
-      try {
-        const currentVersion = normalizeVersion(window.electron?.getVersion?.() || '');
-        // Skip when no version known (e.g. dev launch before env wires up)
-        if (!currentVersion || currentVersion === '0.0.0') return;
 
-        const response = await fetch(GITHUB_API_URL, {
-          headers: { Accept: 'application/vnd.github+json' },
+    // Subscribe to live updater events from the main process.
+    const dispose = window.electron.onUpdaterEvent((payload) => {
+      setState((prev) => {
+        const next = reduceUpdaterEvent(prev, payload);
+        maybeOpen(next);
+        return next;
+      });
+    });
+
+    // Recover any state that was already established before this mounted (the
+    // background check fires ~5s after launch and auto-downloads).
+    window.electron
+      .getUpdateState?.()
+      ?.then((snapshot) => {
+        if (cancelled || !snapshot) return;
+        const recovered = stateFromSnapshot(snapshot);
+        setState((prev) => {
+          // Only adopt the snapshot if it's "further along" than current.
+          const order = ['idle', 'up-to-date', 'checking', 'error', 'available', 'downloaded'];
+          const next =
+            order.indexOf(recovered.phase) > order.indexOf(prev.phase) ? recovered : prev;
+          maybeOpen(next);
+          return next;
         });
-        if (!response.ok) return;
+      })
+      .catch(() => {
+        /* no snapshot available — rely on live events */
+      });
 
-        const data = (await response.json()) as {
-          tag_name?: string;
-          html_url?: string;
-          body?: string;
-        };
-        const latestVersion = normalizeVersion(data.tag_name || '');
-        if (!latestVersion) return;
-
-        if (!isNewerVersion(latestVersion, currentVersion)) return;
-
-        // Respect per-version dismissal
+    function maybeOpen(next: UpdaterState) {
+      if (cancelled) return;
+      if (!shouldShowUpdateModal(next)) return;
+      // Respect per-version dismissal so we don't nag for the same release,
+      // but always surface the ready-to-install state at least once.
+      if (next.latestVersion && next.phase !== 'downloaded') {
         const dismissed = localStorage.getItem(DISMISS_STORAGE_KEY);
-        if (dismissed === latestVersion) return;
-
-        if (cancelled) return;
-
-        const releaseNotes = (data.body || '').slice(0, RELEASE_NOTES_MAX_LEN) || null;
-        setRelease({
-          currentVersion,
-          latestVersion,
-          releaseUrl: data.html_url || GITHUB_RELEASES_URL,
-          releaseNotes,
-        });
-        setOpen(true);
-      } catch {
-        // Network/offline: silently skip — matches bioscratch behavior
+        if (dismissed === next.latestVersion) return;
       }
-    }, STARTUP_DELAY_MS);
+      setOpen(true);
+    }
 
     return () => {
       cancelled = true;
-      clearTimeout(timer);
+      dispose?.();
     };
   }, []);
 
-  const handleNotNow = () => {
-    if (release) {
-      // Remember dismissal so we don't nag for the same version
-      localStorage.setItem(DISMISS_STORAGE_KEY, release.latestVersion);
+  const dismiss = () => {
+    if (state.latestVersion) {
+      localStorage.setItem(DISMISS_STORAGE_KEY, state.latestVersion);
     }
     setOpen(false);
   };
 
-  const handleDownload = () => {
-    if (!release) return;
-    localStorage.setItem(DISMISS_STORAGE_KEY, release.latestVersion);
+  const handleRestartAndUpdate = () => {
+    // Fire-and-forget: the main process quits the app, installs the staged
+    // update, and relaunches into the new version.
+    window.electron?.installUpdate?.();
+  };
+
+  const openReleasePage = () => {
+    const url = releaseUrlRef.current;
     if (window.electron?.openExternal) {
-      window.electron.openExternal(BIOROUTER_DOWNLOAD_URL);
+      window.electron.openExternal(url);
     } else {
-      window.open(BIOROUTER_DOWNLOAD_URL, '_blank');
+      window.open(url, '_blank');
     }
-    setOpen(false);
   };
 
-  if (!release) return null;
+  if (!shouldShowUpdateModal(state)) return null;
+
+  const downloaded = state.phase === 'downloaded';
+  const isError = state.phase === 'error';
 
   return (
-    <Dialog open={open} onOpenChange={(o) => (!o ? handleNotNow() : setOpen(true))}>
+    <Dialog open={open} onOpenChange={(o) => (!o ? dismiss() : setOpen(true))}>
       <DialogContent className="sm:max-w-[460px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            <Download className="w-5 h-5 text-background-accent" />
-            New version available
+            {downloaded ? (
+              <Rocket className="w-5 h-5 text-background-accent" />
+            ) : isError ? (
+              <AlertCircle className="w-5 h-5 text-text-danger" />
+            ) : (
+              <Download className="w-5 h-5 text-background-accent" />
+            )}
+            {downloaded
+              ? 'Update ready to install'
+              : isError
+                ? 'Update download failed'
+                : 'Downloading update…'}
           </DialogTitle>
         </DialogHeader>
 
         <div className="py-2 space-y-3">
-          <p className="text-sm text-text-default">
-            A newer version of BioRouter is available. Download and install the latest release to
-            get the newest features and fixes.
-          </p>
-
-          <div className="bg-background-muted rounded-lg px-3 py-2 space-y-1">
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-text-muted">Current</span>
-              <span className="text-sm font-mono text-text-default">{release.currentVersion}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-text-muted">Latest</span>
-              <span className="text-sm font-mono font-semibold text-text-default">
-                {release.latestVersion}
-              </span>
-            </div>
-          </div>
-
-          {release.releaseNotes && (
-            <div className="bg-background-muted border border-border-default rounded-md px-3 py-2 max-h-32 overflow-y-auto text-xs text-text-muted whitespace-pre-wrap leading-relaxed">
-              {release.releaseNotes}
+          {(state.latestVersion || currentVersion) && (
+            <div className="bg-background-muted rounded-lg px-3 py-2 space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-text-muted">Current</span>
+                <span className="text-sm font-mono text-text-default">{currentVersion}</span>
+              </div>
+              {state.latestVersion && (
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-text-muted">New version</span>
+                  <span className="text-sm font-mono font-semibold text-text-default">
+                    {state.latestVersion}
+                  </span>
+                </div>
+              )}
             </div>
           )}
 
-          <p className="text-xs text-text-muted">
-            Click <strong>Download Latest</strong> to open the BioRouter download page, grab the
-            installer for your platform, and follow the instructions to update.
-          </p>
+          {downloaded && (
+            <p className="text-sm text-text-default">
+              The update has been downloaded. Click <strong>Restart &amp; Update</strong> and
+              BioRouter will reopen on the new version automatically. Your settings, sessions, and
+              extensions are preserved.
+            </p>
+          )}
+
+          {state.phase === 'available' && (
+            <div className="space-y-2">
+              <p className="text-sm text-text-default">
+                A new version is downloading in the background. You can keep working — we&apos;ll let
+                you know the moment it&apos;s ready to install.
+              </p>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-background-muted">
+                <div
+                  className="h-full rounded-full bg-background-accent transition-all duration-300"
+                  style={{ width: `${Math.max(4, state.percent)}%` }}
+                />
+              </div>
+              <p className="text-xs text-text-muted text-right font-mono">{state.percent}%</p>
+            </div>
+          )}
+
+          {isError && (
+            <p className="text-xs font-mono text-text-muted bg-background-muted rounded px-2 py-1">
+              {state.error || 'Something went wrong while downloading the update.'}
+            </p>
+          )}
         </div>
 
         <DialogFooter className="flex-wrap gap-2">
-          <Button variant="outline" size="sm" onClick={handleNotNow}>
-            Not Now
+          <Button variant="outline" size="sm" onClick={dismiss}>
+            {downloaded ? 'Later' : 'Not Now'}
           </Button>
           <Button
             variant="secondary"
             size="sm"
-            onClick={() => {
-              if (window.electron?.openExternal) {
-                window.electron.openExternal(release.releaseUrl);
-              } else {
-                window.open(release.releaseUrl, '_blank');
-              }
-            }}
+            onClick={openReleasePage}
             className="flex items-center gap-2"
           >
             <ExternalLink className="w-4 h-4" />
-            View on GitHub
+            Download from Biorouter
           </Button>
-          <Button
-            variant="default"
-            size="sm"
-            onClick={handleDownload}
-            className="flex items-center gap-2"
-          >
-            <Download className="w-4 h-4" />
-            Download Latest
-          </Button>
+          {downloaded ? (
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleRestartAndUpdate}
+              className="flex items-center gap-2"
+            >
+              <Rocket className="w-4 h-4" />
+              Restart &amp; Update
+            </Button>
+          ) : !isError ? (
+            <Button variant="default" size="sm" disabled className="flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Preparing…
+            </Button>
+          ) : null}
         </DialogFooter>
       </DialogContent>
     </Dialog>

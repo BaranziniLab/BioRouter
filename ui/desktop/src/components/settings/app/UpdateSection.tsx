@@ -1,83 +1,80 @@
 import { useState, useEffect } from 'react';
 import { Button } from '../../ui/button';
-import { ExternalLink, CheckCircle, Download, AlertCircle, Loader2 } from '../../icons/app-icons';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '../../ui/dialog';
+import { ExternalLink, CheckCircle, Download, AlertCircle, Loader2, Rocket } from '../../icons/app-icons';
+import {
+  initialUpdaterState,
+  reduceUpdaterEvent,
+  type UpdaterState,
+} from '../../../utils/updaterState';
 
-const GITHUB_API_URL = 'https://api.github.com/repos/BaranziniLab/BioRouter/releases/latest';
-const GITHUB_RELEASES_URL = 'https://github.com/BaranziniLab/BioRouter/releases/latest';
+// Always point users at the official Biorouter download website (the same place
+// the startup update flow directs to) rather than the raw GitHub releases page.
+const DOWNLOAD_WEBSITE_URL = 'https://biorouter.ucsf.edu/download';
 
-type UpdateStatus = 'idle' | 'checking' | 'up-to-date' | 'update-available' | 'error';
-
-interface ReleaseInfo {
-  version: string;
-  url: string;
-  name: string;
-}
-
-function normalizeVersion(v: string): string {
-  return v.replace(/^v/, '').trim();
-}
-
-function isNewerVersion(latest: string, current: string): boolean {
-  const latestParts = normalizeVersion(latest).split('.').map(Number);
-  const currentParts = normalizeVersion(current).split('.').map(Number);
-  const len = Math.max(latestParts.length, currentParts.length);
-  for (let i = 0; i < len; i++) {
-    const l = latestParts[i] ?? 0;
-    const c = currentParts[i] ?? 0;
-    if (l > c) return true;
-    if (l < c) return false;
-  }
-  return false;
-}
-
+/**
+ * Settings → "Check for Updates".
+ *
+ * Drives the same `electron-updater` pipeline as the startup modal: pressing
+ * "Check for Updates" asks the main process to check GitHub; if a newer release
+ * exists it downloads in the background and this panel shows progress, then a
+ * one-click **Restart & Update** button. No manual DMG/drag-and-drop.
+ */
 export default function UpdateSection() {
   const [currentVersion, setCurrentVersion] = useState('');
-  const [status, setStatus] = useState<UpdateStatus>('idle');
-  const [latestRelease, setLatestRelease] = useState<ReleaseInfo | null>(null);
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [errorMessage, setErrorMessage] = useState('');
+  const [state, setState] = useState<UpdaterState>(initialUpdaterState);
+  const [checkRequested, setCheckRequested] = useState(false);
 
   useEffect(() => {
     setCurrentVersion(window.electron.getVersion());
+
+    if (!window.electron?.onUpdaterEvent) return;
+    const dispose = window.electron.onUpdaterEvent((payload) => {
+      setState((prev) => reduceUpdaterEvent(prev, payload));
+    });
+
+    // Recover any in-flight/ready update established before this panel opened.
+    window.electron
+      .getUpdateState?.()
+      ?.then((snapshot) => {
+        if (!snapshot) return;
+        if (snapshot.status === 'downloaded' || snapshot.updateAvailable) {
+          setState((prev) =>
+            reduceUpdaterEvent(prev, {
+              event: snapshot.status === 'downloaded' ? 'update-downloaded' : 'update-available',
+              data: { version: snapshot.latestVersion, percent: snapshot.percent },
+            })
+          );
+        }
+      })
+      .catch(() => {});
+
+    return () => dispose?.();
   }, []);
 
   const checkForUpdates = async () => {
-    setStatus('checking');
-    setDialogOpen(true);
-
+    setCheckRequested(true);
+    setState((prev) => reduceUpdaterEvent(prev, { event: 'checking-for-update' }));
     try {
-      const response = await fetch(GITHUB_API_URL, {
-        headers: { Accept: 'application/vnd.github+json' },
-      });
-
-      if (!response.ok) {
-        throw new Error(`GitHub API returned ${response.status}`);
+      const res = await window.electron.checkForUpdates();
+      if (res?.error) {
+        setState((prev) => reduceUpdaterEvent(prev, { event: 'error', data: res.error }));
       }
-
-      const data = await response.json();
-      const latestVersion = data.tag_name as string;
-      const releaseName = (data.name as string) || latestVersion;
-      const releaseUrl = (data.html_url as string) || GITHUB_RELEASES_URL;
-
-      setLatestRelease({ version: latestVersion, url: releaseUrl, name: releaseName });
-
-      if (isNewerVersion(latestVersion, currentVersion)) {
-        setStatus('update-available');
-      } else {
-        setStatus('up-to-date');
-      }
+      // Success path: the main process emits update-available / -not-available
+      // (and download-progress / -downloaded) through onUpdaterEvent.
     } catch (err) {
-      console.error('Update check failed:', err);
-      setErrorMessage(err instanceof Error ? err.message : 'Unknown error');
-      setStatus('error');
+      setState((prev) =>
+        reduceUpdaterEvent(prev, {
+          event: 'error',
+          data: err instanceof Error ? err.message : 'Unknown error',
+        })
+      );
     }
   };
 
-  const handleClose = () => {
-    setDialogOpen(false);
-    setStatus('idle');
-  };
+  const handleRestartAndUpdate = () => window.electron?.installUpdate?.();
+
+  const { phase } = state;
+  const busy = phase === 'checking' || phase === 'available';
 
   return (
     <div>
@@ -90,147 +87,102 @@ export default function UpdateSection() {
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
-        <Button
-          onClick={checkForUpdates}
-          disabled={status === 'checking'}
-          variant="secondary"
-          size="sm"
-          className="flex items-center gap-2"
-        >
-          {status === 'checking' ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <ExternalLink className="w-4 h-4" />
-          )}
-          Check for Updates
-        </Button>
-        <p className="text-xs text-text-muted">Compare with the latest release on GitHub.</p>
+      <div className="flex items-center gap-3 flex-wrap">
+        {phase === 'downloaded' ? (
+          <Button
+            onClick={handleRestartAndUpdate}
+            variant="default"
+            size="sm"
+            className="flex items-center gap-2"
+          >
+            <Rocket className="w-4 h-4" />
+            Restart &amp; Update{state.latestVersion ? ` to ${state.latestVersion}` : ''}
+          </Button>
+        ) : (
+          <Button
+            onClick={checkForUpdates}
+            disabled={busy}
+            variant="secondary"
+            size="sm"
+            className="flex items-center gap-2"
+          >
+            {busy ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <ExternalLink className="w-4 h-4" />
+            )}
+            Check for Updates
+          </Button>
+        )}
+        <p className="text-xs text-text-muted">
+          Updates install automatically — one click restarts BioRouter on the new version.
+        </p>
       </div>
 
-      <Dialog open={dialogOpen} onOpenChange={(open) => !open && handleClose()}>
-        <DialogContent className="sm:max-w-[420px]">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              {status === 'checking' && (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin text-text-muted" />
-                  Checking for updates…
-                </>
-              )}
-              {status === 'up-to-date' && (
-                <>
-                  <CheckCircle className="w-5 h-5 text-text-success" />
-                  You&apos;re up to date
-                </>
-              )}
-              {status === 'update-available' && (
-                <>
-                  <Download className="w-5 h-5 text-background-accent" />
-                  New version available
-                </>
-              )}
-              {status === 'error' && (
-                <>
-                  <AlertCircle className="w-5 h-5 text-text-danger" />
-                  Update check failed
-                </>
-              )}
-            </DialogTitle>
-          </DialogHeader>
+      {/* Status line */}
+      {checkRequested && (
+        <div className="mt-3 text-sm">
+          {phase === 'checking' && (
+            <div className="flex items-center gap-2 text-text-muted">
+              <Loader2 className="w-4 h-4 animate-spin" />
+              Checking for updates…
+            </div>
+          )}
 
-          <div className="py-2 space-y-3">
-            {status === 'checking' && (
-              <p className="text-sm text-text-muted">
-                Fetching latest release information from GitHub…
-              </p>
-            )}
+          {phase === 'up-to-date' && (
+            <div className="flex items-center gap-2 text-text-success">
+              <CheckCircle className="w-4 h-4" />
+              BioRouter is up to date.
+            </div>
+          )}
 
-            {status === 'up-to-date' && (
-              <div className="space-y-2">
-                <p className="text-sm text-text-default">
-                  BioRouter is running the latest version.
-                </p>
-                <div className="flex items-center gap-2 bg-background-muted rounded-lg px-3 py-2">
-                  <span className="text-xs text-text-muted">Version</span>
-                  <span className="text-sm font-mono text-text-default ml-auto">
-                    {normalizeVersion(currentVersion)}
-                  </span>
-                </div>
+          {phase === 'available' && (
+            <div className="space-y-2 max-w-sm">
+              <div className="flex items-center gap-2 text-text-default">
+                <Download className="w-4 h-4 text-background-accent" />
+                Downloading {state.latestVersion ?? 'update'}…
               </div>
-            )}
-
-            {status === 'update-available' && latestRelease && (
-              <div className="space-y-3">
-                <p className="text-sm text-text-default">
-                  A newer version of BioRouter is available. Download and install the latest release
-                  to get the newest features and fixes.
-                </p>
-                <div className="bg-background-muted rounded-lg px-3 py-2 space-y-1">
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-text-muted">Current</span>
-                    <span className="text-sm font-mono text-text-default">
-                      {normalizeVersion(currentVersion)}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs text-text-muted">Latest</span>
-                    <span className="text-sm font-mono font-semibold text-text-default">
-                      {normalizeVersion(latestRelease.version)}
-                    </span>
-                  </div>
-                </div>
-                <p className="text-xs text-text-muted">
-                  Download the <code className="font-mono">.dmg</code> file, open it, and drag
-                  BioRouter to your Applications folder to update.
-                </p>
+              <div className="h-2 w-full overflow-hidden rounded-full bg-background-muted">
+                <div
+                  className="h-full rounded-full bg-background-accent transition-all duration-300"
+                  style={{ width: `${Math.max(4, state.percent)}%` }}
+                />
               </div>
-            )}
+              <p className="text-xs text-text-muted text-right font-mono">{state.percent}%</p>
+            </div>
+          )}
 
-            {status === 'error' && (
-              <div className="space-y-2">
-                <p className="text-sm text-text-default">
-                  Could not reach GitHub to check for updates. Please verify your internet
-                  connection and try again.
-                </p>
-                {errorMessage && (
-                  <p className="text-xs font-mono text-text-muted bg-background-muted rounded px-2 py-1">
-                    {errorMessage}
-                  </p>
-                )}
+          {phase === 'downloaded' && (
+            <div className="flex items-center gap-2 text-text-default">
+              <CheckCircle className="w-4 h-4 text-text-success" />
+              Version {state.latestVersion} is ready — click Restart &amp; Update.
+            </div>
+          )}
+
+          {phase === 'error' && (
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 text-text-danger">
+                <AlertCircle className="w-4 h-4" />
+                Could not complete the update.
               </div>
-            )}
-          </div>
-
-          <DialogFooter>
-            {status === 'update-available' && latestRelease && (
-              <Button
-                variant="default"
-                size="sm"
-                onClick={() => window.open(latestRelease.url, '_blank')}
-                className="flex items-center gap-2"
-              >
-                <Download className="w-4 h-4" />
-                Download Latest
-              </Button>
-            )}
-            {status === 'error' && (
+              {state.error && (
+                <p className="text-xs font-mono text-text-muted bg-background-muted rounded px-2 py-1">
+                  {state.error}
+                </p>
+              )}
               <Button
                 variant="secondary"
                 size="sm"
-                onClick={() => window.open(GITHUB_RELEASES_URL, '_blank')}
+                onClick={() => window.open(DOWNLOAD_WEBSITE_URL, '_blank')}
                 className="flex items-center gap-2"
               >
                 <ExternalLink className="w-4 h-4" />
-                View on GitHub
+                Download from Biorouter
               </Button>
-            )}
-            <Button variant="outline" size="sm" onClick={handleClose}>
-              {status === 'up-to-date' ? 'Great!' : 'Close'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

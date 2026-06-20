@@ -18,12 +18,21 @@ let cfg = {
           'entitlements-inherit': 'entitlements.plist',
           'signature-flags': 'library',
         },
-        osxNotarize: {
-          tool: 'notarytool',
-          appleId: process.env.APPLE_ID,
-          appleIdPassword: process.env.APPLE_APP_SPECIFIC_PASSWORD,
-          teamId: 'F3YYBXAFJ8',
-        },
+        // Notarization can be skipped (BIOROUTER_SKIP_NOTARIZE=1) for fast,
+        // signed-but-not-notarized local/test builds — the signature alone is
+        // enough for an in-place Squirrel.Mac update (identity match) and for
+        // running locally without Gatekeeper quarantine. Release builds leave
+        // it unset so the app is fully notarized + stapled.
+        ...(process.env.BIOROUTER_SKIP_NOTARIZE === '1'
+          ? {}
+          : {
+              osxNotarize: {
+                tool: 'notarytool',
+                appleId: process.env.APPLE_ID,
+                appleIdPassword: process.env.APPLE_APP_SPECIFIC_PASSWORD,
+                teamId: 'F3YYBXAFJ8',
+              },
+            }),
       }
     : {}),
   // Windows specific configuration

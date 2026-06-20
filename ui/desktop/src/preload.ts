@@ -155,8 +155,17 @@ type ElectronAPI = {
   downloadUpdate: () => Promise<{ success: boolean; error: string | null }>;
   installUpdate: () => void;
   restartApp: () => void;
-  onUpdaterEvent: (callback: (event: UpdaterEvent) => void) => void;
-  getUpdateState: () => Promise<{ updateAvailable: boolean; latestVersion?: string } | null>;
+  /** Subscribe to main-process updater events. Returns a disposer that removes
+   * the listener; call it on unmount to avoid duplicate registrations. */
+  onUpdaterEvent: (callback: (event: UpdaterEvent) => void) => () => void;
+  getUpdateState: () => Promise<{
+    updateAvailable: boolean;
+    latestVersion?: string;
+    status?: 'checking' | 'available' | 'downloaded' | 'up-to-date' | 'error';
+    percent?: number;
+    usingFallback?: boolean;
+    error?: string;
+  } | null>;
   isUsingGitHubFallback: () => Promise<boolean>;
   // Workflow warning functions
   closeWindow: () => void;
@@ -364,8 +373,10 @@ const electronAPI: ElectronAPI = {
   restartApp: (): void => {
     ipcRenderer.send('restart-app');
   },
-  onUpdaterEvent: (callback: (event: UpdaterEvent) => void): void => {
-    ipcRenderer.on('updater-event', (_event, data) => callback(data));
+  onUpdaterEvent: (callback: (event: UpdaterEvent) => void): (() => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, data: UpdaterEvent) => callback(data);
+    ipcRenderer.on('updater-event', listener);
+    return () => ipcRenderer.removeListener('updater-event', listener);
   },
   getUpdateState: (): Promise<{ updateAvailable: boolean; latestVersion?: string } | null> => {
     return ipcRenderer.invoke('get-update-state');
