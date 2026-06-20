@@ -370,6 +370,7 @@ impl AgentDrafterServer {
         manifest.width = p.width;
         manifest.height = p.height;
         store.save_manifest(&manifest).map_err(internal)?;
+        store.touch(&p.id).map_err(internal)?;
         self.preview_result(
             &manifest,
             &format!(

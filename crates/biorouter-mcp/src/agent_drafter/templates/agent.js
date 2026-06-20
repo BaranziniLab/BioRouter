@@ -84,31 +84,44 @@
   }
 
   // --- MCP-App bridge transport (in-BioRouter preview) ------------------------
+  // Speaks the MCP-UI host protocol (NOT JSON-RPC): post a UI action
+  // `{ type, payload, messageId }` to the host and await its
+  // `{ type: "ui-message-response", messageId, payload: { response } }` reply.
   var bridgePending = {};
   if (transport === "bridge") {
     window.addEventListener("message", function (ev) {
       var msg = ev.data;
-      if (!msg || msg.jsonrpc !== "2.0") return;
-      if (msg.id != null && bridgePending[msg.id]) {
-        var p = bridgePending[msg.id]; delete bridgePending[msg.id];
-        if (msg.error) p.reject(msg.error); else p.resolve(msg.result);
-      }
+      if (!msg || msg.type !== "ui-message-response") return;
+      var p = bridgePending[msg.messageId];
+      if (!p) return;
+      delete bridgePending[msg.messageId];
+      var resp = msg.payload && msg.payload.response;
+      if (resp && resp.status === "error") p.reject(resp.error || new Error("ui action failed"));
+      else p.resolve(resp);
     });
     setTimeout(function () { emit("ready", {}); }, 0);
   }
 
-  function bridgeRequest(method, params) {
+  function bridgeRequest(type, payload) {
     return new Promise(function (resolve, reject) {
-      var id = "br-" + (++rpcId);
-      bridgePending[id] = { resolve: resolve, reject: reject };
-      window.parent.postMessage({ jsonrpc: "2.0", id: id, method: method, params: params || {} }, "*");
+      var messageId = "br-" + (++rpcId);
+      bridgePending[messageId] = { resolve: resolve, reject: reject };
+      // Never hang: settle even if the host never answers.
+      setTimeout(function () {
+        if (bridgePending[messageId]) {
+          delete bridgePending[messageId];
+          reject(new Error("bridge request timed out"));
+        }
+      }, 15000);
+      window.parent.postMessage({ type: type, payload: payload || {}, messageId: messageId }, "*");
     });
   }
 
   function bridgePrompt(text) {
-    // Route into the BioRouter conversation; full in-iframe streaming is a
-    // host-bridge capability tracked separately.
-    return bridgeRequest("ui/message", { type: "append", text: text }).then(function () {
+    // Route the prompt into the BioRouter conversation (the host appends it to
+    // chat). Full in-iframe streaming is a host-bridge capability tracked
+    // separately; here we confirm the hand-off and notify the panel.
+    return bridgeRequest("prompt", { prompt: text }).then(function () {
       emit("message", { delta: "", note: "Sent to BioRouter. The agent's reply appears in the chat." });
       return { routed: true };
     });
@@ -122,14 +135,17 @@
     connect: function () { return transport === "acp-ws" ? acpConnect() : Promise.resolve(); },
     prompt: function (text) { return transport === "acp-ws" ? acpPrompt(text) : bridgePrompt(text); },
     callTool: function (name, args) {
-      if (transport === "bridge") return bridgeRequest("tools/call", { name: name, arguments: args || {} });
+      if (transport === "bridge") return bridgeRequest("tool", { toolName: name, params: args || {} });
       return acpConnect().then(function () { return acpRequest("session/prompt", { sessionId: sessionId, prompt: [{ type: "text", text: "Use tool " + name }] }); });
     }
   };
   window.BioRouterAgent = Agent;
 
-  // --- Auto-resize: report content height to the BioRouter host iframe --------
+  // --- Auto-resize: trigger a height report to the BioRouter host iframe -------
+  // The ResizeObserver + listeners live in resize.js (injected into every
+  // artifact); here we just nudge a fresh measurement after DOM mutations.
   function reportSize() {
+    if (typeof window.__brReportSize === "function") { window.__brReportSize(); return; }
     var h = Math.max(
       document.documentElement.scrollHeight,
       document.body ? document.body.scrollHeight : 0
@@ -142,20 +158,16 @@
 
   // --- Optional auto-mounted chat panel ---------------------------------------
   function mountChat() {
-    if (typeof ResizeObserver !== "undefined") {
-      var ro = new ResizeObserver(function () { reportSize(); });
-      ro.observe(document.documentElement);
-    }
-    window.addEventListener("load", reportSize);
-    setTimeout(reportSize, 60);
-
     var host = document.querySelector("[data-br-chat]");
     if (!host) return;
     host.classList.add("br-chat");
     var log = document.createElement("div"); log.className = "br-chat__log";
     var form = document.createElement("form"); form.className = "br-chat__form";
     var input = document.createElement("input"); input.className = "br-input"; input.placeholder = "Ask the agent…";
-    var send = document.createElement("button"); send.className = "br-btn"; send.type = "submit"; send.textContent = "Send";
+    // NB: the preview iframe is sandboxed "allow-scripts" only (no allow-forms),
+    // so real <form> submission is blocked by the browser. Drive sends from a
+    // plain button click + Enter key instead of the form's submit event.
+    var send = document.createElement("button"); send.className = "br-btn"; send.type = "button"; send.textContent = "Send";
     form.appendChild(input); form.appendChild(send);
     host.appendChild(log); host.appendChild(form);
 
@@ -185,12 +197,17 @@
     Agent.on("tool", function (u) { add("tool", "⚙ " + (u.title || u.toolCallId || "tool")); });
     Agent.on("error", function () { clearTyping(); add("agent", "⚠ Could not reach the agent."); });
 
-    form.addEventListener("submit", function (e) {
-      e.preventDefault();
+    function submitMsg() {
       var text = input.value.trim(); if (!text) return;
       add("user", text); input.value = ""; current = null; showTyping();
       Agent.prompt(text).catch(function () { clearTyping(); add("agent", "⚠ Failed to send."); });
+    }
+    send.addEventListener("click", submitMsg);
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submitMsg(); }
     });
+    // Backstop: suppress any implicit form submission (blocked by the sandbox).
+    form.addEventListener("submit", function (e) { e.preventDefault(); });
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", mountChat);
   else mountChat();
