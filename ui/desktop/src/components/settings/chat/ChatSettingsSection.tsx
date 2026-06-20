@@ -1,5 +1,6 @@
 import { ModeSection } from '../mode/ModeSection';
 import { ResponseStylesSection } from '../response_styles/ResponseStylesSection';
+import { CapabilitiesSection } from '../capabilities/CapabilitiesSection';
 import { BioRouterHintsSection } from './BioRouterHintsSection';
 import { SpellcheckToggle } from './SpellcheckToggle';
 
@@ -25,6 +26,20 @@ export default function ChatSettingsSection() {
         </p>
         <div className="border-t border-border-subtle pt-2">
           <ResponseStylesSection />
+        </div>
+      </div>
+
+      <div>
+        <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+          Capabilities
+        </h2>
+        <p className="text-xs text-text-muted mb-4">
+          Foundational, built-in abilities that make Biorouter more powerful. These are on by
+          default — leave them enabled to get the most out of Biorouter, or turn one off here if you
+          really need to.
+        </p>
+        <div className="border-t border-border-subtle pt-2">
+          <CapabilitiesSection />
         </div>
       </div>
 
