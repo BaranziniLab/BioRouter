@@ -165,3 +165,41 @@ actionable issues every 5 apps (see `ISSUES/`).
   survives — CLAUDE.md documents this; (b) a headless keyring-read failure should
   ideally degrade more gracefully (clear one-line cause + which env var to set),
   and (c) it argues for `XIAOMI_MIMO_API_KEY` via env for long unattended runs.
+
+### App 17 — premature stream stop (reliability)
+- 🐛 Build ended mid-sentence ("Now let me create the core PDB parser module:") with
+  only the package scaffold written (4 files, ~9 LOC), rc=0, NO error / rate-limit /
+  max-turns message. Looks like a clean stream truncation that ended the turn as if
+  complete. Indistinguishable from success without inspecting content — reinforces
+  the C2 "no done-vs-stopped signal" finding. Recovered via --resume.
+- ✅ C1 fix confirmed live: tool-call paths now render the in-project tail in full
+  (`path: ~/…/bio-protein-structure-py/src/bio_protein_structure/__init__.py`).
+
+### App 17 — interactive fix did NOT fully converge (test suite)
+- 🐛 After the initial build (premature stop), a resume completed the 1775-LOC
+  protein modules, but TWO explicit "create the pytest suite" turns produced only
+  tests/__init__.py — never actual test_*.py with assertions. pytest reports
+  "no tests collected". A rare case where the precise-failure→repair pattern did
+  NOT land: the agent kept acknowledging the request but not writing tests.
+  Accepted as partial (code complete, untested) to avoid starving other apps.
+  Hypothesis: something about this app's prompt/context made MiMo treat "tests
+  exist" as satisfied by the package __init__ + the pyproject testpaths config.
+
+### Cross-cutting — CLI binary disappeared mid-loop (environmental)
+- 🐛 Apps 19 & 20 failed with empty logs / 0 files: `target/debug/biorouter` (the
+  symlink target for ~/.local/bin/biorouter) was deleted between app18 and app19
+  — most likely a concurrent `cargo clean`/rebuild in the BioRouter workspace.
+  build_app.sh's `biorouter run` hit a dangling symlink and produced nothing.
+- ✅ Recovered: rebuilt + re-signed the binary, re-ran the two apps. Reinforces
+  that long unattended loops should pin a stable, installed CLI (or set
+  XIAOMI_MIMO_API_KEY via env + a copied binary) rather than a dev-target symlink
+  that shared workspace activity can invalidate.
+
+### App 20 — CLI integration tests assume install (variant of src-layout gotcha)
+- 🐛 3 of 97 tests fail with `assert 32512 == 0` (32512 = exit 127, command not
+  found): the CLI integration tests shell out to the CLI entry-point as a
+  subprocess, which isn't on PATH in a clean venv (no `pip install -e .`). The 94
+  algorithm/unit tests pass. The agent writes CLI tests that aren't runnable from a
+  clean checkout — the CLI analog of the app-5 src-layout issue. One fix turn did
+  not resolve it (it should invoke `python -m <pkg>` with pythonpath, or call the
+  CLI function directly, instead of a bare command name). Accepted at 94/97.
