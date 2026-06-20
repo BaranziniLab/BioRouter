@@ -69,7 +69,8 @@ fn git_context_block(cwd: &std::path::Path) -> String {
         _ => return String::new(),
     }
 
-    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+    let branch =
+        git(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
     let dirty = git(&["status", "--porcelain"])
         .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
         .unwrap_or(0);
@@ -100,13 +101,46 @@ fn git_context_block(cwd: &std::path::Path) -> String {
 /// Parameters for the screen_capture tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ScreenCaptureParams {
-    /// The display number to capture (0 is main display)
+    /// The 0-based display index to capture. If omitted, the primary display is
+    /// captured. Every display capture also reports the full list of connected
+    /// displays (with indices), so on a multi-monitor setup you can re-capture
+    /// another screen by its index.
     #[serde(default)]
     pub display: Option<u64>,
 
-    /// Optional: the exact title of the window to capture.
-    /// Use the list_windows tool to find the available windows.
+    /// Optional: the title (or any substring of it, case-insensitive) of the
+    /// window to capture. Use the list_windows tool to find available windows.
     pub window_title: Option<String>,
+}
+
+/// Produce a compact, agent-readable description of every connected display:
+/// index, name, resolution, position, scale factor, and which one is primary.
+/// `screen_capture` includes this on each display capture so the agent always
+/// knows how many screens exist and which index is which — directly avoiding
+/// the multi-monitor failure where it only ever sees display 0 and reports the
+/// rest as "not found". Cross-platform via xcap (macOS/Windows/Linux).
+fn describe_monitors(monitors: &[Monitor]) -> String {
+    let mut out = String::from("Connected displays:");
+    for (i, m) in monitors.iter().enumerate() {
+        let name = m.name().unwrap_or_else(|_| "unknown".to_string());
+        let w = m.width().unwrap_or(0);
+        let h = m.height().unwrap_or(0);
+        let x = m.x().unwrap_or(0);
+        let y = m.y().unwrap_or(0);
+        let primary = if m.is_primary().unwrap_or(false) {
+            " [primary]"
+        } else {
+            ""
+        };
+        let scale = m.scale_factor().unwrap_or(1.0);
+        out.push_str(&format!(
+            "\n  {i}: \"{name}\" {w}x{h} at ({x},{y}) scale {scale:.1}{primary}"
+        ));
+    }
+    out.push_str(
+        "\nPass the 0-based `display` index above to screen_capture to grab a specific screen.",
+    );
+    out
 }
 
 /// Parameters for the text_editor tool
@@ -708,7 +742,7 @@ impl DeveloperServer {
     /// Only one of display or window_title should be specified.
     #[tool(
         name = "screen_capture",
-        description = "Capture a screenshot of a specified display or window. You can capture either: 1. A full display (monitor) using the display parameter 2. A specific window by its title using the window_title parameter. Only one of display or window_title should be specified."
+        description = "Capture a screenshot of a display or a window. Capture either: 1. a full display via the 0-based `display` index (omit it to capture the primary display; the result lists every connected display with its index so you can target other monitors), or 2. a specific window via `window_title` (case-insensitive substring match; on no match the result lists the open window titles). Specify only one of `display` or `window_title`. Works across macOS, Windows, and Linux."
     )]
     pub async fn screen_capture(
         &self,
@@ -716,8 +750,19 @@ impl DeveloperServer {
     ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
 
+        // Human/agent-readable note describing what was captured and, for
+        // display captures, the full multi-monitor topology. Reporting the
+        // topology on every capture is what lets the agent realise it has more
+        // than one screen (and which index is which) instead of repeatedly
+        // capturing display 0 and reporting things "not found".
+        // Assigned in each branch below (deferred init).
+        let capture_note: String;
+
         let mut image = if let Some(window_title) = &params.window_title {
-            // Try to find and capture the specified window
+            // Try to find and capture the specified window. Match case-insensitively
+            // and by substring: real window titles are noisy (e.g. "Slack | general
+            // | Acme") so requiring an exact match is the main reason window capture
+            // "fails to find" an app that is clearly open.
             let windows = Window::all().map_err(|_| {
                 ErrorData::new(
                     ErrorCode::INTERNAL_ERROR,
@@ -726,28 +771,58 @@ impl DeveloperServer {
                 )
             })?;
 
+            let needle = window_title.to_lowercase();
+            let titles: Vec<String> = windows
+                .iter()
+                .filter_map(|w| w.title().ok())
+                .filter(|t| !t.is_empty())
+                .collect();
+
+            // Prefer an exact (case-insensitive) match, then fall back to substring.
             let window = windows
-                .into_iter()
-                .find(|w| w.title().is_ok_and(|t| &t == window_title))
+                .iter()
+                .find(|w| {
+                    w.title()
+                        .is_ok_and(|t| t.eq_ignore_ascii_case(window_title))
+                })
+                .or_else(|| {
+                    windows
+                        .iter()
+                        .find(|w| w.title().is_ok_and(|t| t.to_lowercase().contains(&needle)))
+                })
                 .ok_or_else(|| {
                     ErrorData::new(
                         ErrorCode::INTERNAL_ERROR,
-                        format!("No window found with title '{}'", window_title),
+                        format!(
+                            "No open window matches '{}'. Available window titles:\n{}\n\nPick one \
+                             of the titles above (a substring is enough), or capture a whole \
+                             display instead.",
+                            window_title,
+                            if titles.is_empty() {
+                                "  (none — no titled windows are currently open)".to_string()
+                            } else {
+                                titles
+                                    .iter()
+                                    .map(|t| format!("  - {t}"))
+                                    .collect::<Vec<_>>()
+                                    .join("\n")
+                            }
+                        ),
                         None,
                     )
                 })?;
 
+            let matched_title = window.title().unwrap_or_default();
+            capture_note = format!("Captured window '{matched_title}'.");
+
             window.capture_image().map_err(|e| {
                 ErrorData::new(
                     ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to capture window '{}': {}", window_title, e),
+                    format!("Failed to capture window '{}': {}", matched_title, e),
                     None,
                 )
             })?
         } else {
-            // Default to display capture if no window title is specified
-            let display = params.display.unwrap_or(0) as usize;
-
             let monitors = Monitor::all().map_err(|_| {
                 ErrorData::new(
                     ErrorCode::INTERNAL_ERROR,
@@ -755,18 +830,43 @@ impl DeveloperServer {
                     None,
                 )
             })?;
+            if monitors.is_empty() {
+                return Err(ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    "No displays were detected.".to_string(),
+                    None,
+                ));
+            }
+
+            let topology = describe_monitors(&monitors);
+
+            // Default to the *primary* display rather than index 0: on
+            // multi-monitor setups Monitor::all() ordering is not guaranteed, so
+            // index 0 is frequently the wrong (secondary) screen.
+            let display = match params.display {
+                Some(d) => d as usize,
+                None => monitors
+                    .iter()
+                    .position(|m| m.is_primary().unwrap_or(false))
+                    .unwrap_or(0),
+            };
 
             let monitor = monitors.get(display).ok_or_else(|| {
                 ErrorData::new(
                     ErrorCode::INTERNAL_ERROR,
                     format!(
-                        "{} was not an available monitor, {} found.",
+                        "Display {} does not exist. {} display(s) are connected (valid indices \
+                         0..={}).\n{}",
                         display,
-                        monitors.len()
+                        monitors.len(),
+                        monitors.len() - 1,
+                        topology
                     ),
                     None,
                 )
             })?;
+
+            capture_note = format!("Captured display {}.\n{}", display, topology);
 
             monitor.capture_image().map_err(|e| {
                 ErrorData::new(
@@ -806,8 +906,13 @@ impl DeveloperServer {
 
         // Return two Content objects like the old implementation:
         // one text for Assistant, one image with priority 0.0
+        let note = if capture_note.is_empty() {
+            "Screenshot captured".to_string()
+        } else {
+            format!("Screenshot captured. {capture_note}")
+        };
         Ok(CallToolResult::success(vec![
-            Content::text("Screenshot captured").with_audience(vec![Role::Assistant]),
+            Content::text(note).with_audience(vec![Role::Assistant]),
             Content::image(data, "image/png").with_priority(0.0),
         ]))
     }
@@ -1674,6 +1779,37 @@ impl DeveloperServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn describe_monitors_empty_is_safe_and_explains_indexing() {
+        // Must not panic on zero monitors and must always tell the agent how
+        // the `display` index works.
+        let s = describe_monitors(&[]);
+        assert!(s.contains("Connected displays:"));
+        assert!(s.contains("display"));
+    }
+
+    #[test]
+    fn describe_monitors_lists_each_connected_display_with_index() {
+        // Environment-dependent: only assert structure when displays exist
+        // (headless CI may have none).
+        if let Ok(monitors) = Monitor::all() {
+            if !monitors.is_empty() {
+                let s = describe_monitors(&monitors);
+                assert!(s.contains("0:"), "should index the first display: {s}");
+                // One line per monitor plus the header and the trailing hint.
+                let display_lines = s
+                    .lines()
+                    .filter(|l| l.trim_start().starts_with(|c: char| c.is_ascii_digit()))
+                    .count();
+                assert_eq!(
+                    display_lines,
+                    monitors.len(),
+                    "every connected display should be listed: {s}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn test_text_editor_params_accepts_file_path_alias() {

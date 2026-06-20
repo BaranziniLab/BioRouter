@@ -767,6 +767,7 @@ mod tests {
         use crate::providers::anthropic::AnthropicProvider;
         use crate::providers::google::GoogleProvider;
         use crate::providers::openai::OpenAiProvider;
+        use crate::providers::xiaomi_mimo::XiaomiMimoProvider;
 
         let cases: Vec<(ProviderMetadata, &str, &str)> = vec![
             (
@@ -779,6 +780,11 @@ mod tests {
                 GoogleProvider::metadata(),
                 "gemini-2.5-pro",
                 "Google Gemini 2.5 Pro",
+            ),
+            (
+                XiaomiMimoProvider::metadata(),
+                "mimo-v2.5-pro",
+                "Xiaomi MiMo v2.5 Pro",
             ),
         ];
 

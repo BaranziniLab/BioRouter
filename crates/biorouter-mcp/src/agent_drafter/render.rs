@@ -317,8 +317,14 @@ mod tests {
         for kind in [ArtifactKind::Static, ArtifactKind::Agentic] {
             let m = manifest(kind);
             let out = assemble_preview(&m, "<html><head></head><body></body></html>");
-            assert!(out.contains("__brReportSize"), "{kind:?} missing resize reporter");
-            assert!(out.contains("ui-size-change"), "{kind:?} missing ui-size-change");
+            assert!(
+                out.contains("__brReportSize"),
+                "{kind:?} missing resize reporter"
+            );
+            assert!(
+                out.contains("ui-size-change"),
+                "{kind:?} missing ui-size-change"
+            );
         }
     }
 

@@ -8,7 +8,7 @@ use super::utils::{
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
 use crate::providers::base::{
-    ConfigKey, MessageStream, Provider, ProviderMetadata, ProviderUsage, Usage,
+    ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage,
 };
 use crate::providers::formats::openai::{create_request, get_usage, response_to_message};
 use anyhow::Result;
@@ -82,12 +82,25 @@ impl XiaomiMimoProvider {
 #[async_trait]
 impl Provider for XiaomiMimoProvider {
     fn metadata() -> ProviderMetadata {
-        ProviderMetadata::new(
+        // The MiMo v2.5 / v2 families are natively multimodal (vision-capable).
+        // Declaring `.with_vision()` here — exactly as the Anthropic and OpenAI
+        // providers do for their vision models — lets the rest of the harness
+        // and the UI treat MiMo as image-capable (e.g. screenshots from the
+        // Computer Controller's screen_capture tool). Images themselves already
+        // flow through the shared OpenAI wire format used below; this declares
+        // the capability so it is surfaced consistently rather than implied.
+        let models = XIAOMI_MIMO_KNOWN_MODELS
+            .iter()
+            .map(|&name| {
+                ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit()).with_vision()
+            })
+            .collect();
+        ProviderMetadata::with_models(
             "xiaomi_mimo",
             "Xiaomi MiMo",
             "Xiaomi MiMo models via an OpenAI-compatible API. Set XIAOMI_MIMO_HOST to your MiMo endpoint.",
             XIAOMI_MIMO_DEFAULT_MODEL,
-            XIAOMI_MIMO_KNOWN_MODELS.to_vec(),
+            models,
             XIAOMI_MIMO_DOC_URL,
             vec![
                 ConfigKey::new("XIAOMI_MIMO_API_KEY", true, true, None),
