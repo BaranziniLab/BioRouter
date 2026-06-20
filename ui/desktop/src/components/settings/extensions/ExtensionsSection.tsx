@@ -13,6 +13,7 @@ import {
 } from './utils';
 
 import { activateExtensionDefault, deleteExtension, toggleExtensionDefault } from './index';
+import { isCapabilityExtension } from '../capabilities/capabilities';
 import { toastService } from '../../../toasts';
 import type { ExtensionConfig } from '../../../api/types.gen';
 import { BrxtInstallModal } from '../../BrxtInstallModal';
@@ -60,26 +61,32 @@ export default function ExtensionsSection({
   const extensions = useMemo(() => {
     if (extensionsList.length === 0) return [];
 
-    return [...extensionsList]
-      .sort((a, b) => {
-        // First sort by builtin
-        if (a.type === 'builtin' && b.type !== 'builtin') return -1;
-        if (a.type !== 'builtin' && b.type === 'builtin') return 1;
+    return (
+      [...extensionsList]
+        // Foundational capabilities (Developer, Extension Manager, Skills, Todo,
+        // Memory, Knowledge) are managed in Settings → Chat → Capabilities, not
+        // in the Extensions sub-panel.
+        .filter((ext) => !isCapabilityExtension(ext))
+        .sort((a, b) => {
+          // First sort by builtin
+          if (a.type === 'builtin' && b.type !== 'builtin') return -1;
+          if (a.type !== 'builtin' && b.type === 'builtin') return 1;
 
-        // Then sort by bundled (handle null/undefined cases)
-        const aBundled = 'bundled' in a && a.bundled === true;
-        const bBundled = 'bundled' in b && b.bundled === true;
-        if (aBundled && !bBundled) return -1;
-        if (!aBundled && bBundled) return 1;
+          // Then sort by bundled (handle null/undefined cases)
+          const aBundled = 'bundled' in a && a.bundled === true;
+          const bBundled = 'bundled' in b && b.bundled === true;
+          if (aBundled && !bBundled) return -1;
+          if (!aBundled && bBundled) return 1;
 
-        // Finally sort alphabetically within each group
-        return a.name.localeCompare(b.name);
-      })
-      .map((ext) => ({
-        ...ext,
-        // Use selectedExtensions to determine enabled state in workflow editor
-        enabled: disableConfiguration ? selectedExtensions.includes(ext.name) : ext.enabled,
-      }));
+          // Finally sort alphabetically within each group
+          return a.name.localeCompare(b.name);
+        })
+        .map((ext) => ({
+          ...ext,
+          // Use selectedExtensions to determine enabled state in workflow editor
+          enabled: disableConfiguration ? selectedExtensions.includes(ext.name) : ext.enabled,
+        }))
+    );
   }, [extensionsList, disableConfiguration, selectedExtensions]);
 
   const fetchExtensions = useCallback(async () => {
