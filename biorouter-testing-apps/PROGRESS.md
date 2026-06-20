@@ -37,3 +37,6 @@ tmux. Model: **xiaomi_mimo / mimo-v2.5-pro**. Extensions: developer + todo.
 - [ ] Apps 1–5 + improvement round 1
 - [ ] Apps 6–10 + improvement round 2
 - [ ] … through 100
+| 18 | bio-blast-lite-rs | Rust | ☑ built + fixed | 3 | 13 | 2326 | **60 tests pass** (51 unit+9 integration); seed-extend BLAST; 1 integration fix turn |
+| 19 | bio-genome-assembly-py | Python | ☑ built | 3 | 17 | 3020 | **70 tests pass** out-of-box (OLC+deBruijn assembler, N50); recovered after binary-delete |
+| 20 | bio-motif-finder-py | Python | ☑ built (94/97) | 5 | 20 | 3362 | **94 tests pass** (Gibbs/MEME/PWM); 3 CLI-integration tests need pkg install (exit 127) |
