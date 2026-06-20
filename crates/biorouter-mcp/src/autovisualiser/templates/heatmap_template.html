@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Heatmap</title>
+    {{ASSETS}}
+    <script>{{COMMON}}</script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: auto; }
+        .header { padding: 20px 30px 0; text-align: center; }
+        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
+        #chart { display: block; margin: 10px auto; }
+        text { fill: var(--text); }
+        .tooltip { position: absolute; background: var(--text); color: var(--surface); padding: 6px 9px; border-radius: 6px; font-size: 12px; pointer-events: none; opacity: 0; transition: opacity .15s; z-index: 10; }
+    </style>
+</head>
+<body>
+    <div class="viz-root">
+        <div class="container">
+            <div class="header"><h1 id="title">Heatmap</h1></div>
+            <svg id="chart"></svg>
+        </div>
+    </div>
+    <div class="tooltip" id="tooltip"></div>
+    <script>
+        const heatmapData = {{HEATMAP_DATA}};
+        BioRouterViz.autoResize();
+        BioRouterViz.guard(function () {
+            BioRouterViz.applyPageTheme();
+            if (heatmapData.title) document.getElementById('title').textContent = heatmapData.title;
+
+            const xs = heatmapData.xLabels, ys = heatmapData.yLabels, vals = heatmapData.values;
+            const cell = 38;
+            const margin = { top: 70, right: 80, bottom: 30, left: 110 };
+            const w = margin.left + xs.length * cell + margin.right;
+            const h = margin.top + ys.length * cell + margin.bottom;
+            const svg = d3.select('#chart').attr('width', w).attr('height', h);
+            const tooltip = d3.select('#tooltip');
+
+            let flat = [];
+            vals.forEach(function (row) { row.forEach(function (v) { if (isFinite(v)) flat.push(v); }); });
+            const vmin = d3.min(flat), vmax = d3.max(flat);
+            const span = (vmax - vmin) || 1;
+
+            const g = svg.append('g').attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+            ys.forEach(function (yl, r) {
+                xs.forEach(function (xl, c) {
+                    const v = vals[r][c];
+                    g.append('rect')
+                        .attr('x', c * cell).attr('y', r * cell).attr('width', cell - 2).attr('height', cell - 2)
+                        .attr('rx', 3)
+                        .attr('fill', isFinite(v) ? BioRouterViz.sequential((v - vmin) / span) : '#888')
+                        .on('mouseover', function (event) {
+                            tooltip.style('opacity', 1).html('<strong>' + yl + ' × ' + xl + '</strong><br/>' + v)
+                                .style('left', (event.pageX + 12) + 'px').style('top', (event.pageY - 10) + 'px');
+                        })
+                        .on('mouseout', function () { tooltip.style('opacity', 0); });
+                });
+            });
+            // Column labels (rotated) and row labels.
+            xs.forEach(function (xl, c) {
+                g.append('text').attr('x', c * cell + cell / 2).attr('y', -8)
+                    .attr('text-anchor', 'start').attr('transform', 'rotate(-45,' + (c * cell + cell / 2) + ',-8)')
+                    .style('font-size', '11px').text(xl);
+            });
+            ys.forEach(function (yl, r) {
+                g.append('text').attr('x', -8).attr('y', r * cell + cell / 2).attr('dy', 4)
+                    .attr('text-anchor', 'end').style('font-size', '11px').text(yl);
+            });
+            // Simple legend.
+            const lg = svg.append('g').attr('transform', 'translate(' + (margin.left + xs.length * cell + 16) + ',' + margin.top + ')');
+            const steps = 40, lh = Math.min(180, ys.length * cell);
+            for (let i = 0; i < steps; i++) {
+                lg.append('rect').attr('x', 0).attr('y', (lh * i) / steps).attr('width', 14).attr('height', lh / steps + 1)
+                    .attr('fill', BioRouterViz.sequential(1 - i / steps));
+            }
+            lg.append('text').attr('x', 18).attr('y', 6).style('font-size', '10px').text(vmax.toFixed(2));
+            lg.append('text').attr('x', 18).attr('y', lh).style('font-size', '10px').text(vmin.toFixed(2));
+
+            BioRouterViz.reportSize();
+        });
+    </script>
+</body>
+</html>

@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dendrogram</title>
+    {{ASSETS}}
+    <script>{{COMMON}}</script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: auto; }
+        .header { padding: 20px 30px 0; text-align: center; }
+        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
+        #chart { display: block; margin: 10px auto; }
+        .link { fill: none; stroke: var(--muted); stroke-opacity: 0.7; }
+        text { fill: var(--text); font-size: 12px; }
+    </style>
+</head>
+<body>
+    <div class="viz-root">
+        <div class="container">
+            <div class="header"><h1 id="title">Dendrogram</h1></div>
+            <svg id="chart"></svg>
+        </div>
+    </div>
+    <script>
+        const dendrogramData = {{DENDROGRAM_DATA}};
+        BioRouterViz.autoResize();
+        BioRouterViz.guard(function () {
+            BioRouterViz.applyPageTheme();
+            document.getElementById('title').textContent = dendrogramData.name || 'Dendrogram';
+
+            const root = d3.hierarchy(dendrogramData);
+            const leaves = root.leaves().length;
+            const height = Math.max(220, leaves * 24 + 60);
+            const margin = { top: 20, right: 160, bottom: 20, left: 30 };
+            const innerW = 760;
+            const width = margin.left + innerW + margin.right;
+            const svg = d3.select('#chart').attr('width', width).attr('height', height + margin.top + margin.bottom);
+            const g = svg.append('g').attr('transform', 'translate(' + margin.left + ',' + margin.top + ')');
+
+            d3.cluster().size([height, innerW])(root);
+
+            g.selectAll('path.link').data(root.links()).join('path')
+                .attr('class', 'link')
+                .attr('d', function (d) {
+                    return 'M' + d.target.y + ',' + d.target.x
+                        + 'C' + (d.source.y + d.target.y) / 2 + ',' + d.target.x
+                        + ' ' + (d.source.y + d.target.y) / 2 + ',' + d.source.x
+                        + ' ' + d.source.y + ',' + d.source.x;
+                });
+
+            const node = g.selectAll('g.node').data(root.descendants()).join('g')
+                .attr('transform', function (d) { return 'translate(' + d.y + ',' + d.x + ')'; });
+            node.append('circle').attr('r', 4)
+                .attr('fill', function (d) { return d.children ? BioRouterViz.colors.muted : BioRouterViz.palette[0]; });
+            node.append('text')
+                .attr('dy', 3)
+                .attr('x', function (d) { return d.children ? -8 : 8; })
+                .attr('text-anchor', function (d) { return d.children ? 'end' : 'start'; })
+                .text(function (d) { return d.data.name; });
+
+            BioRouterViz.reportSize();
+        });
+    </script>
+</body>
+</html>

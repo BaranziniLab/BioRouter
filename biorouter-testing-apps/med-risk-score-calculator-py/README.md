@@ -1,0 +1,168 @@
+# med-risk-score-calculator
+
+A composable clinical risk-score calculator library and CLI in pure Python.
+
+## Features
+
+- **12 validated clinical risk scores** implemented as declarative models
+- **Generic computation engine** with input validation, point calculation, and risk classification
+- **Unit conversion helpers** for clinical measurements (temperature, pressure, weight, lab values)
+- **CLI and in-process API** for both interactive and programmatic use
+- **Clear error messages** with structured validation errors
+- **Comprehensive test suite** with textbook example reproduction
+
+## Included Risk Scores
+
+| Score | Clinical Domain | Points | Ref |
+|-------|----------------|--------|-----|
+| CHA₂DS₂-VASc | Stroke risk in AF | 0–9 | Lip 2010 |
+| HAS-BLED | Bleeding risk in AF | 0–9 | Pisters 2010 |
+| Wells (DVT) | Deep vein thrombosis | -2 to 8 | Wells 2003 |
+| Wells (PE) | Pulmonary embolism | 0–12 | Wells 2001 |
+| CURB-65 | Pneumonia severity | 0–5 | Lim 2003 |
+| MELD | Liver disease severity | 6–40 | Malinchoc 2000 |
+| MELD-Na | Liver disease (with Na) | 6–40 | Leise 2014 |
+| qSOFA | Sepsis screening | 0–3 | Singer 2016 |
+| Framingham Risk Score | 10-yr CHD risk | points | Wilson 1998 |
+| ASCVD 10-Year | Cardiovascular risk | % | Goff 2014 |
+| APACHE II-lite | ICU severity | 0–71 | Knaus 1985 |
+
+## Installation
+
+```bash
+pip install -e ".[dev]"
+```
+
+## Quick Start
+
+### Python API
+
+```python
+from med_risk_scores import compute
+
+# CHA₂DS₂-VASc: 72-year-old female with hypertension and diabetes
+result = compute("cha2ds2_vasc", {
+    "chf": False,
+    "hypertension": True,
+    "age": 72,
+    "diabetes": True,
+    "stroke_tia": False,
+    "vascular_disease": False,
+    "sex_female": True,
+})
+
+print(f"Score: {result.total_score}")
+print(f"Risk: {result.risk_label}")
+print(f"Interpretation: {result.interpretation}")
+print(f"Contributions: {result.contributions}")
+```
+
+### CLI
+
+```bash
+# List available scores
+med-risk-score list
+
+# Compute a score
+med-risk-score compute cha2ds2_vasc \
+    --chf 0 --hypertension 1 --age 72 \
+    --diabetes 1 --stroke-tia 0 \
+    --vascular-disease 0 --sex-female 1
+
+# JSON output
+med-risk-score compute cha2ds2_vasc --json --pretty < inputs.json
+
+# Show score details
+med-risk-score info wells_pe
+```
+
+### Unit Conversions
+
+```python
+from med_risk_scores.units import convert, to_celsius, bmi
+
+# Temperature conversion
+temp_c = convert(98.6, "F", "C")  # 37.0
+
+# Creatinine conversion
+cr_umol = convert(1.2, "mg/dL", "µmol/L")  # 106.08
+
+# BMI calculation
+bmi_val = bmi(weight_kg=70, height_m=1.75)  # 22.86
+```
+
+## Architecture
+
+```
+src/med_risk_scores/
+├── __init__.py         # Package API
+├── registry.py         # Score registry and DSL
+├── engine.py           # Generic computation engine
+├── validate.py         # Input validation
+├── units.py            # Unit conversion helpers
+├── cli.py              # Command-line interface
+└── scores/
+    ├── __init__.py     # Registers all scores
+    ├── cha2ds2_vasc.py # Stroke risk
+    ├── has_bled.py     # Bleeding risk
+    ├── wells.py        # DVT/PE
+    ├── curb65.py       # Pneumonia
+    ├── meld.py         # Liver disease
+    ├── qsofa.py        # Sepsis
+    ├── framingham.py   # Cardiovascular
+    └── apache_ii.py    # ICU severity
+```
+
+### DSL Design
+
+Each risk score is defined declaratively:
+
+```python
+@score_definition(
+    name="my_score",
+    display_name="My Score",
+    description="...",
+    variables=[
+        VariableSpec(name="age", var_type="numeric", min_value=0, max_value=130, unit="years"),
+        VariableSpec(name="diabetes", var_type="boolean"),
+    ],
+    categories=[
+        RiskCategory(min_score=0, max_score=2, label="Low", interpretation="..."),
+        RiskCategory(min_score=3, max_score=10, label="High", interpretation="..."),
+    ],
+)
+def my_score(inputs: Dict[str, Any]) -> Tuple[float, Dict[str, float]]:
+    points = {}
+    points["Age >= 65"] = 1.0 if inputs["age"] >= 65 else 0.0
+    points["Diabetes"] = 1.0 if inputs["diabetes"] else 0.0
+    return sum(points.values()), points
+```
+
+## Development
+
+```bash
+# Install dev dependencies
+pip install -e ".[dev]"
+
+# Run tests
+pytest
+
+# Run with coverage
+pytest --cov=med_risk_scores
+```
+
+## Testing
+
+The test suite verifies:
+
+- **Textbook example values**: Each score reproduces known clinical examples
+- **Input validation**: Rejects out-of-range/missing values with clear errors
+- **Edge cases**: Boundary values, extreme inputs
+- **Interpretation thresholds**: Correct risk category assignment
+- **Unit conversions**: All conversion paths
+- **CLI**: Commands produce correct output
+- **Engine**: Full pipeline validation → compute → classify
+
+## License
+
+MIT

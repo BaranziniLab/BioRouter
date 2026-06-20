@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Choropleth Map</title>
+    {{ASSETS}}
+    <script>{{COMMON}}</script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
+        .container { max-width: 1200px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; }
+        .header { padding: 18px 30px 8px; text-align: center; }
+        .header h1 { margin: 0; font-size: 1.4em; font-weight: 300; color: var(--text); }
+        #map { width: 100%; height: 560px; }
+        .legend { background: var(--surface); color: var(--text); padding: 8px 10px; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,0.3); font-size: 12px; line-height: 18px; }
+        .legend i { display: inline-block; width: 14px; height: 14px; margin-right: 6px; vertical-align: middle; }
+        .info-box { background: var(--surface); color: var(--text); padding: 6px 10px; border-radius: 6px; box-shadow: 0 1px 4px rgba(0,0,0,0.3); font-size: 13px; }
+    </style>
+</head>
+<body>
+    <div class="viz-root">
+        <div class="container">
+            <div class="header"><h1 id="title">Choropleth Map</h1></div>
+            <div id="map"></div>
+        </div>
+    </div>
+    <script>
+        const choroplethData = {{CHOROPLETH_DATA}};
+        BioRouterViz.autoResize();
+        BioRouterViz.guard(function () {
+            if (choroplethData.title) document.getElementById('title').textContent = choroplethData.title;
+            if (typeof L === 'undefined') throw new Error('Leaflet failed to load.');
+
+            const valueProp = choroplethData.valueProperty;
+            const idProp = choroplethData.idProperty;
+            const nameProp = choroplethData.nameProperty;
+            const values = choroplethData.values || null;
+
+            function featureValue(f) {
+                const props = f.properties || {};
+                if (valueProp && props[valueProp] != null) return +props[valueProp];
+                if (values && idProp && props[idProp] != null && values[props[idProp]] != null) return +values[props[idProp]];
+                if (values && props.id != null && values[props.id] != null) return +values[props.id];
+                return null;
+            }
+            function featureName(f) {
+                const props = f.properties || {};
+                if (nameProp && props[nameProp] != null) return props[nameProp];
+                return props.name || props.NAME || (idProp && props[idProp]) || '';
+            }
+
+            const allVals = (choroplethData.geojson.features || []).map(featureValue).filter(function (v) { return v != null && isFinite(v); });
+            if (!allVals.length) throw new Error('No numeric values found for the regions.');
+            const vmin = Math.min.apply(null, allVals), vmax = Math.max.apply(null, allVals);
+            const span = (vmax - vmin) || 1;
+            function color(v) { return v == null ? (BioRouterViz.dark ? '#444' : '#ccc') : BioRouterViz.sequential((v - vmin) / span); }
+
+            const map = L.map('map');
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap', maxZoom: 18 }).addTo(map);
+
+            const info = L.control();
+            info.onAdd = function () { this._div = L.DomUtil.create('div', 'info-box'); this.update(); return this._div; };
+            info.update = function (props, v) {
+                this._div.innerHTML = props ? ('<strong>' + featureName({ properties: props }) + '</strong>: ' + (v == null ? 'n/a' : v)) : 'Hover a region';
+            };
+            info.addTo(map);
+
+            const layer = L.geoJSON(choroplethData.geojson, {
+                style: function (f) {
+                    return { fillColor: color(featureValue(f)), weight: 1, color: '#fff', fillOpacity: 0.8 };
+                },
+                onEachFeature: function (f, lyr) {
+                    const v = featureValue(f);
+                    lyr.bindPopup('<strong>' + featureName(f) + '</strong><br/>' + (v == null ? 'n/a' : v));
+                    lyr.on('mouseover', function (e) { e.target.setStyle({ weight: 3, color: '#333' }); info.update(f.properties, v); });
+                    lyr.on('mouseout', function (e) { layer.resetStyle(e.target); info.update(); });
+                }
+            }).addTo(map);
+
+            if (choroplethData.center) {
+                map.setView([choroplethData.center.lat, choroplethData.center.lng], choroplethData.zoom || 4);
+            } else {
+                try { map.fitBounds(layer.getBounds().pad(0.05)); } catch (e) { map.setView([20, 0], 2); }
+            }
+
+            const legend = L.control({ position: 'bottomright' });
+            legend.onAdd = function () {
+                const div = L.DomUtil.create('div', 'legend');
+                if (choroplethData.legendTitle) div.innerHTML += '<strong>' + choroplethData.legendTitle + '</strong><br/>';
+                const steps = 5;
+                for (let i = 0; i < steps; i++) {
+                    const v = vmin + (span * i) / (steps - 1);
+                    div.innerHTML += '<i style="background:' + color(v) + '"></i>' + v.toFixed(1) + '<br/>';
+                }
+                return div;
+            };
+            legend.addTo(map);
+
+            setTimeout(function () { map.invalidateSize(); BioRouterViz.reportSize(); }, 200);
+        });
+    </script>
+</body>
+</html>

@@ -230,6 +230,42 @@ settings provider grid, `biorouter configure`).
   (real server + tiny Qwen3.5 0.8B, ~0.5 GB one-time download):
   `BIOROUTER_LLAMACPP_BIN=ui/desktop/src/bin/llamacpp/llama-server cargo test -p biorouter --test llamacpp_integration -- --ignored --test-threads=1`
 
+### Auto Visualiser feature
+
+The Auto Visualiser (`autovisualiser`) built-in MCP server turns structured data
+into self-contained interactive HTML figures, returned as `ui://…` resources and
+rendered inline in chat (sandboxed iframe via `@mcp-ui` + the `/mcp-ui-proxy`).
+
+- **Module:** `crates/biorouter-mcp/src/autovisualiser/` — `mod.rs` (router +
+  the 8 original tools), `common.rs` (shared infra), `tools_extra.rs` (Mermaid
+  wrappers), `tools_charts.rs` (Chart.js), `tools_d3.rs` (D3), `tools_geo.rs`
+  (Leaflet), `tests.rs` + `tests_extra.rs`. The `tools_*.rs` files are
+  `include!`d into `mod.rs`; each defines a `#[tool_router(router = …)]` impl
+  block, combined in `new()` via `ToolRouter` `+`.
+- **Shared pipeline (`common.rs`):** validate → JSON-encode safely (`js_data`
+  neutralises `</script>` breakout) → `assemble` template with `{{ASSETS}}` +
+  `{{COMMON}}` (the shared `templates/_common.js`: theme, palette, auto-resize,
+  global error card) → base64 `ui://` blob (`finish`). Every tool also enforces
+  size limits + semantic checks and returns a friendly `INVALID_PARAMS` message
+  instead of producing a broken figure.
+- **Tools (33):** charts (`show_chart`, `render_histogram`, `render_boxplot`,
+  `render_bubble`, `render_area`, `render_radar`, `render_donut`, `render_gauge`);
+  scientific (`render_volcano`, `render_manhattan`, `render_kaplan_meier`,
+  `render_forest`); relationships/hierarchies (`render_network`, `render_sankey`,
+  `render_chord`, `render_heatmap`, `render_treemap`, `render_sunburst`,
+  `render_dendrogram`, `render_wordcloud`, `render_calendar_heatmap`); diagrams
+  (`render_mermaid` + typed wrappers `render_flowchart`/`gantt`/`sequence`/
+  `mindmap`/`timeline`/`er_diagram`/`state_diagram`/`class_diagram`); geo
+  (`render_map`, `render_choropleth`).
+- **Assets:** libraries (D3, Chart.js, Leaflet, Mermaid) are inlined by default
+  for offline use. `BIOROUTER_AUTOVIS_CDN=1` switches to pinned CDN tags, which
+  shrinks the persisted/reloaded blob from megabytes to a few KB (recommended if
+  large Mermaid diagrams fail to re-render on chat reopen).
+  `BIOROUTER_AUTOVIS_DEBUG=1` (or debug builds) dumps generated HTML to the app
+  cache dir (`<cache>/autovisualiser/<name>-<pid>.html`).
+- **Tests:** `cargo test -p biorouter-mcp --lib autovisualiser` (happy paths,
+  edge cases, escaping, lenient enum parsing).
+
 ### Communication Flow
 
 ```

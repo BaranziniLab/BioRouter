@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gauge</title>
+    {{ASSETS}}
+    <script>{{COMMON}}</script>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; padding: 20px; }
+        .container { max-width: 560px; margin: 0 auto; background: var(--surface); border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); overflow: hidden; }
+        .header { padding: 24px 30px 0; text-align: center; }
+        .header h1 { margin: 0; font-size: 1.5em; font-weight: 300; color: var(--text); }
+        .chart-wrap { padding: 16px 30px 30px; position: relative; height: 300px; }
+    </style>
+</head>
+<body>
+    <div class="viz-root">
+        <div class="container">
+            <div class="header"><h1 id="title">Gauge</h1></div>
+            <div class="chart-wrap"><canvas id="chart"></canvas></div>
+        </div>
+    </div>
+    <script>
+        const gaugeData = {{GAUGE_DATA}};
+        BioRouterViz.autoResize();
+        BioRouterViz.guard(function () {
+            BioRouterViz.applyPageTheme();
+            BioRouterViz.applyChartDefaults();
+            if (gaugeData.title) document.getElementById('title').textContent = gaugeData.title;
+
+            const min = (typeof gaugeData.min === 'number') ? gaugeData.min : 0;
+            const max = (typeof gaugeData.max === 'number') ? gaugeData.max : 100;
+            const value = Math.max(min, Math.min(max, gaugeData.value));
+            const frac = (value - min) / (max - min);
+
+            // Pick colour from the first ascending threshold band that contains the value.
+            let color = BioRouterViz.palette[0];
+            if (Array.isArray(gaugeData.thresholds) && gaugeData.thresholds.length) {
+                const sorted = gaugeData.thresholds.slice().sort(function (a, b) { return a.value - b.value; });
+                for (let i = 0; i < sorted.length; i++) {
+                    if (value <= sorted[i].value) { color = sorted[i].color; break; }
+                    color = sorted[i].color;
+                }
+            }
+            const track = BioRouterViz.dark ? '#3a4150' : '#e5e7eb';
+
+            const centerText = {
+                id: 'centerText',
+                afterDraw: function (chart) {
+                    const ctx = chart.ctx;
+                    const cx = (chart.chartArea.left + chart.chartArea.right) / 2;
+                    const cy = chart.chartArea.bottom - 8;
+                    ctx.save();
+                    ctx.textAlign = 'center';
+                    ctx.fillStyle = BioRouterViz.colors.text;
+                    ctx.font = '600 34px -apple-system, sans-serif';
+                    ctx.fillText(String(Math.round(value * 100) / 100), cx, cy - 18);
+                    if (gaugeData.label) {
+                        ctx.fillStyle = BioRouterViz.colors.muted;
+                        ctx.font = '14px -apple-system, sans-serif';
+                        ctx.fillText(gaugeData.label, cx, cy + 4);
+                    }
+                    ctx.restore();
+                }
+            };
+
+            new Chart(document.getElementById('chart').getContext('2d'), {
+                type: 'doughnut',
+                data: { datasets: [{ data: [frac, 1 - frac], backgroundColor: [color, track], borderWidth: 0 }] },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    rotation: -90, circumference: 180, cutout: '72%',
+                    plugins: { legend: { display: false }, tooltip: { enabled: false } }
+                },
+                plugins: [centerText]
+            });
+            BioRouterViz.reportSize();
+        });
+    </script>
+</body>
+</html>

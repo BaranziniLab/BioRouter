@@ -10,6 +10,23 @@ pub const DEFAULT_INITIAL_RETRY_INTERVAL_MS: u64 = 1000;
 pub const DEFAULT_BACKOFF_MULTIPLIER: f64 = 2.0;
 pub const DEFAULT_MAX_RETRY_INTERVAL_MS: u64 = 30_000;
 
+/// Rate-limit (HTTP 429) responses are always transient, but sustained
+/// throttling (e.g. several concurrent sessions against one key) routinely lasts
+/// longer than the generic `max_retries` window (3 retries ≈ 7s). Give rate-limit
+/// errors a deeper dedicated budget so a transient 429 doesn't abort the turn.
+/// With the default 1s→2s backoff capped at 30s, 8 attempts span ~2 minutes.
+pub const RATE_LIMIT_MAX_RETRIES: usize = 8;
+
+/// The effective retry ceiling for a given error: rate-limit errors get the
+/// larger of the configured `max_retries` and [`RATE_LIMIT_MAX_RETRIES`].
+fn effective_max_retries(error: &ProviderError, config: &RetryConfig) -> usize {
+    if matches!(error, ProviderError::RateLimitExceeded { .. }) {
+        config.max_retries.max(RATE_LIMIT_MAX_RETRIES)
+    } else {
+        config.max_retries
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RetryConfig {
     /// Maximum number of retry attempts
@@ -95,12 +112,12 @@ where
         match operation().await {
             Ok(result) => return Ok(result),
             Err(error) => {
-                if should_retry(&error) && attempts < config.max_retries {
+                if should_retry(&error) && attempts < effective_max_retries(&error, config) {
                     attempts += 1;
                     tracing::warn!(
                         "Request failed, retrying ({}/{}): {:?}",
                         attempts,
-                        config.max_retries,
+                        effective_max_retries(&error, config),
                         error
                     );
 
@@ -141,12 +158,12 @@ pub trait ProviderRetry {
             return match operation().await {
                 Ok(result) => Ok(result),
                 Err(error) => {
-                    if should_retry(&error) && attempts < config.max_retries {
+                    if should_retry(&error) && attempts < effective_max_retries(&error, &config) {
                         attempts += 1;
                         tracing::warn!(
                             "Request failed, retrying ({}/{}): {:?}",
                             attempts,
-                            config.max_retries,
+                            effective_max_retries(&error, &config),
                             error
                         );
 
@@ -184,5 +201,49 @@ pub trait ProviderRetry {
 impl<P: Provider> ProviderRetry for P {
     fn retry_config(&self) -> RetryConfig {
         Provider::retry_config(self)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rate_limit_gets_deeper_retry_budget_than_generic() {
+        let config = RetryConfig::default();
+        assert_eq!(config.max_retries, DEFAULT_MAX_RETRIES);
+
+        // A transient 429 should be retried far more than the generic ceiling,
+        // because sustained throttling outlasts ~7s of generic retries.
+        let rate_limit = ProviderError::RateLimitExceeded {
+            details: "Too many requests".to_string(),
+            retry_delay: None,
+        };
+        assert_eq!(
+            effective_max_retries(&rate_limit, &config),
+            RATE_LIMIT_MAX_RETRIES
+        );
+        assert!(RATE_LIMIT_MAX_RETRIES > DEFAULT_MAX_RETRIES);
+
+        // Non-rate-limit retryable errors keep the generic ceiling.
+        let server = ProviderError::ServerError("boom".to_string());
+        assert_eq!(effective_max_retries(&server, &config), DEFAULT_MAX_RETRIES);
+
+        // should_retry still classifies rate limits as retryable.
+        assert!(should_retry(&rate_limit));
+    }
+
+    #[test]
+    fn rate_limit_budget_respects_a_higher_configured_max() {
+        // If a provider configures an even larger max_retries, keep theirs.
+        let config = RetryConfig {
+            max_retries: 20,
+            ..RetryConfig::default()
+        };
+        let rate_limit = ProviderError::RateLimitExceeded {
+            details: "x".to_string(),
+            retry_delay: None,
+        };
+        assert_eq!(effective_max_retries(&rate_limit, &config), 20);
     }
 }

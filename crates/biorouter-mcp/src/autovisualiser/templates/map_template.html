@@ -5,8 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Interactive Map Visualization</title>
     
+    {{ASSETS}}
+    <script>{{COMMON}}</script>
     <style>
-        {{LEAFLET_CSS}}
         
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -114,14 +115,6 @@
     <div class="container">
         <div id="map"></div>
     </div>
-
-    <script>
-        {{LEAFLET_JS}}
-    </script>
-    
-    <script>
-        {{MARKERCLUSTER_JS}}
-    </script>
 
     <script>
         // Data from the tool
@@ -271,8 +264,17 @@
         
         // Initialize everything when page loads
         window.addEventListener('load', function() {
-            initMap();
-            renderMarkers();
+            BioRouterViz.autoResize();
+            BioRouterViz.guard(function () {
+                initMap();
+                renderMarkers();
+                // Leaflet needs a redraw once it knows its real size, and the
+                // iframe needs the reported height so its dimensions match the map.
+                setTimeout(function () {
+                    if (map) map.invalidateSize();
+                    BioRouterViz.reportSize();
+                }, 200);
+            });
         });
     </script>
 </body>
