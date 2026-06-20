@@ -1,0 +1,6 @@
+[
+  {"code": "A00-B99", "description": "Infectious and parasitic diseases", "terminology": "ICD-10-CM", "parent_codes": []},
+  {"code": "A00", "description": "Cholera", "terminology": "ICD-10-CM", "parent_codes": ["A00-B99"]},
+  {"code": "A00.0", "description": "Cholera due to Vibrio cholerae 01, biovar cholerae", "terminology": "ICD-10-CM", "parent_codes": ["A00"]},
+  {"code": "A00.9", "description": "Cholera, unspecified", "terminology": "ICD-10-CM", "parent_codes": ["A00"]}
+]
