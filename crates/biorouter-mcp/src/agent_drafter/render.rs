@@ -10,6 +10,7 @@ use crate::agent_drafter::store::{AgentConfig, ArtifactKind, Manifest};
 
 pub const THEME_CSS: &str = include_str!("templates/theme.css");
 pub const AGENT_JS: &str = include_str!("templates/agent.js");
+pub const RESIZE_JS: &str = include_str!("templates/resize.js");
 pub const STARTER_HTML: &str = include_str!("templates/starter.html");
 
 /// Default local endpoint a standalone export uses to reach the bundled
@@ -75,6 +76,11 @@ pub fn assemble(
 ) -> String {
     let style = format!("<style id=\"biorouter-theme\">\n{THEME_CSS}\n</style>\n");
     let mut html = inject_before(entry_html, "</head>", &style, false);
+
+    // Auto-resize reporter for EVERY artifact so previews auto-grow in height
+    // (static artifacts have no agent runtime, so this must not live in agent.js).
+    let resize = format!("<script>\n{RESIZE_JS}\n</script>\n");
+    html = inject_before(&html, "</body>", &resize, true);
 
     if manifest.kind == ArtifactKind::Agentic {
         let agent = manifest.agent.clone().unwrap_or_default();
@@ -302,6 +308,40 @@ mod tests {
         let out = assemble_preview(&m, "<html><head></head><body></body></html>");
         assert!(!out.contains("BIOROUTER_AGENT_CONFIG"));
         assert!(!out.contains("data-br-chat"));
+    }
+
+    #[test]
+    fn every_artifact_gets_the_resize_reporter() {
+        // Regression: static artifacts must also report height so the preview
+        // iframe auto-grows (the reporter must NOT live only in agent.js).
+        for kind in [ArtifactKind::Static, ArtifactKind::Agentic] {
+            let m = manifest(kind);
+            let out = assemble_preview(&m, "<html><head></head><body></body></html>");
+            assert!(out.contains("__brReportSize"), "{kind:?} missing resize reporter");
+            assert!(out.contains("ui-size-change"), "{kind:?} missing ui-size-change");
+        }
+    }
+
+    #[test]
+    fn resize_reporter_present_even_without_body_tag() {
+        let m = manifest(ArtifactKind::Static);
+        let out = assemble_preview(&m, "<div>no body tag</div>");
+        assert!(out.contains("__brReportSize"));
+    }
+
+    #[test]
+    fn agentic_bridge_uses_mcp_ui_protocol_not_jsonrpc() {
+        // Regression: the in-app bridge must speak the MCP-UI host protocol
+        // (ui-message-response / "prompt" action), not raw JSON-RPC, or prompts
+        // never route and the chat hangs.
+        let m = manifest(ArtifactKind::Agentic);
+        let out = assemble_preview(&m, "<html><head></head><body></body></html>");
+        // Bridge listens for the host's ui-message-response and posts a "prompt"
+        // action (not the old `{jsonrpc, method:"ui/message"}` frame).
+        assert!(out.contains("ui-message-response"));
+        assert!(!out.contains("\"ui/message\""));
+        // Send button must not rely on sandbox-blocked form submission.
+        assert!(out.contains("send.type = \"button\""));
     }
 
     #[test]
