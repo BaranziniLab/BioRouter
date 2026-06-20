@@ -315,9 +315,79 @@ export default function MCPUIResourceRenderer({
     return result;
   };
 
+  // Agent-defined preferred frame size (set by the producing tool via
+  // `_meta["mcpui.dev/ui-preferred-frame-size"]` = [width, height]).
+  const resource = content.resource as {
+    uri?: string;
+    mimeType?: string;
+    blob?: string;
+    text?: string;
+    _meta?: Record<string, unknown>;
+  };
+  const prefSize = resource._meta?.['mcpui.dev/ui-preferred-frame-size'] as
+    | [string, string]
+    | undefined;
+  const pxOf = (v?: string): number | undefined => {
+    if (!v) return undefined;
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) && /px$/.test(v) ? n : undefined;
+  };
+  const prefW = pxOf(prefSize?.[0]);
+  const prefH = pxOf(prefSize?.[1]);
+
+  const decodeArtifactHtml = (): string => {
+    if (resource.blob) {
+      try {
+        const bin = atob(resource.blob);
+        const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+        return new TextDecoder().decode(bytes);
+      } catch {
+        return '';
+      }
+    }
+    return resource.text || '';
+  };
+
+  const artifactTitle = resource.uri?.split('/').pop() || 'Artifact';
+
+  const handleExpand = async () => {
+    const html = decodeArtifactHtml();
+    if (!html) {
+      toast.error('Could not read the artifact contents.');
+      return;
+    }
+    try {
+      await window.electron.openArtifactWindow({
+        html,
+        title: artifactTitle,
+        width: prefW || 1100,
+        height: prefH || 820,
+      });
+    } catch {
+      toast.error('Could not open the artifact window.');
+    }
+  };
+
   return (
-    <div className="mt-3 p-4 border border-border-subtle rounded-lg bg-background-muted">
-      <div className="overflow-hidden rounded-sm">
+    <div className="mt-3 p-3 border border-border-subtle rounded-lg bg-background-muted">
+      <div className="flex items-center justify-between mb-2 px-1">
+        <span className="text-xs text-text-muted font-medium truncate">{artifactTitle}</span>
+        <button
+          type="button"
+          onClick={handleExpand}
+          title="Open in a larger standalone window"
+          className="inline-flex items-center gap-1.5 text-xs text-text-muted hover:text-text-default transition-colors cursor-pointer rounded px-1.5 py-0.5"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M15 3h6v6" />
+            <path d="M9 21H3v-6" />
+            <path d="M21 3l-7 7" />
+            <path d="M3 21l7-7" />
+          </svg>
+          Expand
+        </button>
+      </div>
+      <div className="overflow-hidden rounded-md bg-background-default" style={{ minHeight: 320 }}>
         <UIResourceRenderer
           resource={content.resource}
           onUIAction={handleUIAction}
@@ -325,8 +395,9 @@ export default function MCPUIResourceRenderer({
           htmlProps={{
             autoResizeIframe: {
               height: true,
-              width: false, // set to false to allow for responsive design
+              width: false, // width stays responsive (fills the panel); use Expand for full size
             },
+            style: { width: '100%', minHeight: '320px', border: 'none' },
             iframeRenderData: {
               // iframeRenderData allows us to pass data down to MCP-UIs
               // MCP-UIs might find stuff like host and theme for conditional rendering
