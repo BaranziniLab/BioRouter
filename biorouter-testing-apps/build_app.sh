@@ -32,6 +32,7 @@ Hard requirements:
 - Include a README.md, source split across modules, a test suite, and the standard manifest (Cargo.toml / pyproject.toml or requirements.txt / CMakeLists.txt / DESCRIPTION).
 - Build/compile and run the tests with the shell tool; fix errors until it builds and tests pass (or document a missing toolchain).
 - Use git: make at least 3 logical commits with clear messages as you finish components.
+- Write tests INCREMENTALLY: as you finish each module, immediately add its tests, run them, and commit — do NOT defer the entire test suite to the end.
 - Use the todo tool to plan and track the build.
 Work autonomously to completion. Do not ask questions."
 

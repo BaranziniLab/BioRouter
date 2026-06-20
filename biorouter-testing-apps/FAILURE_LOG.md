@@ -232,3 +232,13 @@ actionable issues every 5 apps (see `ISSUES/`).
   (with app17) where MiMo reliably writes everything EXCEPT the test suite. Pattern:
   it treats tests/conftest.py + pyproject testpaths as "tests handled". Accepted as
   partial (code+data complete, untested).
+
+### Premature stop — 4th occurrence (app 26) + harness mitigation
+- app26 cut off at "Now let me create comprehensive tests. First, the validation
+  tests:" — identical signature. 4 of last ~10 builds. The truncation lands on the
+  big end-of-build test-writing block.
+- ZERO-RISK harness mitigation applied: build_app.sh now instructs "write tests
+  INCREMENTALLY ... do NOT defer the entire test suite to the end", to shrink the
+  large code→tests transition where the stream truncates. (The provider-side
+  continue-on-truncation remains the proper fix; the Plan-B Stop hook is the safe
+  in-product mitigation.)

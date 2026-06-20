@@ -42,3 +42,6 @@ tmux. Model: **xiaomi_mimo / mimo-v2.5-pro**. Extensions: developer + todo.
 | 20 | bio-motif-finder-py | Python | ☑ built (94/97) | 5 | 20 | 3362 | **94 tests pass** (Gibbs/MEME/PWM); 3 CLI-integration tests need pkg install (exit 127) |
 | 24 | med-clinical-trial-sim-py | Python | ☑ built (126/128) | 3 | 23 | 3102 | **126 tests pass** (group-sequential, alpha-spending, MC OC); 2 fail on numpy SeedSequence fixture |
 | 25 | med-drug-interaction-graph-rs | Rust | ☑ built (1-shot) | 4 | 16 | 2660 | **115 tests pass** (DDI graph, severity, paths, centrality, suggest); clean Rust one-shot |
+| 26 | med-risk-score-calculator-py | Python | ☑ built (resumed+fixed) | 3 | 18 | 3839 | **200 tests pass** (8 clinical scores); premature stop→resume created tests→validation fix |
+| 27 | med-cohort-builder-sql-py | Python | ☑ built | 3 | 17 | 4040 | **60 tests pass** out-of-box (synthetic EHR + SQL cohort compiler); clean one-shot |
+| 28 | med-biomarker-discovery-r | R | ☑ built (1-shot) | 3 | 29 | 2450 | **65 R tests pass** (LASSO/RFE/stability sel, BH-FDR, CV); 3rd clean R one-shot |

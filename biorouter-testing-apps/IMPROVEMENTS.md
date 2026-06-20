@@ -66,3 +66,28 @@ Rust/Python/C++ → block, incl. the unregistered-ctest C++ case). CLI rebuilt.
   only if A+B prove insufficient.
 - A live turn/budget HUD (C2 quantifies the *stop*, not a running indicator) —
   needs agent→renderer plumbing.
+
+## Round 5 (after apps 21–25) — premature-stop / continue-on-truncation
+
+**Finding:** premature stream stops are the dominant batch failure (apps 17, 21, 23),
+clustering at code→tests/data transitions (rc=0, no error, mid-sentence).
+
+**Decision — documented design, NOT shipped live (risk-managed):** the clean fix is
+*continue-on-truncation* in `crates/biorouter/src/agents/agent.rs`: when a streamed
+assistant turn ends with **no tool call, no final-output, and a non-natural stop
+reason** (length/truncation, or empty content mid-task), auto-continue the turn
+(bounded by a small counter, like the round-2 retry budget) instead of breaking.
+I did **not** ship this live: it edits the shared streaming loop that every
+remaining build of this very marathon depends on, and a misfire (treating natural
+completion as truncation) would loop or break all of them. It needs isolated
+design + tests + a verified rebuild before going live — deferred to avoid
+destabilizing the running loop.
+
+**Safe in-product mitigation already available (Plan B):** the
+`verify-and-checkpoint` Stop hook shipped in round 3 *is* the truncation guard at
+the hook layer — a premature stop leaves the tree dirty / build incomplete, so the
+hook **blocks the stop and feeds "finish + commit" back to the agent**, which
+continues. Enabling it as a Stop hook gives continue-on-truncation behavior with
+zero agent-loop risk (failure-open, bounded by the Stop-hook block cap). The
+harness instead uses explicit `--resume`, which has recovered all 3 premature
+stops so far.
