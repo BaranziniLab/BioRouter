@@ -156,17 +156,6 @@
       "filename": "ralph.zip"
     },
     {
-      "id": "develop-biorouter-extension",
-      "name": "Build a BioRouter Extension",
-      "category": "Core",
-      "type": "User-invocable · /develop-biorouter-extension",
-      "description": "A guide for building a .brxt extension: directory layout, manifest.json, Python MCP server, and bundled skills.",
-      "tags": ["Extension", "MCP"],
-      "keywords": [],
-      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-develop-biorouter-extension/develop-biorouter-extension.zip",
-      "filename": "develop-biorouter-extension.zip"
-    },
-    {
       "id": "superpowers",
       "name": "Superpowers Collection",
       "category": "Core",

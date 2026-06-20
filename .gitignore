@@ -65,3 +65,11 @@ result
 # Playwright accessibility snapshot dump (runtime artifact)
 knowledge-state.yml
 dist/
+*.env
+cdwagent.env
+config.yaml.bak.*
+
+# Local scratch / work dirs and packaged extension artifacts (not product source)
+spoke-work/
+cdwagent-work/
+*.brxt

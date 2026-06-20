@@ -19,10 +19,20 @@ pub static EXTENSION_NAME: &str = "skills";
 /// Skills that ship with Biorouter. They are re-seeded into the user's skills
 /// directory on every session start, so removing the folder only lasts until
 /// the next session — users disable them via the normal toggle instead.
-pub static BUILTIN_SKILLS: &[(&str, &str)] = &[(
-    "about-biorouter",
-    include_str!("builtin_skills/about-biorouter/SKILL.md"),
-)];
+pub static BUILTIN_SKILLS: &[(&str, &str)] = &[
+    (
+        "about-biorouter",
+        include_str!("builtin_skills/about-biorouter/SKILL.md"),
+    ),
+    (
+        "develop-biorouter-extension",
+        include_str!("builtin_skills/develop-biorouter-extension/SKILL.md"),
+    ),
+    (
+        "develop-biorouter-skill",
+        include_str!("builtin_skills/develop-biorouter-skill/SKILL.md"),
+    ),
+];
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct LoadSkillParams {

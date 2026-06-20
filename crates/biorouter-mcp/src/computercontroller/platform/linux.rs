@@ -107,18 +107,48 @@ impl LinuxAutomation {
         }
     }
 
+    /// Run an input command and fail loudly (with stderr) on a non-zero exit,
+    /// so a missing tool or a failed action is reported instead of silently
+    /// swallowed — the same honest-reporting contract as the macOS/Windows
+    /// backends.
+    fn run_checked(mut command: Command, action: &str) -> Result<String> {
+        let output = command.output()?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(std::io::Error::other(format!(
+                "'{action}' failed (exit {}): {}",
+                output
+                    .status
+                    .code()
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "signal".to_string()),
+                stderr.trim()
+            )))
+        }
+    }
+
     fn execute_x11_command(&self, cmd: &str) -> Result<String> {
         if cmd.starts_with("click") {
-            Command::new("xdotool").arg("click").arg("1").output()?;
+            let mut c = Command::new("xdotool");
+            c.arg("click").arg("1");
+            Self::run_checked(c, "click")?;
             Ok(String::new())
         } else if let Some(text) = cmd.strip_prefix("type ") {
-            Command::new("xdotool").arg("type").arg(text).output()?;
+            let mut c = Command::new("xdotool");
+            c.arg("type").arg(text);
+            Self::run_checked(c, "type")?;
             Ok(String::new())
         } else if let Some(key) = cmd.strip_prefix("key ") {
-            Command::new("xdotool").arg("key").arg(key).output()?;
+            let mut c = Command::new("xdotool");
+            c.arg("key").arg(key);
+            Self::run_checked(c, "key")?;
             Ok(String::new())
         } else if let Some(window) = cmd.strip_prefix("activate ") {
-            Command::new("wmctrl").arg("-a").arg(window).output()?;
+            let mut c = Command::new("wmctrl");
+            c.arg("-a").arg(window);
+            Self::run_checked(c, "activate")?;
             Ok(String::new())
         } else if cmd == "get clipboard" {
             let output = Command::new("xclip")

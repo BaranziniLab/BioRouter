@@ -10,8 +10,8 @@ use indoc::indoc;
 use regex::Regex;
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, Implementation, InitializeResult, JsonObject,
-    ListToolsResult, ProtocolVersion, RawContent, ServerCapabilities, Tool as McpTool,
-    ToolAnnotations, ToolsCapability,
+    ListToolsResult, ProtocolVersion, RawContent, ResourceContents, Role, ServerCapabilities,
+    Tool as McpTool, ToolAnnotations, ToolsCapability,
 };
 use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
@@ -688,14 +688,26 @@ impl CodeExecutionClient {
                     {
                         Ok(dispatch_result) => match dispatch_result.result.await {
                             Ok(result) => {
-                                // Collect resource content (e.g. autovisualiser HTML blobs) so
-                                // handle_execute_code can append them to its result for inline
-                                // UI rendering. Resources are not representable as JS strings so
-                                // they are passed out-of-band via the shared collector.
+                                // Collect *binary/blob* resource content (e.g. autovisualiser
+                                // ui:// HTML blobs) so handle_execute_code can append them to its
+                                // result for inline UI rendering. These are not representable as JS
+                                // strings, so they are passed out-of-band via the shared collector.
+                                // Text resources (e.g. developer/text_editor file contents) are NOT
+                                // collected here — they are surfaced to the script as text below,
+                                // and appending them again would duplicate the payload.
                                 let resources: Vec<Content> = result
                                     .content
                                     .iter()
-                                    .filter(|c| matches!(c.raw, RawContent::Resource(_)))
+                                    .filter(|c| {
+                                        matches!(
+                                            &c.raw,
+                                            RawContent::Resource(r)
+                                                if matches!(
+                                                    r.resource,
+                                                    ResourceContents::BlobResourceContents { .. }
+                                                )
+                                        )
+                                    })
                                     .cloned()
                                     .collect();
                                 let has_resources = !resources.is_empty();
@@ -706,11 +718,32 @@ impl CodeExecutionClient {
                                 Ok(if let Some(sc) = &result.structured_content {
                                     serde_json::to_string(sc).unwrap_or_default()
                                 } else {
+                                    // Surface exactly what the model itself would see: content
+                                    // targeted at the Assistant (or with no audience set), mirroring
+                                    // `From<Content> for MessageContent`. This (a) drops the
+                                    // duplicate User-audience copy some tools emit — e.g.
+                                    // developer/shell returns the same text twice, which would
+                                    // otherwise hand the script "40\n40" for `echo 40` — and (b)
+                                    // unwraps embedded text resources (developer/text_editor returns
+                                    // file contents as an Assistant-audience text resource).
                                     let text: String = result
                                         .content
                                         .iter()
+                                        .filter(|c| {
+                                            c.audience()
+                                                .is_none_or(|a| a.contains(&Role::Assistant))
+                                        })
                                         .filter_map(|c| match &c.raw {
                                             RawContent::Text(t) => Some(t.text.clone()),
+                                            RawContent::Resource(r) => match &r.resource {
+                                                ResourceContents::TextResourceContents {
+                                                    text,
+                                                    ..
+                                                } => Some(text.clone()),
+                                                ResourceContents::BlobResourceContents {
+                                                    ..
+                                                } => None,
+                                            },
                                             _ => None,
                                         })
                                         .collect::<Vec<_>>()

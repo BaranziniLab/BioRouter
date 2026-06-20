@@ -395,6 +395,68 @@ impl ComputerControllerServer {
 
             There is already a screenshot tool available you can use if needed to see what is on screen.
 
+            ## How to operate the computer (read this before using computer_control)
+
+            These principles apply on every operating system. Follow them to avoid
+            wasting time and tokens going back and forth without making progress:
+
+            1. Work PROGRESSIVELY in small, verifiable steps. Do ONE action
+               (activate an app, click a control, type text), then confirm its
+               effect — take a screenshot or query the UI/app state — BEFORE the
+               next action. Do not chain many blind UI actions at once.
+            2. NEVER repeat an action that did not visibly change anything. If the
+               same step fails or has no effect twice, STOP repeating it. Re-read
+               the latest screenshot/output, change your approach, or report what
+               you observe and ask the user — looping wastes their tokens.
+            3. PERMISSIONS are the most common real failure, not your script. If a
+               control script reports a permission/accessibility/automation error
+               (e.g. "not allowed", "assistive access", "not authorized"), the OS
+               is blocking automation. Tell the user exactly which permission to
+               grant (e.g. Accessibility / Screen Recording / Automation for the
+               app) and stop — do NOT retry the same script until they confirm.
+            4. Prefer the most RELIABLE method available, in this order: (a) the
+               application's own automation/scripting interface or a CLI, (b)
+               keyboard navigation and shortcuts, (c) clicking a named UI element,
+               and only as a last resort (d) clicking raw screen coordinates.
+               Coordinate clicks are brittle and are a frequent cause of getting
+               stuck. Before clicking, identify the target element by name/role;
+               if you cannot find it, list the available elements/windows rather
+               than guessing where it is.
+            5. SCREENSHOTS ARE PER-DISPLAY. The machine may have more than one
+               monitor. The screen_capture tool reports the full list of connected
+               displays and which one is primary; the window you need may be on a
+               non-primary display, so target the correct display index instead of
+               assuming everything is on display 0. To capture a specific app, you
+               can also screen-capture by window title (a substring is enough).
+            6. RECOVER FROM POPUPS AND HANGS. If a control action times out or
+               hangs, or a search box / dialog / menu / autocomplete popup is open
+               and not behaving as you expect, the UI is blocked. Press Escape to
+               dismiss the popup (Escape again if needed), take a screenshot to see
+               the real state, and only then choose your next action. Never keep
+               typing into a popup that isn't responding, and never re-send a script
+               that just timed out — fix the situation first.
+
+            ## Driving messaging & chat apps (Slack, Teams, Discord, Mail, etc.)
+
+            These apps are generally NOT scriptable through their automation
+            interface, so you must drive their UI — and you must follow their actual
+            UX rather than guessing:
+            - To SEND a message: the composer is the text box at the BOTTOM of the
+              open conversation. Click into it (it is usually already focused), type
+              the message, then press Return/Enter to send. Afterwards take a
+              screenshot and confirm the message actually appears in the conversation.
+            - To SWITCH channel/DM in Slack: open the quick switcher with Cmd/Ctrl+K,
+              type the channel or person name, and press Return to OPEN it. This is
+              NOT the same as full-text Search (Cmd/Ctrl+G or the magnifier icon),
+              which finds messages and will NOT navigate you to a channel. If you
+              opened Search by mistake, press Escape and use the quick switcher.
+            - Do NOT assume a channel such as #general exists. If the switcher reports
+              "couldn't find anything", press Escape and pick a channel from the left
+              sidebar, or just use the conversation that is already open. Do not get
+              stuck retyping a channel name that does not exist.
+            - Prefer keyboard flow (quick switcher → type → Return → type message →
+              Return) over clicking screen coordinates, which is brittle in these apps.
+
             {os_instructions}
 
             web_scrape
@@ -863,19 +925,72 @@ impl ComputerControllerServer {
         let script = &params.script;
         let save_output = params.save_output;
 
-        // Use platform-specific automation
-        let output = self
-            .system_automation
-            .execute_system_script(script)
-            .map_err(|e| {
-                ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    format!("Failed to execute script: {}", e),
-                    None,
-                )
-            })?;
+        // Use platform-specific automation. execute_system_script returns Err
+        // (with stderr + exit status) when the underlying osascript/PowerShell
+        // actually fails, so a failed UI action surfaces as a tool error the
+        // model can react to — instead of a fake "success" that makes it retry
+        // blindly and "circle".
+        //
+        // Guard against HANGS. A UI-automation script can block for a long time
+        // when the target UI is busy or stuck behind a modal/overlay/search popup
+        // (on macOS this shows up as AppleEvent error -1712 after the ~2-minute
+        // default Apple-event timeout). Two minutes per stuck call is a huge time
+        // and token sink and a major cause of the agent "circling". Bound it with
+        // a watchdog so a hung action fails fast with actionable guidance instead.
+        // OS-invariant: runs the blocking backend call under a tokio timeout.
+        let timeout_secs = std::env::var("BIOROUTER_COMPUTER_CONTROL_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|s| *s > 0)
+            .unwrap_or(45);
+        let automation = Arc::clone(&self.system_automation);
+        let script_owned = script.to_string();
+        let run =
+            tokio::task::spawn_blocking(move || automation.execute_system_script(&script_owned));
+        let output =
+            match tokio::time::timeout(std::time::Duration::from_secs(timeout_secs), run).await {
+                Ok(join) => join
+                    .map_err(|e| {
+                        ErrorData::new(
+                            ErrorCode::INTERNAL_ERROR,
+                            format!("Computer control task failed to run: {e}"),
+                            None,
+                        )
+                    })?
+                    .map_err(|e| {
+                        ErrorData::new(
+                            ErrorCode::INTERNAL_ERROR,
+                            format!("Computer control script failed: {e}"),
+                            None,
+                        )
+                    })?,
+                Err(_elapsed) => {
+                    return Err(ErrorData::new(
+                        ErrorCode::INTERNAL_ERROR,
+                        format!(
+                            "Computer control script timed out after {timeout_secs}s and was \
+                         abandoned. The UI is almost certainly blocked — by a modal dialog, an \
+                         open search/autocomplete popup, a menu, or a pending permission prompt. \
+                         Do NOT re-run this script. Instead: take a screenshot to see the current \
+                         state, press Escape to dismiss any popup, and try a different approach."
+                        ),
+                        None,
+                    ));
+                }
+            };
 
-        let mut result = format!("Script completed successfully.\n\nOutput:\n{}", output);
+        // Many UI-automation scripts succeed without producing stdout (e.g.
+        // "activate app", "click button"). Distinguish that from a result with
+        // output so the model does not mistake silence for a failure (or vice
+        // versa) and re-run the same step.
+        let mut result = if output.trim().is_empty() {
+            "Script ran with no errors and produced no output (this is normal for UI actions \
+             like activating an app or clicking). Verify the effect (e.g. take a screenshot) \
+             before assuming it did or did not work — do not blindly repeat the same step."
+                .to_string()
+        } else {
+            format!("Script completed successfully.\n\nOutput:\n{}", output)
+        };
 
         // Save output if requested
         if save_output && !output.is_empty() {
@@ -1301,8 +1416,11 @@ impl ServerHandler for ComputerControllerServer {
         ServerInfo {
             server_info: Implementation {
                 name: "biorouter-computercontroller".to_string(),
+                // User-facing display name. The internal id/routing key stays
+                // "computercontroller" (tools are prefixed `computercontroller__`),
+                // but clients that honor the MCP `title` show "Computer Controller".
+                title: Some("Computer Controller".to_string()),
                 version: env!("CARGO_PKG_VERSION").to_owned(),
-                title: None,
                 icons: None,
                 website_url: None,
             },
@@ -1356,5 +1474,64 @@ impl ServerHandler for ComputerControllerServer {
         Ok(ReadResourceResult {
             contents: vec![resource.clone()],
         })
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod computer_control_tests {
+    use super::*;
+    use rmcp::model::RawContent;
+
+    fn text_of(result: &rmcp::model::CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|c| match &c.raw {
+                RawContent::Text(t) => Some(t.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test]
+    async fn computer_control_reports_failure_instead_of_fake_success() {
+        let server = ComputerControllerServer::new();
+        let result = server
+            .computer_control(Parameters(ComputerControlParams {
+                script: "this is not valid applescript @@@".to_string(),
+                save_output: false,
+            }))
+            .await;
+        // The script genuinely fails; the tool must return an error (Err here,
+        // which the MCP layer turns into is_error=true) rather than the old
+        // "Script completed successfully" with empty output.
+        assert!(
+            result.is_err(),
+            "a failing control script must surface as an error, got: {:?}",
+            result.ok().map(|r| text_of(&r))
+        );
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("Computer control script failed"),
+            "error should be explicit about the failure, got: {msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn computer_control_no_output_success_guides_to_verify() {
+        let server = ComputerControllerServer::new();
+        let result = server
+            .computer_control(Parameters(ComputerControlParams {
+                script: "set _x to 1\nreturn".to_string(),
+                save_output: false,
+            }))
+            .await
+            .expect("a valid no-output script should succeed");
+        let text = text_of(&result);
+        assert!(
+            text.contains("no output") && text.contains("screenshot"),
+            "no-output success should tell the model to verify rather than repeat, got: {text}"
+        );
     }
 }
