@@ -892,8 +892,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "bio-blast-lite-rs"
+version = "1.85.4"
+dependencies = [
+ "anyhow",
+ "clap",
+ "regex",
+ "tempfile",
+]
+
+[[package]]
 name = "biorouter"
-version = "1.85.3"
+version = "1.85.4"
 dependencies = [
  "agent-client-protocol-schema",
  "ahash",
@@ -976,7 +986,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-acp"
-version = "1.85.3"
+version = "1.85.4"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -991,6 +1001,7 @@ dependencies = [
  "tempfile",
  "test-case",
  "tokio",
+ "tokio-tungstenite",
  "tokio-util",
  "tower-http 0.6.8",
  "tracing",
@@ -1000,7 +1011,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-bench"
-version = "1.85.3"
+version = "1.85.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1023,7 +1034,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-cli"
-version = "1.85.3"
+version = "1.85.4"
 dependencies = [
  "anstream",
  "anyhow",
@@ -1078,7 +1089,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-mcp"
-version = "1.85.3"
+version = "1.85.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1160,7 +1171,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-server"
-version = "1.85.3"
+version = "1.85.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1206,7 +1217,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-test"
-version = "1.85.3"
+version = "1.85.4"
 dependencies = [
  "clap",
  "serde_json",

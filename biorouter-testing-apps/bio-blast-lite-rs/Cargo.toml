@@ -1,0 +1,19 @@
+[package]
+name = "bio-blast-lite-rs"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -232,7 +232,9 @@ fn install_info(name: &str) -> InstallInfo {
             // Rust-backed wheels. `sh -s -- -y` runs it non-interactively (the
             // installer is piped, so it has no TTY and would otherwise abort).
             return InstallInfo {
-                command: s("curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y"),
+                command: s(
+                    "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y",
+                ),
                 requires_sudo: false,
                 download_url: s("https://rustup.rs"),
             };

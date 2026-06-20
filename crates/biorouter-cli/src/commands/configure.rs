@@ -963,7 +963,7 @@ fn configure_builtin_extension() -> anyhow::Result<()> {
         (
             "autovisualiser",
             "Auto Visualiser",
-            "Data visualisation and UI generation tools",
+            "Interactive charts, diagrams, networks, maps & scientific plots",
         ),
         (
             "computercontroller",
@@ -984,6 +984,11 @@ fn configure_builtin_extension() -> anyhow::Result<()> {
             "tutorial",
             "Tutorial",
             "Access interactive tutorials and guides",
+        ),
+        (
+            "agent_drafter",
+            "Agent Drafter",
+            "Build interactive artifacts (static, or with an embedded BioRouter agent) and export them",
         ),
     ];
 

@@ -1,0 +1,2 @@
+[console_scripts]
+med-risk-score = med_risk_scores.cli:main

@@ -17,6 +17,7 @@ sacp = "10.1.0"
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { version = "0.7.15", features = ["compat", "rt"] }
+tokio-tungstenite = "0.28.0"
 tracing = { workspace = true }
 url = "2.5"
 serde_json = { workspace = true }

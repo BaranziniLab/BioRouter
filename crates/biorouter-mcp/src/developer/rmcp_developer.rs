@@ -44,6 +44,59 @@ use super::text_editor::{
     text_editor_insert, text_editor_replace, text_editor_undo, text_editor_view, text_editor_write,
 };
 
+/// Build a git context + version-control policy block for the extension
+/// instructions. If `cwd` is inside a git work tree, the agent is told the
+/// current branch and how many files are uncommitted, plus a concise policy
+/// encouraging disciplined commits and forbidding destructive history ops
+/// without an explicit request. Outside a repo this returns an empty string so
+/// it adds no noise to non-versioned tasks.
+fn git_context_block(cwd: &std::path::Path) -> String {
+    let git = |args: &[&str]| -> Option<String> {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    };
+
+    // Only emit anything when we're actually inside a work tree.
+    match git(&["rev-parse", "--is-inside-work-tree"]).as_deref() {
+        Some("true") => {}
+        _ => return String::new(),
+    }
+
+    let branch = git(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
+    let dirty = git(&["status", "--porcelain"])
+        .map(|s| s.lines().filter(|l| !l.trim().is_empty()).count())
+        .unwrap_or(0);
+    let dirty_str = if dirty == 0 {
+        "clean".to_string()
+    } else {
+        format!("{dirty} uncommitted change(s)")
+    };
+
+    formatdoc! {r#"
+
+        Version control (this directory is a git repository):
+        - git: branch {branch}, {dirty_str}
+        - Treat git as part of doing the work: as you complete a logical unit (a module,
+          a fix, a passing test suite), stage and commit it with a clear, specific message.
+          Prefer several small, meaningful commits over one giant one; don't end with a
+          large pile of uncommitted changes.
+        - Before finishing, run `git status` and commit outstanding work so the result is
+          reproducible from a clean checkout. Add a `.gitignore` for build artifacts and
+          dependencies (e.g. target/, __pycache__/, node_modules/, build/) rather than
+          committing them.
+        - Never run history-rewriting or destructive git commands (`git reset --hard`,
+          `git push --force`, `git clean -fd`, `git rebase`, branch deletion) unless the
+          user explicitly asks for them.
+    "#}
+}
+
 /// Parameters for the screen_capture tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct ScreenCaptureParams {
@@ -60,6 +113,10 @@ pub struct ScreenCaptureParams {
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TextEditorParams {
     /// Absolute path to file or directory, e.g. `/repo/file.py` or `/repo`.
+    /// Accepts `file_path` as an alias: some models (e.g. Xiaomi MiMo) intermittently
+    /// emit the key as `file_path`, which previously caused an opaque
+    /// `-32602: missing field 'path'` deserialization failure and a wasted turn.
+    #[serde(alias = "file_path")]
     pub path: String,
 
     /// The operation to perform. Allowed options are: `view`, `write`, `str_replace`, `insert`, `undo_edit`.
@@ -405,7 +462,10 @@ impl ServerHandler for DeveloperServer {
             _ => format!("{}{}", common_shell_instructions, unix_specific),
         };
 
-        let instructions = format!("{base_instructions}{editor_description}\n{shell_tool_desc}");
+        let git_desc = git_context_block(&cwd);
+
+        let instructions =
+            format!("{base_instructions}{git_desc}{editor_description}\n{shell_tool_desc}");
 
         ServerInfo {
             server_info: Implementation {
@@ -1614,6 +1674,28 @@ impl DeveloperServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_text_editor_params_accepts_file_path_alias() {
+        // Some models (e.g. Xiaomi MiMo) intermittently emit `file_path` instead
+        // of `path`; the alias prevents an opaque -32602 deserialization failure.
+        let with_alias: TextEditorParams = serde_json::from_value(serde_json::json!({
+            "file_path": "/repo/src/lib.rs",
+            "command": "view"
+        }))
+        .expect("file_path alias should deserialize");
+        assert_eq!(with_alias.path, "/repo/src/lib.rs");
+        assert_eq!(with_alias.command, "view");
+
+        // Canonical `path` still works.
+        let canonical: TextEditorParams = serde_json::from_value(serde_json::json!({
+            "path": "/repo/src/lib.rs",
+            "command": "view"
+        }))
+        .expect("path should deserialize");
+        assert_eq!(canonical.path, "/repo/src/lib.rs");
+    }
+
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::{CancelledNotificationParam, NumberOrString};
     use rmcp::service::{serve_directly, NotificationContext};

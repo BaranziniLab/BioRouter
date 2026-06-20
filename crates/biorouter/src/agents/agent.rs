@@ -1247,11 +1247,15 @@ impl Agent {
                 }
 
                 turns_taken += 1;
+                // Surface turn progress so an observer (CLI/GUI/logs) can tell how
+                // much of the per-turn action budget has been used, and so a
+                // budget-exhaustion stop is distinguishable from a normal completion.
+                tracing::debug!("agent action {}/{} this turn", turns_taken, max_turns);
                 if turns_taken > max_turns {
                     yield AgentEvent::Message(
-                        Message::assistant().with_text(
-                            "I've reached the maximum number of actions I can do without user input. Would you like me to continue?"
-                        )
+                        Message::assistant().with_text(format!(
+                            "I've reached my action limit for this turn ({max_turns} actions without user input), so I'm stopping here rather than because the task is necessarily complete. Would you like me to continue? (raise the cap with `max_turns` / `BIOROUTER_MAX_TURNS`.)"
+                        ))
                     );
                     break;
                 }

@@ -1,0 +1,12 @@
+Build a sorting-algorithm library and animated terminal visualizer in Python.
+
+Scope:
+- A `sorts` package implementing: bubble, insertion, selection, merge, quick (with median-of-three), heap, shell, counting, and radix sort.
+- Each sort yields its intermediate states (a generator of array snapshots + the indices being compared/swapped) so they can be animated.
+- A terminal visualizer (curses or ANSI) that animates any chosen sort on a random/seeded array with colored bars, showing comparisons and swaps live.
+- An instrumentation layer counting comparisons, swaps, and array accesses; a benchmark harness comparing algorithms across input sizes and distributions (random, sorted, reversed, few-unique).
+- A CLI: choose algorithm, size, distribution, speed; or run the benchmark and print a results table.
+- pytest test suite verifying correctness (including stability where applicable) and edge cases (empty, single, duplicates).
+- pyproject.toml or requirements.txt, README with algorithm complexity table.
+
+Split into modules (sorts/, viz, instrument, bench, cli). Ensure pytest passes.

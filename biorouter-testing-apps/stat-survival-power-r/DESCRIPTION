@@ -1,0 +1,19 @@
+Package: statSurvivalPower
+Title: Power Analysis and Sample-Size Calculation Toolkit
+Version: 0.1.0
+Authors@R: person("Wanjun", "Gu", email = "wanjun.gu@ucsf.edu",
+                  role = c("aut", "cre"))
+Description: A comprehensive power analysis and sample-size calculation toolkit
+    implementing common statistical designs from scratch in base R. Supports
+    one/two-sample t-tests (and paired), one-way ANOVA, two-proportion tests,
+    correlation tests, chi-square tests, and survival/log-rank analyses via
+    Schoenfeld and Freedman formulas. Solves for any one parameter (n, power,
+    effect size, or alpha) given the others. Includes effect-size conversion
+    helpers, power-curve data generators with ASCII plotting, and a reporting
+    function for clear summaries.
+License: MIT + file LICENSE
+Encoding: UTF-8
+RoxygenNote: 7.3.2
+Suggests: testthat (>= 3.0.0),
+           pwr
+Config/testthat/edition: 3

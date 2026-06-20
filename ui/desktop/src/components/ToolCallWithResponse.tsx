@@ -201,12 +201,6 @@ export default function ToolCallWithResponse({
             return (
               <div key={index} className="mt-3">
                 <MCPUIResourceRenderer content={resourceContent} appendPromptToChat={append} />
-                <div className="mt-3 p-4 py-3 border border-border-subtle rounded-lg bg-background-muted flex items-center">
-                  <FlaskConical className="mr-2" size={20} />
-                  <div className="text-sm font-sans">
-                    MCP UI is experimental and may change at any time.
-                  </div>
-                </div>
               </div>
             );
           } else {

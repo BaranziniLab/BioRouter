@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tskit"
+version = "0.1.0"
+description = "Classical time-series forecasting toolkit in pure Python"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+fast = ["numpy>=1.24"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+tskit = "tskit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

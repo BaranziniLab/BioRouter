@@ -327,11 +327,19 @@ async fn get_or_create_session_id(
     let Some(id) = identifier else {
         return if resume {
             let sessions = session_manager.list_sessions().await?;
-            let session_id = sessions
-                .first()
-                .map(|s| s.id.clone())
-                .ok_or_else(|| anyhow::anyhow!("No session found to resume"))?;
-            Ok(Some(session_id))
+            if let Some(latest) = sessions.first() {
+                Ok(Some(latest.id.clone()))
+            } else {
+                eprintln!("No previous session to resume; starting a new session.");
+                let session = session_manager
+                    .create_session(
+                        std::env::current_dir()?,
+                        "CLI Session".to_string(),
+                        SessionType::User,
+                    )
+                    .await?;
+                Ok(Some(session.id))
+            }
         } else {
             let session = session_manager
                 .create_session(
@@ -347,27 +355,32 @@ async fn get_or_create_session_id(
     if let Some(session_id) = id.session_id {
         Ok(Some(session_id))
     } else if let Some(name) = id.name {
+        // Resume by name when possible; if `--resume` was requested but no such
+        // session exists, fall back to creating a fresh session with that name
+        // (with a warning) instead of erroring out — a missing/typo'd session
+        // name or a session originally started with `--no-session` should not be
+        // a dead end.
         if resume {
             let sessions = session_manager.list_sessions().await?;
-            let session_id = sessions
-                .into_iter()
-                .find(|s| s.name == name || s.id == name)
-                .map(|s| s.id)
-                .ok_or_else(|| anyhow::anyhow!("No session found with name '{}'", name))?;
-            Ok(Some(session_id))
-        } else {
-            let session = session_manager
-                .create_session(std::env::current_dir()?, name.clone(), SessionType::User)
-                .await?;
-
-            session_manager
-                .update(&session.id)
-                .user_provided_name(name)
-                .apply()
-                .await?;
-
-            Ok(Some(session.id))
+            if let Some(existing) = sessions.into_iter().find(|s| s.name == name || s.id == name) {
+                return Ok(Some(existing.id));
+            }
+            eprintln!(
+                "No existing session named '{name}' to resume; starting a new session with that name."
+            );
         }
+
+        let session = session_manager
+            .create_session(std::env::current_dir()?, name.clone(), SessionType::User)
+            .await?;
+
+        session_manager
+            .update(&session.id)
+            .user_provided_name(name)
+            .apply()
+            .await?;
+
+        Ok(Some(session.id))
     } else if let Some(path) = id.path {
         let session_id = path
             .file_stem()
@@ -968,7 +981,7 @@ enum Command {
     },
 
     /// Run Biorouter as an ACP (Agent Client Protocol) agent
-    #[command(about = "Run Biorouter as an ACP agent server on stdio")]
+    #[command(about = "Run Biorouter as an ACP agent server (stdio by default, or a WebSocket)")]
     Acp {
         /// Add builtin extensions by name
         #[arg(
@@ -979,6 +992,17 @@ enum Command {
             value_delimiter = ','
         )]
         builtins: Vec<String>,
+
+        /// Serve over a WebSocket instead of stdio (e.g. for agent-enabled
+        /// artifacts). Optional address; defaults to 127.0.0.1:11577.
+        #[arg(
+            long = "ws",
+            value_name = "ADDR",
+            num_args = 0..=1,
+            default_missing_value = biorouter_acp::server::DEFAULT_WS_ADDR,
+            help = "Serve ACP over a WebSocket at ADDR (default 127.0.0.1:11577) instead of stdio"
+        )]
+        ws: Option<String>,
     },
 
     /// Start or resume interactive chat sessions
@@ -1867,7 +1891,10 @@ pub async fn cli() -> anyhow::Result<()> {
         Some(Command::Configure {}) => handle_configure().await,
         Some(Command::Info { verbose }) => handle_info(verbose),
         Some(Command::Mcp { server }) => handle_mcp_command(server).await,
-        Some(Command::Acp { builtins }) => biorouter_acp::server::run(builtins).await,
+        Some(Command::Acp { builtins, ws }) => match ws {
+            Some(addr) => biorouter_acp::server::run_ws(builtins, addr).await,
+            None => biorouter_acp::server::run(builtins).await,
+        },
         Some(Command::Session {
             command: Some(cmd), ..
         }) => handle_session_subcommand(cmd).await,

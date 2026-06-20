@@ -1,0 +1,25 @@
+drug_a,drug_b,type,severity,mechanism,evidence,recommendation
+warfarin,aspirin,pharmacodynamic,major,Additive anticoagulant effect significantly increases bleeding risk,established,Monitor INR closely; consider PPI gastroprotection
+warfarin,ibuprofen,both,contraindicated,NSAID impairs platelet function and may displace warfarin from albumin binding; high bleeding risk,established,Avoid combination; use acetaminophen for pain
+warfarin,naproxen,both,major,NSAID increases bleeding risk via platelet inhibition and GI erosion,probable,Use with extreme caution; monitor INR and for signs of bleeding
+warfarin,fluoxetine,pharmacokinetic,moderate,Fluoxetine and its metabolite norfluoxetine inhibit CYP2C9 increasing warfarin levels,probable,Reduce warfarin dose and monitor INR when initiating or discontinuing fluoxetine
+warfarin,sertraline,pharmacokinetic,minor,Mild CYP2C9 inhibition; sertraline has less CYP inhibition than fluoxetine,suspected,Monitor INR periodically
+warfarin,omeprazole,pharmacokinetic,minor,Omeprazole may slightly inhibit CYP2C19 metabolism of warfarin R-enantiomer,suspected,Generally safe; monitor INR when starting or stopping omeprazole
+warfarin,simvastatin,pharmacokinetic,minor,Simvastatin is metabolized by CYP3A4; minimal effect on warfarin metabolism,unknown,Monitor INR periodically
+warfarin,carbamazepine,pharmacokinetic,major,Carbamazepine is a potent CYP inducer significantly reducing warfarin levels,established,Increase warfarin dose; frequent INR monitoring required
+warfarin,amiodarone,pharmacokinetic,major,Amiodarone inhibits CYP2C9 and CYP3A4 significantly increasing warfarin levels for weeks,established,Reduce warfarin dose by 30-50%; monitor INR closely for months
+aspirin,ibuprofen,pharmacodynamic,moderate,Ibuprofen may competitively inhibit aspirin's irreversible platelet binding reducing cardioprotection,established,Take aspirin 30 minutes before ibuprofen; or use alternative analgesic
+fluoxetine,sertraline,pharmacodynamic,contraindicated,Combined serotonergic effect causes serotonin syndrome risk,established,Do not combine two SSRIs
+fluoxetine,paroxetine,pharmacodynamic,contraindicated,Combined serotonergic effect causes serotonin syndrome risk,established,Do not combine two SSRIs
+lisinopril,losartan,pharmacodynamic,contraindicated,Dual RAAS blockade increases risk of hyperkalemia hypotension and renal failure,established,Do not combine ACE inhibitor with ARB
+lisinopril,potassium,pharmacodynamic,major,ACE inhibitors reduce aldosterone causing potassium retention,established,Monitor potassium levels; avoid potassium supplements unless deficient
+simvastatin,amiodarone,pharmacokinetic,major,Amiodarone inhibits CYP3A4 increasing simvastatin levels and rhabdomyolysis risk,established,Limit simvastatin to 20mg/day when combined with amiodarone
+simvastatin,cyclosporine,pharmacokinetic,contraindicated,Cyclosporine dramatically increases simvastatin levels via OATP transport inhibition,established,Do not combine; use pravastatin or fluvastatin instead
+digoxin,amiodarone,pharmacokinetic,major,Amiodarone inhibits P-glycoprotein increasing digoxin levels by 50-100%,established,Reduce digoxin dose by 50%; monitor levels closely
+digoxin,verapamil,pharmacokinetic,major,Verapamil inhibits P-glycoprotein and renal clearance of digoxin,established,Reduce digoxin dose; monitor levels and heart rate
+metformin,losartan,pharmacodynamic,moderate,ARBs may reduce renal function potentially increasing metformin accumulation risk,suspected,Monitor renal function; adjust metformin if eGFR declines
+carbamazepine,erythromycin,pharmacokinetic,major,Erythromycin inhibits CYP3A4 increasing carbamazepine levels,probable,Monitor carbamazepine levels; consider azithromycin as alternative antibiotic
+metoprolol,fluoxetine,pharmacokinetic,moderate,Fluoxetine inhibits CYP2D6 increasing metoprolol levels and beta-blockade,probable,Reduce metoprolol dose; monitor heart rate and blood pressure
+omeprazole,clopidogrel,pharmacokinetic,major,Omeprazole inhibits CYP2C19 reducing conversion of clopidogrel to active metabolite,established,Use pantoprazole instead of omeprazole with clopidogrel
+gabapentin,morphine,pharmacodynamic,moderate,Additive CNS depression; increased respiratory depression risk,probable,Start with low doses; monitor respiratory function
+cyclosporine,potassium,pharmacodynamic,major,Cyclosporine causes potassium retention via mineralocorticoid effects,probable,Monitor potassium; avoid potassium-sparing diuretics

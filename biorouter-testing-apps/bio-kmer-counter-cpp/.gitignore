@@ -1,0 +1,26 @@
+# Build directories
+build/
+cmake-build-*/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Compiled objects
+*.o
+*.obj
+*.a
+*.so
+*.dylib
+
+# Test and benchmark binaries
+bkc_tests
+bkc_benchmark
+bio-kmer-counter
+
+# Temporary files
+*.tmp
+*.bak

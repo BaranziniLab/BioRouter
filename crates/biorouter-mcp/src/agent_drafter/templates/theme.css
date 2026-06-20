@@ -1,0 +1,208 @@
+/* Agent Drafter — BioRouter native design system.
+ *
+ * Mirrors BioRouter's own tokens (ui/desktop/src/styles/main.css) so generated
+ * artifacts look like first-class BioRouter surfaces, not generic AI output:
+ * warm cream-gray neutrals, white surfaces, a restrained near-black accent with
+ * a coral spark, whisper-thin borders, flat soft shadows, modest radii (6px
+ * controls / 12px cards), and a plain system typeface. Light + dark aware. */
+
+:root {
+  /* warm neutral scale (verbatim from BioRouter) */
+  --br-n50: #faf8f3;
+  --br-n100: #f4f0e6;
+  --br-n200: #e8e1d2;
+  --br-n300: #d4cab6;
+  --br-n400: #b0a892;
+  --br-n500: #88806a;
+  --br-n600: #615a46;
+  --br-n700: #403928;
+  --br-n800: #282217;
+  --br-n900: #16120c;
+  --br-n950: #0d0a06;
+
+  /* semantic — light */
+  --br-bg: #ffffff;
+  --br-surface: #ffffff;
+  --br-muted: #faf8f3;
+  --br-medium: #f4f0e6;
+  --br-strong: #d4cab6;
+  --br-accent: #16120c;
+  --br-accent-hover: #2a2520;
+  --br-on-accent: #ffffff;
+  --br-text: #2a2520;
+  --br-text-muted: #7a736c;
+  --br-border: #ece6d8;
+  --br-border-subtle: #e8e1d2;
+  --br-coral: #cf6d47;
+  --br-danger: #e85252;
+  --br-green: #5bbe5e;
+
+  --br-radius: 12px;   /* cards */
+  --br-radius-ctl: 6px; /* buttons, inputs */
+  --br-shadow: 0px 1px 3px 0px rgba(0, 0, 0, 0.06), 0px 0px 1px 0px rgba(0, 0, 0, 0.12);
+  --br-shadow-pop: 0px 8px 24px 0px rgba(32, 25, 15, 0.1), 0px 0px 1px 0px rgba(0, 0, 0, 0.15);
+  --br-font: Arial, Helvetica, "Helvetica Neue", system-ui, sans-serif;
+  --br-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --br-bg: #0d0a06;
+    --br-surface: #16120c;
+    --br-muted: #282217;
+    --br-medium: #403928;
+    --br-strong: #615a46;
+    --br-accent: #ffffff;
+    --br-accent-hover: #f4f0e6;
+    --br-on-accent: #16120c;
+    --br-text: #ffffff;
+    --br-text-muted: #b0a892;
+    --br-border: #282217;
+    --br-border-subtle: #282217;
+    --br-shadow: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
+    --br-shadow-pop: 0px 8px 24px 0px rgba(0, 0, 0, 0.4), 0px 0px 1px 0px rgba(0, 0, 0, 0.5);
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--br-bg);
+  color: var(--br-text);
+  font-family: var(--br-font);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.br-container { max-width: 860px; margin: 0 auto; padding: 28px 24px 56px; }
+
+h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 4px; }
+h2 { font-size: 1.15rem; font-weight: 600; margin: 24px 0 8px; }
+h3 { font-size: 1rem; font-weight: 600; margin: 16px 0 6px; }
+p { margin: 0 0 12px; }
+a { color: var(--br-text); text-decoration: underline; text-underline-offset: 2px; }
+a:hover { color: var(--br-coral); }
+
+code, kbd {
+  font-family: var(--br-mono);
+  font-size: 0.85em;
+  background: var(--br-medium);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* Card — white surface, 12px radius, flat shadow, no hard border */
+.br-card {
+  background: var(--br-surface);
+  border: 1px solid var(--br-border);
+  border-radius: var(--br-radius);
+  box-shadow: var(--br-shadow);
+  padding: 18px 20px;
+  margin: 0 0 16px;
+}
+
+/* Buttons — near-black pill, quiet tactile press */
+.br-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.875rem;
+  font-weight: 500;
+  height: 36px;
+  padding: 0 16px;
+  border: none;
+  border-radius: var(--br-radius-ctl);
+  background: var(--br-accent);
+  color: var(--br-on-accent);
+  transition: background 0.15s ease, transform 0.05s ease;
+}
+.br-btn:hover { background: var(--br-accent-hover); }
+.br-btn:active { transform: translateY(1px); }
+.br-btn:disabled { opacity: 0.5; cursor: default; }
+.br-btn--secondary {
+  background: var(--br-medium);
+  color: var(--br-text);
+}
+.br-btn--secondary:hover { background: var(--br-strong); }
+.br-btn--ghost {
+  background: transparent;
+  color: var(--br-text);
+}
+.br-btn--ghost:hover { background: var(--br-medium); }
+
+/* Inputs — faint ring instead of a hard border, hover lift */
+.br-input, .br-textarea {
+  width: 100%;
+  font: inherit;
+  font-size: 0.9375rem;
+  color: var(--br-text);
+  background: var(--br-bg);
+  border: none;
+  border-radius: var(--br-radius-ctl);
+  padding: 9px 12px;
+  box-shadow: inset 0 0 0 1px var(--br-border);
+  transition: background 0.12s ease, box-shadow 0.12s ease;
+}
+.br-input { height: 36px; }
+.br-textarea { min-height: 88px; resize: vertical; }
+.br-input::placeholder, .br-textarea::placeholder { color: var(--br-text-muted); font-weight: 300; }
+.br-input:hover, .br-textarea:hover { background: var(--br-muted); }
+.br-input:focus, .br-textarea:focus {
+  outline: none;
+  background: var(--br-bg);
+  box-shadow: inset 0 0 0 2px var(--br-n300);
+}
+
+.br-label { display: block; font-size: 0.8125rem; color: var(--br-text-muted); margin: 0 0 4px; }
+.br-field { margin: 0 0 12px; }
+.br-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.br-row > * { flex: 1; min-width: 120px; }
+
+/* Badge — subtle pill */
+.br-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--br-medium);
+  color: var(--br-text-muted);
+}
+
+/* Chat panel for agentic artifacts */
+.br-chat { display: flex; flex-direction: column; gap: 12px; min-height: 220px; }
+.br-chat__log { display: flex; flex-direction: column; gap: 10px; overflow-y: auto; flex: 1; }
+.br-msg {
+  padding: 9px 13px;
+  border-radius: 12px;
+  max-width: 88%;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-size: 0.9375rem;
+  line-height: 1.5;
+}
+.br-msg--user { align-self: flex-end; background: var(--br-accent); color: var(--br-on-accent); border-bottom-right-radius: 4px; }
+.br-msg--agent { align-self: flex-start; background: var(--br-muted); color: var(--br-text); border: 1px solid var(--br-border); border-bottom-left-radius: 4px; }
+.br-msg--thought { align-self: flex-start; background: transparent; color: var(--br-text-muted); font-style: italic; font-size: 0.8125rem; padding: 2px 4px; }
+.br-msg--tool { align-self: flex-start; background: transparent; color: var(--br-text-muted); font-family: var(--br-mono); font-size: 0.75rem; padding: 2px 4px; }
+.br-chat__form { display: flex; gap: 8px; align-items: flex-end; }
+.br-chat__form .br-input { flex: 1; }
+
+.br-typing { display: inline-flex; gap: 3px; padding: 4px 2px; }
+.br-typing span { width: 5px; height: 5px; border-radius: 50%; background: var(--br-text-muted); opacity: 0.4; animation: br-blink 1.2s infinite both; }
+.br-typing span:nth-child(2) { animation-delay: 0.2s; }
+.br-typing span:nth-child(3) { animation-delay: 0.4s; }
+@keyframes br-blink { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 0.9; } }
+
+.br-footer { margin-top: 28px; color: var(--br-text-muted); font-size: 0.75rem; }
+hr { border: none; border-top: 1px solid var(--br-border); margin: 20px 0; }

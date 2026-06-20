@@ -794,25 +794,18 @@ fn shorten_path(path: &str, debug: bool) -> String {
 
     let parts: Vec<_> = path_str.split('/').collect();
 
-    // If we have 3 or fewer parts, return as is
-    if parts.len() <= 3 {
+    // Keep the leading component plus the last few components in FULL, collapsing
+    // only the middle into a single ellipsis. This preserves the readable
+    // in-project path (…/project/src/module/file.rs) instead of abbreviating each
+    // directory to a single letter (…/p/s/m/file.rs), which made it hard to tell
+    // which file was being touched.
+    const TAIL: usize = 4;
+    if parts.len() <= TAIL + 2 {
         return path_str;
     }
 
-    // Keep the first component (empty string before root / or ~) and last two components intact
-    let mut shortened = vec![parts[0].to_string()];
-
-    // Shorten middle components to their first letter
-    for component in &parts[1..parts.len() - 2] {
-        if !component.is_empty() {
-            shortened.push(component.chars().next().unwrap_or('?').to_string());
-        }
-    }
-
-    // Add the last two components
-    shortened.push(parts[parts.len() - 2].to_string());
-    shortened.push(parts[parts.len() - 1].to_string());
-
+    let mut shortened = vec![parts[0].to_string(), "…".to_string()];
+    shortened.extend(parts[parts.len() - TAIL..].iter().map(|s| s.to_string()));
     shortened.join("/")
 }
 
@@ -1161,12 +1154,15 @@ mod tests {
 
     #[test]
     fn test_long_path_shortening() {
+        // Long paths collapse the middle to a single ellipsis but keep the last
+        // few components (the in-project path) in full, so it's clear which file
+        // is being touched.
         assert_eq!(
             shorten_path(
                 "/vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv/long/path/with/many/components/file.txt",
                 false
             ),
-            "/v/l/p/w/m/components/file.txt"
+            "/…/with/many/components/file.txt"
         );
     }
 }
