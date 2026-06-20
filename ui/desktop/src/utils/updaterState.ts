@@ -1,0 +1,201 @@
+// Pure, framework-free state machine for the in-app auto-updater UI.
+//
+// Both the startup update modal (`UpdateAvailableModal`) and the Settings
+// "Check for Updates" panel (`UpdateSection`) drive their UI from this reducer.
+// Keeping it pure (no React, no Electron) makes the one-click update flow unit
+// testable: feed it the `updater-event` payloads the main process emits via
+// `window.electron.onUpdaterEvent`, and assert on the resulting view state.
+//
+// Event names mirror what `src/utils/autoUpdater.ts` sends through
+// `sendStatusToWindow(event, data)`:
+//   checking-for-update | update-available | update-not-available |
+//   download-progress | update-downloaded | error
+
+export type UpdatePhase =
+  | 'idle'
+  | 'checking'
+  | 'available' // update found, downloading in the background
+  | 'downloaded' // fully downloaded, ready for one-click restart+install
+  | 'up-to-date'
+  | 'error';
+
+export interface UpdaterState {
+  phase: UpdatePhase;
+  /** Latest version offered by the release feed (no leading "v"). */
+  latestVersion?: string;
+  /** Download progress 0–100 while phase === 'available'. */
+  percent: number;
+  /** Human-readable error when phase === 'error'. */
+  error?: string;
+  /**
+   * True when the main process fell back to the assisted GitHub downloader
+   * (release lacks an electron-updater manifest, or non-mac platform). In that
+   * mode "install" opens the downloaded installer instead of doing a silent
+   * in-place restart.
+   */
+  usingFallback: boolean;
+}
+
+export const initialUpdaterState: UpdaterState = {
+  phase: 'idle',
+  percent: 0,
+  usingFallback: false,
+};
+
+export interface UpdaterEventPayload {
+  event: string;
+  data?: unknown;
+}
+
+export function normalizeVersion(v: string | undefined | null): string {
+  return (v ?? '').replace(/^v/i, '').trim();
+}
+
+/**
+ * Semantic-ish version compare on dotted numeric segments. Returns true when
+ * `latest` is strictly newer than `current`. Non-numeric/missing segments are
+ * treated as 0, matching the existing modal behavior.
+ */
+export function isNewerVersion(latest: string, current: string): boolean {
+  const parts = (v: string) =>
+    normalizeVersion(v)
+      .split('.')
+      .map((p) => parseInt(p, 10))
+      .map((n) => (Number.isFinite(n) ? n : 0));
+  const lat = parts(latest);
+  const cur = parts(current);
+  const len = Math.max(lat.length, cur.length);
+  for (let i = 0; i < len; i++) {
+    const l = lat[i] ?? 0;
+    const c = cur[i] ?? 0;
+    if (l > c) return true;
+    if (l < c) return false;
+  }
+  return false;
+}
+
+function versionFromData(data: unknown): string | undefined {
+  if (data && typeof data === 'object' && 'version' in data) {
+    const v = (data as { version?: unknown }).version;
+    if (typeof v === 'string') return normalizeVersion(v);
+  }
+  return undefined;
+}
+
+function percentFromData(data: unknown): number | undefined {
+  if (data && typeof data === 'object' && 'percent' in data) {
+    const p = (data as { percent?: unknown }).percent;
+    if (typeof p === 'number' && Number.isFinite(p)) {
+      return Math.max(0, Math.min(100, Math.round(p)));
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Fold one main-process `updater-event` into the view state. Pure: returns a
+ * new object and never mutates `prev`.
+ */
+export function reduceUpdaterEvent(
+  prev: UpdaterState,
+  payload: UpdaterEventPayload
+): UpdaterState {
+  switch (payload.event) {
+    case 'checking-for-update':
+      // Don't clobber a finished download with a later background re-check.
+      if (prev.phase === 'downloaded') return prev;
+      return { ...prev, phase: 'checking', error: undefined };
+
+    case 'update-available': {
+      const latestVersion = versionFromData(payload.data) ?? prev.latestVersion;
+      // Once downloaded, stay downloaded.
+      if (prev.phase === 'downloaded') return { ...prev, latestVersion };
+      return {
+        ...prev,
+        phase: 'available',
+        latestVersion,
+        percent: prev.phase === 'available' ? prev.percent : 0,
+        error: undefined,
+      };
+    }
+
+    case 'update-not-available':
+      if (prev.phase === 'downloaded') return prev;
+      return { ...prev, phase: 'up-to-date', error: undefined };
+
+    case 'download-progress': {
+      const percent = percentFromData(payload.data) ?? prev.percent;
+      if (prev.phase === 'downloaded') return prev;
+      // Progress is monotonic; never let a stray smaller value rewind the bar.
+      return {
+        ...prev,
+        phase: 'available',
+        percent: Math.max(prev.percent, percent),
+      };
+    }
+
+    case 'update-downloaded': {
+      const latestVersion = versionFromData(payload.data) ?? prev.latestVersion;
+      return { ...prev, phase: 'downloaded', latestVersion, percent: 100, error: undefined };
+    }
+
+    case 'error': {
+      const message =
+        typeof payload.data === 'string'
+          ? payload.data
+          : payload.data instanceof Error
+            ? payload.data.message
+            : 'Update failed. Please try again later.';
+      // A background error after a successful download must not hide the
+      // ready-to-install state — the user can still restart into the update.
+      if (prev.phase === 'downloaded') return prev;
+      return { ...prev, phase: 'error', error: message };
+    }
+
+    default:
+      return prev;
+  }
+}
+
+/** Should the startup modal be visible for this state? */
+export function shouldShowUpdateModal(state: UpdaterState): boolean {
+  return (
+    state.phase === 'available' || state.phase === 'downloaded' || state.phase === 'error'
+  );
+}
+
+/**
+ * Recover view state from the main process's persisted `get-update-state`
+ * snapshot for a renderer that mounted after some events already fired.
+ */
+export function stateFromSnapshot(
+  snapshot:
+    | {
+        updateAvailable?: boolean;
+        latestVersion?: string;
+        status?: UpdatePhase;
+        percent?: number;
+        usingFallback?: boolean;
+        error?: string;
+      }
+    | null
+    | undefined
+): UpdaterState {
+  if (!snapshot) return initialUpdaterState;
+  const latestVersion = snapshot.latestVersion
+    ? normalizeVersion(snapshot.latestVersion)
+    : undefined;
+  let phase: UpdatePhase = 'idle';
+  if (snapshot.status) {
+    phase = snapshot.status;
+  } else if (snapshot.updateAvailable) {
+    phase = 'available';
+  }
+  return {
+    phase,
+    latestVersion,
+    percent: typeof snapshot.percent === 'number' ? snapshot.percent : phase === 'downloaded' ? 100 : 0,
+    usingFallback: !!snapshot.usingFallback,
+    error: snapshot.error,
+  };
+}

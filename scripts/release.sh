@@ -248,9 +248,18 @@ cmd_verify() {
   local rpm="$DESK/out/make/rpm/x64/BioRouter-$v-1.x86_64.rpm"
   local clideb="$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb"
   local clirpm="$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
-  for f in "$arm" "$x64" "$win" "$deb" "$rpm" "$clideb" "$clirpm"; do
+  local armzip="$DESK/out/make/$ARM64_ZIP_REL/BioRouter-darwin-arm64-$v.zip"
+  local x64zip="$DESK/out/make/$X64_ZIP_REL/BioRouter-darwin-x64-$v.zip"
+  for f in "$arm" "$x64" "$armzip" "$x64zip" "$win" "$deb" "$rpm" "$clideb" "$clirpm"; do
     [ -f "$f" ] && log "present: $(basename "$f") ($(du -h "$f" | cut -f1))" || { printf 'MISSING: %s\n' "$f"; ok=0; }
   done
+  # The electron-updater manifest is generated at publish time; verify it if
+  # already present (and that it references both arch zips).
+  local yml="$DESK/out/make/latest-mac.yml"
+  if [ -f "$yml" ]; then
+    grep -q "BioRouter-darwin-arm64-$v.zip" "$yml" && grep -q "BioRouter-darwin-x64-$v.zip" "$yml" \
+      && log "latest-mac.yml references both arch zips ✓" || { echo "latest-mac.yml missing an arch zip"; ok=0; }
+  fi
   if [ -d "$DESK/out/BioRouter-darwin-arm64/BioRouter.app" ]; then
     log "arm64 gatekeeper: $(spctl --assess --type execute --verbose "$DESK/out/BioRouter-darwin-arm64/BioRouter.app" 2>&1 | tr '\n' ' ')"
     xcrun stapler validate "$DESK/out/BioRouter-darwin-arm64/BioRouter.app" >/dev/null 2>&1 && log "arm64 app stapled ✓" || { echo "arm64 NOT stapled"; ok=0; }
@@ -263,15 +272,39 @@ cmd_verify() {
   log "all artifacts verified"
 }
 
+# ── electron-updater macOS manifest ───────────────────────────────────────────
+# latest-mac.yml is what lets the in-app "Restart & Update" button do a silent,
+# one-click, in-place update on macOS (Squirrel.Mac installs from the signed
+# maker-zip archives). Without it electron-updater 404s and clients fall back to
+# the assisted "download to ~/Downloads" path. Re-runnable; needs both mac
+# zips present (produced by `mac-arm64` + `mac-intel`).
+ARM64_ZIP_REL="zip/darwin/arm64"
+X64_ZIP_REL="zip/darwin/x64"
+cmd_mac-manifest() {
+  local v="$1"; activate_hermit
+  local armzip="$DESK/out/make/$ARM64_ZIP_REL/BioRouter-darwin-arm64-$v.zip"
+  local x64zip="$DESK/out/make/$X64_ZIP_REL/BioRouter-darwin-x64-$v.zip"
+  [ -f "$armzip" ] || die "mac arm64 zip missing — run: scripts/release.sh mac-arm64 $v"
+  [ -f "$x64zip" ] || die "mac x64 zip missing — run: scripts/release.sh mac-intel $v"
+  log "generating latest-mac.yml for v$v"
+  ( cd "$DESK" && node scripts/generate-update-manifests.js \
+      --version "$v" --arm64-zip "$armzip" --x64-zip "$x64zip" --out "$DESK/out/make" )
+  log "latest-mac.yml: $DESK/out/make/latest-mac.yml"
+}
+
 # ── publish ───────────────────────────────────────────────────────────────────
 cmd_publish() {
   local v="$1"
   local notes="$ROOT/docs/release-notes/v$v.md"
   [ -f "$notes" ] || die "release notes missing: $notes"
+  cmd_mac-manifest "$v"
   log "creating GitHub release v$v"
   gh release create "v$v" --title "BioRouter v$v" --notes-file "$notes" \
     "$DESK/out/make/BioRouter-$v-arm64.dmg" \
     "$DESK/out/make/BioRouter-$v-x64.dmg" \
+    "$DESK/out/make/$ARM64_ZIP_REL/BioRouter-darwin-arm64-$v.zip" \
+    "$DESK/out/make/$X64_ZIP_REL/BioRouter-darwin-x64-$v.zip" \
+    "$DESK/out/make/latest-mac.yml" \
     "$DESK/out/make/zip/win32/x64/BioRouter-win32-x64-$v.zip" \
     "$DESK/out/make/deb/x64/biorouter_${v}_amd64.deb" \
     "$DESK/out/make/rpm/x64/BioRouter-$v-1.x86_64.rpm" \
@@ -291,7 +324,7 @@ cmd_all() {
 
 CMD="${1:-}"; VER="${2:-}"
 case "$CMD" in
-  bump|backends|linux-backend|mac-arm64|mac-intel|windows|linux|cli-linux|verify|publish|all)
+  bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|verify|publish|all)
     need_version "$VER"; "cmd_${CMD}" "$VER" ;;
-  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|windows|linux|cli-linux|verify|publish|all} <version>" ;;
+  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|verify|publish|all} <version>" ;;
 esac

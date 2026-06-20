@@ -13,6 +13,7 @@ import {
 } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { writeFileSync } from 'fs';
 import log from './logger';
 import { githubUpdater } from './githubUpdater';
 import { loadRecentDirs } from './recentDirs';
@@ -29,8 +30,18 @@ let githubUpdateInfo: {
   extractedPath?: string;
 } = {};
 
-// Store update state
-let lastUpdateState: { updateAvailable: boolean; latestVersion?: string } | null = null;
+// Store update state. Richer than a simple boolean so a renderer that mounts
+// after some updater events already fired can fully recover the current view
+// (downloading w/ progress, ready-to-install, error) via `get-update-state`.
+type UpdatePhase = 'checking' | 'available' | 'downloaded' | 'up-to-date' | 'error';
+let lastUpdateState: {
+  updateAvailable: boolean;
+  latestVersion?: string;
+  status?: UpdatePhase;
+  percent?: number;
+  usingFallback?: boolean;
+  error?: string;
+} | null = null;
 
 // Track last reported progress to prevent backward jumps
 let lastReportedProgress = 0;
@@ -284,16 +295,62 @@ export function setupAutoUpdater(tray?: Tray) {
   log.info(`App path: ${app.getAppPath()}`);
   log.info(`Resources path: ${process.resourcesPath}`);
 
-  // Set the feed URL for GitHub releases
-  const feedConfig = {
-    provider: 'github' as const,
-    owner: 'BaranziniLab',
-    repo: 'BioRouter',
-    releaseType: 'release' as const,
-  };
-
-  log.info('Setting feed URL with config:', feedConfig);
-  autoUpdater.setFeedURL(feedConfig);
+  // Set the feed URL. Defaults to the public GitHub releases of BioRouter, but
+  // can be redirected to a generic (static-file) feed via
+  // BIOROUTER_UPDATE_FEED_URL — used for controlled update testing and for
+  // self-hosted / enterprise mirrors. The generic feed expects the same layout
+  // electron-updater publishes: latest-mac.yml + the per-arch app zips.
+  const feedOverride = process.env.BIOROUTER_UPDATE_FEED_URL;
+  if (feedOverride) {
+    // electron-updater resolves its provider from a config file (in packaged
+    // builds: Resources/app-update.yml). electron-forge doesn't emit one, so
+    // we synthesize a generic-provider config pointing at the override URL and
+    // direct the updater at it via updateConfigPath. This is the robust path
+    // for packaged builds (setFeedURL alone still triggers the missing-file
+    // load). Used for controlled update testing and self-hosted/enterprise
+    // mirrors; the feed expects electron-updater's layout (latest-mac.yml +
+    // per-arch app zips).
+    try {
+      const cfgPath = path.join(app.getPath('userData'), 'biorouter-update-config.yml');
+      writeFileSync(
+        cfgPath,
+        `provider: generic\nurl: ${feedOverride}\nupdaterCacheDirName: biorouter-updater\n`
+      );
+      autoUpdater.updateConfigPath = cfgPath;
+      autoUpdater.forceDevUpdateConfig = true;
+      log.info(`Update feed override active: ${feedOverride} (config: ${cfgPath})`);
+    } catch (e) {
+      log.error('Failed to apply update feed override:', e);
+    }
+  } else {
+    const feedConfig = {
+      provider: 'github' as const,
+      owner: 'BaranziniLab',
+      repo: 'BioRouter',
+      releaseType: 'release' as const,
+    };
+    log.info('Setting feed URL with config:', feedConfig);
+    // Same reason as the override branch above: electron-updater reads its
+    // config file (Resources/app-update.yml) at *download* time to resolve
+    // `updaterCacheDirName`, even when the provider is set via setFeedURL().
+    // electron-forge never emits that file, so a real GitHub update download
+    // dies with `ENOENT … app-update.yml`. Synthesize a github-provider config
+    // and point the updater at it so the download path always has a config to
+    // read; setFeedURL is kept as a redundant, explicit provider source.
+    try {
+      const cfgPath = path.join(app.getPath('userData'), 'biorouter-update-config.yml');
+      writeFileSync(
+        cfgPath,
+        `provider: github\nowner: ${feedConfig.owner}\nrepo: ${feedConfig.repo}\n` +
+          `releaseType: ${feedConfig.releaseType}\nupdaterCacheDirName: biorouter-updater\n`
+      );
+      autoUpdater.updateConfigPath = cfgPath;
+      log.info(`Wrote github update config: ${cfgPath}`);
+    } catch (e) {
+      log.error('Failed to write github update config:', e);
+    }
+    autoUpdater.setFeedURL(feedConfig);
+  }
 
   // Log the feed URL after setting it
   try {
@@ -543,6 +600,18 @@ export function setupAutoUpdater(tray?: Tray) {
     notification.on('click', () => {
       autoUpdater.quitAndInstall(false, true);
     });
+
+    // Test-only: deterministically trigger the one-click install without a GUI
+    // click, so the full quitAndInstall → in-place swap → relaunch path can be
+    // exercised in an automated update test. Gated behind BOTH the feed
+    // override and an explicit flag, so it can never fire in production.
+    if (
+      process.env.BIOROUTER_UPDATE_FEED_URL &&
+      process.env.BIOROUTER_UPDATE_AUTO_INSTALL === '1'
+    ) {
+      log.info('[test] BIOROUTER_UPDATE_AUTO_INSTALL set — installing update now');
+      setTimeout(() => autoUpdater.quitAndInstall(false, true), 1500);
+    }
   });
 }
 
@@ -552,10 +621,88 @@ interface UpdaterEvent {
 }
 
 function sendStatusToWindow(event: string, data?: unknown) {
+  // Keep the persisted snapshot in lockstep with every emitted event so the
+  // renderer can recover state if it mounts late (get-update-state).
+  recordStateForEvent(event, data);
   const windows = BrowserWindow.getAllWindows();
   windows.forEach((win) => {
     win.webContents.send('updater-event', { event, data } as UpdaterEvent);
   });
+}
+
+function versionFromData(d: unknown): string | undefined {
+  if (d && typeof d === 'object' && 'version' in d) {
+    const v = (d as { version?: unknown }).version;
+    if (typeof v === 'string') return v;
+  }
+  return undefined;
+}
+
+function percentFromData(d: unknown): number | undefined {
+  if (d && typeof d === 'object' && 'percent' in d) {
+    const p = (d as { percent?: unknown }).percent;
+    if (typeof p === 'number' && Number.isFinite(p)) return Math.round(p);
+  }
+  return undefined;
+}
+
+// Fold an updater event into `lastUpdateState`. A finished download is sticky:
+// later background re-checks/errors must not hide the ready-to-install state.
+function recordStateForEvent(event: string, data?: unknown) {
+  const base = lastUpdateState ?? { updateAvailable: false, percent: 0 };
+  const downloaded = base.status === 'downloaded';
+  switch (event) {
+    case 'checking-for-update':
+      if (downloaded) break;
+      lastUpdateState = { ...base, status: 'checking', usingFallback: isUsingGitHubFallback };
+      break;
+    case 'update-available':
+      lastUpdateState = {
+        updateAvailable: true,
+        latestVersion: versionFromData(data) ?? base.latestVersion,
+        status: downloaded ? 'downloaded' : 'available',
+        percent: base.status === 'available' ? (base.percent ?? 0) : downloaded ? 100 : 0,
+        usingFallback: isUsingGitHubFallback,
+      };
+      break;
+    case 'update-not-available':
+      if (downloaded) break;
+      lastUpdateState = {
+        updateAvailable: false,
+        status: 'up-to-date',
+        percent: 0,
+        usingFallback: isUsingGitHubFallback,
+      };
+      break;
+    case 'download-progress':
+      if (downloaded) break;
+      lastUpdateState = {
+        ...base,
+        updateAvailable: true,
+        status: 'available',
+        percent: Math.max(base.percent ?? 0, percentFromData(data) ?? 0),
+        usingFallback: isUsingGitHubFallback,
+      };
+      break;
+    case 'update-downloaded':
+      lastUpdateState = {
+        updateAvailable: true,
+        latestVersion: versionFromData(data) ?? base.latestVersion,
+        status: 'downloaded',
+        percent: 100,
+        usingFallback: isUsingGitHubFallback,
+      };
+      break;
+    case 'error':
+      if (downloaded) break;
+      lastUpdateState = {
+        ...base,
+        status: 'error',
+        error: typeof data === 'string' ? data : 'Update failed',
+        usingFallback: isUsingGitHubFallback,
+      };
+      break;
+  }
 }
 
 // centralize GitHub fallback auto-download logic.
