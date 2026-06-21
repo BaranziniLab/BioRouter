@@ -33,7 +33,7 @@ This tutorial will cover enabling and using the Developer MCP Server, which is a
 
 ## Example Usage
 
-In this example, I'm going to have biorouter automate setting up my JavaScript developer environment with Express, Mongoose, Nodemon, Dotenv and initialize Git.
+In this example, I'm going to have biorouter automate setting up my Python bioinformatics analysis environment with pandas, scikit-learn, scanpy, and python-dotenv, and initialize Git.
 
 > **Info:** Anthropic's Claude 4 Sonnet was used for this task.
 
@@ -52,15 +52,15 @@ In this example, I'm going to have biorouter automate setting up my JavaScript d
 
 ### biorouter Prompt
 ```
-set up a new JavaScript project with Express, Mongoose, Nodemon, and Dotenv? Fetch the latest package versions, generate a README with those versions, and initialize Git
+set up a new Python bioinformatics project with pandas, scikit-learn, scanpy, and python-dotenv? Fetch the latest package versions, generate a README with those versions, and initialize Git
 ```
 
-After 1 minute, biorouter was done setting up my entire dev environment! 🎉
+After 1 minute, biorouter was done setting up my entire analysis environment! 🎉
 
 ### biorouter Output
 
 ```md
-I'll help you set up a new JavaScript project with those dependencies. I'll break this down into steps:
+I'll help you set up a new Python bioinformatics project with those dependencies. I'll break this down into steps:
 
 1. First, let's create a new directory and initialize the project
 2. Then install the dependencies
@@ -71,27 +71,27 @@ I'll help you set up a new JavaScript project with those dependencies. I'll brea
 
 [... shell commands, files created ...]
 
-Great! I've set up a complete Express project with MongoDB and Dotenv integrations:
+Great! I've set up a complete Python analysis project with pandas, scikit-learn, and scanpy integrations:
 
-1. Created a new project directory and initialized npm
-2. Installed Express, Mongoose, and dotenv dependencies
+1. Created a new project directory and initialized a virtual environment
+2. Installed pandas, scikit-learn, scanpy, and python-dotenv dependencies
 3. set up the basic project structure with directories for:
     - config/
-    - models/
-    - routes/ 
-    - controllers/
+    - data/
+    - notebooks/ 
+    - pipelines/
 4. Created essential files:
-    - index.js (main server file)
-    - .env (environment variables)
-    - .ignore (with common node.js ignores)
-5. Added a basic user model with basic name and email fields
-6. Created a user controller with two methods:
-    - getUsers (GET all users)
-    - createUser (POST new user)
-7. Added user routes under `/api/routes`
-8. Updated package.json with start scripts
+    - run_analysis.py (main analysis entry point)
+    - .env (environment variables, e.g. data paths)
+    - .gitignore (with common Python ignores)
+5. Added a basic cohort loader with sample_id and diagnosis fields
+6. Created an analysis module with two functions:
+    - load_cohort (read and validate the cohort table)
+    - run_qc (apply quality-control filters)
+7. Added pipeline scripts under `pipelines/`
+8. Updated requirements.txt with pinned versions
 9. Created a comprehensive README.md with:
-    - Installation scripts
+    - Installation steps
     - Project structure
     - Available scripts
     - Environment variables 
@@ -99,33 +99,26 @@ Great! I've set up a complete Express project with MongoDB and Dotenv integratio
 
 The project structure is:
 
-my-express-app/
+cohort-analysis/
 ├── config/         # Configuration files
-├── models/        # MongoDB models
-│   └── User.js    # User model
-├── routes/        # API routes
-│   └── userRoutes.js
-├── controllers/   # Route controllers
-│   └── userController.js
-├── .env           # Environment variables
-├── .gitignore     # Git ignore file
-├── index.js       # Entry point
-└── package.json   # Project dependencies and scripts
+├── data/           # Input datasets (gitignored)
+├── notebooks/      # Exploratory analysis notebooks
+│   └── eda.ipynb
+├── pipelines/      # Analysis pipelines
+│   └── qc_pipeline.py
+├── .env            # Environment variables
+├── .gitignore      # Git ignore file
+├── run_analysis.py # Entry point
+└── requirements.txt # Project dependencies
 
 To start developing you can:
 
-1. Run `npm install` to install dependencies
-2. start the server with `npm run dev` 
+1. Run `pip install -r requirements.txt` to install dependencies
+2. run the analysis with `python run_analysis.py` 
 
-The API will be available at:
-    - `http://localhost:3000/api/users` (GET to get all users)
-    - `http://localhost:3000/api/users` (POST to create a new user)
+For example, to load a cohort and run quality control:
 
-To test out the API you can use tools like postman or curl, for example, to create a new user:
-
-curl x POST http://localhost:3000/api/users \
--H "Content-Type: application/json" \
--d '{"name": "Ebony Louis" , "email": "ebony@example.com"}'
+python run_analysis.py --cohort data/cohort.csv --step qc
 
 Would you like me to add any additional features or make other improvements to the setup?
 ```
@@ -177,7 +170,7 @@ Here's an example configuration that enables oversight:
 
 1. **Set the [permission mode](/docs/guides/biorouter-permissions)** to Smart Approval or Manual Approval:
    ```yaml
-   # ~/.config/BioRouter/config.yaml
+   # ~/.config/biorouter/config.yaml
    BIOROUTER_MODE: smart_approve  # or approve
    ```
 

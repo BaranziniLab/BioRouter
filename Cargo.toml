@@ -5,10 +5,10 @@ resolver = "2"
 [workspace.package]
 edition = "2021"
 version = "1.86.0"
-authors = ["Block <ai-oss-tools@block.xyz>"]
+authors = ["Wanjun Gu <wanjun.gu@ucsf.edu>"]
 license = "Apache-2.0"
 repository = "https://github.com/BaranziniLab/BioRouter"
-description = "An AI agent"
+description = "An AI-powered integrated research environment for biomedical discovery"
 
 [workspace.lints.clippy]
 uninlined_format_args = "allow"

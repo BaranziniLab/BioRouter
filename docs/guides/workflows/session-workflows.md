@@ -288,7 +288,7 @@ You can turn your current biorouter session into a reusable workflow that includ
        │
        ◆  Enter your biorouter workflow GitHub repo (owner/repo): eg: my_org/biorouter-workflows
        // highlight-start
-       │  squareup/biorouter-workflows (default)
+       │  BaranziniLab/biorouter-workflows
        // highlight-end
        └  
        ```
@@ -298,7 +298,7 @@ You can turn your current biorouter session into a reusable workflow that includ
      
 
        Add to your config file:
-       ```yaml title="~/.config/BioRouter/config.yaml"
+       ```yaml title="~/.config/biorouter/config.yaml"
        BIOROUTER_WORKFLOW_GITHUB_REPO: "owner/repo"
        ```
 

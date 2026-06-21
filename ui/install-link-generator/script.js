@@ -101,12 +101,12 @@ document.addEventListener('DOMContentLoaded', () => {
     function generateInstallLink(server) {
         if (server.is_builtin) {
             const queryParams = [
-                'cmd=goosed',
+                'cmd=biorouterd',
                 'arg=mcp',
                 `arg=${encodeURIComponent(server.id)}`,
                 `description=${encodeURIComponent(server.id)}`
             ].join('&');
-            return `goose://extension?${queryParams}`;
+            return `biorouter://extension?${queryParams}`;
         }
 
         // Handle the case where the command is a URL
@@ -123,7 +123,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ),
             ].join("&");
         
-            return `goose://extension?${queryParams}`;
+            return `biorouter://extension?${queryParams}`;
         }
 
         const parts = server.command.split(" ");
@@ -142,7 +142,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 ),
         ].join("&");
 
-        return `goose://extension?${queryParams}`;
+        return `biorouter://extension?${queryParams}`;
     }
 
     function displayGeneratedLink(link) {
@@ -155,8 +155,8 @@ document.addEventListener('DOMContentLoaded', () => {
         is_builtin: false,
         id: "example-extension",
         name: "Example Extension",
-        description: "An example Goose extension",
-        command: "npx @gooseai/example-extension",
+        description: "An example BioRouter extension",
+        command: "npx your-extension-package",
         environmentVariables: [
             {
                 name: "API_KEY",

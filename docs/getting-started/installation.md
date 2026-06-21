@@ -2,8 +2,8 @@
 
 This guide covers how to install BioRouter, connect an LLM provider, and optionally configure MCP extensions and agents.
 
-**GitHub:** https://github.com/BaranziniLab/BioRouter
-**Latest releases:** https://github.com/BaranziniLab/BioRouter/releases
+**GitHub:** https://github.com/BaranziniLab/biorouter
+**Latest releases:** https://github.com/BaranziniLab/biorouter/releases
 
 Always install the newest release for the latest features and bug fixes.
 
@@ -13,7 +13,7 @@ Always install the newest release for the latest features and bug fixes.
 
 ### macOS (Desktop App — Recommended)
 
-1. Go to https://github.com/BaranziniLab/BioRouter/releases and download the latest macOS release (`.dmg` or `.zip`).
+1. Go to https://github.com/BaranziniLab/biorouter/releases and download the latest macOS release (`.dmg` or `.zip`).
 2. Open the downloaded file and move BioRouter to your Applications folder.
 3. Launch BioRouter from Applications.
 
@@ -22,12 +22,12 @@ Always install the newest release for the latest features and bug fixes.
 ### macOS (CLI)
 
 ```sh
-curl -fsSL https://github.com/BaranziniLab/BioRouter/releases/download/stable/download_cli.sh | bash
+curl -fsSL https://github.com/BaranziniLab/biorouter/releases/download/stable/download_cli.sh | bash
 ```
 
 To install without interactive configuration:
 ```sh
-curl -fsSL https://github.com/BaranziniLab/BioRouter/releases/download/stable/download_cli.sh | CONFIGURE=false bash
+curl -fsSL https://github.com/BaranziniLab/biorouter/releases/download/stable/download_cli.sh | CONFIGURE=false bash
 ```
 
 To update:
@@ -38,7 +38,7 @@ biorouter update
 ### Linux and Windows
 
 Linux and Windows builds are currently in development. Check the GitHub releases page for updates:
-https://github.com/BaranziniLab/BioRouter/releases
+https://github.com/BaranziniLab/biorouter/releases
 
 ---
 
@@ -208,7 +208,7 @@ This file stores provider settings, API keys (encrypted), extension configuratio
 
 ## Updating BioRouter
 
-**Desktop:** BioRouter checks for updates automatically. You can also manually download the latest release from https://github.com/BaranziniLab/BioRouter/releases.
+**Desktop:** BioRouter checks for updates automatically. You can also manually download the latest release from https://github.com/BaranziniLab/biorouter/releases.
 
 **CLI:**
 ```sh

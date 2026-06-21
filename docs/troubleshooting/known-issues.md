@@ -1,6 +1,6 @@
 biorouter, like any system, may run into occasional issues. This guide provides solutions for common problems.
 
-> **Tip:** Our [Discord community](https://discord.gg/biorouter-oss) is here to help! For the fastest support, consider generating a [diagnostic report](/docs/troubleshooting/diagnostics-and-reporting) - it helps us understand your setup quickly.
+> **Tip:** Our [GitHub issues page](https://github.com/BaranziniLab/biorouter/issues) is here to help! For the fastest support, consider generating a [diagnostic report](/docs/troubleshooting/diagnostics) - it helps us understand your setup quickly.
 
 ### biorouter Edits Files
 biorouter can and will edit files as part of its workflow. To avoid losing personal changes, use version control to stage your personal edits. Leave biorouter edits unstaged until reviewed. Consider separate commits for biorouter's edits so you can easily revert them if needed.
@@ -110,7 +110,7 @@ Failed to authenticate: Execution error: OAuth configuration not supported by th
 ``` 
 
 To resolve:
-1. Temporarily comment out or remove lead/worker model variables from the main config file (`~/.config/BioRouter/config.yaml`):
+1. Temporarily comment out or remove lead/worker model variables from the main config file (`~/.config/biorouter/config.yaml`):
    ```yaml
    # BIOROUTER_LEAD_MODEL: your-model
    # BIOROUTER_WORKER_MODEL: your-model
@@ -179,7 +179,7 @@ rm -rf ~/Library/Application\ Support/BioRouter
 
 - **Data/Sessions**: `~/.local/share/BioRouter/`
 - **Logs**: `~/.local/state/BioRouter/`
-- **Config**: `~/.config/BioRouter/`
+- **Config**: `~/.config/biorouter/`
 - **Secrets**: System keyring (if available)
 
 #### Removal Steps
@@ -191,13 +191,13 @@ rm -rf ~/Library/Application\ Support/BioRouter
 ```
 rm -rf ~/.local/share/BioRouter/
 rm -rf ~/.local/state/BioRouter/
-rm -rf ~/.config/BioRouter/
+rm -rf ~/.config/biorouter/
 ```
 #### Windows
 
 **Data Locations**
-- **Configuration and Data**: `%APPDATA%\Block\biorouter\`
-- **Local Application Data**: `%LOCALAPPDATA%\Block\biorouter\`
+- **Configuration and Data**: `%APPDATA%\BioRouter\`
+- **Local Application Data**: `%LOCALAPPDATA%\BioRouter\`
 - **Secrets**: Windows Credential Manager
 
 #### Removal Steps
@@ -209,8 +209,8 @@ rm -rf ~/.config/BioRouter/
 2. Open Windows Credential Manager and delete credentials related to "biorouter"
 3. Remove data directories:
 ```
-rmdir /s /q "%APPDATA%\Block\biorouter"
-rmdir /s /q "%LOCALAPPDATA%\Block\biorouter"
+rmdir /s /q "%APPDATA%\BioRouter"
+rmdir /s /q "%LOCALAPPDATA%\BioRouter"
 ```
 4. Uninstall the biorouter Desktop app from Settings > Apps (if applicable)
 
@@ -260,8 +260,8 @@ You may also use the `BIOROUTER_DISABLE_KEYRING` environment variable, which dis
 
 When the keyring is disabled, secrets are stored here:
 
-* macOS/Linux: `~/.config/BioRouter/secrets.yaml`
-* Windows: `%APPDATA%\Block\biorouter\config\secrets.yaml`
+* macOS/Linux: `~/.config/biorouter/secrets.yaml`
+* Windows: `%APPDATA%\BioRouter\config\secrets.yaml`
 
 ---
 
@@ -322,7 +322,7 @@ Blocked malicious package: package-name@1.0.0 (npm). OSV MAL advisories: MAL-202
 Steps to resolve:
 1. **Find an alternative**: Look for similar extensions in the [extensions directory][extensions-directory] or [PulseMCP](https://www.pulsemcp.com/servers)
 2. **Optional verification**: Verify the source of the blocked extension or the package name/publisher
-3. **Report false positives**: If you believe this is an error, please [open an issue](https://github.com/BaranziniLab/BioRouter/issues)
+3. **Report false positives**: If you believe this is an error, please [open an issue](https://github.com/BaranziniLab/biorouter/issues)
 
 This security check only applies to locally-executed external extensions that use PyPI (`uvx`) or NPM (`npx`). The check uses real-time data from the OSV database; if the security service is unavailable, extensions will still install normally.
 
@@ -450,13 +450,13 @@ biorouter Desktop uses **"shims"** (packaged versions of `npx` and `uvx`) that a
 ---
 ### Need Further Help? 
 
-Still running into issues? We're here to help! Join our [Discord Community][discord] where the biorouter team and community members are happy to assist.
+Still running into issues? We're here to help! [Open an issue on GitHub][discord] where the biorouter team and community members are happy to assist.
 
-> **Tip:** If you can share a [diagnostic report](/docs/troubleshooting/diagnostics-and-reporting#diagnostics-system) along with your question, it helps us understand your setup and provide more targeted solutions.
+> **Tip:** If you can share a [diagnostic report](/docs/troubleshooting/diagnostics#diagnostics-system) along with your question, it helps us understand your setup and provide more targeted solutions.
 
 [handling-rate-limits]: /docs/guides/handling-llm-rate-limits-with-biorouter
 [installation]: /docs/getting-started/installation
-[discord]: https://discord.gg/biorouter-oss
+[discord]: https://github.com/BaranziniLab/biorouter/issues
 [biorouterhints]: /docs/guides/context-engineering/using-biorouterhints
 [configure-llm-provider]: /docs/getting-started/providers
 [extensions-directory]: /extensions

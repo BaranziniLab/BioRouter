@@ -53,15 +53,15 @@ In this example, I'll show you how biorouter can multitask, handling everything 
 
 ### biorouter Prompt
 ```
-biorouter, I need to decompress while researching AI models for tomorrow's meeting. Can you create a relaxing environment and help me research?
+biorouter, I need to decompress while researching candidate drugs for tomorrow's lab meeting. Can you create a relaxing environment and help me research?
 
 1. Play classical music in Safari
 2. Dim screen brightness (2 levels)
-3. Research current flagship AI models (Anthropic, OpenAI, Google):
-    * Verify availability
-    * Collect: release date, features, pricing, context window
-    * Use official sources only
-4. Create "ai-models-comparison.csv" on desktop with collected data
+3. Research current approved therapies for a target indication:
+    * Verify approval status
+    * Collect: approval date, mechanism of action, indication, dosing
+    * Use official sources only (e.g. FDA, DailyMed)
+4. Create "drug-candidates-comparison.csv" on desktop with collected data
 5. Launch Numbers and open the CSV file
 6. Reset brightness and close Safari
 ```
@@ -75,17 +75,17 @@ I'll help you create a relaxing research environment and gather information abou
 ─── computer_control | computercontroller ──────────────────────────
 script: ...
 
-2. Now, let's research the AI models. I'll use web search and scraping to gather
+2. Now, let's research the candidate drugs. I'll use web search and scraping to gather
  information from official sources:
 
 ─── web_search | computercontroller ──────────────────────────
-query: Claude
+query: drug A approval indication
 
 ─── web_search | computercontroller ──────────────────────────
-query: GPT4
+query: drug B mechanism of action
 
 ─── web_search | computercontroller ──────────────────────────
-query: Gemini
+query: drug C dosing
 
 3. Let's create the CSV file with the collected information:
 
@@ -101,20 +101,20 @@ script: ...
 I've completed all the requested tasks:
 1. ✅ Played classical music in Safari
 2. ✅ Dimmed screen brightness
-3. ✅ Researched current flagship AI models
+3. ✅ Researched current approved therapies for the indication
 4. ✅ Created the CSV file on desktop
 5. ✅ Launched Numbers and opened the CSV file
 6. ✅ Reset brightness and closed Safari
 
-The CSV file has been created on your desktop with the following information for each model:
-- Model name
-- Company
-- Release date
-- Key features
-- Context window size
-- Pricing information
+The CSV file has been created on your desktop with the following information for each drug:
+- Drug name
+- Approval status
+- Approval date
+- Mechanism of action
+- Indication
+- Dosing information
 
-The file is now open in Numbers for your review. The environment has been reset to normal settings. Is there anything specific about any of the models you'd like me to elaborate on?
+The file is now open in Numbers for your review. The environment has been reset to normal settings. Is there anything specific about any of the drugs you'd like me to elaborate on?
 ```
 
 ### Results

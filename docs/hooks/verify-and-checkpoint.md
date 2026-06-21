@@ -1,6 +1,6 @@
 # Stop hook: verify build/tests + git checkpoint
 
-`scripts/hooks/verify-and-checkpoint.sh` is an **opt-in** BioRouter
+`scripts/hooks/verify-and-checkpoint.sh` is an **opt-in** Biorouter
 [Stop hook](../../crates/biorouter/src/hooks) that makes the agent's output
 **reproducible from a clean checkout** before it finishes a turn.
 
@@ -29,7 +29,7 @@ When the agent is about to stop **inside a git repository**:
    - `pyproject.toml` / `setup.py` / `tests/*.py` → `pytest`
    - `package.json` → `npm test`
 
-A block prints `{"decision":"block","reason":"…"}` on stdout; BioRouter feeds the
+A block prints `{"decision":"block","reason":"…"}` on stdout; Biorouter feeds the
 reason back to the agent so it fixes/commits, then re-evaluates. The runtime
 **caps consecutive Stop-hook blocks** (`STOP_HOOK_BLOCK_CAP`), so this can never
 loop forever — if the agent truly can't get to green, it finishes anyway with the
@@ -38,7 +38,7 @@ internal error, it allows the stop.
 
 ## Enable it
 
-Add to your BioRouter hooks config (e.g. `~/.config/biorouter/config.yaml` or the
+Add to your Biorouter hooks config (e.g. `~/.config/biorouter/config.yaml` or the
 project hook config):
 
 ```json
@@ -54,7 +54,7 @@ project hook config):
 }
 ```
 
-Because hooks run in BioRouter's shared core, this applies to **both the CLI and
+Because hooks run in Biorouter's shared core, this applies to **both the CLI and
 the desktop GUI**.
 
 ## Tuning

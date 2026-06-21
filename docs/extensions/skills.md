@@ -31,62 +31,62 @@ biorouter automatically discovers skills at startup and uses them when relevant 
 
 ## Example Usage
 
-Let's say you have a skill that biorouter discovers on startup in `~/.config/agents/skills/deploy/SKILL.md`:
+Let's say you have a skill that biorouter discovers on startup in `~/.config/agents/skills/run-gwas/SKILL.md`:
 
 ```markdown
 ---
-name: production-deploy
-description: Safe deployment procedure for production environment
+name: gwas-pipeline
+description: Safe procedure for running a genome-wide association analysis
 ---
 
-# Production Deployment
+# GWAS Analysis
 
-## Pre-deployment Checklist
-1. Ensure all tests pass
-2. Check staging environment is stable
-3. Notify #deployments channel
+## Pre-analysis Checklist
+1. Ensure genotype QC has passed
+2. Check that the phenotype file is finalized
+3. Confirm covariates (age, sex, ancestry PCs) are defined
 
-## Deployment Steps
-1. Create release branch from main
-2. Run `npm run build:prod`
-3. Deploy to staging first, then production
-4. Monitor error rates for 30 minutes
+## Analysis Steps
+1. Create an analysis branch from main
+2. Run sample- and variant-level QC filters
+3. Run the association tests, then apply genomic control
+4. Generate a Manhattan plot and review for genomic inflation
 ```
 
 ### biorouter Prompt
 
 ```
-Deploy the current branch to production
+Run the GWAS on the current dataset
 ```
 
 ### biorouter Output
 
-> **Note:** I'll help you deploy the current branch to production. Let me first load the production deployment skill to follow the safe deployment procedure.
+> **Note:** I'll help you run the GWAS on the current dataset. Let me first load the GWAS pipeline skill to follow the safe analysis procedure.
 
-I can see you're on the **`my-feature-branch`** branch with some untracked files. Before proceeding with production deployment, I need to follow the safe deployment procedure.
+I can see you're working in the **`new-cohort`** dataset with some unprocessed files. Before proceeding with the association analysis, I need to follow the safe analysis procedure.
 
-#### ⚠️ Pre-deployment Confirmation Required
+#### ⚠️ Pre-analysis Confirmation Required
 
-According to the production deployment skill, I need to complete the following checklist:
+According to the GWAS pipeline skill, I need to complete the following checklist:
 
-**Pre-deployment Checklist**
-1. **Ensure all tests pass** - Have tests been run?
-2. **Check staging environment is stable** - Has this been deployed to staging first?
-3. **Notify #deployments channel** - Should I notify the team?
+**Pre-analysis Checklist**
+1. **Ensure genotype QC has passed** - Has QC been run?
+2. **Check that the phenotype file is finalized** - Is the phenotype definition locked?
+3. **Confirm covariates are defined** - Are age, sex, and ancestry PCs available?
 
-**Deployment Steps (once confirmed)**
-1. Create release branch from main
-2. Run `npm run build:prod`
-3. Deploy to staging first, then production
-4. Monitor error rates for 30 minutes
+**Analysis Steps (once confirmed)**
+1. Create an analysis branch from main
+2. Run sample- and variant-level QC filters
+3. Run the association tests, then apply genomic control
+4. Generate a Manhattan plot and review for genomic inflation
 
 ---
 
 **Before I proceed, please confirm:**
 
-1. ✅ Have all tests passed for the `my-feature-branch` branch?
-2. ✅ Has this been tested on staging?
-3. ✅ Should I notify the #deployments channel?
-4. ✅ Are you sure you want to deploy the `my-feature-branch` branch (not `main`) to production?
+1. ✅ Has genotype QC passed for the `new-cohort` dataset?
+2. ✅ Is the phenotype file finalized?
+3. ✅ Are the covariates (age, sex, ancestry PCs) defined?
+4. ✅ Are you sure you want to run the GWAS on the `new-cohort` dataset?
 
-Please confirm these items and I'll proceed with the deployment.
+Please confirm these items and I'll proceed with the analysis.

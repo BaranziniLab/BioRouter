@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**BioRouter** (v1.60.0) is an AI-powered integrated research environment for biomedical discovery built by UCSF's Baranzini Lab. It unifies multiple LLM providers, AI agents, MCP-based extensions, and customizable workflows into a single extensible tool. The architecture has three layers: Interface (Electron GUI or CLI) → Agent (reasoning loop with session state) → Extensions (pluggable MCP servers providing tools).
+**BioRouter** (v1.86.0) is an AI-powered integrated research environment for biomedical discovery built by UCSF's Baranzini Lab. It unifies multiple LLM providers, AI agents, MCP-based extensions, and customizable workflows into a single extensible tool. The architecture has three layers: Interface (Electron GUI or CLI) → Agent (reasoning loop with session state) → Extensions (pluggable MCP servers providing tools).
 
 ## Tech Stack
 
@@ -280,7 +280,7 @@ After changing server routes, always run `just generate-openapi` to regenerate t
 
 - User config: `~/.config/biorouter/config.yaml` (providers, API keys, extensions)
 - Session history: `~/.config/biorouter/sessions/` (SQLite)
-- Recipes/skills: `~/.config/biorouter/recipes/` and `~/.config/biorouter/skills/`
+- Workflows/skills: `~/.config/biorouter/workflows/` and `~/.config/biorouter/skills/`
 - Secrets: OS credential store (macOS Keychain / Windows Credential Manager / Linux Secret Service) via the `keyring` crate, read once per process and cached in memory so macOS shows at most one Keychain authorization prompt per run (tell users to click "Always Allow"). `BIOROUTER_DISABLE_KEYRING=true` switches to plaintext `secrets.yaml`; headless Linux falls back to it automatically. On Windows the secrets blob is chunked across credentials (2560-byte cap each). `just copy-binary` re-signs dev binaries with the Developer ID (when present) so Keychain grants survive rebuilds. Logic in `crates/biorouter/src/config/base.rs`; see `docs/guides/secret-storage.md`.
 
 Key environment variables:
@@ -302,3 +302,51 @@ From `.github/copilot-instructions.md`: Reviews focus on **security, correctness
 From `HOWTOAI.md`: Avoid using AI-generated code for security logic, complex business rules, or schema migrations without thorough human review. Always get human review for MCP protocol implementations and async/concurrency logic.
 
 Use `.biorouterhints` to guide BioRouter's coding style (patterns, error handling, tests) and `.biorouterignore` to protect sensitive files from being read by the agent.
+
+## Connected Repositories & Ecosystem
+
+BioRouter is the hub of a small ecosystem of Baranzini Lab / UCSF repositories: the app itself, its public website + marketplace, a shareable-skills repo, and a set of installable MCP "agent" extensions and skill packs. This section maps every related repo/resource so a future session knows how the pieces fit together. All GitHub URLs below were verified to return HTTP 200 on 2026-06-20 unless noted.
+
+### Core repos
+
+| Repo | Purpose | Local path | GitHub |
+|------|---------|------------|--------|
+| **biorouter** (this repo) | The main app: Rust workspace (CLI `biorouter`, daemon `biorouterd`, core agent lib, MCP servers) + Electron/React desktop GUI. | `/Users/wgu/Desktop/BioRouter` | https://github.com/BaranziniLab/biorouter |
+| **biorouter-landing** | Public website + docs, deployed at **http://biorouter.ucsf.edu/** (GitHub Pages, `CNAME` = `biorouter.ucsf.edu`). Hosts the BAAM marketplace (`baam.html`), `download.html`, `docs.html`, `skills.html`, and the machine-readable **`registry.json`** (the authoritative marketplace catalog of extensions + skills). | `/Users/wgu/Desktop/biorouter-landing` | https://github.com/BaranziniLab/biorouter-landing |
+| **biorouter-skills** | Shareable Biorouter skills. Each skill ships as a GitHub Release asset `skill-<id>` → `<id>.zip`. Local clone has two remotes: `baranzini` → BaranziniLab (canonical) and `origin` → Broccolito (dev fork). | `/Users/wgu/Desktop/biorouter-skills` | https://github.com/BaranziniLab/biorouter-skills (fork: https://github.com/Broccolito/biorouter-skills) |
+
+### Marketplace & docs (BAAM)
+
+**BAAM** = the Biorouter Agent/extension/skill marketplace, served from the landing site. The durable, machine-readable source of truth is `registry.json` in the landing repo (`"source": "https://biorouter.ucsf.edu/baam"`), which the app reads to list and one-click-install extensions (`.brxt` bundles) and skills (`.zip`).
+
+- Marketplace page: http://biorouter.ucsf.edu/baam.html
+- Registry (catalog JSON): https://biorouter.ucsf.edu/registry.json (source: `/Users/wgu/Desktop/biorouter-landing/registry.json`)
+- Docs: http://biorouter.ucsf.edu/docs.html · Skills gallery: http://biorouter.ucsf.edu/skills.html · Downloads: http://biorouter.ucsf.edu/download.html
+- Baranzini Lab: https://baranzinilab.ucsf.edu/ · UCSF: https://www.ucsf.edu
+
+### Extension agents (installable MCP servers, `.brxt` bundles)
+
+These are pluggable MCP extensions distributed via the marketplace; each lives in its own repo and publishes a `.brxt` bundle as a GitHub Release asset.
+
+| Agent | Purpose | GitHub | Notes |
+|-------|---------|--------|-------|
+| **SPOKEAgent** | Cypher queries on the SPOKE biomedical knowledge graph (diseases, genes, proteins, drugs, pathways); bundles a `spoke-knowledge-graph` skill. | https://github.com/BaranziniLab/SPOKEAgent | Needs `SPOKEAGENT_PASSCODE` (UCSF wiki credentials page). |
+| **UCSFOMOPAgent** | Natural-language SQL over the UCSF OMOP de-identified clinical database (OMOP CDM EHR data, read-only). | https://github.com/BaranziniLab/UCSFOMOPAgent | Requires UCSF credentials. |
+| **CDWAgent** | Multimodal natural-language access to the UCSF Clinical Data Warehouse (cohorts, labs, imaging, notes/NLP); read-only. | https://github.com/BaranziniLab/CDWAgent | Requires UCSF network credentials (`CAMPUS\username`). |
+| **PlaywrightAgent** | Browser automation via Microsoft's `@playwright/mcp` (navigate, extract, fill forms); no vision model needed, needs Node.js. | https://github.com/BaranziniLab/PlaywrightAgent | |
+| **CodeGraphAgent** | Pre-indexed code knowledge graph ("who calls X?", "what breaks if I change Z?") across 23 languages incl. R/Julia/MATLAB/Perl; tree-sitter fork of CodeGraph. | https://github.com/Broccolito/CodeGraphAgent | Broccolito org. |
+| **BiorOffice** | Create/read/edit Word/Excel/PowerPoint from chat (built on OfficeCLI, no MS Office needed); ships four bundled office skills. | https://github.com/Broccolito/BiorOffice | Broccolito org. |
+
+### Skill packs (`biorouter-skills`, ~85 skills)
+
+All skills are published as releases of **`BaranziniLab/biorouter-skills`** (asset path `releases/download/skill-<id>/<id>.zip`). Grouped by category in `registry.json`:
+
+- **Core** (9): `scientific-research`, `taste-skill` (frontend design), `anti-ai-writing`, `ggplot-visualization`, `r-scripting`, `python-scripting`, `ralph`, `superpowers`, `ucsf-hpc`.
+- **Developer** (8): `code-review`, `code-simplifier`, `commit-commands`, `skill-creator`, `hookify`, `code-modernization`, `playground`, `frontend-design`.
+- **Biomedical** (~68): genomics/omics + clinical bioinformatics skills, e.g. `single-cell`, `variant-calling`, `differential-expression`, `pathway-analysis`, `spatial-transcriptomics`, `proteomics`, `metabolomics`, `chip-seq`, `atac-seq`, `crispr-screens`, `phylogenetics`, `clinical-biostatistics`, `clinical-databases`, `multi-omics-integration`, `workflows`, etc. See `registry.json` for the full list.
+
+### Workflows
+
+- **biorouter-workflows** — shareable workflow YAML definitions (e.g. `ehr-diabetes-dashboard.yaml`, referenced from `baam.html` via `raw.githubusercontent.com`). GitHub: https://github.com/BaranziniLab/biorouter-workflows (the `Broccolito/biorouter-workflows` URL in `baam.html` 301-redirects to the BaranziniLab repo).
+
+> Maintenance note: the authoritative, always-current catalog of extensions and skills is `registry.json` in the `biorouter-landing` repo. When agents/skills are added or versions change, that file (not this section) is the source of truth — re-derive this section from it if it drifts.

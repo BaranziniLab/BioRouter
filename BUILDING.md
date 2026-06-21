@@ -212,8 +212,8 @@ The `build-linux-deb.sh` script:
 3. Runs `electron-forge make` for `linux/x64` producing `.deb` and `.rpm`
 
 Outputs:
-- `ui/desktop/out/make/deb/x64/biorouter_1.20.0_amd64.deb`
-- `ui/desktop/out/make/rpm/x64/BioRouter-1.20.0-1.x86_64.rpm`
+- `ui/desktop/out/make/deb/x64/biorouter_1.86.0_amd64.deb`
+- `ui/desktop/out/make/rpm/x64/BioRouter-1.86.0-1.x86_64.rpm`
 
 ---
 
@@ -251,7 +251,7 @@ What this does:
 3. Removes the macOS binary from `src/bin/`
 4. Runs `electron-forge make` for `win32/x64`
 
-Output: `out/make/zip/win32/x64/BioRouter-win32-x64-1.20.0.zip`
+Output: `out/make/zip/win32/x64/BioRouter-win32-x64-1.86.0.zip`
 
 After this, restore the ARM binary again:
 ```bash
@@ -281,7 +281,7 @@ APPLE_APP_SPECIFIC_PASSWORD=<app-specific-password> \
 npm run bundle:dmg
 ```
 
-Output: `out/make/BioRouter-1.20.0-arm64.dmg`
+Output: `out/make/BioRouter-1.86.0-arm64.dmg`
 
 ### Intel DMG
 
@@ -299,7 +299,7 @@ APPLE_APP_SPECIFIC_PASSWORD=<app-specific-password> \
 npm run bundle:intel-dmg
 ```
 
-Output: `out/make/BioRouter-1.20.0-x64.dmg`
+Output: `out/make/BioRouter-1.86.0-x64.dmg`
 
 Restore the ARM binary after:
 
@@ -315,13 +315,13 @@ After completing all steps, your distributable files are:
 
 | Platform | File | Location |
 |----------|------|----------|
-| macOS Apple Silicon (DMG) | `BioRouter-1.20.0-arm64.dmg` | `ui/desktop/out/make/` |
-| macOS Intel (DMG) | `BioRouter-1.20.0-x64.dmg` | `ui/desktop/out/make/` |
+| macOS Apple Silicon (DMG) | `BioRouter-1.86.0-arm64.dmg` | `ui/desktop/out/make/` |
+| macOS Intel (DMG) | `BioRouter-1.86.0-x64.dmg` | `ui/desktop/out/make/` |
 | macOS Apple Silicon (zip) | `BioRouter.zip` | `ui/desktop/out/BioRouter-darwin-arm64/` |
 | macOS Intel (zip) | `BioRouter_intel_mac.zip` | `ui/desktop/out/BioRouter-darwin-x64/` |
-| Linux Ubuntu / Pop!_OS | `biorouter_1.20.0_amd64.deb` | `ui/desktop/out/make/deb/x64/` |
-| Linux Fedora / RHEL | `BioRouter-1.20.0-1.x86_64.rpm` | `ui/desktop/out/make/rpm/x64/` |
-| Windows x64 | `BioRouter-win32-x64-1.20.0.zip` | `ui/desktop/out/make/zip/win32/x64/` |
+| Linux Ubuntu / Pop!_OS | `biorouter_1.86.0_amd64.deb` | `ui/desktop/out/make/deb/x64/` |
+| Linux Fedora / RHEL | `BioRouter-1.86.0-1.x86_64.rpm` | `ui/desktop/out/make/rpm/x64/` |
+| Windows x64 | `BioRouter-win32-x64-1.86.0.zip` | `ui/desktop/out/make/zip/win32/x64/` |
 
 Upload all five files to the GitHub Release assets.
 

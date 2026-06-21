@@ -2,8 +2,8 @@
 
 biorouter uses YAML [configuration files](#configuration-files) to manage settings and extensions. The primary config file is located at:
 
-* macOS/Linux: `~/.config/BioRouter/config.yaml`
-* Windows: `%APPDATA%\Block\biorouter\config\config.yaml`
+* macOS/Linux: `~/.config/biorouter/config.yaml`
+* Windows: `%APPDATA%\biorouter\config\config.yaml`
 
 The configuration files allow you to set default behaviors, configure language models, set tool permissions, and manage extensions. While many settings can also be set using [environment variables](/docs/guides/environment-variables), the config files provide a persistent way to maintain your preferences.
 
@@ -147,9 +147,9 @@ You can optionally set up [custom slash commands](/docs/guides/context-engineeri
 ```yaml
 slash_commands:
   - command: "run-tests"
-    recipe_path: "/path/to/workflow.yaml"
+    workflow_path: "/path/to/workflow.yaml"
   - command: "daily-standup"
-    recipe_path: "/Users/me/.local/share/BioRouter/workflows/standup.yaml"
+    workflow_path: "/Users/me/.local/share/biorouter/workflows/standup.yaml"
 ```
 
 ## Configuration Priority

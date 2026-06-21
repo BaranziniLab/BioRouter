@@ -61,11 +61,11 @@ biorouter also recognizes certain trigger words that signal when to store, retri
 
 ## Example Usage
 
-In this example, I’ll show you how to make biorouter a knowledgeable development assistant by teaching it about your project’s API standards. With the Memory extension, biorouter can store structured information and recall it when needed, helping you stay consistent in your work.
+In this example, I’ll show you how to make biorouter a knowledgeable research assistant by teaching it about your lab’s data-analysis standards. With the Memory extension, biorouter can store structured information and recall it when needed, helping you stay consistent in your work.
 
 This means you no longer have to repeat yourself. biorouter will remember your project’s requirements and automatically apply them to new tasks.
 
-> **Tip:** If you frequently work with API standards or other structured knowledge, biorouter may automatically suggest saving them to memory for you when it detects a pattern in your workflow.
+> **Tip:** If you frequently work with analysis standards or other structured knowledge, biorouter may automatically suggest saving them to memory for you when it detects a pattern in your workflow.
 
   
    1. Open a new session in biorouter Desktop
@@ -80,16 +80,16 @@ This means you no longer have to repeat yourself. biorouter will remember your p
 
   
 
-### Step 1: Teach biorouter Your API Standards
+### Step 1: Teach biorouter Your Analysis Standards
     #### biorouter Prompt #1
     ```
-    biorouter, learn our API development standards:
+    biorouter, learn our cohort data-analysis standards:
 
-    - All endpoints must use TypeScript interfaces
-    - Error responses follow RFC 7807 Problem Details spec
-    - Rate limiting headers are required
-    - Authentication uses JWT in Authorization header
-    - All endpoints need OpenAPI documentation
+    - All cohorts must be defined with explicit OMOP concept IDs
+    - Continuous variables are reported as mean ± SD; categorical as n (%)
+    - Multiple-comparison correction uses Benjamini-Hochberg FDR
+    - Patient identifiers must be de-identified before analysis
+    - Every analysis needs a reproducible script and a methods summary
 
     Remember this so you can help me follow these practices.
     ```
@@ -97,68 +97,55 @@ This means you no longer have to repeat yourself. biorouter will remember your p
     #### biorouter Output
 
     ```
-    I've learned your API standards. I'll help enforce these requirements when working on API endpoints.
+    I've learned your analysis standards. I'll help enforce these requirements when working on cohort analyses.
 
     Storing in:
-        - Category: development_standards
-        - Tags: #api #typescript #security #documentation
+        - Category: analysis_standards
+        - Tags: #cohort #omop #statistics #reproducibility
         - Scope: global (these are general standards)
 
     I can now help with:
-        - API endpoint implementation
-        - Error handling patterns
-        - Authentication flows
-        - Documentation requirements
+        - Cohort definition with OMOP concepts
+        - Descriptive and inferential statistics
+        - Multiple-comparison correction
+        - De-identification and methods reporting
     ```
-### Step 2: Use Stored Knowledge to Create a New API Endpoint
+### Step 2: Use Stored Knowledge to Run a New Cohort Analysis
     #### biorouter Prompt # 2
 
     ```
-    Help me create a new endpoint for user preferences
+    Help me compare baseline characteristics between the treatment and control cohorts
     ```
     #### biorouter Output
     ```
-    I see you need a new endpoint. Based on our API development standards that I have stored in memory, I'll ensure it meets all our requirements.
+    I see you need a baseline comparison. Based on our cohort data-analysis standards that I have stored in memory, I'll ensure it meets all our requirements.
 
-    [.. Checking stored API standards ...]
+    [.. Checking stored analysis standards ...]
 
-    I've included all our required elements:
+    I've followed all our required elements:
     
-    ✅ TypeScript interfaces
-    ✅ RFC 7807 error response format
-    ✅ Rate limiting
-    ✅ JWT auth header
-    ✅ OpenAPI documentation
+    ✅ Cohorts defined via OMOP concept IDs
+    ✅ Mean ± SD for continuous, n (%) for categorical
+    ✅ Benjamini-Hochberg FDR correction
+    ✅ De-identified patient data
+    ✅ Reproducible script + methods summary
 
-    Here's your compliant endpoint:
+    Here's your compliant analysis script:
 
-    interface UserPreferences {
-        userId: string;
-        theme: 'light' | 'dark';
-        notifications: boolean;
-        timezone: string;
-    }
+    # baseline_comparison.py
+    import pandas as pd
+    from scipy import stats
+    from statsmodels.stats.multitest import multipletests
 
-    interface ErrorResponse { 
-        type: string;
-        title: string;
-        status: number;
-        detail: string;
-        instance: string;
-    }
+    treatment = load_cohort(concept_ids=[201826])   # OMOP concept
+    control = load_cohort(concept_ids=[4193704])
 
-    @Route('/api/users/:userId/preferences')
-    class UserPreferencesController {
-        @Get()
-        @RateLimit(100)  // Adding required rate limiting
-        @OpenAPI({ ... }) // Including mandatory OpenAPI docs
-        async getUserPreferences(
-            @Header('Authorization') token: string,  // JWT auth as per our standard
-            @Param('userId') userId: string
-        ): Promise<UserPreferences | ErrorResponse> {
-            // Implementation following our error handling pattern
-        }
-    }
+    # Continuous: mean ± SD, two-sample t-test
+    # Categorical: n (%), chi-square test
+    pvals = run_baseline_tests(treatment, control)
 
-    Would you like me to implement the full endpoint logic?
+    # Benjamini-Hochberg FDR correction per our standard
+    _, qvals, _, _ = multipletests(pvals, method="fdr_bh")
+
+    Would you like me to run the full comparison and generate the Table 1 summary?
     ```

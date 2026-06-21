@@ -20,7 +20,7 @@ Click the **"Fork"** button at the top of this repository to create your own cop
 2. **Create a new file**: `your-recipe-name.yaml`
 3. **Important**: Choose a unique filename that describes your recipe
 
-**Example**: For a web scraping recipe, create `web-scraper.yaml`
+**Example**: For a PubMed literature-review recipe, create `pubmed-literature-review.yaml`
 
 ### Step 3: Write Your Recipe
 
@@ -88,8 +88,8 @@ Your recipe should:
 - [ ] **Have a unique filename** - No conflicts with existing recipe files
 
 ### 📝 **Naming Guidelines:**
-- **Filename**: Choose a descriptive, unique filename (e.g., `web-scraper.yaml`)
-- **Title**: Should match your filename (e.g., `"Web Scraper"`)
+- **Filename**: Choose a descriptive, unique filename (e.g., `pubmed-literature-review.yaml`)
+- **Title**: Should match your filename (e.g., `"PubMed Literature Review"`)
 
 ## 🔍 Recipe Validation
 
@@ -106,13 +106,13 @@ If validation fails, you'll get helpful feedback in the PR comments.
 
 Need inspiration? Consider recipes for:
 
-- **Web scraping** workflows
-- **Data processing** pipelines
-- **API integration** tasks
-- **File management** automation
-- **Code generation** helpers
-- **Testing** and validation
-- **Deployment** processes
+- **Literature review** workflows (e.g. summarizing and comparing PubMed papers)
+- **Biomedical data processing** pipelines (e.g. genomics/bioinformatics, OMOP/EHR cohort prep)
+- **Database & knowledge-graph queries** (e.g. gene–disease associations, SPOKE)
+- **Cohort building** and patient-data wrangling
+- **Drug–disease analysis** helpers
+- **Reproducibility** checks and validation
+- **Figure and report generation** for research findings
 
 ## 🆘 Need Help?
 

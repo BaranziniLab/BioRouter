@@ -4,13 +4,13 @@
   "extensions": [
     {
       "id": "cdwagent",
-      "name": "CDW Agent",
+      "name": "CDWAgent",
       "organization": "BaranziniLab · UCSF",
-      "version": "v0.4.3",
-      "description": "SQL access to the UCSF Clinical Data Warehouse through natural language. Read-only queries, schema discovery, and structured results. Requires UCSF network credentials (CAMPUS\\username and password).",
+      "version": "v0.5.1",
+      "description": "Multimodal access to the UCSF Clinical Data Warehouse through natural language. One-call cohort building across diagnoses, medications, procedures, labs, radiology/imaging, immunizations, allergies, and vitals; clinical-notes/NLP search; read-only queries, schema discovery, and structured results. Requires UCSF network credentials (CAMPUS\\username and password).",
       "tags": ["UCSF", "MCP", "CDW", "Clinical"],
       "github": "https://github.com/BaranziniLab/CDWAgent",
-      "download": "https://github.com/BaranziniLab/CDWAgent/releases/download/v0.4.3-brxt/cdwagent.brxt",
+      "download": "https://github.com/BaranziniLab/CDWAgent/releases/download/v0.5.1-brxt/cdwagent.brxt",
       "filename": "cdwagent.brxt"
     },
     {
@@ -37,7 +37,7 @@
     },
     {
       "id": "spokeagent-0.2.0",
-      "name": "SPOKE Agent",
+      "name": "SPOKEAgent",
       "organization": "BaranziniLab · UCSF",
       "version": "v0.2.0",
       "description": "Cypher queries on the SPOKE biomedical knowledge graph linking diseases, genes, proteins, drugs, and pathways. Includes a bundled spoke-knowledge-graph skill. Requires a SPOKEAGENT_PASSCODE (see credentials page).",
@@ -282,7 +282,7 @@
       "description": "Multiple sequence alignment and pairwise alignment.",
       "tags": ["MAFFT", "Biopython", "Foldseek"],
       "keywords": ["alignment", "mafft", "biopython", "foldseek"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/alignment.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-alignment/alignment.zip",
       "filename": "alignment.zip"
     },
     {
@@ -293,7 +293,7 @@
       "description": "SAM/BAM/CRAM manipulation, sorting, indexing, dedup, and stats.",
       "tags": ["samtools", "pysam", "BAM"],
       "keywords": ["alignment-files", "samtools", "pysam", "bam"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/alignment-files.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-alignment-files/alignment-files.zip",
       "filename": "alignment-files.zip"
     },
     {
@@ -304,7 +304,7 @@
       "description": "RNA isoform and splice-junction analysis from short- and long-read data.",
       "tags": ["rMATS", "SUPPA2", "isoforms"],
       "keywords": ["alternative-splicing", "rmats", "suppa2", "isoforms"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/alternative-splicing.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-alternative-splicing/alternative-splicing.zip",
       "filename": "alternative-splicing.zip"
     },
     {
@@ -315,7 +315,7 @@
       "description": "Chromatin accessibility, peak calling, footprinting, and deep-learning ATAC.",
       "tags": ["MACS3", "TOBIAS", "chromBPNet"],
       "keywords": ["atac-seq", "macs3", "tobias", "chrombpnet"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/atac-seq.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-atac-seq/atac-seq.zip",
       "filename": "atac-seq.zip"
     },
     {
@@ -326,7 +326,7 @@
       "description": "Mendelian randomization, colocalization, fine-mapping, and TWAS.",
       "tags": ["MR", "coloc", "TWAS"],
       "keywords": ["causal-genomics", "mr", "coloc", "twas"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/causal-genomics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-causal-genomics/causal-genomics.zip",
       "filename": "causal-genomics.zip"
     },
     {
@@ -337,7 +337,7 @@
       "description": "Molecular structure handling, descriptors, and drug-discovery utilities.",
       "tags": ["RDKit", "SMILES"],
       "keywords": ["chemoinformatics", "rdkit", "smiles"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/chemoinformatics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-chemoinformatics/chemoinformatics.zip",
       "filename": "chemoinformatics.zip"
     },
     {
@@ -348,7 +348,7 @@
       "description": "Transcription-factor and histone-mark peak calling and differential binding.",
       "tags": ["MACS2", "ChIPseeker"],
       "keywords": ["chip-seq", "macs2", "chipseeker"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/chip-seq.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-chip-seq/chip-seq.zip",
       "filename": "chip-seq.zip"
     },
     {
@@ -359,7 +359,7 @@
       "description": "Survival, mixed models, and clinical-trial statistical analysis.",
       "tags": ["survival", "R", "lme4"],
       "keywords": ["clinical-biostatistics", "survival", "r", "lme4"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/clinical-biostatistics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clinical-biostatistics/clinical-biostatistics.zip",
       "filename": "clinical-biostatistics.zip"
     },
     {
@@ -370,7 +370,7 @@
       "description": "ClinVar, OMIM, COSMIC, gnomAD, and phenotype DB queries.",
       "tags": ["ClinVar", "OMIM", "gnomAD"],
       "keywords": ["clinical-databases", "clinvar", "omim", "gnomad"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/clinical-databases.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clinical-databases/clinical-databases.zip",
       "filename": "clinical-databases.zip"
     },
     {
@@ -381,7 +381,7 @@
       "description": "Protein–RNA interaction mapping from iCLIP/eCLIP/PAR-CLIP data.",
       "tags": ["PureCLIP", "eCLIP"],
       "keywords": ["clip-seq", "pureclip", "eclip"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/clip-seq.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clip-seq/clip-seq.zip",
       "filename": "clip-seq.zip"
     },
     {
@@ -392,7 +392,7 @@
       "description": "Cross-species synteny, orthology, and selection scans.",
       "tags": ["OrthoFinder", "synteny"],
       "keywords": ["comparative-genomics", "orthofinder", "synteny"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/comparative-genomics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-comparative-genomics/comparative-genomics.zip",
       "filename": "comparative-genomics.zip"
     },
     {
@@ -403,7 +403,7 @@
       "description": "CNV detection, visualization, and segmentation.",
       "tags": ["CNVkit", "GATK CNV"],
       "keywords": ["copy-number", "cnvkit", "gatk", "cnv"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/copy-number.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-copy-number/copy-number.zip",
       "filename": "copy-number.zip"
     },
     {
@@ -414,7 +414,7 @@
       "description": "Pooled screen counting, MAGeCK analysis, and hit prioritization.",
       "tags": ["MAGeCK", "screens"],
       "keywords": ["crispr-screens", "mageck", "screens"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/crispr-screens.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-crispr-screens/crispr-screens.zip",
       "filename": "crispr-screens.zip"
     },
     {
@@ -425,7 +425,7 @@
       "description": "Publication-quality plots: heatmaps, volcano, Manhattan, dimplots.",
       "tags": ["ggplot2", "matplotlib", "ComplexHeatmap"],
       "keywords": ["data-visualization", "ggplot2", "matplotlib", "complexheatmap"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/data-visualization.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-data-visualization/data-visualization.zip",
       "filename": "data-visualization.zip"
     },
     {
@@ -436,7 +436,7 @@
       "description": "NCBI, UniProt, Ensembl, and biological database APIs.",
       "tags": ["Entrez", "UniProt", "Ensembl"],
       "keywords": ["database-access", "entrez", "uniprot", "ensembl"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/database-access.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-database-access/database-access.zip",
       "filename": "database-access.zip"
     },
     {
@@ -447,7 +447,7 @@
       "description": "RNA-seq DE testing with DESeq2, edgeR, and limma-voom.",
       "tags": ["DESeq2", "edgeR", "limma"],
       "keywords": ["differential-expression", "deseq2", "edger", "limma"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/differential-expression.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-differential-expression/differential-expression.zip",
       "filename": "differential-expression.zip"
     },
     {
@@ -458,7 +458,7 @@
       "description": "Environmental DNA, ecological population genomics, and biodiversity.",
       "tags": ["eDNA", "popgen"],
       "keywords": ["ecological-genomics", "edna", "popgen"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/ecological-genomics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ecological-genomics/ecological-genomics.zip",
       "filename": "ecological-genomics.zip"
     },
     {
@@ -469,7 +469,7 @@
       "description": "Pathogen typing, outbreak phylogeography, and surveillance.",
       "tags": ["Nextstrain", "pathogens"],
       "keywords": ["epidemiological-genomics", "nextstrain", "pathogens"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/epidemiological-genomics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-epidemiological-genomics/epidemiological-genomics.zip",
       "filename": "epidemiological-genomics.zip"
     },
     {
@@ -480,7 +480,7 @@
       "description": "m6A and other RNA modification detection from sequencing.",
       "tags": ["m6A", "RNA mods"],
       "keywords": ["epitranscriptomics", "m6a", "rna", "mods"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/epitranscriptomics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-epitranscriptomics/epitranscriptomics.zip",
       "filename": "epitranscriptomics.zip"
     },
     {
@@ -491,7 +491,7 @@
       "description": "Power analysis and sample-size calculation for omics studies.",
       "tags": ["power", "design"],
       "keywords": ["experimental-design", "power", "design"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/experimental-design.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-experimental-design/experimental-design.zip",
       "filename": "experimental-design.zip"
     },
     {
@@ -502,7 +502,7 @@
       "description": "Count normalization, gene ID mapping, and matrix QC.",
       "tags": ["TPM", "mygene"],
       "keywords": ["expression-matrix", "tpm", "mygene"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/expression-matrix.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-expression-matrix/expression-matrix.zip",
       "filename": "expression-matrix.zip"
     },
     {
@@ -513,7 +513,7 @@
       "description": "FCS parsing, gating, and high-dimensional cytometry analysis.",
       "tags": ["flowCore", "FlowSOM"],
       "keywords": ["flow-cytometry", "flowcore", "flowsom"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/flow-cytometry.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-flow-cytometry/flow-cytometry.zip",
       "filename": "flow-cytometry.zip"
     },
     {
@@ -524,7 +524,7 @@
       "description": "TF–target network inference from expression and chromatin data.",
       "tags": ["SCENIC", "GRNBoost2"],
       "keywords": ["gene-regulatory-networks", "scenic", "grnboost2"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/gene-regulatory-networks.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-gene-regulatory-networks/gene-regulatory-networks.zip",
       "filename": "gene-regulatory-networks.zip"
     },
     {
@@ -535,7 +535,7 @@
       "description": "Gene prediction, repeat masking, and functional annotation.",
       "tags": ["AUGUSTUS", "InterProScan"],
       "keywords": ["genome-annotation", "augustus", "interproscan"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/genome-annotation.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-annotation/genome-annotation.zip",
       "filename": "genome-annotation.zip"
     },
     {
@@ -546,7 +546,7 @@
       "description": "De novo assembly, polishing, and assembly QC.",
       "tags": ["Flye", "hifiasm", "QUAST"],
       "keywords": ["genome-assembly", "flye", "hifiasm", "quast"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/genome-assembly.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-assembly/genome-assembly.zip",
       "filename": "genome-assembly.zip"
     },
     {
@@ -557,7 +557,7 @@
       "description": "CRISPR guide design, off-target prediction, and editing analysis.",
       "tags": ["CRISPOR", "Cas9"],
       "keywords": ["genome-engineering", "crispor", "cas9"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/genome-engineering.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-engineering/genome-engineering.zip",
       "filename": "genome-engineering.zip"
     },
     {
@@ -568,7 +568,7 @@
       "description": "BED/GTF arithmetic, overlap, and feature manipulation.",
       "tags": ["bedtools", "pybedtools"],
       "keywords": ["genome-intervals", "bedtools", "pybedtools"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/genome-intervals.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-intervals/genome-intervals.zip",
       "filename": "genome-intervals.zip"
     },
     {
@@ -579,7 +579,7 @@
       "description": "3D chromatin contacts, TAD calling, and loop detection.",
       "tags": ["cooler", "HiC-Pro"],
       "keywords": ["hi-c-analysis", "cooler", "hic-pro"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/hi-c-analysis.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-hi-c-analysis/hi-c-analysis.zip",
       "filename": "hi-c-analysis.zip"
     },
     {
@@ -590,7 +590,7 @@
       "description": "Single-cell spatial proteomics from IMC and MIBI data.",
       "tags": ["IMC", "Steinbock"],
       "keywords": ["imaging-mass-cytometry", "imc", "steinbock"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/imaging-mass-cytometry.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-imaging-mass-cytometry/imaging-mass-cytometry.zip",
       "filename": "imaging-mass-cytometry.zip"
     },
     {
@@ -601,7 +601,7 @@
       "description": "MHC binding, neoantigen prediction, and HLA typing.",
       "tags": ["NetMHC", "HLA"],
       "keywords": ["immunoinformatics", "netmhc", "hla"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/immunoinformatics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-immunoinformatics/immunoinformatics.zip",
       "filename": "immunoinformatics.zip"
     },
     {
@@ -612,7 +612,7 @@
       "description": "Cell-free DNA fragmentomics, tumor fraction, and methylation cfDNA.",
       "tags": ["cfDNA", "ichorCNA"],
       "keywords": ["liquid-biopsy", "cfdna", "ichorcna"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/liquid-biopsy.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-liquid-biopsy/liquid-biopsy.zip",
       "filename": "liquid-biopsy.zip"
     },
     {
@@ -623,7 +623,7 @@
       "description": "ONT and PacBio basecalling, alignment, and structural-variant workflows.",
       "tags": ["Nanopore", "PacBio", "minimap2"],
       "keywords": ["long-read-sequencing", "nanopore", "pacbio", "minimap2"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/long-read-sequencing.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-long-read-sequencing/long-read-sequencing.zip",
       "filename": "long-read-sequencing.zip"
     },
     {
@@ -634,7 +634,7 @@
       "description": "Biomarker discovery, model training, and cross-validation pipelines.",
       "tags": ["scikit-learn", "ML"],
       "keywords": ["machine-learning", "scikit-learn", "ml"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/machine-learning.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-machine-learning/machine-learning.zip",
       "filename": "machine-learning.zip"
     },
     {
@@ -645,7 +645,7 @@
       "description": "Mass-spec metabolite identification, alignment, and quantification.",
       "tags": ["XCMS", "MetaboAnalyst"],
       "keywords": ["metabolomics", "xcms", "metaboanalyst"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/metabolomics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-metabolomics/metabolomics.zip",
       "filename": "metabolomics.zip"
     },
     {
@@ -656,7 +656,7 @@
       "description": "Shotgun microbial profiling, assembly, and binning.",
       "tags": ["Kraken2", "MetaPhlAn"],
       "keywords": ["metagenomics", "kraken2", "metaphlan"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/metagenomics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-metagenomics/metagenomics.zip",
       "filename": "metagenomics.zip"
     },
     {
@@ -667,7 +667,7 @@
       "description": "Bisulfite alignment and differential methylation testing.",
       "tags": ["Bismark", "methylKit"],
       "keywords": ["methylation-analysis", "bismark", "methylkit"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/methylation-analysis.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-methylation-analysis/methylation-analysis.zip",
       "filename": "methylation-analysis.zip"
     },
     {
@@ -678,7 +678,7 @@
       "description": "16S rRNA amplicon and microbiota community profiling.",
       "tags": ["QIIME2", "DADA2"],
       "keywords": ["microbiome", "qiime2", "dada2"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/microbiome.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-microbiome/microbiome.zip",
       "filename": "microbiome.zip"
     },
     {
@@ -689,7 +689,7 @@
       "description": "Cross-modality fusion: MOFA, DIABLO, WNN, totalVI.",
       "tags": ["MOFA", "DIABLO"],
       "keywords": ["multi-omics-integration", "mofa", "diablo"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/multi-omics-integration.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-multi-omics-integration/multi-omics-integration.zip",
       "filename": "multi-omics-integration.zip"
     },
     {
@@ -700,7 +700,7 @@
       "description": "GO, KEGG, Reactome, and GSEA enrichment testing.",
       "tags": ["clusterProfiler", "GSEA"],
       "keywords": ["pathway-analysis", "clusterprofiler", "gsea"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/pathway-analysis.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-pathway-analysis/pathway-analysis.zip",
       "filename": "pathway-analysis.zip"
     },
     {
@@ -711,7 +711,7 @@
       "description": "Haplotype phasing and genotype imputation with SHAPEIT and Beagle.",
       "tags": ["SHAPEIT", "Beagle"],
       "keywords": ["phasing-imputation", "shapeit", "beagle"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/phasing-imputation.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-phasing-imputation/phasing-imputation.zip",
       "filename": "phasing-imputation.zip"
     },
     {
@@ -722,7 +722,7 @@
       "description": "Tree construction with IQ-TREE, RAxML, BEAST, and ancestral state.",
       "tags": ["IQ-TREE", "BEAST"],
       "keywords": ["phylogenetics", "iq-tree", "beast"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/phylogenetics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-phylogenetics/phylogenetics.zip",
       "filename": "phylogenetics.zip"
     },
     {
@@ -733,7 +733,7 @@
       "description": "GWAS, population structure, LD, and selection scans.",
       "tags": ["PLINK", "GWAS"],
       "keywords": ["population-genetics", "plink", "gwas"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/population-genetics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-population-genetics/population-genetics.zip",
       "filename": "population-genetics.zip"
     },
     {
@@ -744,7 +744,7 @@
       "description": "PCR and qPCR primer generation with Primer3 and primerBLAST.",
       "tags": ["Primer3", "qPCR"],
       "keywords": ["primer-design", "primer3", "qpcr"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/primer-design.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-primer-design/primer-design.zip",
       "filename": "primer-design.zip"
     },
     {
@@ -755,7 +755,7 @@
       "description": "Mass-spec quantification and protein abundance pipelines.",
       "tags": ["MaxQuant", "FragPipe"],
       "keywords": ["proteomics", "maxquant", "fragpipe"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/proteomics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-proteomics/proteomics.zip",
       "filename": "proteomics.zip"
     },
     {
@@ -766,7 +766,7 @@
       "description": "Short-read mapping with BWA-MEM2, Bowtie2, STAR, HISAT2.",
       "tags": ["BWA-MEM2", "STAR"],
       "keywords": ["read-alignment", "bwa-mem2", "star"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/read-alignment.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-read-alignment/read-alignment.zip",
       "filename": "read-alignment.zip"
     },
     {
@@ -777,7 +777,7 @@
       "description": "FastQC, fastp, trimming, and contamination screening.",
       "tags": ["FastQC", "fastp", "Kraken2"],
       "keywords": ["read-qc", "fastqc", "fastp", "kraken2"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/read-qc.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-read-qc/read-qc.zip",
       "filename": "read-qc.zip"
     },
     {
@@ -788,7 +788,7 @@
       "description": "Reproducible HTML, Quarto, and R Markdown reports.",
       "tags": ["Quarto", "RMarkdown"],
       "keywords": ["reporting", "quarto", "rmarkdown"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/reporting.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-reporting/reporting.zip",
       "filename": "reporting.zip"
     },
     {
@@ -799,7 +799,7 @@
       "description": "Restriction-enzyme mapping and digestion prediction.",
       "tags": ["REBASE", "digestion"],
       "keywords": ["restriction-analysis", "rebase", "digestion"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/restriction-analysis.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-restriction-analysis/restriction-analysis.zip",
       "filename": "restriction-analysis.zip"
     },
     {
@@ -810,7 +810,7 @@
       "description": "Ribosome profiling and translation-efficiency analysis.",
       "tags": ["riboWaltz", "Ribo-TISH"],
       "keywords": ["ribo-seq", "ribowaltz", "ribo-tish"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/ribo-seq.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ribo-seq/ribo-seq.zip",
       "filename": "ribo-seq.zip"
     },
     {
@@ -821,7 +821,7 @@
       "description": "Gene and transcript abundance with Salmon, kallisto, RSEM.",
       "tags": ["Salmon", "kallisto"],
       "keywords": ["rna-quantification", "salmon", "kallisto"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/rna-quantification.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-rna-quantification/rna-quantification.zip",
       "filename": "rna-quantification.zip"
     },
     {
@@ -832,7 +832,7 @@
       "description": "Secondary-structure prediction with RNAfold, IPknot.",
       "tags": ["RNAfold", "ViennaRNA"],
       "keywords": ["rna-structure", "rnafold", "viennarna"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/rna-structure.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-rna-structure/rna-structure.zip",
       "filename": "rna-structure.zip"
     },
     {
@@ -843,7 +843,7 @@
       "description": "FASTA/FASTQ parsing, conversion, and indexing.",
       "tags": ["Biopython", "seqkit"],
       "keywords": ["sequence-io", "biopython", "seqkit"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/sequence-io.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-sequence-io/sequence-io.zip",
       "filename": "sequence-io.zip"
     },
     {
@@ -854,7 +854,7 @@
       "description": "Transcription, translation, ORF finding, and motif search.",
       "tags": ["Biopython", "EMBOSS"],
       "keywords": ["sequence-manipulation", "biopython", "emboss"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/sequence-manipulation.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-sequence-manipulation/sequence-manipulation.zip",
       "filename": "sequence-manipulation.zip"
     },
     {
@@ -865,7 +865,7 @@
       "description": "scRNA-seq clustering, annotation, trajectory, and integration.",
       "tags": ["Scanpy", "Seurat", "scVI"],
       "keywords": ["single-cell", "scanpy", "seurat", "scvi"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/single-cell.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-single-cell/single-cell.zip",
       "filename": "single-cell.zip"
     },
     {
@@ -876,7 +876,7 @@
       "description": "miRNA, piRNA, and small-RNA quantification.",
       "tags": ["miRDeep2", "isomiRs"],
       "keywords": ["small-rna-seq", "mirdeep2", "isomirs"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/small-rna-seq.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-small-rna-seq/small-rna-seq.zip",
       "filename": "small-rna-seq.zip"
     },
     {
@@ -887,7 +887,7 @@
       "description": "Visium, Slide-seq, and high-resolution tissue expression.",
       "tags": ["Visium", "Squidpy"],
       "keywords": ["spatial-transcriptomics", "visium", "squidpy"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/spatial-transcriptomics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-spatial-transcriptomics/spatial-transcriptomics.zip",
       "filename": "spatial-transcriptomics.zip"
     },
     {
@@ -898,7 +898,7 @@
       "description": "PDB parsing, AlphaFold, ESMFold, and structure analysis.",
       "tags": ["AlphaFold", "PyMOL"],
       "keywords": ["structural-biology", "alphafold", "pymol"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/structural-biology.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-structural-biology/structural-biology.zip",
       "filename": "structural-biology.zip"
     },
     {
@@ -909,7 +909,7 @@
       "description": "Metabolic flux balance, kinetic modelling, network analysis.",
       "tags": ["COBRApy", "FBA"],
       "keywords": ["systems-biology", "cobrapy", "fba"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/systems-biology.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-systems-biology/systems-biology.zip",
       "filename": "systems-biology.zip"
     },
     {
@@ -920,7 +920,7 @@
       "description": "Immune-receptor repertoire profiling and clonal-family analysis.",
       "tags": ["MiXCR", "scirpy"],
       "keywords": ["tcr-bcr-analysis", "mixcr", "scirpy"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/tcr-bcr-analysis.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-tcr-bcr-analysis/tcr-bcr-analysis.zip",
       "filename": "tcr-bcr-analysis.zip"
     },
     {
@@ -931,7 +931,7 @@
       "description": "Time-series and circadian expression analysis.",
       "tags": ["MetaCycle", "JTK_CYCLE"],
       "keywords": ["temporal-genomics", "metacycle", "jtk_cycle"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/temporal-genomics.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-temporal-genomics/temporal-genomics.zip",
       "filename": "temporal-genomics.zip"
     },
     {
@@ -942,7 +942,7 @@
       "description": "SNPs, indels, SVs with GATK, DeepVariant, Manta, Delly.",
       "tags": ["GATK", "DeepVariant", "Manta"],
       "keywords": ["variant-calling", "gatk", "deepvariant", "manta"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/variant-calling.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-variant-calling/variant-calling.zip",
       "filename": "variant-calling.zip"
     },
     {
@@ -953,7 +953,7 @@
       "description": "Snakemake, Nextflow, CWL, WDL pipeline scaffolding.",
       "tags": ["Snakemake", "Nextflow"],
       "keywords": ["workflow-management", "snakemake", "nextflow"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/workflow-management.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-workflow-management/workflow-management.zip",
       "filename": "workflow-management.zip"
     },
     {
@@ -964,7 +964,7 @@
       "description": "Ready-to-run analysis pipelines combining multiple skills.",
       "tags": ["Pipelines", "End-to-end"],
       "keywords": ["workflows", "pipelines", "end-to-end"],
-      "download": "https://biorouter.ucsf.edu/assets/bio-skills/workflows.zip",
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-workflows/workflows.zip",
       "filename": "workflows.zip"
     }
   ]

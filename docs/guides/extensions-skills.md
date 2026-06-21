@@ -122,7 +122,7 @@ BioRouter checks all of these directories (later directories take priority if th
 
 1. `~/.claude/skills/` — global, shared with Claude Desktop
 2. `~/.config/agents/skills/` — global, portable across AI coding agents
-3. `~/.config/BioRouter/skills/` — global, BioRouter-specific
+3. `~/.config/biorouter/skills/` — global, BioRouter-specific
 4. `./.claude/skills/` — project-level, shared with Claude Desktop
 5. `./.biorouter/skills/` — project-level, BioRouter-specific
 6. `./.agents/skills/` — project-level, portable across agents

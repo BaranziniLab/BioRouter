@@ -264,7 +264,7 @@ export BIOROUTER_PATH_ROOT="/tmp/biorouter-test"
 BIOROUTER_PATH_ROOT="/tmp/biorouter-dev" cargo run -p biorouter-cli -- session
 ```
 
-This creates isolated `config/`, `data/`, and `state/` directories under the specified path, preventing your test sessions from affecting your main BioRouter installation. See the [environment variables guide](./documentation/docs/guides/environment-variables.md#development--testing) for more details.
+This creates isolated `config/`, `data/`, and `state/` directories under the specified path, preventing your test sessions from affecting your main BioRouter installation. See the [environment variables guide](http://biorouter.ucsf.edu/docs/guides/environment-variables) for more details.
 
 ## Enable traces in BioRouter with [locally hosted Langfuse](https://langfuse.com/docs/deployment/self-host)
 

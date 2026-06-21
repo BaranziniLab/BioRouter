@@ -65,7 +65,7 @@ This process ensures fairness and transparency while enabling timely decision-ma
 
 ### Deadlocks
 
-In the event of a decision deadlock in the process above, BioRouter's creator, Bradley Axen, steps in as a tie breaker to remove the deadlock and make progress.
+In the event of a decision deadlock in the process above, BioRouter's maintainer, Wanjun Gu, steps in as a tie breaker to remove the deadlock and make progress.
 
 ### Major Changes
 
@@ -190,7 +190,7 @@ We believe this balance enables BioRouter to remain innovative while building a 
 
 # General Project Policies
 
-Founded by Block, BioRouter has been established as a Series of LF Projects, LLC. Policies applicable to BioRouter and participants in the BioRouter project, including guidelines on the usage of trademarks, are located at [https://lfprojects.org/policies/](https://lfprojects.org/policies/).  Governance changes approved as per the provisions of this governance document must also be approved by LF Projects, LLC.
+BioRouter is developed and maintained by the [Baranzini Lab](https://baranzinilab.ucsf.edu/) at the University of California, San Francisco. It builds on the open-source [Goose](https://github.com/block/goose) project from Block, which provided the foundation for this work.
 
 BioRouter participants acknowledge that the copyright in all new contributions will be retained by the copyright holder as independent works of authorship and that no contributor or copyright holder will be required to assign copyrights to the project.
 Except as described below, all code and specification contributions to the project must be made using the Apache License, Version 2.0 available at (the “Project License”).

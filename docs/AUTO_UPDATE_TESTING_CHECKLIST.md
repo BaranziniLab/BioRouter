@@ -201,7 +201,7 @@ Before updating, note the contents of `~/.config/biorouter/`. After the one-clic
 - [ ] `~/.config/biorouter/config.yaml` — providers, selected default provider/model, and **extensions** list unchanged.
 - [ ] Secrets still resolve from the OS keychain (no re-entry of API keys; at most one Keychain prompt — "Always Allow").
 - [ ] `~/.config/biorouter/sessions/` — prior chat sessions still listed and openable.
-- [ ] `~/.config/biorouter/recipes/` and `skills/` intact.
+- [ ] `~/.config/biorouter/workflows/` and `skills/` intact.
 - [ ] Knowledge bases under `~/.config/biorouter/knowledge/` intact, including the active-KB pointer `.active-kb`.
 - [ ] Window state, theme, menu-bar/dock icon prefs preserved.
 - [ ] Llama Server downloaded models (in the data dir) are not re-downloaded.
