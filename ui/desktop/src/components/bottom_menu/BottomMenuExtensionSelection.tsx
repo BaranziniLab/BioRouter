@@ -5,6 +5,7 @@ import { Input } from '../ui/input';
 import { Switch } from '../ui/switch';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import { FixedExtensionEntry, useConfig } from '../ConfigContext';
+import { isCapabilityExtension } from '../settings/capabilities/capabilities';
 import { toastService } from '../../toasts';
 import {
   formatExtensionName,
@@ -165,8 +166,15 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
   const extensionsList = useMemo(() => {
     const hubOverrides = getExtensionOverrides();
 
+    // Foundational capabilities (Developer, Extension Manager, Skills, Todo,
+    // Memory, Knowledge) are managed in Settings → Capabilities, not toggled
+    // per-conversation. Excluding them here keeps the chat extension list focused
+    // on the optional built-ins and the user's own installed extensions, instead
+    // of a long, confusing list that mixes in the always-on capabilities.
+    const togglable = allExtensions.filter((ext) => !isCapabilityExtension(ext));
+
     if (isHubView) {
-      return allExtensions.map(
+      return togglable.map(
         (ext) =>
           ({
             ...ext,
@@ -177,7 +185,7 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
 
     const sessionExtensionNames = new Set(sessionExtensions.map((ext) => ext.name));
 
-    return allExtensions.map(
+    return togglable.map(
       (ext) =>
         ({
           ...ext,

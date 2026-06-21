@@ -11,6 +11,7 @@ import {
   getProviderModels as apiGetProviderModels,
 } from '../api';
 import { syncBundledExtensions } from './settings/extensions';
+import { isCapabilityExtension } from './settings/capabilities/capabilities';
 import type {
   ConfigResponse,
   UpsertConfigQuery,
@@ -233,6 +234,29 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
           await apiAddExtension({ body: query });
         };
         await syncBundledExtensions(extensions, addExtensionForSync);
+
+        // One-time upgrade migration: the foundational capabilities (Developer,
+        // Extension Manager, Skills, Todo, Memory, Knowledge) are enabled by
+        // default and managed in Settings → Capabilities. A user upgrading from a
+        // build where they had left some of these off would otherwise keep them
+        // disabled, so the FIRST time this build runs we turn any still-disabled
+        // capability back on. Guarded by a localStorage flag so it runs exactly
+        // once — a user can disable a capability afterwards and it stays disabled.
+        const CAP_MIGRATION_FLAG = 'biorouter.capabilities.defaultEnabled.v1';
+        if (!localStorage.getItem(CAP_MIGRATION_FLAG)) {
+          try {
+            const current = (await apiGetExtensions()).data?.extensions || [];
+            for (const ext of current) {
+              if (isCapabilityExtension(ext) && !ext.enabled) {
+                await addExtensionForSync(ext.name, ext as ExtensionConfig, true);
+              }
+            }
+          } catch (e) {
+            console.error('Capability default-enable migration failed:', e);
+          }
+          localStorage.setItem(CAP_MIGRATION_FLAG, '1');
+        }
+
         const refreshedResponse = await apiGetExtensions();
         extensions = refreshedResponse.data?.extensions || [];
 
