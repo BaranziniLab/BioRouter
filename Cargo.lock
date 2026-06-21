@@ -892,16 +892,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bio-blast-lite-rs"
-version = "1.86.0"
-dependencies = [
- "anyhow",
- "clap",
- "regex",
- "tempfile",
-]
-
-[[package]]
 name = "biorouter"
 version = "1.86.0"
 dependencies = [
