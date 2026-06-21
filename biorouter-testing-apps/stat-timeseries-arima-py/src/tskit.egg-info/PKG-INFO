@@ -1,9 +1,0 @@
-Metadata-Version: 2.4
-Name: tskit
-Version: 0.1.0
-Summary: Classical time-series forecasting toolkit in pure Python
-Requires-Python: >=3.10
-Provides-Extra: fast
-Requires-Dist: numpy>=1.24; extra == "fast"
-Provides-Extra: dev
-Requires-Dist: pytest>=7.0; extra == "dev"
