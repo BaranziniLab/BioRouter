@@ -667,6 +667,7 @@ where
                     final_usage = Some(ProviderUsage {
                         usage,
                         model: model.clone(),
+                        finish_reason: None,
                     });
 
                     // For complete output, use the response output items

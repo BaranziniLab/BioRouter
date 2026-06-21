@@ -255,11 +255,22 @@ impl ConfigKey {
 pub struct ProviderUsage {
     pub model: String,
     pub usage: Usage,
+    /// The provider's stop/finish reason for the response, when reported
+    /// (OpenAI-compatible streaming `choices[].finish_reason`, e.g. `"stop"`,
+    /// `"length"`, `"tool_calls"`). `None` when the provider does not surface it.
+    /// Used by the agent loop to auto-continue a turn that was cut off by the
+    /// output-length limit (`"length"`) rather than completed naturally.
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 impl ProviderUsage {
     pub fn new(model: String, usage: Usage) -> Self {
-        Self { model, usage }
+        Self {
+            model,
+            usage,
+            finish_reason: None,
+        }
     }
 
     /// Ensures this ProviderUsage has token counts, estimating them if necessary
@@ -287,6 +298,11 @@ impl ProviderUsage {
         ProviderUsage {
             model: self.model.clone(),
             usage: self.usage + other.usage,
+            // Prefer the most recent finish_reason (the terminal chunk's).
+            finish_reason: other
+                .finish_reason
+                .clone()
+                .or_else(|| self.finish_reason.clone()),
         }
     }
 }

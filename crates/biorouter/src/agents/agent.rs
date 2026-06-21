@@ -65,6 +65,33 @@ use tracing::{debug, error, info, instrument, warn};
 const DEFAULT_MAX_TURNS: u32 = 100;
 const DEFAULT_MAX_REPETITIONS: u32 = 3;
 const COMPACTION_THINKING_TEXT: &str = "biorouter is compacting the conversation...";
+/// Max consecutive auto-continues for a turn the provider cut off by the output
+/// length limit (`finish_reason == "length"`) with no tool call. Bounded so a
+/// pathological "always truncates, never progresses" stream can't loop forever;
+/// any tool call resets the streak. Also globally bounded by `max_turns`.
+const MAX_TRUNCATION_CONTINUATIONS: u32 = 12;
+/// Injected when auto-continuing a length-truncated turn, so the model resumes
+/// instead of the agent ending the turn on a half-finished response.
+const TRUNCATION_CONTINUATION_MESSAGE: &str = "Your previous response was cut off because it reached the output length limit (finish_reason=\"length\"). Continue exactly where you left off — do not repeat what you already wrote.";
+/// Max consecutive auto-continues for a turn that ended with no tool call while the
+/// agent's own todo list still has unchecked items — i.e. it stopped mid-plan. Reset
+/// on any tool call; also bounded by `max_turns`. This is the safe completion gate
+/// for the model's "natural stop mid-task" behavior (finish_reason="stop"), driven
+/// by the agent's explicit plan rather than a fragile text heuristic.
+const MAX_TODO_CONTINUATIONS: u32 = 12;
+/// Injected when the agent stops with unchecked todos remaining.
+const TODO_CONTINUATION_MESSAGE: &str = "You stopped, but your todo list still has unchecked items ([ ]). The task is not finished. Continue working through the remaining todos — implement them, run the tests, and check items off as you complete them. Only stop once every item is done (or explicitly mark an item as not-applicable in the list).";
+
+/// Whether a todo markdown body still has at least one unchecked checkbox item
+/// (`- [ ]` / `* [ ]`, optionally with surrounding whitespace).
+fn todo_has_unchecked(content: &str) -> bool {
+    content.lines().any(|line| {
+        let s = line.trim_start();
+        let s = s.strip_prefix('-').or_else(|| s.strip_prefix('*')).unwrap_or(s);
+        let s = s.trim_start();
+        s.starts_with("[ ]") || s.starts_with("[]")
+    })
+}
 
 /// Context needed for the reply function
 pub struct ReplyContext {
@@ -1230,6 +1257,12 @@ impl Agent {
                 .or_else(|| Config::global().get_param("BIOROUTER_MAX_TURNS").ok())
                 .unwrap_or(DEFAULT_MAX_TURNS);
             let mut compaction_attempts = 0;
+            // Consecutive auto-continues of a length-truncated turn; reset on any
+            // tool call (real progress). Bounds the continue-on-truncation guard.
+            let mut truncation_continuations = 0u32;
+            // Consecutive auto-continues triggered by "stopped with unchecked todos";
+            // reset on any tool call. Bounds the completion gate.
+            let mut todo_continuations = 0u32;
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -1279,6 +1312,9 @@ impl Agent {
                 let mut messages_to_add = Conversation::default();
                 let mut tools_updated = false;
                 let mut did_recovery_compact_this_iteration = false;
+                // finish_reason of this turn's response (from the provider usage),
+                // used below to auto-continue a length-truncated turn.
+                let mut last_finish_reason: Option<String> = None;
 
                 while let Some(next) = stream.next().await {
                     if is_token_cancelled(&cancel_token) {
@@ -1311,6 +1347,9 @@ impl Agent {
                             }
 
                             if let Some(ref usage) = usage {
+                                if usage.finish_reason.is_some() {
+                                    last_finish_reason = usage.finish_reason.clone();
+                                }
                                 self.update_session_metrics(&session_config, usage, false).await?;
                             }
 
@@ -1686,7 +1725,58 @@ impl Agent {
                 }
                 let mut exit_chat = false;
                 if no_tools_called {
-                    if let Some(final_output_tool) = self.final_output_tool.lock().await.as_ref() {
+                    // Observability: a turn that ends without a tool call is either a
+                    // natural completion ("stop"), a length-truncation ("length"), or
+                    // an unreported end (None). Logged so "done" vs "cut off" is
+                    // distinguishable in the logs (and to scope continue-on-truncation).
+                    info!(
+                        "turn ended with no tool call; finish_reason={:?}",
+                        last_finish_reason
+                    );
+                    // Completion gate: the model often ends a turn naturally
+                    // (finish_reason="stop") while still mid-task. Use its OWN todo
+                    // list as the safe "not done" signal — if items remain unchecked,
+                    // the work isn't finished. Only checked for non-length stops, when
+                    // no structured final-output is pending, and bounded by a streak cap.
+                    let stopped_with_unchecked_todos = last_finish_reason.as_deref()
+                        != Some("length")
+                        && todo_continuations < MAX_TODO_CONTINUATIONS
+                        && self.final_output_tool.lock().await.is_none()
+                        && match session_manager.get_session(&session_config.id, false).await {
+                            Ok(sess) => crate::session::extension_data::TodoState::from_extension_data(
+                                &sess.extension_data,
+                            )
+                            .map(|t| todo_has_unchecked(&t.content))
+                            .unwrap_or(false),
+                            Err(_) => false,
+                        };
+                    if last_finish_reason.as_deref() == Some("length")
+                        && truncation_continuations < MAX_TRUNCATION_CONTINUATIONS
+                    {
+                        // The provider cut the response off at the output-length
+                        // limit (not a natural stop) and the model called no tool,
+                        // so the turn is genuinely unfinished. Auto-continue it
+                        // instead of ending on a half-written response. Bounded by
+                        // the streak cap (reset on any tool call) and by max_turns.
+                        truncation_continuations += 1;
+                        warn!(
+                            "Response truncated by output-length limit (finish_reason=\"length\"); auto-continuing ({}/{})",
+                            truncation_continuations, MAX_TRUNCATION_CONTINUATIONS
+                        );
+                        let message = Message::user().with_text(TRUNCATION_CONTINUATION_MESSAGE);
+                        messages_to_add.push(message.clone());
+                        yield AgentEvent::Message(message);
+                    } else if stopped_with_unchecked_todos {
+                        // Stopped mid-plan: continue working the remaining todos.
+                        todo_continuations += 1;
+                        warn!(
+                            "Agent stopped with unchecked todos remaining; auto-continuing ({}/{})",
+                            todo_continuations, MAX_TODO_CONTINUATIONS
+                        );
+                        let message = Message::user().with_text(TODO_CONTINUATION_MESSAGE);
+                        messages_to_add.push(message.clone());
+                        yield AgentEvent::Message(message);
+                    } else if let Some(final_output_tool) = self.final_output_tool.lock().await.as_ref() {
                         if final_output_tool.final_output.is_none() {
                             warn!("Final output tool has not been called yet. Continuing agent loop.");
                             let message = Message::user().with_text(FINAL_OUTPUT_CONTINUATION_MESSAGE);
@@ -1728,8 +1818,11 @@ impl Agent {
                 conversation.extend(messages_to_add);
 
                 if !no_tools_called {
-                    // Tools ran this iteration: any Stop-hook block streak is over.
+                    // Tools ran this iteration: any Stop-hook block streak is over,
+                    // and the turn made real progress, so reset the auto-continue streaks.
                     self.hooks_manager.reset_stop_blocks(&session_config.id).await;
+                    truncation_continuations = 0;
+                    todo_continuations = 0;
                 }
 
                 if exit_chat {
@@ -2201,6 +2294,21 @@ impl Agent {
 mod tests {
     use super::*;
     use crate::workflow::Response;
+
+    #[test]
+    fn test_todo_has_unchecked() {
+        // Unchecked items present -> true
+        assert!(todo_has_unchecked("- [ ] write the parser\n- [x] scaffold"));
+        assert!(todo_has_unchecked("* [ ] add tests"));
+        assert!(todo_has_unchecked("  - [ ] indented item"));
+        assert!(todo_has_unchecked("- [] compact form"));
+        // All checked / no checkboxes -> false (real completion, do not auto-continue)
+        assert!(!todo_has_unchecked("- [x] done\n- [x] also done"));
+        assert!(!todo_has_unchecked("## Plan\nAll tasks complete."));
+        assert!(!todo_has_unchecked(""));
+        // A checked item whose TEXT mentions "[ ]" should not false-trigger
+        assert!(!todo_has_unchecked("- [x] handle the empty [ ] case"));
+    }
 
     #[tokio::test]
     async fn test_add_final_output_tool() -> Result<()> {
