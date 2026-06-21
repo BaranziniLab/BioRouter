@@ -1703,6 +1703,14 @@ impl Agent {
                 }
                 let mut exit_chat = false;
                 if no_tools_called {
+                    // Observability: a turn that ends without a tool call is either a
+                    // natural completion ("stop"), a length-truncation ("length"), or
+                    // an unreported end (None). Logged so "done" vs "cut off" is
+                    // distinguishable in the logs (and to scope continue-on-truncation).
+                    info!(
+                        "turn ended with no tool call; finish_reason={:?}",
+                        last_finish_reason
+                    );
                     if last_finish_reason.as_deref() == Some("length")
                         && truncation_continuations < MAX_TRUNCATION_CONTINUATIONS
                     {
