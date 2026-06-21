@@ -456,6 +456,12 @@ where
         use futures::StreamExt;
 
         let mut accumulated_reasoning: Vec<Value> = Vec::new();
+        // Track the most recent finish_reason across chunks. MiMo (and other
+        // OpenAI-compatible hosts) send finish_reason in one chunk and the usage
+        // in a later `choices: []` chunk, so we remember it and attach it to the
+        // ProviderUsage we emit — letting the agent loop tell a length-truncated
+        // turn ("length") apart from a natural completion ("stop").
+        let mut last_finish_reason: Option<String> = None;
 
         'outer: while let Some(response) = stream.next().await {
             if response.as_ref().is_ok_and(|s| s == "data: [DONE]") {
@@ -476,6 +482,9 @@ where
                 if let Some(details) = &chunk.choices[0].delta.reasoning_details {
                     accumulated_reasoning.extend(details.iter().cloned());
                 }
+                if let Some(reason) = &chunk.choices[0].finish_reason {
+                    last_finish_reason = Some(reason.clone());
+                }
             }
 
             let usage = chunk.usage.as_ref().and_then(|u| {
@@ -483,6 +492,7 @@ where
                     ProviderUsage {
                         usage: get_usage(u),
                         model: model.clone(),
+                        finish_reason: last_finish_reason.clone(),
                     }
                 })
             });
@@ -1472,5 +1482,61 @@ data: [DONE]
         }
 
         panic!("Expected tool call message with two calls, but did not see it");
+    }
+
+    #[tokio::test]
+    async fn test_streaming_captures_length_finish_reason() -> anyhow::Result<()> {
+        // Mirrors MiMo's truncation protocol: a content chunk, then a chunk with
+        // finish_reason="length" and usage:null, then a separate choices:[] chunk
+        // carrying usage, then [DONE]. The emitted ProviderUsage must carry the
+        // "length" finish_reason so the agent loop can auto-continue.
+        let lines = r#"
+data: {"model":"mimo-v2.5-pro","choices":[{"delta":{"content":"counting"},"index":0,"finish_reason":null}],"object":"chat.completion.chunk","id":"x"}
+data: {"model":"mimo-v2.5-pro","choices":[{"delta":{"content":null},"index":0,"finish_reason":"length"}],"usage":null,"object":"chat.completion.chunk","id":"x"}
+data: {"model":"mimo-v2.5-pro","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":8,"total_tokens":18},"object":"chat.completion.chunk","id":"x"}
+data: [DONE]
+"#;
+        let response_stream = tokio_stream::iter(lines.lines().map(|l| Ok(l.to_string())));
+        let messages = response_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut seen_length = false;
+        while let Some(Ok((_message, usage))) = messages.next().await {
+            if let Some(u) = usage {
+                if u.finish_reason.as_deref() == Some("length") {
+                    seen_length = true;
+                }
+            }
+        }
+        assert!(
+            seen_length,
+            "expected ProviderUsage.finish_reason == Some(\"length\") on a truncated stream"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_streaming_natural_stop_is_not_length() -> anyhow::Result<()> {
+        // A natural completion reports finish_reason="stop"; the agent loop must
+        // NOT treat it as truncation.
+        let lines = r#"
+data: {"model":"mimo-v2.5-pro","choices":[{"delta":{"content":"hello"},"index":0,"finish_reason":null}],"object":"chat.completion.chunk","id":"y"}
+data: {"model":"mimo-v2.5-pro","choices":[{"delta":{"content":null},"index":0,"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6},"object":"chat.completion.chunk","id":"y"}
+data: [DONE]
+"#;
+        let response_stream = tokio_stream::iter(lines.lines().map(|l| Ok(l.to_string())));
+        let messages = response_to_streaming_message(response_stream);
+        pin!(messages);
+
+        while let Some(Ok((_message, usage))) = messages.next().await {
+            if let Some(u) = usage {
+                assert_ne!(
+                    u.finish_reason.as_deref(),
+                    Some("length"),
+                    "natural stop must not be reported as length-truncation"
+                );
+            }
+        }
+        Ok(())
     }
 }

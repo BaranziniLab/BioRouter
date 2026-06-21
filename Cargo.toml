@@ -1,5 +1,5 @@
 [workspace]
-members = ["biorouter-testing-apps/bio-blast-lite-rs","crates/*"]
+members = ["crates/*"]
 resolver = "2"
 
 [workspace.package]
