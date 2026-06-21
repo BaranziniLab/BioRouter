@@ -5,7 +5,7 @@ use super::utils::{
     get_model, handle_response_openai_compat, handle_status_openai_compat, stream_openai_compat,
     RequestLog,
 };
-use crate::conversation::message::Message;
+use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
 use crate::providers::base::{
     ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage,
@@ -39,6 +39,52 @@ pub const XIAOMI_MIMO_KNOWN_MODELS: &[&str] = &[
 ];
 
 pub const XIAOMI_MIMO_DOC_URL: &str = "https://github.com/XiaomiMiMo/MiMo";
+
+/// Whether a MiMo model accepts image input. Only the multimodal "omni" models
+/// do on the served endpoints; the text models 404 on images
+/// ("No endpoints found that support image input"). Override is intentional and
+/// conservative — an unknown/custom model name is treated as text-only so we
+/// never feed images to an endpoint that will reject them.
+pub fn model_supports_vision(name: &str) -> bool {
+    name.to_ascii_lowercase().contains("omni")
+}
+
+const IMAGE_OMITTED_PLACEHOLDER: &str = "[image omitted: the active MiMo model does not accept image input. Describe what you need in text, or switch to a vision-capable model such as mimo-v2-omni.]";
+
+/// Defensive: replace any image content with a text placeholder so a text-only
+/// model never *receives* image input — even if a tool (e.g. the developer
+/// `image_processor` or a screenshot) put an image in the conversation. Without
+/// this the served endpoint rejects the request with
+/// `404: No endpoints found that support image input`, which strands the agent.
+fn strip_image_content(messages: &[Message]) -> Vec<Message> {
+    use rmcp::model::{Content, RawContent};
+    messages
+        .iter()
+        .map(|msg| {
+            let mut out = msg.clone();
+            out.content = msg
+                .content
+                .iter()
+                .map(|c| match c {
+                    MessageContent::Image(_) => MessageContent::text(IMAGE_OMITTED_PLACEHOLDER),
+                    MessageContent::ToolResponse(tr) => {
+                        let mut new_tr = tr.clone();
+                        if let Ok(result) = &mut new_tr.tool_result {
+                            for ct in result.content.iter_mut() {
+                                if matches!(&ct.raw, RawContent::Image(_)) {
+                                    *ct = Content::text(IMAGE_OMITTED_PLACEHOLDER);
+                                }
+                            }
+                        }
+                        MessageContent::ToolResponse(new_tr)
+                    }
+                    other => other.clone(),
+                })
+                .collect();
+            out
+        })
+        .collect()
+}
 
 #[derive(serde::Serialize)]
 pub struct XiaomiMimoProvider {
@@ -82,17 +128,23 @@ impl XiaomiMimoProvider {
 #[async_trait]
 impl Provider for XiaomiMimoProvider {
     fn metadata() -> ProviderMetadata {
-        // The MiMo v2.5 / v2 families are natively multimodal (vision-capable).
-        // Declaring `.with_vision()` here — exactly as the Anthropic and OpenAI
-        // providers do for their vision models — lets the rest of the harness
-        // and the UI treat MiMo as image-capable (e.g. screenshots from the
-        // Computer Controller's screen_capture tool). Images themselves already
-        // flow through the shared OpenAI wire format used below; this declares
-        // the capability so it is surfaced consistently rather than implied.
+        // Only the multimodal "omni" MiMo models actually accept image input on
+        // the served endpoints. The text models (mimo-v2.5 / mimo-v2.5-pro /
+        // mimo-v2-pro) return `404: No endpoints found that support image input`
+        // when sent an image — so declaring them vision-capable made the harness
+        // and UI feed them screenshots (e.g. via the developer image_processor /
+        // Computer Controller screen_capture), which then 404'd and got the agent
+        // stuck. We therefore declare `.with_vision()` ONLY for vision-capable
+        // models (name contains "omni"); see `model_supports_vision`.
         let models = XIAOMI_MIMO_KNOWN_MODELS
             .iter()
             .map(|&name| {
-                ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit()).with_vision()
+                let info = ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit());
+                if model_supports_vision(name) {
+                    info.with_vision()
+                } else {
+                    info
+                }
             })
             .collect();
         ProviderMetadata::with_models(
@@ -128,6 +180,9 @@ impl Provider for XiaomiMimoProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<(Message, ProviderUsage), ProviderError> {
+        let stripped = (!model_supports_vision(&model_config.model_name))
+            .then(|| strip_image_content(messages));
+        let messages = stripped.as_deref().unwrap_or(messages);
         let payload = create_request(
             model_config,
             system,
@@ -160,6 +215,9 @@ impl Provider for XiaomiMimoProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
+        let stripped = (!model_supports_vision(&self.model.model_name))
+            .then(|| strip_image_content(messages));
+        let messages = stripped.as_deref().unwrap_or(messages);
         let payload = create_request(
             &self.model,
             system,
@@ -203,6 +261,69 @@ mod tests {
         assert_eq!(metadata.config_keys.len(), 2);
         assert_eq!(metadata.config_keys[0].name, "XIAOMI_MIMO_API_KEY");
         assert_eq!(metadata.config_keys[1].name, "XIAOMI_MIMO_HOST");
+    }
+
+    #[test]
+    fn test_only_omni_models_declare_vision() {
+        // The text models must NOT advertise vision (they 404 on image input);
+        // only the multimodal "omni" model does.
+        assert!(model_supports_vision("mimo-v2-omni"));
+        assert!(!model_supports_vision("mimo-v2.5"));
+        assert!(!model_supports_vision("mimo-v2.5-pro"));
+        assert!(!model_supports_vision("mimo-v2-pro"));
+        // an unknown/custom model is conservatively text-only
+        assert!(!model_supports_vision("some-custom-model"));
+
+        let metadata = XiaomiMimoProvider::metadata();
+        for m in &metadata.known_models {
+            let expected = m.name.contains("omni");
+            assert_eq!(
+                m.supports_vision,
+                if expected { Some(true) } else { None },
+                "vision flag wrong for {}",
+                m.name
+            );
+        }
+    }
+
+    #[test]
+    fn test_strip_image_content_replaces_images_with_text() {
+        use rmcp::model::{CallToolResult, Content};
+        let msgs = vec![
+            Message::user().with_image("BASE64DATA", "image/png"),
+            Message::user().with_tool_response(
+                "call_1",
+                Ok(CallToolResult {
+                    content: vec![
+                        Content::text("preview generated"),
+                        Content::image("BASE64DATA", "image/png"),
+                    ],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+            ),
+        ];
+        let stripped = strip_image_content(&msgs);
+        // No image content remains anywhere.
+        for m in &stripped {
+            for c in &m.content {
+                assert!(
+                    !matches!(c, MessageContent::Image(_)),
+                    "top-level image should be stripped"
+                );
+                if let MessageContent::ToolResponse(tr) = c {
+                    if let Ok(r) = &tr.tool_result {
+                        for ct in &r.content {
+                            assert!(
+                                !matches!(&ct.raw, rmcp::model::RawContent::Image(_)),
+                                "tool-result image should be stripped"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[tokio::test]

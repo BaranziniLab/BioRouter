@@ -118,6 +118,12 @@ pub struct App {
     pub stream_text: String,
     pub stream_id: Option<String>,
     pub stream_start: Option<usize>,
+    /// Scrollback range `[start, start+len)` of the MOST RECENT tool result's
+    /// preview lines. When the next tool call starts, that block is collapsed to a
+    /// one-line summary so old tool output doesn't bury the conversation — only the
+    /// current tool result stays expanded. `None` when there's no collapsible block
+    /// (or in debug mode, where full output is kept).
+    pub last_tool_result: Option<(usize, usize)>,
 }
 
 impl App {
@@ -143,6 +149,7 @@ impl App {
             stream_text: String::new(),
             stream_id: None,
             stream_start: None,
+            last_tool_result: None,
         }
     }
 
@@ -345,6 +352,7 @@ impl App {
                 }
                 MessageContent::ToolResponse(resp) => {
                     if let Ok(result) = &resp.tool_result {
+                        let start = self.scrollback.len();
                         for c in &result.content {
                             if let Some(text) = c.as_text() {
                                 let preview = if debug {
@@ -357,6 +365,10 @@ impl App {
                                 }
                             }
                         }
+                        // Remember this block so the NEXT tool call can collapse it.
+                        // Skip in debug (full output is intentionally kept there).
+                        let count = self.scrollback.len() - start;
+                        self.last_tool_result = (!debug && count > 1).then_some((start, count));
                     }
                 }
                 MessageContent::Thinking(t) => {
@@ -375,7 +387,33 @@ impl App {
         }
     }
 
+    /// Collapse the previous tool result's preview into a one-line summary so the
+    /// conversation stays readable as tool calls pile up (only the current result
+    /// stays expanded). Adjusts the live-stream anchor if it sits after the block.
+    fn collapse_last_tool_result(&mut self) {
+        let Some((start, len)) = self.last_tool_result.take() else {
+            return;
+        };
+        if len < 2 || start + len > self.scrollback.len() {
+            return;
+        }
+        let summary = Line::from(Span::styled(
+            format!("    ⋯ {len} lines of tool output collapsed (scroll up to review)"),
+            DIM,
+        ));
+        self.scrollback
+            .splice(start..start + len, std::iter::once(summary));
+        if let Some(s) = self.stream_start.as_mut() {
+            if *s >= start + len {
+                *s -= len - 1;
+            }
+        }
+    }
+
     fn push_tool_header(&mut self, name: &str) {
+        // A new tool call begins → the previous tool result is now "passed";
+        // collapse it so only the current result stays expanded.
+        self.collapse_last_tool_result();
         let parts: Vec<&str> = name.rsplit("__").collect();
         let tool = parts.first().copied().unwrap_or("tool");
         let ns = parts
