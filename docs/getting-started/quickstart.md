@@ -1,12 +1,12 @@
 # biorouter in 5 minutes
 
-biorouter is an extensible open source AI agent that enhances your software development by automating coding tasks. 
+biorouter is an AI-powered integrated research environment for biomedical discovery, built by UCSF's Baranzini Lab. It unifies multiple LLM providers, AI agents, and MCP-based extensions into a single extensible tool.
 
 This quick tutorial will guide you through:
 
 - ✅ Installing biorouter
 - ✅ Configuring your LLM
-- ✅ Building a small app
+- ✅ Running your first biomedical research task
 - ✅ Adding an MCP server
 
 Let's begin 🚀
@@ -28,7 +28,7 @@ Let's begin 🚀
         Run the following command to install biorouter:
 
         ```sh
-        curl -fsSL https://github.com/BaranziniLab/BioRouter/releases/download/stable/download_cli.sh | bash
+        curl -fsSL https://github.com/BaranziniLab/biorouter/releases/download/stable/download_cli.sh | bash
         ```
       
     
@@ -38,7 +38,7 @@ Let's begin 🚀
     
 > **Caution:** Linux installation for BioRouter is not yet available. We're working on bringing BioRouter to Linux and will release builds soon.
 
-    Please check back later or [watch our GitHub repository](https://github.com/BaranziniLab/BioRouter) for updates.
+    Please check back later or [watch our GitHub repository](https://github.com/BaranziniLab/biorouter) for updates.
 
   
 
@@ -46,7 +46,7 @@ Let's begin 🚀
     
 > **Caution:** Windows installation for BioRouter is not yet available. We're working on bringing BioRouter to Windows and will release builds soon.
 
-    Please check back later or [watch our GitHub repository](https://github.com/BaranziniLab/BioRouter) for updates.
+    Please check back later or [watch our GitHub repository](https://github.com/BaranziniLab/biorouter) for updates.
 
   
 
@@ -64,9 +64,6 @@ biorouter works with [supported LLM providers](/docs/getting-started/providers) 
   
   biorouter will open a browser for you to authenticate with Tetrate, or create a new account if you don't have one already. When you return to the biorouter desktop app, you're ready to begin your first session.
       
-  
-> **Info:** You'll receive $10 in free credits the first time you automatically authenticate with Tetrate through biorouter. This offer is available to both new and existing Tetrate users.
-
     
   
   
@@ -109,8 +106,6 @@ biorouter works with [supported LLM providers](/docs/getting-started/providers) 
    │  ○ ...
    └  
    ```
-    
-> **Info:** You'll receive $10 in free credits the first time you automatically authenticate with Tetrate through biorouter. This offer is available to both new and existing Tetrate users.
 
    4. Enter your API key (and any other configuration details) when prompted.
 
@@ -177,26 +172,26 @@ Sessions are single, continuous conversations between you and biorouter. Let's s
 
 ## Write Prompt
 
-From the prompt, you can interact with biorouter by typing your instructions exactly as you would speak to a developer.
+From the prompt, you can interact with biorouter by typing your instructions exactly as you would describe a task to a research assistant.
 
-Let's ask biorouter to make a tic-tac-toe game!
+Let's ask biorouter to do a quick literature analysis!
 
 ```
-create an interactive browser-based tic-tac-toe game in javascript where a player competes against a bot
+find three recent review papers on the role of microglia in multiple sclerosis, then write a one-page markdown summary comparing their main conclusions
 ```
 
-biorouter will create a plan and then get right to work on implementing it. Once done, your directory should contain a JavaScript file as well as an HTML page for playing.
+biorouter will create a plan and then get right to work on it. Once done, your directory should contain a markdown summary of the papers it analyzed.
 
 ## Enable an Extension
 
-While you're able to manually navigate to your working directory and open the HTML file in a browser, wouldn't it be better if biorouter did that for you? Let's give biorouter the ability to open a web browser by enabling the [`Computer Controller` extension](/docs/mcp/computer-controller-mcp).
+While biorouter can already work with files in your directory, wouldn't it be better if it could fetch papers and data from the web for you? Let's give biorouter the ability to browse the web and scrape sources by enabling the [`Computer Controller` extension](/docs/mcp/computer-controller-mcp).
 
     
         1. Click the  button in the top-left to open the sidebar.
         2. Click `Extensions` in the sidebar menu.
         3. Toggle the `Computer Controller` extension to enable it. This extension enables webscraping, file caching, and automations.
         4. Return to your session to continue.
-        5. Now that biorouter has browser capabilities, let's ask it to launch your game in a browser:
+        5. Now that biorouter has browser capabilities, let's ask it to pull an abstract from the web:
     
     
         1. End the current session by entering `Ctrl+C` so that you can return to the terminal's command prompt.
@@ -226,20 +221,20 @@ While you're able to manually navigate to your working directory and open the HT
         ```sh
          biorouter session -r
         ```
-        5. Ask biorouter to launch your game in a browser:
+        5. Ask biorouter to fetch a paper's abstract from the web:
     
 
 ```
-open the tic-tac-toe game in a browser
+fetch the abstract of the most-cited paper on PubMed for "BRCA1 breast cancer risk" and add it to my summary
 ```
 
-Go ahead and play your game, I know you want to 😂 ... good luck!
+Go ahead and review the results — your literature summary now pulls directly from the source.
 
 ## Next Steps
-Congrats, you've successfully used biorouter to develop a web app! 🎉
+Congrats, you've successfully used biorouter for your first biomedical research task! 🎉
 
 Here are some ideas for next steps:
-* Continue your session with biorouter and improve your game (styling, functionality, etc).
+* Continue your session with biorouter and deepen the analysis (add more papers, extract data tables, draw a figure, etc).
 * Browse other available [extensions](/extensions) and install more to enhance biorouter's functionality even further.
 * Provide biorouter with a [set of hints](/docs/guides/context-engineering/using-biorouterhints) to use within your sessions.
 * See how you can set up [access controls](/docs/mcp/developer-mcp#configuring-access-controls) if you don't want biorouter to work autonomously.

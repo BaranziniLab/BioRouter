@@ -181,7 +181,7 @@ These variables control how biorouter handles [tool execution](/docs/guides/bior
 
 | Variable | Purpose | Values | Default |
 |----------|---------|---------|---------|
-| `BIOROUTER_MODE` | Controls how biorouter handles tool execution | "auto", "approve", "chat", "smart_approve" | "smart_approve" |
+| `BIOROUTER_MODE` | Controls how biorouter handles tool execution | "auto", "approve", "chat", "smart_approve" | "auto" |
 | `BIOROUTER_TOOLSHIM` | Enables/disables tool call interpretation | "1", "true" (case insensitive) to enable | false |
 | `BIOROUTER_TOOLSHIM_OLLAMA_MODEL` | Specifies the model for [tool call interpretation](/docs/experimental/ollama) | Model name (e.g. llama3.2, qwen2.5) | System default |
 | `BIOROUTER_CLI_MIN_PRIORITY` | Controls verbosity of [tool output](/docs/guides/managing-tools/adjust-tool-output) | Float between 0.0 and 1.0 | 0.0 |
@@ -232,8 +232,8 @@ These variables control security related features.
 
 > **Tip:** When the keyring is disabled, secrets are stored here:
 
-* macOS/Linux: `~/.config/BioRouter/secrets.yaml`
-* Windows: `%APPDATA%\Block\biorouter\config\secrets.yaml`
+* macOS/Linux: `~/.config/biorouter/secrets.yaml`
+* Windows: `%APPDATA%\biorouter\config\secrets.yaml`
 
 ## Observability
 
@@ -280,8 +280,8 @@ These variables control workflow discovery and management.
 |----------|---------|---------|---------|
 | `BIOROUTER_WORKFLOW_PATH` | Additional directories to search for workflows | Colon-separated paths on Unix, semicolon-separated on Windows | None |
 | `BIOROUTER_WORKFLOW_GITHUB_REPO` | GitHub repository to search for workflows | Format: "owner/repo" (e.g., "BaranziniLab/biorouter-workflows") | None |
-| `BIOROUTER_RECIPE_RETRY_TIMEOUT_SECONDS` | Global timeout for workflow success check commands | Integer (seconds) | Workflow-specific default |
-| `BIOROUTER_RECIPE_ON_FAILURE_TIMEOUT_SECONDS` | Global timeout for workflow on_failure commands | Integer (seconds) | Workflow-specific default |
+| `BIOROUTER_WORKFLOW_RETRY_TIMEOUT_SECONDS` | Global timeout for workflow success check commands | Integer (seconds) | Workflow-specific default |
+| `BIOROUTER_WORKFLOW_ON_FAILURE_TIMEOUT_SECONDS` | Global timeout for workflow on_failure commands | Integer (seconds) | Workflow-specific default |
 
 **Examples**
 
@@ -319,8 +319,8 @@ These variables are primarily used for development, testing, and debugging bioro
 | `BIOROUTER_PATH_ROOT` | Override the root directory for all biorouter data, config, and state files | Absolute path to directory | Platform-specific defaults |
 
 **Default locations:**
-- macOS: `~/Library/Application Support/Block/BioRouter/`
-- Linux: `~/.local/share/BioRouter/`
+- macOS: `~/Library/Application Support/Block/biorouter/`
+- Linux: `~/.local/share/biorouter/`
 - Windows: `%APPDATA%\Block\biorouter\`
 
 When set, biorouter creates `config/`, `data/`, and `state/` subdirectories under the specified path. Useful for isolating test environments, running multiple configurations, or CI/CD pipelines.

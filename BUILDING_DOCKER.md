@@ -20,7 +20,7 @@ docker run --rm \
   -e BIOROUTER_PROVIDER=openai \
   -e BIOROUTER_MODEL=gpt-4o \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
-  ghcr.io/BaranziniLab/BioRouter:latest run -t "Hello, world!"
+  ghcr.io/BaranziniLab/BioRouter:latest run -t "Summarize the latest PubMed review on CRISPR gene therapy"
 ```
 
 ## Building from Source
@@ -75,7 +75,7 @@ docker run --rm \
   -e BIOROUTER_PROVIDER=openai \
   -e BIOROUTER_MODEL=gpt-4o \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
-  biorouter:local run -t "Explain Docker containers"
+  biorouter:local run -t "Explain the mechanism of action of metformin"
 ```
 
 With volume mounts for file access:
@@ -86,7 +86,7 @@ docker run --rm \
   -e BIOROUTER_PROVIDER=openai \
   -e BIOROUTER_MODEL=gpt-4o \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
-  biorouter:local run -t "Analyze the code in this directory"
+  biorouter:local run -t "Analyze the patient cohort CSV in this directory and report cohort demographics"
 ```
 
 Interactive session mode with Databricks:
@@ -190,7 +190,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Run BioRouter analysis
         run: |
-          biorouter run -t "Review this codebase for security issues"
+          biorouter run -t "Run the QC checks on the sequencing results in this repo and summarize any flagged samples"
 ```
 
 ### GitLab CI
@@ -202,7 +202,7 @@ analyze:
     BIOROUTER_PROVIDER: openai
     BIOROUTER_MODEL: gpt-4o
   script:
-    - biorouter run -t "Generate documentation for this project"
+    - biorouter run -t "Generate a methods writeup for the analysis pipeline in this project"
 ```
 
 ## Image Details
@@ -283,7 +283,7 @@ For development with hot reload:
 docker run --rm \
   -v $(pwd):/usr/src/biorouter \
   -w /usr/src/biorouter \
-  rust:1.82-bookworm \
+  rust:1.92-bookworm \
   cargo watch -x run
 ```
 
@@ -298,7 +298,7 @@ For production deployments:
 
 Example production Dockerfile:
 ```dockerfile
-FROM ghcr.io/BaranziniLab/BioRouter:v1.6.0
+FROM ghcr.io/BaranziniLab/BioRouter:v1.86.0
 # Add any additional tools needed for your use case
 USER root
 RUN apt-get update && apt-get install -y your-tools && rm -rf /var/lib/apt/lists/*
@@ -317,6 +317,6 @@ When contributing Docker-related changes:
 
 ## Related Documentation
 
-- [BioRouter in Docker Tutorial](documentation/docs/tutorials/biorouter-in-docker.md) - Step-by-step tutorial
+- [BioRouter in Docker Tutorial](http://biorouter.ucsf.edu/docs/tutorials/biorouter-in-docker) - Step-by-step tutorial
 - [Installation Guide](http://biorouter.ucsf.edu/docs/getting-started/installation) - All installation methods
 - [Configuration Guide](http://biorouter.ucsf.edu/docs/guides/config-files) - Detailed configuration options

@@ -54,6 +54,6 @@ You also agree that you will not use, or allow others to use, BioRouter in viola
 
 ---
 
-**Please report any violation of this Policy through the following means:**  [open-source-governance@block.xyz](mailto:open-source-governance@block.xyz) 
+**Please report any violation of this Policy through the following means:**  [wanjun.gu@ucsf.edu](mailto:wanjun.gu@ucsf.edu) 
 
 

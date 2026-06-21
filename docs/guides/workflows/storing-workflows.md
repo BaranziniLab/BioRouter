@@ -11,7 +11,7 @@ Before saving workflows, it's important to understand where they can be stored a
 
 | Type | Location | Availability | Best For |
 |------|----------|-------------|----------|
-| **Global** | `~/.config/BioRouter/workflows/` | All projects and sessions | Personal workflows, general-purpose workflows |
+| **Global** | `~/.config/biorouter/workflows/` | All projects and sessions | Personal workflows, general-purpose workflows |
 | **Local** | `YOUR_WORKING_DIRECTORY/.biorouter/workflows/` | Only when working in that project | Project-specific workflows, team workflows |
 
 **Choose Global Storage When:**
@@ -117,7 +117,7 @@ biorouter searches for workflows in the following locations (in order):
 
 1. **Current directory**: `.` (looks for `*.yaml` and `*.json` files)
 2. **Custom paths**: Directories specified in [`BIOROUTER_WORKFLOW_PATH`](/docs/guides/environment-variables#workflow-configuration) environment variable
-3. **Global workflow library**: `~/.config/BioRouter/workflows/` (or equivalent on your OS)
+3. **Global workflow library**: `~/.config/biorouter/workflows/` (or equivalent on your OS)
 4. **Local project workflows**: `./.biorouter/workflows/`
 5. **GitHub repository**: If [`BIOROUTER_WORKFLOW_GITHUB_REPO`](/docs/guides/environment-variables#workflow-configuration) environment variable is configured
 
@@ -128,8 +128,8 @@ biorouter searches for workflows in the following locations (in order):
 $ biorouter workflow list
 Available workflows:
 biorouter-self-test - A comprehensive meta-testing workflow - local: ./biorouter-self-test.yaml
-hello-world - A sample workflow demonstrating basic usage - local: ~/.config/BioRouter/workflows/hello-world.yaml
-job-finder - Find software engineering positions - local: ~/.config/BioRouter/workflows/job-finder.yaml
+hello-world - A sample workflow demonstrating basic usage - local: ~/.config/biorouter/workflows/hello-world.yaml
+literature-scan - Summarize new PubMed papers on a topic - local: ~/.config/biorouter/workflows/literature-scan.yaml
 ```
 
 *Verbose mode:*
@@ -139,9 +139,9 @@ Available workflows:
   biorouter-self-test - A comprehensive meta-testing workflow - local: ./biorouter-self-test.yaml
     Title: biorouter Self-Testing Integration Suite
     Path: ./biorouter-self-test.yaml
-  hello-world - A sample workflow demonstrating basic usage - local: ~/.config/BioRouter/workflows/hello-world.yaml
+  hello-world - A sample workflow demonstrating basic usage - local: ~/.config/biorouter/workflows/hello-world.yaml
     Title: Hello World Workflow
-    Path: /Users/username/.config/BioRouter/workflows/hello-world.yaml
+    Path: /Users/username/.config/biorouter/workflows/hello-world.yaml
 ```
 
 *JSON format for automation:*
@@ -184,7 +184,7 @@ If you need to browse workflow directories manually:
 
 ```bash
 # List workflows in default global location
-ls ~/.config/BioRouter/workflows/
+ls ~/.config/biorouter/workflows/
 
 # List workflows in current project
 ls .biorouter/workflows/

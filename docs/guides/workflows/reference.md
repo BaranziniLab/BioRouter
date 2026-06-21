@@ -173,7 +173,7 @@ extensions:
       - mcp_codesearch@latest
     timeout: 300
     bundled: true
-    description: "Query https://codesearch.sqprod.co/ directly from biorouter"
+    description: "Query your code search service directly from biorouter"
   
   - type: stdio
     name: presidio
@@ -218,7 +218,7 @@ extensions:
       "args": ["mcp_codesearch@latest"],
       "timeout": 300,
       "bundled": true,
-      "description": "Query https://codesearch.sqprod.co/ directly from biorouter"
+      "description": "Query your code search service directly from biorouter"
     },
     {
       "type": "stdio",
@@ -691,7 +691,7 @@ Built-in template parameters are automatically supported and don't need to be de
 
 ## Validation Rules
 
-Validation rules from [`validate_workflow.rs`](https://github.com/BaranziniLab/BioRouter/blob/main/crates/biorouter/src/workflow/validate_workflow.rs) are enforced when loading workflows and used by the [`biorouter workflow validate`](/docs/guides/biorouter-cli-commands#workflow) subcommand:
+Validation rules from [`validate_workflow.rs`](https://github.com/BaranziniLab/biorouter/blob/main/crates/biorouter/src/workflow/validate_workflow.rs) are enforced when loading workflows and used by the [`biorouter workflow validate`](/docs/guides/biorouter-cli-commands#workflow) subcommand:
 
 ### Workflow-Level Validation
 

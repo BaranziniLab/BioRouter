@@ -42,7 +42,7 @@ pkg install cmake protobuf clang build-essential
 ### Development Tools
 
 - **Rust**: Install via [rustup](https://rustup.rs/)
-- **Node.js**: Version 22.9.0 or later (use [nvm](https://github.com/nvm-sh/nvm) for version management)
+- **Node.js**: Version 24 or later (use [nvm](https://github.com/nvm-sh/nvm) for version management)
 - **npm**: Comes with Node.js
 
 ## Build Process
@@ -171,12 +171,12 @@ Create `~/.local/share/applications/biorouter.desktop`:
 ```ini
 [Desktop Entry]
 Name=BioRouter AI Agent
-Comment=Local AI agent for development tasks
+Comment=AI research environment for biomedical discovery
 Exec=/path/to/BioRouter/ui/desktop/out/biorouter-linux-x64/biorouter %U
 Icon=/path/to/BioRouter/ui/desktop/out/biorouter-linux-x64/resources/app.asar.unpacked/src/images/icon.png
 Terminal=false
 Type=Application
-Categories=Development;Utility;
+Categories=Science;Education;Utility;
 StartupNotify=true
 MimeType=x-scheme-handler/biorouter
 ```

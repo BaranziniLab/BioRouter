@@ -38,33 +38,33 @@ Let's ask biorouter to find recent conversations about a topic:
 ### biorouter Prompt
 
 ```
-What did we discuss about database migrations last week?
+What did we discuss about the cohort QC pipeline last week?
 ```
 
 ### biorouter Output
 
-> **Note:** I found discussions about database migrations in your recent sessions. Here's what we covered:
+> **Note:** I found discussions about the cohort QC pipeline in your recent sessions. Here's what we covered:
 
-**Database Migration Discussions - Last Week**
+**Cohort QC Pipeline Discussions - Last Week**
 
-#### Session: Fix migration scripts (Nov 26, 2024)
-**Working Dir:** /projects/myapp
+#### Session: Fix QC filtering scripts (Nov 26, 2024)
+**Working Dir:** /projects/cohort-study
 
-We debugged a production database migration that was failing with a "column already exists" error. The key points were:
+We debugged a quality-control step that was dropping more samples than expected. The key points were:
 
-- The migration was trying to add a column that already existed in some environments
-- We added conditional logic to check if the column exists before adding it
-- Tested the fix locally and committed the changes
+- The filter was excluding samples with missing values in an optional biomarker column
+- We added conditional logic to skip the filter when the column is absent
+- Re-ran the pipeline locally and committed the fix
 
-#### Session: Database schema updates (Nov 27, 2024)
-**Working Dir:** /projects/myapp
+#### Session: Cohort schema updates (Nov 27, 2024)
+**Working Dir:** /projects/cohort-study
 
-We discussed adding email verification functionality:
+We discussed adding a derived eligibility flag:
 
-- Planned to add a new `email_verified` column to the users table
-- Discussed whether to make it nullable or default to false
-- Created the migration script for the new column
+- Planned to add a new `meets_inclusion_criteria` field to the cohort table
+- Discussed whether to default it to false until criteria are evaluated
+- Created the script to populate the new field
 
-Both sessions were focused on safely updating the database schema in production. Would you like me to load the full details from either of these sessions?
+Both sessions were focused on safely refining the cohort dataset. Would you like me to load the full details from either of these sessions?
 
 > **Info:** Compacted sessions from biorouter versions prior to v1.14.0 may not be searchable due to a change in how conversation history is stored.

@@ -273,34 +273,34 @@ prompt: |
 
 ### Context-Based Parameter Passing
 
-This Travel Planner example shows how subworkflows can receive parameters from conversation context, including results from previous subworkflows:
+This Drug Repurposing example shows how subworkflows can receive parameters from conversation context, including results from previous subworkflows:
 
 **Usage:**
 ```bash
-biorouter run --workflow travel-planner.yaml
+biorouter run --workflow drug-repurposing.yaml
 ```
 
 **Main Workflow:**
 
 ```yaml
-# travel-planner.yaml
+# drug-repurposing.yaml
 version: "1.0.0"
-title: "Travel Activity Planner"
-description: "Get weather data and suggest appropriate activities"
+title: "Drug Repurposing Explorer"
+description: "Fetch known drug targets, then suggest repurposing candidates"
 instructions: |
-  Plan activities by first getting weather data, then suggesting activities based on conditions.
+  Explore repurposing opportunities by first retrieving the drug's known targets, then suggesting candidate diseases based on those targets.
 
 prompt: |
-  Plan activities for Sydney by first getting weather data, then suggesting activities based on the weather conditions we receive.
+  Explore repurposing opportunities for metformin by first retrieving its known targets, then suggesting candidate diseases based on the targets we receive.
 
 sub_workflows:
-  - name: weather_data
-    path: "./subworkflows/weather-data.yaml"
-    # No values - location parameter comes from prompt context
+  - name: target_data
+    path: "./subworkflows/target-data.yaml"
+    # No values - drug_name parameter comes from prompt context
   
-  - name: activity_suggestions
-    path: "./subworkflows/activity-suggestions.yaml"
-    # weather_conditions parameter comes from conversation context
+  - name: repurposing_suggestions
+    path: "./subworkflows/repurposing-suggestions.yaml"
+    # known_targets parameter comes from conversation context
 
 extensions:
   - type: builtin
@@ -311,56 +311,56 @@ extensions:
 
 **Subworkflows:**
 
-**weather_data**
+**target_data**
 ```yaml
-  # subworkflows/weather-data.yaml
+  # subworkflows/target-data.yaml
   version: "1.0.0"
-  title: "Weather Data Collector"
-  description: "Fetch current weather conditions for a location"
+  title: "Drug Target Collector"
+  description: "Fetch known protein targets for a drug"
   instructions: |
-    You are a weather data specialist. Gather current weather information
-    including temperature, conditions, and seasonal context.
+    You are a pharmacology data specialist. Gather the known molecular
+    targets for the drug, including target genes and mechanism of action.
 
   parameters:
-    - key: location
+    - key: drug_name
       input_type: string
       requirement: required
-      description: "City or location to get weather data for"
+      description: "Drug name to look up targets for"
 
   extensions:
     - type: stdio
-      name: weather
+      name: spoke
       cmd: uvx
       args:
-        - mcp_weather@latest
+        - mcp_spoke@latest
       timeout: 300
-      description: "Weather data for trip planning"
+      description: "Query the SPOKE knowledge graph for drug targets"
     - type: builtin
       name: developer
       timeout: 300
       bundled: true
 
   prompt: |
-    Get the current weather conditions for {{ location }}.
-    Include temperature, weather conditions (sunny, rainy, etc.), 
-    and any relevant seasonal information.
+    Retrieve the known protein targets for {{ drug_name }}.
+    Include target gene symbols, mechanism of action,
+    and any relevant pathway context.
   ```
 
-**activity_suggestions**
+**repurposing_suggestions**
 ```yaml
-  # subworkflows/activity-suggestions.yaml
+  # subworkflows/repurposing-suggestions.yaml
   version: "1.0.0"
-  title: "Activity Recommender"
-  description: "Suggest activities based on weather conditions"
+  title: "Repurposing Candidate Recommender"
+  description: "Suggest candidate diseases based on drug targets"
   instructions: |
-    You are a travel expert. Recommend appropriate activities and attractions
-    based on current weather conditions.
+    You are a translational research expert. Recommend candidate diseases
+    a drug might be repurposed for, based on its known molecular targets.
 
   parameters:
-    - key: weather_conditions
+    - key: known_targets
       input_type: string
       requirement: required
-      description: "Current weather conditions to base recommendations on"
+      description: "Known drug targets to base recommendations on"
 
   extensions:
     - type: builtin
@@ -369,14 +369,14 @@ extensions:
       bundled: true
 
   prompt: |
-    Based on these weather conditions: {{ weather_conditions }}, 
-    suggest appropriate activities, attractions, and travel tips.
-    Include both indoor and outdoor options as relevant.
+    Based on these drug targets: {{ known_targets }}, 
+    suggest candidate diseases for repurposing along with the
+    biological rationale and supporting evidence for each.
   ```
 
 In this example:
-- The `weather_data` subworkflow gets the location from the prompt context (the AI extracts "Sydney" from the natural language prompt)
-- The `activity_suggestions` subworkflow gets weather conditions from the conversation context (the AI uses the weather results from the first subworkflow)
+- The `target_data` subworkflow gets the drug name from the prompt context (the AI extracts "metformin" from the natural language prompt)
+- The `repurposing_suggestions` subworkflow gets the known targets from the conversation context (the AI uses the target results from the first subworkflow)
 
 ## Best Practices
 - **Single responsibility**: Each subworkflow should have one clear purpose

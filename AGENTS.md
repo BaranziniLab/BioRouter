@@ -43,16 +43,13 @@ cd ui/desktop && npm test    # test UI
 ```
 crates/
 ├── biorouter         # core logic
+├── biorouter-acp     # Agent Communication Protocol
 ├── biorouter-bench   # benchmarking
 ├── biorouter-cli     # CLI entry
 ├── biorouter-server  # backend (binary: biorouterd)
 ├── biorouter-mcp     # MCP extensions
-├── biorouter-test    # test utilities
-├── mcp-client        # MCP client
-├── mcp-core          # MCP shared
-└── mcp-server        # MCP server
+└── biorouter-test    # test utilities
 
-temporal-service/     # Go scheduler
 ui/desktop/           # Electron app
 ```
 

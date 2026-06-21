@@ -126,6 +126,6 @@ After completing tutorials, you can:
 - Suggest new tutorial topics that would be helpful for others
 
 ### Need Further Help? 
-If you have questions, run into issues, or just need to brainstorm ideas join the [Discord Community][discord]!
+If you have questions, run into issues, or just need to brainstorm ideas, [open an issue on GitHub][issues]!
 
-[discord]: https://discord.gg/biorouter-oss
+[issues]: https://github.com/BaranziniLab/biorouter/issues

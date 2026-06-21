@@ -49,7 +49,7 @@ These never appear in `system.md` but can enter context:
 - **Knowledge sub-agent macros** (`knowledge/macros/{ingest,query,lint}.rs` + `subagent/procedures.rs` + per-KB `schema.md`): isolated bounded sub-agent loops; "The knowledge graph is derived **purely** from `[[link]]` patterns… If you do not emit links, the graph will have nodes but no edges"; "Hedge claims sourced only from web or personal materials."
 - **Compaction continuation** (`context_mgmt/mod.rs`): three "Do not mention that you read a summary… continue the conversation naturally" variants.
 - **Final-output tool** (`agents/final_output_tool.rs`): forces schema-valid output; injects validation-failure feedback.
-- **Recipe/workflow templating, scheduler** (`workflow/`, `scheduler.rs`): user-authored instructions become system-prompt extras / the scheduled `prompt` becomes the initial user message.
+- **Workflow templating, scheduler** (`workflow/`, `scheduler.rs`): user-authored instructions become system-prompt extras / the scheduled `prompt` becomes the initial user message.
 - **Isolated LLM side-calls**: permission judge, hook judge (`hooks/prompt_runner.rs`), credibility classifier (`knowledge/credibility/agentic.rs`), session-title generator (`providers/base.rs`).
 - **CLI prompt** (`biorouter-cli/src/session/prompt.rs`): lists slash commands.
 - **Security inspector** (`security/`): non-LLM pattern + classifier scanning; injects a user-facing "🔒 Security Alert" on flagged tool calls.

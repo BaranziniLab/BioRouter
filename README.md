@@ -7,33 +7,72 @@
 **An AI-powered integrated research environment for biomedical discovery**
 
 <p>
-
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="Apache 2.0 License"></a>
+  <img src="https://img.shields.io/badge/version-1.86.0-tan.svg" alt="Version 1.86.0">
 </p>
+
+<a href="http://biorouter.ucsf.edu/">Website</a> ·
+<a href="http://biorouter.ucsf.edu/download">Download</a> ·
+<a href="http://biorouter.ucsf.edu/docs">Docs</a> ·
+<a href="http://biorouter.ucsf.edu/baam">BAAM Marketplace</a>
 
 </div>
 
-
-
 ## What is Biorouter?
 
-[UCSF Biorouter](http://biorouter.ucsf.edu/) is an AI-powered integrated research environment that unifies commercial, institution-hosted, and local LLMs, AI agents, Information Commons databases, and customizable workflows into one extensible tool for explorative analysis, prototyping, automation, and federated cross-institution collaboration.
+[UCSF Biorouter](http://biorouter.ucsf.edu/) is an AI-powered integrated research environment for **biomedical discovery**, built by the [Baranzini Lab](https://baranzinilab.ucsf.edu/) at UCSF. It unifies commercial, institution-hosted, and fully local LLMs together with AI agents, biomedical databases and knowledge graphs, personal knowledge bases, and customizable workflows into a single extensible tool.
 
-Think of Biorouter as your intelligent research co-pilot — one that can read papers, query databases, run code, manage files, and carry out complex multi-step research tasks, all from a single unified interface.
+Think of Biorouter as your biomedical research co-pilot — one that can read and synthesize papers, query biomedical databases and knowledge graphs (like SPOKE), explore clinical/EHR/OMOP data, build cohorts, run genomics and bioinformatics pipelines, analyze drug–disease relationships, visualize results, and carry out complex multi-step research tasks — all from one unified interface.
 
-<br>
+Biorouter runs as a desktop app, a full-screen terminal CLI, or a headless REST/WebSocket server, sharing the same agent core across all three.
 
 ## Key Features
 
-- **Multi-Provider LLM Support** — Works with Anthropic Claude, OpenAI GPT, Google Gemini, Amazon Bedrock, Azure OpenAI, Ollama (local), and many more
-- **UCSF Institution-Ready** — Built-in support for UCSF-hosted ChatGPT (Azure) and UCSF-hosted Anthropic (Bedrock)
-- **Extensible via MCP Agents** — Connect to databases, web tools, file systems, APIs, and custom agents through the Model Context Protocol
-- **Workflows & Automation** — Package any workflow into a shareable, reusable file; run it on a schedule without lifting a finger
-- **Fully Local Mode** — Use Ollama for completely air-gapped, private inference — nothing ever leaves your machine
-- **Skills System** — Teach Biorouter your team's workflows and best practices as reusable instruction sets
-- **Desktop & CLI** — Beautiful GUI desktop app for interactive work; CLI for scripting and automation
+### Bring your own model — commercial, institutional, or fully local
 
-<br>
+- **40+ LLM providers** — Anthropic Claude, OpenAI GPT, Google Gemini, Amazon Bedrock, Azure OpenAI, Databricks, Ollama, and many more.
+- **UCSF institution-hosted options** — built-in support for UCSF-hosted ChatGPT (Azure OpenAI) and UCSF-hosted Anthropic (Amazon Bedrock) for compliant access on sensitive research.
+- **Zero-setup local models** — a bundled **Llama Server** (llama.cpp sidecar) ships a curated Qwen/Gemma catalog with one-click download and runs entirely on your machine; Ollama is also supported. Ideal for **air-gapped, private inference** where no data leaves your device.
+
+### Biomedical agents & the MCP extension ecosystem
+
+- **Model Context Protocol (MCP)** — connect Biorouter to biomedical databases, web tools, file systems, and APIs through pluggable extensions, and install third-party agents.
+- **Biomedical agents via the BAAM marketplace** ([biorouter.ucsf.edu/baam](http://biorouter.ucsf.edu/baam)) — including **SPOKEAgent** (the SPOKE biomedical knowledge graph), the **UCSF OMOP Agent** and **CDWAgent** (clinical/EHR/OMOP data and cohort building), plus a growing library of bioinformatics and clinical skills (ATAC-seq, ChIP-seq, alternative splicing, causal genomics, chemoinformatics, clinical biostatistics, and more).
+- **Built-in extensions** — Developer (shell, files, code execution), Computer Controller (web/computer automation), Memory, Tutorial, Auto Visualiser, and Knowledge.
+
+### Personal, LLM-maintained knowledge bases
+
+- Build personal knowledge bases backed by **markdown trees + git history** that an LLM curates as it ingests.
+- **Ingest** papers and documents from **PDF, HTML, DOCX, PowerPoint, CSV/XLSX, and URLs**.
+- **Source credibility classification** via Crossref / OpenAlex, a **knowledge graph view** of cross-linked pages, **BM25 search**, full change history, and **`.brkb` export/import** to share a base.
+
+### Auto Visualiser — publication-ready figures in chat
+
+Turn structured data into self-contained, interactive HTML figures rendered inline in chat — **33 tools** spanning scientific plots (**volcano**, **Manhattan**, **Kaplan–Meier**, **forest**), charts (histogram, box, bubble, area, radar, donut, gauge), relationships and hierarchies (network, Sankey, chord, heatmap, treemap, sunburst, dendrogram, word cloud, calendar heatmap), diagrams (Mermaid flowchart/gantt/sequence/mindmap/timeline/ER/state/class), and geographic maps (Leaflet map, choropleth).
+
+### Computer Controller & vision
+
+- Drive the web and your computer for research automation, with **multi-monitor screen capture** (enumerate displays and re-capture any screen by index) and **vision input** so the model can read screenshots and figures.
+
+### Workflows, skills & automation
+
+- **Workflows** — package any multi-step task into a shareable, reusable file with Jinja-style templating; compose **sub-workflows**.
+- **Scheduling** — run workflows and agent automations on a **cron schedule**, unattended.
+- **Skills** — teach Biorouter your lab's reusable instruction sets and best practices; built-in authoring skills (`develop-biorouter-extension`, `develop-biorouter-skill`) help you create your own.
+- **Lifecycle hooks** — fire custom commands at `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, and `SessionEnd` for logging, policy, and automation.
+- **Agent goals & ACP** — agents track goals across a session, and the Agent Communication Protocol enables multi-agent orchestration.
+
+### Three surfaces, one core
+
+- **Desktop app** (Electron + React) for interactive work.
+- **`biorouter` CLI** — a full-screen TUI at parity with the GUI: slash-command palette, model/provider setup, knowledge bases, and extension/skill/workflow install, all from the terminal. `biorouter doctor` checks prerequisites and self-updates.
+- **`biorouterd` server** — REST + WebSocket API with an OpenAPI-generated TypeScript client.
+
+### Built for the desktop
+
+- **One-click "Restart & Update"** on macOS (electron-updater) — downloads in the background and swaps the app in place, leaving your settings, sessions, and knowledge bases untouched.
+- **Native installers** for macOS (Apple Silicon + Intel), Windows, and Linux (deb/rpm), plus **headless CLI-only Linux packages** for servers, HPC nodes, and containers.
+- **Secret storage** via the OS keychain (macOS Keychain / Windows Credential Manager / Linux Secret Service), configurable **permission modes**, and a **`.biorouterignore`** to keep sensitive files out of the agent's reach.
 
 ## Download
 
@@ -41,54 +80,54 @@ Native installers for all major platforms are available in every release:
 
 | Platform | Package |
 |----------|---------|
-| **macOS** (Apple Silicon) | `.zip` — unzip and drag to `/Applications` |
-| **Windows** (x64) | `.zip` — unzip and run `Biorouter.exe` |
-| **Linux** Ubuntu / Pop!_OS (x64) | `.deb` — `sudo dpkg -i biorouter_*.deb` |
-| **Linux** Fedora / RHEL (x64) | `.rpm` — `sudo rpm -i Biorouter-*.rpm` |
+| **macOS** (Apple Silicon) | `BioRouter-*-arm64.dmg` — open and drag to `/Applications` |
+| **macOS** (Intel) | `BioRouter-*-x64.dmg` — open and drag to `/Applications` |
+| **Windows** (x64) | `BioRouter-win32-x64-*.zip` — unzip and run `BioRouter.exe` |
+| **Linux** Ubuntu / Pop!_OS (x64) | `biorouter_*_amd64.deb` — `sudo dpkg -i biorouter_*.deb` |
+| **Linux** Fedora / RHEL (x64) | `BioRouter-*-1.x86_64.rpm` — `sudo rpm -i BioRouter-*.rpm` |
+| **Linux — CLI only** Debian/Ubuntu (x64) | `biorouter-cli_*_amd64.deb` — `sudo apt install ./biorouter-cli_*.deb` |
+| **Linux — CLI only** Fedora/RHEL (x64) | `biorouter-cli-*-1.x86_64.rpm` — `sudo dnf install ./biorouter-cli-*.rpm` |
 
-**[Download Biorouter →](http://biorouter.ucsf.edu/download)**
+**[Download Biorouter →](http://biorouter.ucsf.edu/download)** or grab assets from the [Releases page](https://github.com/BaranziniLab/biorouter/releases).
+
+To install just the command-line tool:
+
+```bash
+curl -fsSL https://github.com/BaranziniLab/biorouter/releases/download/stable/download_cli.sh | bash
+```
 
 Always install the newest version for the latest features and fixes.
 
-<br>
-
 ## Getting Started in 3 Steps
 
-**1. Download and install** Biorouter from the [Releases page](https://github.com/BaranziniLab/BioRouter/releases).
+**1. Download and install** Biorouter for your platform from the table above.
 
-**2. Connect a provider** — On first launch, Biorouter will walk you through choosing an LLM provider:
-- **UCSF users**: Select Azure OpenAI (UCSF ChatGPT) or Amazon Bedrock (UCSF Anthropic)
-- **With your own API key**: Enter your Anthropic, OpenAI, or Google API key directly
-- **Fully local**: Install [Ollama](https://ollama.com) and select it — no API key needed, no data leaves your device
+**2. Connect a model** — on first launch, Biorouter walks you through choosing a provider:
+- **UCSF users** — select Azure OpenAI (UCSF ChatGPT) or Amazon Bedrock (UCSF Anthropic).
+- **Your own API key** — enter your Anthropic, OpenAI, or Google key directly.
+- **Fully local** — pick the bundled Llama Server (zero setup) or install [Ollama](https://ollama.com); no API key, no data leaves your device.
 
-**3. Start exploring** — Type a question, describe a task, or load a workflow. Biorouter takes it from there.
-
-<br>
+**3. Start exploring** — ask a research question, ingest papers into a knowledge base, query SPOKE, build a cohort, or load a workflow. Biorouter takes it from there.
 
 ## Who is Biorouter For?
 
-- **Researchers** who want to analyze data, review literature, and run bioinformatics pipelines with the help of AI
-- **Clinicians and data scientists** who need secure, institution-compliant AI access for sensitive research tasks
-- **Developers and engineers** building automated workflows, pipelines, and agentic systems
-- **Teams** looking to share reusable AI workflows across their organization
-
-<br>
+- **Bench and computational researchers** analyzing data, reviewing literature, and running genomics/bioinformatics pipelines with AI assistance.
+- **Clinical researchers and data scientists** who need secure, institution-compliant AI access for sensitive EHR/OMOP and cohort work.
+- **Labs and teams** sharing reusable AI workflows, skills, and knowledge bases across their group.
 
 ## Working with Sensitive Data
 
 Biorouter routes your inputs to an LLM provider. For patient data, PHI, or other sensitive research data:
 
-- **Use institution-managed services** (UCSF Azure OpenAI or UCSF Amazon Bedrock) or **fully local Ollama**
-- **Do not** use personal commercial API keys with patient data
-- **Always verify** with your institution's compliance office before processing sensitive data
+- **Use institution-managed services** (UCSF Azure OpenAI or UCSF Amazon Bedrock) or **fully local models** (bundled Llama Server or Ollama).
+- **Do not** use personal commercial API keys with patient data.
+- **Always verify** with your institution's compliance office before processing sensitive data.
 
 See the [Data Privacy Guide](docs/guides/data-privacy.md) for full details.
 
-<br>
-
 ## Documentation
 
-In-depth documentation is available in the [docs/](docs/) folder:
+Full documentation lives at [biorouter.ucsf.edu/docs](http://biorouter.ucsf.edu/docs) and in the [docs/](docs/) folder:
 
 | Guide | Description |
 |---|---|
@@ -97,22 +136,20 @@ In-depth documentation is available in the [docs/](docs/) folder:
 | [Extensions, Skills & MCP](docs/guides/extensions-skills.md) | Adding tools, agents, and reusable skills |
 | [Workflows](docs/guides/workflows/index.md) | Creating and sharing automated workflows |
 | [Schedulers](docs/guides/schedulers.md) | Running workflows on a schedule |
+| [Hooks](docs/guides/hooks.md) | Lifecycle hooks for logging, policy, and automation |
+| [Secret Storage](docs/guides/secret-storage.md) | How credentials are kept in your OS keychain |
 | [Installation & Setup](docs/getting-started/installation.md) | Step-by-step setup guide |
 | [Data Privacy](docs/guides/data-privacy.md) | Guidelines for handling patient and sensitive data |
 
-<br>
-
 ## Acknowledgments
 
-Biorouter's agentic coding environment was developed with reference to the following open-source AI coding tools — we are grateful to their authors and communities:
+Biorouter's agentic environment was built on the foundation of, and with reference to, the following open-source AI tools — we are grateful to their authors and communities:
 
 - **[Goose](https://block.github.io/goose/)** — CLI/Desktop agent for full developer workflows (Block) — Biorouter's primary upstream foundation
-- **[Aider](https://aider.chat/)** — Open-source, Git-native CLI AI coding agent
-- **[Cline](https://github.com/cline/cline)** — Open-source interactive CLI coding agent
-- **[OpenCode](https://opencode.ai/)** — Open-source coding agent with multi-session and multi-provider support
-- **[ForgeCode](https://forgecode.dev/)** — Terminal AI coding assistant for task planning and code generation
-
-<br>
+- **[Aider](https://aider.chat/)** — open-source, Git-native CLI AI coding agent
+- **[Cline](https://github.com/cline/cline)** — open-source interactive CLI coding agent
+- **[OpenCode](https://opencode.ai/)** — open-source coding agent with multi-session and multi-provider support
+- **[ForgeCode](https://forgecode.dev/)** — terminal AI assistant for task planning and code generation
 
 ## Citation
 
@@ -121,13 +158,11 @@ If you use Biorouter in your research, please cite:
 ```bibtex
 @software{biorouter2025,
   title  = {UCSF Biorouter: An AI-Powered Integrated Research Environment},
-  author = {Gu, Wanjun, Bellucci, Gianmarco and Baranzini, Sergio E.},
+  author = {Gu, Wanjun and Bellucci, Gianmarco and Baranzini, Sergio E.},
   year   = {2025},
-  url    = {https://github.com/BaranziniLab/BioRouter}
+  url    = {https://github.com/BaranziniLab/biorouter}
 }
 ```
-
-<br>
 
 ## About
 
@@ -135,13 +170,11 @@ UCSF Biorouter is developed by **Wanjun Gu** ([wanjun.gu@ucsf.edu](mailto:wanjun
 
 Licensed under the [Apache License 2.0](LICENSE).
 
-<br>
-
 <div align="center">
   <p>
-    <a href="https://github.com/BaranziniLab/BioRouter/releases">Download</a> ·
+    <a href="https://github.com/BaranziniLab/biorouter/releases">Download</a> ·
     <a href="docs/getting-started/installation.md">Setup Guide</a> ·
-    <a href="https://github.com/BaranziniLab/BioRouter/issues">Report an Issue</a> ·
+    <a href="https://github.com/BaranziniLab/biorouter/issues">Report an Issue</a> ·
     <a href="mailto:wanjun.gu@ucsf.edu">Contact</a>
   </p>
 </div>

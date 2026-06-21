@@ -98,8 +98,10 @@ Questions? Join our [Discord](https://discord.gg/biorouter-oss) or [GitHub Discu
 
 **Using BioRouter (meta!):**
 ```bash
-# Install BioRouter
-curl -fsSL https://github.com/BaranziniLab/BioRouter/releases/latest/download/install.sh | bash
+# Install BioRouter — download the installer for your platform from
+# https://github.com/BaranziniLab/BioRouter/releases/latest
+# (macOS .dmg, Windows .zip, Linux .deb/.rpm), or build the CLI from source
+# with `cargo build --release` (binary at target/release/biorouter).
 
 # Navigate to your BioRouter clone
 cd /path/to/BioRouter

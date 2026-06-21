@@ -1,17 +1,17 @@
-# UCSF BioRouter — Architecture
+# UCSF Biorouter — Architecture
 
-UCSF BioRouter is an AI-powered integrated research environment that unifies commercial, institution-hosted, and local large language models (LLMs), AI agents, Information Commons databases, and customizable workflows into one extensible platform for explorative analysis, prototyping, automation, and federated cross-institution collaboration.
+UCSF Biorouter is an AI-powered integrated research environment that unifies commercial, institution-hosted, and local large language models (LLMs), AI agents, Information Commons databases, and customizable workflows into one extensible platform for explorative analysis, prototyping, automation, and federated cross-institution collaboration.
 
 **Developed by:** Wanjun Gu (wanjun.gu@ucsf.edu), Baranzini Lab (https://baranzinilab.ucsf.edu/), UCSF
 **Supported by:** UCSF IT and Information Commons
-**GitHub:** https://github.com/BaranziniLab/BioRouter
-**Releases:** https://github.com/BaranziniLab/BioRouter/releases
+**GitHub:** https://github.com/BaranziniLab/biorouter
+**Releases:** https://github.com/BaranziniLab/biorouter/releases
 
 ---
 
 ## High-Level Overview
 
-BioRouter is built as a modular, plugin-based system. It consists of three main layers:
+Biorouter is built as a modular, plugin-based system. It consists of three main layers:
 
 1. **Interface** — The desktop GUI or CLI that accepts user input and displays responses.
 2. **Agent** — The core reasoning loop that manages LLM interaction, tool execution, and session state.
@@ -32,7 +32,7 @@ The backend is a Rust workspace (`crates/`) organized into several crates:
 | `biorouter` | Core agent library — agent loop, provider integrations, session management, workflows, scheduling |
 | `biorouter-server` | REST API server (`biorouterd`) that the desktop UI communicates with |
 | `biorouter-cli` | Command-line interface (`biorouter` binary) |
-| `biorouter-mcp` | Built-in MCP servers (Developer, Computer Controller, Memory, Tutorial, Auto Visualiser) |
+| `biorouter-mcp` | Built-in MCP servers (Developer, Computer Controller, Memory, Auto Visualiser, Tutorial, Knowledge) |
 | `biorouter-acp` | Agent Communication Protocol support |
 | `biorouter-bench` | Benchmarking tools |
 | `biorouter-test` | Integration tests |
@@ -79,7 +79,7 @@ The agent operates in a continuous loop:
 5. **Context revision** — Old or irrelevant messages are summarized or pruned to manage token usage efficiently.
 6. **Final response** — Once all tool calls are complete, the LLM sends a final response to the user.
 
-If a tool call produces an error (invalid JSON, missing tool, etc.), BioRouter captures and returns the error to the model as a tool response, allowing the LLM to self-correct without breaking the session.
+If a tool call produces an error (invalid JSON, missing tool, etc.), Biorouter captures and returns the error to the model as a tool response, allowing the LLM to self-correct without breaking the session.
 
 ---
 
@@ -90,7 +90,7 @@ If a tool call produces an error (invalid JSON, missing tool, etc.), BioRouter c
 | `~/.config/biorouter/config.yaml` | Primary config — providers, API keys, extensions, settings |
 | `~/.config/biorouter/sessions/` | Session history (SQLite) |
 | `~/.config/biorouter/workflows/` | Saved workflows |
-| `~/.config/biorouter/skills/` | BioRouter-specific global skills |
+| `~/.config/biorouter/skills/` | Biorouter-specific global skills |
 | `~/Library/Application Support/BioRouter/` | Electron app state (macOS) |
 
 The config file is shared between the Desktop UI and the CLI — changes in either interface are reflected in both.
@@ -99,7 +99,7 @@ The config file is shared between the Desktop UI and the CLI — changes in eith
 
 ## Multi-Model and Multi-Agent Support
 
-BioRouter supports running multiple agents in parallel:
+Biorouter supports running multiple agents in parallel:
 
 - **Sub-agents** — A workflow can spawn sub-agents to handle parallel tasks, each with its own LLM provider and extension set.
 - **Lead/Worker orchestration** — A lead model delegates sub-tasks to worker models, enabling multi-model pipelines.
@@ -110,6 +110,6 @@ BioRouter supports running multiple agents in parallel:
 ## Security
 
 - Extensions are scanned for known malware before activation.
-- BioRouter enforces permission modes that control whether tool calls require user approval.
+- Biorouter enforces permission modes that control whether tool calls require user approval.
 - `.biorouterignore` files can restrict which files and directories the agent is allowed to access.
 - Allowlists can restrict which shell commands the agent may execute.

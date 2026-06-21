@@ -87,18 +87,20 @@ phase('Package')
 await step('mac-arm64', `Run \`bash scripts/release.sh mac-arm64 ${version}\` — signs + notarizes the Apple Silicon dmg. Verify out/make/BioRouter-${version}-arm64.dmg exists and the app reports "Notarized Developer ID".`)
 await step('mac-intel', `Run \`bash scripts/release.sh mac-intel ${version}\` — signs + notarizes the Intel dmg. Verify out/make/BioRouter-${version}-x64.dmg exists and its bundled binary is x86_64.`)
 await step('windows',   `Run \`bash scripts/release.sh windows ${version}\` — packages the Windows zip. Verify out/make/zip/win32/x64/BioRouter-win32-x64-${version}.zip exists and contains resources/bin/biorouterd.exe.`)
-await step('linux',     `Run \`bash scripts/release.sh linux ${version}\` — packages the Linux deb + rpm via docker (this is last; it leaves node_modules Linux-flavored). Verify the .deb and .rpm exist.`)
+await step('linux',     `Run \`bash scripts/release.sh linux ${version}\` — packages the Linux GUI deb + rpm via docker (it leaves node_modules Linux-flavored). Verify the .deb and .rpm exist.`)
+await step('cli-linux', `Run \`bash scripts/release.sh cli-linux ${version}\` — builds the 2 headless CLI-only Linux packages (biorouter + biorouterd) via docker, smoke-tested in clean Debian/Rocky containers. Verify dist/cli/biorouter-cli_${version}_amd64.deb and dist/cli/biorouter-cli-${version}-1.x86_64.rpm exist. These are 2 of the 7 required release assets.`)
 
 phase('Verify')
 await step('verify',
   `First restore a mac-native node_modules: \`cd ui/desktop && rm -rf node_modules && npm install\` (the linux package corrupted it). ` +
-  `Then run \`bash scripts/release.sh verify ${version}\`. Also compare the 5 asset names + sizes against the previous GitHub release ` +
-  `(\`gh release view <prev-tag> --json assets\`) to confirm the set matches (version-bumped) and nothing is missing.`)
+  `Then run \`bash scripts/release.sh verify ${version}\`. Also compare the 7 asset names + sizes against the previous GitHub release ` +
+  `(\`gh release view <prev-tag> --json assets\`) to confirm the set matches (version-bumped) and nothing is missing. ` +
+  `The 7 assets are 5 GUI (arm64.dmg, x64.dmg, win32-x64 zip, amd64.deb, x86_64.rpm) + 2 headless CLI (biorouter-cli_*_amd64.deb, biorouter-cli-*-1.x86_64.rpm).`)
 
 phase('Publish')
 await step('publish',
   `Create and push the tag, then publish: \`git push origin main && git tag v${version} && git push origin v${version}\` ` +
   `(skip any that already exist), then \`bash scripts/release.sh publish ${version}\`. ` +
-  `Finally confirm \`gh release view v${version}\` shows exactly 5 uploaded assets and is not a draft.`)
+  `Finally confirm \`gh release view v${version}\` shows exactly 7 uploaded assets (5 GUI + 2 CLI) and is not a draft.`)
 
 return { version, status: 'released', release: `v${version}` }

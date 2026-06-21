@@ -415,7 +415,7 @@ biorouter workflow help
 Automate workflows by running them on a [schedule](/docs/guides/workflows/session-workflows.md#schedule-workflow).
 
 **Commands:**
-- `add <OPTIONS>`: Create a new scheduled job. Copies the current version of the workflow to `~/.local/share/BioRouter/scheduled_recipes`
+- `add <OPTIONS>`: Create a new scheduled job. Copies the current version of the workflow to the `scheduled_workflows` directory in BioRouter's data directory
 - `list`: View all scheduled jobs
 - `remove`: Delete a scheduled job
 - `sessions`: List sessions created by a scheduled workflow
@@ -665,10 +665,10 @@ The `Ctrl+R` shortcut provides interactive search through your stored CLI [comma
 For example, instead of retyping this long command:
 
 ```
-analyze the performance issues in the sales database queries and suggest optimizations
+analyze the GWAS summary statistics file and suggest follow-up enrichment analyses
 ```
 
-Use the `"sales database"` or `"optimization"` search term to find and rerun it.
+Use the `"GWAS summary"` or `"enrichment"` search term to find and rerun it.
 
 **Search tips:**
 - **Distinctive terms work best**: Choose unique words or phrases to help filter the results

@@ -1,4 +1,4 @@
-# Error Handling in BioRouter
+# Error Handling in Biorouter
 
 Error handling is a key performance-driving part of biorouter. There are many ways that the non-determinism
 in the LLM can introduce an error that it can in turn recover from. In a typical biorouter session, it's expected for there

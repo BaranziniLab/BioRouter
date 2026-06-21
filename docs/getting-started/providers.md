@@ -34,7 +34,7 @@ You can also add fully custom providers (e.g. any OpenAI-compatible endpoint) vi
 
 Start from this profile to access UCSF-hosted ChatGPT models. Uses Azure credential chain by default, making it compatible with institutional single sign-on.
 
-Default model: `gpt-5-2025-08-07`
+Default model: `gpt-5.4-2026-03-05`
 
 Available models include:
 - gpt-4o, gpt-4o-mini, gpt-4
@@ -47,7 +47,7 @@ Available models include:
 
 Start from this profile to access UCSF-hosted Anthropic models. Supports AWS SSO profiles — run `aws sso login --profile <profile-name>` before using.
 
-Default model: `us.anthropic.claude-sonnet-4-5-20250929-v1:0`
+Default model: `us.anthropic.claude-sonnet-4-6`
 
 Available models include:
 - Claude Sonnet 4.5 (via Bedrock)
@@ -61,11 +61,11 @@ Available models include:
 
 Direct API access to Anthropic's Claude models.
 
-Default model: `claude-sonnet-4-5`
+Default model: `claude-opus-4-8`
 
 Available models include:
-- claude-opus-4-5
-- claude-sonnet-4-5
+- claude-opus-4-8
+- claude-sonnet-4-6
 - claude-haiku-4-5
 
 ---
@@ -76,10 +76,10 @@ Available models include:
 
 Direct API access to OpenAI models.
 
-Default model: `gpt-4o`
+Default model: `gpt-5.5`
 
 Available models include:
-- gpt-4o, gpt-4o-mini
+- gpt-5.5, gpt-5.4-mini
 - gpt-4.1
 - o1, o3
 
@@ -93,12 +93,12 @@ Optional configuration: `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`
 
 Direct API access to Google's Gemini models.
 
-Default model: `gemini-2.5-pro`
+Default model: `gemini-3.1-pro-preview`
 
 Available models include:
+- gemini-3.1-pro-preview
 - gemini-2.5-pro
-- gemini-2.5-flash
-- gemini-2.0-flash variants
+- gemini-2.5-flash variants
 
 ---
 
@@ -108,7 +108,7 @@ Available models include:
 
 Runs Google and Anthropic models through Google Cloud's Vertex AI infrastructure.
 
-Default model: `gemini-2.5-flash`
+Default model: `gemini-3.5-flash`
 
 ---
 
@@ -118,7 +118,7 @@ Default model: `gemini-2.5-flash`
 
 Access models through Databricks. Supports OAuth.
 
-Default model: `databricks-claude-sonnet-4`
+Default model: `databricks-claude-sonnet-4-6`
 
 Available models include:
 - Claude variants
@@ -133,7 +133,7 @@ Available models include:
 
 Access Claude and other models through Snowflake's Cortex integration.
 
-Default model: `claude-sonnet-4-5`
+Default model: `claude-sonnet-4-6`
 
 ---
 
@@ -159,7 +159,7 @@ To use: install Ollama (https://ollama.com), pull a model (`ollama pull qwen3`),
 
 A proxy service that provides access to many providers through a single API.
 
-Default model: `anthropic/claude-sonnet-4`
+Default model: `anthropic/claude-sonnet-4.6`
 
 Available models include access to Anthropic, Google, Deepseek, Qwen, and many others.
 
@@ -193,9 +193,9 @@ Available models include:
 
 **Authentication:** Device code OAuth flow
 
-Access GPT-4.1, Claude, Gemini, and Grok models through GitHub Copilot infrastructure.
+Access GPT, Claude, Gemini, and Grok models through GitHub Copilot infrastructure.
 
-Default model: `gpt-4.1`
+Default model: `gpt-5.3-codex`
 
 ---
 
@@ -205,7 +205,7 @@ Default model: `gpt-4.1`
 
 Access Grok models from xAI.
 
-Default model: `grok-code-fast-1`
+Default model: `grok-4.3`
 
 ---
 

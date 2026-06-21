@@ -135,7 +135,7 @@ I'll use your code-reviewer workflow to create a specialized subagent for this a
 
 External subagents let you bring in AI agents from other providers and platforms, enabling biorouter to coordinate and integrate your workflow with the broader ecosystem. In the below example, we use Codex as a subagent by running it as an MCP server:
 
-**[BioRouter Configuration File](/docs/guides/config-files)** (`.~/.config/BioRouter/config.yaml `):
+**[BioRouter Configuration File](/docs/guides/config-files)** (`~/.config/biorouter/config.yaml`):
 ```yaml
 subagent:
   args:
@@ -175,7 +175,7 @@ mode = "workspace-write"
 ```md
 Based on my analysis of your codebase, here are the main components:
 
-1. **Core Agent System** (`crates/BioRouter/src/agents/`)
+1. **Core Agent System** (`crates/biorouter/src/agents/`)
    - Agent orchestration and session management
    - Tool execution framework
    - Extension system integration
