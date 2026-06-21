@@ -1,6 +1,0 @@
-^\.git$
-^\.Rproj\.user$
-^.*\.Rproj$
-^README\.md$
-^\.github$
-^inst/scripts/driver\.R$
