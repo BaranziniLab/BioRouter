@@ -17,8 +17,8 @@ use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::permission::{Permission, PermissionConfirmation};
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, Event, EventStream, KeyCode,
-    KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
+    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -43,6 +43,10 @@ use self::app::{App, PermissionModal, StatusInfo, ACCENT};
 use super::CliSession;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+/// Max queued messages shown in the preview pane (older ones beyond this are
+/// summarized as a "+N more" line so the pane never eats the screen).
+const QUEUED_PREVIEW_MAX: u16 = 4;
 
 /// Terminal input events are read by a single dedicated task and forwarded over
 /// this channel, so the draw/stream loops `recv()` (cancel-safe, buffered)
@@ -79,15 +83,19 @@ impl Tui {
         // bracketed paste so multi-line pastes arrive as one chunk instead of a
         // flood of keystrokes (which would submit prematurely on embedded \n).
         //
-        // We deliberately do NOT enable mouse capture: capturing the mouse
-        // routes drag/selection to the app, which disables the terminal's own
-        // text selection — so users can't select and copy CLI output. Leaving it
-        // off keeps native copy/paste working everywhere. Scrolling is handled by
-        // the keyboard (PageUp/PageDown); see the event loop.
+        // Mouse capture is ON so the scroll wheel scrolls the *conversation*
+        // (the app scrollback) rather than the terminal's own buffer — without it,
+        // in the alternate screen a wheel-scroll just exposed the pre-launch banner
+        // and the conversation looked lost. The trade-off is that click-drag
+        // selection is routed to the app; native text selection still works by
+        // holding the terminal's bypass modifier while dragging (Option on
+        // macOS Terminal/iTerm2, Shift on most others) — and PageUp/PageDown also
+        // scroll. See the `MouseEventKind::ScrollUp/Down` handlers in the event loop.
         execute!(
             out,
             EnterAlternateScreen,
             EnableBracketedPaste,
+            EnableMouseCapture,
             SetCursorStyle::BlinkingBar
         )?;
         let terminal = Terminal::new(CrosstermBackend::new(out))?;
@@ -623,6 +631,14 @@ fn draw(f: &mut Frame, app: &mut App) {
     let input_text_w = area.width.saturating_sub(4).max(1);
     let input_h = input_rows(&app.input, input_text_w).clamp(1, 10) + 2;
     let gap_h = 2u16; // blank rows separating the response from the input UI
+    // A "queued" preview pane: the messages the user typed while the agent was
+    // busy, shown in full (capped) so they can SEE what runs next instead of just
+    // a count. 0 rows when nothing is queued.
+    let queued_h: u16 = if app.queued.is_empty() {
+        0
+    } else {
+        (app.queued.len() as u16).min(QUEUED_PREVIEW_MAX) + 1 // +1 header row
+    };
     let status_h = 2u16; // model/provider on line 1; counts + context on line 2
     let hints_h = 1u16;
     // The input cluster (status + box + hints) is pinned to the bottom and never
@@ -633,6 +649,7 @@ fn draw(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Min(1), // history → all remaining space at the top
             Constraint::Length(gap_h),
+            Constraint::Length(queued_h),
             Constraint::Length(status_h),
             Constraint::Length(input_h),
             Constraint::Length(hints_h),
@@ -640,13 +657,16 @@ fn draw(f: &mut Frame, app: &mut App) {
         .split(area);
 
     draw_history(f, app, chunks[0]);
-    draw_status(f, app, chunks[2]);
-    draw_input(f, app, chunks[3]);
-    draw_hints(f, chunks[4]);
+    if queued_h > 0 {
+        draw_queued(f, app, chunks[2]);
+    }
+    draw_status(f, app, chunks[3]);
+    draw_input(f, app, chunks[4]);
+    draw_hints(f, chunks[5]);
 
     // The completion popup floats just above the input box.
     if app.completion.is_some() && app.modal.is_none() {
-        draw_completion(f, app, chunks[3]);
+        draw_completion(f, app, chunks[4]);
     }
     if app.modal.is_some() {
         draw_modal(f, app);
@@ -812,6 +832,55 @@ fn draw_hints(f: &mut Frame, area: Rect) {
         ))),
         area,
     );
+}
+
+/// The queued-messages preview: the lines the user typed while the agent was
+/// busy. Shown in full (capped) so they're never hidden — they run next, in order.
+fn draw_queued(f: &mut Frame, app: &App, area: Rect) {
+    let n = app.queued.len();
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!("⏳ {n} queued — will run next, in order:"),
+        Style::new().fg(ACCENT).add_modifier(Modifier::DIM),
+    )));
+    let shown = (QUEUED_PREVIEW_MAX as usize).min(n);
+    let text_w = area.width.saturating_sub(4).max(8) as usize;
+    for q in app.queued.iter().take(shown) {
+        // One row per queued message; flatten newlines and clip with an ellipsis.
+        let flat: String = q.split_whitespace().collect::<Vec<_>>().join(" ");
+        let clipped = clip_cells(&flat, text_w);
+        lines.push(Line::from(vec![
+            Span::styled("  ↵ ", Style::new().fg(ACCENT)),
+            Span::styled(clipped, Style::new().fg(Color::Indexed(250))),
+        ]));
+    }
+    if n > shown {
+        lines.push(Line::from(Span::styled(
+            format!("  …and {} more", n - shown),
+            Style::new().fg(Color::Indexed(244)).add_modifier(Modifier::DIM),
+        )));
+    }
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// Clip a single-line string to at most `max` display cells, adding an ellipsis.
+fn clip_cells(s: &str, max: usize) -> String {
+    if UnicodeWidthStr::width(s) <= max {
+        return s.to_string();
+    }
+    let budget = max.saturating_sub(1);
+    let mut out = String::new();
+    let mut w = 0usize;
+    for ch in s.chars() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if w + cw > budget {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out.push('…');
+    out
 }
 
 fn draw_input(f: &mut Frame, app: &App, area: Rect) {
@@ -1462,5 +1531,66 @@ mod tests {
         assert_eq!(app.input, "/help ");
         app.backspace();
         assert_eq!(app.input, "/help");
+    }
+
+    // B3: queued messages are rendered in full (not just a count).
+    #[test]
+    fn queued_messages_shown_in_full() {
+        let mut app = App::new(StatusInfo::default());
+        app.queued.push_back("first queued task".to_string());
+        app.queued.push_back("second queued task".to_string());
+        let text = buffer_text(&mut app, 80, 24);
+        assert!(text.contains("2 queued"), "header missing:\n{text}");
+        assert!(text.contains("first queued task"), "queued #1 not shown:\n{text}");
+        assert!(text.contains("second queued task"), "queued #2 not shown:\n{text}");
+    }
+
+    // B2: an older tool result collapses once a newer tool call starts; the
+    // current tool result stays expanded.
+    #[test]
+    fn older_tool_results_collapse() {
+        use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
+        let req = |id: &str| {
+            biorouter::conversation::message::Message::assistant().with_tool_request(
+                id,
+                Ok(CallToolRequestParams {
+                    name: "developer__shell".into(),
+                    arguments: None,
+                    meta: None,
+                    task: None,
+                }),
+            )
+        };
+        let resp = |id: &str, body: &str| {
+            biorouter::conversation::message::Message::user().with_tool_response(
+                id,
+                Ok(CallToolResult {
+                    content: vec![Content::text(body.to_string())],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+            )
+        };
+        let mut app = App::new(StatusInfo::default());
+        app.push_message(&req("a"), false);
+        app.push_message(&resp("a", "AAA-1\nAAA-2\nAAA-3\nAAA-4"), false);
+        // New tool call → the previous result collapses.
+        app.push_message(&req("b"), false);
+        app.push_message(&resp("b", "BBB-1\nBBB-2"), false);
+
+        let text = buffer_text(&mut app, 80, 40);
+        assert!(
+            text.contains("tool output collapsed"),
+            "expected a collapse summary line:\n{text}"
+        );
+        assert!(
+            !text.contains("AAA-2"),
+            "older tool output should be collapsed away:\n{text}"
+        );
+        assert!(
+            text.contains("BBB-1"),
+            "current tool output should stay visible:\n{text}"
+        );
     }
 }
