@@ -1,7 +1,0 @@
-^.*\.Rproj$
-^\.Rproj\.user$
-^LICENSE\.md$
-^README\.Rmd$
-^\.github$
-analysis_script\.R
-tests/testthat.R
