@@ -248,7 +248,10 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
             const current = (await apiGetExtensions()).data?.extensions || [];
             for (const ext of current) {
               if (isCapabilityExtension(ext) && !ext.enabled) {
-                await addExtensionForSync(ext.name, ext as ExtensionConfig, true);
+                // Pass a clean ExtensionConfig (without the entry's `enabled`
+                // field) so we don't persist a stray `enabled` key inside config.
+                const { enabled: _omit, ...cfg } = ext;
+                await addExtensionForSync(ext.name, cfg as ExtensionConfig, true);
               }
             }
           } catch (e) {

@@ -637,7 +637,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     let queued_h: u16 = if app.queued.is_empty() {
         0
     } else {
-        (app.queued.len() as u16).min(QUEUED_PREVIEW_MAX) + 1 // +1 header row
+        // header (1) + shown messages + a "+N more" line when over the cap
+        let over = u16::from(app.queued.len() as u16 > QUEUED_PREVIEW_MAX);
+        (app.queued.len() as u16).min(QUEUED_PREVIEW_MAX) + 1 + over
     };
     let status_h = 2u16; // model/provider on line 1; counts + context on line 2
     let hints_h = 1u16;
@@ -1543,6 +1545,22 @@ mod tests {
         assert!(text.contains("2 queued"), "header missing:\n{text}");
         assert!(text.contains("first queued task"), "queued #1 not shown:\n{text}");
         assert!(text.contains("second queued task"), "queued #2 not shown:\n{text}");
+    }
+
+    // B3: when more than the cap are queued, the "+N more" line is allocated room
+    // and rendered (not clipped).
+    #[test]
+    fn queued_overflow_shows_more_line() {
+        let mut app = App::new(StatusInfo::default());
+        for i in 0..(QUEUED_PREVIEW_MAX + 2) {
+            app.queued.push_back(format!("queued task {i}"));
+        }
+        let text = buffer_text(&mut app, 80, 30);
+        let more = (QUEUED_PREVIEW_MAX + 2) as usize - QUEUED_PREVIEW_MAX as usize;
+        assert!(
+            text.contains(&format!("and {more} more")),
+            "the +N more overflow line should be visible:\n{text}"
+        );
     }
 
     // B2: an older tool result collapses once a newer tool call starts; the
