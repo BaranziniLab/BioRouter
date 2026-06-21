@@ -1,8 +1,0 @@
-^.*\.Rproj$
-^\.Rproj\.user$
-^README\.md$
-^LICENSE$
-^tests/run_tests\.R$
-^Rscript\.R$
-^\.gitignore$
-^build\.log$

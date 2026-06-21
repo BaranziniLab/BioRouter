@@ -1,6 +1,0 @@
-
-[dev]
-pytest>=7.0
-
-[fast]
-numpy>=1.24

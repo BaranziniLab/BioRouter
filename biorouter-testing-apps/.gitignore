@@ -1,9 +1,0 @@
-# Regenerable build artifacts from the per-app builds
-*/target/
-*/build/
-*/.venv/
-**/__pycache__/
-*.log
-.DS_Store
-# User's separate dataset that happened to live here — not part of the QA apps
-autovis-phase3/
