@@ -156,16 +156,19 @@ pub enum MessageEvent {
 }
 
 async fn get_token_state(session_manager: &SessionManager, session_id: &str) -> TokenState {
+    // Fetch only the token counters — not a full session row plus a
+    // `COUNT(*)` over the messages table — since this runs once per streamed
+    // event on the chat hot path and only the token fields are used here.
     session_manager
-        .get_session(session_id, false)
+        .get_token_counts(session_id)
         .await
-        .map(|session| TokenState {
-            input_tokens: session.input_tokens.unwrap_or(0),
-            output_tokens: session.output_tokens.unwrap_or(0),
-            total_tokens: session.total_tokens.unwrap_or(0),
-            accumulated_input_tokens: session.accumulated_input_tokens.unwrap_or(0),
-            accumulated_output_tokens: session.accumulated_output_tokens.unwrap_or(0),
-            accumulated_total_tokens: session.accumulated_total_tokens.unwrap_or(0),
+        .map(|counts| TokenState {
+            input_tokens: counts.input_tokens.unwrap_or(0),
+            output_tokens: counts.output_tokens.unwrap_or(0),
+            total_tokens: counts.total_tokens.unwrap_or(0),
+            accumulated_input_tokens: counts.accumulated_input_tokens.unwrap_or(0),
+            accumulated_output_tokens: counts.accumulated_output_tokens.unwrap_or(0),
+            accumulated_total_tokens: counts.accumulated_total_tokens.unwrap_or(0),
         })
         .inspect_err(|e| {
             tracing::warn!(

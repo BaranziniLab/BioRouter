@@ -224,14 +224,26 @@ impl<'a> ChatHistorySearch<'a> {
         session_messages: &HashMap<String, SessionMessageGroup>,
     ) -> Result<HashMap<String, usize>> {
         let mut session_totals: HashMap<String, usize> = HashMap::new();
-        for session_id in session_messages.keys() {
-            let count: i64 =
-                sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE session_id = ?")
-                    .bind(session_id)
-                    .fetch_one(self.pool)
-                    .await
-                    .unwrap_or(0);
-            session_totals.insert(session_id.clone(), count as usize);
+        if session_messages.is_empty() {
+            return Ok(session_totals);
+        }
+
+        // Single grouped query instead of one COUNT(*) round-trip per session
+        // (the previous N+1 issued a separate query for every matched session).
+        let ids: Vec<&String> = session_messages.keys().collect();
+        let placeholders = std::iter::repeat_n("?", ids.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT session_id, COUNT(*) FROM messages WHERE session_id IN ({placeholders}) GROUP BY session_id"
+        );
+        let mut query = sqlx::query_as::<_, (String, i64)>(&sql);
+        for id in &ids {
+            query = query.bind(*id);
+        }
+        let rows = query.fetch_all(self.pool).await.unwrap_or_default();
+        for (session_id, count) in rows {
+            session_totals.insert(session_id, count as usize);
         }
         Ok(session_totals)
     }
