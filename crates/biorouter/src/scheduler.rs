@@ -165,10 +165,12 @@ async fn persist_jobs(
     let jobs_guard = jobs.lock().await;
     let list: Vec<ScheduledJob> = jobs_guard.values().map(|(_, j)| j.clone()).collect();
     if let Some(parent) = storage_path.parent() {
-        fs::create_dir_all(parent)?;
+        // tokio::fs to avoid blocking the runtime — persist_jobs runs from
+        // async cron callbacks, several times per job firing.
+        tokio::fs::create_dir_all(parent).await?;
     }
     let data = serde_json::to_string_pretty(&list)?;
-    fs::write(storage_path, data)?;
+    tokio::fs::write(storage_path, data).await?;
     Ok(())
 }
 
