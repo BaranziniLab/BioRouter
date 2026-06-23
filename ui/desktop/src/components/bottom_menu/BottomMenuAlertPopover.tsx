@@ -1,6 +1,6 @@
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { CircleIcon } from '../icons/app-icons';
-import { isEqual } from 'lodash';
+import isEqual from 'lodash/isEqual';
 import { cn } from '../../utils';
 import { Alert, AlertType } from '../alerts';
 import { AlertBox } from '../alerts';
