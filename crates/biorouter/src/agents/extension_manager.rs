@@ -357,11 +357,18 @@ async fn merge_environments(
 
 /// Substitute environment variables in a string. Supports both ${VAR} and $VAR syntax.
 fn substitute_env_vars(value: &str, env_map: &HashMap<String, String>) -> String {
+    // Compiled once process-wide rather than on every call (this runs once per
+    // extension HTTP header during connection setup).
+    static RE_BRACES: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"\$\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}").expect("valid regex")
+    });
+    static RE_SIMPLE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)").expect("valid regex")
+    });
+
     let mut result = value.to_string();
 
-    let re_braces =
-        regex::Regex::new(r"\$\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}").expect("valid regex");
-    for cap in re_braces.captures_iter(value) {
+    for cap in RE_BRACES.captures_iter(value) {
         if let Some(var_name) = cap.get(1) {
             if let Some(env_value) = env_map.get(var_name.as_str()) {
                 result = result.replace(&cap[0], env_value);
@@ -369,8 +376,8 @@ fn substitute_env_vars(value: &str, env_map: &HashMap<String, String>) -> String
         }
     }
 
-    let re_simple = regex::Regex::new(r"\$([A-Za-z_][A-Za-z0-9_]*)").expect("valid regex");
-    for cap in re_simple.captures_iter(&result.clone()) {
+    let result_snapshot = result.clone();
+    for cap in RE_SIMPLE.captures_iter(&result_snapshot) {
         if let Some(var_name) = cap.get(1) {
             if !value.contains(&format!("${{{}}}", var_name.as_str())) {
                 if let Some(env_value) = env_map.get(var_name.as_str()) {

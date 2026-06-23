@@ -1683,14 +1683,19 @@ impl DeveloperServer {
 
     // Helper function to handle Mac screenshot filenames that contain U+202F (narrow no-break space)
     fn normalize_mac_screenshot_path(&self, path: &Path) -> PathBuf {
+        // Compiled once rather than on every call.
+        static SCREENSHOT_RE: once_cell::sync::Lazy<regex::Regex> =
+            once_cell::sync::Lazy::new(|| {
+                regex::Regex::new(
+                    r"^Screenshot \d{4}-\d{2}-\d{2} at \d{1,2}\.\d{2}\.\d{2} (AM|PM|am|pm)(?: \(\d+\))?\.png$",
+                )
+                .expect("valid regex")
+            });
         // Only process if the path has a filename
         if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
             // Check if this matches Mac screenshot pattern:
             // "Screenshot YYYY-MM-DD at H.MM.SS AM/PM.png"
-            if let Some(captures) = regex::Regex::new(r"^Screenshot \d{4}-\d{2}-\d{2} at \d{1,2}\.\d{2}\.\d{2} (AM|PM|am|pm)(?: \(\d+\))?\.png$")
-                .ok()
-                .and_then(|re| re.captures(filename))
-            {
+            if let Some(captures) = SCREENSHOT_RE.captures(filename) {
                 // Get the AM/PM part
                 let meridian = captures.get(1).unwrap().as_str();
 

@@ -4,9 +4,14 @@ use crate::knowledge::{
     types::{Graph, GraphEdge, GraphNode, PageKind},
 };
 use anyhow::Result;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use std::path::Path;
 
 const KNOWLEDGE_LINK_RE: &str = r"\[\[([^\]]+)\]\]";
+
+// Compiled once rather than on every `derive()` call.
+static KNOWLEDGE_LINK: Lazy<Regex> = Lazy::new(|| Regex::new(KNOWLEDGE_LINK_RE).unwrap());
 
 pub fn derive(kb_root: &Path) -> Result<Graph> {
     // `list_pages` walks the whole `knowledge/` tree, which includes the
@@ -51,7 +56,7 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
     }
 
     let mut edges = Vec::new();
-    let re = regex::Regex::new(KNOWLEDGE_LINK_RE).unwrap();
+    let re = &*KNOWLEDGE_LINK;
     for p in &pages {
         let abs = kb_root.join(&p.path);
         let body = std::fs::read_to_string(&abs)?;
