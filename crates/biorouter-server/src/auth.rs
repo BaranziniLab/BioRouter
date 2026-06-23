@@ -39,9 +39,17 @@ pub async fn check_token(
     request: Request,
     next: Next,
 ) -> Result<Response, StatusCode> {
-    if request.uri().path() == "/status"
-        || request.uri().path() == "/mcp-ui-proxy"
-        || request.uri().path() == "/mcp-app-proxy"
+    let path = request.uri().path();
+    if path == "/status" || path == "/mcp-ui-proxy" || path == "/mcp-app-proxy" {
+        return Ok(next.run(request).await);
+    }
+    // BioRouter apps are opened directly in the browser (and connect a WebSocket),
+    // so they can't send the secret-key header. Allow browser-facing GET reads
+    // under /apps (serving the bundle + the per-app agent socket); management
+    // verbs (POST/DELETE) still require the secret. The daemon binds localhost
+    // only, matching the unauthenticated MCP UI proxy.
+    if request.method() == axum::http::Method::GET
+        && (path == "/apps" || path.starts_with("/apps/"))
     {
         return Ok(next.run(request).await);
     }

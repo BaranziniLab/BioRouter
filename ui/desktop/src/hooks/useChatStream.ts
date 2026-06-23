@@ -14,6 +14,32 @@ import {
   updateSessionUserWorkflowValues,
   listApps,
 } from '../api';
+import { client } from '../api/client.gen';
+import { getToolResponses } from '../types/message';
+
+// Apps already opened this session (dedupe so a launch_app result auto-opens
+// the browser exactly once).
+const openedAppUrls = new Set<string>();
+
+/**
+ * Auto-open an Agent-Drafter app in the default browser when a *live* launch_app
+ * result arrives. Keyed on the result `_meta["biorouter/app-path"]` marker.
+ * Only called from the live stream (case 'Message'), never on history replay, so
+ * viewing past sessions won't pop browser windows.
+ */
+function autoOpenLaunchedApps(msg: Message): void {
+  for (const tr of getToolResponses(msg)) {
+    const result = tr.toolResult as { status?: string; value?: { _meta?: Record<string, unknown> } };
+    if (result?.status !== 'success') continue;
+    const path = result.value?._meta?.['biorouter/app-path'];
+    if (typeof path !== 'string' || !path.startsWith('/apps/')) continue;
+    const base = ((client.getConfig().baseUrl as string) || '').replace(/\/+$/, '');
+    const url = base + path;
+    if (!base || openedAppUrls.has(url)) continue;
+    openedAppUrls.add(url);
+    window.electron.openExternal(url).catch((e) => console.error('auto-open app failed:', e));
+  }
+}
 import {
   announceSessionName,
   cacheGet,
@@ -185,6 +211,9 @@ async function streamFromResponse(
         case 'Message': {
           const msg = event.message;
           currentMessages = pushMessage(currentMessages, msg);
+
+          // Live launch_app → open the app in the default browser (once).
+          autoOpenLaunchedApps(msg);
 
           const hasToolConfirmation = msg.content.some(
             (content) => content.type === 'toolConfirmationRequest'
