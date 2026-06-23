@@ -61,7 +61,14 @@ pub async fn run() -> Result<()> {
         .layer(cors);
 
     let listener = tokio::net::TcpListener::bind(settings.socket_addr()).await?;
-    info!("listening on {}", listener.local_addr()?);
+    let local_addr = listener.local_addr()?;
+    info!("listening on {}", local_addr);
+    // Publish the base URL so in-process MCP tools (e.g. Agent Drafter's
+    // `launch_app`) can emit absolute http://host:port/apps/<id>/ URLs.
+    std::env::set_var(
+        "BIOROUTER_APP_BASE_URL",
+        format!("http://{local_addr}"),
+    );
 
     let tunnel_manager = app_state.tunnel_manager.clone();
     tokio::spawn(async move {
