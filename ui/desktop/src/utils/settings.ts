@@ -37,22 +37,36 @@ const defaultSettings: Settings = {
   spellcheckEnabled: true,
 };
 
+// In-memory write-through cache of the parsed settings. `loadSettings` is
+// called ~20x per launch (several on the startup critical path); without this
+// each call did a synchronous existsSync + readFileSync + JSON.parse on the
+// main thread. `saveSettings` is the only writer through this module, so the
+// cache stays authoritative. Callers still receive an isolated clone, so the
+// previous "fresh object per call" semantics are preserved exactly.
+let cachedSettings: Settings | null = null;
+
 // Settings management
 export function loadSettings(): Settings {
-  try {
-    if (fs.existsSync(getSettingsFile())) {
-      const data = fs.readFileSync(getSettingsFile(), 'utf8');
-      return JSON.parse(data);
+  if (cachedSettings === null) {
+    try {
+      if (fs.existsSync(getSettingsFile())) {
+        const data = fs.readFileSync(getSettingsFile(), 'utf8');
+        cachedSettings = JSON.parse(data) as Settings;
+      } else {
+        cachedSettings = defaultSettings;
+      }
+    } catch (error) {
+      console.error('Error loading settings:', error);
+      cachedSettings = defaultSettings;
     }
-  } catch (error) {
-    console.error('Error loading settings:', error);
   }
-  return defaultSettings;
+  return structuredClone(cachedSettings);
 }
 
 export function saveSettings(settings: Settings): void {
   try {
     fs.writeFileSync(getSettingsFile(), JSON.stringify(settings, null, 2));
+    cachedSettings = structuredClone(settings);
   } catch (error) {
     console.error('Error saving settings:', error);
   }
