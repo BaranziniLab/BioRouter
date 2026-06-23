@@ -504,7 +504,7 @@ impl ComputerControllerServer {
         extension: &str,
     ) -> Result<PathBuf, ErrorData> {
         let cache_path = self.get_cache_path(prefix, extension);
-        fs::write(&cache_path, content).map_err(|e| {
+        tokio::fs::write(&cache_path, content).await.map_err(|e| {
             ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
                 format!("Failed to write to cache: {}", e),
@@ -1340,7 +1340,7 @@ impl ComputerControllerServer {
                     )
                 })?;
 
-                let content = fs::read_to_string(path).map_err(|e| {
+                let content = tokio::fs::read_to_string(path).await.map_err(|e| {
                     ErrorData::new(
                         ErrorCode::INTERNAL_ERROR,
                         format!("Failed to read file: {}", e),

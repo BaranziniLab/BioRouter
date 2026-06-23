@@ -2,8 +2,30 @@ use lopdf::{content::Content as PdfContent, Document, Object};
 use rmcp::model::{Content, ErrorCode, ErrorData};
 use std::{fs, path::Path};
 
-#[allow(clippy::too_many_lines)]
+/// Async wrapper: PDF parsing (lopdf load + full content-stream decode +
+/// image writes) is entirely synchronous CPU/IO work, so run it on a blocking
+/// thread instead of stalling a tokio worker for the whole parse.
 pub async fn pdf_tool(
+    path: &str,
+    operation: &str,
+    cache_dir: &Path,
+) -> Result<Vec<Content>, ErrorData> {
+    let path = path.to_string();
+    let operation = operation.to_string();
+    let cache_dir = cache_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || pdf_tool_blocking(&path, &operation, &cache_dir))
+        .await
+        .map_err(|e| {
+            ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                format!("PDF processing task failed: {}", e),
+                None,
+            )
+        })?
+}
+
+#[allow(clippy::too_many_lines)]
+fn pdf_tool_blocking(
     path: &str,
     operation: &str,
     cache_dir: &Path,
