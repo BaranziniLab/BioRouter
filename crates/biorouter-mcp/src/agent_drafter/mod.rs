@@ -1,21 +1,20 @@
-//! Agent Drafter — author interactive artifacts, optionally wired to a live
-//! BioRouter agent over ACP.
+//! Agent Drafter — author interactive **BioRouter apps**: TypeScript front-ends
+//! wired to a *real* BioRouter agent backend.
 //!
-//! Agent Drafter is BioRouter's answer to "Claude artifacts", but the artifacts
-//! it produces can embed *real* AI-agent capability. It exposes MCP tools that
-//! let the assistant create, edit, preview, and export self-contained artifacts
-//! with a consistent tech stack and a BioRouter-flavored design system:
+//! An Agent-Drafter app is a self-contained project the assistant builds for the
+//! user. The UI is authored in TypeScript (bundled with esbuild) and the app
+//! talks to BioRouter over a per-app WebSocket: when the user sends a message,
+//! the BioRouter backend runs the **full agent loop** — the app's own model,
+//! extensions, skills and knowledge base — and streams the answer (text /
+//! markdown / tool activity) straight back into the app. Apps are *launched in
+//! the browser* (GUI) or via a printed URL (CLI), not embedded in a chat iframe.
 //!
-//!   - **Static** artifacts: plain interactive HTML/CSS/JS pages.
-//!   - **Agentic** artifacts: the above, plus an embedded agent runtime that
-//!     talks to a BioRouter agent via the Agent Client Protocol (ACP) — or, when
-//!     previewed inside BioRouter, via the sandboxed MCP-App bridge.
-//!
-//! In-app previews are returned as `ui://` HTML resources (rendered in the
-//! desktop's sandboxed iframe). `export_artifact` scaffolds a standalone,
-//! runnable project (Tauri, bundling the BioRouter CLI as a sidecar — or a plain
-//! static web build).
+//! Apps live under `~/.config/biorouter/agent_drafter/<id>/` (a project dir with
+//! `manifest.json`, `index.html`, `src/*.ts`, `dist/app.js`). `biorouterd` serves
+//! them at `/apps/<id>/` and exposes the agent socket at `/apps/<id>/agent`.
+//! `export_app` produces a standalone runnable TypeScript project.
 
+pub mod bundle;
 pub mod render;
 pub mod store;
 
@@ -32,9 +31,16 @@ use rmcp::{
     tool, tool_handler, tool_router, ServerHandler,
 };
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use store::{AgentConfig, ArtifactKind, ArtifactStore, Manifest};
+use store::{AgentConfig, ArtifactKind, ArtifactStore, Manifest, ModelSelection};
+
+/// Optional suggestions only. Apps are **provider-agnostic**: by default an app
+/// pins no model and inherits whatever provider/model the user has configured in
+/// BioRouter (any supported provider). A specific provider+model is stored only
+/// when the caller explicitly chooses one. These constants are not auto-applied.
+pub const DEFAULT_APP_PROVIDER: &str = "xiaomi_mimo";
+pub const DEFAULT_APP_MODEL: &str = "mimo-v2.5";
 
 // ---------------------------------------------------------------------------
 // Tool parameter structs
@@ -42,50 +48,116 @@ use store::{AgentConfig, ArtifactKind, ArtifactStore, Manifest};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct FileSpec {
-    /// Path relative to the artifact root (e.g. "css/app.css").
+    /// Path relative to the app root (e.g. "src/main.ts", "assets/logo.svg").
     pub path: String,
     /// File contents.
     pub content: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct CreateArtifactParams {
-    /// Human-readable title; also used to derive the artifact id.
-    pub title: String,
-    /// Short description of what the artifact does.
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+pub struct ModelParam {
+    /// Provider name (e.g. "xiaomi_mimo", "anthropic", "openai").
     #[serde(default)]
-    pub description: String,
-    /// "static" (default) or "agentic" (embeds a BioRouter agent).
+    pub provider: Option<String>,
+    /// Model name (e.g. "mimo-v2.5", "claude-opus-4-8").
     #[serde(default)]
-    pub kind: Option<String>,
-    /// Entry HTML for the artifact. If omitted, a BioRouter-styled starter is used.
-    #[serde(default)]
-    pub html: Option<String>,
-    /// Additional files to write alongside the entry HTML.
-    #[serde(default)]
-    pub files: Vec<FileSpec>,
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct SetArtifactSizeParams {
-    /// Artifact id.
+pub struct CreateAppParams {
+    /// Human-readable title; also used to derive the app id when `id` is omitted.
+    pub title: String,
+    /// Optional explicit app id (slugified). If given and an app already exists
+    /// at that id, it is REPLACED — so re-creating the same app is idempotent
+    /// and the app stays addressable. Omit to auto-derive a unique id from the
+    /// title.
+    #[serde(default)]
+    pub id: Option<String>,
+    /// Short description of what the app does.
+    #[serde(default)]
+    pub description: String,
+    /// "agentic" (default — wired to a BioRouter agent) or "static".
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// Entry HTML (index.html). If omitted, a BioRouter-styled starter is used.
+    #[serde(default)]
+    pub html: Option<String>,
+    /// Additional files (TypeScript under `src/`, assets, etc.). Provide your own
+    /// `src/main.ts` to drive a custom UI; otherwise a starter is written.
+    #[serde(default)]
+    pub files: Vec<FileSpec>,
+    /// System prompt defining the app agent's behavior/persona.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    /// Greeting shown when the chat panel mounts.
+    #[serde(default)]
+    pub greeting: Option<String>,
+    /// Provider+model the app's agent runs on (any BioRouter-supported provider).
+    /// Omit to inherit the user's configured provider/model (provider-agnostic).
+    #[serde(default)]
+    pub model: Option<ModelParam>,
+    /// Builtin/platform extension names the agent may use (e.g. "developer",
+    /// "autovisualiser", "computercontroller", "knowledge").
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    /// Skill ids the agent should have available.
+    #[serde(default)]
+    pub skills: Vec<String>,
+    /// Knowledge base id to scope the agent to.
+    #[serde(default)]
+    pub knowledge_base: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ConfigureAppParams {
+    /// App id.
     pub id: String,
-    /// Preferred preview width in CSS px. Omit/null to fill the panel.
+    /// New system prompt / persona.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
+    /// New greeting.
+    #[serde(default)]
+    pub greeting: Option<String>,
+    /// Provider+model override.
+    #[serde(default)]
+    pub model: Option<ModelParam>,
+    /// Replace the extension list.
+    #[serde(default)]
+    pub extensions: Option<Vec<String>>,
+    /// Replace the skills list.
+    #[serde(default)]
+    pub skills: Option<Vec<String>>,
+    /// Set (or clear, with empty string) the knowledge base id.
+    #[serde(default)]
+    pub knowledge_base: Option<String>,
+    /// Bound the agent's tool-calling loop per message. Raise this for
+    /// workflow-style apps that chain many tool calls; lower it to keep apps
+    /// snappy. Unset → a safe server default.
+    #[serde(default)]
+    pub max_turns: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetAppSizeParams {
+    /// App id.
+    pub id: String,
+    /// Preferred width in CSS px (omit to fill).
     #[serde(default)]
     pub width: Option<u32>,
-    /// Preferred preview height in CSS px. Omit/null for the auto-growing default.
+    /// Preferred height in CSS px (omit for auto).
     #[serde(default)]
     pub height: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct UpdateArtifactParams {
-    /// Artifact id.
+pub struct UpdateAppParams {
+    /// App id.
     pub id: String,
-    /// File to modify (defaults to the artifact's entry HTML).
+    /// File to modify (defaults to the entry HTML).
     #[serde(default)]
     pub path: Option<String>,
-    /// Full new contents for the file (write mode).
+    /// Full new contents (write mode).
     #[serde(default)]
     pub content: Option<String>,
     /// Exact substring to replace (str-replace mode; requires `new_str`).
@@ -97,15 +169,15 @@ pub struct UpdateArtifactParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct ListArtifactsParams {
+pub struct ListAppsParams {
     /// Optional filter: "static" or "agentic".
     #[serde(default)]
     pub kind: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct ReadArtifactParams {
-    /// Artifact id.
+pub struct ReadAppParams {
+    /// App id.
     pub id: String,
     /// File to read. If omitted, returns the manifest.
     #[serde(default)]
@@ -113,35 +185,18 @@ pub struct ReadArtifactParams {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct ArtifactIdParams {
-    /// Artifact id.
+pub struct AppIdParams {
+    /// App id.
     pub id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct AddAgentCapabilityParams {
-    /// Artifact id.
-    pub id: String,
-    /// System prompt defining the embedded agent's behavior.
-    pub system_prompt: String,
-    /// Optional greeting shown when the chat panel mounts.
-    #[serde(default)]
-    pub greeting: Option<String>,
-    /// Tool / MCP-extension names the embedded agent may use.
-    #[serde(default)]
-    pub tools: Vec<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ExportArtifactParams {
-    /// Artifact id.
+pub struct ExportAppParams {
+    /// App id.
     pub id: String,
     /// Destination directory (created if missing).
     pub target_dir: String,
-    /// "tauri" (default, bundles the BioRouter agent) or "web".
-    #[serde(default)]
-    pub runtime: Option<String>,
-    /// Override the ACP WebSocket endpoint the exported artifact connects to.
+    /// Override the agent WebSocket endpoint the exported app connects to.
     #[serde(default)]
     pub endpoint: Option<String>,
 }
@@ -164,7 +219,9 @@ impl Default for AgentDrafterServer {
     }
 }
 
-fn default_root() -> PathBuf {
+/// Shared default store root (`~/.config/biorouter/agent_drafter`). Public so the
+/// server's `/apps` routes resolve the same location.
+pub fn default_root() -> PathBuf {
     choose_app_strategy(crate::APP_STRATEGY.clone())
         .map(|s| s.in_config_dir("agent_drafter"))
         .unwrap_or_else(|_| PathBuf::from(".config/biorouter/agent_drafter"))
@@ -178,9 +235,25 @@ fn internal(e: impl std::fmt::Display) -> ErrorData {
     err(ErrorCode::INTERNAL_ERROR, e.to_string())
 }
 
-/// Recursively collect an artifact's files (relative path → contents),
-/// skipping `manifest.json`.
-fn collect_files(base: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
+impl From<ModelParam> for ModelSelection {
+    fn from(p: ModelParam) -> Self {
+        ModelSelection {
+            provider: p.provider.filter(|s| !s.trim().is_empty()),
+            model: p.model.filter(|s| !s.trim().is_empty()),
+        }
+    }
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Recursively collect an app's files (relative path → contents), skipping
+/// `manifest.json`.
+fn collect_files(base: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -200,6 +273,55 @@ fn collect_files(base: &Path, dir: &Path, out: &mut Vec<(String, String)>) {
     }
 }
 
+/// Gather an app's files and produce the standalone export scaffold (a file map
+/// of relative-path → contents). Shared by the `export_app` tool and the
+/// server's `GET /apps/{id}/export` route. `endpoint` overrides the agent
+/// WebSocket the exported app connects to (None → a local biorouterd).
+pub fn export_scaffold(
+    root: &std::path::Path,
+    id: &str,
+    endpoint: Option<&str>,
+) -> std::io::Result<Vec<(String, String)>> {
+    let store = ArtifactStore::new(root.to_path_buf());
+    let manifest = store.load_manifest(id)?;
+    let dir = store.artifact_dir(id);
+    let mut all_files = Vec::new();
+    collect_files(&dir, &dir, &mut all_files);
+    let entry_html = all_files
+        .iter()
+        .find(|(p, _)| p == &manifest.entry)
+        .map(|(_, c)| c.clone())
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "entry file missing"))?;
+    let src_files: Vec<(String, String)> = all_files
+        .iter()
+        .filter(|(p, _)| p.starts_with("src/"))
+        .cloned()
+        .collect();
+    let extra_files: Vec<(String, String)> = all_files
+        .iter()
+        .filter(|(p, _)| p != &manifest.entry && !p.starts_with("src/") && !p.starts_with("dist/"))
+        .cloned()
+        .collect();
+    let mut scaffold = render::scaffold_standalone(
+        &manifest,
+        &entry_html,
+        &src_files,
+        &extra_files,
+        endpoint,
+    );
+    // Ship a prebuilt bundle so the export is directly runnable with no build
+    // step (the launcher / a static server can serve it as-is). Build on demand.
+    if manifest.kind == ArtifactKind::Agentic {
+        if !store.file_exists(id, "dist/app.js") {
+            let _ = bundle::build_app(&dir);
+        }
+        if let Ok(js) = store.read_file(id, "dist/app.js") {
+            scaffold.push(("dist/app.js".to_string(), js));
+        }
+    }
+    Ok(scaffold)
+}
+
 #[tool_router(router = tool_router)]
 impl AgentDrafterServer {
     pub fn new() -> Self {
@@ -208,54 +330,110 @@ impl AgentDrafterServer {
 
     pub fn with_root(root: PathBuf) -> Self {
         let instructions = formatdoc! {r#"
-            Agent Drafter lets you build interactive *artifacts* for the user —
-            self-contained HTML/CSS/JS apps — that can optionally embed a live
-            BioRouter agent. Think "Claude artifacts", but the artifacts can carry
-            real AI-agent capability powered by the Agent Client Protocol (ACP).
+            Agent Drafter builds interactive **BioRouter apps** for the user:
+            TypeScript front-ends wired to a real BioRouter agent. Think "Claude
+            artifacts", but each app embeds a genuine BioRouter backend — when the
+            user sends a message, BioRouter runs the full agent loop (the app's own
+            model, extensions, skills, knowledge base) and streams the answer back
+            into the app. Apps open in the user's browser (GUI) or via a printed
+            URL (CLI); they are NOT shown in a chat iframe.
 
-            Two kinds of artifact:
-            - "static": a plain interactive page (dashboards, tools, visualizations,
-              forms). No agent.
-            - "agentic": a page with an embedded agent runtime + chat panel that
-              talks to a BioRouter agent. Use this when the artifact should reason,
-              call tools, or hold a conversation.
+            Two kinds:
+            - "agentic" (default): a UI plus a live BioRouter agent + chat. Use this
+              for assistants, dashboards that reason over results, search tools, etc.
+            - "static": a plain interactive page with no agent.
 
-            Tech stack & conventions (keep artifacts consistent):
-            - One entry file, "index.html", plus optional CSS/JS files.
-            - The BioRouter design system is injected automatically at preview/export
-              time and mirrors the app's own look (warm neutral palette, white
-              cards with a soft shadow, a restrained near-black accent, thin
-              borders, 6px/12px radii, system font). ALWAYS compose with the
-              provided classes — `br-container` (page wrapper), `br-card`,
-              `br-btn` (+ `br-btn--secondary`, `br-btn--ghost`), `br-input`,
-              `br-textarea`, `br-label`, `br-field`, `br-row`, `br-badge`,
-              `br-chat` — and the CSS variables (`var(--br-text)`,
-              `var(--br-text-muted)`, `var(--br-accent)`, `var(--br-border)`,
-              etc.). Do NOT paste your own colors, fonts, or a <style> theme and
-              do NOT pull in external CSS frameworks — rely on the system so the
-              artifact looks native to BioRouter, not generic.
-            - Sizing: previews fill the panel width and auto-grow in height. For
-              wide layouts (dashboards, side-by-side panels) call
-              `set_artifact_size` with a larger width like 1000 so the user gets
-              room to work; omit a dimension to fill/auto-grow.
-            - For agentic artifacts you do not need to write any networking code:
-              call `add_agent_capability` and the runtime (`window.BioRouterAgent`)
-              plus a chat panel are wired in for you. To place the chat yourself,
-              add an element with the `data-br-chat` attribute.
-            - Exported artifacts default to a Tauri desktop bundle that ships the
-              BioRouter CLI as a sidecar (fully self-contained), or a plain web build.
+            Project layout (kept consistent):
+            - `index.html` — the UI shell you author.
+            - `src/main.ts` — your app logic (TypeScript), `import`ing `./sdk`.
+            - `src/sdk.ts` — the BioRouter App SDK (provided): opens the agent
+              WebSocket, streams markdown, handles multimodal (image) input, and can
+              auto-mount a chat panel into any element with `data-br-chat`.
+            - `dist/app.js` — the esbuild bundle (produced by `build_app`).
+
+            AESTHETICS — default to BioRouter's look unless the user asks for a
+            different style. BioRouter's design language is calm, minimal, and
+            informative: a warm neutral palette (cream/taupe), white cards on a
+            light ground, generous whitespace, thin hairline borders, soft flat
+            shadows, a restrained near-black accent with a single coral spark,
+            modest radii (6px controls / 12px cards), a plain system typeface, and
+            quiet hover transitions. The design system is injected automatically.
+            ALWAYS compose with the provided classes (`br-container`, `br-card`,
+            `br-btn` [+ `--secondary`/`--ghost`], `br-input`, `br-textarea`,
+            `br-label`, `br-field`, `br-row`, `br-badge`, `br-chat`) and CSS
+            variables (`var(--br-text)`, `var(--br-accent)`, `var(--br-coral)`,
+            `var(--br-border)`, `var(--br-muted)`, …).
+            Do NOT: paste your own color values or fonts, pull in external CSS
+            frameworks/CDNs, use gradients/neon/glassmorphism, emoji-stuffed
+            headings, or other flashy "generic AI" looks. Prefer filled shades
+            over outlines, clear hierarchy, and restraint. Aim for taste:
+            well-aligned, breathable layouts that look native to BioRouter and feel
+            simple yet polished. If (and only if) the user specifies a different
+            visual style — now or later in the conversation — follow their
+            direction instead.
+
+            Driving the agent from `src/main.ts`:
+              import {{ createApp }} from "./sdk";
+              const br = createApp({{ autoChat: false }});   // false → build your OWN UI
+              await br.run("...prompt...", '#out');            // stream markdown+charts into the result element
+              const text = await br.ask("...");               // collect full reply as a string
+              await br.prompt("...", {{ images: [{{ mimeType, data }}] }}); // multimodal
+              br.on("message", (e) => {{ if (e.type === "message") {{}} }}); // low-level stream
+
+            VARY THE INTERFACE — do NOT make every app a chat box. Prefer a custom
+            UI driven by `createApp({{ autoChat: false }})` and wire controls to
+            `br.run(prompt, target)`. The design system provides themed,
+            BioRouter-native controls — use a mix that fits the task:
+            - buttons / button grids: `br-btn`, `br-grid`
+            - dropdowns: `<select class="br-select">`
+            - sliders: `<input type="range" class="br-slider">` (+ `br-slider-val`)
+            - toggles: `<label class="br-switch"><input type="checkbox"><span class="br-switch__track"></span></label>`
+            - checkboxes/radios: `br-check`; selectable chips/tags: `br-chips`/`br-chip`
+            - tabs: `br-tabs`/`br-tab`; cards: `br-card`; layout: `br-grid`/`br-row`
+            - drag & drop: `br-dropzone` (drop files/text) and `br-draglist`/`br-dragitem` (reorder)
+            - region/map pick: `br-mapgrid`/`br-region` (clickable cells; no external map lib)
+            - results: a `<div class="br-output" data-placeholder="…">` target for `br.run`
+            Build the prompt from the control state (slider values, selected
+            chips, dropdown choice, dragged order, clicked region, dropped text)
+            and call `br.run(...)` on `change`/`click`/`drop`. Each new app should
+            look and interact differently from the others.
 
             Typical workflow:
-            1. `create_artifact` with a title, description, kind, and (optionally) your
-               own HTML. A preview is returned and shown to the user.
-            2. Iterate with `update_artifact` (full `content` write, or `old_str`/
-               `new_str` replace). Call `preview_artifact` to re-render.
-            3. For agentic artifacts, `add_agent_capability` with a system prompt
-               (and optionally a greeting and the tools the agent may use).
-            4. `export_artifact` to produce a standalone, runnable project.
+            1. `create_app` (title, description, optional html/files, system_prompt,
+               greeting, model, extensions, skills, knowledge_base). A preview card
+               is shown to the user.
+            2. Author the UI: `update_app` the entry HTML and `src/main.ts`.
+            3. `configure_app` to change the model/extensions/skills/knowledge/persona.
+            4. `build_app` to bundle the TypeScript.
+            5. `launch_app` to open it in the browser (returns the URL).
+            6. `export_app` for a standalone runnable project.
 
-            Use `list_artifacts` and `read_artifact` to inspect existing work.
-            Always confirm the artifact looks right via a preview before exporting.
+            Use `list_apps`, `read_app`, and `preview_app` to inspect existing apps —
+            you can query and modify any previously-built app.
+
+            WORKFLOW-STYLE APPS (multi-step agentic loops, not just chat): every
+            user message runs BioRouter's full agent loop — the agent can call
+            many tools in sequence and reason over the results before replying, so
+            an app can encode a real pipeline. Design one by: (a) giving it the
+            extensions/skills/knowledge it needs, (b) writing a system_prompt that
+            spells out the ordered procedure ("1. search … 2. extract … 3.
+            summarize as a table … 4. emit a ```chart block"), and (c) raising
+            `max_turns` (via `configure_app`) so it can chain enough tool calls.
+            `max_turns` also bounds the loop (a guardrail against runaway/cost).
+            The app surfaces each step to the user as a tool event.
+
+            BUILD HARNESS / guardrails: `build_app` (and `lint_app`) run a
+            validation harness on whatever you generate and report findings. It
+            enforces three things — fix any ERRORs before `launch_app`/`export_app`:
+            1. Backend wiring: `src/main.ts` imports from "./sdk" and calls the
+               agent (`br.run`/`br.prompt`/`br.ask`) or enables autoChat.
+            2. Self-contained: no external `<script>`/`<link>`/CDN in index.html
+               and no non-local imports in `src/main.ts` (so exports run offline).
+            3. On-theme: uses `br-*` classes/CSS variables, not raw hex colors or
+               a custom `<style>` theme; includes a result surface (`.br-output`
+               or `[data-br-chat]`).
+            Always `build_app` after editing `src/`, address the harness findings,
+            and verify via `launch_app` before `export_app`.
         "#};
         Self {
             tool_router: Self::tool_router(),
@@ -264,23 +442,23 @@ impl AgentDrafterServer {
         }
     }
 
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
     fn store(&self) -> ArtifactStore {
         ArtifactStore::new(self.root.clone())
     }
 
-    /// Build the two-part preview result: a `ui://` HTML resource for the user and
-    /// a short assistant-audience text confirmation.
-    fn preview_result(&self, manifest: &Manifest, note: &str) -> Result<CallToolResult, ErrorData> {
+    /// Build a card-preview result (ui:// blob for the user + assistant note).
+    fn card_result(&self, manifest: &Manifest, note: &str) -> Result<CallToolResult, ErrorData> {
         let store = self.store();
         let entry_html = store
             .read_file(&manifest.id, &manifest.entry)
             .map_err(|e| err(ErrorCode::INTERNAL_ERROR, format!("read entry: {e}")))?;
-        let html = render::assemble_preview(manifest, &entry_html);
+        let html = render::assemble_card(manifest, &entry_html);
         let blob = STANDARD.encode(html.as_bytes());
 
-        // Tell the host (MCP-UI) the preferred frame size. Width fills the panel
-        // unless the agent pinned one; height defaults comfortably and then
-        // auto-grows (the runtime posts `ui-size-change`).
         let width_css = manifest
             .width
             .map(|w| format!("{w}px"))
@@ -288,7 +466,7 @@ impl AgentDrafterServer {
         let height_css = manifest
             .height
             .map(|h| format!("{h}px"))
-            .unwrap_or_else(|| "560px".to_string());
+            .unwrap_or_else(|| "420px".to_string());
         let mut meta_obj = serde_json::Map::new();
         meta_obj.insert(
             "mcpui.dev/ui-preferred-frame-size".to_string(),
@@ -308,12 +486,12 @@ impl AgentDrafterServer {
     }
 
     #[tool(
-        name = "create_artifact",
-        description = "Create a new interactive artifact (static HTML/JS, or agentic with an embedded BioRouter agent). Returns a live preview."
+        name = "create_app",
+        description = "Create a new BioRouter app: a TypeScript UI wired to a live BioRouter agent (kind 'agentic', default) or a static page. Returns a preview card."
     )]
-    pub async fn create_artifact(
+    pub async fn create_app(
         &self,
-        params: Parameters<CreateArtifactParams>,
+        params: Parameters<CreateAppParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
         if p.title.trim().is_empty() {
@@ -326,14 +504,25 @@ impl AgentDrafterServer {
                     "kind must be 'static' or 'agentic'",
                 )
             })?,
-            None => ArtifactKind::Static,
+            None => ArtifactKind::Agentic,
         };
         let entry = "index.html";
         let entry_html = p
             .html
             .unwrap_or_else(|| render::starter(&p.title, &p.description));
 
-        let mut files = vec![(entry.to_string(), entry_html)];
+        // Compose file set: entry + default TS sources + caller overrides.
+        let mut files: Vec<(String, String)> = vec![(entry.to_string(), entry_html)];
+        let provided: std::collections::HashSet<&str> =
+            p.files.iter().map(|f| f.path.as_str()).collect();
+        if kind == ArtifactKind::Agentic {
+            for (path, content) in bundle::default_sources() {
+                let ps = path.to_string_lossy().to_string();
+                if ps != entry && !provided.contains(ps.as_str()) {
+                    files.push((ps, content));
+                }
+            }
+        }
         for f in p.files {
             if f.path != entry {
                 files.push((f.path, f.content));
@@ -341,58 +530,119 @@ impl AgentDrafterServer {
         }
 
         let store = self.store();
-        let manifest = store
-            .create(&p.title, &p.description, kind, entry, &files)
-            .map_err(internal)?;
+        let mut manifest = match p.id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(explicit) => {
+                store.create_with_id(explicit, &p.title, &p.description, kind, entry, &files)
+            }
+            None => store.create(&p.title, &p.description, kind, entry, &files),
+        }
+        .map_err(internal)?;
 
-        self.preview_result(
+        if kind == ArtifactKind::Agentic {
+            // Provider-agnostic by default: leave the model unset so the app uses
+            // whatever provider/model the user has configured in BioRouter. Pin a
+            // specific provider+model only when the caller explicitly chose one —
+            // any BioRouter-supported provider works.
+            let model = p.model.map(ModelSelection::from).filter(|m| m.is_set());
+            manifest.agent = Some(AgentConfig {
+                system_prompt: p.system_prompt.unwrap_or_default(),
+                greeting: p.greeting,
+                tools: Vec::new(),
+                model,
+                extensions: p.extensions,
+                skills: p.skills,
+                knowledge_base: p.knowledge_base.filter(|s| !s.trim().is_empty()),
+                max_turns: None,
+            });
+            store.save_manifest(&manifest).map_err(internal)?;
+        }
+
+        self.card_result(
             &manifest,
             &format!(
-                "Created {kind:?} artifact '{}' (id: {}). Preview shown to the user.",
+                "Created {kind:?} app '{}' (id: {}). Author src/main.ts and index.html, then build_app + launch_app.",
                 manifest.title, manifest.id
             ),
         )
     }
 
     #[tool(
-        name = "set_artifact_size",
-        description = "Set an artifact's preferred preview size in CSS px (width/height). Use a larger size for dashboards or wide layouts; omit a value to fill the panel / auto-grow."
+        name = "configure_app",
+        description = "Set an app's agent config: system prompt/persona, greeting, model (provider+model), extensions, skills, knowledge base, and max_turns (bound/raise the tool-calling loop for workflow-style apps). Makes the app agentic if it wasn't."
     )]
-    pub async fn set_artifact_size(
+    pub async fn configure_app(
         &self,
-        params: Parameters<SetArtifactSizeParams>,
+        params: Parameters<ConfigureAppParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
         let store = self.store();
         let mut manifest = store
             .load_manifest(&p.id)
-            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no artifact '{}'", p.id)))?;
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
+        manifest.kind = ArtifactKind::Agentic;
+        let mut agent = manifest.agent.take().unwrap_or_default();
+        if let Some(sp) = p.system_prompt {
+            agent.system_prompt = sp;
+        }
+        if let Some(g) = p.greeting {
+            agent.greeting = Some(g).filter(|s| !s.is_empty());
+        }
+        if let Some(m) = p.model {
+            // Empty provider+model clears the pin → inherit the user's configured
+            // provider/model. Any BioRouter-supported provider may be pinned.
+            agent.model = Some(ModelSelection::from(m)).filter(|s| s.is_set());
+        }
+        if let Some(ext) = p.extensions {
+            agent.extensions = ext;
+        }
+        if let Some(sk) = p.skills {
+            agent.skills = sk;
+        }
+        if let Some(kb) = p.knowledge_base {
+            agent.knowledge_base = Some(kb).filter(|s| !s.trim().is_empty());
+        }
+        if let Some(mt) = p.max_turns {
+            agent.max_turns = Some(mt).filter(|&n| n > 0);
+        }
+        manifest.agent = Some(agent);
+        store.save_manifest(&manifest).map_err(internal)?;
+        store.touch(&p.id).map_err(internal)?;
+        self.card_result(&manifest, &format!("Configured app '{}'.", p.id))
+    }
+
+    #[tool(
+        name = "set_app_size",
+        description = "Set an app's preferred preview-card size in CSS px (width/height). Omit a value to fill/auto."
+    )]
+    pub async fn set_app_size(
+        &self,
+        params: Parameters<SetAppSizeParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let store = self.store();
+        let mut manifest = store
+            .load_manifest(&p.id)
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
         manifest.width = p.width;
         manifest.height = p.height;
         store.save_manifest(&manifest).map_err(internal)?;
         store.touch(&p.id).map_err(internal)?;
-        self.preview_result(
-            &manifest,
-            &format!(
-                "Set preview size for '{}' (width: {:?}, height: {:?}).",
-                p.id, p.width, p.height
-            ),
-        )
+        self.card_result(&manifest, &format!("Set preview size for '{}'.", p.id))
     }
 
     #[tool(
-        name = "update_artifact",
-        description = "Edit a file in an artifact: provide full `content` to overwrite, or `old_str`+`new_str` to replace a snippet. Defaults to the entry HTML."
+        name = "update_app",
+        description = "Edit a file in an app: provide full `content` to overwrite, or `old_str`+`new_str` to replace a snippet. Defaults to index.html. Editing src/ marks the bundle stale (re-run build_app)."
     )]
-    pub async fn update_artifact(
+    pub async fn update_app(
         &self,
-        params: Parameters<UpdateArtifactParams>,
+        params: Parameters<UpdateAppParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
         let store = self.store();
-        let manifest = store
+        let mut manifest = store
             .load_manifest(&p.id)
-            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no artifact '{}'", p.id)))?;
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
         let path = p.path.clone().unwrap_or_else(|| manifest.entry.clone());
 
         if let Some(content) = p.content {
@@ -415,25 +665,150 @@ impl AgentDrafterServer {
                 "provide either `content` or both `old_str` and `new_str`",
             ));
         }
+        // Editing sources invalidates the build.
+        if path.starts_with("src/") {
+            manifest.built_at = None;
+            store.save_manifest(&manifest).map_err(internal)?;
+        }
         store.touch(&p.id).map_err(internal)?;
 
         if path == manifest.entry {
-            self.preview_result(&manifest, &format!("Updated {path} in '{}'.", p.id))
+            self.card_result(&manifest, &format!("Updated {path} in '{}'.", p.id))
         } else {
+            let hint = if path.starts_with("src/") {
+                " (run build_app to rebundle)"
+            } else {
+                ""
+            };
             Ok(CallToolResult::success(vec![Content::text(format!(
-                "Updated {path} in '{}'.",
+                "Updated {path} in '{}'.{hint}",
                 p.id
             ))]))
         }
     }
 
     #[tool(
-        name = "list_artifacts",
-        description = "List all artifacts (optionally filtered by kind)."
+        name = "build_app",
+        description = "Bundle the app's TypeScript (src/main.ts → dist/app.js) with esbuild. Run after editing src/. Returns the build log."
     )]
-    pub async fn list_artifacts(
+    pub async fn build_app(
         &self,
-        params: Parameters<ListArtifactsParams>,
+        params: Parameters<AppIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let store = self.store();
+        let mut manifest = store
+            .load_manifest(&p.id)
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
+        let dir = store.artifact_dir(&p.id);
+        let report = tokio::task::spawn_blocking(move || bundle::build_app(&dir))
+            .await
+            .map_err(internal)?
+            .map_err(internal)?;
+        if report.ok {
+            manifest.built_at = Some(now_secs());
+            store.save_manifest(&manifest).map_err(internal)?;
+            // Run the guardrail harness and surface findings so the agent can
+            // self-correct (SDK-wired, self-contained, on-theme).
+            let lint = bundle::lint_app(&store.artifact_dir(&p.id));
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "Built '{}' with {} → dist/app.js.\n{}\n\n{}",
+                p.id,
+                report.used,
+                bundle::format_lint(&lint),
+                report.log
+            ))]))
+        } else {
+            Err(err(
+                ErrorCode::INTERNAL_ERROR,
+                format!("build failed for '{}':\n{}", p.id, report.log),
+            ))
+        }
+    }
+
+    #[tool(
+        name = "lint_app",
+        description = "Run the build harness guardrails on an app and report findings: does it reach the backend via the App SDK, is it self-contained (no CDN/external assets), and is it on-theme (BioRouter classes/tokens)? Fix ERRORs before launch/export."
+    )]
+    pub async fn lint_app(
+        &self,
+        params: Parameters<AppIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let store = self.store();
+        if !store.exists(&p.id) {
+            return Err(err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)));
+        }
+        let findings = bundle::lint_app(&store.artifact_dir(&p.id));
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Harness check for '{}':\n{}",
+            p.id,
+            bundle::format_lint(&findings)
+        ))]))
+    }
+
+    #[tool(
+        name = "launch_app",
+        description = "Build (if needed) and launch a BioRouter app. Returns the URL to open in the browser (GUI auto-opens; CLI prints it)."
+    )]
+    pub async fn launch_app(
+        &self,
+        params: Parameters<AppIdParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let store = self.store();
+        let mut manifest = store
+            .load_manifest(&p.id)
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
+
+        // Ensure a fresh bundle exists.
+        if manifest.kind == ArtifactKind::Agentic
+            && (manifest.built_at.is_none() || !store.file_exists(&p.id, "dist/app.js"))
+        {
+            let dir = store.artifact_dir(&p.id);
+            let report = tokio::task::spawn_blocking(move || bundle::build_app(&dir))
+                .await
+                .map_err(internal)?
+                .map_err(internal)?;
+            if !report.ok {
+                return Err(err(
+                    ErrorCode::INTERNAL_ERROR,
+                    format!("build failed before launch:\n{}", report.log),
+                ));
+            }
+            manifest.built_at = Some(now_secs());
+            store.save_manifest(&manifest).map_err(internal)?;
+        }
+
+        let path = format!("/apps/{}/", manifest.id);
+        let base = std::env::var("BIOROUTER_APP_BASE_URL").ok();
+        let url = base
+            .as_ref()
+            .map(|b| format!("{}{}", b.trim_end_matches('/'), path))
+            .unwrap_or_else(|| path.clone());
+
+        // Surface a launch marker the GUI can act on, plus a human URL line.
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "biorouter/launch-app".to_string(),
+            serde_json::json!(manifest.id),
+        );
+        meta.insert("biorouter/app-path".to_string(), serde_json::json!(path));
+        let mut result = CallToolResult::success(vec![Content::text(format!(
+            "App '{}' is ready. Open it in your browser: {}\n(In the desktop GUI use the Applications panel's Launch button; in the CLI open the URL above with a running biorouterd.)",
+            manifest.id, url
+        ))]);
+        result.meta = Some(rmcp::model::Meta(meta));
+        Ok(result)
+    }
+
+    #[tool(
+        name = "list_apps",
+        description = "List all BioRouter apps (optionally filtered by kind)."
+    )]
+    pub async fn list_apps(
+        &self,
+        params: Parameters<ListAppsParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let filter = match params.0.kind.as_deref() {
             Some(k) => Some(ArtifactKind::parse(k).ok_or_else(|| {
@@ -452,12 +827,20 @@ impl AgentDrafterServer {
             .collect();
         if list.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(
-                "No artifacts yet.".to_string(),
+                "No apps yet.".to_string(),
             )]));
         }
         let lines: Vec<String> = list
             .iter()
-            .map(|m| format!("- {} [{:?}] — {}", m.id, m.kind, m.title))
+            .map(|m| {
+                let model = m
+                    .agent
+                    .as_ref()
+                    .and_then(|a| a.model.as_ref())
+                    .and_then(|s| s.model.clone())
+                    .unwrap_or_else(|| "default".into());
+                format!("- {} [{:?}, model: {}] — {}", m.id, m.kind, model, m.title)
+            })
             .collect();
         Ok(CallToolResult::success(vec![Content::text(
             lines.join("\n"),
@@ -465,20 +848,20 @@ impl AgentDrafterServer {
     }
 
     #[tool(
-        name = "read_artifact",
-        description = "Read an artifact's manifest, or a specific file within it."
+        name = "read_app",
+        description = "Read an app's manifest, or a specific file within it."
     )]
-    pub async fn read_artifact(
+    pub async fn read_app(
         &self,
-        params: Parameters<ReadArtifactParams>,
+        params: Parameters<ReadAppParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
         let store = self.store();
         match p.path {
             None => {
-                let m = store.load_manifest(&p.id).map_err(|_| {
-                    err(ErrorCode::INVALID_PARAMS, format!("no artifact '{}'", p.id))
-                })?;
+                let m = store
+                    .load_manifest(&p.id)
+                    .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
                 let json = serde_json::to_string_pretty(&m).map_err(internal)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
@@ -492,94 +875,32 @@ impl AgentDrafterServer {
     }
 
     #[tool(
-        name = "preview_artifact",
-        description = "Render an artifact and return a live preview for the user."
+        name = "preview_app",
+        description = "Render an app's preview card for the user."
     )]
-    pub async fn preview_artifact(
+    pub async fn preview_app(
         &self,
-        params: Parameters<ArtifactIdParams>,
+        params: Parameters<AppIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
         let manifest = self
             .store()
             .load_manifest(&p.id)
-            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no artifact '{}'", p.id)))?;
-        self.preview_result(&manifest, &format!("Preview of '{}'.", p.id))
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
+        self.card_result(&manifest, &format!("Preview of '{}'.", p.id))
     }
 
     #[tool(
-        name = "add_agent_capability",
-        description = "Turn an artifact into an agentic artifact: embed a BioRouter agent (system prompt, optional greeting, allowed tools) and a chat panel."
+        name = "export_app",
+        description = "Export an app as a standalone, runnable TypeScript project (esbuild build + a tiny static server) that talks to a BioRouter daemon."
     )]
-    pub async fn add_agent_capability(
+    pub async fn export_app(
         &self,
-        params: Parameters<AddAgentCapabilityParams>,
+        params: Parameters<ExportAppParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
-        if p.system_prompt.trim().is_empty() {
-            return Err(err(
-                ErrorCode::INVALID_PARAMS,
-                "system_prompt must not be empty",
-            ));
-        }
-        let store = self.store();
-        let mut manifest = store
-            .load_manifest(&p.id)
-            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no artifact '{}'", p.id)))?;
-        manifest.kind = ArtifactKind::Agentic;
-        manifest.agent = Some(AgentConfig {
-            system_prompt: p.system_prompt,
-            greeting: p.greeting,
-            tools: p.tools,
-        });
-        store.save_manifest(&manifest).map_err(internal)?;
-        store.touch(&p.id).map_err(internal)?;
-        self.preview_result(
-            &manifest,
-            &format!("'{}' is now an agentic artifact. Preview shown.", p.id),
-        )
-    }
-
-    #[tool(
-        name = "export_artifact",
-        description = "Scaffold a standalone, runnable project from an artifact (Tauri desktop bundle with the BioRouter agent sidecar, or a static web build)."
-    )]
-    pub async fn export_artifact(
-        &self,
-        params: Parameters<ExportArtifactParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let p = params.0;
-        let runtime = p.runtime.as_deref().unwrap_or("tauri").to_lowercase();
-        if runtime != "tauri" && runtime != "web" {
-            return Err(err(
-                ErrorCode::INVALID_PARAMS,
-                "runtime must be 'tauri' or 'web'",
-            ));
-        }
-        let store = self.store();
-        let manifest = store
-            .load_manifest(&p.id)
-            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no artifact '{}'", p.id)))?;
-
-        // Gather the artifact's files.
-        let artifact_dir = store.root().join(&manifest.id);
-        let mut all_files = Vec::new();
-        collect_files(&artifact_dir, &artifact_dir, &mut all_files);
-        let entry_html = all_files
-            .iter()
-            .find(|(path, _)| path == &manifest.entry)
-            .map(|(_, c)| c.clone())
-            .ok_or_else(|| err(ErrorCode::INTERNAL_ERROR, "entry file missing"))?;
-        let extras: Vec<(String, String)> = all_files
-            .into_iter()
-            .filter(|(path, _)| path != &manifest.entry)
-            .collect();
-
-        let scaffold = if runtime == "tauri" {
-            render::scaffold_tauri(&manifest, &entry_html, &extras, p.endpoint.as_deref())
-        } else {
-            render::scaffold_web(&manifest, &entry_html, &extras, p.endpoint.as_deref())
-        };
+        let scaffold = export_scaffold(self.root(), &p.id, p.endpoint.as_deref())
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
 
         let target = PathBuf::from(&p.target_dir);
         for (rel, content) in &scaffold {
@@ -591,33 +912,26 @@ impl AgentDrafterServer {
         }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Exported '{}' as a {} project to {} ({} files). See README.md for run instructions.",
-            manifest.id,
-            runtime,
+            "Exported '{}' as a standalone TypeScript project to {} ({} files). README.md: npm install && npm run build && npm start (with a biorouterd running).",
+            p.id,
             target.display(),
             scaffold.len()
         ))]))
     }
 
-    #[tool(
-        name = "delete_artifact",
-        description = "Delete an artifact and all of its files."
-    )]
-    pub async fn delete_artifact(
+    #[tool(name = "delete_app", description = "Delete an app and all of its files.")]
+    pub async fn delete_app(
         &self,
-        params: Parameters<ArtifactIdParams>,
+        params: Parameters<AppIdParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
         let store = self.store();
         if !store.exists(&p.id) {
-            return Err(err(
-                ErrorCode::INVALID_PARAMS,
-                format!("no artifact '{}'", p.id),
-            ));
+            return Err(err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)));
         }
         store.delete(&p.id).map_err(internal)?;
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Deleted artifact '{}'.",
+            "Deleted app '{}'.",
             p.id
         ))]))
     }
@@ -672,237 +986,164 @@ mod tests {
             .any(|c| matches!(&c.raw, RawContent::Resource(_)))
     }
 
-    #[tokio::test]
-    async fn create_returns_preview_and_persists() {
-        let (_d, s) = server();
-        let res = s
-            .create_artifact(Parameters(CreateArtifactParams {
-                title: "Dashboard".into(),
-                description: "a dash".into(),
-                kind: None,
-                html: None,
-                files: vec![],
-            }))
-            .await
-            .unwrap();
-        assert!(has_ui_resource(&res));
-        assert!(text_of(&res).contains("dashboard"));
-        // Persisted entry uses the BioRouter starter (design-system classes).
-        let html = s.store().read_file("dashboard", "index.html").unwrap();
-        assert!(html.contains("br-container"));
+    fn create(title: &str, kind: Option<&str>) -> CreateAppParams {
+        CreateAppParams {
+            title: title.into(),
+            id: None,
+            description: String::new(),
+            kind: kind.map(|k| k.to_string()),
+            html: None,
+            files: vec![],
+            system_prompt: None,
+            greeting: None,
+            model: None,
+            extensions: vec![],
+            skills: vec![],
+            knowledge_base: None,
+        }
     }
 
     #[tokio::test]
-    async fn set_artifact_size_persists_and_previews() {
+    async fn create_app_writes_ts_project_and_defaults() {
         let (_d, s) = server();
-        s.create_artifact(Parameters(CreateArtifactParams {
-            title: "Wide".into(),
-            description: String::new(),
-            kind: Some("agentic".into()),
-            html: None,
-            files: vec![],
+        let mut p = create("Dashboard", None);
+        p.system_prompt = Some("You analyze data.".into());
+        p.extensions = vec!["autovisualiser".into()];
+        let res = s.create_app(Parameters(p)).await.unwrap();
+        assert!(has_ui_resource(&res));
+        assert!(s.store().read_file("dashboard", "src/main.ts").is_ok());
+        assert!(s.store().read_file("dashboard", "src/sdk.ts").is_ok());
+        let html = s.store().read_file("dashboard", "index.html").unwrap();
+        assert!(html.contains("br-container"));
+        let m = s.store().load_manifest("dashboard").unwrap();
+        assert_eq!(m.kind, ArtifactKind::Agentic);
+        let agent = m.agent.unwrap();
+        // Provider-agnostic: no model pinned unless explicitly chosen → inherits
+        // the user's configured provider/model.
+        assert!(agent.model.is_none());
+        assert_eq!(agent.extensions, vec!["autovisualiser".to_string()]);
+        assert_eq!(agent.system_prompt, "You analyze data.");
+    }
+
+    #[tokio::test]
+    async fn configure_app_sets_model_and_extensions() {
+        let (_d, s) = server();
+        s.create_app(Parameters(create("Cfg", Some("static"))))
+            .await
+            .unwrap();
+        s.configure_app(Parameters(ConfigureAppParams {
+            id: "cfg".into(),
+            system_prompt: Some("Be terse.".into()),
+            greeting: None,
+            model: Some(ModelParam {
+                provider: Some("anthropic".into()),
+                model: Some("claude-opus-4-8".into()),
+            }),
+            extensions: Some(vec!["developer".into(), "knowledge".into()]),
+            skills: Some(vec!["scientific-research".into()]),
+            knowledge_base: Some("my-kb".into()),
+            max_turns: Some(40),
         }))
         .await
         .unwrap();
-        let res = s
-            .set_artifact_size(Parameters(SetArtifactSizeParams {
-                id: "wide".into(),
-                width: Some(1000),
-                height: None,
-            }))
-            .await
-            .unwrap();
-        assert!(has_ui_resource(&res));
-        let m = s.store().load_manifest("wide").unwrap();
-        assert_eq!(m.width, Some(1000));
-        assert_eq!(m.height, None);
-        assert!(s
-            .set_artifact_size(Parameters(SetArtifactSizeParams {
-                id: "nope".into(),
-                width: Some(1),
-                height: None,
-            }))
-            .await
-            .is_err());
+        let m = s.store().load_manifest("cfg").unwrap();
+        assert_eq!(m.kind, ArtifactKind::Agentic);
+        let a = m.agent.unwrap();
+        assert_eq!(a.model.unwrap().provider.unwrap(), "anthropic");
+        assert_eq!(a.extensions, vec!["developer", "knowledge"]);
+        assert_eq!(a.skills, vec!["scientific-research"]);
+        assert_eq!(a.knowledge_base.unwrap(), "my-kb");
+        assert_eq!(a.max_turns, Some(40));
     }
 
     #[tokio::test]
     async fn create_rejects_empty_title_and_bad_kind() {
         let (_d, s) = server();
+        assert!(s.create_app(Parameters(create("  ", None))).await.is_err());
         assert!(s
-            .create_artifact(Parameters(CreateArtifactParams {
-                title: "  ".into(),
-                description: String::new(),
-                kind: None,
-                html: None,
-                files: vec![],
-            }))
-            .await
-            .is_err());
-        assert!(s
-            .create_artifact(Parameters(CreateArtifactParams {
-                title: "X".into(),
-                description: String::new(),
-                kind: Some("bogus".into()),
-                html: None,
-                files: vec![],
-            }))
+            .create_app(Parameters(create("X", Some("bogus"))))
             .await
             .is_err());
     }
 
     #[tokio::test]
-    async fn update_write_and_str_replace() {
+    async fn update_marks_bundle_stale_for_src() {
         let (_d, s) = server();
-        s.create_artifact(Parameters(CreateArtifactParams {
-            title: "Edit Me".into(),
-            description: String::new(),
-            kind: None,
-            html: Some("<html><body>ORIGINAL</body></html>".into()),
-            files: vec![],
-        }))
-        .await
-        .unwrap();
+        let mut p = create("Edit Me", None);
+        p.html = Some("<html><body>ORIGINAL</body></html>".into());
+        s.create_app(Parameters(p)).await.unwrap();
 
-        // str-replace
-        s.update_artifact(Parameters(UpdateArtifactParams {
+        s.update_app(Parameters(UpdateAppParams {
             id: "edit-me".into(),
-            path: None,
-            content: None,
-            old_str: Some("ORIGINAL".into()),
-            new_str: Some("CHANGED".into()),
-        }))
-        .await
-        .unwrap();
-        assert!(s
-            .store()
-            .read_file("edit-me", "index.html")
-            .unwrap()
-            .contains("CHANGED"));
-
-        // missing old_str errors
-        assert!(s
-            .update_artifact(Parameters(UpdateArtifactParams {
-                id: "edit-me".into(),
-                path: None,
-                content: None,
-                old_str: Some("NOPE".into()),
-                new_str: Some("x".into()),
-            }))
-            .await
-            .is_err());
-
-        // full content write to a new file
-        s.update_artifact(Parameters(UpdateArtifactParams {
-            id: "edit-me".into(),
-            path: Some("css/app.css".into()),
-            content: Some("body{color:red}".into()),
+            path: Some("src/main.ts".into()),
+            content: Some("import './sdk'; console.log(1);".into()),
             old_str: None,
             new_str: None,
         }))
         .await
         .unwrap();
-        assert_eq!(
-            s.store().read_file("edit-me", "css/app.css").unwrap(),
-            "body{color:red}"
-        );
+        assert_eq!(s.store().load_manifest("edit-me").unwrap().built_at, None);
 
-        // neither mode → error
-        assert!(s
-            .update_artifact(Parameters(UpdateArtifactParams {
+        let res = s
+            .update_app(Parameters(UpdateAppParams {
                 id: "edit-me".into(),
                 path: None,
                 content: None,
-                old_str: None,
-                new_str: None,
-            }))
-            .await
-            .is_err());
-    }
-
-    #[tokio::test]
-    async fn add_agent_capability_makes_artifact_agentic() {
-        let (_d, s) = server();
-        s.create_artifact(Parameters(CreateArtifactParams {
-            title: "Helper".into(),
-            description: String::new(),
-            kind: None,
-            html: Some("<html><head></head><body></body></html>".into()),
-            files: vec![],
-        }))
-        .await
-        .unwrap();
-
-        let res = s
-            .add_agent_capability(Parameters(AddAgentCapabilityParams {
-                id: "helper".into(),
-                system_prompt: "You are a research assistant.".into(),
-                greeting: Some("How can I help?".into()),
-                tools: vec!["developer".into()],
+                old_str: Some("ORIGINAL".into()),
+                new_str: Some("CHANGED".into()),
             }))
             .await
             .unwrap();
         assert!(has_ui_resource(&res));
-
-        let m = s.store().load_manifest("helper").unwrap();
-        assert_eq!(m.kind, ArtifactKind::Agentic);
-        let agent = m.agent.unwrap();
-        assert_eq!(agent.system_prompt, "You are a research assistant.");
-        assert_eq!(agent.tools, vec!["developer".to_string()]);
-
-        // empty system prompt rejected
         assert!(s
-            .add_agent_capability(Parameters(AddAgentCapabilityParams {
-                id: "helper".into(),
-                system_prompt: "   ".into(),
-                greeting: None,
-                tools: vec![],
-            }))
-            .await
-            .is_err());
+            .store()
+            .read_file("edit-me", "index.html")
+            .unwrap()
+            .contains("CHANGED"));
     }
 
     #[tokio::test]
-    async fn list_and_read_and_delete() {
+    async fn build_then_launch_returns_url() {
         let (_d, s) = server();
-        s.create_artifact(Parameters(CreateArtifactParams {
-            title: "One".into(),
-            description: "first".into(),
-            kind: None,
-            html: None,
-            files: vec![],
-        }))
-        .await
-        .unwrap();
-        s.create_artifact(Parameters(CreateArtifactParams {
-            title: "Two".into(),
-            description: String::new(),
-            kind: Some("agentic".into()),
-            html: None,
-            files: vec![],
-        }))
-        .await
-        .unwrap();
-
-        let all = s
-            .list_artifacts(Parameters(ListArtifactsParams { kind: None }))
+        s.create_app(Parameters(create("Launchy", None)))
             .await
             .unwrap();
-        assert!(text_of(&all).contains("one"));
-        assert!(text_of(&all).contains("two"));
-
-        let agentic = s
-            .list_artifacts(Parameters(ListArtifactsParams {
-                kind: Some("agentic".into()),
+        let res = s
+            .build_app(Parameters(AppIdParams {
+                id: "launchy".into(),
             }))
             .await
             .unwrap();
-        assert!(text_of(&agentic).contains("two"));
-        assert!(!text_of(&agentic).contains("one"));
+        assert!(text_of(&res).contains("dist/app.js"));
+        assert!(s.store().file_exists("launchy", "dist/app.js"));
+        assert!(s
+            .store()
+            .load_manifest("launchy")
+            .unwrap()
+            .built_at
+            .is_some());
 
-        // read manifest
+        let res = s
+            .launch_app(Parameters(AppIdParams {
+                id: "launchy".into(),
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&res).contains("/apps/launchy/"));
+    }
+
+    #[tokio::test]
+    async fn list_read_delete() {
+        let (_d, s) = server();
+        s.create_app(Parameters(create("One", None))).await.unwrap();
+        let all = s
+            .list_apps(Parameters(ListAppsParams { kind: None }))
+            .await
+            .unwrap();
+        assert!(text_of(&all).contains("one"));
+
         let m = s
-            .read_artifact(Parameters(ReadArtifactParams {
+            .read_app(Parameters(ReadAppParams {
                 id: "one".into(),
                 path: None,
             }))
@@ -910,79 +1151,47 @@ mod tests {
             .unwrap();
         assert!(text_of(&m).contains("\"title\": \"One\""));
 
-        // read entry file
-        let f = s
-            .read_artifact(Parameters(ReadArtifactParams {
-                id: "one".into(),
-                path: Some("index.html".into()),
-            }))
-            .await
-            .unwrap();
-        assert!(text_of(&f).contains("br-container"));
-
-        // delete
-        s.delete_artifact(Parameters(ArtifactIdParams { id: "one".into() }))
+        s.delete_app(Parameters(AppIdParams { id: "one".into() }))
             .await
             .unwrap();
         assert!(!s.store().exists("one"));
     }
 
     #[tokio::test]
-    async fn export_tauri_writes_runnable_project() {
+    async fn export_writes_standalone_ts_project() {
         let (_d, s) = server();
-        s.create_artifact(Parameters(CreateArtifactParams {
-            title: "Exporter".into(),
-            description: String::new(),
-            kind: Some("agentic".into()),
-            html: Some("<html><head></head><body>hi</body></html>".into()),
-            files: vec![FileSpec {
-                path: "css/app.css".into(),
-                content: "body{}".into(),
-            }],
-        }))
-        .await
-        .unwrap();
-        s.add_agent_capability(Parameters(AddAgentCapabilityParams {
-            id: "exporter".into(),
-            system_prompt: "help".into(),
-            greeting: None,
-            tools: vec![],
-        }))
-        .await
-        .unwrap();
+        let mut p = create("Exporter", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        s.create_app(Parameters(p)).await.unwrap();
 
         let out = TempDir::new().unwrap();
         let res = s
-            .export_artifact(Parameters(ExportArtifactParams {
+            .export_app(Parameters(ExportAppParams {
                 id: "exporter".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
-                runtime: Some("tauri".into()),
                 endpoint: None,
             }))
             .await
             .unwrap();
-        assert!(text_of(&res).contains("tauri"));
-
-        assert!(out.path().join("dist/index.html").exists());
-        assert!(out.path().join("dist/css/app.css").exists());
-        assert!(out.path().join("src-tauri/Cargo.toml").exists());
-        assert!(out.path().join("src-tauri/tauri.conf.json").exists());
-        assert!(out.path().join("src-tauri/src/main.rs").exists());
-        assert!(out.path().join("README.md").exists());
-
-        let index = std::fs::read_to_string(out.path().join("dist/index.html")).unwrap();
-        assert!(index.contains("acp-ws"));
-        assert!(index.contains("BioRouterAgent"));
+        assert!(text_of(&res).contains("standalone"));
+        assert!(out.path().join("index.html").exists());
+        assert!(out.path().join("package.json").exists());
+        assert!(out.path().join("serve.mjs").exists());
+        assert!(out.path().join("src/main.ts").exists());
+        assert!(out.path().join("src/sdk.ts").exists());
+        let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
+        assert!(index.contains("dist/app.js"));
+        assert!(index.contains("BIOROUTER_APP_CONFIG"));
     }
 
     #[tokio::test]
-    async fn export_rejects_bad_runtime_and_missing_artifact() {
+    async fn export_rejects_missing_app() {
         let (_d, s) = server();
         assert!(s
-            .export_artifact(Parameters(ExportArtifactParams {
+            .export_app(Parameters(ExportAppParams {
                 id: "ghost".into(),
                 target_dir: "/tmp/x".into(),
-                runtime: Some("web".into()),
                 endpoint: None,
             }))
             .await

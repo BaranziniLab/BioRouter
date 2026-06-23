@@ -100,6 +100,13 @@ const menuItems: NavigationEntry[] = [
     tooltip: 'Personal knowledge bases',
   },
   {
+    type: 'item' as const,
+    path: '/applications',
+    label: 'Applications',
+    icon: AppWindow,
+    tooltip: 'BioRouter apps you built with Agent Drafter',
+  },
+  {
     type: 'item',
     path: '/apps',
     label: 'Apps',

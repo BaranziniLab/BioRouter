@@ -44,6 +44,7 @@ import KnowledgeView from './components/knowledge/KnowledgeView';
 import { KnowledgeProvider } from './components/knowledge/KnowledgeContext';
 import AppsView from './components/apps/AppsView';
 import StandaloneAppView from './components/apps/StandaloneAppView';
+import ApplicationsView from './components/applications/ApplicationsView';
 import { View, ViewOptions } from './utils/navigationUtils';
 
 import { useNavigation } from './hooks/useNavigation';
@@ -606,6 +607,7 @@ export function AppInner() {
                 }
               />
               <Route path="apps" element={<AppsView />} />
+              <Route path="applications" element={<ApplicationsView />} />
               <Route path="sessions" element={<SessionsRoute />} />
               <Route path="schedules" element={<SchedulesRoute />} />
               <Route path="workflows" element={<WorkflowsRoute />} />
