@@ -3,7 +3,7 @@
 //! (the same duplex path `extension_manager` uses to spawn builtins).
 
 use biorouter_mcp::AgentDrafterServer;
-use rmcp::model::{CallToolRequestParam, RawContent};
+use rmcp::model::{CallToolRequestParams, RawContent};
 use rmcp::ServiceExt;
 use tempfile::TempDir;
 
@@ -34,14 +34,17 @@ async fn agent_drafter_serves_tools_over_mcp() {
     let tools = client.list_all_tools().await.unwrap();
     let names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     for expected in [
-        "create_artifact",
-        "update_artifact",
-        "list_artifacts",
-        "read_artifact",
-        "preview_artifact",
-        "add_agent_capability",
-        "export_artifact",
-        "delete_artifact",
+        "create_app",
+        "configure_app",
+        "update_app",
+        "build_app",
+        "lint_app",
+        "launch_app",
+        "list_apps",
+        "read_app",
+        "preview_app",
+        "export_app",
+        "delete_app",
     ] {
         assert!(
             names.iter().any(|n| n == expected),
@@ -49,32 +52,25 @@ async fn agent_drafter_serves_tools_over_mcp() {
         );
     }
 
-    // create_artifact runs end-to-end and returns a ui:// preview resource.
+    // create_app runs end-to-end and returns a ui:// preview resource.
     let mut args = serde_json::Map::new();
     args.insert("title".into(), serde_json::json!("Live Test"));
     args.insert("kind".into(), serde_json::json!("agentic"));
     let res = client
-        .call_tool(CallToolRequestParam {
+        .call_tool(CallToolRequestParams {
             task: None,
-            name: "create_artifact".into(),
+            name: "create_app".into(),
             arguments: Some(args),
             meta: None,
         })
         .await
         .unwrap();
-    assert_ne!(
-        res.is_error,
-        Some(true),
-        "create_artifact returned an error"
-    );
+    assert_ne!(res.is_error, Some(true), "create_app returned an error");
     let has_resource = res
         .content
         .iter()
         .any(|c| matches!(&c.raw, RawContent::Resource(_)));
-    assert!(
-        has_resource,
-        "create_artifact should return a ui:// resource"
-    );
+    assert!(has_resource, "create_app should return a ui:// resource");
 
     // It actually persisted to the temp store.
     assert!(tmp.path().join("live-test/manifest.json").exists());

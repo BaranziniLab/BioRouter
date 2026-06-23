@@ -29,7 +29,28 @@ impl ArtifactKind {
     }
 }
 
-/// Per-artifact agent configuration (present for `Agentic` artifacts).
+/// The provider + model an app's agent should run on. When absent, the app
+/// falls back to BioRouter's globally-configured provider/model.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModelSelection {
+    /// Provider name (e.g. "xiaomi_mimo", "anthropic", "openai").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Model name (e.g. "mimo-v2.5", "claude-opus-4-8").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl ModelSelection {
+    pub fn is_set(&self) -> bool {
+        self.provider.is_some() || self.model.is_some()
+    }
+}
+
+/// Per-app agent configuration (present for `Agentic` apps). Captures everything
+/// that distinguishes one app's BioRouter backend from another: the system
+/// prompt/persona, which model runs it, and which extensions / skills /
+/// knowledge base the agent may use.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentConfig {
     /// System prompt that defines the embedded agent's behavior.
@@ -38,9 +59,29 @@ pub struct AgentConfig {
     /// Optional greeting shown when the chat panel mounts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub greeting: Option<String>,
-    /// Tool / MCP-extension names the artifact's agent is allowed to use.
-    #[serde(default)]
+    /// Legacy free-form tool names (kept for back-compat; prefer `extensions`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<String>,
+    /// Provider + model the app's agent should run on. Defaults to the global
+    /// BioRouter model when unset (the GUI/CLI seeds this with the default).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<ModelSelection>,
+    /// Builtin / platform extension names the app's agent should load
+    /// (e.g. "developer", "computercontroller", "autovisualiser", "knowledge").
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extensions: Vec<String>,
+    /// Skill ids the app's agent should have available.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<String>,
+    /// Knowledge base id the app's agent should be scoped to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_base: Option<String>,
+    /// Bound on the agent's tool-calling loop per user message (a guardrail and
+    /// a workflow control, like the knowledge sub-agent's `max_steps`). When
+    /// unset, the server applies a safe default cap. Higher values let
+    /// workflow-style apps chain more tool calls autonomously.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_turns: Option<u32>,
 }
 
 /// Metadata describing a single artifact.
@@ -64,6 +105,10 @@ pub struct Manifest {
     /// then auto-grows to fit content).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub height: Option<u32>,
+    /// Unix seconds of the last successful esbuild bundle, if any. `None` means
+    /// the app has never been built (or its sources changed since).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub built_at: Option<u64>,
 }
 
 fn now_secs() -> u64 {
@@ -191,6 +236,50 @@ impl ArtifactStore {
             },
             width: None,
             height: None,
+            built_at: None,
+        };
+        self.save_manifest(&manifest)?;
+        for (path, content) in files {
+            self.write_file(&id, path, content)?;
+        }
+        Ok(manifest)
+    }
+
+    /// Create an artifact at an **explicit** id (slugified). If one already
+    /// exists at that id it is replaced, so re-authoring the same app is
+    /// idempotent (no `-2` duplicates) and apps are stably addressable.
+    pub fn create_with_id(
+        &self,
+        id: &str,
+        title: &str,
+        description: &str,
+        kind: ArtifactKind,
+        entry: &str,
+        files: &[(String, String)],
+    ) -> io::Result<Manifest> {
+        let id = slugify(id);
+        if self.dir(&id).exists() {
+            self.delete(&id)?;
+        }
+        let dir = self.dir(&id);
+        std::fs::create_dir_all(&dir)?;
+        let now = now_secs();
+        let manifest = Manifest {
+            id: id.clone(),
+            title: title.to_string(),
+            description: description.to_string(),
+            kind,
+            entry: entry.to_string(),
+            created_at: now,
+            updated_at: now,
+            agent: if kind == ArtifactKind::Agentic {
+                Some(AgentConfig::default())
+            } else {
+                None
+            },
+            width: None,
+            height: None,
+            built_at: None,
         };
         self.save_manifest(&manifest)?;
         for (path, content) in files {
@@ -230,7 +319,7 @@ impl ArtifactStore {
                 }
             }
         }
-        out.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+        out.sort_by_key(|manifest| std::cmp::Reverse(manifest.updated_at));
         out
     }
 
@@ -246,6 +335,31 @@ impl ArtifactStore {
     pub fn read_file(&self, id: &str, path: &str) -> io::Result<String> {
         let rel = safe_relative(path)?;
         std::fs::read_to_string(self.dir(id).join(rel))
+    }
+
+    /// Read a file's raw bytes (for serving binary assets like images/fonts).
+    pub fn read_bytes(&self, id: &str, path: &str) -> io::Result<Vec<u8>> {
+        let rel = safe_relative(path)?;
+        std::fs::read(self.dir(id).join(rel))
+    }
+
+    /// Absolute path to an artifact's directory (used by the bundler/server).
+    pub fn artifact_dir(&self, id: &str) -> PathBuf {
+        self.dir(id)
+    }
+
+    /// Absolute path to a file within an artifact, path-traversal checked.
+    pub fn file_path(&self, id: &str, path: &str) -> io::Result<PathBuf> {
+        let rel = safe_relative(path)?;
+        Ok(self.dir(id).join(rel))
+    }
+
+    /// Whether a file exists within an artifact (path-traversal checked).
+    pub fn file_exists(&self, id: &str, path: &str) -> bool {
+        match safe_relative(path) {
+            Ok(rel) => self.dir(id).join(rel).is_file(),
+            Err(_) => false,
+        }
     }
 
     pub fn delete(&self, id: &str) -> io::Result<()> {
