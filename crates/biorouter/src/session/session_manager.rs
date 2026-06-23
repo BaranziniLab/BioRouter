@@ -244,6 +244,18 @@ impl<'a> SessionUpdateBuilder<'a> {
     }
 }
 
+/// The six token counters stored on a session row. Fetched cheaply on the
+/// streaming hot path without the surrounding metadata or message count.
+#[derive(Debug, Clone, Default, sqlx::FromRow)]
+pub struct SessionTokenCounts {
+    pub total_tokens: Option<i32>,
+    pub input_tokens: Option<i32>,
+    pub output_tokens: Option<i32>,
+    pub accumulated_total_tokens: Option<i32>,
+    pub accumulated_input_tokens: Option<i32>,
+    pub accumulated_output_tokens: Option<i32>,
+}
+
 pub struct SessionManager {
     storage: Arc<SessionStorage>,
 }
@@ -278,6 +290,14 @@ impl SessionManager {
 
     pub async fn get_session(&self, id: &str, include_messages: bool) -> Result<Session> {
         self.storage.get_session(id, include_messages).await
+    }
+
+    /// Fetch only the session's token counters, without the `COUNT(*)` over the
+    /// messages table or deserializing the heavy metadata columns that
+    /// `get_session` parses. Used on the per-streamed-event hot path where the
+    /// message count and metadata are irrelevant.
+    pub async fn get_token_counts(&self, id: &str) -> Result<SessionTokenCounts> {
+        self.storage.get_token_counts(id).await
     }
 
     pub fn update(&self, id: &str) -> SessionUpdateBuilder<'_> {
@@ -543,9 +563,20 @@ impl SessionStorage {
             .filename(path)
             .create_if_missing(true)
             .busy_timeout(std::time::Duration::from_secs(5))
-            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
+            // Under WAL, NORMAL is durable across application crashes and only
+            // risks the last commit on an OS/power crash, while avoiding an
+            // fsync on every commit (the SQLite default is FULL). This removes
+            // a per-message-write fsync from the agent hot path.
+            .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
 
-        SqlitePoolOptions::new().connect_lazy_with(options)
+        // SQLite serializes writes on a single write lock; fanning out to many
+        // writer connections just produces lock contention rather than
+        // parallelism. Cap the pool deliberately instead of inheriting sqlx's
+        // default of 10.
+        SqlitePoolOptions::new()
+            .max_connections(4)
+            .connect_lazy_with(options)
     }
 
     pub fn new(data_dir: PathBuf) -> Self {
@@ -1012,6 +1043,23 @@ impl SessionStorage {
         }
 
         Ok(session)
+    }
+
+    async fn get_token_counts(&self, id: &str) -> Result<SessionTokenCounts> {
+        let pool = self.pool().await?;
+        let counts = sqlx::query_as::<_, SessionTokenCounts>(
+            r#"
+        SELECT total_tokens, input_tokens, output_tokens,
+               accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens
+        FROM sessions
+        WHERE id = ?
+    "#,
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+        Ok(counts)
     }
 
     #[allow(clippy::too_many_lines)]
