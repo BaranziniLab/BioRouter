@@ -326,9 +326,34 @@ export function useChatStream({
     });
   }, [sessionId]);
 
+  const pendingFlushRef = useRef<number | null>(null);
+
   const updateMessages = useCallback((newMessages: Message[]) => {
-    setMessages(newMessages);
+    // Keep the ref exact and synchronous — large parts of this hook read
+    // messagesRef.current mid-stream to build the next request, find a message
+    // by id, etc.
     messagesRef.current = newMessages;
+    // Coalesce the React state update (which re-renders the whole message
+    // list) to at most once per animation frame. During streaming, tokens
+    // arrive far faster than the display refreshes; previously every token
+    // triggered a setMessages and a full re-render. The rendered content is
+    // identical — only the render cadence is capped to ~60fps. The flush reads
+    // messagesRef.current, so it always paints the latest state.
+    if (pendingFlushRef.current !== null) return;
+    pendingFlushRef.current = requestAnimationFrame(() => {
+      pendingFlushRef.current = null;
+      setMessages(messagesRef.current);
+    });
+  }, []);
+
+  // Cancel any pending frame on unmount so we don't setState after teardown.
+  useEffect(() => {
+    return () => {
+      if (pendingFlushRef.current !== null) {
+        cancelAnimationFrame(pendingFlushRef.current);
+        pendingFlushRef.current = null;
+      }
+    };
   }, []);
 
   const updateNotifications = useCallback((notification: NotificationEvent) => {
