@@ -4,6 +4,7 @@ use anyhow::Result;
 use axum::middleware;
 use biorouter_server::auth::check_token;
 use http::HeaderValue;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tracing::info;
 
@@ -58,7 +59,11 @@ pub async fn run() -> Result<()> {
             secret_key.clone(),
             check_token,
         ))
-        .layer(cors);
+        .layer(cors)
+        // gzip large JSON payloads (config/providers/tools/session bodies). The
+        // default predicate skips small bodies and `text/event-stream`, so the
+        // streaming `/reply` SSE response is left unbuffered/uncompressed.
+        .layer(CompressionLayer::new());
 
     let listener = tokio::net::TcpListener::bind(settings.socket_addr()).await?;
     let local_addr = listener.local_addr()?;
