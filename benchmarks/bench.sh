@@ -24,6 +24,7 @@ mkdir -p "$RES"
 
 now_ms() { python3 -c 'import time; print(int(time.time()*1000))'; }
 hr() { printf '%s\n' "----------------------------------------"; }
+mb() { awk -v n="$1" -v d="$2" 'BEGIN{ printf "%.1f", n/d }'; }
 
 # 1. binary sizes -----------------------------------------------------------
 sz() { [ -f "$1" ] && stat -f%z "$1" || echo 0; }
@@ -44,8 +45,8 @@ if [ -x "$BD_BIN" ]; then
   LOG="$RES/.${LABEL}.biorouterd.log"
   T0=$(now_ms)
   BIOROUTER_SERVER__SECRET_KEY="$SECRET" \
-  BIOROUTER_SERVER__PORT="$PORT" \
-  BIOROUTER_SERVER__HOST="127.0.0.1" \
+  BIOROUTER_PORT="$PORT" \
+  BIOROUTER_HOST="127.0.0.1" \
     "$BD_BIN" agent >"$LOG" 2>&1 &
   PID=$!
   READY=0
@@ -89,12 +90,12 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
   echo
   echo "| metric | value |"
   echo "|---|---:|"
-  echo "| biorouter (release) | $(awk "BEGIN{printf \"%.1f\", $BR_SZ/1048576}") MB |"
-  echo "| biorouterd (release) | $(awk "BEGIN{printf \"%.1f\", $BD_SZ/1048576}") MB |"
+  echo "| biorouter (release) | $(mb "$BR_SZ" 1048576) MB |"
+  echo "| biorouterd (release) | $(mb "$BD_SZ" 1048576) MB |"
   echo "| Cargo.lock crates | $CRATES |"
   echo "| biorouter dep crates | $BR_DEPS |"
   echo "| biorouter-server dep crates | $BD_DEPS |"
-  echo "| biorouterd idle RSS | $(awk "BEGIN{printf \"%.1f\", $RSS_KB/1024}") MB |"
+  echo "| biorouterd idle RSS | $(mb "$RSS_KB" 1024) MB |"
   echo "| biorouterd startup | $STARTUP_MS ms (status: $STATUS) |"
 } | tee "$RES/$LABEL.md"
 

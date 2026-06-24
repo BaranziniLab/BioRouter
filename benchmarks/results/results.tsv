@@ -1,0 +1,4 @@
+label	git	biorouter_bytes	biorouterd_bytes	lockfile_crates	biorouter_deps	biorouterd_deps	idle_rss_kb	startup_ms	status
+baseline	bb750db	144541408	129722704	988	795	836	21776	99	ok
+baseline-run2	bb750db	144541408	129722704	988	795	836	21808	99	ok
+baseline-run3	bb750db	144541408	129722704	988	795	836	21888	34	ok
