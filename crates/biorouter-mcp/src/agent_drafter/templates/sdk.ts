@@ -42,15 +42,31 @@ export interface PromptOptions {
 
 /** Events emitted while the agent answers a prompt. */
 export type AgentEvent =
-  | { type: "ready" }
+  | { type: "ready"; protocol?: number; capabilities?: string[]; sessionId?: string }
   | { type: "message"; delta: string }
   | { type: "thought"; delta: string }
-  | { type: "tool"; name: string; status: string }
+  | { type: "tool"; name: string; status: string; id?: string }
   | { type: "done" }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  // ── BRSDK protocol v2 (additive; gated by the ready frame's capabilities) ──
+  | { type: "output"; schema?: unknown; value: unknown }
+  | { type: "usage"; inputTokens?: number; outputTokens?: number; totalTokens?: number; model?: string }
+  | { type: "guardrail"; stage?: string; name?: string; blocked?: boolean; reason?: string }
+  | { type: "approval"; id: string; tool: string; args?: unknown; reason?: string }
+  | { type: "tool_call"; id: string; name: string; args?: unknown }
+  | { type: "handoff"; from?: string; to?: string }
+  | { type: "compaction"; phase: string; trigger?: string; before?: number; after?: number }
+  | { type: "trace"; span?: unknown; snapshot?: unknown }
+  | { type: "context"; used?: number; limit?: number; ratio?: number }
+  | { type: "widget"; id: string; tree: unknown };
 
 type EventKind = AgentEvent["type"];
 type Listener = (ev: AgentEvent) => void;
+// Named aliases so the no-esbuild fallback type-stripper can remove these
+// annotations (it keys off an uppercase/primitive leading type token, which a
+// bare `(() => void)` annotation lacks).
+type ResolveFn = () => void;
+type RejectFn = (e: Error) => void;
 
 declare global {
   interface Window {
@@ -71,16 +87,13 @@ export class BioRouterClient {
   readonly config: AppConfig;
   private ws: WebSocket | null = null;
   private readyPromise: Promise<void> | null = null;
-  private listeners: Record<EventKind, Listener[]> = {
-    ready: [],
-    message: [],
-    thought: [],
-    tool: [],
-    done: [],
-    error: [],
-  };
-  private activeResolve: (() => void) | null = null;
-  private activeReject: ((e: Error) => void) | null = null;
+  // Lazily-populated so new/unknown event kinds (BRSDK v2, future frames) work
+  // without enumerating every key — `on()` seeds buckets on demand.
+  private listeners: Record<string, Listener[]> = {};
+  // Capabilities advertised by the server in the `ready` frame (deny-by-default).
+  private capabilities: string[] = [];
+  private activeResolve: ResolveFn | null = null;
+  private activeReject: RejectFn | null = null;
 
   constructor(config: AppConfig) {
     this.config = config;
@@ -153,9 +166,38 @@ export class BioRouterClient {
     } catch {
       return;
     }
+    if (msg == null || typeof msg.type !== "string") return;
+    // Latch advertised capabilities so feature-detection works before any turn.
+    if (msg.type === "ready" && Array.isArray(msg.capabilities)) {
+      this.capabilities = msg.capabilities;
+    }
     this.emit(msg);
     if (msg.type === "done") this.settleActive();
     else if (msg.type === "error") this.settleActive(new Error(msg.message));
+  }
+
+  /** Whether the server advertised a given BRSDK capability in `ready`. */
+  has(capability: string): boolean {
+    return this.capabilities.indexOf(capability) >= 0;
+  }
+
+  /** Send a raw client frame if the socket is open; returns whether it went. */
+  private send(frame: unknown): boolean {
+    if (this.ws && this.ws.readyState === 1 /* WebSocket.OPEN */) {
+      this.ws.send(JSON.stringify(frame));
+      return true;
+    }
+    return false;
+  }
+
+  /** Approve a pending human-in-the-loop tool request (BRSDK Phase 5). */
+  approve(id: string): void {
+    this.send({ type: "approve", id });
+  }
+
+  /** Reject a pending human-in-the-loop tool request, with an optional reason. */
+  reject(id: string, reason?: string): void {
+    this.send({ type: "reject", id, reason });
   }
 
   /**
@@ -262,7 +304,10 @@ export class BioRouterClient {
       await this.prompt(text, opts);
       if (!buf) el.innerHTML = "";
     } catch (e) {
-      el.innerHTML = `<div class="br-msg br-msg--agent">⚠ ${(e as Error).message || "request failed"}</div>`;
+      // Hoisted out of the template literal so the no-esbuild fallback stripper
+      // (which treats `${…}` as part of the string) can strip the `as` cast.
+      const emsg = (e as Error).message || "request failed";
+      el.innerHTML = `<div class="br-msg br-msg--agent">⚠ ${emsg}</div>`;
       throw e;
     } finally {
       this.off("message", onMsg);
@@ -513,7 +558,10 @@ export function renderMarkdown(md: string): string {
         inList = true;
         inOrdered = ordered;
       }
-      out.push(`<li>${inline((ul || ol)![1])}</li>`);
+      // Hoisted out of the template literal so the fallback stripper can drop
+      // the non-null assertion (`!`) — it skips `${…}` interpolations as string.
+      const liText = (ul || ol)![1];
+      out.push(`<li>${inline(liText)}</li>`);
       i++;
       continue;
     }

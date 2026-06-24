@@ -373,7 +373,20 @@ async fn handle_agent_socket(mut socket: WebSocket, state: Arc<AppState>, manife
 
     configure_agent(&agent, &state, &session_id, &manifest).await;
     info!(app = %manifest.id, session = %session_id, "app agent session ready");
-    if !send_json(&mut socket, json!({"type":"ready"})).await {
+    // BRSDK protocol v2: advertise capabilities so old apps ignore frames they
+    // don't understand and new apps can feature-detect. Deny-by-default — only
+    // capabilities the manifest declared are advertised.
+    let capabilities = manifest
+        .agent
+        .as_ref()
+        .map(|a| a.capabilities.advertised())
+        .unwrap_or_default();
+    if !send_json(
+        &mut socket,
+        json!({"type":"ready", "protocol": 2, "capabilities": capabilities}),
+    )
+    .await
+    {
         return;
     }
 

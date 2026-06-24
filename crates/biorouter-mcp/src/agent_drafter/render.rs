@@ -336,11 +336,13 @@ mod tests {
                     model: Some(ModelSelection {
                         provider: Some("xiaomi_mimo".into()),
                         model: Some("mimo-v2.5".into()),
+                        ..Default::default()
                     }),
                     extensions: vec!["developer".into()],
                     skills: vec![],
                     knowledge_base: None,
                     max_turns: None,
+                    ..Default::default()
                 })
             } else {
                 None

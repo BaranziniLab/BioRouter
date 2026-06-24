@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
+use super::manifest::{Capabilities, GuardrailsConfig, ModelSettings, Orchestration, ReliabilityConfig};
+
 /// Whether an artifact embeds live agent capability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -31,7 +33,8 @@ impl ArtifactKind {
 
 /// The provider + model an app's agent should run on. When absent, the app
 /// falls back to BioRouter's globally-configured provider/model.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+// Note: not `Eq` — `settings` carries `f32` fields (temperature/top_p).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ModelSelection {
     /// Provider name (e.g. "xiaomi_mimo", "anthropic", "openai").
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -39,6 +42,10 @@ pub struct ModelSelection {
     /// Model name (e.g. "mimo-v2.5", "claude-opus-4-8").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Provider-agnostic generation settings (temperature, reasoning effort, …).
+    /// Consumed by the per-app model surface (Phase 4); `None` → provider defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settings: Option<ModelSettings>,
 }
 
 impl ModelSelection {
@@ -82,6 +89,38 @@ pub struct AgentConfig {
     /// workflow-style apps chain more tool calls autonomously.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<u32>,
+
+    // ───── BRSDK (all default; absence = denied / off) ─────
+    /// Deny-by-default capability grants: files / data / compute / vault /
+    /// memory / tracing / lifecycle-events (Phases 3–7).
+    #[serde(default)]
+    pub capabilities: Capabilities,
+    /// Declarative content guardrails + goal harness + HITL approvals (Phase 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guardrails: Option<GuardrailsConfig>,
+    /// Reliability knobs: tool timeouts, stop conditions, error→output, etc.
+    /// (Phase 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reliability: Option<ReliabilityConfig>,
+    /// Multi-agent orchestration: sub-agents-as-tools, handoffs, workflows,
+    /// lazy tools (Phase 6).
+    #[serde(default)]
+    pub orchestration: Orchestration,
+    /// JSON-Schema contract the final answer must validate against (Phase 2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_type: Option<serde_json::Value>,
+    /// Durable, resumable per-app sessions (Phase 1). `None` is treated as ON
+    /// (the recovery default); set `Some(false)` to restore ephemeral
+    /// per-connection sessions. Use [`AgentConfig::durable_session`] to read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub durable_session: Option<bool>,
+}
+
+impl AgentConfig {
+    /// Whether this app's sessions are durable + resumable (default: yes).
+    pub fn durable_session(&self) -> bool {
+        self.durable_session.unwrap_or(true)
+    }
 }
 
 /// Metadata describing a single artifact.
@@ -408,6 +447,119 @@ mod tests {
         let loaded = s.load_manifest("my-app").unwrap();
         assert_eq!(loaded.title, "My App");
         assert_eq!(loaded.description, "does things");
+    }
+
+    #[test]
+    fn pre_brsdk_manifest_deserializes_with_defaults() {
+        // A manifest written before BRSDK existed (no capabilities/guardrails/
+        // reliability/orchestration/output_type/durable_session) must still load.
+        let legacy = r#"{
+            "id": "legacy-app",
+            "title": "Legacy App",
+            "description": "made before BRSDK",
+            "kind": "agentic",
+            "entry": "index.html",
+            "created_at": 100,
+            "updated_at": 200,
+            "agent": {
+                "system_prompt": "be helpful",
+                "model": { "provider": "anthropic", "model": "claude-opus-4-8" },
+                "extensions": ["developer"],
+                "max_turns": 24
+            }
+        }"#;
+        let m: Manifest = serde_json::from_str(legacy).expect("legacy manifest must load");
+        let agent = m.agent.expect("agent present");
+        // New fields fall back to deny-by-default / off.
+        assert!(agent.capabilities.files.is_none());
+        assert!(agent.capabilities.data.is_none());
+        assert!(agent.capabilities.compute.is_none());
+        assert_eq!(agent.capabilities.memory.mode, crate::agent_drafter::manifest::MemoryMode::Off);
+        assert!(!agent.capabilities.tracing.enabled);
+        assert!(agent.capabilities.tracing.redact, "tracing redaction defaults ON");
+        assert!(agent.guardrails.is_none());
+        assert!(agent.reliability.is_none());
+        assert!(agent.output_type.is_none());
+        assert!(agent.orchestration.sub_agents.is_empty());
+        // durable_session: absent → treated as ON (the recovery default).
+        assert!(agent.durable_session(), "durable sessions default ON");
+        // Advertised capability list is empty for a legacy app (deny-by-default).
+        assert!(agent.capabilities.advertised().is_empty());
+    }
+
+    #[test]
+    fn full_brsdk_manifest_roundtrips_and_advertises() {
+        use crate::agent_drafter::manifest::*;
+        let mut caps = Capabilities::default();
+        caps.files = Some(FilesCapability::default());
+        caps.compute = Some(ComputeCapability {
+            sandbox: "docker".into(),
+            timeout_s: 120,
+            network: "none".into(),
+            max_mem: Some("1g".into()),
+            cpus: Some(2.0),
+            image: None,
+        });
+        caps.memory = MemoryCapability {
+            kb: Some("lab".into()),
+            mode: MemoryMode::ReadWrite,
+            shared_kb: None,
+            distill: true,
+        };
+        caps.tracing = TracingCapability {
+            enabled: true,
+            redact: true,
+            processor: None,
+        };
+        caps.events = vec!["tool".into(), "llm".into()];
+
+        let agent = AgentConfig {
+            system_prompt: "clinical assistant".into(),
+            model: Some(ModelSelection {
+                provider: Some("anthropic".into()),
+                model: Some("claude-opus-4-8".into()),
+                settings: Some(ModelSettings {
+                    temperature: Some(0.2),
+                    reasoning_effort: Some("high".into()),
+                    ..Default::default()
+                }),
+            }),
+            capabilities: caps,
+            guardrails: Some(GuardrailsConfig {
+                goal: Some("cite the KB".into()),
+                pii: PiiMode::Mask,
+                needs_approval: vec!["send_email".into()],
+                ..Default::default()
+            }),
+            reliability: Some(ReliabilityConfig {
+                tool_timeout_s: Some(30),
+                parallel_tools: true,
+                ..Default::default()
+            }),
+            output_type: Some(serde_json::json!({"type":"object"})),
+            durable_session: Some(true),
+            ..Default::default()
+        };
+
+        // Round-trips through JSON without loss.
+        let json = serde_json::to_string(&agent).unwrap();
+        let back: AgentConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.guardrails.as_ref().unwrap().pii, PiiMode::Mask);
+        assert_eq!(
+            back.model.as_ref().unwrap().settings.as_ref().unwrap().temperature,
+            Some(0.2)
+        );
+        assert_eq!(back.capabilities.compute.as_ref().unwrap().sandbox, "docker");
+        assert!(back.reliability.as_ref().unwrap().parallel_tools);
+
+        // Advertises exactly the granted capabilities (deny-by-default elsewhere).
+        let adv = back.capabilities.advertised();
+        assert!(adv.contains(&"files".to_string()));
+        assert!(adv.contains(&"compute".to_string()));
+        assert!(adv.contains(&"memory".to_string()));
+        assert!(adv.contains(&"tracing".to_string()));
+        assert!(adv.contains(&"event:tool".to_string()));
+        assert!(!adv.contains(&"data".to_string()), "data not granted → not advertised");
     }
 
     #[test]
