@@ -1,9 +1,15 @@
 //! Serializable paused-run state for human-in-the-loop approvals + recovery.
 //!
-//! When a tool needs approval and there's no interactive UI (a headless or
-//! exported app), the run is snapshotted to a [`RunState`], persisted, and an
-//! `approval` frame is surfaced; later `approve`/`reject` resumes it — possibly
-//! in a different process.
+//! When a tool needs approval, the run is snapshotted to a [`RunState`],
+//! persisted into the session, and an `approval` frame is surfaced. The live
+//! decision (`approve`/`reject`) is delivered over the connection that is parked
+//! awaiting it. Persistence makes the pause **observable** after a reconnect
+//! (an app can re-surface "approval pending" via `GET /apps/{id}/runstate`).
+//!
+//! Note: re-driving a *resolved* snapshot from a fresh connection/process (full
+//! cross-process resume) would require replaying the agent loop from the
+//! snapshot and is intentionally out of scope here — the snapshot carries enough
+//! to support that later (session handle + pending tool + remaining budget).
 //!
 //! The snapshot is intentionally **lightweight**: the conversation already lives
 //! in the durable session (Phase 1), so RunState only carries what's needed to
