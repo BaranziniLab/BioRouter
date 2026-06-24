@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
@@ -26,6 +27,42 @@ use crate::workflow::Workflow;
 
 type RunningTasksMap = HashMap<String, CancellationToken>;
 type JobsMap = HashMap<String, (JobId, ScheduledJob)>;
+
+/// Count of in-progress *interactive* (user-facing) agent turns. While > 0 the
+/// scheduler defers scheduled jobs so background work doesn't compete with the
+/// user for the provider / rate-limit budget (jcode's "pause when active").
+static ACTIVE_INTERACTIVE_TURNS: AtomicUsize = AtomicUsize::new(0);
+
+/// RAII guard marking an interactive turn in progress. Hold it for the lifetime
+/// of an interactive reply (e.g. the HTTP `/reply` SSE stream).
+pub struct InteractiveTurnGuard;
+
+/// Begin an interactive turn; the returned guard decrements the counter on drop.
+pub fn interactive_turn_guard() -> InteractiveTurnGuard {
+    ACTIVE_INTERACTIVE_TURNS.fetch_add(1, Ordering::SeqCst);
+    InteractiveTurnGuard
+}
+
+impl Drop for InteractiveTurnGuard {
+    fn drop(&mut self) {
+        ACTIVE_INTERACTIVE_TURNS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn interactive_active() -> bool {
+    ACTIVE_INTERACTIVE_TURNS.load(Ordering::SeqCst) > 0
+}
+
+/// Whether to pause scheduled work while a user is interacting. Default on; set
+/// `BIOROUTER_SCHEDULER_PAUSE_ON_ACTIVE=0` to disable.
+fn pause_on_active() -> bool {
+    !matches!(
+        std::env::var("BIOROUTER_SCHEDULER_PAUSE_ON_ACTIVE")
+            .ok()
+            .as_deref(),
+        Some("0") | Some("false")
+    )
+}
 
 pub fn get_default_scheduler_storage_path() -> Result<PathBuf, io::Error> {
     let data_dir = Paths::data_dir();
@@ -146,6 +183,24 @@ async fn claim_run_slot(jobs: &Arc<Mutex<JobsMap>>, job_id: &str, now: DateTime<
                 job.max_runs
             );
             job.paused = true;
+            false
+        }
+        // Resource-aware deferral (jcode "ambient" idea): skip this firing (the
+        // cron fires again next interval) when the provider is rate-limited or a
+        // user is mid-conversation, so background work never competes with the
+        // user. Does NOT bump run_count, so the job isn't consumed.
+        Some(_) if crate::providers::retry::is_rate_limited() => {
+            tracing::info!(
+                "Deferring scheduled job '{}': provider rate-limited, backing off",
+                job_id
+            );
+            false
+        }
+        Some(_) if pause_on_active() && interactive_active() => {
+            tracing::info!(
+                "Deferring scheduled job '{}': user session active",
+                job_id
+            );
             false
         }
         Some((_, job)) => {
