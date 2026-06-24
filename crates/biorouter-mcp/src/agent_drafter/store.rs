@@ -545,6 +545,12 @@ mod tests {
         let json = serde_json::to_string(&agent).unwrap();
         let back: AgentConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back.guardrails.as_ref().unwrap().pii, PiiMode::Mask);
+        // The goal one-liner (consumed by configure_agent → set_goal) round-trips.
+        assert_eq!(
+            back.guardrails.as_ref().unwrap().goal.as_deref(),
+            Some("cite the KB")
+        );
+        assert_eq!(back.guardrails.as_ref().unwrap().needs_approval, vec!["send_email"]);
         assert_eq!(
             back.model.as_ref().unwrap().settings.as_ref().unwrap().temperature,
             Some(0.2)
