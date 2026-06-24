@@ -102,6 +102,11 @@ pub struct App {
     /// Last rendered history-viewport height, for page scrolling.
     pub last_viewport_h: u16,
     pub last_total_lines: usize,
+    /// Cache of draw_history's wrapped-line total, keyed by a cheap content
+    /// signature (scrollback length, viewport width, in-progress stream length).
+    /// Skips the O(content) unicode re-measure on redraws where nothing changed
+    /// (e.g. spinner-tick redraws during streaming). (sb_len, width, stream_len, total)
+    pub(super) wrap_cache: Option<(usize, u16, usize, u16)>,
     /// Full set of completable commands / references (built once at startup).
     pub catalog: Vec<CompletionItem>,
     /// Active completion popup, recomputed as the input changes.
@@ -142,6 +147,7 @@ impl App {
             should_quit: false,
             last_viewport_h: 0,
             last_total_lines: 0,
+            wrap_cache: None,
             catalog: Vec::new(),
             completion: None,
             completion_dismissed: false,
