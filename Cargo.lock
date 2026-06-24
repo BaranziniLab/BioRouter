@@ -1084,6 +1084,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.21.7",
+ "biorouter-sandbox",
  "bm25",
  "bzip2 0.6.1",
  "calamine",
