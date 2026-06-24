@@ -24,11 +24,22 @@ const mockDeleteSession = vi.fn(async () => ({ data: {}, error: undefined }));
 const mockStopAgent = vi.fn(async () => ({ data: {}, error: undefined }));
 // Default: a non-empty session (so created-here windows are kept unless a test
 // overrides the message count).
-const mockGetSession = vi.fn(async (_opts: { path: { session_id: string } }) => ({
-  data: { message_count: 3 },
-  error: undefined,
-  response: { status: 200 } as Response,
-}));
+// Return type widened to cover both the success shape and the error/404 shape
+// (data undefined, error present) that individual tests below mock in, so
+// mockImplementation/mockResolvedValue accept either branch.
+const mockGetSession = vi.fn(
+  async (_opts: {
+    path: { session_id: string };
+  }): Promise<{
+    data: { message_count: number } | undefined;
+    error: unknown;
+    response: Response;
+  }> => ({
+    data: { message_count: 3 },
+    error: undefined,
+    response: { status: 200 } as Response,
+  })
+);
 vi.mock('../../api', () => ({
   deleteSession: (...a: unknown[]) => mockDeleteSession(...(a as [])),
   getSession: (...a: unknown[]) => mockGetSession(...(a as [{ path: { session_id: string } }])),
@@ -201,7 +212,11 @@ describe('dashboard session lifecycle (diverge hardening)', () => {
       if (opts.path.session_id === 'dead') {
         return { data: undefined, error: {}, response: { status: 404 } as Response };
       }
-      return { data: { message_count: 2 }, error: undefined, response: { status: 200 } as Response };
+      return {
+        data: { message_count: 2 },
+        error: undefined,
+        response: { status: 200 } as Response,
+      };
     });
 
     const { result } = renderHook(() => useDashboard(), { wrapper });
