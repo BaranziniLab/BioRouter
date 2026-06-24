@@ -13,6 +13,7 @@ pub mod agent_drafter;
 pub mod autovisualiser;
 pub mod computercontroller;
 pub mod datasql;
+pub mod files_server;
 pub mod developer;
 pub mod knowledge;
 pub mod mcp_server_runner;
