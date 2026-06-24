@@ -1,0 +1,23 @@
+[package]
+name = "biorouter-sandbox"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Capability-scoped sandboxed execution for BioRouter agents (leaf crate; no engine deps)"
+
+[lints]
+workspace = true
+
+[dependencies]
+async-trait = "0.1"
+anyhow = { workspace = true }
+thiserror = "1.0"
+tokio = { workspace = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
