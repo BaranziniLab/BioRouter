@@ -266,9 +266,12 @@ impl Agent {
     }
 
     /// Resolve `{{vault:NAME}}` placeholders in a tool call's arguments using the
-    /// installed vault (no-op when none is set). Called at the top of
-    /// [`Self::dispatch_tool_call`], so this is the single chokepoint every tool
-    /// invocation passes through.
+    /// installed vault (no-op when none is set). Called ONLY on the leaf
+    /// MCP-dispatch path in [`Self::dispatch_tool_call`] — never for the subagent,
+    /// frontend, final_output, or schedule branches, whose arguments would carry
+    /// the plaintext back to an LLM/browser/store. (Residual: a tool that echoes
+    /// its arguments in its *result* can still surface the secret on the next turn
+    /// — that's outside the request-side substitution's control.)
     pub(super) async fn apply_vault(&self, tool_call: &mut CallToolRequestParams) {
         let vault = { self.vault.lock().await.clone() };
         if let Some(vault) = vault {
@@ -577,11 +580,6 @@ impl Agent {
         cancellation_token: Option<CancellationToken>,
         session: &Session,
     ) -> (String, Result<ToolCallResult, ErrorData>) {
-        // BRSDK encryption: substitute {{vault:NAME}} secrets into the arguments
-        // now — after the model produced this call, before any tool (or subagent)
-        // sees it. No-op unless a vault was installed for this app session.
-        self.apply_vault(&mut tool_call).await;
-
         // Prevent subagents from creating other subagents
         if session.session_type == SessionType::SubAgent && tool_call.name == SUBAGENT_TOOL_NAME {
             return (
@@ -685,6 +683,14 @@ impl Agent {
                 None,
             )))
         } else {
+            // BRSDK encryption: resolve {{vault:NAME}} secrets ONLY here — on the
+            // leaf MCP-dispatch path, after the model produced the call and right
+            // before the tool runs. Deliberately NOT applied to the subagent /
+            // frontend / final_output / schedule branches above, whose arguments
+            // are re-consumed by an LLM, returned to the browser, or persisted — a
+            // resolved secret there would leak. No-op unless a vault is installed.
+            self.apply_vault(&mut tool_call).await;
+
             // Clone the result to ensure no references to extension_manager are returned
             let result = self
                 .extension_manager
