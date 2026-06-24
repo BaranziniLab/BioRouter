@@ -355,6 +355,17 @@ async fn configure_agent(
         ));
     }
     agent.extend_system_prompt(prompt).await;
+
+    // BRSDK guardrails: a one-line `goal` auto-installs the goal Stop-hook so the
+    // app's agent keeps working until the goal condition holds — reusing the
+    // proven /goal machinery (LLM-judge, iteration cap, stall detection, graceful
+    // give-up). Opt-in (deny-by-default): only apps that declare a goal get it.
+    // Idempotent: re-installed on each (re)connect via configure_agent.
+    if let Some(goal) = cfg.guardrails.as_ref().and_then(|g| g.goal.clone()) {
+        if !goal.trim().is_empty() {
+            agent.set_goal(session_id, goal).await;
+        }
+    }
 }
 
 async fn handle_agent_socket(
