@@ -1,6 +1,7 @@
 import { ModeSection } from '../mode/ModeSection';
 import { ResponseStylesSection } from '../response_styles/ResponseStylesSection';
 import { CapabilitiesSection } from '../capabilities/CapabilitiesSection';
+import { BrsdkSection } from '../brsdk/BrsdkSection';
 import { BioRouterHintsSection } from './BioRouterHintsSection';
 import { SpellcheckToggle } from './SpellcheckToggle';
 
@@ -40,6 +41,19 @@ export default function ChatSettingsSection() {
         </p>
         <div className="border-t border-border-subtle pt-2">
           <CapabilitiesSection />
+        </div>
+      </div>
+
+      <div>
+        <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+          App SDK (experimental)
+        </h2>
+        <p className="text-xs text-text-muted mb-4">
+          Opt-in safety frameworks for Agent-Drafter apps. All are off by default and apply only to
+          Agent-Drafter apps — never to normal chat.
+        </p>
+        <div className="border-t border-border-subtle pt-2">
+          <BrsdkSection />
         </div>
       </div>
 

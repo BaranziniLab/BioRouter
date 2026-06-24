@@ -59,6 +59,7 @@ export type AgentEvent =
   | { type: "trace"; span?: unknown; snapshot?: unknown }
   | { type: "context"; used?: number; limit?: number; ratio?: number }
   | { type: "history"; messages?: Array<{ role: string; text: string }> }
+  | { type: "model"; ok: boolean; provider?: string; model?: string }
   | { type: "widget"; id: string; tree: unknown };
 
 type EventKind = AgentEvent["type"];
@@ -271,6 +272,34 @@ export class BioRouterClient {
     return {
       tokens: () => this.tokens(),
       history: () => this.history(),
+    };
+  }
+
+  /** Provider/model catalog the user has available (the provider-agnostic
+   *  headline). Returns `[]` on failure. */
+  async listModels(): Promise<unknown[]> {
+    try {
+      const loc = window.location;
+      const base = `${loc.protocol}//${loc.host}/apps/${encodeURIComponent(this.config.appId)}`;
+      const res = await fetch(`${base}/models`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return Array.isArray(data.providers) ? data.providers : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Live-switch the session's provider/model. */
+  selectModel(provider: string, model: string): void {
+    this.send({ type: "modelselect", provider, model });
+  }
+
+  /** Namespaced model surface: `br.model.list()` / `br.model.select(p, m)`. */
+  get model() {
+    return {
+      list: () => this.listModels(),
+      select: (provider: string, model: string) => this.selectModel(provider, model),
     };
   }
 

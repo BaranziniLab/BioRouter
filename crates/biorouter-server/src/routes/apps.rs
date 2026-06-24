@@ -235,6 +235,13 @@ enum ClientFrame {
     /// a reloaded app can repaint its chat. Served over the WS (which is already
     /// bound to the resolved session) — no guessable id, no auth-exempt route.
     History,
+    /// BRSDK model surface: live-switch the session's provider/model.
+    ModelSelect {
+        #[serde(default)]
+        provider: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
+    },
 }
 
 async fn send_json(socket: &mut WebSocket, value: serde_json::Value) -> bool {
@@ -636,6 +643,28 @@ async fn handle_agent_socket(
                 let _ = send_json(&mut socket, json!({"type":"history","messages": messages})).await;
                 continue;
             }
+            ClientFrame::ModelSelect { provider, model } => {
+                // Live-switch the session's provider/model (BRSDK model surface).
+                let model_name = model.unwrap_or_default();
+                let provider_name = provider.unwrap_or_default();
+                let ok = if provider_name.is_empty() || model_name.is_empty() {
+                    false
+                } else {
+                    match ModelConfig::new(&model_name) {
+                        Ok(mc) => match create_provider(&provider_name, mc).await {
+                            Ok(p) => agent.update_provider(p, &session_id).await.is_ok(),
+                            Err(_) => false,
+                        },
+                        Err(_) => false,
+                    }
+                };
+                let _ = send_json(
+                    &mut socket,
+                    json!({"type":"model","ok": ok, "provider": provider_name, "model": model_name}),
+                )
+                .await;
+                continue;
+            }
         };
 
         // Content guardrail (input stage): apply the manifest's PII/PHI policy to
@@ -834,12 +863,41 @@ async fn backlog_for(state: &AppState, session_id: &str) -> Vec<serde_json::Valu
     }
 }
 
+/// The model catalog the per-app model surface exposes: every provider the
+/// build knows, with its display name, default model, and known models. Apps use
+/// it to let the user pick a provider/model — the provider-agnostic headline.
+async fn model_catalog() -> Vec<serde_json::Value> {
+    biorouter::providers::providers()
+        .await
+        .into_iter()
+        .map(|(m, _)| {
+            json!({
+                "name": m.name,
+                "displayName": m.display_name,
+                "defaultModel": m.default_model,
+                "models": m.known_models.iter().map(|mi| mi.name.clone()).collect::<Vec<_>>(),
+                "allowsUnlisted": m.allows_unlisted_models,
+            })
+        })
+        .collect()
+}
+
+/// GET /apps/{id}/models — the provider/model catalog for the per-app model
+/// surface (`br.model.list()`).
+async fn list_models(Path(id): Path<String>) -> Response {
+    if !store().exists(&id) {
+        return (StatusCode::NOT_FOUND, "no such app").into_response();
+    }
+    Json(json!({ "providers": model_catalog().await })).into_response()
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/apps", get(list_apps))
         .route("/apps/{id}", get(redirect_to_slash).delete(delete_app_route))
         .route("/apps/{id}/", get(serve_index))
         .route("/apps/{id}/agent", get(agent_ws))
+        .route("/apps/{id}/models", get(list_models))
         .route("/apps/{id}/build", post(build_app_route))
         .route("/apps/{id}/export", get(export_app_route))
         .route("/apps/{id}/dist/{*path}", get(serve_dist))
@@ -1014,7 +1072,25 @@ mod tests {
             serde_json::from_str::<ClientFrame>(r#"{"type":"history"}"#).unwrap(),
             ClientFrame::History
         ));
+        assert!(matches!(
+            serde_json::from_str::<ClientFrame>(
+                r#"{"type":"modelselect","provider":"anthropic","model":"claude-opus-4-8"}"#
+            )
+            .unwrap(),
+            ClientFrame::ModelSelect { .. }
+        ));
         // Unknown frame types must fail to parse (caller skips them).
         assert!(serde_json::from_str::<ClientFrame>(r#"{"type":"bogus"}"#).is_err());
+    }
+
+    #[tokio::test]
+    async fn model_catalog_lists_providers_and_models() {
+        let cat = super::model_catalog().await;
+        assert!(!cat.is_empty(), "the build knows providers");
+        // Every entry is well-formed: a name and a models array.
+        for p in &cat {
+            assert!(p["name"].as_str().is_some(), "provider has a name: {p}");
+            assert!(p["models"].is_array(), "provider has a models array: {p}");
+        }
     }
 }
