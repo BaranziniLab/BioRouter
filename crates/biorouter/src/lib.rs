@@ -13,6 +13,7 @@ pub mod logging;
 pub mod mcp_utils;
 pub mod model;
 pub mod oauth;
+pub mod observability;
 pub mod permission;
 pub mod prompt_template;
 pub mod providers;
