@@ -250,7 +250,6 @@ mod tests {
             message_count: 0,
             provider_name: None,
             model_config: None,
-            diverged_from: None,
         }
     }
 

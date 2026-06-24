@@ -63,4 +63,3 @@ tempfile = "3.15.0"
 env-lock = { workspace = true }
 wiremock = { workspace = true }
 zip = "8.6.0"
-serial_test = { workspace = true }
