@@ -618,6 +618,8 @@ async fn configure_agent(
         let mut subs = Vec::new();
         for (name, sa) in &cfg.orchestration.sub_agents {
             // Sanitize the filename; keep the original name as the callable id.
+            // Append a hash of the original name so distinct names that sanitize
+            // to the same string (e.g. "a.b" and "a/b") don't collide on one file.
             let safe: String = name
                 .chars()
                 .map(|c| {
@@ -628,7 +630,13 @@ async fn configure_agent(
                     }
                 })
                 .collect();
-            let path = dir.join(format!("{safe}.json"));
+            let disambig = {
+                use std::hash::{Hash, Hasher};
+                let mut h = std::collections::hash_map::DefaultHasher::new();
+                name.hash(&mut h);
+                h.finish()
+            };
+            let path = dir.join(format!("{safe}-{disambig:x}.json"));
             if std::fs::write(&path, materialize_subagent_recipe(name, sa)).is_ok() {
                 subs.push(biorouter::workflow::SubWorkflow {
                     name: name.clone(),
@@ -1275,7 +1283,10 @@ async fn get_run_state(
         return (StatusCode::BAD_REQUEST, "session required").into_response();
     };
     match load_run_state(&state, session).await {
-        Some(rs) if rs.is_pending() => Json(json!({
+        // Bind the snapshot to THIS app: the route is auth-exempt (GET under
+        // /apps) and session ids are enumerable, so without `rs.app_id == id`
+        // any local caller could read another app's pending tool name + args.
+        Some(rs) if rs.is_pending() && rs.app_id == id => Json(json!({
             "pending": true,
             "requestId": rs.run_id,
             "tool": rs.pending_tool.name,
