@@ -37,6 +37,10 @@ const CLIENT_INSERT_COMMANDS: Record<string, { description: string; insert: stri
     insert:
       'Using the Knowledge extension, search the visible knowledge bases and prioritize the focused knowledge base, ',
   },
+  diverge: {
+    description: 'Branch this conversation into a new chat, keeping the full history — press Enter',
+    insert: '/diverge',
+  },
 };
 
 const referenceInsert = (item: DisplayItem) => {

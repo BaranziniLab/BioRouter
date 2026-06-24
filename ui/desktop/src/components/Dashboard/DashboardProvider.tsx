@@ -11,17 +11,46 @@ import {
   saveDashboardState,
   SerializedDashboardState,
   debounceSave,
+  filterDeadSessions,
 } from './dashboardStorage';
-import {
-  isDefaultSessionName,
-  subscribeSessionNameChanges,
-} from '../../utils/sessionNameSync';
+import { isDefaultSessionName, subscribeSessionNameChanges } from '../../utils/sessionNameSync';
 import { findSpawnPosition, organize as organizeLayout } from './canvasLayout';
 import { createSession } from '../../sessions';
-import { deleteSession } from '../../api';
+import { deleteSession, getSession, stopAgent } from '../../api';
 import { getInitialWorkingDir } from '../../utils/workingDir';
 import { toastError } from '../../toasts';
 import { errorMessage } from '../../utils/conversionUtils';
+
+/**
+ * Reap a session whose dashboard window was just closed.
+ *
+ * Closing a canvas window must NEVER destroy a real conversation — that was the
+ * old "history seemingly deleted / chat cannot be loaded" bug. So:
+ *  - Always `stopAgent` to evict the in-memory agent from the AgentManager LRU
+ *    (the original reason close used to delete — a zombie agent can hold its
+ *    write-lock and block future spawns). This does NOT touch the DB.
+ *  - Only `deleteSession` (which removes history) when the window CREATED the
+ *    session itself AND it never received a message — a throwaway empty spawn.
+ *    Resumed and diverged sessions (createdHere=false) are always preserved.
+ */
+async function reapDashboardSession(sessionId: string, createdHere: boolean): Promise<void> {
+  if (createdHere) {
+    try {
+      const res = await getSession({ path: { session_id: sessionId }, throwOnError: false });
+      if (res.data && res.data.message_count === 0) {
+        await deleteSession({ path: { session_id: sessionId }, throwOnError: false });
+        return;
+      }
+    } catch {
+      // Fall through to stopAgent — never escalate to a delete on uncertainty.
+    }
+  }
+  try {
+    await stopAgent({ body: { session_id: sessionId }, throwOnError: false });
+  } catch {
+    // Best-effort: the window has already left the canvas.
+  }
+}
 
 // Default window size — kept in sync with DashboardBoard.MIN_WINDOW_*.
 const MIN_WINDOW_W = 600;
@@ -119,6 +148,44 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       } catch {
         // Ignore; the debounced save handles quota errors silently too.
       }
+    };
+  }, []);
+
+  // On mount, drop any restored windows whose backend session no longer exists
+  // (deleted from History, or by an older build that deleted on close). Without
+  // this, such a window renders a "Failed to load session" card. We only drop
+  // on a definitive 404 — never on a transient/network error — so a slow
+  // backend at launch can't wipe out valid windows.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const current = stateRef.current;
+      if (current.windows.length === 0) return;
+      const filtered = await filterDeadSessions(serialize(current), async (sid) => {
+        try {
+          const res = await getSession({ path: { session_id: sid }, throwOnError: false });
+          if (res.data) return true;
+          // Only a confirmed 404 means the session is gone; keep on anything else.
+          return res.response?.status !== 404;
+        } catch {
+          return true; // network error → keep the window
+        }
+      });
+      if (cancelled) return;
+      const aliveIds = new Set(filtered.windows.map((w) => w.windowId));
+      if (aliveIds.size !== current.windows.length) {
+        setState((prev) => ({
+          ...prev,
+          windows: prev.windows.filter((w) => aliveIds.has(w.windowId)),
+          focusedWindowId:
+            prev.focusedWindowId && aliveIds.has(prev.focusedWindowId)
+              ? prev.focusedWindowId
+              : null,
+        }));
+      }
+    })();
+    return () => {
+      cancelled = true;
     };
   }, []);
 
@@ -230,6 +297,8 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       const newWin: DashboardWindow = {
         windowId: nextWindowId(),
         sessionId,
+        // Created-here only when we minted a fresh session (no resumeSessionId).
+        createdHere: !options?.resumeSessionId,
         name: overrideName || generateName(prev.windows.length),
         // An override name is a "real" name from the workflow/history — mark
         // it user-set so the LLM auto-rename poller and backend default
@@ -257,18 +326,12 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
   }, []);
 
   const closeWindow: DashboardApi['closeWindow'] = useCallback((windowId) => {
-    // Tell biorouterd to delete the session too, so the AgentManager LRU
-    // doesn't accumulate zombie agents from closed windows — a crashed
-    // zombie can hold its LRU write-lock and block future createSession
-    // calls, manifesting as "Spawn does nothing" after Clear.
+    // Closing a window removes it from the canvas but must NOT destroy the
+    // underlying conversation. reapDashboardSession frees the in-memory agent
+    // and only deletes genuinely-empty throwaway spawns (see its doc comment).
     const target = stateRef.current.windows.find((w) => w.windowId === windowId);
     if (target?.sessionId) {
-      void deleteSession({
-        path: { session_id: target.sessionId },
-        throwOnError: false,
-      }).catch(() => {
-        // Best-effort: the window leaves the UI either way.
-      });
+      void reapDashboardSession(target.sessionId, target.createdHere ?? false);
     }
     setState((prev) => {
       const remaining = prev.windows.filter((w) => w.windowId !== windowId);
@@ -306,30 +369,27 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
   // (`userSetName`) OR it's a non-default LLM-generated name. We never let
   // a backend default ("New Session" / legacy numbered variants) overwrite
   // a non-default local name — that was the cause of the snap-back bug.
-  const syncSessionName: DashboardApi['syncSessionName'] = useCallback(
-    (windowId, name, opts) => {
-      const isUserSet = opts?.userSetName ?? false;
-      setState((prev) => ({
-        ...prev,
-        windows: prev.windows.map((w) => {
-          if (w.windowId !== windowId) return w;
-          // Always accept user-authored renames from the backend
-          // (e.g. another window renamed the same session).
-          if (isUserSet) {
-            if (w.name === name && w.userSetName) return w;
-            return { ...w, name, userSetName: true };
-          }
-          // Don't let backend's default placeholder overwrite an
-          // LLM-rename we already accepted or a user rename here.
-          if (w.userSetName) return w;
-          if (isDefaultSessionName(name)) return w;
-          if (w.name === name) return w;
-          return { ...w, name };
-        }),
-      }));
-    },
-    []
-  );
+  const syncSessionName: DashboardApi['syncSessionName'] = useCallback((windowId, name, opts) => {
+    const isUserSet = opts?.userSetName ?? false;
+    setState((prev) => ({
+      ...prev,
+      windows: prev.windows.map((w) => {
+        if (w.windowId !== windowId) return w;
+        // Always accept user-authored renames from the backend
+        // (e.g. another window renamed the same session).
+        if (isUserSet) {
+          if (w.name === name && w.userSetName) return w;
+          return { ...w, name, userSetName: true };
+        }
+        // Don't let backend's default placeholder overwrite an
+        // LLM-rename we already accepted or a user rename here.
+        if (w.userSetName) return w;
+        if (isDefaultSessionName(name)) return w;
+        if (w.name === name) return w;
+        return { ...w, name };
+      }),
+    }));
+  }, []);
 
   const moveWindow: DashboardApi['moveWindow'] = useCallback((windowId, position, size) => {
     setState((prev) => ({
@@ -418,16 +478,12 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     // resolved yet) so they don't append a phantom window after the user
     // explicitly cleared the canvas.
     spawnGenerationRef.current += 1;
-    // Tell biorouterd to delete each session too — without this, the
-    // AgentManager LRU keeps holding the closed agents (including any
-    // crashed ones whose background tasks still hold their LRU write-lock),
-    // which can block subsequent createSession calls and make later Spawn
-    // clicks appear to do nothing.
-    const sessionIds = stateRef.current.windows.map((w) => w.sessionId);
-    for (const sid of sessionIds) {
-      void deleteSession({ path: { session_id: sid }, throwOnError: false }).catch(() => {
-        // Best-effort cleanup.
-      });
+    // Clear the canvas, freeing each window's agent from the AgentManager LRU.
+    // Real conversations (resumed/diverged, or created-here chats that were
+    // actually used) are preserved in history; only empty throwaway spawns are
+    // deleted. See reapDashboardSession.
+    for (const w of stateRef.current.windows) {
+      void reapDashboardSession(w.sessionId, w.createdHere ?? false);
     }
     setState((prev) => ({ ...prev, windows: [], focusedWindowId: null }));
   }, []);
@@ -447,34 +503,35 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     });
   }, []);
 
-  const centerOn: DashboardApi['centerOn'] = useCallback((windowId, viewport) => {
-    flashAnimating();
-    setState((prev) => {
-      const w = prev.windows.find((x) => x.windowId === windowId);
-      if (!w) return prev;
-      const cx = w.position.x + w.size.w / 2;
-      const cy = w.position.y + w.size.h / 2;
-      // Snap to integer device pixels. The world layer renders with
-      // translate3d() + will-change: transform, so fractional offsets here
-      // composite the GPU layer at sub-pixel positions and read as blurred
-      // text on Retina displays.
-      return {
-        ...prev,
-        cameraOffset: {
-          x: Math.round(viewport.width / 2 - cx),
-          y: Math.round(viewport.height / 2 - cy),
-        },
-      };
-    });
-  }, [flashAnimating]);
+  const centerOn: DashboardApi['centerOn'] = useCallback(
+    (windowId, viewport) => {
+      flashAnimating();
+      setState((prev) => {
+        const w = prev.windows.find((x) => x.windowId === windowId);
+        if (!w) return prev;
+        const cx = w.position.x + w.size.w / 2;
+        const cy = w.position.y + w.size.h / 2;
+        // Snap to integer device pixels. The world layer renders with
+        // translate3d() + will-change: transform, so fractional offsets here
+        // composite the GPU layer at sub-pixel positions and read as blurred
+        // text on Retina displays.
+        return {
+          ...prev,
+          cameraOffset: {
+            x: Math.round(viewport.width / 2 - cx),
+            y: Math.round(viewport.height / 2 - cy),
+          },
+        };
+      });
+    },
+    [flashAnimating]
+  );
 
   const updateWindowField: DashboardApi['updateWindowField'] = useCallback(
     (windowId, field, value) => {
       setState((prev) => ({
         ...prev,
-        windows: prev.windows.map((w) =>
-          w.windowId === windowId ? { ...w, [field]: value } : w
-        ),
+        windows: prev.windows.map((w) => (w.windowId === windowId ? { ...w, [field]: value } : w)),
       }));
     },
     []
@@ -491,35 +548,38 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     }));
   }, []);
 
-  const foldWindow: DashboardApi['foldWindow'] = useCallback((windowId, folded) => {
-    flashAnimating();
-    setState((prev) => {
-      // In fold mode, unfolding a window auto-folds every other window — keeps
-      // the canvas to a single visible chat at a time.
-      const autoFoldSiblings = prev.foldMode && !folded;
-      let mutated = false;
-      const windows = prev.windows.map((w) => {
-        if (w.windowId === windowId) {
-          if (w.folded === folded) return w;
-          mutated = true;
-          return { ...w, folded };
-        }
-        if (autoFoldSiblings && !w.folded) {
-          mutated = true;
-          return { ...w, folded: true };
-        }
-        return w;
+  const foldWindow: DashboardApi['foldWindow'] = useCallback(
+    (windowId, folded) => {
+      flashAnimating();
+      setState((prev) => {
+        // In fold mode, unfolding a window auto-folds every other window — keeps
+        // the canvas to a single visible chat at a time.
+        const autoFoldSiblings = prev.foldMode && !folded;
+        let mutated = false;
+        const windows = prev.windows.map((w) => {
+          if (w.windowId === windowId) {
+            if (w.folded === folded) return w;
+            mutated = true;
+            return { ...w, folded };
+          }
+          if (autoFoldSiblings && !w.folded) {
+            mutated = true;
+            return { ...w, folded: true };
+          }
+          return w;
+        });
+        if (!mutated) return prev;
+        return {
+          ...prev,
+          windows,
+          // Make the just-unfolded window the focused one so centerOn brings it
+          // into view. Folding doesn't change focus.
+          focusedWindowId: !folded ? windowId : prev.focusedWindowId,
+        };
       });
-      if (!mutated) return prev;
-      return {
-        ...prev,
-        windows,
-        // Make the just-unfolded window the focused one so centerOn brings it
-        // into view. Folding doesn't change focus.
-        focusedWindowId: !folded ? windowId : prev.focusedWindowId,
-      };
-    });
-  }, [flashAnimating]);
+    },
+    [flashAnimating]
+  );
 
   const foldAll: DashboardApi['foldAll'] = useCallback(() => {
     flashAnimating();
@@ -537,34 +597,32 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     }));
   }, [flashAnimating]);
 
-  const setFoldMode: DashboardApi['setFoldMode'] = useCallback((on) => {
-    flashAnimating();
-    setState((prev) => {
-      if (prev.foldMode === on) return prev;
-      // Entering fold mode folds everything; leaving unfolds everything.
-      const windows = prev.windows.map((w) =>
-        w.folded === on ? w : { ...w, folded: on }
-      );
-      return { ...prev, foldMode: on, windows };
-    });
-  }, [flashAnimating]);
-
-  const setWindowPreview: DashboardApi['setWindowPreview'] = useCallback(
-    (windowId, text) => {
+  const setFoldMode: DashboardApi['setFoldMode'] = useCallback(
+    (on) => {
+      flashAnimating();
       setState((prev) => {
-        let mutated = false;
-        const windows = prev.windows.map((w) => {
-          if (w.windowId !== windowId) return w;
-          const next = text ?? undefined;
-          if (w.previewTail === next) return w;
-          mutated = true;
-          return { ...w, previewTail: next };
-        });
-        return mutated ? { ...prev, windows } : prev;
+        if (prev.foldMode === on) return prev;
+        // Entering fold mode folds everything; leaving unfolds everything.
+        const windows = prev.windows.map((w) => (w.folded === on ? w : { ...w, folded: on }));
+        return { ...prev, foldMode: on, windows };
       });
     },
-    []
+    [flashAnimating]
   );
+
+  const setWindowPreview: DashboardApi['setWindowPreview'] = useCallback((windowId, text) => {
+    setState((prev) => {
+      let mutated = false;
+      const windows = prev.windows.map((w) => {
+        if (w.windowId !== windowId) return w;
+        const next = text ?? undefined;
+        if (w.previewTail === next) return w;
+        mutated = true;
+        return { ...w, previewTail: next };
+      });
+      return mutated ? { ...prev, windows } : prev;
+    });
+  }, []);
 
   const setWindowBusy: DashboardApi['setWindowBusy'] = useCallback((windowId, busy) => {
     setState((prev) => {
@@ -578,8 +636,7 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     });
   }, []);
 
-  const allFolded =
-    state.windows.length > 0 && state.windows.every((w) => w.folded);
+  const allFolded = state.windows.length > 0 && state.windows.every((w) => w.folded);
 
   const api: DashboardApi = useMemo(
     () => ({

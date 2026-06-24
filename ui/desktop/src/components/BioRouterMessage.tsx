@@ -17,6 +17,7 @@ import { Message } from '../api';
 import ToolCallConfirmation from './ToolCallConfirmation';
 import ElicitationRequest from './ElicitationRequest';
 import MessageCopyLink from './MessageCopyLink';
+import MessageDivergeLink from './MessageDivergeLink';
 import { cn } from '../utils';
 import { identifyConsecutiveToolCalls, shouldHideTimestamp } from '../utils/toolCallChaining';
 
@@ -163,8 +164,9 @@ export default function BioRouterMessage({
                   </div>
                 )}
                 {message.content.every((content) => content.type === 'text') && !isStreaming && (
-                  <div className="absolute left-0 pt-1">
+                  <div className="absolute left-0 pt-1 flex items-center gap-3">
                     <MessageCopyLink text={displayText} contentRef={contentRef} />
+                    <MessageDivergeLink sessionId={sessionId} truncateAfterMs={message.created} />
                   </div>
                 )}
               </div>

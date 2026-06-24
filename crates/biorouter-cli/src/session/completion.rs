@@ -14,6 +14,7 @@ pub(crate) const SLASH_COMMANDS: &[&str] = &[
     "/help",
     "/clear",
     "/compact",
+    "/diverge",
     "/goal",
     "/loop",
     "/schedule",
