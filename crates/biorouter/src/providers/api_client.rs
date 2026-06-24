@@ -20,6 +20,46 @@ pub struct ApiClient {
     tls_config: Option<TlsConfig>,
 }
 
+/// Overall request-timeout default (seconds). Deliberately generous so a healthy
+/// long generation is not killed mid-stream — per-read inactivity is bounded
+/// separately by the read timeout below. Override: `BIOROUTER_HTTP_TIMEOUT_SECS`.
+fn default_overall_timeout_secs() -> u64 {
+    std::env::var("BIOROUTER_HTTP_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1800)
+}
+
+/// Connection-reuse + timeout tuning shared by every `ApiClient`:
+/// - `connect_timeout`: fail fast on a black-holed connect instead of hanging
+///   toward the overall timeout, so a retry can open a fresh connection (SW3).
+/// - `read_timeout`: a stalled SSE stream / hung response body aborts on
+///   inactivity instead of waiting the full overall timeout; a healthy stream
+///   that keeps emitting deltas is unaffected (FW3 SSE idle timeout).
+/// - `tcp_keepalive` + `pool_idle_timeout`: keep warm HTTP/1.1 keep-alive
+///   connections in the pool so successive turns reuse them (SW3).
+/// All four are env-overridable; defaults chosen to be safe for slow local
+/// models (a 300s read timeout tolerates a long first-token on weak hardware).
+fn tune_client_builder(
+    builder: reqwest::ClientBuilder,
+    timeout: Duration,
+) -> reqwest::ClientBuilder {
+    let connect = std::env::var("BIOROUTER_HTTP_CONNECT_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(15);
+    let read = std::env::var("BIOROUTER_HTTP_READ_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(300);
+    builder
+        .timeout(timeout)
+        .connect_timeout(Duration::from_secs(connect))
+        .read_timeout(Duration::from_secs(read))
+        .tcp_keepalive(Duration::from_secs(30))
+        .pool_idle_timeout(Duration::from_secs(90))
+}
+
 pub enum AuthMethod {
     BearerToken(String),
     ApiKey {
@@ -202,11 +242,11 @@ pub struct ApiRequestBuilder<'a> {
 
 impl ApiClient {
     pub fn new(host: String, auth: AuthMethod) -> Result<Self> {
-        Self::with_timeout(host, auth, Duration::from_secs(600))
+        Self::with_timeout(host, auth, Duration::from_secs(default_overall_timeout_secs()))
     }
 
     pub fn with_timeout(host: String, auth: AuthMethod, timeout: Duration) -> Result<Self> {
-        let mut client_builder = Client::builder().timeout(timeout);
+        let mut client_builder = tune_client_builder(Client::builder(), timeout);
 
         // Configure TLS if needed
         let tls_config = TlsConfig::from_config()?;
@@ -227,8 +267,7 @@ impl ApiClient {
     }
 
     fn rebuild_client(&mut self) -> Result<()> {
-        let mut client_builder = Client::builder()
-            .timeout(self.timeout)
+        let mut client_builder = tune_client_builder(Client::builder(), self.timeout)
             .default_headers(self.default_headers.clone());
 
         // Configure TLS if needed
