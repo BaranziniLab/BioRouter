@@ -158,6 +158,11 @@ pub struct Agent {
     /// Lazily-created scheduler for `/loop`/`/schedule` when no
     /// `scheduler_service` was injected (plain CLI/TUI sessions).
     pub(super) fallback_scheduler: tokio::sync::OnceCell<Arc<dyn SchedulerTrait>>,
+    /// Soft-interrupt queue: user messages submitted mid-turn. Drained and
+    /// injected at the next safe loop boundary in `reply_internal` instead of
+    /// cancelling the turn (no lost work, no full context re-send). A plain
+    /// `std::Mutex` so callers can push without awaiting the agent's async locks.
+    pub(super) soft_interrupts: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -251,7 +256,25 @@ impl Agent {
             hooks_manager,
             goals: Default::default(),
             fallback_scheduler: tokio::sync::OnceCell::new(),
+            soft_interrupts: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
+    }
+
+    /// Queue a user message to be injected into the running turn at the next safe
+    /// loop boundary (soft interrupt). Cheap + lock-light: callable from a server
+    /// route or the CLI while a turn is streaming, without cancelling it.
+    pub fn queue_soft_interrupt(&self, text: String) {
+        if let Ok(mut q) = self.soft_interrupts.lock() {
+            q.push(text);
+        }
+    }
+
+    /// Drain queued soft-interrupt messages (FIFO). Returns empty when none.
+    pub(super) fn drain_soft_interrupts(&self) -> Vec<String> {
+        self.soft_interrupts
+            .lock()
+            .map(|mut q| std::mem::take(&mut *q))
+            .unwrap_or_default()
     }
 
     /// The hooks manager driving user-configured lifecycle hooks.
@@ -1281,6 +1304,17 @@ impl Agent {
                         ))
                     );
                     break;
+                }
+
+                // Soft interrupt: inject any user messages queued mid-turn at this
+                // safe boundary (after the previous turn's tools completed, before
+                // the next provider call) so the model incorporates them without a
+                // cancel-and-resend round trip that discards in-flight work.
+                for text in self.drain_soft_interrupts() {
+                    let m = Message::user().with_text(text);
+                    session_manager.add_message(&session_config.id, &m).await?;
+                    conversation.push(m.clone());
+                    yield AgentEvent::Message(m);
                 }
 
                 let conversation_with_moim = super::moim::inject_moim(
