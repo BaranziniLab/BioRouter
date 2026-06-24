@@ -747,7 +747,19 @@ fn draw_completion(f: &mut Frame, app: &App, input_area: Rect) {
 
 fn draw_history(f: &mut Frame, app: &mut App, area: Rect) {
     let para = Paragraph::new(app.scrollback.clone()).wrap(Wrap { trim: false });
-    let total = wrapped_count(&app.scrollback, area.width);
+    // The wrapped-line total is an O(content) unicode re-measure. Cache it by a
+    // cheap content signature so spinner-tick redraws (where nothing changed)
+    // don't recompute it; recompute only when scrollback grows, the viewport
+    // resizes, or a streamed token extends the in-progress text.
+    let sig = (app.scrollback.len(), area.width, app.stream_text.len());
+    let total = match app.wrap_cache {
+        Some((sb, w, st, cached)) if (sb, w, st) == sig => cached,
+        _ => {
+            let t = wrapped_count(&app.scrollback, area.width);
+            app.wrap_cache = Some((sig.0, sig.1, sig.2, t));
+            t
+        }
+    };
     app.last_total_lines = total as usize;
     app.last_viewport_h = area.height;
     let base = total.saturating_sub(area.height);
