@@ -255,6 +255,10 @@ pub async fn reply(
     let task_tx = tx.clone();
 
     let _handle = tokio::spawn(async move {
+        // Mark an interactive turn in progress for the lifetime of this reply
+        // stream so the scheduler defers background jobs while the user is
+        // mid-conversation (dropped when the stream task ends).
+        let _interactive_turn = biorouter::scheduler::interactive_turn_guard();
         let agent = match state.get_agent(session_id.clone()).await {
             Ok(agent) => agent,
             Err(e) => {

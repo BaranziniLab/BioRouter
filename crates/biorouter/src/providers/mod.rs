@@ -25,7 +25,7 @@ pub mod openai;
 pub mod openrouter;
 pub mod provider_registry;
 pub mod provider_test;
-mod retry;
+pub(crate) mod retry;
 pub mod sagemaker_tgi;
 pub mod snowflake;
 pub mod testprovider;
