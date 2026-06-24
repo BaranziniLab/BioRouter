@@ -27,8 +27,10 @@ pub mod subagent_tool;
 pub(crate) mod todo_extension;
 mod tool_execution;
 pub mod types;
+pub mod vault_refs;
 
 pub use agent::{Agent, AgentConfig, AgentEvent, ExtensionLoadResult};
+pub use vault_refs::VaultRefs;
 pub use execute_commands::COMPACT_TRIGGERS;
 pub use extension::ExtensionConfig;
 pub use extension_manager::{normalize, ExtensionManager};
