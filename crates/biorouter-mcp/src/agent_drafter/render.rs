@@ -348,6 +348,7 @@ mod tests {
             width: None,
             height: None,
             built_at: None,
+            session_id: None,
         }
     }
 

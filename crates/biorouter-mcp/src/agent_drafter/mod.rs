@@ -28,10 +28,17 @@ use rmcp::{
         ServerCapabilities, ServerInfo,
     },
     schemars::JsonSchema,
-    tool, tool_handler, tool_router, ServerHandler,
+    service::RequestContext,
+    tool, tool_handler, tool_router, RoleServer, ServerHandler,
 };
 use serde::Deserialize;
 use std::path::PathBuf;
+
+/// Meta key the agent loop uses to pass the current chat session id into MCP
+/// tool calls. Must match `biorouter::session_context::SESSION_ID_HEADER`
+/// (duplicated here to avoid a circular dependency on the `biorouter` crate,
+/// the same way `knowledge::server` does).
+const SESSION_ID_META_KEY: &str = "biorouter-session-id";
 
 use store::{AgentConfig, ArtifactKind, ArtifactStore, Manifest, ModelSelection};
 
@@ -328,6 +335,16 @@ impl AgentDrafterServer {
         Self::with_root(default_root())
     }
 
+    /// The chat session id carried in a tool call's request meta, if present.
+    fn session_id_from_context(context: &RequestContext<RoleServer>) -> Option<String> {
+        context
+            .meta
+            .0
+            .get(SESSION_ID_META_KEY)
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
     pub fn with_root(root: PathBuf) -> Self {
         let instructions = formatdoc! {r#"
             Agent Drafter builds interactive **BioRouter apps** for the user:
@@ -492,8 +509,20 @@ impl AgentDrafterServer {
     pub async fn create_app(
         &self,
         params: Parameters<CreateAppParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let p = params.0;
+        // Record the chat session this app was built in, so the GUI can reopen
+        // that conversation to keep iterating. (Absent in headless/CLI calls
+        // that don't carry session meta.)
+        self.create_app_inner(params.0, Self::session_id_from_context(&context))
+            .await
+    }
+
+    async fn create_app_inner(
+        &self,
+        p: CreateAppParams,
+        session_id: Option<String>,
+    ) -> Result<CallToolResult, ErrorData> {
         if p.title.trim().is_empty() {
             return Err(err(ErrorCode::INVALID_PARAMS, "title must not be empty"));
         }
@@ -538,6 +567,8 @@ impl AgentDrafterServer {
         }
         .map_err(internal)?;
 
+        manifest.session_id = session_id.clone();
+
         if kind == ArtifactKind::Agentic {
             // Provider-agnostic by default: leave the model unset so the app uses
             // whatever provider/model the user has configured in BioRouter. Pin a
@@ -554,6 +585,10 @@ impl AgentDrafterServer {
                 knowledge_base: p.knowledge_base.filter(|s| !s.trim().is_empty()),
                 max_turns: None,
             });
+            store.save_manifest(&manifest).map_err(internal)?;
+        } else if session_id.is_some() {
+            // Static apps were already persisted by `create`; re-save so the
+            // freshly-stamped session id lands on disk.
             store.save_manifest(&manifest).map_err(internal)?;
         }
 
@@ -1009,7 +1044,7 @@ mod tests {
         let mut p = create("Dashboard", None);
         p.system_prompt = Some("You analyze data.".into());
         p.extensions = vec!["autovisualiser".into()];
-        let res = s.create_app(Parameters(p)).await.unwrap();
+        let res = s.create_app_inner(p, None).await.unwrap();
         assert!(has_ui_resource(&res));
         assert!(s.store().read_file("dashboard", "src/main.ts").is_ok());
         assert!(s.store().read_file("dashboard", "src/sdk.ts").is_ok());
@@ -1026,9 +1061,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_app_records_session_id_when_present() {
+        let (_d, s) = server();
+        // Agentic app carries the session id through the agent-config save path.
+        s.create_app_inner(create("Sessioned", None), Some("sess-123".into()))
+            .await
+            .unwrap();
+        let m = s.store().load_manifest("sessioned").unwrap();
+        assert_eq!(m.session_id.as_deref(), Some("sess-123"));
+
+        // Static app gets the id too (re-saved after the initial create).
+        s.create_app_inner(create("StaticOne", Some("static")), Some("sess-999".into()))
+            .await
+            .unwrap();
+        let sm = s.store().load_manifest("staticone").unwrap();
+        assert_eq!(sm.session_id.as_deref(), Some("sess-999"));
+
+        // No session meta (headless/CLI) leaves it unset.
+        s.create_app_inner(create("NoSession", None), None)
+            .await
+            .unwrap();
+        assert_eq!(s.store().load_manifest("nosession").unwrap().session_id, None);
+    }
+
+    #[tokio::test]
     async fn configure_app_sets_model_and_extensions() {
         let (_d, s) = server();
-        s.create_app(Parameters(create("Cfg", Some("static"))))
+        s.create_app_inner(create("Cfg", Some("static")), None)
             .await
             .unwrap();
         s.configure_app(Parameters(ConfigureAppParams {
@@ -1059,9 +1118,12 @@ mod tests {
     #[tokio::test]
     async fn create_rejects_empty_title_and_bad_kind() {
         let (_d, s) = server();
-        assert!(s.create_app(Parameters(create("  ", None))).await.is_err());
         assert!(s
-            .create_app(Parameters(create("X", Some("bogus"))))
+            .create_app_inner(create("  ", None), None)
+            .await
+            .is_err());
+        assert!(s
+            .create_app_inner(create("X", Some("bogus")), None)
             .await
             .is_err());
     }
@@ -1071,7 +1133,7 @@ mod tests {
         let (_d, s) = server();
         let mut p = create("Edit Me", None);
         p.html = Some("<html><body>ORIGINAL</body></html>".into());
-        s.create_app(Parameters(p)).await.unwrap();
+        s.create_app_inner(p, None).await.unwrap();
 
         s.update_app(Parameters(UpdateAppParams {
             id: "edit-me".into(),
@@ -1105,7 +1167,7 @@ mod tests {
     #[tokio::test]
     async fn build_then_launch_returns_url() {
         let (_d, s) = server();
-        s.create_app(Parameters(create("Launchy", None)))
+        s.create_app_inner(create("Launchy", None), None)
             .await
             .unwrap();
         let res = s
@@ -1135,7 +1197,9 @@ mod tests {
     #[tokio::test]
     async fn list_read_delete() {
         let (_d, s) = server();
-        s.create_app(Parameters(create("One", None))).await.unwrap();
+        s.create_app_inner(create("One", None), None)
+            .await
+            .unwrap();
         let all = s
             .list_apps(Parameters(ListAppsParams { kind: None }))
             .await
@@ -1163,7 +1227,7 @@ mod tests {
         let mut p = create("Exporter", None);
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         p.system_prompt = Some("help".into());
-        s.create_app(Parameters(p)).await.unwrap();
+        s.create_app_inner(p, None).await.unwrap();
 
         let out = TempDir::new().unwrap();
         let res = s
