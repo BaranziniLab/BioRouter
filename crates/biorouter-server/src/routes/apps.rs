@@ -383,6 +383,21 @@ async fn configure_agent(
         }
     }
 
+    // BRSDK files capability: inject a jailed file server confined to the app
+    // workspace (read/write/list, jail-enforced). Deny-by-default.
+    if cfg.capabilities.files.is_some() {
+        let workspace = store().artifact_dir(&manifest.id).join("workspace");
+        let _ = std::fs::create_dir_all(&workspace);
+        let server = biorouter_mcp::files_server::for_workspace(workspace, true);
+        if let Err(e) = agent
+            .extension_manager
+            .add_inprocess_server("files", server)
+            .await
+        {
+            warn!(app = %manifest.id, "files injection failed: {e}");
+        }
+    }
+
     // Knowledge base scoping.
     if let Some(kb) = cfg.knowledge_base.as_ref() {
         if let Err(e) = state
