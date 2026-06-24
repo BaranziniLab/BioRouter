@@ -4,7 +4,6 @@ use super::{
     anthropic::AnthropicProvider,
     azure::AzureProvider,
     base::{Provider, ProviderMetadata},
-    bedrock::BedrockProvider,
     databricks::DatabricksProvider,
     gcpvertexai::GcpVertexAIProvider,
     githubcopilot::GithubCopilotProvider,
@@ -16,15 +15,18 @@ use super::{
     openai::OpenAiProvider,
     openrouter::OpenRouterProvider,
     provider_registry::ProviderRegistry,
-    sagemaker_tgi::SageMakerTgiProvider,
     snowflake::SnowflakeProvider,
     tetrate::TetrateProvider,
     venice::VeniceProvider,
     versa_azure::VersaAzureProvider,
-    versa_bedrock::VersaBedrockProvider,
     xai::XaiProvider,
     xiaomi_mimo::XiaomiMimoProvider,
     zai::ZaiProvider,
+};
+#[cfg(feature = "aws-providers")]
+use super::{
+    bedrock::BedrockProvider, sagemaker_tgi::SageMakerTgiProvider,
+    versa_bedrock::VersaBedrockProvider,
 };
 use crate::model::ModelConfig;
 use crate::providers::base::ProviderType;
@@ -46,11 +48,13 @@ async fn init_registry() -> RwLock<ProviderRegistry> {
         registry
             .register::<AnthropicProvider, _>(|m| Box::pin(AnthropicProvider::from_env(m)), true);
         registry.register::<AzureProvider, _>(|m| Box::pin(AzureProvider::from_env(m)), false);
+        #[cfg(feature = "aws-providers")]
         registry.register::<BedrockProvider, _>(|m| Box::pin(BedrockProvider::from_env(m)), false);
         registry.register::<VersaAzureProvider, _>(
             |m| Box::pin(VersaAzureProvider::from_env(m)),
             false,
         );
+        #[cfg(feature = "aws-providers")]
         registry.register::<VersaBedrockProvider, _>(
             |m| Box::pin(VersaBedrockProvider::from_env(m)),
             false,
@@ -72,6 +76,7 @@ async fn init_registry() -> RwLock<ProviderRegistry> {
         registry.register::<OpenAiProvider, _>(|m| Box::pin(OpenAiProvider::from_env(m)), true);
         registry
             .register::<OpenRouterProvider, _>(|m| Box::pin(OpenRouterProvider::from_env(m)), true);
+        #[cfg(feature = "aws-providers")]
         registry.register::<SageMakerTgiProvider, _>(
             |m| Box::pin(SageMakerTgiProvider::from_env(m)),
             false,
