@@ -5,6 +5,7 @@ pub mod config;
 pub mod context_mgmt;
 pub mod conversation;
 pub mod execution;
+pub mod guardrails;
 pub mod hints;
 pub mod hooks;
 pub mod knowledge;
