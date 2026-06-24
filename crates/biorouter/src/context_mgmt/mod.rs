@@ -188,13 +188,27 @@ pub async fn check_if_compaction_needed(
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create token counter: {}", e))?;
 
-            let token_counts: Vec<_> = messages
+            // tiktoken BPE over the whole history is CPU-bound. This runs at the
+            // top of reply() on a session's first turn (or for providers that
+            // don't report usage). Offload it to the blocking pool so it never
+            // stalls an async runtime worker. Clone the agent-visible messages to
+            // move into the task (cold path only — the happy path uses the
+            // provider-reported `session.total_tokens` above).
+            let owned: Vec<Message> = messages
                 .iter()
                 .filter(|m| m.is_agent_visible())
-                .map(|msg| token_counter.count_chat_tokens("", std::slice::from_ref(msg), &[]))
+                .cloned()
                 .collect();
+            let total = tokio::task::spawn_blocking(move || {
+                owned
+                    .iter()
+                    .map(|msg| token_counter.count_chat_tokens("", std::slice::from_ref(msg), &[]))
+                    .sum::<usize>()
+            })
+            .await
+            .map_err(|e| anyhow::anyhow!("Token counting task failed: {}", e))?;
 
-            (token_counts.iter().sum(), "estimated")
+            (total, "estimated")
         }
     };
 
