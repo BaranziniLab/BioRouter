@@ -8,6 +8,7 @@
 //! wiring into the agent loop land in Phase 2b.
 
 pub mod pii;
+pub mod run_state;
 
 /// Where in a turn's lifecycle a guardrail runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
