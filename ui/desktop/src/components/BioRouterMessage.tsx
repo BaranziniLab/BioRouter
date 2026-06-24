@@ -28,6 +28,12 @@ interface BioRouterMessageProps {
   toolCallNotifications: Map<string, NotificationEvent[]>;
   append: (value: string) => void;
   isStreaming?: boolean; // Whether this message is currently being streamed
+  // Precomputed by the parent list once per render and passed down to avoid each
+  // message recomputing O(n) scans over the whole conversation (which made the
+  // list O(n²) per streaming frame). Both fall back to local computation when
+  // omitted, so the component still works standalone.
+  messageIndex?: number;
+  toolCallChains?: ReturnType<typeof identifyConsecutiveToolCalls>;
   submitElicitationResponse?: (
     elicitationId: string,
     userData: Record<string, unknown>
@@ -41,6 +47,8 @@ export default function BioRouterMessage({
   toolCallNotifications,
   append,
   isStreaming = false,
+  messageIndex: messageIndexProp,
+  toolCallChains: toolCallChainsProp,
   submitElicitationResponse,
 }: BioRouterMessageProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
@@ -81,10 +89,18 @@ export default function BioRouterMessage({
 
   const timestamp = useMemo(() => formatMessageTimestamp(message.created), [message.created]);
   const toolRequests = getToolRequests(message);
-  const messageIndex = messages.findIndex((msg) => msg.id === message.id);
+  // Use the index passed by the parent list when available (O(1)); only fall
+  // back to the O(n) scan when rendered standalone.
+  const messageIndex =
+    messageIndexProp ?? messages.findIndex((msg) => msg.id === message.id);
   const toolConfirmationContent = getToolConfirmationContent(message);
   const elicitationContent = getElicitationContent(message);
-  const toolCallChains = useMemo(() => identifyConsecutiveToolCalls(messages), [messages]);
+  // Prefer the parent's single precomputed chain map; only recompute locally
+  // (the old O(n)-per-message cost) when not provided.
+  const toolCallChains = useMemo(
+    () => toolCallChainsProp ?? identifyConsecutiveToolCalls(messages),
+    [toolCallChainsProp, messages]
+  );
   const hideTimestamp = useMemo(
     () => shouldHideTimestamp(messageIndex, toolCallChains),
     [messageIndex, toolCallChains]
