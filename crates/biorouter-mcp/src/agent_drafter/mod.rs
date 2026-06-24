@@ -18,6 +18,7 @@ pub mod bundle;
 pub mod manifest;
 pub mod render;
 pub mod store;
+pub mod vault;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use etcetera::{choose_app_strategy, AppStrategy};
