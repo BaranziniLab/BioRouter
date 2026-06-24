@@ -23,6 +23,9 @@ pub enum InputResult {
     Workflow(Option<String>),
     Compact,
     ToggleFullToolOutput,
+    /// Branch the current conversation into a brand-new session (full history
+    /// preserved) and open it in a fresh BioRouter desktop window.
+    Diverge,
 }
 
 #[derive(Debug)]
@@ -197,6 +200,7 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
         }
         s if s == CMD_ENDPLAN => Some(InputResult::EndPlan),
         s if s == CMD_CLEAR => Some(InputResult::Clear),
+        "/diverge" => Some(InputResult::Diverge),
         s if s.starts_with(CMD_WORKFLOW) => parse_workflow_command(s),
         s if s == CMD_COMPACT => Some(InputResult::Compact),
         s if s == CMD_SUMMARIZE_DEPRECATED => {
@@ -351,6 +355,10 @@ fn print_help() {
         ("/compact", "Compact the conversation to reclaim context"),
         ("/clear", "Clear the current chat history"),
         (
+            "/diverge",
+            "Branch this conversation into a new BioRouter window (keeps full history)",
+        ),
+        (
             "/goal <condition>",
             "Keep working until the condition is met (/goal clear to stop)",
         ),
@@ -489,8 +497,26 @@ mod tests {
             panic!("Expected AddBuiltin");
         }
 
+        // Test diverge command
+        assert!(matches!(
+            handle_slash_command("/diverge"),
+            Some(InputResult::Diverge)
+        ));
+        assert!(matches!(
+            handle_slash_command("  /diverge  "),
+            Some(InputResult::Diverge)
+        ));
+        assert!(handle_slash_command("/divergent").is_none());
+        assert!(handle_slash_command("/diverge now").is_none());
+
         // Test unknown commands
         assert!(handle_slash_command("/unknown").is_none());
+    }
+
+    #[test]
+    fn test_diverge_is_in_completion_registry() {
+        // Keep the parser and the autocomplete list in sync.
+        assert!(super::super::completion::SLASH_COMMANDS.contains(&"/diverge"));
     }
 
     #[test]

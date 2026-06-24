@@ -4,6 +4,7 @@ import { ChatProvider, DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
 import { ChatType } from '../../types/chat';
 import { DashboardWindow } from '../../contexts/DashboardContext';
 import { useDashboard } from '../../contexts/DashboardContext';
+import { DashboardCanvasContext } from '../../contexts/DashboardCanvasContext';
 import { WindowTitleBar } from './WindowTitleBar';
 import { ResizeHandle } from './ResizeHandle';
 import { usePointerDrag } from './useDashboardDrag';
@@ -99,10 +100,7 @@ export const ChatWindow: React.FC<Props> = ({
   });
 
   const isManipulating =
-    dragOffset.dx !== 0 ||
-    dragOffset.dy !== 0 ||
-    resizeDelta.dw !== 0 ||
-    resizeDelta.dh !== 0;
+    dragOffset.dx !== 0 || dragOffset.dy !== 0 || resizeDelta.dw !== 0 || resizeDelta.dh !== 0;
   // Animate transform / size only when the dashboard is in an animation frame
   // (after organize / centerOn) AND the user isn't actively dragging/resizing.
   // Keeps drag-feel instant while making organize and focus-centering smooth.
@@ -184,50 +182,55 @@ export const ChatWindow: React.FC<Props> = ({
         />
         <div className="flex-1 min-h-0 relative">
           <ChatProvider chat={chat} setChat={setChat} contextKey={`dashboard-${win.sessionId}`}>
-            <BaseChat
-              setChat={setChat}
-              sessionId={win.sessionId}
-              suppressEmptyState={false}
-              coherent
-              hideSessionNamePill
-              compactPicker
-              showPopularTopics={false}
-              accentColor={win.accentColor}
-              onBusyChange={(busy) => dashboard.setWindowBusy(win.windowId, busy)}
-              focusTrigger={focusTrigger}
-              onLatestMessage={(text) => dashboard.setWindowPreview(win.windowId, text)}
-              onRenameSession={(newName) => {
-                dashboard.renameWindow(win.windowId, newName);
-                announceSessionName({
-                  sessionId: win.sessionId,
-                  name: newName,
-                  userSetName: true,
-                  origin: 'user',
-                });
-                void renameSession(win.sessionId, newName, 'user').catch((err) => {
-                  if (win.name) {
-                    dashboard.renameWindow(win.windowId, win.name);
-                    announceSessionName({
-                      sessionId: win.sessionId,
-                      name: win.name,
-                      userSetName: win.userSetName,
-                      origin: 'sync',
+            {/* Mark this BaseChat as living on the dashboard canvas so a
+                Diverge from here spawns a new on-canvas window instead of a
+                new Electron window. */}
+            <DashboardCanvasContext.Provider value={true}>
+              <BaseChat
+                setChat={setChat}
+                sessionId={win.sessionId}
+                suppressEmptyState={false}
+                coherent
+                hideSessionNamePill
+                compactPicker
+                showPopularTopics={false}
+                accentColor={win.accentColor}
+                onBusyChange={(busy) => dashboard.setWindowBusy(win.windowId, busy)}
+                focusTrigger={focusTrigger}
+                onLatestMessage={(text) => dashboard.setWindowPreview(win.windowId, text)}
+                onRenameSession={(newName) => {
+                  dashboard.renameWindow(win.windowId, newName);
+                  announceSessionName({
+                    sessionId: win.sessionId,
+                    name: newName,
+                    userSetName: true,
+                    origin: 'user',
+                  });
+                  void renameSession(win.sessionId, newName, 'user').catch((err) => {
+                    if (win.name) {
+                      dashboard.renameWindow(win.windowId, win.name);
+                      announceSessionName({
+                        sessionId: win.sessionId,
+                        name: win.name,
+                        userSetName: win.userSetName,
+                        origin: 'sync',
+                      });
+                    }
+                    toastError({
+                      title: 'Failed to rename session',
+                      msg: errorMessage(err),
+                    });
+                  });
+                }}
+                onSessionUpdate={(s) => {
+                  if (s?.name) {
+                    dashboard.syncSessionName(win.windowId, s.name, {
+                      userSetName: s.userSetName,
                     });
                   }
-                  toastError({
-                    title: 'Failed to rename session',
-                    msg: errorMessage(err),
-                  });
-                });
-              }}
-              onSessionUpdate={(s) => {
-                if (s?.name) {
-                  dashboard.syncSessionName(win.windowId, s.name, {
-                    userSetName: s.userSetName,
-                  });
-                }
-              }}
-            />
+                }}
+              />
+            </DashboardCanvasContext.Provider>
           </ChatProvider>
         </div>
         <ResizeHandle onPointerDown={resizeStart} />

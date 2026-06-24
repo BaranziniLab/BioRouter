@@ -10,6 +10,13 @@ vi.mock('../../sessions', () => ({
 vi.mock('../../utils/workingDir', () => ({
   getInitialWorkingDir: () => '/tmp',
 }));
+// The provider now reaps agents/sessions on close via these — resolve them
+// cleanly so the fire-and-forget calls don't leak rejections in jsdom.
+vi.mock('../../api', () => ({
+  deleteSession: vi.fn(async () => ({ data: {}, error: undefined })),
+  getSession: vi.fn(async () => ({ data: { message_count: 1 }, error: undefined })),
+  stopAgent: vi.fn(async () => ({ data: {}, error: undefined })),
+}));
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <DashboardProvider>{children}</DashboardProvider>
@@ -36,7 +43,8 @@ describe('DashboardProvider (canvas mode)', () => {
     const w = result.current.state.windows[0];
     expect(result.current.state.focusedWindowId).toBe(w.windowId);
     expect(w.position).toBeDefined();
-    expect(w.size).toEqual({ w: 520, h: 440 });
+    // Spawn default size = DashboardProvider.MIN_WINDOW_{W,H}.
+    expect(w.size).toEqual({ w: 600, h: 440 });
   });
 
   it('spawning multiple windows places them non-overlappingly', async () => {

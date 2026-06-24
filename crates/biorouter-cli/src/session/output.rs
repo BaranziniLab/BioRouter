@@ -449,6 +449,36 @@ pub fn render_extension_error(name: &str, error: &str) {
     println!();
 }
 
+pub fn render_diverge_success(new_session_id: &str) {
+    println!();
+    println!(
+        "  {} conversation into a new window (session {})",
+        style("diverged"),
+        style(new_session_id).cyan()
+    );
+    println!(
+        "  {}",
+        style("the original conversation is unchanged — keep chatting here").dim()
+    );
+    println!();
+}
+
+pub fn render_diverge_open_failed(new_session_id: &str, url: &str, error: &str) {
+    println!();
+    println!(
+        "  {} the diverged session ({}) but couldn't open a window",
+        style("created").yellow(),
+        style(new_session_id).cyan()
+    );
+    println!("  {} {}", style("reason:").dim(), style(error).dim());
+    println!(
+        "  {} open BioRouter and run this link manually:",
+        style("tip:").dim()
+    );
+    println!("  {}", style(url).cyan());
+    println!();
+}
+
 pub fn render_builtin_success(names: &str) {
     println!();
     println!(
