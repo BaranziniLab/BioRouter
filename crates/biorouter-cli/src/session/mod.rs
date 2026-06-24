@@ -54,6 +54,26 @@ use tokio;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
+/// Build the `biorouter://diverge` deeplink the CLI hands to the desktop app to
+/// open a diverged session in a fresh window. The session id and working dir
+/// are URL-encoded so paths with spaces/special characters survive the round
+/// trip. Kept as a free function so it can be unit-tested without a session.
+pub(crate) fn build_diverge_deeplink(session_id: &str, working_dir: &std::path::Path) -> String {
+    let encoded_id = urlencoding::encode(session_id);
+    let working_dir_lossy = working_dir.to_string_lossy();
+    let encoded_dir = urlencoding::encode(&working_dir_lossy);
+    format!("biorouter://diverge?session_id={encoded_id}&dir={encoded_dir}")
+}
+
+/// Result of a `/diverge`: the new branched session, the deeplink used to open
+/// it, and whether opening the desktop window failed (the branch is persisted
+/// regardless).
+pub(crate) struct DivergeOutcome {
+    pub new_session_id: String,
+    pub url: String,
+    pub open_error: Option<String>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 struct JsonOutput {
     messages: Vec<Message>,
@@ -585,8 +605,55 @@ impl CliSession {
                 history.save(editor);
                 self.handle_compact().await?;
             }
+            InputResult::Diverge => {
+                history.save(editor);
+                self.handle_diverge().await?;
+            }
         }
         Ok(())
+    }
+
+    /// Branch the current conversation into a brand-new session (full history
+    /// preserved, original untouched) and open it in a fresh BioRouter desktop
+    /// window via the `biorouter://diverge` deeplink. Used by the classic CLI.
+    async fn handle_diverge(&self) -> Result<()> {
+        let outcome = self.diverge_and_open(|url| open::that(url)).await?;
+        match outcome.open_error {
+            None => output::render_diverge_success(&outcome.new_session_id),
+            Some(err) => {
+                output::render_diverge_open_failed(&outcome.new_session_id, &outcome.url, &err)
+            }
+        }
+        Ok(())
+    }
+
+    /// Core of `/diverge`, shared by the classic CLI and the TUI. Copies the
+    /// current session (full history, original untouched), builds the desktop
+    /// deeplink, and hands it to `opener`. The opener is injected so this can be
+    /// unit-tested without actually launching the GUI. A failure to open the
+    /// window is *not* an error — the branch is still persisted — so it is
+    /// reported via `DivergeOutcome::open_error` for the caller to surface.
+    pub(crate) async fn diverge_and_open<F>(&self, opener: F) -> Result<DivergeOutcome>
+    where
+        F: FnOnce(&str) -> std::io::Result<()>,
+    {
+        let manager = &self.agent.config.session_manager;
+
+        // diverge_session branches the conversation with a placeholder-aware,
+        // sibling-numbered name (e.g. "Foo (branch 2)") and records lineage.
+        let new_session = manager
+            .diverge_session(&self.session_id, None)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to diverge session: {}", e))?;
+
+        let url = build_diverge_deeplink(&new_session.id, &new_session.working_dir);
+        let open_error = opener(&url).err().map(|e| e.to_string());
+
+        Ok(DivergeOutcome {
+            new_session_id: new_session.id,
+            url,
+            open_error,
+        })
     }
 
     async fn handle_message_input(
@@ -1861,6 +1928,28 @@ fn format_elapsed_time(duration: std::time::Duration) -> String {
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn test_build_diverge_deeplink_basic() {
+        let url = build_diverge_deeplink("20260622_3", std::path::Path::new("/home/u/proj"));
+        assert_eq!(
+            url,
+            "biorouter://diverge?session_id=20260622_3&dir=%2Fhome%2Fu%2Fproj"
+        );
+        assert!(url.starts_with("biorouter://diverge?"));
+    }
+
+    #[test]
+    fn test_build_diverge_deeplink_encodes_spaces_and_specials() {
+        let url = build_diverge_deeplink(
+            "id with space",
+            std::path::Path::new("/tmp/My Projects/a&b"),
+        );
+        assert!(url.contains("session_id=id%20with%20space"));
+        assert!(url.contains("dir=%2Ftmp%2FMy%20Projects%2Fa%26b"));
+        // The raw ampersand from the path must NOT introduce a 3rd query param.
+        assert_eq!(url.matches('&').count(), 1);
+    }
 
     #[test]
     fn test_format_elapsed_time_under_60_seconds() {
