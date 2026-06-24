@@ -309,13 +309,8 @@ pub fn export_scaffold(
         .filter(|(p, _)| p != &manifest.entry && !p.starts_with("src/") && !p.starts_with("dist/"))
         .cloned()
         .collect();
-    let mut scaffold = render::scaffold_standalone(
-        &manifest,
-        &entry_html,
-        &src_files,
-        &extra_files,
-        endpoint,
-    );
+    let mut scaffold =
+        render::scaffold_standalone(&manifest, &entry_html, &src_files, &extra_files, endpoint);
     // Ship a prebuilt bundle so the export is directly runnable with no build
     // step (the launcher / a static server can serve it as-is). Build on demand.
     if manifest.kind == ArtifactKind::Agentic {
@@ -954,7 +949,10 @@ impl AgentDrafterServer {
         ))]))
     }
 
-    #[tool(name = "delete_app", description = "Delete an app and all of its files.")]
+    #[tool(
+        name = "delete_app",
+        description = "Delete an app and all of its files."
+    )]
     pub async fn delete_app(
         &self,
         params: Parameters<AppIdParams>,
@@ -1081,7 +1079,10 @@ mod tests {
         s.create_app_inner(create("NoSession", None), None)
             .await
             .unwrap();
-        assert_eq!(s.store().load_manifest("nosession").unwrap().session_id, None);
+        assert_eq!(
+            s.store().load_manifest("nosession").unwrap().session_id,
+            None
+        );
     }
 
     #[tokio::test]
@@ -1118,10 +1119,7 @@ mod tests {
     #[tokio::test]
     async fn create_rejects_empty_title_and_bad_kind() {
         let (_d, s) = server();
-        assert!(s
-            .create_app_inner(create("  ", None), None)
-            .await
-            .is_err());
+        assert!(s.create_app_inner(create("  ", None), None).await.is_err());
         assert!(s
             .create_app_inner(create("X", Some("bogus")), None)
             .await
@@ -1197,9 +1195,7 @@ mod tests {
     #[tokio::test]
     async fn list_read_delete() {
         let (_d, s) = server();
-        s.create_app_inner(create("One", None), None)
-            .await
-            .unwrap();
+        s.create_app_inner(create("One", None), None).await.unwrap();
         let all = s
             .list_apps(Parameters(ListAppsParams { kind: None }))
             .await

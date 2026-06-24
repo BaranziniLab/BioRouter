@@ -151,8 +151,7 @@ async fn build_app_route(Path(id): Path<String>) -> Response {
                     let _ = st.save_manifest(&m);
                 }
             }
-            Json(json!({ "ok": report.ok, "used": report.used, "log": report.log }))
-                .into_response()
+            Json(json!({ "ok": report.ok, "used": report.used, "log": report.log })).into_response()
         }
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "build error").into_response(),
     }
@@ -263,9 +262,10 @@ async fn configure_agent(
     }
     if !provider_set {
         let global = biorouter::config::Config::global();
-        if let (Ok(provider), Ok(model)) =
-            (global.get_biorouter_provider(), global.get_biorouter_model())
-        {
+        if let (Ok(provider), Ok(model)) = (
+            global.get_biorouter_provider(),
+            global.get_biorouter_model(),
+        ) {
             if let Ok(mc) = ModelConfig::new(&model) {
                 match create_provider(&provider, mc).await {
                     Ok(p) => {
@@ -357,7 +357,11 @@ async fn handle_agent_socket(mut socket: WebSocket, state: Arc<AppState>, manife
     {
         Ok(s) => s,
         Err(e) => {
-            let _ = send_json(&mut socket, json!({"type":"error","message": format!("session: {e}")})).await;
+            let _ = send_json(
+                &mut socket,
+                json!({"type":"error","message": format!("session: {e}")}),
+            )
+            .await;
             return;
         }
     };
@@ -366,7 +370,11 @@ async fn handle_agent_socket(mut socket: WebSocket, state: Arc<AppState>, manife
     let agent = match state.get_agent(session_id.clone()).await {
         Ok(a) => a,
         Err(e) => {
-            let _ = send_json(&mut socket, json!({"type":"error","message": format!("agent: {e}")})).await;
+            let _ = send_json(
+                &mut socket,
+                json!({"type":"error","message": format!("agent: {e}")}),
+            )
+            .await;
             return;
         }
     };
@@ -418,8 +426,11 @@ async fn handle_agent_socket(mut socket: WebSocket, state: Arc<AppState>, manife
         {
             Ok(s) => s,
             Err(e) => {
-                let _ = send_json(&mut socket, json!({"type":"error","message": e.to_string()}))
-                    .await;
+                let _ = send_json(
+                    &mut socket,
+                    json!({"type":"error","message": e.to_string()}),
+                )
+                .await;
                 continue;
             }
         };
@@ -463,9 +474,11 @@ async fn handle_agent_socket(mut socket: WebSocket, state: Arc<AppState>, manife
                 }
                 Ok(_) => {}
                 Err(e) => {
-                    let _ =
-                        send_json(&mut socket, json!({"type":"error","message": e.to_string()}))
-                            .await;
+                    let _ = send_json(
+                        &mut socket,
+                        json!({"type":"error","message": e.to_string()}),
+                    )
+                    .await;
                     errored = true;
                     break;
                 }
@@ -480,7 +493,10 @@ async fn handle_agent_socket(mut socket: WebSocket, state: Arc<AppState>, manife
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/apps", get(list_apps))
-        .route("/apps/{id}", get(redirect_to_slash).delete(delete_app_route))
+        .route(
+            "/apps/{id}",
+            get(redirect_to_slash).delete(delete_app_route),
+        )
         .route("/apps/{id}/", get(serve_index))
         .route("/apps/{id}/agent", get(agent_ws))
         .route("/apps/{id}/build", post(build_app_route))

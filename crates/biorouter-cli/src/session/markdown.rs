@@ -1223,7 +1223,11 @@ mod tests {
                 line
             );
         }
-        assert!(out.lines().count() >= 6, "should span several lines: {:?}", out);
+        assert!(
+            out.lines().count() >= 6,
+            "should span several lines: {:?}",
+            out
+        );
         // The content survives the break (concatenating the lines restores it).
         let joined: String = out.lines().collect();
         assert_eq!(joined, token);
@@ -1267,7 +1271,10 @@ mod tests {
             })
             .map(measure_text_width)
             .collect();
-        assert!(widths.windows(2).all(|w| w[0] == w[1]), "ragged table: {widths:?}");
+        assert!(
+            widths.windows(2).all(|w| w[0] == w[1]),
+            "ragged table: {widths:?}"
+        );
     }
 
     #[test]

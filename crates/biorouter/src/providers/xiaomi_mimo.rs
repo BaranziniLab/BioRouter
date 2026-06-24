@@ -215,8 +215,8 @@ impl Provider for XiaomiMimoProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
-        let stripped = (!model_supports_vision(&self.model.model_name))
-            .then(|| strip_image_content(messages));
+        let stripped =
+            (!model_supports_vision(&self.model.model_name)).then(|| strip_image_content(messages));
         let messages = stripped.as_deref().unwrap_or(messages);
         let payload = create_request(
             &self.model,

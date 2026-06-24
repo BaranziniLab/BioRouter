@@ -42,7 +42,12 @@ pub struct LintFinding {
 /// analysis — safe to run on every build/preview.
 pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     let mut out = Vec::new();
-    let mut err = |m: &str| out.push(LintFinding { level: LintLevel::Error, msg: m.to_string() });
+    let mut err = |m: &str| {
+        out.push(LintFinding {
+            level: LintLevel::Error,
+            msg: m.to_string(),
+        })
+    };
     let index = std::fs::read_to_string(project_dir.join("index.html")).unwrap_or_default();
     let main = std::fs::read_to_string(project_dir.join("src/main.ts")).unwrap_or_default();
     let il = index.to_lowercase();
@@ -113,8 +118,8 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     // and the app crashes on the first addEventListener.
     let referenced = referenced_ids(&main);
     for rid in &referenced {
-        let present = index.contains(&format!("id=\"{rid}\""))
-            || index.contains(&format!("id='{rid}'"));
+        let present =
+            index.contains(&format!("id=\"{rid}\"")) || index.contains(&format!("id='{rid}'"));
         if !present {
             out.push(LintFinding {
                 level: LintLevel::Error,
@@ -126,7 +131,12 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     }
 
     // (3) Aesthetic alignment with the design system.
-    let mut warn = |m: &str| out.push(LintFinding { level: LintLevel::Warn, msg: m.to_string() });
+    let mut warn = |m: &str| {
+        out.push(LintFinding {
+            level: LintLevel::Warn,
+            msg: m.to_string(),
+        })
+    };
     if il.contains("<style") {
         warn("index.html contains a <style> block — prefer the design-system classes/CSS variables over custom CSS for a native look.");
     }

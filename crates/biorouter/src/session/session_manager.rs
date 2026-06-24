@@ -1690,11 +1690,12 @@ impl SessionStorage {
     async fn count_branch_siblings(&self, base: &str) -> Result<i64> {
         let pool = self.pool().await?;
         let pattern = format!("{} (branch %)", like_escape(base));
-        let count =
-            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sessions WHERE name LIKE ? ESCAPE '\\'")
-                .bind(pattern)
-                .fetch_one(pool)
-                .await?;
+        let count = sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sessions WHERE name LIKE ? ESCAPE '\\'",
+        )
+        .bind(pattern)
+        .fetch_one(pool)
+        .await?;
         Ok(count)
     }
 
@@ -2104,8 +2105,14 @@ mod tests {
         assert_eq!(counts.total_tokens, full.total_tokens);
         assert_eq!(counts.input_tokens, full.input_tokens);
         assert_eq!(counts.output_tokens, full.output_tokens);
-        assert_eq!(counts.accumulated_total_tokens, full.accumulated_total_tokens);
-        assert_eq!(counts.accumulated_input_tokens, full.accumulated_input_tokens);
+        assert_eq!(
+            counts.accumulated_total_tokens,
+            full.accumulated_total_tokens
+        );
+        assert_eq!(
+            counts.accumulated_input_tokens,
+            full.accumulated_input_tokens
+        );
         assert_eq!(
             counts.accumulated_output_tokens,
             full.accumulated_output_tokens
@@ -2222,7 +2229,10 @@ mod tests {
         assert_eq!(strip_branch_suffix("Foo (branch 1)"), "Foo");
         assert_eq!(strip_branch_suffix("Foo (branch 42)"), "Foo");
         // Only strips one level / a real numeric suffix.
-        assert_eq!(strip_branch_suffix("Foo (branch 1) (branch 2)"), "Foo (branch 1)");
+        assert_eq!(
+            strip_branch_suffix("Foo (branch 1) (branch 2)"),
+            "Foo (branch 1)"
+        );
         assert_eq!(strip_branch_suffix("Foo (branch)"), "Foo (branch)");
         assert_eq!(strip_branch_suffix("Foo (branch abc)"), "Foo (branch abc)");
         // A name that merely contains the word branch is untouched.
@@ -2420,8 +2430,7 @@ mod tests {
     fn test_trim_drops_trailing_unanswered_question() {
         // The reported bug: diverge fired while the agent was still generating
         // the answer to q2, so the DB has q2 persisted with no answer yet.
-        let conv =
-            Conversation::new_unvalidated(vec![umsg(1, "q1"), amsg(2, "a1"), umsg(3, "q2")]);
+        let conv = Conversation::new_unvalidated(vec![umsg(1, "q1"), amsg(2, "a1"), umsg(3, "q2")]);
         let t = trim_to_last_complete_answer(&conv, None);
         assert_eq!(t.messages().len(), 2);
         assert_eq!(t.messages().last().unwrap().as_concat_text(), "a1");

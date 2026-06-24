@@ -675,8 +675,7 @@ mod diverge_tests {
     #[serial]
     async fn diverge_nonexistent_session_returns_404() {
         let state = AppState::new().await.unwrap();
-        let (status, _) =
-            post_diverge(state, "29990101_99999", serde_json::json!({})).await;
+        let (status, _) = post_diverge(state, "29990101_99999", serde_json::json!({})).await;
         assert_eq!(status, axum::http::StatusCode::NOT_FOUND);
     }
 
@@ -707,7 +706,10 @@ mod diverge_tests {
             .unwrap();
         // A complete exchange (question + answer) so the branch — which is
         // trimmed to the last complete assistant answer — carries it over.
-        manager.add_message(&original.id, &user_msg("hello")).await.unwrap();
+        manager
+            .add_message(&original.id, &user_msg("hello"))
+            .await
+            .unwrap();
         manager
             .add_message(&original.id, &Message::assistant().with_text("hi there"))
             .await
@@ -715,14 +717,16 @@ mod diverge_tests {
 
         let expected_branch = format!("{base_name} (branch 1)");
 
-        let (status, json) =
-            post_diverge(state.clone(), &original.id, serde_json::json!({})).await;
+        let (status, json) = post_diverge(state.clone(), &original.id, serde_json::json!({})).await;
         assert_eq!(status, axum::http::StatusCode::OK);
 
         let new_id = json["sessionId"].as_str().unwrap().to_string();
         assert_ne!(new_id, original.id);
         // Working dir surfaced and matches the original.
-        assert_eq!(json["workingDir"].as_str().unwrap(), "/tmp/diverge_route_test");
+        assert_eq!(
+            json["workingDir"].as_str().unwrap(),
+            "/tmp/diverge_route_test"
+        );
         // Response carries the branch name and lineage pointer.
         assert_eq!(json["name"].as_str().unwrap(), expected_branch);
         assert_eq!(json["divergedFrom"].as_str().unwrap(), original.id);

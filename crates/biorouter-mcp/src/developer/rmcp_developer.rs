@@ -1684,13 +1684,14 @@ impl DeveloperServer {
     // Helper function to handle Mac screenshot filenames that contain U+202F (narrow no-break space)
     fn normalize_mac_screenshot_path(&self, path: &Path) -> PathBuf {
         // Compiled once rather than on every call.
-        static SCREENSHOT_RE: once_cell::sync::Lazy<regex::Regex> =
-            once_cell::sync::Lazy::new(|| {
+        static SCREENSHOT_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(
+            || {
                 regex::Regex::new(
                     r"^Screenshot \d{4}-\d{2}-\d{2} at \d{1,2}\.\d{2}\.\d{2} (AM|PM|am|pm)(?: \(\d+\))?\.png$",
                 )
                 .expect("valid regex")
-            });
+            },
+        );
         // Only process if the path has a filename
         if let Some(filename) = path.file_name().and_then(|f| f.to_str()) {
             // Check if this matches Mac screenshot pattern:
@@ -1700,19 +1701,17 @@ impl DeveloperServer {
                 let meridian = captures.get(1).unwrap().as_str();
 
                 // Find the last space before AM/PM and replace it with U+202F
-                let space_pos = filename.rfind(meridian)
+                let space_pos = filename
+                    .rfind(meridian)
                     .and_then(|pos| filename.get(..pos).map(|s| s.trim_end().len()))
                     .unwrap_or(0);
 
                 if space_pos > 0 {
                     let parent = path.parent().unwrap_or(Path::new(""));
-                    if let (Some(before), Some(after)) = (filename.get(..space_pos), filename.get(space_pos+1..)) {
-                        let new_filename = format!(
-                            "{}{}{}",
-                            before,
-                            '\u{202F}',
-                            after
-                        );
+                    if let (Some(before), Some(after)) =
+                        (filename.get(..space_pos), filename.get(space_pos + 1..))
+                    {
+                        let new_filename = format!("{}{}{}", before, '\u{202F}', after);
                         let new_path = parent.join(new_filename);
 
                         return new_path;

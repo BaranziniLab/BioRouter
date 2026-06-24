@@ -627,8 +627,10 @@ pub fn md_lines(text: &str) -> Vec<Line<'static>> {
                 end += 1;
             }
             let header = split_table_row(raw);
-            let body: Vec<Vec<String>> =
-                rows[i + 2..end].iter().map(|l| split_table_row(l)).collect();
+            let body: Vec<Vec<String>> = rows[i + 2..end]
+                .iter()
+                .map(|l| split_table_row(l))
+                .collect();
             out.extend(render_table(&header, &body));
             i = end;
             continue;
