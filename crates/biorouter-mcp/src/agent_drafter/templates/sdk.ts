@@ -123,6 +123,8 @@ export class BioRouterClient {
   private activeReject: RejectFn | null = null;
   private tokensWaiters: Array<(u: { used: number; limit: number; ratio: number }) => void> = [];
   private historyWaiters: Array<(m: Array<{ role: string; text: string }>) => void> = [];
+  // Last widget tree the server sent for each widget id.
+  private widgetStore: Map<string, WidgetNode> = new Map();
 
   constructor(config: AppConfig) {
     this.config = config;
@@ -215,6 +217,10 @@ export class BioRouterClient {
         }
       }
     }
+    // Cache server-emitted widget trees so apps can re-render / look them up.
+    if (msg.type === "widget" && typeof msg.id === "string") {
+      this.widgetStore.set(msg.id, msg.tree as WidgetNode);
+    }
     // Resolve any pending history() callers.
     if (msg.type === "history") {
       const waiters = this.historyWaiters;
@@ -265,6 +271,42 @@ export class BioRouterClient {
     return {
       tokens: () => this.tokens(),
       history: () => this.history(),
+    };
+  }
+
+  /** Render a widget tree into `target` and wire its actions back to the agent
+   *  (a submit button sends a `widget_action` frame scoped to this widget id). */
+  private renderWidgetInto(
+    id: string,
+    tree: WidgetNode,
+    target: HTMLElement | string
+  ): HTMLElement {
+    const host =
+      typeof target === "string"
+        ? (document.querySelector(target) as HTMLElement | null)
+        : target;
+    const ctx: WidgetContext = {
+      fields: new Map(),
+      onAction: (action, payload) =>
+        this.send({ type: "widget_action", widgetId: id, action, payload }),
+    };
+    const dom = renderWidget(tree, ctx);
+    if (host) {
+      host.innerHTML = "";
+      host.appendChild(dom);
+    }
+    return dom;
+  }
+
+  /** Interactive widgets API: render an agent-emitted tree, fire an action, or
+   *  look up the last tree the server sent for an id. */
+  get widgets() {
+    return {
+      render: (id: string, tree: WidgetNode, target: HTMLElement | string) =>
+        this.renderWidgetInto(id, tree, target),
+      action: (widgetId: string, action: string, payload?: unknown) =>
+        this.send({ type: "widget_action", widgetId, action, payload }),
+      get: (id: string) => this.widgetStore.get(id),
     };
   }
 
@@ -696,6 +738,188 @@ export function fileToImageInput(file: File): Promise<ImageInput> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+// ── Interactive widgets ─────────────────────────────────────────────────────
+// Agent-emitted UI (cards/forms/tables/charts) that can call back into the loop:
+// the agent emits a `widget` frame, the app renders the tree, and a Button with
+// `submit` collects the named form fields and sends a `widget_action` frame the
+// server feeds back into the agent as the next turn. Dependency-free DOM,
+// built only from the BioRouter theme classes so it stays on-brand and passes
+// the build lint.
+
+export type WidgetNode =
+  | { t: "card"; title?: string; children: WidgetNode[] }
+  | { t: "row"; children: WidgetNode[] }
+  | { t: "col"; children: WidgetNode[] }
+  | { t: "text"; value: string; markdown?: boolean; muted?: boolean }
+  | { t: "badge"; value: string }
+  | { t: "table"; columns: string[]; rows: Array<Array<string | number>> }
+  | { t: "chart"; spec: unknown }
+  | { t: "input"; name: string; label?: string; value?: string; placeholder?: string; inputType?: string }
+  | { t: "select"; name: string; label?: string; value?: string; options: Array<{ value: string; label: string }> }
+  | { t: "checkbox"; name: string; label?: string; checked?: boolean }
+  | { t: "button"; label: string; action: string; variant?: string; submit?: boolean }
+  | { t: "form"; children: WidgetNode[] };
+
+export interface WidgetContext {
+  // name → live value getter, registered by inputs/selects/checkboxes.
+  fields: Map<string, () => string | boolean>;
+  // dispatched by a button (carrying collected form fields on submit).
+  onAction: (action: string, payload: unknown) => void;
+}
+
+function wEl(tag: string, cls?: string): HTMLElement {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  return e;
+}
+
+/** Build a detached DOM subtree from a widget node. Recursive; unknown node
+ *  types render a muted placeholder rather than throwing. */
+export function renderWidget(node: WidgetNode, ctx: WidgetContext): HTMLElement {
+  switch (node.t) {
+    case "card": {
+      const c = wEl("div", "br-card");
+      if (node.title) {
+        const h = wEl("div", "br-card__title");
+        h.textContent = node.title;
+        c.appendChild(h);
+      }
+      for (const ch of node.children) c.appendChild(renderWidget(ch, ctx));
+      return c;
+    }
+    case "row":
+    case "col": {
+      const r = wEl("div", node.t === "row" ? "br-row" : "br-col");
+      for (const ch of node.children) r.appendChild(renderWidget(ch, ctx));
+      return r;
+    }
+    case "text": {
+      const t = wEl("div", node.muted ? "br-text br-text--muted" : "br-text");
+      if (node.markdown) t.innerHTML = renderMarkdown(node.value);
+      else t.textContent = node.value;
+      return t;
+    }
+    case "badge": {
+      const b = wEl("span", "br-badge");
+      b.textContent = node.value;
+      return b;
+    }
+    case "table": {
+      const tbl = wEl("table", "br-table");
+      const thead = wEl("thead");
+      const htr = wEl("tr");
+      for (const col of node.columns) {
+        const th = wEl("th");
+        th.textContent = col;
+        htr.appendChild(th);
+      }
+      thead.appendChild(htr);
+      tbl.appendChild(thead);
+      const tbody = wEl("tbody");
+      for (const row of node.rows) {
+        const tr = wEl("tr");
+        for (const cell of row) {
+          const td = wEl("td");
+          td.textContent = String(cell);
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+      tbl.appendChild(tbody);
+      return tbl;
+    }
+    case "chart": {
+      const w = wEl("div", "br-chart");
+      w.innerHTML = renderChart(JSON.stringify(node.spec));
+      return w;
+    }
+    case "input": {
+      const wrap = wEl("label", "br-field");
+      if (node.label) {
+        const l = wEl("span", "br-field__label");
+        l.textContent = node.label;
+        wrap.appendChild(l);
+      }
+      const i = document.createElement("input");
+      i.className = "br-input";
+      i.type = node.inputType || "text";
+      if (node.value) i.value = node.value;
+      if (node.placeholder) i.placeholder = node.placeholder;
+      ctx.fields.set(node.name, () => i.value);
+      wrap.appendChild(i);
+      return wrap;
+    }
+    case "select": {
+      const wrap = wEl("label", "br-field");
+      if (node.label) {
+        const l = wEl("span", "br-field__label");
+        l.textContent = node.label;
+        wrap.appendChild(l);
+      }
+      const s = document.createElement("select");
+      s.className = "br-select";
+      for (const opt of node.options) {
+        const o = document.createElement("option");
+        o.value = opt.value;
+        o.textContent = opt.label;
+        if (node.value === opt.value) o.selected = true;
+        s.appendChild(o);
+      }
+      ctx.fields.set(node.name, () => s.value);
+      wrap.appendChild(s);
+      return wrap;
+    }
+    case "checkbox": {
+      const wrap = wEl("label", "br-check");
+      const c = document.createElement("input");
+      c.type = "checkbox";
+      c.checked = node.checked === true;
+      ctx.fields.set(node.name, () => c.checked);
+      wrap.appendChild(c);
+      if (node.label) {
+        const l = wEl("span");
+        l.textContent = node.label;
+        wrap.appendChild(l);
+      }
+      return wrap;
+    }
+    case "button": {
+      const b = document.createElement("button");
+      b.className =
+        node.variant === "secondary"
+          ? "br-btn br-btn--secondary"
+          : node.variant === "ghost"
+            ? "br-btn br-btn--ghost"
+            : "br-btn";
+      b.textContent = node.label;
+      const action = node.action;
+      const submit = node.submit === true;
+      b.addEventListener("click", () => {
+        let payload: unknown;
+        if (submit) {
+          const collected: Record<string, string | boolean> = {};
+          ctx.fields.forEach((get, name) => {
+            collected[name] = get();
+          });
+          payload = collected;
+        }
+        ctx.onAction(action, payload);
+      });
+      return b;
+    }
+    case "form": {
+      const f = wEl("div", "br-form");
+      for (const ch of node.children) f.appendChild(renderWidget(ch, ctx));
+      return f;
+    }
+    default: {
+      const d = wEl("div", "br-msg br-msg--tool");
+      d.textContent = "unsupported widget";
+      return d;
+    }
+  }
 }
 
 export function mountChat(client: BioRouterClient, host: HTMLElement): void {
