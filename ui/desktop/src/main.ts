@@ -621,6 +621,10 @@ const createChat = async (
       spellcheck: settings.spellcheckEnabled ?? true,
       preload: path.join(__dirname, 'preload.js'),
       webSecurity: true,
+      // Throttle timers/rAF/reconciliation in backgrounded windows. This is
+      // Electron's default; set explicitly so a future window-pooling change
+      // can't silently lose it (each project window is a full renderer process).
+      backgroundThrottling: true,
       nodeIntegration: false,
       contextIsolation: true,
       additionalArguments: [
@@ -3505,6 +3509,7 @@ async function appMain() {
             contextIsolation: true,
             sandbox: true,
             webSecurity: true,
+            backgroundThrottling: true,
           },
         });
         // Route external links to the system browser; keep the artifact in-window.
@@ -3550,6 +3555,7 @@ async function appMain() {
           nodeIntegration: false,
           contextIsolation: true,
           webSecurity: true,
+          backgroundThrottling: true,
           partition: 'persist:biorouter',
         },
       });
