@@ -55,6 +55,11 @@ struct Extension {
     client: McpClientBox,
     server_info: Option<ServerInfo>,
     _temp_dir: Option<tempfile::TempDir>,
+    /// True for per-app in-process servers injected via `add_inprocess_server`.
+    /// Their `config` is a synthetic name-only marker that is NOT spawnable from
+    /// any registry, so they are excluded from `get_extension_configs` (never
+    /// persisted/replayed/propagated) and re-injected per connect instead.
+    inprocess: bool,
 }
 
 impl Extension {
@@ -69,6 +74,7 @@ impl Extension {
             config,
             server_info,
             _temp_dir: temp_dir,
+            inprocess: false,
         }
     }
 
@@ -671,6 +677,12 @@ impl ExtensionManager {
         S: rmcp::ServerHandler + Send + 'static,
     {
         use rmcp::ServiceExt;
+        // Idempotent: configure_agent re-runs on every (re)connect against the
+        // same cached agent, so skip if this server is already injected (avoids
+        // a redundant connect/handshake + a transient double-server).
+        if self.extensions.lock().await.contains_key(name) {
+            return Ok(());
+        }
         let (server_read, client_write) = tokio::io::duplex(65536);
         let (client_read, server_write) = tokio::io::duplex(65536);
         let label = name.to_string();
@@ -691,6 +703,10 @@ impl ExtensionManager {
         )
         .await?;
         let info = client.get_info().cloned();
+        // A synthetic name-only marker config. It is NEVER spawned from a
+        // registry (the `inprocess` flag excludes it from get_extension_configs),
+        // so the absence of a "datasql" builtin entry is fine — it exists only so
+        // extension listings have a name.
         let config = ExtensionConfig::Builtin {
             name: name.to_string(),
             description: name.to_string(),
@@ -699,14 +715,17 @@ impl ExtensionManager {
             bundled: None,
             available_tools: Vec::new(),
         };
-        self.add_client(
+        self.extensions.lock().await.insert(
             name.to_string(),
-            config,
-            Arc::new(Mutex::new(Box::new(client) as Box<dyn McpClientTrait>)),
-            info,
-            None,
-        )
-        .await;
+            Extension {
+                config,
+                client: Arc::new(Mutex::new(Box::new(client) as Box<dyn McpClientTrait>)),
+                server_info: info,
+                _temp_dir: None,
+                inprocess: true,
+            },
+        );
+        self.invalidate_tools_cache_and_bump_version().await;
         Ok(())
     }
 
@@ -747,6 +766,11 @@ impl ExtensionManager {
             .lock()
             .await
             .values()
+            // Exclude per-app in-process servers: their config is a name-only
+            // marker that no registry can re-spawn, so it must never be persisted,
+            // replayed on resume, or propagated to sub-agents (it would fail to
+            // load). They are re-injected per connect via configure_agent.
+            .filter(|ext| !ext.inprocess)
             .map(|ext| ext.config.clone())
             .collect()
     }
@@ -1729,6 +1753,23 @@ mod tests {
         let text = serde_json::to_string(&output).unwrap();
         assert!(text.contains("CFTR"), "expected query rows in output: {text}");
         assert!(!text.contains("TP53"), "WHERE filter must apply: {text}");
+
+        // (2b) The in-process server's synthetic config is EXCLUDED from
+        // get_extension_configs — so it's never persisted/replayed/propagated as
+        // an un-spawnable "datasql" builtin.
+        let configs = em.get_extension_configs().await;
+        assert!(
+            !configs.iter().any(|c| c.name() == "datasql"),
+            "in-process datasql config must be excluded from exported configs"
+        );
+
+        // (2c) Re-injection is idempotent (configure_agent re-runs per connect).
+        let before = em.get_prefixed_tools(None).await.unwrap().len();
+        em.add_inprocess_server("datasql", DataSqlServer::new(std::collections::HashMap::new()))
+            .await
+            .expect("idempotent re-inject");
+        let after = em.get_prefixed_tools(None).await.unwrap().len();
+        assert_eq!(before, after, "re-injecting an existing server is a no-op");
 
         // (3) A mutation is rejected end-to-end (whichever way the error surfaces).
         let bad = CallToolRequestParams {
