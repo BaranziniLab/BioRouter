@@ -297,6 +297,48 @@ impl BrsdkSettings {
     }
 }
 
+/// Load (or create + persist) the per-app AES-256 vault key from the OS keyring.
+/// Returns `None` if a fresh key can't be persisted — we refuse to encrypt with
+/// an ephemeral key whose secrets could never be read back.
+fn load_or_create_vault_key(app_id: &str) -> Option<biorouter_mcp::agent_drafter::vault::DataKey> {
+    use biorouter_mcp::agent_drafter::vault::{generate_key, DataKey, KEY_LEN};
+    let cfg = biorouter::config::Config::global();
+    let key_id = format!("brsdk_vault_key_{app_id}");
+    if let Ok(bytes) = cfg.get_secret::<Vec<u8>>(&key_id) {
+        if bytes.len() == KEY_LEN {
+            let mut k: DataKey = [0u8; KEY_LEN];
+            k.copy_from_slice(&bytes);
+            return Some(k);
+        }
+    }
+    let key = generate_key();
+    match cfg.set_secret(&key_id, &key.to_vec()) {
+        Ok(()) => Some(key),
+        Err(e) => {
+            warn!(app = %app_id, "could not persist vault key: {e}");
+            None
+        }
+    }
+}
+
+/// Decrypt an app's allow-listed secrets into a name→value map. Only names in
+/// `allowed` (the manifest's `vault.encrypted` list) are loaded — a stored but
+/// non-allow-listed secret is never exposed — and missing names are skipped.
+fn load_vault_secrets(
+    vault: &biorouter_mcp::agent_drafter::vault::Vault,
+    allowed: &[String],
+) -> std::collections::HashMap<String, String> {
+    let mut secrets = std::collections::HashMap::new();
+    for name in allowed {
+        if vault.contains(name) {
+            if let Ok(value) = vault.get(name) {
+                secrets.insert(name.clone(), value);
+            }
+        }
+    }
+    secrets
+}
+
 /// Resolve an app's declared `sql` data sources to jailed, existing db paths.
 ///
 /// Pure (no global state) so it is unit-testable: each `source.file` must
@@ -474,6 +516,30 @@ async fn configure_agent(
                     sandbox = %compute.sandbox,
                     "compute sandbox could not be constructed; compute tools NOT granted"
                 ),
+            }
+        }
+    }
+
+    // BRSDK encryption capability: decrypt the app's allow-listed secrets and
+    // install them on the agent so `{{vault:NAME}}` resolves at tool-dispatch
+    // (plaintext never reaches the model). Opt-in: only when the user enabled
+    // encryption in Settings AND the manifest declares a vault.
+    if BrsdkSettings::current().encryption {
+        if let Some(vault_cap) = cfg.capabilities.vault.as_ref() {
+            if !vault_cap.encrypted.is_empty() {
+                let workspace = store().artifact_dir(&manifest.id).join("workspace");
+                let _ = std::fs::create_dir_all(&workspace);
+                if let Some(key) = load_or_create_vault_key(&manifest.id) {
+                    let vault =
+                        biorouter_mcp::agent_drafter::vault::Vault::new(&workspace, key);
+                    let secrets = load_vault_secrets(&vault, &vault_cap.encrypted);
+                    if !secrets.is_empty() {
+                        agent
+                            .set_vault(Arc::new(biorouter::agents::VaultRefs::new(secrets)))
+                            .await;
+                        info!(app = %manifest.id, count = vault_cap.encrypted.len(), "vault installed");
+                    }
+                }
             }
         }
     }
@@ -906,6 +972,38 @@ async fn model_catalog() -> Vec<serde_json::Value> {
         .collect()
 }
 
+#[derive(Deserialize)]
+struct VaultPut {
+    name: String,
+    value: String,
+}
+
+/// POST /apps/{id}/vault — store (encrypt) a secret in the app's vault. A
+/// management verb, so it requires the secret-key header (auth.rs exempts only
+/// GET-under-/apps). The secret is AES-256-GCM-sealed with the app's keyring key
+/// and is only ever loaded back for names the manifest allow-lists.
+async fn put_vault_secret(Path(id): Path<String>, Json(body): Json<VaultPut>) -> Response {
+    if !store().exists(&id) {
+        return (StatusCode::NOT_FOUND, "no such app").into_response();
+    }
+    if body.name.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, "name required").into_response();
+    }
+    let workspace = store().artifact_dir(&id).join("workspace");
+    let _ = std::fs::create_dir_all(&workspace);
+    let key = match load_or_create_vault_key(&id) {
+        Some(k) => k,
+        None => {
+            return (StatusCode::INTERNAL_SERVER_ERROR, "vault key unavailable").into_response()
+        }
+    };
+    let vault = biorouter_mcp::agent_drafter::vault::Vault::new(&workspace, key);
+    match vault.put(&body.name, &body.value) {
+        Ok(()) => (StatusCode::OK, "stored").into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
 /// GET /apps/{id}/models — the provider/model catalog for the per-app model
 /// surface (`br.model.list()`).
 async fn list_models(Path(id): Path<String>) -> Response {
@@ -922,6 +1020,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/apps/{id}/", get(serve_index))
         .route("/apps/{id}/agent", get(agent_ws))
         .route("/apps/{id}/models", get(list_models))
+        .route("/apps/{id}/vault", post(put_vault_secret))
         .route("/apps/{id}/build", post(build_app_route))
         .route("/apps/{id}/export", get(export_app_route))
         .route("/apps/{id}/dist/{*path}", get(serve_dist))
@@ -1055,6 +1154,29 @@ mod tests {
         assert!(s.llm_guardrails, "LLM-guardrail opt-in honored");
         assert!(!s.pii_guardrail, "un-set flags stay off");
         assert!(!s.tracing);
+    }
+
+    #[test]
+    fn load_vault_secrets_respects_allowlist() {
+        use biorouter_mcp::agent_drafter::vault::{generate_key, Vault};
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let vault = Vault::new(&ws, generate_key());
+        vault.put("API_KEY", "sk-123").unwrap();
+        vault.put("EXTRA", "should-not-load").unwrap();
+
+        // Only allow-listed AND present names load: EXTRA is stored but not
+        // allow-listed; MISSING is allow-listed but not stored. Both excluded.
+        let allowed = vec!["API_KEY".to_string(), "MISSING".to_string()];
+        let secrets = super::load_vault_secrets(&vault, &allowed);
+        assert_eq!(secrets.len(), 1);
+        assert_eq!(secrets.get("API_KEY").map(String::as_str), Some("sk-123"));
+        assert!(
+            !secrets.contains_key("EXTRA"),
+            "a stored but non-allow-listed secret must never load"
+        );
+        assert!(!secrets.contains_key("MISSING"));
     }
 
     #[test]
