@@ -244,6 +244,40 @@ async fn send_json(socket: &mut WebSocket, value: serde_json::Value) -> bool {
         .is_ok()
 }
 
+/// Resolve an app's declared `sql` data sources to jailed, existing db paths.
+///
+/// Pure (no global state) so it is unit-testable: each `source.file` must
+/// resolve INSIDE `workspace` (a read-only jail) and exist on disk; sources that
+/// escape the jail, don't exist, aren't `sql`, or duplicate a name are dropped
+/// (and logged). Returns name → resolved path. This is the security boundary
+/// that keeps an app's data sources confined to its own workspace.
+fn resolve_sql_sources(
+    workspace: &std::path::Path,
+    data: &biorouter_mcp::agent_drafter::manifest::DataCapability,
+) -> std::collections::HashMap<String, std::path::PathBuf> {
+    let jail = biorouter_mcp::developer::jail::Jail::new(workspace, false);
+    let mut sources: std::collections::HashMap<String, std::path::PathBuf> =
+        std::collections::HashMap::new();
+    for src in &data.sources {
+        if src.kind != "sql" {
+            continue; // extension-backed sources (knowledge/spoke/…) are wired elsewhere
+        }
+        let Some(file) = src.file.as_ref() else { continue };
+        match jail.resolve(file, false) {
+            Ok(path) if path.exists() => {
+                if sources.contains_key(&src.name) {
+                    warn!(source = %src.name, "duplicate data source name; keeping the first");
+                    continue;
+                }
+                sources.insert(src.name.clone(), path);
+            }
+            Ok(_) => warn!(source = %src.name, "data source file not found in workspace"),
+            Err(_) => warn!(source = %src.name, "data source rejected by workspace jail"),
+        }
+    }
+    sources
+}
+
 /// Configure a freshly-created session's agent from the app manifest: model,
 /// extensions, skills, knowledge base, and persona. Errors are logged, not fatal
 /// (the agent falls back to the global config where possible).
@@ -333,23 +367,10 @@ async fn configure_agent(
     // apps that declared `capabilities.data` get the tools.
     if let Some(data) = cfg.capabilities.data.as_ref() {
         let workspace = store().artifact_dir(&manifest.id).join("workspace");
-        let jail = biorouter_mcp::developer::jail::Jail::new(&workspace, false);
-        let mut sources = std::collections::HashMap::new();
-        for src in &data.sources {
-            if src.kind != "sql" {
-                continue; // extension-backed sources (knowledge/spoke/…) are separate
-            }
-            let Some(file) = src.file.as_ref() else { continue };
-            match jail.resolve(file, false) {
-                Ok(path) if path.exists() => {
-                    sources.insert(src.name.clone(), path);
-                }
-                Ok(_) => warn!(app = %manifest.id, source = %src.name, "data source file not found"),
-                Err(e) => {
-                    warn!(app = %manifest.id, source = %src.name, "data source rejected by jail: {e}")
-                }
-            }
-        }
+        // Ensure the jail root exists so a fresh app's sources resolve (rather
+        // than every source failing canonicalize on a missing dir).
+        let _ = std::fs::create_dir_all(&workspace);
+        let sources = resolve_sql_sources(&workspace, data);
         if !sources.is_empty() {
             let server = biorouter_mcp::datasql::server::DataSqlServer::new(sources);
             if let Err(e) = agent
@@ -778,6 +799,83 @@ mod tests {
             PiiMode::Block,
         );
         assert!(matches!(out, PiiOutcome::Pass(_)));
+    }
+
+    // --- data-source jail boundary (the security boundary of the data feature) ---
+    use biorouter_mcp::agent_drafter::manifest::{DataCapability, DataSource};
+    use super::resolve_sql_sources;
+
+    fn src(name: &str, kind: &str, file: Option<&str>) -> DataSource {
+        DataSource {
+            name: name.to_string(),
+            kind: kind.to_string(),
+            file: file.map(|f| f.to_string()),
+            ref_id: None,
+            read_only: true,
+        }
+    }
+
+    #[test]
+    fn resolve_sql_sources_keeps_in_workspace_and_rejects_escapes() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(ws.join("sub")).unwrap();
+        std::fs::write(ws.join("sub/cohort.db"), b"x").unwrap();
+        // A real db OUTSIDE the workspace that an attacker might try to reach.
+        std::fs::write(dir.path().join("secret.db"), b"y").unwrap();
+
+        let data = DataCapability {
+            sources: vec![
+                src("ok", "sql", Some("sub/cohort.db")),          // in-workspace, exists → kept
+                src("escape", "sql", Some("../secret.db")),       // traversal → rejected
+                src("abs", "sql", Some("/etc/hosts")),            // absolute-outside → rejected
+                src("missing", "sql", Some("nope.db")),           // in-jail but absent → dropped
+                src("notsql", "knowledge", Some("sub/cohort.db")),// non-sql → skipped
+                src("nofile", "sql", None),                       // no file → skipped
+            ],
+        };
+        let resolved = resolve_sql_sources(&ws, &data);
+        assert_eq!(resolved.len(), 1, "only the in-workspace existing sql source survives: {resolved:?}");
+        assert!(resolved.contains_key("ok"));
+        assert!(!resolved.contains_key("escape"), "traversal source must not escape the workspace");
+        assert!(!resolved.contains_key("abs"), "absolute-outside source must be rejected");
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn resolve_sql_sources_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(dir.path().join("outside.db"), b"y").unwrap();
+        // A symlink inside the workspace pointing at the outside db.
+        symlink(dir.path().join("outside.db"), ws.join("link.db")).unwrap();
+        let data = DataCapability {
+            sources: vec![src("sneaky", "sql", Some("link.db"))],
+        };
+        let resolved = resolve_sql_sources(&ws, &data);
+        assert!(
+            resolved.is_empty(),
+            "a symlink escaping the workspace must be rejected: {resolved:?}"
+        );
+    }
+
+    #[test]
+    fn resolve_sql_sources_dedups_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("a.db"), b"x").unwrap();
+        std::fs::write(ws.join("b.db"), b"x").unwrap();
+        let data = DataCapability {
+            sources: vec![
+                src("dup", "sql", Some("a.db")),
+                src("dup", "sql", Some("b.db")),
+            ],
+        };
+        let resolved = resolve_sql_sources(&ws, &data);
+        assert_eq!(resolved.len(), 1, "duplicate names collapse to one");
     }
 
     // Guards the lowercase serde contract between the SDK (which sends
