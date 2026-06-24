@@ -52,7 +52,7 @@ export type AgentEvent =
   | { type: "output"; schema?: unknown; value: unknown }
   | { type: "usage"; inputTokens?: number; outputTokens?: number; totalTokens?: number; model?: string }
   | { type: "guardrail"; stage?: string; name?: string; blocked?: boolean; reason?: string }
-  | { type: "approval"; id: string; tool: string; args?: unknown; reason?: string }
+  | { type: "approval"; requestId: string; tool: string; args?: unknown; prompt?: string | null }
   | { type: "tool_call"; id: string; name: string; args?: unknown }
   | { type: "handoff"; from?: string; to?: string }
   | { type: "compaction"; phase: string; trigger?: string; before?: number; after?: number }
@@ -301,6 +301,17 @@ export class BioRouterClient {
       list: () => this.listModels(),
       select: (provider: string, model: string) => this.selectModel(provider, model),
     };
+  }
+
+  /** HITL: approve a pending tool surfaced via an `approval` event.
+   *  `action` is "allow_once" (default) or "always_allow". */
+  approve(requestId: string, action: string = "allow_once"): void {
+    this.send({ type: "approve", request: requestId, action });
+  }
+
+  /** HITL: reject a pending tool, with an optional human-readable reason. */
+  reject(requestId: string, reason?: string): void {
+    this.send({ type: "reject", request: requestId, reason });
   }
 
   /** Render a widget tree into `target` and wire its actions back to the agent

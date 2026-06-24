@@ -131,7 +131,37 @@ impl RunState {
         }
         Ok(state)
     }
+
+    /// Persist this run state into a session's `extension_data` (which the
+    /// session DB already round-trips), so a paused approval survives a reload —
+    /// no dedicated schema migration needed.
+    pub fn store_into(&self, data: &mut crate::session::ExtensionData) {
+        if let Ok(v) = serde_json::to_value(self) {
+            data.set_extension_state(RUN_STATE_KEY, RUN_STATE_VER, v);
+        }
+    }
+
+    /// Load a persisted run state from a session's `extension_data` (if any, and
+    /// not a too-new schema). Returns `None` when absent or cleared.
+    pub fn load_from(data: &crate::session::ExtensionData) -> Option<RunState> {
+        let v = data.get_extension_state(RUN_STATE_KEY, RUN_STATE_VER)?;
+        if v.is_null() {
+            return None;
+        }
+        let state: RunState = serde_json::from_value(v.clone()).ok()?;
+        (state.version <= RUN_STATE_VERSION).then_some(state)
+    }
+
+    /// Clear any persisted run state (after the approval is resolved).
+    pub fn clear(data: &mut crate::session::ExtensionData) {
+        data.set_extension_state(RUN_STATE_KEY, RUN_STATE_VER, serde_json::Value::Null);
+    }
 }
+
+/// Pseudo-extension name under which a paused run is stashed in a session's
+/// `extension_data` (avoids a dedicated `sessions` column / schema migration).
+const RUN_STATE_KEY: &str = "brsdk_run_state";
+const RUN_STATE_VER: &str = "1";
 
 #[cfg(test)]
 mod tests {
@@ -196,5 +226,37 @@ mod tests {
         s.version = RUN_STATE_VERSION + 1;
         let json = s.to_json().unwrap();
         assert!(RunState::from_json(&json).is_err());
+    }
+
+    #[test]
+    fn persists_into_and_loads_from_extension_data() {
+        use crate::session::ExtensionData;
+        let mut data = ExtensionData::new();
+        // Absent → None.
+        assert!(RunState::load_from(&data).is_none());
+
+        // Store → load roundtrips.
+        let s = state();
+        s.store_into(&mut data);
+        let back = RunState::load_from(&data).expect("stored run state");
+        assert_eq!(back, s);
+        assert!(back.is_pending());
+
+        // Clear → None again (so a reconnect won't re-show a resolved approval).
+        RunState::clear(&mut data);
+        assert!(RunState::load_from(&data).is_none());
+    }
+
+    #[test]
+    fn load_from_rejects_a_too_new_persisted_schema() {
+        use crate::session::ExtensionData;
+        let mut data = ExtensionData::new();
+        let mut s = state();
+        s.version = RUN_STATE_VERSION + 1;
+        s.store_into(&mut data);
+        assert!(
+            RunState::load_from(&data).is_none(),
+            "a future-schema persisted run state must not load"
+        );
     }
 }
