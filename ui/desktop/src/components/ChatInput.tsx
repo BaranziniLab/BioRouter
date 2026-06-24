@@ -1,11 +1,5 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
-import {
-  CodeAnalysis,
-  ScrollText,
-  Pipeline,
-  ChevronRight,
-  ChevronLeft,
-} from './icons/app-icons';
+import { CodeAnalysis, ScrollText, Pipeline, ChevronRight, ChevronLeft } from './icons/app-icons';
 import { ContextWindowGauge, ContextWindowIndicator } from './ContextWindowIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
@@ -29,6 +23,7 @@ import MentionPopover, { DisplayItemWithMatch } from './MentionPopover';
 import { COST_TRACKING_ENABLED } from '../updates';
 import { CostTracker } from './bottom_menu/CostTracker';
 import { DroppedFile, useFileDrop } from '../hooks/useFileDrop';
+import { useDiverge } from '../hooks/useDiverge';
 import { Workflow } from '../workflow';
 import MessageQueue from './MessageQueue';
 import { detectInterruption } from '../utils/interruptionDetector';
@@ -65,6 +60,10 @@ const TOOLS_MAX_SUGGESTED = 60; // max number of tools before we show a warning
 
 // Manual compact trigger message - must match backend constant
 const MANUAL_COMPACT_TRIGGER = '/compact';
+
+// Client-side slash command: branch the conversation into a new chat. Handled
+// entirely in the renderer (never sent to the agent).
+const DIVERGE_TRIGGER = '/diverge';
 
 interface ModelLimit {
   pattern: string;
@@ -195,6 +194,9 @@ export default function ChatInput({
   // Always visible: DirSwitcher, Attach, Extensions, Skills.
   const [pickerExpanded, setPickerExpanded] = useState(false);
 
+  // Branch-the-conversation action shared with the message-level Diverge button.
+  const { diverge } = useDiverge();
+
   useEffect(() => {
     if (!sessionId) {
       return;
@@ -217,7 +219,10 @@ export default function ChatInput({
   // Save queue state (paused/interrupted) to storage
   useEffect(() => {
     try {
-      window.sessionStorage.setItem('biorouter-queue-paused', JSON.stringify(queuePausedRef.current));
+      window.sessionStorage.setItem(
+        'biorouter-queue-paused',
+        JSON.stringify(queuePausedRef.current)
+      );
     } catch (error) {
       console.error('Error saving queue pause state:', error);
     }
@@ -225,7 +230,10 @@ export default function ChatInput({
 
   useEffect(() => {
     try {
-      window.sessionStorage.setItem('biorouter-queue-interruption', JSON.stringify(lastInterruption));
+      window.sessionStorage.setItem(
+        'biorouter-queue-interruption',
+        JSON.stringify(lastInterruption)
+      );
     } catch (error) {
       console.error('Error saving queue interruption state:', error);
     }
@@ -236,8 +244,14 @@ export default function ChatInput({
     return () => {
       // Save final queue state when component unmounts
       try {
-        window.sessionStorage.setItem('biorouter-queue-paused', JSON.stringify(queuePausedRef.current));
-        window.sessionStorage.setItem('biorouter-queue-interruption', JSON.stringify(lastInterruption));
+        window.sessionStorage.setItem(
+          'biorouter-queue-paused',
+          JSON.stringify(queuePausedRef.current)
+        );
+        window.sessionStorage.setItem(
+          'biorouter-queue-interruption',
+          JSON.stringify(lastInterruption)
+        );
       } catch (error) {
         console.error('Error saving queue state on unmount:', error);
       }
@@ -376,8 +390,7 @@ export default function ChatInput({
     if (currentModelSupportsVision) {
       return [...droppedFiles, ...localDroppedFiles];
     }
-    const stripImages = (arr: DroppedFile[]) =>
-      arr.filter((f) => !f.type?.startsWith('image/'));
+    const stripImages = (arr: DroppedFile[]) => arr.filter((f) => !f.type?.startsWith('image/'));
     return [...stripImages(droppedFiles), ...stripImages(localDroppedFiles)];
   }, [droppedFiles, localDroppedFiles, currentModelSupportsVision]);
 
@@ -1001,12 +1014,28 @@ export default function ChatInput({
 
       // Build structured image attachments (sent as content blocks, not path tokens)
       const imageAttachments: UserAttachment[] = [
-        ...validPastedImages.map((img) => ({ path: img.filePath as string, kind: 'image' as const })),
+        ...validPastedImages.map((img) => ({
+          path: img.filePath as string,
+          kind: 'image' as const,
+        })),
         ...validDroppedImages.map((file) => ({ path: file.path, kind: 'image' as const })),
       ];
 
       // Non-image dropped files still go into the text as paths (file content is not base64-embedded)
       const nonImageFilePaths = validDroppedFiles.map((file) => file.path);
+
+      // Intercept the client-side /diverge command before it becomes a message.
+      // It branches the current conversation instead of being sent to the agent.
+      const trimmedCandidate = (text ?? displayValue).trim();
+      if (trimmedCandidate === DIVERGE_TRIGGER) {
+        if (sessionId) {
+          void diverge(sessionId);
+        }
+        setDisplayValue('');
+        setValue('');
+        setHasUserTyped(false);
+        return;
+      }
 
       let textToSend = text ?? displayValue.trim();
 
@@ -1060,12 +1089,14 @@ export default function ChatInput({
     [
       allDroppedFiles,
       displayValue,
+      diverge,
       droppedFiles.length,
       handleSubmit,
       lastInterruption,
       localDroppedFiles.length,
       onFilesProcessed,
       pastedImages,
+      sessionId,
       setLocalDroppedFiles,
     ]
   );
@@ -1323,8 +1354,8 @@ export default function ChatInput({
             <line x1="2" y1="2" x2="22" y2="22" />
           </svg>
           <span className="leading-snug">
-            The active model can&apos;t read images. Switch to a vision-capable
-            model, or remove attached images to send.
+            The active model can&apos;t read images. Switch to a vision-capable model, or remove
+            attached images to send.
           </span>
         </div>
       )}
@@ -1549,11 +1580,7 @@ export default function ChatInput({
                 )}
               </Button>
             </PopoverTrigger>
-            <PopoverContent
-              side="top"
-              align="start"
-              className="flex flex-col gap-0.5 w-72 p-1.5"
-            >
+            <PopoverContent side="top" align="start" className="flex flex-col gap-0.5 w-72 p-1.5">
               {/* Order: pricing first, then context (paired immediately with
                   the model selector so they read as one group), then the
                   conversation-style/mode selector last. */}

@@ -228,6 +228,11 @@ if (process.platform !== 'darwin') {
       const protocolUrl = commandLine.find((arg) => arg.startsWith('biorouter://'));
       if (protocolUrl) {
         const parsedUrl = new URL(protocolUrl);
+        // Diverge: always open the branch in a fresh, focused window.
+        if (parsedUrl.hostname === 'diverge') {
+          app.whenReady().then(() => openDivergedWindow(parsedUrl));
+          return;
+        }
         // If it's a bot/workflow URL, handle it directly by creating a new window
         if (parsedUrl.hostname === 'bot' || parsedUrl.hostname === 'workflow') {
           app.whenReady().then(async () => {
@@ -297,6 +302,13 @@ async function handleProtocolUrl(url: string) {
   const parsedUrl = new URL(url);
   const recentDirs = loadRecentDirs();
   const openDir = recentDirs.length > 0 ? recentDirs[0] : null;
+
+  // Diverge: always open the branch in a fresh, focused window.
+  if (parsedUrl.hostname === 'diverge') {
+    pendingDeepLink = null;
+    await openDivergedWindow(parsedUrl);
+    return;
+  }
 
   if (parsedUrl.hostname === 'bot' || parsedUrl.hostname === 'workflow') {
     // For bot/workflow URLs, get existing window or create new one
@@ -373,6 +385,14 @@ app.on('open-url', async (_event, url) => {
 
     const recentDirs = loadRecentDirs();
     const openDir = recentDirs.length > 0 ? recentDirs[0] : null;
+
+    // Diverge: always open the branch in a fresh, focused window.
+    if (parsedUrl.hostname === 'diverge') {
+      log.info('[Main] Detected diverge URL, opening branch in a new window');
+      openUrlHandledLaunch = true;
+      await openDivergedWindow(parsedUrl);
+      return;
+    }
 
     // Handle bot/workflow URLs by directly creating a new window
     if (parsedUrl.hostname === 'bot' || parsedUrl.hostname === 'workflow') {
@@ -902,6 +922,38 @@ const createChat = async (
   });
   return mainWindow;
 };
+
+/**
+ * Open a diverged (branched) session in a NEW, focused window, leaving every
+ * existing window exactly in place. Backs the `biorouter://diverge` deeplink
+ * (CLI/TUI `/diverge`) and mirrors the in-app Diverge button. The new window is
+ * offset from the focused one so the user can see it's a distinct, second
+ * window rather than a silent in-place clone.
+ */
+async function openDivergedWindow(parsedUrl: URL): Promise<void> {
+  const sessionId = parsedUrl.searchParams.get('session_id') || undefined;
+  if (!sessionId) {
+    log.error('[Main] diverge deeplink missing session_id:', parsedUrl.toString());
+    return;
+  }
+  const recentDirs = loadRecentDirs();
+  const dir =
+    parsedUrl.searchParams.get('dir') ||
+    (recentDirs.length > 0 ? recentDirs[0] : undefined) ||
+    undefined;
+
+  const anchor = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+  const win = await createChat(app, undefined, dir, undefined, sessionId, 'pair');
+  if (win) {
+    if (anchor && anchor !== win && !anchor.isDestroyed()) {
+      const b = anchor.getBounds();
+      win.setBounds({ x: b.x + 40, y: b.y + 40, width: b.width, height: b.height });
+    }
+    win.show();
+    win.focus();
+    win.moveTop();
+  }
+}
 
 const createLauncher = () => {
   const launcherWindow = new BrowserWindow({
@@ -3233,13 +3285,17 @@ async function appMain() {
 
   ipcMain.on(
     'create-chat-window',
-    (_, query, dir, version, resumeSessionId, viewType, workflowId) => {
+    async (_, query, dir, version, resumeSessionId, viewType, workflowId) => {
       if (!dir?.trim()) {
         const recentDirs = loadRecentDirs();
         dir = recentDirs.length > 0 ? recentDirs[0] : undefined;
       }
 
-      createChat(
+      // Offset the new window from the one that triggered it (e.g. the Diverge
+      // button) so it's clearly a distinct second window, then bring it to the
+      // front — the originating window stays exactly where it is.
+      const anchor = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+      const win = await createChat(
         app,
         query,
         dir,
@@ -3250,6 +3306,15 @@ async function appMain() {
         undefined,
         workflowId
       );
+      if (win) {
+        if (anchor && anchor !== win && !anchor.isDestroyed()) {
+          const b = anchor.getBounds();
+          win.setBounds({ x: b.x + 40, y: b.y + 40, width: b.width, height: b.height });
+        }
+        win.show();
+        win.focus();
+        win.moveTop();
+      }
     }
   );
 
@@ -3479,10 +3544,7 @@ async function appMain() {
   // it, so the embedded agent actually responds inside the window.
   ipcMain.handle(
     'open-artifact-window',
-    async (
-      _event,
-      payload: { html: string; title?: string; width?: number; height?: number }
-    ) => {
+    async (_event, payload: { html: string; title?: string; width?: number; height?: number }) => {
       try {
         let html = payload.html;
         const isAgentic = html.includes('"transport":"bridge"');

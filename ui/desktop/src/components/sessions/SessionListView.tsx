@@ -13,6 +13,7 @@ import {
   Puzzle,
   LayoutDashboard,
 } from '../icons/app-icons';
+import { GitBranch } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useDashboard } from '../../contexts/DashboardContext';
 import { toastError } from '../../toasts';
@@ -254,6 +255,13 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
     const visibleDateGroups = useMemo(() => {
       return dateGroups.slice(0, visibleGroupsCount);
     }, [dateGroups, visibleGroupsCount]);
+
+    // id → name lookup so a diverged session can show its lineage parent's name.
+    const sessionNameById = useMemo(() => {
+      const map = new Map<string, string>();
+      for (const s of sessions) map.set(s.id, s.name);
+      return map;
+    }, [sessions]);
 
     const handleScroll = useCallback(
       (target: HTMLDivElement) => {
@@ -604,6 +612,15 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           {/* Title + metadata */}
           <div className="flex-1 min-w-0">
             <h3 className="text-sm font-medium truncate">{session.name}</h3>
+            {session.diverged_from && (
+              <div className="flex items-center gap-1 mt-0.5 text-text-muted text-xs min-w-0">
+                <GitBranch className="w-3 h-3 flex-shrink-0" />
+                <span className="truncate max-w-[320px]">
+                  branched from{' '}
+                  {sessionNameById.get(session.diverged_from) ?? session.diverged_from}
+                </span>
+              </div>
+            )}
             <div className="flex items-center gap-3 mt-0.5 text-text-muted text-xs">
               <div className="flex items-center gap-1">
                 <Calendar className="w-3 h-3 flex-shrink-0" />
@@ -633,7 +650,10 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <div className="flex items-center gap-0.5" onClick={(e) => e.stopPropagation()}>
+                      <div
+                        className="flex items-center gap-0.5"
+                        onClick={(e) => e.stopPropagation()}
+                      >
                         <Puzzle className="w-3 h-3" />
                         <span>{extensionNames.length}</span>
                       </div>
@@ -764,7 +784,9 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           {visibleDateGroups.map((group) => (
             <div key={group.label} className="space-y-4">
               <div className="sticky top-0 z-10 bg-background-muted/95 backdrop-blur-sm pt-2 pb-2">
-                <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider">{group.label}</h2>
+                <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider">
+                  {group.label}
+                </h2>
               </div>
               <div className="session-grid divide-y divide-border-subtle">
                 {group.sessions.map((session) => (
@@ -818,7 +840,12 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
             </div>
 
             <div className="flex-1 min-h-0 relative px-8 pt-6 pb-8">
-              <ScrollArea handleScroll={handleScroll} className="h-full" paddingX={1} data-search-scroll-area>
+              <ScrollArea
+                handleScroll={handleScroll}
+                className="h-full"
+                paddingX={1}
+                data-search-scroll-area
+              >
                 <div ref={containerRef} className="h-full relative">
                   <SearchView
                     onSearch={handleSearch}

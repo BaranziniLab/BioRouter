@@ -18,7 +18,7 @@ use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 7;
+pub const CURRENT_SCHEMA_VERSION: i32 = 8;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -90,6 +90,11 @@ pub struct Session {
     pub message_count: usize,
     pub provider_name: Option<String>,
     pub model_config: Option<ModelConfig>,
+    /// Id of the session this one was diverged (branched) from, if any. Set by
+    /// `diverge_session`; `None` for normally-created sessions. Lets the UI show
+    /// a session's lineage ("branched from …").
+    #[serde(default)]
+    pub diverged_from: Option<String>,
 }
 
 pub struct SessionUpdateBuilder<'a> {
@@ -111,6 +116,7 @@ pub struct SessionUpdateBuilder<'a> {
     user_workflow_values: Option<Option<HashMap<String, String>>>,
     provider_name: Option<Option<String>>,
     model_config: Option<Option<ModelConfig>>,
+    diverged_from: Option<Option<String>>,
 }
 
 #[derive(Serialize, ToSchema, Debug)]
@@ -145,6 +151,7 @@ impl<'a> SessionUpdateBuilder<'a> {
             user_workflow_values: None,
             provider_name: None,
             model_config: None,
+            diverged_from: None,
         }
     }
 
@@ -240,6 +247,12 @@ impl<'a> SessionUpdateBuilder<'a> {
 
     pub fn model_config(mut self, model_config: ModelConfig) -> Self {
         self.model_config = Some(Some(model_config));
+        self
+    }
+
+    /// Record (or clear) the id of the session this one was diverged from.
+    pub fn diverged_from(mut self, diverged_from: Option<String>) -> Self {
+        self.diverged_from = Some(diverged_from);
         self
     }
 }
@@ -342,6 +355,39 @@ impl SessionManager {
 
     pub async fn copy_session(&self, session_id: &str, new_name: String) -> Result<Session> {
         self.storage.copy_session(self, session_id, new_name).await
+    }
+
+    /// Diverge (branch) a session: copy the full conversation into a fresh
+    /// session that records its lineage (`diverged_from`) and gets a
+    /// human-friendly, collision-free branch name.
+    ///
+    /// Naming:
+    /// - `custom_name` (when non-blank) is used verbatim.
+    /// - Otherwise the name is `"{base} (branch {N})"`, where `base` is the
+    ///   parent's name (a placeholder like "New Session" is replaced with a
+    ///   title derived from the conversation) with any existing `(branch K)`
+    ///   suffix stripped, and `N` is the next free index across that family.
+    ///
+    /// The branch name is locked (`user_set_name = true`) so the auto-namer
+    /// never overwrites the marker. Shared by the `/sessions/{id}/diverge`
+    /// route and the CLI/TUI `/diverge` command.
+    ///
+    /// The branch conversation is trimmed to end at the last *complete*
+    /// assistant answer (see `trim_to_last_complete_answer`), so a diverge
+    /// triggered while the agent is still generating or calling tools never
+    /// leaves a dangling, unanswered turn in the new session. `anchor_ms` (the
+    /// `created` timestamp of the message a per-message Diverge button was
+    /// clicked on) bounds the branch to that point; `None` uses the most recent
+    /// complete answer.
+    pub async fn diverge_session(
+        &self,
+        session_id: &str,
+        custom_name: Option<String>,
+        anchor_ms: Option<i64>,
+    ) -> Result<Session> {
+        self.storage
+            .diverge_session(self, session_id, custom_name, anchor_ms)
+            .await
     }
 
     pub async fn truncate_conversation(&self, session_id: &str, timestamp: i64) -> Result<()> {
@@ -485,6 +531,7 @@ impl Default for Session {
             message_count: 0,
             provider_name: None,
             model_config: None,
+            diverged_from: None,
         }
     }
 }
@@ -493,6 +540,95 @@ impl Session {
     pub fn without_messages(mut self) -> Self {
         self.conversation = None;
         self
+    }
+}
+
+/// True when `name` is a placeholder title (empty, "New Session", "CLI
+/// Session", "New session N", "Session N") rather than a meaningful name —
+/// mirrors the frontend `isDefaultSessionName`. Used so a diverged branch
+/// doesn't inherit a useless placeholder.
+pub(crate) fn is_default_session_name(name: &str) -> bool {
+    let n = name.trim();
+    if n.is_empty() {
+        return true;
+    }
+    if n.eq_ignore_ascii_case("New Session") || n.eq_ignore_ascii_case("CLI Session") {
+        return true;
+    }
+    // "New session <N>" or "Session <N>" (trailing digits).
+    let lower = n.to_ascii_lowercase();
+    for prefix in ["new session ", "session "] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            if !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Strip a trailing `" (branch <digits>)"` from a name so branching a branch
+/// re-numbers within the same family instead of nesting suffixes
+/// ("Foo (branch 1)" → "Foo", then the next branch becomes "Foo (branch 2)").
+pub(crate) fn strip_branch_suffix(name: &str) -> &str {
+    let trimmed = name.trim_end();
+    if let Some(idx) = trimmed.rfind(" (branch ") {
+        let inner = &trimmed[idx + " (branch ".len()..];
+        if let Some(digits) = inner.strip_suffix(')') {
+            if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
+                return trimmed[..idx].trim_end();
+            }
+        }
+    }
+    trimmed
+}
+
+/// Escape SQL LIKE wildcards in a literal so a name containing `%` or `_`
+/// (or `\`) is matched literally. Pair with `ESCAPE '\'`.
+fn like_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+/// True when `m` is a *complete* assistant answer: an assistant message that
+/// carries real text and has no pending tool call. These are the only points a
+/// branch should end on — everything after the last one (an unanswered user
+/// question, an empty "about to call a tool" assistant turn, a tool
+/// request/response still mid-flight) is an in-progress exchange.
+fn is_assistant_terminal_answer(m: &Message) -> bool {
+    m.role == Role::Assistant && !m.is_tool_call() && !m.as_concat_text().trim().is_empty()
+}
+
+/// Trim a conversation for a diverged branch so it ends at the last complete
+/// assistant answer. A diverge fired while the agent is still generating or
+/// calling tools therefore branches from the previous finished response rather
+/// than leaving a dangling, unanswered turn.
+///
+/// `anchor_ms` bounds the branch to messages created at or before it — used by
+/// the per-message Diverge button to branch from exactly that answer. With
+/// `None`, the most recent complete answer in the whole conversation is used.
+/// If there is no complete answer at all (e.g. diverged before the very first
+/// reply landed), the branch starts empty rather than carrying an orphaned
+/// question.
+pub(crate) fn trim_to_last_complete_answer(
+    conversation: &Conversation,
+    anchor_ms: Option<i64>,
+) -> Conversation {
+    let kept: Vec<&Message> = conversation
+        .messages()
+        .iter()
+        .filter(|m| anchor_ms.is_none_or(|ts| m.created <= ts))
+        .collect();
+
+    match kept.iter().rposition(|m| is_assistant_terminal_answer(m)) {
+        Some(end) => Conversation::new_unvalidated(
+            kept[..=end]
+                .iter()
+                .map(|m| (*m).clone())
+                .collect::<Vec<Message>>(),
+        ),
+        None => Conversation::default(),
     }
 }
 
@@ -549,6 +685,7 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
             message_count: row.try_get("message_count").unwrap_or(0) as usize,
             provider_name: row.try_get("provider_name").ok().flatten(),
             model_config,
+            diverged_from: row.try_get("diverged_from").ok().flatten(),
         })
     }
 }
@@ -658,7 +795,8 @@ impl SessionStorage {
                 workflow_json TEXT,
                 user_workflow_values_json TEXT,
                 provider_name TEXT,
-                model_config_json TEXT
+                model_config_json TEXT,
+                diverged_from TEXT
             )
         "#,
         )
@@ -767,8 +905,8 @@ impl SessionStorage {
             total_tokens, input_tokens, output_tokens,
             accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
             schedule_id, workflow_json, user_workflow_values_json,
-            provider_name, model_config_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            provider_name, model_config_json, diverged_from
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         "#,
         )
         .bind(&session.id)
@@ -790,6 +928,7 @@ impl SessionStorage {
         .bind(user_workflow_values_json)
         .bind(&session.provider_name)
         .bind(model_config_json)
+        .bind(&session.diverged_from)
         .execute(&mut *tx)
         .await?;
 
@@ -963,6 +1102,12 @@ impl SessionStorage {
                     .await?;
                 }
             }
+            8 => {
+                // Lineage pointer for diverged (branched) sessions.
+                sqlx::query("ALTER TABLE sessions ADD COLUMN diverged_from TEXT")
+                    .execute(pool)
+                    .await?;
+            }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
             }
@@ -1019,7 +1164,7 @@ impl SessionStorage {
                total_tokens, input_tokens, output_tokens,
                accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
                schedule_id, workflow_json, user_workflow_values_json,
-               provider_name, model_config_json
+               provider_name, model_config_json, diverged_from
         FROM sessions
         WHERE id = ?
     "#,
@@ -1099,6 +1244,7 @@ impl SessionStorage {
         add_update!(builder.user_workflow_values, "user_workflow_values_json");
         add_update!(builder.provider_name, "provider_name");
         add_update!(builder.model_config, "model_config_json");
+        add_update!(builder.diverged_from, "diverged_from");
 
         if updates.is_empty() {
             return Ok(());
@@ -1163,6 +1309,9 @@ impl SessionStorage {
                 .map(|mc| serde_json::to_string(&mc))
                 .transpose()?;
             q = q.bind(model_config_json);
+        }
+        if let Some(diverged_from) = builder.diverged_from {
+            q = q.bind(diverged_from);
         }
 
         let pool = self.pool().await?;
@@ -1291,7 +1440,7 @@ impl SessionStorage {
                    s.total_tokens, s.input_tokens, s.output_tokens,
                    s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
                    s.schedule_id, s.workflow_json, s.user_workflow_values_json,
-                   s.provider_name, s.model_config_json,
+                   s.provider_name, s.model_config_json, s.diverged_from,
                    COUNT(m.id) as message_count
             FROM sessions s
             INNER JOIN messages m ON s.id = m.session_id
@@ -1454,6 +1603,99 @@ impl SessionStorage {
         }
 
         self.get_session(&new_session.id, true).await
+    }
+
+    async fn diverge_session(
+        &self,
+        session_manager: &SessionManager,
+        session_id: &str,
+        custom_name: Option<String>,
+        anchor_ms: Option<i64>,
+    ) -> Result<Session> {
+        // Load original first (with conversation) so we can derive a name and
+        // confirm it exists.
+        let original = self.get_session(session_id, true).await?;
+
+        let new_name = match custom_name {
+            Some(n) if !n.trim().is_empty() => n.trim().to_string(),
+            _ => self.compute_branch_name(&original).await?,
+        };
+
+        // Build the branch conversation: the parent's history trimmed to end at
+        // the last complete assistant answer (so a mid-generation diverge never
+        // carries over an unanswered question or a dangling tool call).
+        let branch_conversation = original
+            .conversation
+            .as_ref()
+            .map(|c| trim_to_last_complete_answer(c, anchor_ms))
+            .unwrap_or_default();
+
+        // Mint the branch session and copy the carry-over metadata (mirrors
+        // copy_session, but writes the *trimmed* conversation rather than the
+        // full one).
+        let new_session = self
+            .create_session(
+                original.working_dir.clone(),
+                new_name.clone(),
+                original.session_type,
+            )
+            .await?;
+
+        session_manager
+            .update(&new_session.id)
+            .extension_data(original.extension_data)
+            .schedule_id(original.schedule_id)
+            .workflow(original.workflow)
+            .user_workflow_values(original.user_workflow_values)
+            // Lock the computed/custom name (so the auto-namer never clobbers
+            // the branch marker) and record the lineage pointer.
+            .user_provided_name(new_name)
+            .diverged_from(Some(session_id.to_string()))
+            .apply()
+            .await?;
+
+        self.replace_conversation(&new_session.id, &branch_conversation)
+            .await?;
+
+        self.get_session(&new_session.id, true).await
+    }
+
+    /// Derive `"{base} (branch {N})"` for a diverged session. `base` is the
+    /// parent's name with any `(branch K)` suffix stripped, falling back to a
+    /// conversation-derived title when the parent's name is just a placeholder.
+    /// `N` is the next free index across that base's branch family.
+    async fn compute_branch_name(&self, original: &Session) -> Result<String> {
+        let stripped = strip_branch_suffix(&original.name);
+        let base = if is_default_session_name(stripped) {
+            let derived = original
+                .conversation
+                .as_ref()
+                .map(SessionManager::fallback_session_name)
+                .unwrap_or_default();
+            if derived.trim().is_empty() {
+                "Conversation".to_string()
+            } else {
+                derived
+            }
+        } else {
+            stripped.to_string()
+        };
+
+        let next = self.count_branch_siblings(&base).await? + 1;
+        Ok(format!("{base} (branch {next})"))
+    }
+
+    /// Count existing sessions named `"{base} (branch <digits>)"` so the next
+    /// branch gets a unique index. The base is escaped for use in a SQL LIKE.
+    async fn count_branch_siblings(&self, base: &str) -> Result<i64> {
+        let pool = self.pool().await?;
+        let pattern = format!("{} (branch %)", like_escape(base));
+        let count =
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sessions WHERE name LIKE ? ESCAPE '\\'")
+                .bind(pattern)
+                .fetch_one(pool)
+                .await?;
+        Ok(count)
     }
 
     async fn truncate_conversation(&self, session_id: &str, timestamp: i64) -> Result<()> {
@@ -1679,5 +1921,573 @@ mod tests {
         assert_eq!(imported.name, "Old format session");
         assert!(imported.user_set_name);
         assert_eq!(imported.working_dir, PathBuf::from("/tmp/test"));
+    }
+
+    // ── Diverge (copy_session) tests ────────────────────────────────────────
+    //
+    // `copy_session` is the engine behind both the edit-fork path and the
+    // `/diverge` feature (Diverge button + `/diverge` slash command). Diverge
+    // copies the *entire* conversation with no truncation, so the new session
+    // resumes from exactly where the original left off while the original stays
+    // put. These tests exercise that contract from many angles.
+
+    /// Seed a User session with `n` user/assistant message pairs and return it
+    /// (loaded with its conversation).
+    async fn seed_session_with_messages(sm: &SessionManager, n: usize) -> Session {
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/diverge_test"),
+                "Original".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        for i in 0..n {
+            sm.add_message(
+                &session.id,
+                &Message {
+                    id: None,
+                    role: Role::User,
+                    created: chrono::Utc::now().timestamp_millis() + (i as i64) * 2,
+                    content: vec![MessageContent::text(format!("question {i}"))],
+                    metadata: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+            sm.add_message(
+                &session.id,
+                &Message {
+                    id: None,
+                    role: Role::Assistant,
+                    created: chrono::Utc::now().timestamp_millis() + (i as i64) * 2 + 1,
+                    content: vec![MessageContent::text(format!("answer {i}"))],
+                    metadata: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+        }
+
+        sm.get_session(&session.id, true).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_diverge_preserves_full_history_and_metadata() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let original = seed_session_with_messages(&sm, 3).await;
+        assert_eq!(original.message_count, 6);
+
+        let diverged = sm
+            .copy_session(&original.id, "Branch".to_string())
+            .await
+            .unwrap();
+
+        // New, distinct id.
+        assert_ne!(diverged.id, original.id);
+        // Name applied.
+        assert_eq!(diverged.name, "Branch");
+        // Working dir carried over.
+        assert_eq!(diverged.working_dir, original.working_dir);
+        // Full conversation copied verbatim, in order.
+        assert_eq!(diverged.message_count, 6);
+        let orig_texts: Vec<_> = original
+            .conversation
+            .as_ref()
+            .unwrap()
+            .messages()
+            .iter()
+            .map(|m| m.as_concat_text())
+            .collect();
+        let new_texts: Vec<_> = diverged
+            .conversation
+            .as_ref()
+            .unwrap()
+            .messages()
+            .iter()
+            .map(|m| m.as_concat_text())
+            .collect();
+        assert_eq!(orig_texts, new_texts);
+    }
+
+    #[tokio::test]
+    async fn test_diverge_leaves_original_untouched() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let original = seed_session_with_messages(&sm, 2).await;
+        let diverged = sm
+            .copy_session(&original.id, "Branch".to_string())
+            .await
+            .unwrap();
+
+        // Mutate the diverged session by appending a new message.
+        sm.add_message(
+            &diverged.id,
+            &Message {
+                id: None,
+                role: Role::User,
+                created: chrono::Utc::now().timestamp_millis() + 10_000,
+                content: vec![MessageContent::text("only in the branch")],
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+        // Original is completely unaffected: same id, same message count.
+        let original_after = sm.get_session(&original.id, true).await.unwrap();
+        assert_eq!(original_after.message_count, 4);
+        let branch_after = sm.get_session(&diverged.id, true).await.unwrap();
+        assert_eq!(branch_after.message_count, 5);
+
+        // Both sessions still exist independently.
+        let sessions = sm.list_sessions().await.unwrap();
+        assert_eq!(sessions.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_diverge_resets_token_counts() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let original = seed_session_with_messages(&sm, 1).await;
+        sm.update(&original.id)
+            .total_tokens(Some(1234))
+            .input_tokens(Some(1000))
+            .output_tokens(Some(234))
+            .apply()
+            .await
+            .unwrap();
+
+        let diverged = sm
+            .copy_session(&original.id, "Branch".to_string())
+            .await
+            .unwrap();
+
+        // Diverged session starts with fresh token accounting.
+        assert_eq!(diverged.total_tokens, None);
+        assert_eq!(diverged.input_tokens, None);
+        assert_eq!(diverged.output_tokens, None);
+
+        // Original keeps its counts.
+        let original_after = sm.get_session(&original.id, false).await.unwrap();
+        assert_eq!(original_after.total_tokens, Some(1234));
+    }
+
+    #[tokio::test]
+    async fn test_get_token_counts_matches_get_session() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let session = seed_session_with_messages(&sm, 2).await;
+        sm.update(&session.id)
+            .total_tokens(Some(4321))
+            .input_tokens(Some(4000))
+            .output_tokens(Some(321))
+            .accumulated_total_tokens(Some(9999))
+            .accumulated_input_tokens(Some(9000))
+            .accumulated_output_tokens(Some(999))
+            .apply()
+            .await
+            .unwrap();
+
+        // The lightweight token-only query must return exactly the same token
+        // counters that the full `get_session` exposes (it just skips the
+        // COUNT(*) and metadata columns).
+        let full = sm.get_session(&session.id, false).await.unwrap();
+        let counts = sm.get_token_counts(&session.id).await.unwrap();
+
+        assert_eq!(counts.total_tokens, full.total_tokens);
+        assert_eq!(counts.input_tokens, full.input_tokens);
+        assert_eq!(counts.output_tokens, full.output_tokens);
+        assert_eq!(counts.accumulated_total_tokens, full.accumulated_total_tokens);
+        assert_eq!(counts.accumulated_input_tokens, full.accumulated_input_tokens);
+        assert_eq!(
+            counts.accumulated_output_tokens,
+            full.accumulated_output_tokens
+        );
+        assert_eq!(counts.total_tokens, Some(4321));
+        assert_eq!(counts.accumulated_total_tokens, Some(9999));
+    }
+
+    #[tokio::test]
+    async fn test_diverge_empty_conversation() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let original = sm
+            .create_session(
+                PathBuf::from("/tmp/empty"),
+                "Empty".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let diverged = sm
+            .copy_session(&original.id, "Branch of empty".to_string())
+            .await
+            .unwrap();
+
+        assert_ne!(diverged.id, original.id);
+        assert_eq!(diverged.message_count, 0);
+        assert_eq!(diverged.name, "Branch of empty");
+    }
+
+    #[tokio::test]
+    async fn test_diverge_of_a_diverge_chains() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let original = seed_session_with_messages(&sm, 2).await;
+        let first = sm
+            .copy_session(&original.id, "First branch".to_string())
+            .await
+            .unwrap();
+        let second = sm
+            .copy_session(&first.id, "Second branch".to_string())
+            .await
+            .unwrap();
+
+        // Three distinct sessions, all sharing the same history.
+        let ids: std::collections::HashSet<_> =
+            [&original.id, &first.id, &second.id].into_iter().collect();
+        assert_eq!(ids.len(), 3);
+        assert_eq!(second.message_count, 4);
+        assert_eq!(sm.list_sessions().await.unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_diverge_nonexistent_session_errors() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let result = sm
+            .copy_session("does_not_exist", "Branch".to_string())
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_diverge_produces_unique_ids() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+
+        let original = seed_session_with_messages(&sm, 2).await;
+
+        let mut handles = vec![];
+        for i in 0..NUM_CONCURRENT_SESSIONS {
+            let sm = Arc::clone(&sm);
+            let oid = original.id.clone();
+            handles.push(tokio::spawn(async move {
+                sm.copy_session(&oid, format!("Branch {i}"))
+                    .await
+                    .unwrap()
+                    .id
+            }));
+        }
+
+        let mut ids = std::collections::HashSet::new();
+        for h in handles {
+            ids.insert(h.await.unwrap());
+        }
+        // Every concurrent diverge yields a unique id, none colliding with the
+        // original.
+        assert_eq!(ids.len(), NUM_CONCURRENT_SESSIONS as usize);
+        assert!(!ids.contains(&original.id));
+
+        // Original + all branches persisted; original still has its 4 messages.
+        assert_eq!(
+            sm.list_sessions().await.unwrap().len(),
+            NUM_CONCURRENT_SESSIONS as usize + 1
+        );
+        assert_eq!(
+            sm.get_session(&original.id, true)
+                .await
+                .unwrap()
+                .message_count,
+            4
+        );
+    }
+
+    // ── Branch naming + lineage (diverge_session) ───────────────────────────
+
+    #[test]
+    fn test_strip_branch_suffix() {
+        assert_eq!(strip_branch_suffix("Foo"), "Foo");
+        assert_eq!(strip_branch_suffix("Foo (branch 1)"), "Foo");
+        assert_eq!(strip_branch_suffix("Foo (branch 42)"), "Foo");
+        // Only strips one level / a real numeric suffix.
+        assert_eq!(strip_branch_suffix("Foo (branch 1) (branch 2)"), "Foo (branch 1)");
+        assert_eq!(strip_branch_suffix("Foo (branch)"), "Foo (branch)");
+        assert_eq!(strip_branch_suffix("Foo (branch abc)"), "Foo (branch abc)");
+        // A name that merely contains the word branch is untouched.
+        assert_eq!(strip_branch_suffix("My branch plan"), "My branch plan");
+    }
+
+    #[test]
+    fn test_is_default_session_name() {
+        assert!(is_default_session_name(""));
+        assert!(is_default_session_name("   "));
+        assert!(is_default_session_name("New Session"));
+        assert!(is_default_session_name("new session"));
+        assert!(is_default_session_name("CLI Session"));
+        assert!(is_default_session_name("New session 3"));
+        assert!(is_default_session_name("Session 12"));
+        assert!(!is_default_session_name("Glycolysis explained"));
+        assert!(!is_default_session_name("Session about sessions"));
+    }
+
+    #[tokio::test]
+    async fn test_diverge_session_names_branches_and_sets_lineage() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let original = seed_session_with_messages(&sm, 2).await;
+        sm.update(&original.id)
+            .user_provided_name("Glycolysis")
+            .apply()
+            .await
+            .unwrap();
+
+        let b1 = sm.diverge_session(&original.id, None, None).await.unwrap();
+        let b2 = sm.diverge_session(&original.id, None, None).await.unwrap();
+
+        // Sibling-numbered, collision-free names.
+        assert_eq!(b1.name, "Glycolysis (branch 1)");
+        assert_eq!(b2.name, "Glycolysis (branch 2)");
+        // Lineage recorded; original has none.
+        assert_eq!(b1.diverged_from.as_deref(), Some(original.id.as_str()));
+        assert_eq!(b2.diverged_from.as_deref(), Some(original.id.as_str()));
+        assert_eq!(
+            sm.get_session(&original.id, false)
+                .await
+                .unwrap()
+                .diverged_from,
+            None
+        );
+        // Full history carried over.
+        assert_eq!(b1.message_count, 4);
+    }
+
+    #[tokio::test]
+    async fn test_diverge_of_a_branch_flattens_numbering() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let original = seed_session_with_messages(&sm, 1).await;
+        sm.update(&original.id)
+            .user_provided_name("Topic")
+            .apply()
+            .await
+            .unwrap();
+
+        let b1 = sm.diverge_session(&original.id, None, None).await.unwrap();
+        assert_eq!(b1.name, "Topic (branch 1)");
+
+        // Diverging the *branch* strips its suffix and continues the family
+        // count rather than nesting "(branch 1) (branch 1)".
+        let b2 = sm.diverge_session(&b1.id, None, None).await.unwrap();
+        assert_eq!(b2.name, "Topic (branch 2)");
+        // Its lineage points at the immediate parent (the branch).
+        assert_eq!(b2.diverged_from.as_deref(), Some(b1.id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn test_diverge_placeholder_name_derives_from_conversation() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        // Session left with the default placeholder name.
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/ph"),
+                "New Session".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.add_message(
+            &session.id,
+            &Message {
+                id: None,
+                role: Role::User,
+                created: chrono::Utc::now().timestamp_millis(),
+                content: vec![MessageContent::text("Explain the citric acid cycle")],
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+        let branch = sm.diverge_session(&session.id, None, None).await.unwrap();
+        // Name derives from the first user message, not "New Session".
+        assert!(
+            branch.name.starts_with("Explain the citric acid cycle"),
+            "unexpected branch name: {}",
+            branch.name
+        );
+        assert!(branch.name.ends_with("(branch 1)"));
+    }
+
+    #[tokio::test]
+    async fn test_diverge_custom_name_overrides() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let original = seed_session_with_messages(&sm, 1).await;
+        let branch = sm
+            .diverge_session(&original.id, Some("  Hand Picked  ".to_string()), None)
+            .await
+            .unwrap();
+        // Trimmed, used verbatim (no "(branch N)" suffix), lineage still set.
+        assert_eq!(branch.name, "Hand Picked");
+        assert_eq!(branch.diverged_from.as_deref(), Some(original.id.as_str()));
+    }
+
+    #[tokio::test]
+    async fn test_diverge_branch_name_survives_like_wildcards() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let original = seed_session_with_messages(&sm, 1).await;
+        // A name containing SQL LIKE metacharacters must not break sibling
+        // counting.
+        sm.update(&original.id)
+            .user_provided_name("100%_done")
+            .apply()
+            .await
+            .unwrap();
+
+        let b1 = sm.diverge_session(&original.id, None, None).await.unwrap();
+        let b2 = sm.diverge_session(&original.id, None, None).await.unwrap();
+        assert_eq!(b1.name, "100%_done (branch 1)");
+        assert_eq!(b2.name, "100%_done (branch 2)");
+    }
+
+    // ── Branch trimming (start exactly from the last complete answer) ───────
+
+    fn umsg(created: i64, text: &str) -> Message {
+        Message {
+            id: None,
+            role: Role::User,
+            created,
+            content: vec![MessageContent::text(text)],
+            metadata: Default::default(),
+        }
+    }
+    fn amsg(created: i64, text: &str) -> Message {
+        Message {
+            id: None,
+            role: Role::Assistant,
+            created,
+            content: vec![MessageContent::text(text)],
+            metadata: Default::default(),
+        }
+    }
+    fn atool(created: i64) -> Message {
+        let mut m = Message::assistant().with_tool_request(
+            "call_1",
+            Ok(rmcp::model::CallToolRequestParams {
+                task: None,
+                name: "shell".into(),
+                arguments: None,
+                meta: None,
+            }),
+        );
+        m.created = created;
+        m
+    }
+
+    #[test]
+    fn test_trim_keeps_through_last_complete_answer() {
+        let conv = Conversation::new_unvalidated(vec![
+            umsg(1, "q1"),
+            amsg(2, "a1"),
+            umsg(3, "q2"),
+            amsg(4, "a2"),
+        ]);
+        let t = trim_to_last_complete_answer(&conv, None);
+        assert_eq!(t.messages().len(), 4);
+        assert_eq!(t.messages().last().unwrap().as_concat_text(), "a2");
+    }
+
+    #[test]
+    fn test_trim_drops_trailing_unanswered_question() {
+        // The reported bug: diverge fired while the agent was still generating
+        // the answer to q2, so the DB has q2 persisted with no answer yet.
+        let conv =
+            Conversation::new_unvalidated(vec![umsg(1, "q1"), amsg(2, "a1"), umsg(3, "q2")]);
+        let t = trim_to_last_complete_answer(&conv, None);
+        assert_eq!(t.messages().len(), 2);
+        assert_eq!(t.messages().last().unwrap().as_concat_text(), "a1");
+    }
+
+    #[test]
+    fn test_trim_drops_trailing_empty_assistant_and_tool_call() {
+        // Mid tool-call: assistant("") then a pending tool request, no final
+        // answer yet → branch ends at the previous complete answer.
+        let conv = Conversation::new_unvalidated(vec![
+            umsg(1, "q1"),
+            amsg(2, "a1"),
+            umsg(3, "q2"),
+            amsg(4, ""),
+            atool(5),
+        ]);
+        let t = trim_to_last_complete_answer(&conv, None);
+        assert_eq!(t.messages().len(), 2);
+        assert_eq!(t.messages().last().unwrap().as_concat_text(), "a1");
+    }
+
+    #[test]
+    fn test_trim_anchor_bounds_branch_to_clicked_answer() {
+        let conv = Conversation::new_unvalidated(vec![
+            umsg(10, "q1"),
+            amsg(20, "a1"),
+            umsg(30, "q2"),
+            amsg(40, "a2"),
+        ]);
+        // Per-message Diverge button clicked on a1 (created=20).
+        let t = trim_to_last_complete_answer(&conv, Some(20));
+        assert_eq!(t.messages().len(), 2);
+        assert_eq!(t.messages().last().unwrap().as_concat_text(), "a1");
+    }
+
+    #[test]
+    fn test_trim_empty_when_no_complete_answer() {
+        // Diverged before the first reply landed: only an unanswered question.
+        let conv = Conversation::new_unvalidated(vec![umsg(1, "q1")]);
+        let t = trim_to_last_complete_answer(&conv, None);
+        assert!(t.messages().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_diverge_trims_in_flight_turn_end_to_end() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        // q0 → a0 (complete), then a follow-up question whose answer is still
+        // being generated when the user hits Diverge.
+        let original = seed_session_with_messages(&sm, 1).await;
+        let now = chrono::Utc::now().timestamp_millis();
+        sm.add_message(&original.id, &umsg(now + 10_000, "follow-up?"))
+            .await
+            .unwrap();
+
+        let branch = sm.diverge_session(&original.id, None, None).await.unwrap();
+        // The unanswered follow-up is NOT carried over; the branch ends at a0.
+        assert_eq!(branch.message_count, 2);
+        let last = branch
+            .conversation
+            .unwrap()
+            .messages()
+            .last()
+            .unwrap()
+            .as_concat_text();
+        assert_eq!(last, "answer 0");
     }
 }
