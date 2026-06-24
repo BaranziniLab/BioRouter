@@ -109,6 +109,11 @@ pub struct Manifest {
     /// the app has never been built (or its sources changed since).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub built_at: Option<u64>,
+    /// Id of the chat session this app was created in, when known. Lets the GUI
+    /// reopen the originating conversation so the user can keep iterating on the
+    /// app there. Apps created before this was recorded have `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
 }
 
 fn now_secs() -> u64 {
@@ -237,6 +242,7 @@ impl ArtifactStore {
             width: None,
             height: None,
             built_at: None,
+            session_id: None,
         };
         self.save_manifest(&manifest)?;
         for (path, content) in files {
@@ -280,6 +286,7 @@ impl ArtifactStore {
             width: None,
             height: None,
             built_at: None,
+            session_id: None,
         };
         self.save_manifest(&manifest)?;
         for (path, content) in files {
