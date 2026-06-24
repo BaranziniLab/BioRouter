@@ -130,6 +130,12 @@ export const startBiorouterd = async (options: StartBiorouterdOptions): Promise<
     PATH: `${path.dirname(resolvedBiorouterdPath)}${path.delimiter}${process.env.PATH || ''}`,
     BIOROUTER_PORT: String(port),
     BIOROUTER_SERVER__SECRET_KEY: serverSecret,
+    // Default Auto Visualiser to CDN-referenced assets so each figure's persisted
+    // HTML blob is a few KB instead of megabytes of inlined D3/Chart.js/Leaflet/
+    // Mermaid — keeps figure-heavy sessions light in the renderer heap and SQLite.
+    // Respects an explicit user override; set BIOROUTER_AUTOVIS_CDN=0 for fully
+    // offline/self-contained figures (no network needed at render time).
+    BIOROUTER_AUTOVIS_CDN: process.env.BIOROUTER_AUTOVIS_CDN ?? '1',
     ...env,
   } as BiorouterProcessEnv;
 
