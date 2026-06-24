@@ -659,6 +659,57 @@ impl ExtensionManager {
         self.invalidate_tools_cache_and_bump_version().await;
     }
 
+    /// Inject an already-constructed in-process rmcp server into this manager.
+    ///
+    /// This is the seam for **per-app** servers that carry app context (a
+    /// workspace path, a data-source map, a jail) which the no-arg
+    /// `BUILTIN_EXTENSIONS` registry cannot express. It mirrors the `Builtin`
+    /// spawn path (duplex transport → serve task → `McpClient::connect`) but
+    /// serves the *provided* instance instead of looking one up by name.
+    pub async fn add_inprocess_server<S>(&self, name: &str, server: S) -> ExtensionResult<()>
+    where
+        S: rmcp::ServerHandler + Send + 'static,
+    {
+        use rmcp::ServiceExt;
+        let (server_read, client_write) = tokio::io::duplex(65536);
+        let (client_read, server_write) = tokio::io::duplex(65536);
+        let label = name.to_string();
+        tokio::spawn(async move {
+            match server.serve((server_read, server_write)).await {
+                Ok(running) => {
+                    let _ = running.waiting().await;
+                }
+                Err(e) => {
+                    tracing::error!(server = %label, error = %e, "in-process server error")
+                }
+            }
+        });
+        let client = McpClient::connect(
+            (client_read, client_write),
+            Duration::from_secs(300),
+            self.provider.clone(),
+        )
+        .await?;
+        let info = client.get_info().cloned();
+        let config = ExtensionConfig::Builtin {
+            name: name.to_string(),
+            description: name.to_string(),
+            display_name: None,
+            timeout: Some(300),
+            bundled: None,
+            available_tools: Vec::new(),
+        };
+        self.add_client(
+            name.to_string(),
+            config,
+            Arc::new(Mutex::new(Box::new(client) as Box<dyn McpClientTrait>)),
+            info,
+            None,
+        )
+        .await;
+        Ok(())
+    }
+
     /// Get extensions info for building the system prompt
     pub async fn get_extensions_info(&self) -> Vec<ExtensionInfo> {
         self.extensions
@@ -1609,6 +1660,105 @@ mod tests {
             .get_client_for_tool("client___tool")
             .await
             .is_some());
+    }
+
+    /// BRSDK INTEGRATED end-to-end: a per-app `DataSqlServer` injected via the
+    /// `add_inprocess_server` seam is discoverable as an MCP tool and dispatches
+    /// real read-only SQL through the actual MCP transport — exercising the full
+    /// path (manifest source → per-app server → in-process MCP → tool discovery
+    /// → dispatch → real rows), plus end-to-end mutation rejection.
+    #[tokio::test]
+    async fn brsdk_inprocess_datasql_end_to_end() {
+        use biorouter_mcp::datasql::server::DataSqlServer;
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("cohort.db");
+        {
+            let opts = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(opts)
+                .await
+                .unwrap();
+            sqlx::query("CREATE TABLE genes (symbol TEXT, chrom TEXT)")
+                .execute(&pool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO genes VALUES ('CFTR','7'), ('TP53','17')")
+                .execute(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+        }
+
+        let em = ExtensionManager::new_without_provider(dir.path().to_path_buf());
+        let mut sources = std::collections::HashMap::new();
+        sources.insert("cohort".to_string(), db_path);
+        em.add_inprocess_server("datasql", DataSqlServer::new(sources))
+            .await
+            .expect("inject per-app server");
+
+        // (1) The tool is discoverable over the in-process MCP transport.
+        let tools = em.get_prefixed_tools(None).await.unwrap();
+        assert!(
+            tools.iter().any(|t| t.name.contains("data_query")),
+            "data_query not discovered; tools = {:?}",
+            tools.iter().map(|t| t.name.to_string()).collect::<Vec<_>>()
+        );
+
+        // (2) Dispatch a real read-only query and read the rows back.
+        let call = CallToolRequestParams {
+            task: None,
+            name: "datasql__data_query".to_string().into(),
+            arguments: Some(
+                serde_json::json!({"source":"cohort","sql":"SELECT symbol FROM genes WHERE chrom='7'"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            meta: None,
+        };
+        let dispatched = em
+            .dispatch_tool_call("test-session", call, CancellationToken::default())
+            .await
+            .expect("dispatch ok");
+        let output = dispatched.result.await.expect("tool result ok");
+        let text = serde_json::to_string(&output).unwrap();
+        assert!(text.contains("CFTR"), "expected query rows in output: {text}");
+        assert!(!text.contains("TP53"), "WHERE filter must apply: {text}");
+
+        // (3) A mutation is rejected end-to-end (whichever way the error surfaces).
+        let bad = CallToolRequestParams {
+            task: None,
+            name: "datasql__data_query".to_string().into(),
+            arguments: Some(
+                serde_json::json!({"source":"cohort","sql":"DROP TABLE genes"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            meta: None,
+        };
+        let rejected = match em
+            .dispatch_tool_call("test-session", bad, CancellationToken::default())
+            .await
+        {
+            Err(_) => true,
+            Ok(tcr) => match tcr.result.await {
+                Err(_) => true,
+                Ok(r) => {
+                    r.is_error == Some(true)
+                        || serde_json::to_string(&r)
+                            .unwrap()
+                            .to_lowercase()
+                            .contains("read-only")
+                }
+            },
+        };
+        assert!(rejected, "mutation must be rejected end-to-end");
     }
 
     #[tokio::test]
