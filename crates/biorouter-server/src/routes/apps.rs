@@ -301,21 +301,37 @@ impl BrsdkSettings {
 /// Returns `None` if a fresh key can't be persisted — we refuse to encrypt with
 /// an ephemeral key whose secrets could never be read back.
 fn load_or_create_vault_key(app_id: &str) -> Option<biorouter_mcp::agent_drafter::vault::DataKey> {
+    use biorouter::config::ConfigError;
     use biorouter_mcp::agent_drafter::vault::{generate_key, DataKey, KEY_LEN};
     let cfg = biorouter::config::Config::global();
     let key_id = format!("brsdk_vault_key_{app_id}");
-    if let Ok(bytes) = cfg.get_secret::<Vec<u8>>(&key_id) {
-        if bytes.len() == KEY_LEN {
+    match cfg.get_secret::<Vec<u8>>(&key_id) {
+        Ok(bytes) if bytes.len() == KEY_LEN => {
             let mut k: DataKey = [0u8; KEY_LEN];
             k.copy_from_slice(&bytes);
-            return Some(k);
+            Some(k)
         }
-    }
-    let key = generate_key();
-    match cfg.set_secret(&key_id, &key.to_vec()) {
-        Ok(()) => Some(key),
+        Ok(_) => {
+            // A stored-but-wrong-length blob is corrupt. Refuse rather than
+            // overwrite — overwriting would make any sealed secrets unreadable.
+            warn!(app = %app_id, "stored vault key has wrong length; refusing to use");
+            None
+        }
+        Err(ConfigError::NotFound(_)) => {
+            // Genuinely absent → generate + persist exactly once.
+            let key = generate_key();
+            match cfg.set_secret(&key_id, &key.to_vec()) {
+                Ok(()) => Some(key),
+                Err(e) => {
+                    warn!(app = %app_id, "could not persist vault key: {e}");
+                    None
+                }
+            }
+        }
         Err(e) => {
-            warn!(app = %app_id, "could not persist vault key: {e}");
+            // Transient/other keyring failure: do NOT generate a new key — that
+            // would clobber the real one and orphan previously-sealed secrets.
+            warn!(app = %app_id, "vault key read failed (not overwriting): {e}");
             None
         }
     }
@@ -983,11 +999,27 @@ struct VaultPut {
 /// GET-under-/apps). The secret is AES-256-GCM-sealed with the app's keyring key
 /// and is only ever loaded back for names the manifest allow-lists.
 async fn put_vault_secret(Path(id): Path<String>, Json(body): Json<VaultPut>) -> Response {
+    // Defense-in-depth: reject a traversal-ish id even though store().exists()
+    // requires a real manifest at this path.
+    if id.contains('/') || id.contains('\\') || id.contains("..") {
+        return (StatusCode::BAD_REQUEST, "invalid app id").into_response();
+    }
     if !store().exists(&id) {
         return (StatusCode::NOT_FOUND, "no such app").into_response();
     }
-    if body.name.trim().is_empty() {
-        return (StatusCode::BAD_REQUEST, "name required").into_response();
+    // Secret names map 1:1 to filenames; restrict to a safe charset so two names
+    // can't collide on the sanitized path (and nothing can escape .vault).
+    let name = body.name.trim();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            "name must be non-empty and use only [A-Za-z0-9_-]",
+        )
+            .into_response();
     }
     let workspace = store().artifact_dir(&id).join("workspace");
     let _ = std::fs::create_dir_all(&workspace);
@@ -998,7 +1030,7 @@ async fn put_vault_secret(Path(id): Path<String>, Json(body): Json<VaultPut>) ->
         }
     };
     let vault = biorouter_mcp::agent_drafter::vault::Vault::new(&workspace, key);
-    match vault.put(&body.name, &body.value) {
+    match vault.put(name, &body.value) {
         Ok(()) => (StatusCode::OK, "stored").into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }

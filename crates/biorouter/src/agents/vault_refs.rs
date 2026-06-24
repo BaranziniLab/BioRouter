@@ -7,9 +7,16 @@
 //! after the model has produced a tool call, before any tool sees it — the
 //! placeholders in the call's arguments are replaced with the real secrets.
 //!
-//! This ordering is the whole point: the plaintext secret never enters the
-//! model's context (so it can't leak into output, memory, or a trace). The
-//! model only ever sees the `{{vault:NAME}}` placeholder.
+//! This ordering is the whole point: on the **request** side the plaintext secret
+//! never enters the model's context — the model only ever emits the
+//! `{{vault:NAME}}` placeholder, and substitution happens only on the leaf
+//! MCP-dispatch path (never for subagent/frontend/final_output/schedule calls,
+//! whose args would carry plaintext back to an LLM, the browser, or a store).
+//!
+//! Residual risk (documented, not eliminated here): the tool runs with the real
+//! secret, so a tool that echoes its arguments back in its **result** can surface
+//! the secret into history on the next turn. That's a property of the tool, not
+//! of this substitution — apps should avoid secret-echoing tools.
 
 use std::collections::HashMap;
 
