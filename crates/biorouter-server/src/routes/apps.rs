@@ -244,6 +244,41 @@ async fn send_json(socket: &mut WebSocket, value: serde_json::Value) -> bool {
         .is_ok()
 }
 
+/// User-controlled opt-in for the BRSDK safety frameworks. **Default ALL OFF.**
+///
+/// A manifest-declared guardrail / encryption / tracing only activates when the
+/// user has explicitly enabled it in Settings — so these features NEVER
+/// auto-apply (and never touch normal, non-app BioRouter usage at all). Backed
+/// by config params the Settings panel writes.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct BrsdkSettings {
+    /// Local PII/PHI masking on app input (config key `brsdk_pii_guardrail`).
+    pub pii_guardrail: bool,
+    /// LLM-as-just-in-time guardrails: the goal Stop-hook judge + (future)
+    /// injection/groundedness/moderation judges (config key `brsdk_llm_guardrails`).
+    pub llm_guardrails: bool,
+    /// Per-app encrypted vault (config key `brsdk_encryption`).
+    pub encryption: bool,
+    /// Agent trace timeline (config key `brsdk_tracing`).
+    pub tracing: bool,
+}
+
+impl BrsdkSettings {
+    pub(crate) fn from_config(c: &biorouter::config::Config) -> Self {
+        let flag = |k: &str| c.get_param::<bool>(k).unwrap_or(false);
+        Self {
+            pii_guardrail: flag("brsdk_pii_guardrail"),
+            llm_guardrails: flag("brsdk_llm_guardrails"),
+            encryption: flag("brsdk_encryption"),
+            tracing: flag("brsdk_tracing"),
+        }
+    }
+
+    pub(crate) fn current() -> Self {
+        Self::from_config(biorouter::config::Config::global())
+    }
+}
+
 /// Resolve an app's declared `sql` data sources to jailed, existing db paths.
 ///
 /// Pure (no global state) so it is unit-testable: each `source.file` must
@@ -461,9 +496,13 @@ async fn configure_agent(
     // proven /goal machinery (LLM-judge, iteration cap, stall detection, graceful
     // give-up). Opt-in (deny-by-default): only apps that declare a goal get it.
     // Idempotent: re-installed on each (re)connect via configure_agent.
-    if let Some(goal) = cfg.guardrails.as_ref().and_then(|g| g.goal.clone()) {
-        if !goal.trim().is_empty() {
-            agent.set_goal(session_id, goal).await;
+    // Opt-in gate: the goal Stop-hook is an LLM-as-just-in-time guardrail, so it
+    // only installs if the user enabled LLM guardrails in Settings (default off).
+    if BrsdkSettings::current().llm_guardrails {
+        if let Some(goal) = cfg.guardrails.as_ref().and_then(|g| g.goal.clone()) {
+            if !goal.trim().is_empty() {
+                agent.set_goal(session_id, goal).await;
+            }
         }
     }
 }
@@ -604,12 +643,18 @@ async fn handle_agent_socket(
         // the conversation. Local, on-device detection (no provider). Mask rewrites
         // the prompt; Block refuses the turn. Either way a `guardrail` frame tells
         // the app what happened.
-        let pii_mode = manifest
-            .agent
-            .as_ref()
-            .and_then(|a| a.guardrails.as_ref())
-            .map(|g| g.pii)
-            .unwrap_or(PiiMode::Off);
+        // Opt-in gate: the manifest's PII policy applies ONLY if the user enabled
+        // the content guardrail in Settings (default off → never auto-applies).
+        let pii_mode = if BrsdkSettings::current().pii_guardrail {
+            manifest
+                .agent
+                .as_ref()
+                .and_then(|a| a.guardrails.as_ref())
+                .map(|g| g.pii)
+                .unwrap_or(PiiMode::Off)
+        } else {
+            PiiMode::Off
+        };
         let prompt_text = match apply_pii_policy(prompt_text, pii_mode) {
             PiiOutcome::Pass(text) => text,
             PiiOutcome::Masked { text, reason } => {
@@ -901,6 +946,33 @@ mod tests {
             resolved.is_empty(),
             "a symlink escaping the workspace must be rejected: {resolved:?}"
         );
+    }
+
+    #[test]
+    fn brsdk_settings_default_off_and_opt_in() {
+        use super::BrsdkSettings;
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = biorouter::config::Config::new_with_file_secrets(
+            dir.path().join("config.yaml"),
+            dir.path().join("secrets.yaml"),
+        )
+        .unwrap();
+
+        // Default: every safety framework is OFF (never auto-applies).
+        let s = BrsdkSettings::from_config(&cfg);
+        assert!(!s.pii_guardrail);
+        assert!(!s.llm_guardrails);
+        assert!(!s.encryption);
+        assert!(!s.tracing);
+
+        // Opting in flips exactly the chosen flag.
+        cfg.set_param("brsdk_encryption", true).unwrap();
+        cfg.set_param("brsdk_llm_guardrails", true).unwrap();
+        let s = BrsdkSettings::from_config(&cfg);
+        assert!(s.encryption, "encryption opt-in honored");
+        assert!(s.llm_guardrails, "LLM-guardrail opt-in honored");
+        assert!(!s.pii_guardrail, "un-set flags stay off");
+        assert!(!s.tracing);
     }
 
     #[test]
