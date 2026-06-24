@@ -18,6 +18,7 @@ mod recurring;
 mod reply_parts;
 pub mod retry;
 mod schedule_tool;
+pub mod structured_output;
 pub(crate) mod skills_extension;
 pub mod subagent_execution_tool;
 pub mod subagent_handler;
