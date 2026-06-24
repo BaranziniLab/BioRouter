@@ -498,7 +498,9 @@ async fn drive_response(
 fn is_stream_text(m: &Message) -> bool {
     m.role == Role::Assistant
         && !m.content.is_empty()
-        && m.content.iter().all(|c| matches!(c, MessageContent::Text(_)))
+        && m.content
+            .iter()
+            .all(|c| matches!(c, MessageContent::Text(_)))
 }
 
 /// Commit any in-progress streamed assistant text into permanent scrollback and
@@ -647,9 +649,9 @@ fn draw(f: &mut Frame, app: &mut App) {
     let input_text_w = area.width.saturating_sub(4).max(1);
     let input_h = input_rows(&app.input, input_text_w).clamp(1, 10) + 2;
     let gap_h = 2u16; // blank rows separating the response from the input UI
-    // A "queued" preview pane: the messages the user typed while the agent was
-    // busy, shown in full (capped) so they can SEE what runs next instead of just
-    // a count. 0 rows when nothing is queued.
+                      // A "queued" preview pane: the messages the user typed while the agent was
+                      // busy, shown in full (capped) so they can SEE what runs next instead of just
+                      // a count. 0 rows when nothing is queued.
     let queued_h: u16 = if app.queued.is_empty() {
         0
     } else {
@@ -875,7 +877,9 @@ fn draw_queued(f: &mut Frame, app: &App, area: Rect) {
     if n > shown {
         lines.push(Line::from(Span::styled(
             format!("  …and {} more", n - shown),
-            Style::new().fg(Color::Indexed(244)).add_modifier(Modifier::DIM),
+            Style::new()
+                .fg(Color::Indexed(244))
+                .add_modifier(Modifier::DIM),
         )));
     }
     f.render_widget(Paragraph::new(lines), area);
@@ -1528,9 +1532,8 @@ mod tests {
     #[test]
     fn renders_markdown_table_as_box() {
         let mut app = App::new(StatusInfo::default());
-        let msg = biorouter::conversation::message::Message::assistant().with_text(
-            "| Area | High |\n|------|------|\n| Bay | 72 |\n| Inland | 78 |",
-        );
+        let msg = biorouter::conversation::message::Message::assistant()
+            .with_text("| Area | High |\n|------|------|\n| Bay | 72 |\n| Inland | 78 |");
         app.push_message(&msg, false);
         let text = buffer_text(&mut app, 80, 24);
         // Box-drawing borders + header + cells present.
@@ -1559,8 +1562,14 @@ mod tests {
         app.queued.push_back("second queued task".to_string());
         let text = buffer_text(&mut app, 80, 24);
         assert!(text.contains("2 queued"), "header missing:\n{text}");
-        assert!(text.contains("first queued task"), "queued #1 not shown:\n{text}");
-        assert!(text.contains("second queued task"), "queued #2 not shown:\n{text}");
+        assert!(
+            text.contains("first queued task"),
+            "queued #1 not shown:\n{text}"
+        );
+        assert!(
+            text.contains("second queued task"),
+            "queued #2 not shown:\n{text}"
+        );
     }
 
     // B3: when more than the cap are queued, the "+N more" line is allocated room

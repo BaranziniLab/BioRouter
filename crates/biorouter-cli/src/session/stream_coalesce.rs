@@ -86,10 +86,7 @@ pub fn coalesce_text_deltas(
                 return Some((item, st));
             }
             if st.inner_done {
-                return st
-                    .pending
-                    .take()
-                    .map(|p| (Ok(AgentEvent::Message(p)), st));
+                return st.pending.take().map(|p| (Ok(AgentEvent::Message(p)), st));
             }
 
             match st.inner.next().await {
@@ -159,11 +156,7 @@ mod tests {
 
     #[tokio::test]
     async fn different_ids_stay_separate() {
-        let out = collect_text(vec![
-            text_delta("r1", "hello"),
-            text_delta("r2", "world"),
-        ])
-        .await;
+        let out = collect_text(vec![text_delta("r1", "hello"), text_delta("r2", "world")]).await;
         assert_eq!(out, vec!["hello".to_string(), "world".to_string()]);
     }
 

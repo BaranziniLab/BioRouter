@@ -362,7 +362,10 @@ async fn get_or_create_session_id(
         // a dead end.
         if resume {
             let sessions = session_manager.list_sessions().await?;
-            if let Some(existing) = sessions.into_iter().find(|s| s.name == name || s.id == name) {
+            if let Some(existing) = sessions
+                .into_iter()
+                .find(|s| s.name == name || s.id == name)
+            {
                 return Ok(Some(existing.id));
             }
             eprintln!(
