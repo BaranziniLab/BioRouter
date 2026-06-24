@@ -69,12 +69,23 @@ valuable finding.
 | SW6 | GUI render-before-/status + scheduler off bind | **documented** | **Reasoning** | **Limited value for BioRouter:** backend starts ~99 ms warm (vs the multi-second gap that motivated the proposal); render-before-ready risks startup breakage unless the React app tolerates a not-ready backend. Not worth the risk for the small gain — see rationale below. |
 
 ### Cumulative build & numbers
-All 13 commits compile and integrate: the cumulative `cargo build --release`
-(default features = AWS on) **exited 0**, validating SW1 + SW2 + SW5-CLI together
-with every prior change. Final binaries: biorouterd **107.7 MB**, biorouter
-**120.6 MB** (the FW2 strip held; SW1/SW2/SW5-CLI added negligible size). Idle RSS
-landed ~24–26 MB (jemalloc's ~+2 MB arena cost over the 21.3 MB system-allocator
-baseline; the FW1 churn win is the point, not idle).
+All commits compile and integrate: the cumulative `cargo build --release`
+(default features = AWS on) **exited 0** (re-confirmed by a from-scratch cold
+restore build), validating SW1 + SW2 + SW5-CLI with every prior change. Clean
+3-run benchmark of the cumulative binaries vs the baseline:
+
+| metric | baseline | cumulative (all changes) | Δ |
+|---|---:|---:|---:|
+| biorouterd (release) | 123.7 MB | **107.7 MB** | **−13.0%** |
+| biorouter (release) | 137.8 MB | **120.6 MB** | **−12.5%** |
+| biorouterd idle RSS | 21.3 MB | 26.2 MB | +4.9 MB |
+| biorouterd startup (warm) | 34–99 ms | 32–87 ms | ~same |
+| Cargo.lock crates | 988 | 991 (−42 buildable via `--no-default-features`) | +3 / −42 |
+
+The idle RSS is **+4.9 MB** (jemalloc arena metadata dominates, ~+2.3 MB of it) —
+the deliberate trade for the **4.4× lower peak RSS under churn** (FW1), which is
+what a busy daemon actually pays. Startup is unchanged despite jemalloc init.
+**SW1 `/interrupt` verified live:** returns 202 with the secret, 401 without.
 
 > **Build-artifact note.** During final benchmarking the shared `target/` cache was
 > wiped by an external disk-pressure cleanup (disk had climbed to ~95%). This is
