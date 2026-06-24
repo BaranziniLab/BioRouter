@@ -370,6 +370,39 @@ fn load_vault_secrets(
     secrets
 }
 
+/// Materialize a manifest-declared sub-agent into a minimal workflow recipe
+/// (JSON — a valid `biorouter::workflow::Workflow`) that the engine's subagent
+/// tool can load by path. This is how an app's `orchestration.sub_agents` become
+/// agents-as-tools the main agent can delegate to.
+fn materialize_subagent_recipe(
+    name: &str,
+    m: &biorouter_mcp::agent_drafter::manifest::SubAgentManifest,
+) -> String {
+    let description = if m.description.trim().is_empty() {
+        format!("Specialist sub-agent '{name}'.")
+    } else {
+        m.description.clone()
+    };
+    // Workflow needs instructions OR prompt; default so the sub-agent is runnable.
+    let instructions = if m.system_prompt.trim().is_empty() {
+        format!(
+            "You are the '{name}' specialist sub-agent. Complete the delegated task and report back concisely."
+        )
+    } else {
+        m.system_prompt.clone()
+    };
+    let mut doc = serde_json::json!({
+        "version": "1.0.0",
+        "title": name,
+        "description": description,
+        "instructions": instructions,
+    });
+    if !m.skills.is_empty() {
+        doc["skills"] = serde_json::json!(m.skills);
+    }
+    serde_json::to_string_pretty(&doc).unwrap_or_else(|_| "{}".to_string())
+}
+
 /// Resolve an app's declared `sql` data sources to jailed, existing db paths.
 ///
 /// Pure (no global state) so it is unit-testable: each `source.file` must
@@ -572,6 +605,48 @@ async fn configure_agent(
                     }
                 }
             }
+        }
+    }
+
+    // BRSDK orchestration: register manifest-declared sub-agents as
+    // agents-as-tools. Each becomes a recipe the engine's subagent tool can
+    // invoke by name (the tool auto-lists them once registered). A functional
+    // capability, opt-in via the manifest — no global safety gate.
+    if !cfg.orchestration.sub_agents.is_empty() {
+        let dir = store().artifact_dir(&manifest.id).join("subagents");
+        let _ = std::fs::create_dir_all(&dir);
+        let mut subs = Vec::new();
+        for (name, sa) in &cfg.orchestration.sub_agents {
+            // Sanitize the filename; keep the original name as the callable id.
+            let safe: String = name
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            let path = dir.join(format!("{safe}.json"));
+            if std::fs::write(&path, materialize_subagent_recipe(name, sa)).is_ok() {
+                subs.push(biorouter::workflow::SubWorkflow {
+                    name: name.clone(),
+                    path: path.to_string_lossy().into_owned(),
+                    values: None,
+                    sequential_when_repeated: false,
+                    description: Some(if sa.description.trim().is_empty() {
+                        format!("Specialist sub-agent '{name}'")
+                    } else {
+                        sa.description.clone()
+                    }),
+                });
+            }
+        }
+        if !subs.is_empty() {
+            let n = subs.len();
+            agent.add_sub_workflows(subs).await;
+            info!(app = %manifest.id, count = n, "registered sub-agents as tools");
         }
     }
 
@@ -1363,6 +1438,41 @@ mod tests {
         assert!(s.llm_guardrails, "LLM-guardrail opt-in honored");
         assert!(!s.pii_guardrail, "un-set flags stay off");
         assert!(!s.tracing);
+    }
+
+    #[test]
+    fn materialize_subagent_recipe_parses_as_workflow() {
+        use biorouter_mcp::agent_drafter::manifest::SubAgentManifest;
+        let m = SubAgentManifest {
+            description: "Biostatistics specialist".into(),
+            system_prompt: "You are a careful biostatistician. Use FDR correction.".into(),
+            skills: vec!["clinical-biostatistics".into()],
+            ..Default::default()
+        };
+        let recipe = super::materialize_subagent_recipe("stats", &m);
+        // It MUST parse into a valid engine Workflow the subagent tool can load.
+        let wf: biorouter::workflow::Workflow = serde_json::from_str(&recipe).unwrap();
+        assert_eq!(wf.title, "stats");
+        assert_eq!(
+            wf.instructions.as_deref(),
+            Some("You are a careful biostatistician. Use FDR correction.")
+        );
+        assert_eq!(wf.description, "Biostatistics specialist");
+        assert_eq!(
+            wf.skills.as_deref(),
+            Some(&["clinical-biostatistics".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn materialize_subagent_recipe_defaults_empty_fields_to_runnable() {
+        use biorouter_mcp::agent_drafter::manifest::SubAgentManifest;
+        // An under-specified sub-agent still produces a runnable recipe (non-empty
+        // instructions + description), so the subagent tool won't fail to build.
+        let recipe = super::materialize_subagent_recipe("helper", &SubAgentManifest::default());
+        let wf: biorouter::workflow::Workflow = serde_json::from_str(&recipe).unwrap();
+        assert!(wf.instructions.as_deref().unwrap_or("").contains("helper"));
+        assert!(!wf.description.is_empty());
     }
 
     #[test]
