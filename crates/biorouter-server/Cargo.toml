@@ -44,6 +44,13 @@ hex = "0.4.3"
 socket2 = "0.6.1"
 fs2 = "0.4.3"
 rustls = { version = "0.23", features = ["ring"] }
+tikv-jemallocator = { workspace = true, optional = true }
+tikv-jemalloc-ctl = { workspace = true, optional = true }
+
+[features]
+default = ["jemalloc"]
+# Use tuned jemalloc as the global allocator for the long-running daemon.
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 
 [target.'cfg(windows)'.dependencies]
 winreg = { version = "0.55.0" }

@@ -61,11 +61,16 @@ anstream = "0.6.18"
 open = "5.3.2"
 urlencoding = "2.1"
 clap_complete = "4.5.62"
+tikv-jemallocator = { workspace = true, optional = true }
+tikv-jemalloc-ctl = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winapi = { version = "0.3", features = ["wincred"] }
 
 [features]
+default = ["jemalloc"]
+# Use tuned jemalloc as the global allocator (returns freed pages to the OS).
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 # disables the update command
 disable-update = []
 

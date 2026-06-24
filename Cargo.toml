@@ -30,3 +30,7 @@ crunchy = "0.2.4"
 env-lock = "1.0.1"
 wiremock = "0.6"
 serial_test = "3.2.0"
+# Tuned jemalloc for the long-running binaries (biorouterd / CLI). Default-on
+# via each binary's `jemalloc` feature; returns freed pages to the OS promptly.
+tikv-jemallocator = "0.6"
+tikv-jemalloc-ctl = "0.6"
