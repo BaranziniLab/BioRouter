@@ -335,6 +335,9 @@ export class BioRouterClient {
         this.renderWidgetInto(id, tree, target),
       action: (widgetId: string, action: string, payload?: unknown) =>
         this.send({ type: "widget_action", widgetId, action, payload }),
+      // alias kept for symmetry with the agent-side naming
+      submit: (widgetId: string, action: string, payload?: unknown) =>
+        this.send({ type: "widget_action", widgetId, action, payload }),
       get: (id: string) => this.widgetStore.get(id),
     };
   }

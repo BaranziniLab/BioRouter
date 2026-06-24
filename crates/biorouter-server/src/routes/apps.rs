@@ -242,6 +242,17 @@ enum ClientFrame {
         #[serde(default)]
         model: Option<String>,
     },
+    /// BRSDK widgets: a submit/button action from an agent-rendered widget, fed
+    /// back into the agent as the next turn (closing the interactive loop).
+    #[serde(rename = "widget_action")]
+    WidgetAction {
+        #[serde(rename = "widgetId", default)]
+        widget_id: String,
+        #[serde(default)]
+        action: String,
+        #[serde(default)]
+        payload: serde_json::Value,
+    },
 }
 
 async fn send_json(socket: &mut WebSocket, value: serde_json::Value) -> bool {
@@ -665,6 +676,19 @@ async fn handle_agent_socket(
                 .await;
                 continue;
             }
+            ClientFrame::WidgetAction {
+                widget_id,
+                action,
+                payload,
+            } => {
+                // A widget submit becomes the next user turn — the agent sees
+                // what was submitted and continues. Falls through (no `continue`).
+                let payload_str = serde_json::to_string(&payload).unwrap_or_default();
+                let text = format!(
+                    "[widget:{widget_id}] The user submitted action '{action}' with values: {payload_str}"
+                );
+                (text, Vec::new())
+            }
         };
 
         // Content guardrail (input stage): apply the manifest's PII/PHI policy to
@@ -1078,6 +1102,14 @@ mod tests {
             )
             .unwrap(),
             ClientFrame::ModelSelect { .. }
+        ));
+        // The widget_action frame uses the underscore form (not lowercase-collapsed).
+        assert!(matches!(
+            serde_json::from_str::<ClientFrame>(
+                r#"{"type":"widget_action","widgetId":"w1","action":"submit","payload":{"dose":5}}"#
+            )
+            .unwrap(),
+            ClientFrame::WidgetAction { .. }
         ));
         // Unknown frame types must fail to parse (caller skips them).
         assert!(serde_json::from_str::<ClientFrame>(r#"{"type":"bogus"}"#).is_err());
