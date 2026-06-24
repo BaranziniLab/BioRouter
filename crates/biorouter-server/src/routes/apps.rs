@@ -21,7 +21,7 @@ use std::sync::Arc;
 use axum::{
     extract::{
         ws::{Message as WsMessage, WebSocket, WebSocketUpgrade},
-        Path, State,
+        Path, Query, State,
     },
     http::{header, StatusCode},
     response::{IntoResponse, Redirect, Response},
@@ -194,6 +194,7 @@ async fn delete_app_route(Path(id): Path<String>) -> Response {
 /// GET /apps/{id}/agent — per-app agent WebSocket.
 async fn agent_ws(
     Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
 ) -> Response {
@@ -201,7 +202,13 @@ async fn agent_ws(
         Ok(m) => m,
         Err(_) => return (StatusCode::NOT_FOUND, "no such app").into_response(),
     };
-    ws.on_upgrade(move |socket| handle_agent_socket(socket, state, manifest))
+    // Stable per-client handle for durable, resumable sessions (the SDK persists
+    // it in localStorage and passes it as ?client_id=…).
+    let client_id = params
+        .get("client_id")
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    ws.on_upgrade(move |socket| handle_agent_socket(socket, state, manifest, client_id))
 }
 
 #[derive(Deserialize)]
@@ -220,6 +227,12 @@ enum ClientFrame {
         images: Vec<ImageInput>,
     },
     Cancel,
+    /// BRSDK context API: request current token usage vs the model's window.
+    Tokens,
+    /// BRSDK durable sessions: request this connection's own message backlog so
+    /// a reloaded app can repaint its chat. Served over the WS (which is already
+    /// bound to the resolved session) — no guessable id, no auth-exempt route.
+    History,
 }
 
 async fn send_json(socket: &mut WebSocket, value: serde_json::Value) -> bool {
@@ -344,24 +357,53 @@ async fn configure_agent(
     agent.extend_system_prompt(prompt).await;
 }
 
-async fn handle_agent_socket(mut socket: WebSocket, state: Arc<AppState>, manifest: Manifest) {
-    // One session per connection → conversational memory within the app session.
-    let session = match state
-        .session_manager()
-        .create_session(
-            std::env::current_dir().unwrap_or_default(),
-            format!("app:{}", manifest.id),
-            SessionType::User,
-        )
-        .await
-    {
-        Ok(s) => s,
-        Err(e) => {
-            let _ = send_json(&mut socket, json!({"type":"error","message": format!("session: {e}")})).await;
-            return;
+async fn handle_agent_socket(
+    mut socket: WebSocket,
+    state: Arc<AppState>,
+    manifest: Manifest,
+    client_id: Option<String>,
+) {
+    // BRSDK durable sessions: when the app opts in (default) and the client sent
+    // a stable client_id, bind the session to "app:<id>:<client-id>" so a reload
+    // RESUMES the same conversation. Otherwise fall back to a fresh per-connection
+    // session (the pre-BRSDK behavior).
+    let durable = manifest
+        .agent
+        .as_ref()
+        .map(|a| a.durable_session())
+        .unwrap_or(true);
+    let workdir = std::env::current_dir().unwrap_or_default();
+    let name = format!("app:{}", manifest.id);
+
+    let (session, resumed) = match (durable, client_id.as_ref()) {
+        (true, Some(cid)) => {
+            let key = format!("app:{}:{}", manifest.id, cid);
+            match state
+                .session_manager()
+                .get_or_create_by_external_key(&key, workdir, name, SessionType::User)
+                .await
+            {
+                Ok(pair) => pair,
+                Err(e) => {
+                    let _ = send_json(&mut socket, json!({"type":"error","message": format!("session: {e}")})).await;
+                    return;
+                }
+            }
         }
+        _ => match state
+            .session_manager()
+            .create_session(workdir, name, SessionType::User)
+            .await
+        {
+            Ok(s) => (s, false),
+            Err(e) => {
+                let _ = send_json(&mut socket, json!({"type":"error","message": format!("session: {e}")})).await;
+                return;
+            }
+        },
     };
     let session_id = session.id.clone();
+    let message_count = session.message_count;
 
     let agent = match state.get_agent(session_id.clone()).await {
         Ok(a) => a,
@@ -383,7 +425,14 @@ async fn handle_agent_socket(mut socket: WebSocket, state: Arc<AppState>, manife
         .unwrap_or_default();
     if !send_json(
         &mut socket,
-        json!({"type":"ready", "protocol": 2, "capabilities": capabilities}),
+        json!({
+            "type": "ready",
+            "protocol": 2,
+            "capabilities": capabilities,
+            "sessionId": session_id,
+            "resumed": resumed,
+            "messageCount": message_count,
+        }),
     )
     .await
     {
@@ -403,6 +452,40 @@ async fn handle_agent_socket(mut socket: WebSocket, state: Arc<AppState>, manife
         let (prompt_text, images) = match frame {
             ClientFrame::Prompt { text, images } => (text, images),
             ClientFrame::Cancel => continue,
+            ClientFrame::Tokens => {
+                // Report current context usage vs the model's window.
+                let used = state
+                    .session_manager()
+                    .get_token_counts(&session_id)
+                    .await
+                    .ok()
+                    .and_then(|c| c.total_tokens)
+                    .unwrap_or(0)
+                    .max(0) as u64;
+                let limit = match agent.provider().await {
+                    Ok(p) => p.get_model_config().context_limit() as u64,
+                    Err(_) => 0,
+                };
+                let ratio = if limit > 0 {
+                    used as f64 / limit as f64
+                } else {
+                    0.0
+                };
+                let _ = send_json(
+                    &mut socket,
+                    json!({"type":"context","used":used,"limit":limit,"ratio":ratio}),
+                )
+                .await;
+                continue;
+            }
+            ClientFrame::History => {
+                // Backlog for THIS connection's own session only. The WS is
+                // already bound to the resolved session, so there's no id to
+                // guess and no cross-session access.
+                let messages = backlog_for(&state, &session_id).await;
+                let _ = send_json(&mut socket, json!({"type":"history","messages": messages})).await;
+                continue;
+            }
         };
 
         let mut user = Message::user().with_text(prompt_text);
@@ -490,6 +573,35 @@ async fn handle_agent_socket(mut socket: WebSocket, state: Arc<AppState>, manife
     }
 }
 
+/// The user-visible transcript backlog for a session, as `{role, text}` pairs.
+/// Agent-only compaction summaries/continuations and empty (tool/thinking-only)
+/// turns are filtered out. Used by the WS `history` request, which is already
+/// scoped to the connection's own resolved session.
+async fn backlog_for(state: &AppState, session_id: &str) -> Vec<serde_json::Value> {
+    match state.session_manager().get_session(session_id, true).await {
+        Ok(s) => s
+            .conversation
+            .map(|c| c.user_visible_messages())
+            .unwrap_or_default()
+            .iter()
+            .map(|m| {
+                let text: String = m
+                    .content
+                    .iter()
+                    .filter_map(|c| match c {
+                        MessageContent::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("");
+                json!({ "role": m.role, "text": text })
+            })
+            .filter(|m| !m["text"].as_str().unwrap_or("").is_empty())
+            .collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/apps", get(list_apps))
@@ -501,4 +613,35 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/apps/{id}/dist/{*path}", get(serve_dist))
         .route("/apps/{id}/assets/{*path}", get(serve_assets))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClientFrame;
+
+    // Guards the lowercase serde contract between the SDK (which sends
+    // `{type:"tokens"}` / `{type:"history"}`) and the Rust enum. A casing drift
+    // here would silently route these frames to the parser's skip path and hang
+    // the SDK's tokens()/history() promises.
+    #[test]
+    fn client_frame_parses_v2_variants() {
+        assert!(matches!(
+            serde_json::from_str::<ClientFrame>(r#"{"type":"prompt","text":"hi"}"#).unwrap(),
+            ClientFrame::Prompt { .. }
+        ));
+        assert!(matches!(
+            serde_json::from_str::<ClientFrame>(r#"{"type":"cancel"}"#).unwrap(),
+            ClientFrame::Cancel
+        ));
+        assert!(matches!(
+            serde_json::from_str::<ClientFrame>(r#"{"type":"tokens"}"#).unwrap(),
+            ClientFrame::Tokens
+        ));
+        assert!(matches!(
+            serde_json::from_str::<ClientFrame>(r#"{"type":"history"}"#).unwrap(),
+            ClientFrame::History
+        ));
+        // Unknown frame types must fail to parse (caller skips them).
+        assert!(serde_json::from_str::<ClientFrame>(r#"{"type":"bogus"}"#).is_err());
+    }
 }

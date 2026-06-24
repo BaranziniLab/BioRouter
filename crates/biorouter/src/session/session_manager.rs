@@ -18,7 +18,7 @@ use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 7;
+pub const CURRENT_SCHEMA_VERSION: i32 = 8;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -290,6 +290,22 @@ impl SessionManager {
 
     pub async fn get_session(&self, id: &str, include_messages: bool) -> Result<Session> {
         self.storage.get_session(id, include_messages).await
+    }
+
+    /// Resume (or create + bind) a durable session keyed by a stable external
+    /// handle such as `"app:<app-id>:<client-id>"`. Returns `(session, resumed)`
+    /// where `resumed` is true when an existing session was reused. Backs the
+    /// BRSDK durable-app-session feature.
+    pub async fn get_or_create_by_external_key(
+        &self,
+        external_key: &str,
+        working_dir: PathBuf,
+        name: String,
+        session_type: SessionType,
+    ) -> Result<(Session, bool)> {
+        self.storage
+            .get_or_create_by_external_key(external_key, working_dir, name, session_type)
+            .await
     }
 
     /// Fetch only the session's token counters, without the `COUNT(*)` over the
@@ -658,7 +674,8 @@ impl SessionStorage {
                 workflow_json TEXT,
                 user_workflow_values_json TEXT,
                 provider_name TEXT,
-                model_config_json TEXT
+                model_config_json TEXT,
+                external_key TEXT
             )
         "#,
         )
@@ -694,6 +711,14 @@ impl SessionStorage {
         sqlx::query("CREATE INDEX idx_sessions_type ON sessions(session_type)")
             .execute(pool)
             .await?;
+        // BRSDK: stable external handle for durable, resumable app sessions
+        // (e.g. "app:<app-id>:<client-id>"). Unique so a reconnecting client
+        // resolves back to its existing session.
+        sqlx::query(
+            "CREATE UNIQUE INDEX idx_sessions_external_key ON sessions(external_key) WHERE external_key IS NOT NULL",
+        )
+        .execute(pool)
+        .await?;
 
         Ok(())
     }
@@ -963,6 +988,18 @@ impl SessionStorage {
                     .await?;
                 }
             }
+            8 => {
+                // BRSDK durable sessions: a stable external handle so an app
+                // client can resume its session across reconnects.
+                sqlx::query("ALTER TABLE sessions ADD COLUMN external_key TEXT")
+                    .execute(pool)
+                    .await?;
+                sqlx::query(
+                    "CREATE UNIQUE INDEX idx_sessions_external_key ON sessions(external_key) WHERE external_key IS NOT NULL",
+                )
+                .execute(pool)
+                .await?;
+            }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
             }
@@ -1009,6 +1046,63 @@ impl SessionStorage {
 
         tx.commit().await?;
         Ok(session)
+    }
+
+    /// Resume the session bound to `external_key`, or create a fresh one and bind
+    /// it. Returns `(session, resumed)`. The session's real primary key remains
+    /// the allocated `YYYYMMDD_N` id; `external_key` is only a stable lookup
+    /// handle for durable, resumable app sessions.
+    async fn get_or_create_by_external_key(
+        &self,
+        external_key: &str,
+        working_dir: PathBuf,
+        name: String,
+        session_type: SessionType,
+    ) -> Result<(Session, bool)> {
+        let pool = self.pool().await?;
+        if let Some(id) = sqlx::query_scalar::<_, String>(
+            "SELECT id FROM sessions WHERE external_key = ?",
+        )
+        .bind(external_key)
+        .fetch_optional(pool)
+        .await?
+        {
+            return Ok((self.get_session(&id, true).await?, true));
+        }
+
+        let session = self.create_session(working_dir, name, session_type).await?;
+        match sqlx::query("UPDATE sessions SET external_key = ? WHERE id = ?")
+            .bind(external_key)
+            .bind(&session.id)
+            .execute(pool)
+            .await
+        {
+            Ok(_) => Ok((session, false)),
+            // ONLY a UNIQUE-constraint violation means another connection bound
+            // this key first (a genuine lost race) — recover by discarding our
+            // duplicate and resuming the winner. Any OTHER error (SQLITE_BUSY,
+            // I/O, disk-full, …) is transient/retryable and must NOT destroy our
+            // freshly-created session, so propagate it unchanged.
+            Err(e)
+                if matches!(
+                    e.as_database_error().map(|d| d.kind()),
+                    Some(sqlx::error::ErrorKind::UniqueViolation)
+                ) =>
+            {
+                let _ = sqlx::query("DELETE FROM sessions WHERE id = ?")
+                    .bind(&session.id)
+                    .execute(pool)
+                    .await;
+                let id = sqlx::query_scalar::<_, String>(
+                    "SELECT id FROM sessions WHERE external_key = ?",
+                )
+                .bind(external_key)
+                .fetch_one(pool)
+                .await?;
+                Ok((self.get_session(&id, true).await?, true))
+            }
+            Err(e) => Err(e.into()),
+        }
     }
 
     async fn get_session(&self, id: &str, include_messages: bool) -> Result<Session> {
@@ -1656,6 +1750,269 @@ mod tests {
         assert_eq!(conversation.messages().len(), 2);
         assert_eq!(conversation.messages()[0].role, Role::User);
         assert_eq!(conversation.messages()[1].role, Role::Assistant);
+    }
+
+    #[tokio::test]
+    async fn durable_session_resumes_by_external_key() {
+        // BRSDK durable sessions: the same external key resumes the same
+        // session (with its conversation), distinct keys stay isolated, and a
+        // reconnect recovers prior messages — the "recover what it lost" path.
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let key1 = "app:demo:client-1";
+        let (s1, resumed1) = sm
+            .get_or_create_by_external_key(
+                key1,
+                PathBuf::from("/tmp/app"),
+                "app:demo".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        assert!(!resumed1, "first call creates, does not resume");
+
+        // Simulate a turn of conversation on this session.
+        sm.add_message(
+            &s1.id,
+            &Message {
+                id: None,
+                role: Role::User,
+                created: chrono::Utc::now().timestamp_millis(),
+                content: vec![MessageContent::text("what is CFTR?")],
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+
+        // Reconnect with the SAME external key → resume the SAME session.
+        let (s2, resumed2) = sm
+            .get_or_create_by_external_key(
+                key1,
+                PathBuf::from("/tmp/app"),
+                "app:demo".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        assert!(resumed2, "same key must resume");
+        assert_eq!(s2.id, s1.id, "resumed session keeps its id");
+        assert_eq!(s2.message_count, 1, "prior conversation is recovered");
+        let convo = s2.conversation.expect("resumed session carries conversation");
+        assert_eq!(convo.messages().len(), 1);
+        assert_eq!(convo.messages()[0].role, Role::User);
+
+        // A different client key → a separate, isolated session.
+        let (s3, resumed3) = sm
+            .get_or_create_by_external_key(
+                "app:demo:client-2",
+                PathBuf::from("/tmp/app"),
+                "app:demo".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        assert!(!resumed3);
+        assert_ne!(s3.id, s1.id, "distinct keys are isolated");
+        assert_eq!(s3.message_count, 0);
+
+        // A different app entirely → also isolated.
+        let (s4, _) = sm
+            .get_or_create_by_external_key(
+                "app:other:client-1",
+                PathBuf::from("/tmp/app"),
+                "app:other".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        assert_ne!(s4.id, s1.id);
+    }
+
+    #[tokio::test]
+    async fn durable_session_survives_a_fresh_manager_on_same_dir() {
+        // The external_key binding is persisted, so a brand-new SessionManager
+        // over the same data dir (e.g. a daemon restart) still resumes it.
+        let temp_dir = TempDir::new().unwrap();
+        let key = "app:persist:client-x";
+
+        let id_first = {
+            let sm = SessionManager::new(temp_dir.path().to_path_buf());
+            let (s, resumed) = sm
+                .get_or_create_by_external_key(
+                    key,
+                    PathBuf::from("/tmp/app"),
+                    "app:persist".to_string(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            assert!(!resumed);
+            s.id
+        };
+
+        // New manager instance, same on-disk DB.
+        let sm2 = SessionManager::new(temp_dir.path().to_path_buf());
+        let (s2, resumed2) = sm2
+            .get_or_create_by_external_key(
+                key,
+                PathBuf::from("/tmp/app"),
+                "app:persist".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        assert!(resumed2, "binding persists across manager instances");
+        assert_eq!(s2.id, id_first);
+    }
+
+    #[tokio::test]
+    async fn migrates_v7_db_to_v8_external_key() {
+        // The production upgrade path: every existing user has a v7 DB. Hand-roll
+        // a v7-shaped DB, then open the real manager and confirm it migrates to
+        // v8 (adds external_key + the partial unique index) WITHOUT losing data.
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir
+            .path()
+            .join(SESSIONS_FOLDER)
+            .join(DB_NAME);
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+
+        {
+            let opts = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(opts)
+                .await
+                .unwrap();
+
+            sqlx::query("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+                .execute(&pool).await.unwrap();
+            for v in 1..=7 {
+                sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+                    .bind(v).execute(&pool).await.unwrap();
+            }
+            // The v7 sessions table = current schema MINUS external_key.
+            sqlx::query(
+                r#"CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+                    user_set_name BOOLEAN DEFAULT FALSE, session_type TEXT NOT NULL DEFAULT 'user', working_dir TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    extension_data TEXT DEFAULT '{}', total_tokens INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+                    accumulated_total_tokens INTEGER, accumulated_input_tokens INTEGER, accumulated_output_tokens INTEGER,
+                    schedule_id TEXT, workflow_json TEXT, user_workflow_values_json TEXT, provider_name TEXT, model_config_json TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            sqlx::query(
+                r#"CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    role TEXT NOT NULL, content_json TEXT NOT NULL, created_timestamp INTEGER NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, tokens INTEGER, metadata_json TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            // A pre-existing (legacy) session that must survive the migration.
+            sqlx::query("INSERT INTO sessions (id, name, working_dir) VALUES ('20240101_1', 'legacy session', '/tmp/old')")
+                .execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+
+        // Opening the real manager triggers run_migrations → the `8 =>` arm.
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        // Legacy data survived the ALTER TABLE.
+        let legacy = sm.get_session("20240101_1", true).await.unwrap();
+        assert_eq!(legacy.name, "legacy session");
+        assert_eq!(legacy.working_dir, PathBuf::from("/tmp/old"));
+
+        // Messages table still works post-migration.
+        sm.add_message(
+            "20240101_1",
+            &Message {
+                id: None,
+                role: Role::User,
+                created: chrono::Utc::now().timestamp_millis(),
+                content: vec![MessageContent::text("post-migration message")],
+                metadata: Default::default(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sm.get_session("20240101_1", true).await.unwrap().message_count,
+            1
+        );
+
+        // The migrated external_key column + unique index are queryable: a
+        // second call with the same key resumes (proves the index exists).
+        let (s1, r1) = sm
+            .get_or_create_by_external_key(
+                "app:x:c1",
+                PathBuf::from("/tmp/app"),
+                "app:x".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        assert!(!r1);
+        let (s2, r2) = sm
+            .get_or_create_by_external_key(
+                "app:x:c1",
+                PathBuf::from("/tmp/app"),
+                "app:x".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        assert!(r2, "external_key index works after migration");
+        assert_eq!(s1.id, s2.id);
+
+        // Two NULL external_keys are allowed (partial unique index) — the legacy
+        // row + a fresh plain session both have NULL and coexist.
+        let plain = sm
+            .create_session(PathBuf::from("/tmp"), "plain".to_string(), SessionType::User)
+            .await
+            .unwrap();
+        assert_ne!(plain.id, "20240101_1");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_same_key_callers_converge_on_one_session() {
+        // The race-safe claim: many truly-concurrent callers with the SAME key
+        // must all resolve to exactly ONE session (no duplicates, no errors).
+        let temp_dir = TempDir::new().unwrap();
+        let sm = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let key = "app:race:client-1";
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let sm = sm.clone();
+            let key = key.to_string();
+            handles.push(tokio::spawn(async move {
+                sm.get_or_create_by_external_key(
+                    &key,
+                    PathBuf::from("/tmp/app"),
+                    "app:race".to_string(),
+                    SessionType::User,
+                )
+                .await
+            }));
+        }
+
+        let mut ids = std::collections::HashSet::new();
+        for h in handles {
+            let (s, _resumed) = h.await.unwrap().expect("no caller should error");
+            ids.insert(s.id);
+        }
+        assert_eq!(
+            ids.len(),
+            1,
+            "all concurrent same-key callers must converge on exactly one session"
+        );
     }
 
     #[tokio::test]

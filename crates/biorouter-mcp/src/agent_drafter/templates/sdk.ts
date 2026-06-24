@@ -58,6 +58,7 @@ export type AgentEvent =
   | { type: "compaction"; phase: string; trigger?: string; before?: number; after?: number }
   | { type: "trace"; span?: unknown; snapshot?: unknown }
   | { type: "context"; used?: number; limit?: number; ratio?: number }
+  | { type: "history"; messages?: Array<{ role: string; text: string }> }
   | { type: "widget"; id: string; tree: unknown };
 
 type EventKind = AgentEvent["type"];
@@ -75,12 +76,35 @@ declare global {
   }
 }
 
+/** Stable per-app client id (persisted) so sessions resume across reloads. */
+function getClientId(appId: string): string {
+  const key = "br.client." + appId;
+  try {
+    let id = window.localStorage.getItem(key);
+    if (!id) {
+      id = "c-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      window.localStorage.setItem(key, id);
+    }
+    return id;
+  } catch {
+    // localStorage unavailable (e.g. private mode) → ephemeral id (no resume).
+    return "c-" + Math.random().toString(36).slice(2);
+  }
+}
+
 function resolveEndpoint(cfg: AppConfig): string {
-  if (cfg.endpoint) return cfg.endpoint;
-  const loc = window.location;
-  const proto = loc.protocol === "https:" ? "wss:" : "ws:";
-  // Served by biorouterd at /apps/<id>/ — the agent socket is a sibling.
-  return `${proto}//${loc.host}/apps/${cfg.appId}/agent`;
+  const cid = encodeURIComponent(getClientId(cfg.appId));
+  let base: string;
+  if (cfg.endpoint) {
+    base = cfg.endpoint;
+  } else {
+    const loc = window.location;
+    const proto = loc.protocol === "https:" ? "wss:" : "ws:";
+    // Served by biorouterd at /apps/<id>/ — the agent socket is a sibling.
+    base = `${proto}//${loc.host}/apps/${cfg.appId}/agent`;
+  }
+  const sep = base.indexOf("?") >= 0 ? "&" : "?";
+  return `${base}${sep}client_id=${cid}`;
 }
 
 export class BioRouterClient {
@@ -92,8 +116,13 @@ export class BioRouterClient {
   private listeners: Record<string, Listener[]> = {};
   // Capabilities advertised by the server in the `ready` frame (deny-by-default).
   private capabilities: string[] = [];
+  // Durable-session info latched from the `ready` frame.
+  sessionId: string | null = null;
+  resumed = false;
   private activeResolve: ResolveFn | null = null;
   private activeReject: RejectFn | null = null;
+  private tokensWaiters: Array<(u: { used: number; limit: number; ratio: number }) => void> = [];
+  private historyWaiters: Array<(m: Array<{ role: string; text: string }>) => void> = [];
 
   constructor(config: AppConfig) {
     this.config = config;
@@ -167,13 +196,76 @@ export class BioRouterClient {
       return;
     }
     if (msg == null || typeof msg.type !== "string") return;
-    // Latch advertised capabilities so feature-detection works before any turn.
-    if (msg.type === "ready" && Array.isArray(msg.capabilities)) {
-      this.capabilities = msg.capabilities;
+    // Latch advertised capabilities + durable-session info from `ready`.
+    if (msg.type === "ready") {
+      if (Array.isArray(msg.capabilities)) this.capabilities = msg.capabilities;
+      if (typeof msg.sessionId === "string") this.sessionId = msg.sessionId;
+      this.resumed = msg.resumed === true;
+    }
+    // Resolve any pending br.context.tokens() callers.
+    if (msg.type === "context") {
+      const waiters = this.tokensWaiters;
+      this.tokensWaiters = [];
+      const u = { used: msg.used || 0, limit: msg.limit || 0, ratio: msg.ratio || 0 };
+      for (const w of waiters) {
+        try {
+          w(u);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    // Resolve any pending history() callers.
+    if (msg.type === "history") {
+      const waiters = this.historyWaiters;
+      this.historyWaiters = [];
+      const m = Array.isArray(msg.messages) ? msg.messages : [];
+      for (const w of waiters) {
+        try {
+          w(m);
+        } catch {
+          /* ignore */
+        }
+      }
     }
     this.emit(msg);
     if (msg.type === "done") this.settleActive();
     else if (msg.type === "error") this.settleActive(new Error(msg.message));
+  }
+
+  /**
+   * Fetch the user-visible message backlog for the current (resumed) session so
+   * a reloaded app can repaint its chat history. Returns `[]` when there is no
+   * session yet or the request fails.
+   */
+  history(): Promise<Array<{ role: string; text: string }>> {
+    return new Promise((resolve) => {
+      this.historyWaiters.push(resolve);
+      if (!this.send({ type: "history" })) {
+        this.historyWaiters = this.historyWaiters.filter((w) => w !== resolve);
+        resolve([]);
+      }
+    });
+  }
+
+  /** Current context-window usage (BRSDK context API). */
+  tokens(): Promise<{ used: number; limit: number; ratio: number }> {
+    return new Promise((resolve) => {
+      this.tokensWaiters.push(resolve);
+      if (!this.send({ type: "tokens" })) {
+        // Socket not open — resolve with zeros rather than hang.
+        this.tokensWaiters = this.tokensWaiters.filter((w) => w !== resolve);
+        resolve({ used: 0, limit: 0, ratio: 0 });
+      }
+    });
+  }
+
+  /** Namespaced context API: `br.context.tokens()` / `br.context.history()`. */
+  get context() {
+    return {
+      tokens: () => this.tokens(),
+      history: () => this.history(),
+    };
   }
 
   /** Whether the server advertised a given BRSDK capability in `ready`. */
