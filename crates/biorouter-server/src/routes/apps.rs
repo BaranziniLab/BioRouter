@@ -37,9 +37,11 @@ use tracing::{info, warn};
 use biorouter::agents::extension::PLATFORM_EXTENSIONS;
 use biorouter::agents::{AgentEvent, ExtensionConfig, SessionConfig};
 use biorouter::conversation::message::{Message, MessageContent};
+use biorouter::guardrails::pii::PiiDetector;
 use biorouter::model::ModelConfig;
 use biorouter::providers::create as create_provider;
 use biorouter::session::SessionType;
+use biorouter_mcp::agent_drafter::manifest::PiiMode;
 use biorouter_mcp::agent_drafter::store::{ArtifactKind, ArtifactStore, Manifest};
 use biorouter_mcp::agent_drafter::{bundle, default_root, export_scaffold};
 
@@ -499,6 +501,41 @@ async fn handle_agent_socket(
             }
         };
 
+        // Content guardrail (input stage): apply the manifest's PII/PHI policy to
+        // the user's message at the app boundary — before it reaches the model or
+        // the conversation. Local, on-device detection (no provider). Mask rewrites
+        // the prompt; Block refuses the turn. Either way a `guardrail` frame tells
+        // the app what happened.
+        let pii_mode = manifest
+            .agent
+            .as_ref()
+            .and_then(|a| a.guardrails.as_ref())
+            .map(|g| g.pii)
+            .unwrap_or(PiiMode::Off);
+        let prompt_text = match apply_pii_policy(prompt_text, pii_mode) {
+            PiiOutcome::Pass(text) => text,
+            PiiOutcome::Masked { text, reason } => {
+                let _ = send_json(
+                    &mut socket,
+                    json!({"type":"guardrail","stage":"input","name":"pii","blocked":false,"reason":reason}),
+                )
+                .await;
+                text
+            }
+            PiiOutcome::Blocked { reason } => {
+                let _ = send_json(
+                    &mut socket,
+                    json!({"type":"guardrail","stage":"input","name":"pii","blocked":true,"reason":reason}),
+                )
+                .await;
+                // End the turn cleanly without running the agent.
+                if !send_json(&mut socket, json!({"type":"done"})).await {
+                    return;
+                }
+                continue;
+            }
+        };
+
         let mut user = Message::user().with_text(prompt_text);
         for img in images {
             user = user.with_image(img.data, img.mime_type);
@@ -584,6 +621,47 @@ async fn handle_agent_socket(
     }
 }
 
+/// Result of applying the input-stage PII/PHI policy to a user prompt.
+enum PiiOutcome {
+    /// No policy / no PII found — use the text as-is.
+    Pass(String),
+    /// PII found and masked; `reason` summarizes what for the `guardrail` frame.
+    Masked { text: String, reason: String },
+    /// PII found under a Block policy — refuse the turn.
+    Blocked { reason: String },
+}
+
+/// Apply the manifest's PII/PHI policy to a prompt. Pure + on-device (no
+/// provider, no network), so it is unit-testable in isolation.
+fn apply_pii_policy(text: String, mode: PiiMode) -> PiiOutcome {
+    if mode == PiiMode::Off {
+        return PiiOutcome::Pass(text);
+    }
+    let detector = PiiDetector::new();
+    let found = detector.scan(&text);
+    if found.is_empty() {
+        return PiiOutcome::Pass(text);
+    }
+    let kinds = found
+        .iter()
+        .map(|m| m.kind.tag().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    match mode {
+        PiiMode::Block => PiiOutcome::Blocked {
+            reason: format!("Message blocked: it contains PII/PHI ({kinds})."),
+        },
+        PiiMode::Mask => {
+            let (masked, _) = detector.mask(&text);
+            PiiOutcome::Masked {
+                text: masked,
+                reason: format!("Masked PII/PHI in your message ({kinds})."),
+            }
+        }
+        PiiMode::Off => PiiOutcome::Pass(text),
+    }
+}
+
 /// The user-visible transcript backlog for a session, as `{role, text}` pairs.
 /// Agent-only compaction summaries/continuations and empty (tool/thinking-only)
 /// turns are filtered out. Used by the WS `history` request, which is already
@@ -628,7 +706,44 @@ pub fn routes(state: Arc<AppState>) -> Router {
 
 #[cfg(test)]
 mod tests {
-    use super::ClientFrame;
+    use super::{apply_pii_policy, ClientFrame, PiiMode, PiiOutcome};
+
+    #[test]
+    fn pii_policy_off_passes_through_even_with_phi() {
+        let out = apply_pii_policy("SSN 123-45-6789".to_string(), PiiMode::Off);
+        assert!(matches!(out, PiiOutcome::Pass(t) if t.contains("123-45-6789")));
+    }
+
+    #[test]
+    fn pii_policy_mask_redacts_and_keeps_clinical_text() {
+        let out = apply_pii_policy(
+            "Patient MRN: A1234567 on ivacaftor 150mg".to_string(),
+            PiiMode::Mask,
+        );
+        match out {
+            PiiOutcome::Masked { text, reason } => {
+                assert!(!text.contains("A1234567"), "PHI must be masked");
+                assert!(text.contains("ivacaftor 150mg"), "clinical content preserved");
+                assert!(reason.contains("MRN"));
+            }
+            other => panic!("expected Masked, got {:?}", std::mem::discriminant(&other)),
+        }
+    }
+
+    #[test]
+    fn pii_policy_block_refuses_on_phi() {
+        let out = apply_pii_policy("call me at 415-555-0188".to_string(), PiiMode::Block);
+        assert!(matches!(out, PiiOutcome::Blocked { .. }));
+    }
+
+    #[test]
+    fn pii_policy_passes_clean_text() {
+        let out = apply_pii_policy(
+            "Run differential expression on the cohort".to_string(),
+            PiiMode::Block,
+        );
+        assert!(matches!(out, PiiOutcome::Pass(_)));
+    }
 
     // Guards the lowercase serde contract between the SDK (which sends
     // `{type:"tokens"}` / `{type:"history"}`) and the Rust enum. A casing drift
