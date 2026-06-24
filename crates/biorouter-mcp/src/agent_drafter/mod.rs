@@ -15,6 +15,7 @@
 //! `export_app` produces a standalone runnable TypeScript project.
 
 pub mod bundle;
+pub mod manifest;
 pub mod render;
 pub mod store;
 
@@ -240,6 +241,7 @@ impl From<ModelParam> for ModelSelection {
         ModelSelection {
             provider: p.provider.filter(|s| !s.trim().is_empty()),
             model: p.model.filter(|s| !s.trim().is_empty()),
+            ..Default::default()
         }
     }
 }
@@ -553,6 +555,7 @@ impl AgentDrafterServer {
                 skills: p.skills,
                 knowledge_base: p.knowledge_base.filter(|s| !s.trim().is_empty()),
                 max_turns: None,
+                ..Default::default()
             });
             store.save_manifest(&manifest).map_err(internal)?;
         }
