@@ -398,6 +398,33 @@ async fn configure_agent(
         }
     }
 
+    // BRSDK compute capability: inject a sandboxed compute server (local or
+    // Docker per the manifest) over the app workspace. Deny-by-default
+    // (sandbox=="none" → no server). If the requested backend can't be built we
+    // log + skip rather than silently fall through to unsandboxed host exec.
+    if let Some(compute) = cfg.capabilities.compute.as_ref() {
+        if compute.sandbox != "none" {
+            let workspace = store().artifact_dir(&manifest.id).join("workspace");
+            let _ = std::fs::create_dir_all(&workspace);
+            match biorouter_mcp::compute_server::for_capability(workspace, compute) {
+                Some(server) => {
+                    if let Err(e) = agent
+                        .extension_manager
+                        .add_inprocess_server("compute", server)
+                        .await
+                    {
+                        warn!(app = %manifest.id, "compute injection failed: {e}");
+                    }
+                }
+                None => warn!(
+                    app = %manifest.id,
+                    sandbox = %compute.sandbox,
+                    "compute sandbox could not be constructed; compute tools NOT granted"
+                ),
+            }
+        }
+    }
+
     // Knowledge base scoping.
     if let Some(kb) = cfg.knowledge_base.as_ref() {
         if let Err(e) = state
