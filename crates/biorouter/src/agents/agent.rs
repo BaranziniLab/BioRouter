@@ -158,6 +158,9 @@ pub struct Agent {
     /// Lazily-created scheduler for `/loop`/`/schedule` when no
     /// `scheduler_service` was injected (plain CLI/TUI sessions).
     pub(super) fallback_scheduler: tokio::sync::OnceCell<Arc<dyn SchedulerTrait>>,
+    /// BRSDK encryption: per-app decrypted secrets, substituted into tool-call
+    /// arguments at dispatch (`{{vault:NAME}}`). `None` for normal sessions.
+    pub(super) vault: Mutex<Option<Arc<crate::agents::vault_refs::VaultRefs>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -251,6 +254,27 @@ impl Agent {
             hooks_manager,
             goals: Default::default(),
             fallback_scheduler: tokio::sync::OnceCell::new(),
+            vault: Mutex::new(None),
+        }
+    }
+
+    /// Install the per-app secret vault (BRSDK encryption). Decrypted secrets are
+    /// substituted into tool-call arguments at dispatch — after the model has
+    /// produced the call — so plaintext never enters the model's context.
+    pub async fn set_vault(&self, refs: Arc<crate::agents::vault_refs::VaultRefs>) {
+        *self.vault.lock().await = Some(refs);
+    }
+
+    /// Resolve `{{vault:NAME}}` placeholders in a tool call's arguments using the
+    /// installed vault (no-op when none is set). Called at the top of
+    /// [`Self::dispatch_tool_call`], so this is the single chokepoint every tool
+    /// invocation passes through.
+    pub(super) async fn apply_vault(&self, tool_call: &mut CallToolRequestParams) {
+        let vault = { self.vault.lock().await.clone() };
+        if let Some(vault) = vault {
+            if let Some(args) = tool_call.arguments.as_mut() {
+                vault.resolve_args(args);
+            }
         }
     }
 
@@ -548,11 +572,16 @@ impl Agent {
     #[allow(clippy::too_many_lines)]
     pub async fn dispatch_tool_call(
         &self,
-        tool_call: CallToolRequestParams,
+        mut tool_call: CallToolRequestParams,
         request_id: String,
         cancellation_token: Option<CancellationToken>,
         session: &Session,
     ) -> (String, Result<ToolCallResult, ErrorData>) {
+        // BRSDK encryption: substitute {{vault:NAME}} secrets into the arguments
+        // now — after the model produced this call, before any tool (or subagent)
+        // sees it. No-op unless a vault was installed for this app session.
+        self.apply_vault(&mut tool_call).await;
+
         // Prevent subagents from creating other subagents
         if session.session_type == SessionType::SubAgent && tool_call.name == SUBAGENT_TOOL_NAME {
             return (
@@ -2293,6 +2322,45 @@ mod tests {
             final_output_tool_ref.as_ref().unwrap().system_prompt();
         assert!(system_prompt.contains(&final_output_tool_system_prompt));
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn apply_vault_resolves_secrets_in_tool_args() {
+        use crate::agents::vault_refs::VaultRefs;
+        use std::collections::HashMap;
+
+        let agent = Agent::new();
+
+        // No vault installed → arguments are untouched.
+        let mut call = CallToolRequestParams {
+            name: "files_read".into(),
+            arguments: Some(
+                serde_json::json!({ "header": "Bearer {{vault:API_KEY}}" })
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            ),
+            meta: None,
+            task: None,
+        };
+        agent.apply_vault(&mut call).await;
+        assert_eq!(
+            call.arguments.as_ref().unwrap()["header"],
+            serde_json::json!("Bearer {{vault:API_KEY}}"),
+            "without a vault, placeholders are left intact"
+        );
+
+        // Install a vault → the placeholder resolves to the secret at dispatch.
+        let mut secrets = HashMap::new();
+        secrets.insert("API_KEY".to_string(), "sk-live-xyz".to_string());
+        agent.set_vault(Arc::new(VaultRefs::new(secrets))).await;
+
+        agent.apply_vault(&mut call).await;
+        assert_eq!(
+            call.arguments.as_ref().unwrap()["header"],
+            serde_json::json!("Bearer sk-live-xyz"),
+            "the installed vault resolves the secret into the args"
+        );
     }
 
     #[tokio::test]
