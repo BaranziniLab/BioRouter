@@ -327,6 +327,41 @@ async fn configure_agent(
         }
     }
 
+    // BRSDK data capability: inject a per-app read-only SQL server for any
+    // `sql` data sources, each resolved INSIDE the app's workspace jail (so a
+    // source can't point at a db file outside the app). Deny-by-default: only
+    // apps that declared `capabilities.data` get the tools.
+    if let Some(data) = cfg.capabilities.data.as_ref() {
+        let workspace = store().artifact_dir(&manifest.id).join("workspace");
+        let jail = biorouter_mcp::developer::jail::Jail::new(&workspace, false);
+        let mut sources = std::collections::HashMap::new();
+        for src in &data.sources {
+            if src.kind != "sql" {
+                continue; // extension-backed sources (knowledge/spoke/…) are separate
+            }
+            let Some(file) = src.file.as_ref() else { continue };
+            match jail.resolve(file, false) {
+                Ok(path) if path.exists() => {
+                    sources.insert(src.name.clone(), path);
+                }
+                Ok(_) => warn!(app = %manifest.id, source = %src.name, "data source file not found"),
+                Err(e) => {
+                    warn!(app = %manifest.id, source = %src.name, "data source rejected by jail: {e}")
+                }
+            }
+        }
+        if !sources.is_empty() {
+            let server = biorouter_mcp::datasql::server::DataSqlServer::new(sources);
+            if let Err(e) = agent
+                .extension_manager
+                .add_inprocess_server("datasql", server)
+                .await
+            {
+                warn!(app = %manifest.id, "datasql injection failed: {e}");
+            }
+        }
+    }
+
     // Knowledge base scoping.
     if let Some(kb) = cfg.knowledge_base.as_ref() {
         if let Err(e) = state
