@@ -14,6 +14,8 @@ use serde::Serialize;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use sqlx::{Column, Row};
 
+pub mod server;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataError {
     Open(String),
