@@ -36,9 +36,12 @@ use tracing::{info, warn};
 
 use biorouter::agents::extension::PLATFORM_EXTENSIONS;
 use biorouter::agents::{AgentEvent, ExtensionConfig, SessionConfig};
-use biorouter::conversation::message::{Message, MessageContent};
+use biorouter::conversation::message::{ActionRequiredData, Message, MessageContent};
 use biorouter::guardrails::pii::PiiDetector;
+use biorouter::guardrails::run_state::{PendingTool, RunState};
 use biorouter::model::ModelConfig;
+use biorouter::permission::permission_confirmation::PrincipalType;
+use biorouter::permission::{Permission, PermissionConfirmation};
 use biorouter::providers::create as create_provider;
 use biorouter::session::SessionType;
 use biorouter_mcp::agent_drafter::manifest::PiiMode;
@@ -241,6 +244,18 @@ enum ClientFrame {
         provider: Option<String>,
         #[serde(default)]
         model: Option<String>,
+    },
+    /// BRSDK HITL: approve a pending tool. `action` ∈ {allow_once, always_allow}.
+    Approve {
+        request: String,
+        #[serde(default)]
+        action: String,
+    },
+    /// BRSDK HITL: reject a pending tool, with an optional human reason.
+    Reject {
+        request: String,
+        #[serde(default)]
+        reason: Option<String>,
     },
     /// BRSDK widgets: a submit/button action from an agent-rendered widget, fed
     /// back into the agent as the next turn (closing the interactive loop).
@@ -758,6 +773,12 @@ async fn handle_agent_socket(
                 .await;
                 continue;
             }
+            ClientFrame::Approve { .. } | ClientFrame::Reject { .. } => {
+                // Approve/Reject are consumed inline during an approval pause
+                // (handle_action_required, while the reply stream is parked). One
+                // arriving outside a pause is stray — ignore it.
+                continue;
+            }
             ClientFrame::WidgetAction {
                 widget_id,
                 action,
@@ -874,6 +895,20 @@ async fn handle_agent_socket(
                                 };
                                 Some(json!({"type":"tool","name":"tool","status": status}))
                             }
+                            MessageContent::ActionRequired(ar) => {
+                                // HITL: pause for human approval over this socket,
+                                // then resume. Returns no frame (it sends its own).
+                                handle_action_required(
+                                    &mut socket,
+                                    &state,
+                                    &agent,
+                                    &session_id,
+                                    &manifest.id,
+                                    ar,
+                                )
+                                .await;
+                                None
+                            }
                             _ => None,
                         };
                         if let Some(f) = frame {
@@ -944,6 +979,121 @@ fn apply_pii_policy(text: String, mode: PiiMode) -> PiiOutcome {
 /// Agent-only compaction summaries/continuations and empty (tool/thinking-only)
 /// turns are filtered out. Used by the WS `history` request, which is already
 /// scoped to the connection's own resolved session.
+/// Persist a paused-run snapshot into the session so a reconnecting app can
+/// re-surface a pending approval. Best-effort (a persistence error is logged
+/// upstream by the session layer; HITL still works in-process).
+async fn save_run_state(state: &AppState, session_id: &str, rs: &RunState) {
+    let sm = state.session_manager();
+    if let Ok(mut sd) = sm.get_session(session_id, false).await {
+        rs.store_into(&mut sd.extension_data);
+        let _ = sm
+            .update(session_id)
+            .extension_data(sd.extension_data)
+            .apply()
+            .await;
+    }
+}
+
+/// Clear any persisted paused-run snapshot once the approval is resolved.
+async fn clear_run_state(state: &AppState, session_id: &str) {
+    let sm = state.session_manager();
+    if let Ok(mut sd) = sm.get_session(session_id, false).await {
+        RunState::clear(&mut sd.extension_data);
+        let _ = sm
+            .update(session_id)
+            .extension_data(sd.extension_data)
+            .apply()
+            .await;
+    }
+}
+
+/// Load a persisted paused-run snapshot, if any.
+async fn load_run_state(state: &AppState, session_id: &str) -> Option<RunState> {
+    let sm = state.session_manager();
+    let sd = sm.get_session(session_id, false).await.ok()?;
+    RunState::load_from(&sd.extension_data)
+}
+
+/// HITL approval at the app boundary. The agent **yields** the ToolConfirmation
+/// message BEFORE it awaits the confirmation channel, so while the reply stream
+/// is parked we: (1) persist the paused state, (2) surface an `approval` frame,
+/// (3) read the user's decision from the SAME socket, (4) feed it back via
+/// `handle_confirmation`, and (5) clear the snapshot. No separate route and no
+/// reply-loop concurrency change — the decision rides the app's own authed WS.
+async fn handle_action_required(
+    socket: &mut WebSocket,
+    state: &AppState,
+    agent: &Arc<biorouter::agents::Agent>,
+    session_id: &str,
+    app_id: &str,
+    ar: &biorouter::conversation::message::ActionRequired,
+) {
+    let ActionRequiredData::ToolConfirmation {
+        id,
+        tool_name,
+        arguments,
+        prompt,
+    } = &ar.data
+    else {
+        return; // only tool-confirmation approvals are handled here
+    };
+
+    let rs = RunState::awaiting_approval(
+        id.clone(),
+        session_id,
+        app_id,
+        PendingTool {
+            request_id: id.clone(),
+            name: tool_name.clone(),
+            args: serde_json::Value::Object(arguments.clone()),
+        },
+        prompt.clone().unwrap_or_default(),
+        0,
+    );
+    save_run_state(state, session_id, &rs).await;
+
+    let _ = send_json(
+        socket,
+        json!({"type":"approval","requestId": id, "tool": tool_name, "args": arguments, "prompt": prompt}),
+    )
+    .await;
+
+    // Read the decision from this socket (the reply stream is parked, consuming
+    // nothing). Default to deny if the client vanishes, so the agent never hangs.
+    let permission = loop {
+        match socket.next().await {
+            Some(Ok(WsMessage::Text(t))) => match serde_json::from_str::<ClientFrame>(&t) {
+                Ok(ClientFrame::Approve { request, action }) if request == *id => {
+                    break if action == "always_allow" {
+                        Permission::AlwaysAllow
+                    } else {
+                        Permission::AllowOnce
+                    };
+                }
+                Ok(ClientFrame::Reject { request, .. }) if request == *id => {
+                    break Permission::DenyOnce;
+                }
+                Ok(ClientFrame::Cancel) => break Permission::DenyOnce,
+                _ => continue, // ignore unrelated frames while awaiting a decision
+            },
+            Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => break Permission::DenyOnce,
+            _ => continue,
+        }
+    };
+
+    agent
+        .handle_confirmation(
+            id.clone(),
+            PermissionConfirmation {
+                principal_type: PrincipalType::Tool,
+                permission,
+            },
+        )
+        .await;
+
+    clear_run_state(state, session_id).await;
+}
+
 async fn backlog_for(state: &AppState, session_id: &str) -> Vec<serde_json::Value> {
     match state.session_manager().get_session(session_id, true).await {
         Ok(s) => s
@@ -1036,6 +1186,32 @@ async fn put_vault_secret(Path(id): Path<String>, Json(body): Json<VaultPut>) ->
     }
 }
 
+/// GET /apps/{id}/runstate?session=<sid> — the current paused-run snapshot so a
+/// reconnecting app can re-surface a pending approval. `{pending:false}` if none.
+async fn get_run_state(
+    Path(id): Path<String>,
+    Query(q): Query<std::collections::HashMap<String, String>>,
+    State(state): State<Arc<AppState>>,
+) -> Response {
+    if !store().exists(&id) {
+        return (StatusCode::NOT_FOUND, "no such app").into_response();
+    }
+    let Some(session) = q.get("session") else {
+        return (StatusCode::BAD_REQUEST, "session required").into_response();
+    };
+    match load_run_state(&state, session).await {
+        Some(rs) if rs.is_pending() => Json(json!({
+            "pending": true,
+            "requestId": rs.run_id,
+            "tool": rs.pending_tool.name,
+            "args": rs.pending_tool.args,
+            "prompt": rs.reason,
+        }))
+        .into_response(),
+        _ => Json(json!({ "pending": false })).into_response(),
+    }
+}
+
 /// GET /apps/{id}/models — the provider/model catalog for the per-app model
 /// surface (`br.model.list()`).
 async fn list_models(Path(id): Path<String>) -> Response {
@@ -1052,6 +1228,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/apps/{id}/", get(serve_index))
         .route("/apps/{id}/agent", get(agent_ws))
         .route("/apps/{id}/models", get(list_models))
+        .route("/apps/{id}/runstate", get(get_run_state))
         .route("/apps/{id}/vault", post(put_vault_secret))
         .route("/apps/{id}/build", post(build_app_route))
         .route("/apps/{id}/export", get(export_app_route))
@@ -1264,6 +1441,21 @@ mod tests {
             )
             .unwrap(),
             ClientFrame::WidgetAction { .. }
+        ));
+        // HITL approve/reject frames.
+        assert!(matches!(
+            serde_json::from_str::<ClientFrame>(
+                r#"{"type":"approve","request":"tr_9","action":"allow_once"}"#
+            )
+            .unwrap(),
+            ClientFrame::Approve { .. }
+        ));
+        assert!(matches!(
+            serde_json::from_str::<ClientFrame>(
+                r#"{"type":"reject","request":"tr_9","reason":"wrong recipient"}"#
+            )
+            .unwrap(),
+            ClientFrame::Reject { .. }
         ));
         // Unknown frame types must fail to parse (caller skips them).
         assert!(serde_json::from_str::<ClientFrame>(r#"{"type":"bogus"}"#).is_err());
