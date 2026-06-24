@@ -3,6 +3,11 @@ import { createContext, useContext } from 'react';
 export interface DashboardWindow {
   windowId: string;
   sessionId: string;
+  /** True when this window's spawn CREATED the session (a fresh "New chat"),
+   * false when it resumed/diverged an already-existing session. Closing only
+   * ever deletes a created-here session that is still empty; resumed and
+   * diverged sessions are always preserved in history. */
+  createdHere?: boolean;
   name: string;
   userSetName: boolean;
   badge: number;
@@ -74,11 +79,7 @@ export interface DashboardApi {
    * Without `opts.userSetName`, the window only accepts the name if it
    * isn't a default placeholder and the window hasn't been renamed
    * locally (`userSetName=false` on the window). */
-  syncSessionName: (
-    windowId: string,
-    name: string,
-    opts?: { userSetName?: boolean }
-  ) => void;
+  syncSessionName: (windowId: string, name: string, opts?: { userSetName?: boolean }) => void;
   moveWindow: (
     windowId: string,
     position: { x: number; y: number },
@@ -94,9 +95,7 @@ export interface DashboardApi {
   /** Pin every on-canvas window at the given rects with isManuallyPlaced=true.
    * Called by the board at drag/resize start so manipulating one window never
    * triggers an automatic re-layout of the others. */
-  freezeAllRects: (
-    rects: Record<string, { x: number; y: number; w: number; h: number }>
-  ) => void;
+  freezeAllRects: (rects: Record<string, { x: number; y: number; w: number; h: number }>) => void;
   organize: () => void;
   clearAll: () => void;
   /** Pan the camera by (dx, dy) in viewport pixels. */

@@ -239,6 +239,44 @@ export type DetectProviderResponse = {
     provider_name: string;
 };
 
+export type DivergeSessionRequest = {
+    /**
+     * Optional name for the diverged session. When omitted or blank, the
+     * diverged session inherits the original session's name so it stays
+     * recognizable in the session list.
+     */
+    name?: string | null;
+    /**
+     * Optional anchor: the `created` timestamp (ms) of the assistant message a
+     * per-message Diverge button was clicked on. The branch is trimmed to end
+     * at that answer. When omitted, the branch ends at the most recent
+     * complete assistant answer — an in-flight turn captured mid-generation is
+     * never carried over.
+     */
+    truncateAfter?: number | null;
+};
+
+export type DivergeSessionResponse = {
+    /**
+     * The id of the session this one was diverged from (its lineage parent).
+     */
+    divergedFrom?: string | null;
+    /**
+     * The diverged session's resolved name (e.g. "Foo (branch 2)").
+     */
+    name: string;
+    /**
+     * The id of the newly-created diverged session.
+     */
+    sessionId: string;
+    /**
+     * The working directory of the diverged session (identical to the
+     * original). Surfaced so the client can spawn the new window/backend in
+     * the correct directory.
+     */
+    workingDir: string;
+};
+
 export type EditMessageRequest = {
     editType?: EditType;
     timestamp: number;
@@ -1072,6 +1110,12 @@ export type Session = {
     accumulated_total_tokens?: number | null;
     conversation?: Conversation | null;
     created_at: string;
+    /**
+     * Id of the session this one was diverged (branched) from, if any. Set by
+     * `diverge_session`; `None` for normally-created sessions. Lets the UI show
+     * a session's lineage ("branched from …").
+     */
+    diverged_from?: string | null;
     extension_data: ExtensionData;
     id: string;
     input_tokens?: number | null;
@@ -3782,6 +3826,46 @@ export type GetSessionResponses = {
 };
 
 export type GetSessionResponse = GetSessionResponses[keyof GetSessionResponses];
+
+export type DivergeSessionData = {
+    body: DivergeSessionRequest;
+    path: {
+        /**
+         * Unique identifier for the session to diverge from
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/diverge';
+};
+
+export type DivergeSessionErrors = {
+    /**
+     * Bad request - Invalid session id or name too long
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Session not found
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type DivergeSessionResponses = {
+    /**
+     * Session diverged successfully
+     */
+    200: DivergeSessionResponse;
+};
+
+export type DivergeSessionResponse2 = DivergeSessionResponses[keyof DivergeSessionResponses];
 
 export type EditMessageData = {
     body: EditMessageRequest;

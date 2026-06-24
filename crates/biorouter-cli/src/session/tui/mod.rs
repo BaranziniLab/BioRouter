@@ -601,6 +601,22 @@ async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bo
             help_into(app);
             true
         }
+        "/diverge" => {
+            match session.diverge_and_open(|url| open::that(url)).await {
+                Ok(outcome) => match outcome.open_error {
+                    None => app.push_note(&format!(
+                        "Diverged into a new window (session {}). This conversation is unchanged.",
+                        outcome.new_session_id
+                    )),
+                    Some(err) => app.push_note(&format!(
+                        "Created diverged session {} but couldn't open a window ({}). Open BioRouter and run: {}",
+                        outcome.new_session_id, err, outcome.url
+                    )),
+                },
+                Err(e) => app.push_error(&format!("Couldn't diverge: {e}")),
+            }
+            true
+        }
         // Agent-serviced commands: let submit() send them through the normal
         // reply flow, where Agent::execute_command handles them.
         s if ["/goal", "/loop", "/schedule", "/prompts", "/prompt"]
