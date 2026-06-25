@@ -10,7 +10,6 @@ import React, {
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom';
 import { SearchView } from './conversation/SearchView';
 import LoadingBioRouter from './LoadingBioRouter';
-import PopularChatTopics from './PopularChatTopics';
 import ProgressiveMessageList from './ProgressiveMessageList';
 import { MainPanelLayout } from './Layout/MainPanelLayout';
 import ChatInput from './ChatInput';
@@ -109,7 +108,6 @@ function BaseChatContent({
   accentColor,
   hideSessionNamePill = false,
   compactPicker = false,
-  showPopularTopics: showPopularTopicsProp = true,
   onBusyChange,
   onLatestMessage,
   focusTrigger,
@@ -425,12 +423,6 @@ function BaseChatContent({
     });
   };
 
-  const showPopularTopics =
-    showPopularTopicsProp &&
-    messages.length === 0 &&
-    !initialMessage &&
-    chatState === ChatState.Idle;
-
   const chat: ChatType = {
     messages,
     workflow,
@@ -637,16 +629,6 @@ function BaseChatContent({
 
                 <div className="block h-8" />
               </>
-            ) : !workflow && showPopularTopics ? (
-              <PopularChatTopics
-                append={(text: string) => {
-                  const syntheticEvent = {
-                    detail: { value: text },
-                    preventDefault: () => {},
-                  } as unknown as React.FormEvent;
-                  handleFormSubmit(syntheticEvent);
-                }}
-              />
             ) : null}
           </ScrollArea>
 

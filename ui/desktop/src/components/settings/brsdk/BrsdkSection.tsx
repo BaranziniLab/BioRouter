@@ -2,7 +2,7 @@ import { Switch } from '../../ui/switch';
 import { useConfig } from '../../ConfigContext';
 
 // The four backend config keys gating the BRSDK App-SDK safety frameworks.
-// All default to false on the server — these toggles only opt a user in.
+// All default to false on the server, so these toggles only opt a user in.
 interface BrsdkConfig {
   brsdk_pii_guardrail?: boolean;
   brsdk_llm_guardrails?: boolean;
@@ -23,25 +23,23 @@ const BRSDK_TOGGLES: BrsdkToggleMeta[] = [
     key: 'brsdk_pii_guardrail',
     label: 'PII / PHI guardrail',
     description:
-      'Mask personally identifiable and health information locally before it reaches an Agent-Drafter app. Opt-in, off by default.',
+      'Mask personal and health information on your device before it reaches an Agent-Drafter app.',
   },
   {
     key: 'brsdk_llm_guardrails',
     label: 'LLM guardrails',
     description:
-      'Just-in-time LLM safety checks, including the goal Stop-hook judge, for Agent-Drafter apps. Opt-in, off by default.',
+      'Run LLM safety checks, including the goal Stop-hook judge, for Agent-Drafter apps.',
   },
   {
     key: 'brsdk_encryption',
     label: 'Encrypted vault',
-    description:
-      'Store each Agent-Drafter app’s data in a per-app encrypted vault. Opt-in, off by default.',
+    description: "Store each Agent-Drafter app's data in a per-app encrypted vault.",
   },
   {
     key: 'brsdk_tracing',
     label: 'Agent tracing',
-    description:
-      'Record an agent trace timeline for Agent-Drafter apps to inspect what ran and when. Opt-in, off by default.',
+    description: 'Record a trace timeline for Agent-Drafter apps so you can see what ran and when.',
   },
 ];
 
