@@ -5,7 +5,7 @@ use biorouter_cli::cli::cli;
 // long-running CLI/TUI churns conversation buffers per turn; jemalloc returns
 // freed pages to the OS far more readily than the system allocator's retained
 // arenas.
-#[cfg(feature = "jemalloc")]
+#[cfg(all(feature = "jemalloc", not(target_os = "windows")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -25,7 +25,7 @@ async fn main() -> Result<()> {
 /// (`MALLCTL_ARENAS_ALL` = 4096) and as the default for future arenas. Errors
 /// are ignored (`background_thread` is unsupported on macOS). Set
 /// `BIOROUTER_DEBUG_ALLOC=1` to print the applied values.
-#[cfg(feature = "jemalloc")]
+#[cfg(all(feature = "jemalloc", not(target_os = "windows")))]
 fn tune_allocator() {
     use tikv_jemalloc_ctl::raw;
     unsafe {
@@ -42,5 +42,5 @@ fn tune_allocator() {
     }
 }
 
-#[cfg(not(feature = "jemalloc"))]
+#[cfg(not(all(feature = "jemalloc", not(target_os = "windows"))))]
 fn tune_allocator() {}

@@ -44,6 +44,10 @@ hex = "0.4.3"
 socket2 = "0.6.1"
 fs2 = "0.4.3"
 rustls = { version = "0.23", features = ["ring"] }
+
+# jemalloc only builds on Unix; the mingw windows-gnu cross target can't link it,
+# so depend on it only off Windows. Windows uses the system allocator.
+[target.'cfg(not(target_os = "windows"))'.dependencies]
 tikv-jemallocator = { workspace = true, optional = true }
 tikv-jemalloc-ctl = { workspace = true, optional = true }
 

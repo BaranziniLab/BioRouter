@@ -17,7 +17,7 @@ use clap::{Parser, Subcommand};
 // Tuned jemalloc as the global allocator for the long-running daemon (default-on
 // `jemalloc` feature). Returns freed pages to the OS far more readily than the
 // system allocator under the agent's per-turn allocation churn.
-#[cfg(feature = "jemalloc")]
+#[cfg(all(feature = "jemalloc", not(target_os = "windows")))]
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
@@ -77,7 +77,7 @@ async fn main() -> anyhow::Result<()> {
 /// Applied to all current arenas (`MALLCTL_ARENAS_ALL` = 4096) and as the
 /// default for future arenas. Errors are ignored (`background_thread` is
 /// unsupported on macOS). Set `BIOROUTER_DEBUG_ALLOC=1` to print applied values.
-#[cfg(feature = "jemalloc")]
+#[cfg(all(feature = "jemalloc", not(target_os = "windows")))]
 fn tune_allocator() {
     use tikv_jemalloc_ctl::raw;
     unsafe {
@@ -94,5 +94,5 @@ fn tune_allocator() {
     }
 }
 
-#[cfg(not(feature = "jemalloc"))]
+#[cfg(not(all(feature = "jemalloc", not(target_os = "windows"))))]
 fn tune_allocator() {}
