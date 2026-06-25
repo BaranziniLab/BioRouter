@@ -46,11 +46,11 @@ export default function ChatSettingsSection() {
 
       <div>
         <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
-          App SDK (experimental)
+          App SDK
         </h2>
         <p className="text-xs text-text-muted mb-4">
           Opt-in safety frameworks for Agent-Drafter apps. All are off by default and apply only to
-          Agent-Drafter apps — never to normal chat.
+          Agent-Drafter apps, never to normal chat.
         </p>
         <div className="border-t border-border-subtle pt-2">
           <BrsdkSection />
