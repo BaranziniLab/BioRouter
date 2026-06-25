@@ -28,6 +28,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { spawn, spawnSync } from 'child_process';
 import AdmZip from 'adm-zip';
+import { safeExtractZip, safeZipEntryTarget } from './utils/safeZip';
 import 'dotenv/config';
 import { checkServerStatus, startBiorouterd, getBiorouterCliBinaryPath } from './biorouterd';
 import { expandTilde } from './utils/pathUtils';
@@ -2368,9 +2369,9 @@ ipcMain.handle(
       // Create install directory
       fsSync.mkdirSync(installDir, { recursive: true });
 
-      // Extract bundle
+      // Extract bundle (zip-slip guarded: rejects entries that escape installDir)
       const zip = new AdmZip(filePath);
-      zip.extractAllTo(installDir, /* overwrite */ true);
+      safeExtractZip(zip, installDir);
 
       // Pre-build the virtual environment
       const uvResult = spawnSync('uv', ['sync'], {
@@ -2472,6 +2473,13 @@ ipcMain.handle('skills:extract-zip', async (_event, { filePath }: { filePath: st
         if (prefix && !entry.entryName.startsWith(prefix)) continue;
         const relName = prefix ? entry.entryName.slice(prefix.length) : entry.entryName;
         if (!relName) continue;
+        // zip-slip guard: skip entries whose path would escape the skill dir when
+        // written downstream (installSkill writes `${destFolder}/${relName}`).
+        try {
+          safeZipEntryTarget('/__skill__', relName);
+        } catch {
+          continue;
+        }
         const ext = path.extname(relName).toLowerCase();
         if (!TEXT_EXTENSIONS.includes(ext)) continue;
         files.push([relName, entry.getData().toString('utf8')]);
@@ -2514,6 +2522,12 @@ ipcMain.handle('skills:extract-zip', async (_event, { filePath }: { filePath: st
       if (!entry.entryName.startsWith(bundlePrefix)) continue;
       const relName = entry.entryName.slice(bundlePrefix.length);
       if (!relName) continue;
+      // zip-slip guard: skip entries whose path would escape the skill dir.
+      try {
+        safeZipEntryTarget('/__skill__', relName);
+      } catch {
+        continue;
+      }
       const ext = path.extname(relName).toLowerCase();
       if (!TEXT_EXTENSIONS.includes(ext)) continue;
       bundleFiles.push([relName, entry.getData().toString('utf8')]);
