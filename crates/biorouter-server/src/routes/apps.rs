@@ -1020,6 +1020,20 @@ async fn handle_agent_socket(
                 }
             }
         }
+
+        // Reply loop ended — trigger the best-effort LLM session rename. Always
+        // runs here regardless of how the loop exited, so app sessions get a
+        // content-derived name instead of staying on the placeholder.
+        {
+            let agent_for_rename = agent.clone();
+            let session_id_for_rename = session_id.clone();
+            tokio::spawn(async move {
+                agent_for_rename
+                    .maybe_rename_session(&session_id_for_rename)
+                    .await;
+            });
+        }
+
         if !errored && !send_json(&mut socket, json!({"type":"done"})).await {
             return;
         }
