@@ -42,9 +42,19 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   const setView = useMemo(() => createNavigationHandler(navigate), [navigate]);
 
-  const handleCommercialSuccess = async (provider: string, _model: string, apiKey: string) => {
+  const handleCommercialSuccess = async (
+    provider: string,
+    _model: string,
+    apiKey: string,
+    extraConfig: Record<string, string> = {}
+  ) => {
     const keyName = `${provider.toUpperCase()}_API_KEY`;
     await upsert(keyName, apiKey, true);
+    // Persist any non-secret endpoint config (e.g. a regional host) so the saved
+    // provider targets the same endpoint detection validated against.
+    for (const [key, value] of Object.entries(extraConfig)) {
+      await upsert(key, value, false);
+    }
     await upsert('BIOROUTER_PROVIDER', provider, false);
     setSwitchModelProvider(provider);
     setShowSwitchModelModal(true);

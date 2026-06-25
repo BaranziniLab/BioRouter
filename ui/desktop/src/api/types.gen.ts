@@ -235,8 +235,38 @@ export type DetectProviderRequest = {
 };
 
 export type DetectProviderResponse = {
-    models: Array<string>;
-    provider_name: string;
+    /**
+     * A recommended default chat model, when one could be determined.
+     */
+    default_model?: string | null;
+    /**
+     * Non-secret config to persist alongside the key (e.g. a regional host).
+     */
+    extra_config?: {
+        [key: string]: string;
+    };
+    /**
+     * All model ids the provider reported for the key (empty on failure).
+     */
+    models?: Array<string>;
+    /**
+     * The detected provider, or `null` when detection failed.
+     */
+    provider_name?: string | null;
+    /**
+     * Machine-readable failure reason when `provider_name` is null:
+     * `"timeout" | "network" | "invalid_key" | "no_match"`.
+     */
+    reason?: string | null;
+};
+
+export type DetectableProvider = {
+    display_name: string;
+    name: string;
+};
+
+export type DetectableProvidersResponse = {
+    providers: Array<DetectableProvider>;
 };
 
 export type DivergeSessionRequest = {
@@ -2175,21 +2205,30 @@ export type DetectProviderData = {
     url: '/config/detect-provider';
 };
 
-export type DetectProviderErrors = {
-    /**
-     * No matching provider found
-     */
-    404: unknown;
-};
-
 export type DetectProviderResponses = {
     /**
-     * Provider detected successfully
+     * Detection result (provider_name is null with a reason on failure)
      */
     200: DetectProviderResponse;
 };
 
 export type DetectProviderResponse2 = DetectProviderResponses[keyof DetectProviderResponses];
+
+export type GetDetectableProvidersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/config/detectable-providers';
+};
+
+export type GetDetectableProvidersResponses = {
+    /**
+     * Providers supported by API-key auto-detection
+     */
+    200: DetectableProvidersResponse;
+};
+
+export type GetDetectableProvidersResponse = GetDetectableProvidersResponses[keyof GetDetectableProvidersResponses];
 
 export type GetExtensionsData = {
     body?: never;

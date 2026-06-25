@@ -11,7 +11,7 @@ use biorouter::config::paths::Paths;
 use biorouter::config::ExtensionEntry;
 use biorouter::config::{Config, ConfigError};
 use biorouter::model::ModelConfig;
-use biorouter::providers::auto_detect::detect_provider_from_api_key;
+use biorouter::providers::auto_detect::{detect_provider_from_api_key, detectable_providers};
 use biorouter::providers::base::{ProviderMetadata, ProviderType};
 use biorouter::providers::canonical::maybe_get_canonical_model;
 use biorouter::providers::create_with_default_model;
@@ -144,8 +144,30 @@ pub struct DetectProviderRequest {
 
 #[derive(Serialize, ToSchema)]
 pub struct DetectProviderResponse {
-    pub provider_name: String,
+    /// The detected provider, or `null` when detection failed.
+    pub provider_name: Option<String>,
+    /// All model ids the provider reported for the key (empty on failure).
+    #[serde(default)]
     pub models: Vec<String>,
+    /// A recommended default chat model, when one could be determined.
+    pub default_model: Option<String>,
+    /// Non-secret config to persist alongside the key (e.g. a regional host).
+    #[serde(default)]
+    pub extra_config: HashMap<String, String>,
+    /// Machine-readable failure reason when `provider_name` is null:
+    /// `"timeout" | "network" | "invalid_key" | "no_match"`.
+    pub reason: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DetectableProvider {
+    pub name: String,
+    pub display_name: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct DetectableProvidersResponse {
+    pub providers: Vec<DetectableProvider>,
 }
 #[utoipa::path(
     post,
@@ -575,22 +597,62 @@ pub async fn upsert_permissions(
     path = "/config/detect-provider",
     request_body = DetectProviderRequest,
     responses(
-        (status = 200, description = "Provider detected successfully", body = DetectProviderResponse),
-        (status = 404, description = "No matching provider found"),
+        (status = 200, description = "Detection result (provider_name is null with a reason on failure)", body = DetectProviderResponse),
     )
 )]
 pub async fn detect_provider(
     Json(detect_request): Json<DetectProviderRequest>,
-) -> Result<Json<DetectProviderResponse>, StatusCode> {
+) -> Json<DetectProviderResponse> {
     let api_key = detect_request.api_key.trim();
 
     match detect_provider_from_api_key(api_key).await {
-        Some((provider_name, models)) => Ok(Json(DetectProviderResponse {
-            provider_name,
-            models,
-        })),
-        None => Err(StatusCode::NOT_FOUND),
+        Some((provider_name, models)) => {
+            let default_model = models.first().cloned();
+            Json(DetectProviderResponse {
+                provider_name: Some(provider_name),
+                models,
+                default_model,
+                extra_config: HashMap::new(),
+                reason: None,
+            })
+        }
+        None => Json(DetectProviderResponse {
+            provider_name: None,
+            models: Vec::new(),
+            default_model: None,
+            extra_config: HashMap::new(),
+            reason: Some("no_match".to_string()),
+        }),
     }
+}
+
+#[utoipa::path(
+    get,
+    path = "/config/detectable-providers",
+    responses(
+        (status = 200, description = "Providers supported by API-key auto-detection", body = DetectableProvidersResponse),
+    )
+)]
+pub async fn get_detectable_providers() -> Json<DetectableProvidersResponse> {
+    // Single source of truth: the detectable set lives in `auto_detect`; we only
+    // enrich it with display names from provider metadata here.
+    let metadata = get_providers().await;
+    let providers = detectable_providers()
+        .into_iter()
+        .map(|name| {
+            let display_name = metadata
+                .iter()
+                .find(|(m, _)| m.name == name)
+                .map(|(m, _)| m.display_name.clone())
+                .unwrap_or_else(|| name.to_string());
+            DetectableProvider {
+                name: name.to_string(),
+                display_name,
+            }
+        })
+        .collect();
+
+    Json(DetectableProvidersResponse { providers })
 }
 
 #[utoipa::path(
@@ -831,6 +893,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/config/providers", get(providers))
         .route("/config/providers/{name}/models", get(get_provider_models))
         .route("/config/detect-provider", post(detect_provider))
+        .route(
+            "/config/detectable-providers",
+            get(get_detectable_providers),
+        )
         .route("/config/slash_commands", get(get_slash_commands))
         .route("/config/pricing", post(get_pricing))
         .route("/config/init", post(init_config))
@@ -880,5 +946,24 @@ mod tests {
         let gpt4_limit = limits.iter().find(|l| l.pattern == "gpt-4o");
         assert!(gpt4_limit.is_some());
         assert_eq!(gpt4_limit.unwrap().context_limit, 128_000);
+    }
+
+    #[tokio::test]
+    async fn detectable_providers_route_lists_known_providers() {
+        let Json(resp) = get_detectable_providers().await;
+        let names: Vec<&str> = resp.providers.iter().map(|p| p.name.as_str()).collect();
+        for expected in [
+            "openai",
+            "anthropic",
+            "google",
+            "groq",
+            "xai",
+            "xiaomi_mimo",
+        ] {
+            assert!(names.contains(&expected), "missing {expected}");
+        }
+        // Display names should be resolved from metadata, not left as the id.
+        let openai = resp.providers.iter().find(|p| p.name == "openai").unwrap();
+        assert!(!openai.display_name.is_empty());
     }
 }
