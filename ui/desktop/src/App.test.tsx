@@ -180,6 +180,8 @@ const mockElectron = {
   getAllowedExtensions: vi.fn().mockResolvedValue([]),
   platform: 'darwin',
   createChatWindow: vi.fn(),
+  // DependencySetupModal calls this on mount; null means "no CLI status / nothing to prompt".
+  cliStatus: vi.fn().mockResolvedValue(null),
 };
 
 // Mock appConfig

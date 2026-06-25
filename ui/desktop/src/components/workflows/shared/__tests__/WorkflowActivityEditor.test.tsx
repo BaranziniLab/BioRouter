@@ -61,9 +61,9 @@ describe('WorkflowActivityEditor', () => {
       const activities = [longActivity];
       render(<WorkflowActivityEditor activities={activities} setActivities={mockOnChange} />);
 
-      expect(screen.getByText(/button: a+\.\.\./)).toBeInTheDocument();
+      expect(screen.getByText(/button: a+…/)).toBeInTheDocument();
 
-      const activityBox = screen.getByText(/button: a+\.\.\./).closest('div');
+      const activityBox = screen.getByText(/button: a+…/).closest('div');
       expect(activityBox).toHaveAttribute('title', longActivity);
     });
 
