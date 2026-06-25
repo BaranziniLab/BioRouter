@@ -133,11 +133,12 @@ describe('LeadWorkerSettings', () => {
       expect(screen.getByText('Lead/Worker Mode')).toBeInTheDocument();
     });
 
-    // Toggle off
-    const checkbox = screen.getByLabelText('Enable lead/worker mode') as HTMLInputElement;
-    expect(checkbox.checked).toBe(true);
-    fireEvent.click(checkbox);
-    expect(checkbox.checked).toBe(false);
+    // Toggle off. The enable control is a Radix Switch (role="switch"),
+    // labelled "Lead/worker mode" via htmlFor/id, with state on aria-checked.
+    const toggle = screen.getByRole('switch', { name: 'Lead/worker mode' });
+    expect(toggle).toHaveAttribute('aria-checked', 'true');
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-checked', 'false');
 
     const saveBtn = screen.getByRole('button', { name: 'Save Settings' });
     expect(saveBtn).toBeEnabled();

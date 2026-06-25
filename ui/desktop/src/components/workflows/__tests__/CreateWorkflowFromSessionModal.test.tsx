@@ -7,6 +7,25 @@ import type { CreateWorkflowResponse } from '../../../api/types.gen';
 
 vi.mock('../../../api/sdk.gen', () => ({
   createWorkflow: vi.fn(),
+  // The modal and its child WorkflowFormFields now load extensions, knowledge
+  // bases, and the active KB on open. Provide blank-but-correctly-shaped
+  // resolutions so those effects don't throw.
+  getExtensions: vi.fn().mockResolvedValue({
+    data: { extensions: [] },
+    error: undefined,
+  }),
+  getSessionExtensions: vi.fn().mockResolvedValue({
+    data: { extensions: [] },
+    error: undefined,
+  }),
+  listBases: vi.fn().mockResolvedValue({
+    data: [],
+    error: undefined,
+  }),
+  getActive: vi.fn().mockResolvedValue({
+    data: { active_kb: null, hidden_kbs: [] },
+    error: undefined,
+  }),
 }));
 
 vi.mock('../../../toasts', () => ({
