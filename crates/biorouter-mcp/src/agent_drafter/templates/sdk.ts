@@ -42,15 +42,33 @@ export interface PromptOptions {
 
 /** Events emitted while the agent answers a prompt. */
 export type AgentEvent =
-  | { type: "ready" }
+  | { type: "ready"; protocol?: number; capabilities?: string[]; sessionId?: string }
   | { type: "message"; delta: string }
   | { type: "thought"; delta: string }
-  | { type: "tool"; name: string; status: string }
+  | { type: "tool"; name: string; status: string; id?: string }
   | { type: "done" }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  // ── BRSDK protocol v2 (additive; gated by the ready frame's capabilities) ──
+  | { type: "output"; schema?: unknown; value: unknown }
+  | { type: "usage"; inputTokens?: number; outputTokens?: number; totalTokens?: number; model?: string }
+  | { type: "guardrail"; stage?: string; name?: string; blocked?: boolean; reason?: string }
+  | { type: "approval"; requestId: string; tool: string; args?: unknown; prompt?: string | null }
+  | { type: "tool_call"; id: string; name: string; args?: unknown }
+  | { type: "handoff"; from?: string; to?: string }
+  | { type: "compaction"; phase: string; trigger?: string; before?: number; after?: number }
+  | { type: "trace"; span?: unknown; snapshot?: unknown }
+  | { type: "context"; used?: number; limit?: number; ratio?: number }
+  | { type: "history"; messages?: Array<{ role: string; text: string }> }
+  | { type: "model"; ok: boolean; provider?: string; model?: string }
+  | { type: "widget"; id: string; tree: unknown };
 
 type EventKind = AgentEvent["type"];
 type Listener = (ev: AgentEvent) => void;
+// Named aliases so the no-esbuild fallback type-stripper can remove these
+// annotations (it keys off an uppercase/primitive leading type token, which a
+// bare `(() => void)` annotation lacks).
+type ResolveFn = () => void;
+type RejectFn = (e: Error) => void;
 
 declare global {
   interface Window {
@@ -59,28 +77,55 @@ declare global {
   }
 }
 
+/** Stable per-app client id (persisted) so sessions resume across reloads. */
+function getClientId(appId: string): string {
+  const key = "br.client." + appId;
+  try {
+    let id = window.localStorage.getItem(key);
+    if (!id) {
+      id = "c-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      window.localStorage.setItem(key, id);
+    }
+    return id;
+  } catch {
+    // localStorage unavailable (e.g. private mode) → ephemeral id (no resume).
+    return "c-" + Math.random().toString(36).slice(2);
+  }
+}
+
 function resolveEndpoint(cfg: AppConfig): string {
-  if (cfg.endpoint) return cfg.endpoint;
-  const loc = window.location;
-  const proto = loc.protocol === "https:" ? "wss:" : "ws:";
-  // Served by biorouterd at /apps/<id>/ — the agent socket is a sibling.
-  return `${proto}//${loc.host}/apps/${cfg.appId}/agent`;
+  const cid = encodeURIComponent(getClientId(cfg.appId));
+  let base: string;
+  if (cfg.endpoint) {
+    base = cfg.endpoint;
+  } else {
+    const loc = window.location;
+    const proto = loc.protocol === "https:" ? "wss:" : "ws:";
+    // Served by biorouterd at /apps/<id>/ — the agent socket is a sibling.
+    base = `${proto}//${loc.host}/apps/${cfg.appId}/agent`;
+  }
+  const sep = base.indexOf("?") >= 0 ? "&" : "?";
+  return `${base}${sep}client_id=${cid}`;
 }
 
 export class BioRouterClient {
   readonly config: AppConfig;
   private ws: WebSocket | null = null;
   private readyPromise: Promise<void> | null = null;
-  private listeners: Record<EventKind, Listener[]> = {
-    ready: [],
-    message: [],
-    thought: [],
-    tool: [],
-    done: [],
-    error: [],
-  };
-  private activeResolve: (() => void) | null = null;
-  private activeReject: ((e: Error) => void) | null = null;
+  // Lazily-populated so new/unknown event kinds (BRSDK v2, future frames) work
+  // without enumerating every key — `on()` seeds buckets on demand.
+  private listeners: Record<string, Listener[]> = {};
+  // Capabilities advertised by the server in the `ready` frame (deny-by-default).
+  private capabilities: string[] = [];
+  // Durable-session info latched from the `ready` frame.
+  sessionId: string | null = null;
+  resumed = false;
+  private activeResolve: ResolveFn | null = null;
+  private activeReject: RejectFn | null = null;
+  private tokensWaiters: Array<(u: { used: number; limit: number; ratio: number }) => void> = [];
+  private historyWaiters: Array<(m: Array<{ role: string; text: string }>) => void> = [];
+  // Last widget tree the server sent for each widget id.
+  private widgetStore: Map<string, WidgetNode> = new Map();
 
   constructor(config: AppConfig) {
     this.config = config;
@@ -153,9 +198,183 @@ export class BioRouterClient {
     } catch {
       return;
     }
+    if (msg == null || typeof msg.type !== "string") return;
+    // Latch advertised capabilities + durable-session info from `ready`.
+    if (msg.type === "ready") {
+      if (Array.isArray(msg.capabilities)) this.capabilities = msg.capabilities;
+      if (typeof msg.sessionId === "string") this.sessionId = msg.sessionId;
+      this.resumed = msg.resumed === true;
+    }
+    // Resolve any pending br.context.tokens() callers.
+    if (msg.type === "context") {
+      const waiters = this.tokensWaiters;
+      this.tokensWaiters = [];
+      const u = { used: msg.used || 0, limit: msg.limit || 0, ratio: msg.ratio || 0 };
+      for (const w of waiters) {
+        try {
+          w(u);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    // Cache server-emitted widget trees so apps can re-render / look them up.
+    if (msg.type === "widget" && typeof msg.id === "string") {
+      this.widgetStore.set(msg.id, msg.tree as WidgetNode);
+    }
+    // Resolve any pending history() callers.
+    if (msg.type === "history") {
+      const waiters = this.historyWaiters;
+      this.historyWaiters = [];
+      const m = Array.isArray(msg.messages) ? msg.messages : [];
+      for (const w of waiters) {
+        try {
+          w(m);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
     this.emit(msg);
     if (msg.type === "done") this.settleActive();
     else if (msg.type === "error") this.settleActive(new Error(msg.message));
+  }
+
+  /**
+   * Fetch the user-visible message backlog for the current (resumed) session so
+   * a reloaded app can repaint its chat history. Returns `[]` when there is no
+   * session yet or the request fails.
+   */
+  history(): Promise<Array<{ role: string; text: string }>> {
+    return new Promise((resolve) => {
+      this.historyWaiters.push(resolve);
+      if (!this.send({ type: "history" })) {
+        this.historyWaiters = this.historyWaiters.filter((w) => w !== resolve);
+        resolve([]);
+      }
+    });
+  }
+
+  /** Current context-window usage (BRSDK context API). */
+  tokens(): Promise<{ used: number; limit: number; ratio: number }> {
+    return new Promise((resolve) => {
+      this.tokensWaiters.push(resolve);
+      if (!this.send({ type: "tokens" })) {
+        // Socket not open — resolve with zeros rather than hang.
+        this.tokensWaiters = this.tokensWaiters.filter((w) => w !== resolve);
+        resolve({ used: 0, limit: 0, ratio: 0 });
+      }
+    });
+  }
+
+  /** Namespaced context API: `br.context.tokens()` / `br.context.history()`. */
+  get context() {
+    return {
+      tokens: () => this.tokens(),
+      history: () => this.history(),
+    };
+  }
+
+  /** Provider/model catalog the user has available (the provider-agnostic
+   *  headline). Returns `[]` on failure. */
+  async listModels(): Promise<unknown[]> {
+    try {
+      const loc = window.location;
+      const base = `${loc.protocol}//${loc.host}/apps/${encodeURIComponent(this.config.appId)}`;
+      const res = await fetch(`${base}/models`);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return Array.isArray(data.providers) ? data.providers : [];
+    } catch {
+      return [];
+    }
+  }
+
+  /** Live-switch the session's provider/model. */
+  selectModel(provider: string, model: string): void {
+    this.send({ type: "modelselect", provider, model });
+  }
+
+  /** Namespaced model surface: `br.model.list()` / `br.model.select(p, m)`. */
+  get model() {
+    return {
+      list: () => this.listModels(),
+      select: (provider: string, model: string) => this.selectModel(provider, model),
+    };
+  }
+
+  /** HITL: approve a pending tool surfaced via an `approval` event.
+   *  `action` is "allow_once" (default) or "always_allow". */
+  approve(requestId: string, action: string = "allow_once"): void {
+    this.send({ type: "approve", request: requestId, action });
+  }
+
+  /** HITL: reject a pending tool, with an optional human-readable reason. */
+  reject(requestId: string, reason?: string): void {
+    this.send({ type: "reject", request: requestId, reason });
+  }
+
+  /** Render a widget tree into `target` and wire its actions back to the agent
+   *  (a submit button sends a `widget_action` frame scoped to this widget id). */
+  private renderWidgetInto(
+    id: string,
+    tree: WidgetNode,
+    target: HTMLElement | string
+  ): HTMLElement {
+    const host =
+      typeof target === "string"
+        ? (document.querySelector(target) as HTMLElement | null)
+        : target;
+    const ctx: WidgetContext = {
+      fields: new Map(),
+      onAction: (action, payload) =>
+        this.send({ type: "widget_action", widgetId: id, action, payload }),
+    };
+    const dom = renderWidget(tree, ctx);
+    if (host) {
+      host.innerHTML = "";
+      host.appendChild(dom);
+    }
+    return dom;
+  }
+
+  /** Interactive widgets API: render an agent-emitted tree, fire an action, or
+   *  look up the last tree the server sent for an id. */
+  get widgets() {
+    return {
+      render: (id: string, tree: WidgetNode, target: HTMLElement | string) =>
+        this.renderWidgetInto(id, tree, target),
+      action: (widgetId: string, action: string, payload?: unknown) =>
+        this.send({ type: "widget_action", widgetId, action, payload }),
+      // alias kept for symmetry with the agent-side naming
+      submit: (widgetId: string, action: string, payload?: unknown) =>
+        this.send({ type: "widget_action", widgetId, action, payload }),
+      get: (id: string) => this.widgetStore.get(id),
+    };
+  }
+
+  /** Whether the server advertised a given BRSDK capability in `ready`. */
+  has(capability: string): boolean {
+    return this.capabilities.indexOf(capability) >= 0;
+  }
+
+  /** Send a raw client frame if the socket is open; returns whether it went. */
+  private send(frame: unknown): boolean {
+    if (this.ws && this.ws.readyState === 1 /* WebSocket.OPEN */) {
+      this.ws.send(JSON.stringify(frame));
+      return true;
+    }
+    return false;
+  }
+
+  /** Approve a pending human-in-the-loop tool request (BRSDK Phase 5). */
+  approve(id: string): void {
+    this.send({ type: "approve", id });
+  }
+
+  /** Reject a pending human-in-the-loop tool request, with an optional reason. */
+  reject(id: string, reason?: string): void {
+    this.send({ type: "reject", id, reason });
   }
 
   /**
@@ -262,7 +481,10 @@ export class BioRouterClient {
       await this.prompt(text, opts);
       if (!buf) el.innerHTML = "";
     } catch (e) {
-      el.innerHTML = `<div class="br-msg br-msg--agent">⚠ ${(e as Error).message || "request failed"}</div>`;
+      // Hoisted out of the template literal so the no-esbuild fallback stripper
+      // (which treats `${…}` as part of the string) can strip the `as` cast.
+      const emsg = (e as Error).message || "request failed";
+      el.innerHTML = `<div class="br-msg br-msg--agent">⚠ ${emsg}</div>`;
       throw e;
     } finally {
       this.off("message", onMsg);
@@ -513,7 +735,10 @@ export function renderMarkdown(md: string): string {
         inList = true;
         inOrdered = ordered;
       }
-      out.push(`<li>${inline((ul || ol)![1])}</li>`);
+      // Hoisted out of the template literal so the fallback stripper can drop
+      // the non-null assertion (`!`) — it skips `${…}` interpolations as string.
+      const liText = (ul || ol)![1];
+      out.push(`<li>${inline(liText)}</li>`);
       i++;
       continue;
     }
@@ -556,6 +781,188 @@ export function fileToImageInput(file: File): Promise<ImageInput> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+// ── Interactive widgets ─────────────────────────────────────────────────────
+// Agent-emitted UI (cards/forms/tables/charts) that can call back into the loop:
+// the agent emits a `widget` frame, the app renders the tree, and a Button with
+// `submit` collects the named form fields and sends a `widget_action` frame the
+// server feeds back into the agent as the next turn. Dependency-free DOM,
+// built only from the BioRouter theme classes so it stays on-brand and passes
+// the build lint.
+
+export type WidgetNode =
+  | { t: "card"; title?: string; children: WidgetNode[] }
+  | { t: "row"; children: WidgetNode[] }
+  | { t: "col"; children: WidgetNode[] }
+  | { t: "text"; value: string; markdown?: boolean; muted?: boolean }
+  | { t: "badge"; value: string }
+  | { t: "table"; columns: string[]; rows: Array<Array<string | number>> }
+  | { t: "chart"; spec: unknown }
+  | { t: "input"; name: string; label?: string; value?: string; placeholder?: string; inputType?: string }
+  | { t: "select"; name: string; label?: string; value?: string; options: Array<{ value: string; label: string }> }
+  | { t: "checkbox"; name: string; label?: string; checked?: boolean }
+  | { t: "button"; label: string; action: string; variant?: string; submit?: boolean }
+  | { t: "form"; children: WidgetNode[] };
+
+export interface WidgetContext {
+  // name → live value getter, registered by inputs/selects/checkboxes.
+  fields: Map<string, () => string | boolean>;
+  // dispatched by a button (carrying collected form fields on submit).
+  onAction: (action: string, payload: unknown) => void;
+}
+
+function wEl(tag: string, cls?: string): HTMLElement {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  return e;
+}
+
+/** Build a detached DOM subtree from a widget node. Recursive; unknown node
+ *  types render a muted placeholder rather than throwing. */
+export function renderWidget(node: WidgetNode, ctx: WidgetContext): HTMLElement {
+  switch (node.t) {
+    case "card": {
+      const c = wEl("div", "br-card");
+      if (node.title) {
+        const h = wEl("div", "br-card__title");
+        h.textContent = node.title;
+        c.appendChild(h);
+      }
+      for (const ch of node.children) c.appendChild(renderWidget(ch, ctx));
+      return c;
+    }
+    case "row":
+    case "col": {
+      const r = wEl("div", node.t === "row" ? "br-row" : "br-col");
+      for (const ch of node.children) r.appendChild(renderWidget(ch, ctx));
+      return r;
+    }
+    case "text": {
+      const t = wEl("div", node.muted ? "br-text br-text--muted" : "br-text");
+      if (node.markdown) t.innerHTML = renderMarkdown(node.value);
+      else t.textContent = node.value;
+      return t;
+    }
+    case "badge": {
+      const b = wEl("span", "br-badge");
+      b.textContent = node.value;
+      return b;
+    }
+    case "table": {
+      const tbl = wEl("table", "br-table");
+      const thead = wEl("thead");
+      const htr = wEl("tr");
+      for (const col of node.columns) {
+        const th = wEl("th");
+        th.textContent = col;
+        htr.appendChild(th);
+      }
+      thead.appendChild(htr);
+      tbl.appendChild(thead);
+      const tbody = wEl("tbody");
+      for (const row of node.rows) {
+        const tr = wEl("tr");
+        for (const cell of row) {
+          const td = wEl("td");
+          td.textContent = String(cell);
+          tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+      }
+      tbl.appendChild(tbody);
+      return tbl;
+    }
+    case "chart": {
+      const w = wEl("div", "br-chart");
+      w.innerHTML = renderChart(JSON.stringify(node.spec));
+      return w;
+    }
+    case "input": {
+      const wrap = wEl("label", "br-field");
+      if (node.label) {
+        const l = wEl("span", "br-field__label");
+        l.textContent = node.label;
+        wrap.appendChild(l);
+      }
+      const i = document.createElement("input");
+      i.className = "br-input";
+      i.type = node.inputType || "text";
+      if (node.value) i.value = node.value;
+      if (node.placeholder) i.placeholder = node.placeholder;
+      ctx.fields.set(node.name, () => i.value);
+      wrap.appendChild(i);
+      return wrap;
+    }
+    case "select": {
+      const wrap = wEl("label", "br-field");
+      if (node.label) {
+        const l = wEl("span", "br-field__label");
+        l.textContent = node.label;
+        wrap.appendChild(l);
+      }
+      const s = document.createElement("select");
+      s.className = "br-select";
+      for (const opt of node.options) {
+        const o = document.createElement("option");
+        o.value = opt.value;
+        o.textContent = opt.label;
+        if (node.value === opt.value) o.selected = true;
+        s.appendChild(o);
+      }
+      ctx.fields.set(node.name, () => s.value);
+      wrap.appendChild(s);
+      return wrap;
+    }
+    case "checkbox": {
+      const wrap = wEl("label", "br-check");
+      const c = document.createElement("input");
+      c.type = "checkbox";
+      c.checked = node.checked === true;
+      ctx.fields.set(node.name, () => c.checked);
+      wrap.appendChild(c);
+      if (node.label) {
+        const l = wEl("span");
+        l.textContent = node.label;
+        wrap.appendChild(l);
+      }
+      return wrap;
+    }
+    case "button": {
+      const b = document.createElement("button");
+      b.className =
+        node.variant === "secondary"
+          ? "br-btn br-btn--secondary"
+          : node.variant === "ghost"
+            ? "br-btn br-btn--ghost"
+            : "br-btn";
+      b.textContent = node.label;
+      const action = node.action;
+      const submit = node.submit === true;
+      b.addEventListener("click", () => {
+        let payload: unknown;
+        if (submit) {
+          const collected: Record<string, string | boolean> = {};
+          ctx.fields.forEach((get, name) => {
+            collected[name] = get();
+          });
+          payload = collected;
+        }
+        ctx.onAction(action, payload);
+      });
+      return b;
+    }
+    case "form": {
+      const f = wEl("div", "br-form");
+      for (const ch of node.children) f.appendChild(renderWidget(ch, ctx));
+      return f;
+    }
+    default: {
+      const d = wEl("div", "br-msg br-msg--tool");
+      d.textContent = "unsupported widget";
+      return d;
+    }
+  }
 }
 
 export function mountChat(client: BioRouterClient, host: HTMLElement): void {

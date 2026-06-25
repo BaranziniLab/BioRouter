@@ -342,27 +342,41 @@ fn fallback_bundle(project_dir: &Path, out: &Path) -> std::io::Result<BuildRepor
 /// most common inline type annotations. Conservative and line-oriented.
 fn strip_module_syntax(ts: &str) -> String {
     let mut out = Vec::new();
-    let mut in_type_block = false;
+    // `None` = not skipping. `Some(true)` = inside a multi-line `type X = …`
+    // alias (ends at a `;` once braces are balanced — covers multi-line union
+    // types like `type AgentEvent =\n | {…}\n | {…};`). `Some(false)` = inside an
+    // interface/declare block (ends when braces balance).
+    let mut skipping: Option<bool> = None;
     let mut depth = 0i32;
     for line in ts.lines() {
         let trimmed = line.trim_start();
-        // Drop multi-line interface / `type X = { … }` blocks.
-        if in_type_block {
+        if let Some(is_alias) = skipping {
             depth += count(line, '{') - count(line, '}');
-            if depth <= 0 {
-                in_type_block = false;
+            let done = if is_alias {
+                depth <= 0 && trimmed.trim_end().ends_with(';')
+            } else {
+                depth <= 0
+            };
+            if done {
+                skipping = None;
             }
             continue;
         }
-        if trimmed.starts_with("interface ")
+        let is_type_alias = trimmed.starts_with("type ") || trimmed.starts_with("export type ");
+        let is_iface = trimmed.starts_with("interface ")
             || trimmed.starts_with("export interface ")
-            || trimmed.starts_with("declare ")
-            || trimmed.starts_with("export type ")
-            || trimmed.starts_with("type ")
-        {
-            if line.contains('{') && count(line, '{') > count(line, '}') {
-                in_type_block = true;
-                depth = count(line, '{') - count(line, '}');
+            || trimmed.starts_with("declare ");
+        if is_type_alias || is_iface {
+            depth = count(line, '{') - count(line, '}');
+            let complete = if is_type_alias {
+                // Single-line alias: braces balanced AND statement-terminated.
+                depth <= 0 && trimmed.trim_end().ends_with(';')
+            } else {
+                // Single-line interface/declare with balanced braces (rare).
+                depth <= 0 && line.contains('}')
+            };
+            if !complete {
+                skipping = Some(is_type_alias);
             }
             continue;
         }
@@ -375,6 +389,22 @@ fn strip_module_syntax(ts: &str) -> String {
         if let Some(rest) = l.trim_start().strip_prefix("export ") {
             let indent = &l[..l.len() - l.trim_start().len()];
             l = format!("{indent}{rest}");
+        }
+        // Strip TS-only class-member modifiers (e.g. `private`, `readonly`),
+        // which are not valid JS, while preserving indentation. `static` is
+        // valid JS and is intentionally kept. Loops to handle combinations like
+        // `private readonly foo`.
+        loop {
+            let ls = l.trim_start();
+            let indent_len = l.len() - ls.len();
+            let modifier = ["private ", "public ", "protected ", "readonly ", "abstract ", "override "]
+                .iter()
+                .find(|kw| ls.starts_with(**kw))
+                .map(|kw| kw.len());
+            match modifier {
+                Some(n) => l = format!("{}{}", &l[..indent_len], &ls[n..]),
+                None => break,
+            }
         }
         out.push(strip_inline_types(&l));
     }
@@ -392,27 +422,135 @@ fn strip_inline_types(line: &str) -> String {
     let mut s = regex_lite_replace_as(line);
     // Remove parameter / variable annotations `name: Type` → `name`.
     s = strip_colon_types(&s);
+    // Remove value-position generic type args: `new Promise<void>(` → `new Promise(`.
+    s = strip_value_generics(&s);
+    // Remove TS non-null assertions: `this.ws!.send(` → `this.ws.send(`.
+    s = strip_non_null_assertions(&s);
     s
 }
 
-fn regex_lite_replace_as(line: &str) -> String {
-    // Replace " as Something" up to a delimiter. Simple scan.
-    let mut result = String::with_capacity(line.len());
-    let bytes = line.as_bytes();
+/// Strip TS non-null assertion operators (`expr!`) while leaving logical-not
+/// (`!expr`) and inequality (`!=`/`!==`) intact. A non-null assertion is a
+/// postfix `!`: it follows an operand char and precedes a member/call/terminator.
+fn strip_non_null_assertions(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut in_str: Option<char> = None;
     let mut i = 0;
-    while i < bytes.len() {
-        if line[i..].starts_with(" as ") {
-            // skip " as " and the following type token(s)
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(q) = in_str {
+            out.push(c);
+            if c == q && (i == 0 || chars[i - 1] != '\\') {
+                in_str = None;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' || c == '\'' || c == '`' {
+            in_str = Some(c);
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '!' {
+            let prev = if i > 0 { chars[i - 1] } else { ' ' };
+            let next = if i + 1 < chars.len() { chars[i + 1] } else { ' ' };
+            let postfix_operand =
+                prev.is_alphanumeric() || prev == '_' || prev == ')' || prev == ']';
+            let member_or_end = matches!(next, '.' | ')' | ';' | ',' | ']' | '(' | '[')
+                || next.is_whitespace();
+            if postfix_operand && member_or_end && next != '=' {
+                i += 1; // drop the assertion `!`
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+/// Remove value-position generic type arguments that directly precede a call,
+/// e.g. `new Promise<void>(...)` or `foo<T>(...)` → `Promise(...)` / `foo(...)`.
+/// Conservative: only strips a `<…>` that (1) immediately follows an identifier
+/// char, (2) contains only type-ish characters, and (3) is immediately followed
+/// by `(` — so comparisons (`a < b`) and bit-shifts (`a << b`) are untouched.
+fn strip_value_generics(line: &str) -> String {
+    let chars: Vec<char> = line.chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut in_str: Option<char> = None;
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(q) = in_str {
+            out.push(c);
+            if c == q && (i == 0 || chars[i - 1] != '\\') {
+                in_str = None;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' || c == '\'' || c == '`' {
+            in_str = Some(c);
+            out.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '<' && i > 0 && (chars[i - 1].is_alphanumeric() || chars[i - 1] == '_') {
+            let mut j = i + 1;
+            let mut depth = 1i32;
+            let mut type_only = true;
+            while j < chars.len() && depth > 0 {
+                let d = chars[j];
+                if d == '<' {
+                    depth += 1;
+                } else if d == '>' {
+                    depth -= 1;
+                } else if !(d.is_alphanumeric()
+                    || matches!(d, '_' | ',' | ' ' | '[' | ']' | '.' | '|' | '&'))
+                {
+                    type_only = false;
+                    break;
+                }
+                j += 1;
+            }
+            if type_only && depth == 0 && j < chars.len() && chars[j] == '(' {
+                // Drop the `<…>` entirely; resume at the `(`.
+                i = j;
+                continue;
+            }
+        }
+        out.push(c);
+        i += 1;
+    }
+    out
+}
+
+fn regex_lite_replace_as(line: &str) -> String {
+    // Replace " as Something" casts up to a delimiter. Char-based scan so it is
+    // safe on multibyte UTF-8 (em-dash, box-drawing, ellipsis in comments) —
+    // byte indexing here previously panicked on a non-char-boundary slice.
+    let chars: Vec<char> = line.chars().collect();
+    let mut result = String::with_capacity(line.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if i + 4 <= chars.len()
+            && chars[i] == ' '
+            && chars[i + 1] == 'a'
+            && chars[i + 2] == 's'
+            && chars[i + 3] == ' '
+        {
             i += 4;
-            while i < bytes.len() {
-                let c = bytes[i] as char;
+            while i < chars.len() {
+                let c = chars[i];
                 if c == ')' || c == ';' || c == ',' || c == '}' || c == ']' {
                     break;
                 }
                 i += 1;
             }
         } else {
-            result.push(bytes[i] as char);
+            result.push(chars[i]);
             i += 1;
         }
     }
@@ -453,26 +591,51 @@ fn strip_colon_types(line: &str) -> String {
                 && (chars[j].is_ascii_uppercase()
                     || matches!(
                         peek_word(&chars, j).as_str(),
-                        "string" | "number" | "boolean" | "void" | "any" | "null" | "undefined"
+                        "string"
+                            | "number"
+                            | "boolean"
+                            | "void"
+                            | "any"
+                            | "null"
+                            | "undefined"
+                            | "unknown"
+                            | "never"
+                            | "this"
+                            | "object"
                     ));
             // Only strip in a clearly typed position (preceded by an identifier
-            // char or `)`), not an object literal `{ key: value }`.
+            // char, `)`, or `?` for optional params), not an object literal
+            // `{ key: value }`.
             let prev = if i > 0 { chars[i - 1] } else { ' ' };
-            let typed_position = prev.is_alphanumeric() || prev == '_' || prev == ')';
+            let typed_position =
+                prev.is_alphanumeric() || prev == '_' || prev == ')' || prev == '?';
             if starts_type && typed_position {
-                // consume the type expression until a stopper
+                // An optional-param/field marker `name?:` — drop the trailing `?`
+                // we already emitted (it is TS-only and invalid in plain JS).
+                if prev == '?' {
+                    out.pop();
+                }
+                // Consume the whole type expression — unions `|`, intersections
+                // `&`, generics `<…>`, tuples `[…]`, function types `(…) =>` —
+                // up to a top-level terminator, tracking nesting so commas /
+                // parens inside generics or function types don't end it early.
                 i = j;
-                let mut ang = 0i32;
+                let (mut ang, mut par, mut brk) = (0i32, 0i32, 0i32);
                 while i < chars.len() {
                     let d = chars[i];
-                    if d == '<' {
-                        ang += 1;
-                    } else if d == '>' {
-                        ang -= 1;
-                    } else if ang == 0
-                        && matches!(d, '=' | ',' | ')' | ';' | '{' | '|' | '&' | '\n')
-                    {
-                        break;
+                    match d {
+                        '<' => ang += 1,
+                        '>' if ang > 0 => ang -= 1,
+                        '(' => par += 1,
+                        ')' if par > 0 => par -= 1,
+                        '[' => brk += 1,
+                        ']' if brk > 0 => brk -= 1,
+                        _ if ang == 0 && par == 0 && brk == 0
+                            && matches!(d, '=' | ',' | ')' | ';' | '{' | '\n') =>
+                        {
+                            break;
+                        }
+                        _ => {}
                     }
                     i += 1;
                 }
@@ -523,6 +686,77 @@ mod tests {
         assert!(!out.contains("interface"));
         assert!(out.contains("function f()"));
         assert!(out.contains("const y = 2"));
+    }
+
+    #[test]
+    fn strip_module_syntax_drops_multiline_type_alias_union() {
+        // Regression: a multi-line `type X =` union (no `{` on the first line)
+        // must be fully removed, not leak its `| { … }` members as statements.
+        let ts = "export type E =\n  | { type: \"a\"; x: number }\n  | { type: \"b\"; y: string };\nconst k = 1;";
+        let out = strip_module_syntax(ts);
+        for l in out.lines() {
+            assert!(
+                !l.trim_start().starts_with("| "),
+                "union member leaked into JS: {l:?}"
+            );
+        }
+        assert!(out.contains("const k = 1"));
+    }
+
+    #[test]
+    fn regex_lite_replace_as_is_multibyte_safe() {
+        // Must not panic on multibyte chars (em-dash, box-drawing, ellipsis)
+        // and must preserve them while still stripping ` as T` casts.
+        let line = "  // ── header — note … done; const x = y as Foo;";
+        let out = regex_lite_replace_as(line);
+        assert!(out.contains('─') && out.contains('—') && out.contains('…'));
+        assert!(!out.contains(" as Foo"));
+    }
+
+    #[test]
+    fn fallback_strips_real_sdk_template_into_valid_js() {
+        // The actual shipped SDK template must survive the no-esbuild fallback:
+        // no panic, no leaked TS (imports / interfaces / union members), and the
+        // key runtime symbols survive. If `node` is present, assert it parses.
+        let sdk = include_str!("templates/sdk.ts");
+        let main = include_str!("templates/main.ts");
+        let stripped_sdk = strip_module_syntax(sdk);
+        let stripped_main = strip_module_syntax(main);
+
+        for (name, body) in [("sdk.ts", &stripped_sdk), ("main.ts", &stripped_main)] {
+            for l in body.lines() {
+                let t = l.trim_start();
+                assert!(!t.starts_with("import "), "{name}: leaked import: {l:?}");
+                assert!(!t.starts_with("| "), "{name}: leaked union member: {l:?}");
+                assert!(
+                    !t.starts_with("interface ") && !t.starts_with("export "),
+                    "{name}: leaked TS decl: {l:?}"
+                );
+            }
+        }
+        // Core runtime API must remain.
+        assert!(stripped_sdk.contains("function createApp"));
+        assert!(stripped_sdk.contains("class BioRouterClient"));
+        assert!(stripped_sdk.contains("function renderMarkdown"));
+        assert!(stripped_sdk.contains("approve"));
+
+        // Wrap as the fallback bundler does and (optionally) node --check it.
+        let js = format!("(function(){{\n{stripped_sdk}\n{stripped_main}\n}})();\n");
+        if let Ok(node) = which::which("node") {
+            let dir = TempDir::new().unwrap();
+            let f = dir.path().join("app.js");
+            std::fs::write(&f, &js).unwrap();
+            let out = std::process::Command::new(node)
+                .arg("--check")
+                .arg(&f)
+                .output()
+                .expect("run node --check");
+            assert!(
+                out.status.success(),
+                "node --check rejected the fallback bundle:\n{}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
     }
 
     #[test]
