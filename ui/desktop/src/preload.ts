@@ -178,6 +178,7 @@ type ElectronAPI = {
     title?: string;
     width?: number;
     height?: number;
+    theme?: 'light' | 'dark';
   }) => Promise<{ ok: boolean }>;
   addRecentDir: (dir: string) => Promise<boolean>;
   openBrxtFilePicker: () => Promise<string | null>;
@@ -391,8 +392,13 @@ const electronAPI: ElectronAPI = {
   openDirectoryInExplorer: (directoryPath: string) =>
     ipcRenderer.invoke('open-directory-in-explorer', directoryPath),
   launchApp: (app: BioRouterApp) => ipcRenderer.invoke('launch-app', app),
-  openArtifactWindow: (payload: { html: string; title?: string; width?: number; height?: number }) =>
-    ipcRenderer.invoke('open-artifact-window', payload),
+  openArtifactWindow: (payload: {
+    html: string;
+    title?: string;
+    width?: number;
+    height?: number;
+    theme?: 'light' | 'dark';
+  }) => ipcRenderer.invoke('open-artifact-window', payload),
   addRecentDir: (dir: string) => ipcRenderer.invoke('add-recent-dir', dir),
   openBrxtFilePicker: () => ipcRenderer.invoke('brxt:open-file-dialog'),
   validateBrxtBundle: (filePath: string) =>
