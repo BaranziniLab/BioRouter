@@ -817,7 +817,7 @@
         },
         "responses": {
           "200": {
-            "description": "Provider detected successfully",
+            "description": "Detection result (provider_name is null with a reason on failure)",
             "content": {
               "application/json": {
                 "schema": {
@@ -825,9 +825,26 @@
                 }
               }
             }
-          },
-          "404": {
-            "description": "No matching provider found"
+          }
+        }
+      }
+    },
+    "/config/detectable-providers": {
+      "get": {
+        "tags": [
+          "super::routes::config_management"
+        ],
+        "operationId": "get_detectable_providers",
+        "responses": {
+          "200": {
+            "description": "Providers supported by API-key auto-detection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DetectableProvidersResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -4512,19 +4529,64 @@
       },
       "DetectProviderResponse": {
         "type": "object",
-        "required": [
-          "provider_name",
-          "models"
-        ],
         "properties": {
+          "default_model": {
+            "type": "string",
+            "description": "A recommended default chat model, when one could be determined.",
+            "nullable": true
+          },
+          "extra_config": {
+            "type": "object",
+            "description": "Non-secret config to persist alongside the key (e.g. a regional host).",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
           "models": {
             "type": "array",
             "items": {
               "type": "string"
-            }
+            },
+            "description": "All model ids the provider reported for the key (empty on failure)."
           },
           "provider_name": {
+            "type": "string",
+            "description": "The detected provider, or `null` when detection failed.",
+            "nullable": true
+          },
+          "reason": {
+            "type": "string",
+            "description": "Machine-readable failure reason when `provider_name` is null:\n`\"timeout\" | \"network\" | \"invalid_key\" | \"no_match\"`.",
+            "nullable": true
+          }
+        }
+      },
+      "DetectableProvider": {
+        "type": "object",
+        "required": [
+          "name",
+          "display_name"
+        ],
+        "properties": {
+          "display_name": {
             "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "DetectableProvidersResponse": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DetectableProvider"
+            }
           }
         }
       },

@@ -58,3 +58,41 @@ pub async fn detect_provider_from_api_key(api_key: &str) -> Option<(String, Vec<
 
     None
 }
+
+/// Display-purpose list of provider registry names that auto-detection supports.
+///
+/// This is the single source of truth surfaced to the UI via
+/// `GET /config/detectable-providers`. Keep it in sync with the provider list
+/// probed in [`detect_provider_from_api_key`].
+pub fn detectable_providers() -> Vec<&'static str> {
+    vec![
+        "anthropic",
+        "openai",
+        "google",
+        "groq",
+        "xai",
+        "zai",
+        "xiaomi_mimo",
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detectable_providers_lists_all_candidates() {
+        let providers = detectable_providers();
+        for expected in [
+            "anthropic",
+            "google",
+            "groq",
+            "xai",
+            "openai",
+            "zai",
+            "xiaomi_mimo",
+        ] {
+            assert!(providers.contains(&expected), "missing {expected}");
+        }
+    }
+}
