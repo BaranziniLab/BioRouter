@@ -15,6 +15,44 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use thiserror::Error;
 
+tokio::task_local! {
+    /// Per-task overrides for `get_secret` / `get_param` resolution.
+    ///
+    /// This exists so a candidate credential (e.g. an API key being validated
+    /// during provider auto-detection) can be supplied to provider constructors
+    /// **without** mutating the process environment. Mutating `std::env` from a
+    /// multi-threaded program is unsound (`set_var`/`remove_var` race with any
+    /// other thread reading the environment) and leaks the value into every
+    /// subprocess spawned during the window. A task-local override is instead
+    /// scoped to the probing task only: concurrent agent turns never observe it,
+    /// and nothing touches the real environment. Keys are the upper-cased config
+    /// key names (the same form `get_secret`/`get_param` look up).
+    static CONFIG_OVERRIDES: HashMap<String, String>;
+}
+
+/// Look up a task-local override for the given upper-cased key, if one is set in
+/// the current task scope. Returns `None` when no override scope is active (the
+/// common case) so callers fall through to environment / keyring resolution.
+fn override_lookup(env_key: &str) -> Option<String> {
+    CONFIG_OVERRIDES
+        .try_with(|m| m.get(env_key).cloned())
+        .ok()
+        .flatten()
+}
+
+/// Run `fut` with the given config overrides active for the duration of its
+/// execution (and any synchronous `get_secret`/`get_param` calls it makes).
+///
+/// The overrides take precedence over both environment variables and the
+/// keyring, but only within this task — they are never written to the process
+/// environment. Used by provider auto-detection to test a candidate key.
+pub async fn with_config_overrides<F, T>(overrides: HashMap<String, String>, fut: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    CONFIG_OVERRIDES.scope(overrides, fut).await
+}
+
 const KEYRING_SERVICE: &str = "biorouter";
 const KEYRING_USERNAME: &str = "secrets";
 pub const CONFIG_YAML_NAME: &str = "config.yaml";
@@ -716,6 +754,12 @@ impl Config {
     /// - There is an error reading the config file
     pub fn get_param<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<T, ConfigError> {
         let env_key = key.to_uppercase();
+        // A task-local override (set during provider auto-detection) wins over
+        // both env and the config file, but only within the probing task.
+        if let Some(val) = override_lookup(&env_key) {
+            let value = Self::parse_env_value(&val)?;
+            return Ok(serde_json::from_value(value)?);
+        }
         if let Ok(val) = env::var(&env_key) {
             let value = Self::parse_env_value(&val)?;
             return Ok(serde_json::from_value(value)?);
@@ -788,8 +832,16 @@ impl Config {
     /// - The value cannot be deserialized into the requested type
     /// - There is an error accessing the keyring
     pub fn get_secret<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<T, ConfigError> {
-        // First check environment variables (convert to uppercase)
         let env_key = key.to_uppercase();
+        // A task-local override (set during provider auto-detection) wins over
+        // both env and the keyring, but only within the probing task — see
+        // `with_config_overrides`. This avoids mutating the process environment
+        // to test a candidate credential.
+        if let Some(val) = override_lookup(&env_key) {
+            let value = Self::parse_env_value(&val)?;
+            return Ok(serde_json::from_value(value)?);
+        }
+        // First check environment variables (convert to uppercase)
         if let Ok(val) = env::var(&env_key) {
             let value = Self::parse_env_value(&val)?;
             return Ok(serde_json::from_value(value)?);
@@ -1852,6 +1904,54 @@ mod tests {
         let config_file = NamedTempFile::new().unwrap();
         let secrets_file = NamedTempFile::new().unwrap();
         Config::new_with_file_secrets(config_file.path(), secrets_file.path()).unwrap()
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn task_local_override_is_used_and_scoped() {
+        let config = new_test_config();
+        let key = "auto_detect_test_key";
+        let env_key = "AUTO_DETECT_TEST_KEY";
+        std::env::remove_var(env_key);
+
+        // Outside any override scope the secret is simply absent.
+        assert!(config.get_secret::<String>(key).is_err());
+
+        // Inside the scope, the override is returned without touching env.
+        let mut overrides = HashMap::new();
+        overrides.insert(env_key.to_string(), "candidate-123".to_string());
+        let observed = with_config_overrides(overrides, async {
+            // The process environment must NOT have been mutated.
+            assert!(std::env::var(env_key).is_err());
+            config.get_secret::<String>(key).unwrap()
+        })
+        .await;
+        assert_eq!(observed, "candidate-123");
+
+        // After the scope the override is gone and env is still untouched.
+        assert!(config.get_secret::<String>(key).is_err());
+        assert!(std::env::var(env_key).is_err());
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn task_local_override_wins_over_env() {
+        let config = new_test_config();
+        let key = "auto_detect_test_key2";
+        let env_key = "AUTO_DETECT_TEST_KEY2";
+        std::env::set_var(env_key, "real-env-value");
+
+        let mut overrides = HashMap::new();
+        overrides.insert(env_key.to_string(), "candidate-override".to_string());
+        let inside = with_config_overrides(overrides, async {
+            config.get_secret::<String>(key).unwrap()
+        })
+        .await;
+        assert_eq!(inside, "candidate-override");
+
+        // Outside the scope the real env value resolves again.
+        assert_eq!(config.get_secret::<String>(key).unwrap(), "real-env-value");
+        std::env::remove_var(env_key);
     }
 
     #[test]
