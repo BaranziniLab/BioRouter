@@ -4,6 +4,7 @@ pub mod auto_detect;
 pub mod azure;
 pub mod azureauth;
 pub mod base;
+#[cfg(feature = "aws-providers")]
 pub mod bedrock;
 pub mod canonical;
 pub mod databricks;
@@ -25,7 +26,8 @@ pub mod openai;
 pub mod openrouter;
 pub mod provider_registry;
 pub mod provider_test;
-mod retry;
+pub(crate) mod retry;
+#[cfg(feature = "aws-providers")]
 pub mod sagemaker_tgi;
 pub mod snowflake;
 pub mod testprovider;
@@ -35,6 +37,7 @@ pub mod usage_estimator;
 pub mod utils;
 pub mod venice;
 pub mod versa_azure;
+#[cfg(feature = "aws-providers")]
 pub mod versa_bedrock;
 pub mod xai;
 pub mod xiaomi_mimo;

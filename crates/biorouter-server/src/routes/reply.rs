@@ -255,6 +255,10 @@ pub async fn reply(
     let task_tx = tx.clone();
 
     let _handle = tokio::spawn(async move {
+        // Mark an interactive turn in progress for the lifetime of this reply
+        // stream so the scheduler defers background jobs while the user is
+        // mid-conversation (dropped when the stream task ends).
+        let _interactive_turn = biorouter::scheduler::interactive_turn_guard();
         let agent = match state.get_agent(session_id.clone()).await {
             Ok(agent) => agent,
             Err(e) => {
@@ -466,12 +470,33 @@ pub async fn reply(
     Ok(SseResponse::new(stream))
 }
 
+/// Request body for the soft-interrupt route.
+#[derive(Deserialize)]
+pub struct InterruptRequest {
+    pub session_id: String,
+    pub text: String,
+}
+
+/// Soft interrupt: queue a user message to be injected into the session's
+/// running turn at the next safe loop boundary, instead of cancelling the turn
+/// and re-sending the whole context. Returns 202 Accepted; the message surfaces
+/// as a normal user message in the active reply stream on the next loop step.
+async fn interrupt(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<InterruptRequest>,
+) -> Result<StatusCode, StatusCode> {
+    let agent = state.get_agent_for_route(req.session_id).await?;
+    agent.queue_soft_interrupt(req.text);
+    Ok(StatusCode::ACCEPTED)
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route(
             "/reply",
             post(reply).layer(DefaultBodyLimit::max(50 * 1024 * 1024)),
         )
+        .route("/interrupt", post(interrupt))
         .with_state(state)
 }
 

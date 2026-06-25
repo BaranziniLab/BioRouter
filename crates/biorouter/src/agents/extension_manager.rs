@@ -825,7 +825,16 @@ impl ExtensionManager {
         }
 
         let version_before = self.tools_cache_version.load(Ordering::SeqCst);
-        let tools = Arc::new(self.fetch_all_tools().await?);
+        // Deterministic tool order so the serialized tool-definitions block (which
+        // BioRouter caches via Anthropic `cache_control`) is byte-stable across
+        // process restarts. The source `extensions` HashMap iterates in a
+        // per-process-randomized order, so a session resumed in a fresh process
+        // would otherwise get a different tool order and miss the provider prompt
+        // cache on its first turn. Tools are a named set — ordering is
+        // semantically irrelevant to the model, so sorting is safe.
+        let mut fetched = self.fetch_all_tools().await?;
+        fetched.sort_by(|a, b| a.name.cmp(&b.name));
+        let tools = Arc::new(fetched);
 
         {
             let mut cache = self.tools_cache.lock().await;

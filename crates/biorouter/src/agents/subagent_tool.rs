@@ -1,12 +1,15 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::LazyLock;
 
 use anyhow::{anyhow, Result};
 use futures::FutureExt;
 use rmcp::model::{Content, ErrorCode, ErrorData, Tool};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::agents::subagent_handler::run_complete_subagent_task;
@@ -19,6 +22,50 @@ use crate::workflow::local_workflows::load_local_workflow_file;
 use crate::workflow::{SubWorkflow, Workflow};
 
 pub const SUBAGENT_TOOL_NAME: &str = "subagent";
+
+// --- Fork-bomb guard -------------------------------------------------------
+// The model is told it can spawn many subagents in parallel, and a subagent can
+// itself spawn subagents, so spawning was previously unbounded. Two caps bound
+// it: the semaphore throttles *concurrent* subagents; the in-flight ceiling
+// refuses outright once too many are queued+running so a recursive spawn storm
+// can't accumulate unbounded tasks. Both env-overridable.
+fn max_concurrent_subagents() -> usize {
+    std::env::var("BIOROUTER_SUBAGENT_MAX_CONCURRENT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(8)
+}
+fn max_inflight_subagents() -> usize {
+    std::env::var("BIOROUTER_SUBAGENT_MAX_INFLIGHT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(64)
+}
+static SUBAGENT_SEMAPHORE: LazyLock<Semaphore> =
+    LazyLock::new(|| Semaphore::new(max_concurrent_subagents()));
+static SUBAGENT_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// RAII counter for total in-flight subagents (queued + running).
+struct InflightGuard;
+impl InflightGuard {
+    /// Increment and return the new in-flight count.
+    fn enter() -> (Self, usize) {
+        let prev = SUBAGENT_INFLIGHT.fetch_add(1, Ordering::SeqCst);
+        (Self, prev + 1)
+    }
+}
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        SUBAGENT_INFLIGHT.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// Current number of in-flight subagents (test/introspection helper).
+pub fn inflight_subagent_count() -> usize {
+    SUBAGENT_INFLIGHT.load(Ordering::SeqCst)
+}
 
 const SUMMARY_INSTRUCTIONS: &str = r#"
 Important: Your parent agent will only receive your final message as a summary of your work.
@@ -248,6 +295,27 @@ async fn execute_subagent(
     working_dir: PathBuf,
     cancellation_token: Option<CancellationToken>,
 ) -> Result<rmcp::model::CallToolResult, ErrorData> {
+    // Fork-bomb guard: count this spawn, refuse if too many are already in
+    // flight, then throttle concurrency. The guard + permit are held until this
+    // function returns (i.e. the subagent finishes).
+    let (_inflight, inflight_count) = InflightGuard::enter();
+    let max_inflight = max_inflight_subagents();
+    if inflight_count > max_inflight {
+        return Err(ErrorData {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!(
+                "Subagent limit reached: {inflight_count} already in flight (max {max_inflight}). \
+                 Wait for running subagents to finish, or raise BIOROUTER_SUBAGENT_MAX_INFLIGHT."
+            )),
+            data: None,
+        });
+    }
+    let _permit = SUBAGENT_SEMAPHORE.acquire().await.map_err(|e| ErrorData {
+        code: ErrorCode::INTERNAL_ERROR,
+        message: Cow::from(format!("Subagent semaphore closed: {e}")),
+        data: None,
+    })?;
+
     let session = config
         .session_manager
         .create_session(

@@ -2,8 +2,34 @@ use super::errors::ProviderError;
 use crate::providers::base::Provider;
 use async_trait::async_trait;
 use std::future::Future;
-use std::time::Duration;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
+
+/// Unix-millis until which a provider was last observed rate-limited (HTTP 429).
+/// Set by [`retry_operation`] on any rate-limit error; read by the scheduler
+/// ([`crate::scheduler`]) to defer scheduled (non-interactive) jobs so background
+/// work doesn't pile onto a throttled provider while the per-request retry budget
+/// is already absorbing the 429.
+pub static RATE_LIMITED_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
+}
+
+/// Record that the provider is rate-limited for at least `dur` from now.
+pub fn note_rate_limited(dur: Duration) {
+    let until = now_ms().saturating_add(dur.as_millis() as u64);
+    RATE_LIMITED_UNTIL_MS.fetch_max(until, Ordering::Relaxed);
+}
+
+/// Whether a provider is currently within an observed rate-limit backoff window.
+pub fn is_rate_limited() -> bool {
+    now_ms() < RATE_LIMITED_UNTIL_MS.load(Ordering::Relaxed)
+}
 
 pub const DEFAULT_MAX_RETRIES: usize = 3;
 pub const DEFAULT_INITIAL_RETRY_INTERVAL_MS: u64 = 1000;
@@ -112,6 +138,14 @@ where
         match operation().await {
             Ok(result) => return Ok(result),
             Err(error) => {
+                // Surface rate-limiting to the scheduler so background jobs back
+                // off, whether or not we retry this request.
+                if let ProviderError::RateLimitExceeded { retry_delay, .. } = &error {
+                    let window = retry_delay
+                        .unwrap_or(Duration::from_secs(60))
+                        .max(Duration::from_secs(30));
+                    note_rate_limited(window);
+                }
                 if should_retry(&error) && attempts < effective_max_retries(&error, config) {
                     attempts += 1;
                     tracing::warn!(
