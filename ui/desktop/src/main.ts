@@ -3200,24 +3200,50 @@ async function appMain() {
 
   // Add CSP headers to all sessions
   session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    // Agent Drafter / Auto Visualiser artifacts are opened in a standalone
+    // "Expand" window from a file:// temp file (see the open-artifact-window
+    // handler). Those self-contained artifacts run their OWN inline <script>
+    // (the converter's convert(), a figure's Chart.js/D3/Mermaid render, the
+    // agentic runtime), pull chart libs from a CDN when BIOROUTER_AUTOVIS_CDN
+    // is on, and — for agentic apps — open a WebSocket to the local ACP
+    // sidecar. The app's strict `script-src 'self'` CSP silently blocks ALL of
+    // that, so the Expand window showed only static markup (blank charts, a
+    // dead Convert button, an unresponsive embedded agent). These artifacts are
+    // agent-generated and already isolated (sandbox + contextIsolation, no node
+    // integration), so give just this file:// path a CSP permissive enough to
+    // actually run. Everything else keeps the strict policy.
+    const isArtifactWindow =
+      details.url.startsWith('file://') && details.url.includes('biorouter-artifacts');
+
+    const csp = isArtifactWindow
+      ? "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:;" +
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https: blob:;" +
+        "style-src 'self' 'unsafe-inline' https:;" +
+        "img-src 'self' data: blob: https:;" +
+        "connect-src 'self' https: http://127.0.0.1:* ws://127.0.0.1:* ws://localhost:*;" +
+        "font-src 'self' data: https:;" +
+        "frame-src 'self' https: http:;" +
+        "worker-src 'self' blob:;" +
+        "base-uri 'self';"
+      : "default-src 'self';" +
+        "style-src 'self' 'unsafe-inline';" +
+        "script-src 'self';" +
+        "img-src 'self' data: https:;" +
+        `connect-src ${buildConnectSrc()};` +
+        "object-src 'none';" +
+        "frame-src 'self' https: http:;" +
+        "font-src 'self' data: https:;" +
+        "media-src 'self' mediastream:;" +
+        "form-action 'none';" +
+        "base-uri 'self';" +
+        "manifest-src 'self';" +
+        "worker-src 'self';" +
+        'upgrade-insecure-requests;';
+
     callback({
       responseHeaders: {
         ...details.responseHeaders,
-        'Content-Security-Policy':
-          "default-src 'self';" +
-          "style-src 'self' 'unsafe-inline';" +
-          "script-src 'self';" +
-          "img-src 'self' data: https:;" +
-          `connect-src ${buildConnectSrc()};` +
-          "object-src 'none';" +
-          "frame-src 'self' https: http:;" +
-          "font-src 'self' data: https:;" +
-          "media-src 'self' mediastream:;" +
-          "form-action 'none';" +
-          "base-uri 'self';" +
-          "manifest-src 'self';" +
-          "worker-src 'self';" +
-          'upgrade-insecure-requests;',
+        'Content-Security-Policy': csp,
       },
     });
   });
