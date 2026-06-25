@@ -23,15 +23,16 @@ interface ExtensionLoadingToastProps {
 
 export function GroupedExtensionLoadingToast({
   extensions,
-  totalCount,
   isComplete,
 }: ExtensionLoadingToastProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [copiedExtension, setCopiedExtension] = useState<string | null>(null);
   const setView = useNavigation();
 
-  const successCount = extensions.filter((ext) => ext.status === 'success').length;
   const errorCount = extensions.filter((ext) => ext.status === 'error').length;
+  const failedNames = extensions
+    .filter((ext) => ext.status === 'error')
+    .map((ext) => formatExtensionName(ext.name));
 
   const getStatusIcon = (status: 'loading' | 'success' | 'error') => {
     switch (status) {
@@ -44,47 +45,40 @@ export function GroupedExtensionLoadingToast({
     }
   };
 
+  // Summary line. On success we deliberately say "All extensions loaded" rather
+  // than a count (many built-ins are now capabilities, so a number is
+  // misleading). On failure we name which extensions failed and how many.
   const getSummaryText = () => {
     if (!isComplete) {
-      return `Loading ${totalCount} extension${totalCount !== 1 ? 's' : ''}...`;
+      return 'Loading extensions…';
     }
-
     if (errorCount === 0) {
-      return `Successfully loaded ${successCount} extension${successCount !== 1 ? 's' : ''}`;
+      return 'All extensions loaded';
     }
-
-    return `Loaded ${successCount}/${totalCount} extension${totalCount !== 1 ? 's' : ''}`;
+    return `${errorCount} extension${errorCount !== 1 ? 's' : ''} failed to load`;
   };
 
-  const getSummaryIcon = () => {
-    if (!isComplete) {
-      return <Loader2 className="w-5 h-5 animate-spin text-text-info" />;
-    }
-
-    if (errorCount === 0) {
-      return <div className="w-5 h-5 rounded-full bg-background-success" />;
-    }
-
-    return <div className="w-5 h-5 rounded-full bg-background-warning" />;
-  };
+  // Show the per-extension detail / toggle only when something failed — a clean
+  // all-loaded toast needs no list (matching the model-change toast's simplicity).
+  const showDetails = errorCount > 0;
 
   return (
     <div className="w-full">
       <Collapsible open={isOpen} onOpenChange={setIsOpen}>
         <div className="flex flex-col">
-          {/* Main summary section - clickable */}
+          {/* Main summary section — typography matches the standard toast
+              (toastSuccess/toastError): a bold font-medium title + a plain msg
+              line. The status icon/theme is supplied by the react-toastify toast
+              type set in toastService.extensionLoading. */}
           <CollapsibleTrigger asChild>
-            <div className="flex items-start gap-3 pr-8 cursor-pointer hover:opacity-90 transition-opacity">
-              <div className="flex items-center gap-3 flex-1 min-w-0">
-                {getSummaryIcon()}
-                <div className="flex-1 min-w-0">
-                  <div className="font-medium text-base">{getSummaryText()}</div>
-                  {errorCount > 0 && (
-                    <div className="text-sm opacity-90">
-                      {errorCount} extension{errorCount !== 1 ? 's' : ''} failed to load
-                    </div>
-                  )}
-                </div>
+            <div
+              className={`flex items-start gap-3 pr-8 ${showDetails ? 'cursor-pointer hover:opacity-90 transition-opacity' : ''}`}
+            >
+              <div className="flex-1 min-w-0">
+                <strong className="font-medium">{getSummaryText()}</strong>
+                {errorCount > 0 && (
+                  <div className="text-sm opacity-90">Failed: {failedNames.join(', ')}</div>
+                )}
               </div>
             </div>
           </CollapsibleTrigger>
@@ -144,8 +138,8 @@ export function GroupedExtensionLoadingToast({
             </div>
           </CollapsibleContent>
 
-          {/* Toggle button */}
-          {totalCount > 0 && (
+          {/* Toggle button — only when there are failures to inspect */}
+          {showDetails && (
             <CollapsibleTrigger asChild>
               <button
                 className="flex items-center justify-center gap-1 text-xs opacity-60 hover:opacity-100 transition-opacity mt-2 py-1.5 w-full"
