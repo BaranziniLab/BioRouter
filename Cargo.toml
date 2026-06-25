@@ -30,3 +30,33 @@ crunchy = "0.2.4"
 env-lock = "1.0.1"
 wiremock = "0.6"
 serial_test = "3.2.0"
+# Tuned jemalloc for the long-running binaries (biorouterd / CLI). Default-on
+# via each binary's `jemalloc` feature; returns freed pages to the OS promptly.
+tikv-jemallocator = "0.6"
+tikv-jemalloc-ctl = "0.6"
+
+# --- Build profiles -------------------------------------------------------
+# The default release build (used by `cargo build --release`, the Justfile, and
+# the whole `scripts/release.sh` pipeline) strips the symbol table from shipped
+# binaries. Debug info is already off, so this is a pure ~13% size win with no
+# runtime change and no pipeline/path changes.
+[profile.release]
+strip = true
+
+# Max-optimized distribution profile: thin LTO + 16 codegen units on top of the
+# stripped release. Smallest + fastest binary; slower to compile, so it is opt-in
+# (`cargo build --profile release-dist`). `just release-binary` uses it.
+[profile.release-dist]
+inherits = "release"
+opt-level = 3
+lto = "thin"
+codegen-units = 16
+
+# Fast-compile profile for iterating on optimized builds: opt-level 1, maximum
+# codegen-units, incremental on. Opt in via `cargo build --profile quick`.
+# (Everyday dev still uses the debug `cargo build` / `cargo check`.)
+[profile.quick]
+inherits = "release"
+opt-level = 1
+codegen-units = 256
+incremental = true

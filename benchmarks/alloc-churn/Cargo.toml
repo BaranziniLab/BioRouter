@@ -1,0 +1,28 @@
+# Standalone allocator A/B microbench (its own workspace, own target dir, NOT a
+# member of the BioRouter workspace). Mimics BioRouter's per-turn transcript
+# reload + double-clone to show how much memory each allocator returns to the OS.
+#
+#   cargo build --release                        # system allocator
+#   cargo build --release --features jemalloc    # tuned jemalloc (as shipped)
+[workspace]
+
+[package]
+name = "alloc-churn"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+memory-stats = "1.2"
+tikv-jemallocator = { version = "0.6", optional = true }
+tikv-jemalloc-ctl = { version = "0.6", optional = true }
+
+[features]
+jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
+
+[[bin]]
+name = "alloc-churn"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3

@@ -61,6 +61,21 @@ just make-ui-windows    # Package for Windows (requires Docker)
 just generate-openapi   # Regenerate OpenAPI spec from server routes
 ```
 
+**Cargo build profiles** (defined in the root `Cargo.toml`):
+- `release` — the default for `cargo build --release`, the Justfile, and the whole
+  `scripts/release.sh` pipeline. Now sets `strip = true`, which removes the symbol
+  table from shipped binaries (~13% smaller: biorouterd 124→108 MB, biorouter
+  138→120 MB) with no runtime change. Debug info was already off. Every shipped
+  artifact benefits automatically — no pipeline change needed.
+- `release-dist` — `cargo build --profile release-dist`. Inherits `release` (so
+  stripped) and adds thin LTO + 16 codegen-units for the smallest/fastest binary.
+  Slower to compile, so it is opt-in. Intended as the final distribution profile;
+  wiring `just release-binary`/`scripts/release.sh` to it is a safe follow-up once
+  the macOS notarized packaging path has had a smoke test.
+- `quick` — `cargo build --profile quick`. opt-level 1 + max codegen-units +
+  incremental, for fast iteration on optimized builds. Everyday dev still uses the
+  debug `cargo build` / `cargo check`.
+
 ### Releasing (cross-platform)
 
 **Automated path (preferred): `scripts/release.sh` and the `release` workflow.**
