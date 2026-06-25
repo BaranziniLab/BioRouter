@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { snakeToTitleCase } from '../utils';
 import PermissionModal from './settings/permission/PermissionModal';
-import { ChevronRight } from './icons/app-icons';
+import { ChevronRight, Lock, Check, X, AlertTriangle } from './icons/app-icons';
 import { confirmToolAction, ActionRequired } from '../api';
 import { Button } from './ui/button';
 
@@ -124,99 +124,81 @@ export default function ToolConfirmation({
     return parts.length > 1 ? parts[0] : '';
   }
 
+  // One cohesive, bordered "permission request" card. A single border wraps the
+  // whole element (header + actions) so there are no mismatched borders, it uses
+  // the app's standard card tokens + typography, and a soft shadow plus a gentle
+  // slide-in make it read as a distinct prompt the user is meant to act on.
   return isCancelledMessage ? (
-    <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 text-text-default">
-      Tool call confirmation is cancelled.
+    <div className="biorouter-message-content rounded-2xl border border-border-subtle bg-background-muted px-4 py-3 text-sm text-text-muted">
+      Tool call confirmation was cancelled.
     </div>
   ) : (
     <>
-      {/* Display security message if present */}
-      {prompt && (
-        <div className="biorouter-message-content bg-background-warning/10 border border-border-warning/40 rounded-2xl px-4 py-2 mb-2 text-text-warning">
-          {prompt}
-        </div>
-      )}
-
-      <div className="biorouter-message-content bg-background-muted rounded-2xl px-4 py-2 rounded-b-none text-text-default">
-        {prompt
-          ? 'Do you allow this tool call?'
-          : 'BioRouter would like to call the above tool. Allow?'}
-      </div>
-      {clicked ? (
-        <div className="biorouter-message-tool bg-background-default border border-border-subtle rounded-b-2xl px-4 pt-2 pb-2 flex items-center justify-between">
-          <div className="flex items-center">
-            {(status === 'allow_once' || status === 'always_allow') && (
-              <svg
-                className="w-5 h-5 text-text-muted"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2}
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            )}
-            {status === 'deny' && (
-              <svg
-                className="w-5 h-5 text-text-muted"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2}
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            )}
-            {status === 'confirmed' && (
-              <svg
-                className="w-5 h-5 text-text-muted"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2}
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-              </svg>
-            )}
-            <span className="ml-2 text-text-default">
-              {isClicked
-                ? 'Tool confirmation is not available'
-                : `${snakeToTitleCase(toolName.substring(toolName.lastIndexOf('__') + 2))} is ${actionDisplay}`}
-            </span>
+      <div className="biorouter-message-content overflow-hidden rounded-2xl border border-border-subtle bg-background-default shadow-sm animate-in fade-in slide-in-from-bottom-1 duration-200">
+        {/* Security finding banner, only when the backend flagged one */}
+        {prompt && (
+          <div className="flex items-start gap-2 border-b border-border-subtle bg-background-warning/10 px-4 py-2.5 text-sm text-text-warning">
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>{prompt}</span>
           </div>
+        )}
 
-          <div className="flex items-center cursor-pointer" onClick={() => setIsModalOpen(true)}>
-            <span className="mr-1 text-text-default">Change</span>
-            <ChevronRight className="w-4 h-4 ml-1 text-iconStandard" />
-          </div>
-        </div>
-      ) : (
-        <div className="biorouter-message-tool bg-background-default border border-border-subtle rounded-b-2xl px-4 pt-2 pb-2 flex gap-2 items-center">
-          <Button
-            className="rounded-md"
-            variant="secondary"
-            onClick={() => handleButtonClick(ALLOW_ONCE)}
-          >
-            Allow Once
-          </Button>
-          {/* Only show "Always Allow" if there's no security message (no security finding) */}
-          {!prompt && (
-            <Button
-              className="rounded-md"
-              variant="secondary"
-              onClick={() => handleButtonClick(ALWAYS_ALLOW)}
+        {clicked ? (
+          // Resolved state — one consistent row inside the same card.
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-2 text-sm text-text-default">
+              {status === 'deny' ? (
+                <X className="h-4 w-4 shrink-0 text-text-muted" />
+              ) : (
+                <Check className="h-4 w-4 shrink-0 text-text-muted" />
+              )}
+              <span>
+                {isClicked
+                  ? 'Tool confirmation is not available'
+                  : `${snakeToTitleCase(toolName.substring(toolName.lastIndexOf('__') + 2))} is ${actionDisplay}`}
+              </span>
+            </div>
+            <button
+              type="button"
+              className="flex items-center gap-1 text-sm text-text-muted transition-colors hover:text-text-default"
+              onClick={() => setIsModalOpen(true)}
             >
-              Always Allow
-            </Button>
-          )}
-          <Button className="rounded-md" variant="outline" onClick={() => handleButtonClick(DENY)}>
-            Deny
-          </Button>
-        </div>
-      )}
+              Change
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        ) : (
+          // Pending state — the agent is asking the user for permission.
+          <div className="px-4 py-3">
+            <div className="mb-3 flex items-center gap-2">
+              <Lock className="h-4 w-4 shrink-0 text-text-muted" />
+              <span className="text-sm font-medium text-text-default">
+                {prompt
+                  ? 'Do you allow this tool call?'
+                  : 'BioRouter wants to run this tool. Allow?'}
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" variant="default" onClick={() => handleButtonClick(ALLOW_ONCE)}>
+                Allow Once
+              </Button>
+              {/* Only offer "Always Allow" when there's no security finding. */}
+              {!prompt && (
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => handleButtonClick(ALWAYS_ALLOW)}
+                >
+                  Always Allow
+                </Button>
+              )}
+              <Button size="sm" variant="outline" onClick={() => handleButtonClick(DENY)}>
+                Deny
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
 
       {/* Modal for updating tool permission */}
       {isModalOpen && (
