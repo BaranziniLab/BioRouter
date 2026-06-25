@@ -223,6 +223,31 @@ run-ui-playwright:
     echo "Using isolated directory: $RUN_DIR"
     cd ui/desktop && ENABLE_PLAYWRIGHT=true BIOROUTER_PATH_ROOT="$RUN_DIR" npm run start-gui
 
+# Launch the dev GUI for agent-browser (vercel-labs) CDP debugging.
+# Exposes Chrome DevTools Protocol on a DEDICATED port (default 9333, NOT the
+# Playwright default 9222) so it never collides with a regular Google Chrome
+# the user may already have listening on 9222. Config is sandboxed under an
+# isolated BIOROUTER_PATH_ROOT so the dev app can't clobber ~/.config/biorouter.
+#
+# In another terminal, drive it with:
+#   agent-browser connect 9333      # once per session
+#   agent-browser snapshot -i       # list interactive elements (@e1, @e2, ...)
+#   agent-browser click @e5
+#   agent-browser screenshot ui.png
+#   agent-browser console --json    # renderer console + errors
+# See docs/guides/agent-browser-debugging.md. Override the port with PORT=...
+agent-browser-ui PORT="9333":
+    #!/usr/bin/env sh
+    echo "Building debug binary..."
+    cargo build
+    just copy-binary debug
+    echo "Running dev GUI with agent-browser CDP on port {{PORT}}..."
+    RUN_DIR="$HOME/biorouter-runs/$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$RUN_DIR"
+    echo "Using isolated config dir: $RUN_DIR"
+    echo "Connect with:  agent-browser connect {{PORT}}"
+    cd ui/desktop && ENABLE_PLAYWRIGHT=true PLAYWRIGHT_CDP_PORT={{PORT}} BIOROUTER_PATH_ROOT="$RUN_DIR" npm run start-gui
+
 # Run debug build + Electron with CDP on port 9222 (for Playwright MCP debugging via .mcp.json)
 dev-ui-playwright:
     @echo "Building debug binary..."
