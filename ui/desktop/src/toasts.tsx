@@ -84,7 +84,16 @@ class ToastService {
 
     const toastId = 'extension-loading';
 
-    // Check if toast already exists
+    // Drive react-toastify's own icon + theme (same as toastSuccess/toastError,
+    // i.e. the model-change toast) so this toast looks consistent: a spinner
+    // while loading, a green check when all loaded, the error theme on failure.
+    const hasErrors = extensions.some((ext) => ext.status === 'error');
+    const type: 'success' | 'error' | 'default' = !isComplete
+      ? 'default'
+      : hasErrors
+        ? 'error'
+        : 'success';
+
     if (toast.isActive(toastId)) {
       // Update existing toast
       toast.update(toastId, {
@@ -95,6 +104,8 @@ class ToastService {
             isComplete={isComplete}
           />
         ),
+        isLoading: !isComplete,
+        type,
         autoClose: isComplete ? 5000 : false,
         closeButton: true,
         closeOnClick: false,
@@ -110,6 +121,8 @@ class ToastService {
         {
           ...commonToastOptions,
           toastId,
+          isLoading: !isComplete,
+          type,
           autoClose: isComplete ? 5000 : false,
           closeButton: true,
           closeOnClick: false, // Prevent closing when clicking to expand/collapse
