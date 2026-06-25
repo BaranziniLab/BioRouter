@@ -12,6 +12,9 @@ workspace = true
 
 [dependencies]
 rmcp = { workspace = true, features = ["server", "client", "transport-io", "macros"] }
+biorouter-sandbox = { path = "../biorouter-sandbox" }
+aes-gcm = "0.10"
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite"] }
 anyhow = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { version = "0.1", features = ["io-util"] }

@@ -18,6 +18,7 @@ mod recurring;
 mod reply_parts;
 pub mod retry;
 mod schedule_tool;
+pub mod structured_output;
 pub(crate) mod skills_extension;
 pub mod subagent_execution_tool;
 pub mod subagent_handler;
@@ -26,8 +27,10 @@ pub mod subagent_tool;
 pub(crate) mod todo_extension;
 mod tool_execution;
 pub mod types;
+pub mod vault_refs;
 
 pub use agent::{Agent, AgentConfig, AgentEvent, ExtensionLoadResult};
+pub use vault_refs::VaultRefs;
 pub use execute_commands::COMPACT_TRIGGERS;
 pub use extension::ExtensionConfig;
 pub use extension_manager::{normalize, ExtensionManager};
