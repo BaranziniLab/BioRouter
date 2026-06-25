@@ -3562,7 +3562,16 @@ async function appMain() {
   // it, so the embedded agent actually responds inside the window.
   ipcMain.handle(
     'open-artifact-window',
-    async (_event, payload: { html: string; title?: string; width?: number; height?: number }) => {
+    async (
+      _event,
+      payload: {
+        html: string;
+        title?: string;
+        width?: number;
+        height?: number;
+        theme?: 'light' | 'dark';
+      }
+    ) => {
       try {
         let html = payload.html;
         const isAgentic = html.includes('"transport":"bridge"');
@@ -3574,12 +3583,14 @@ async function appMain() {
             .replace('"endpoint":null', `"endpoint":${JSON.stringify(endpoint)}`);
         }
 
+        const isDark = payload.theme === 'dark';
         const win = new BrowserWindow({
           title: payload.title || 'BioRouter Artifact',
           width: Math.min(Math.max(payload.width || 1000, 480), 1600),
           height: Math.min(Math.max(payload.height || 760, 360), 1200),
           resizable: true,
-          backgroundColor: '#ffffff',
+          // Match the figure's own background so there is no flash before scripts run.
+          backgroundColor: isDark ? '#1c1f26' : '#ffffff',
           webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
@@ -3595,8 +3606,25 @@ async function appMain() {
           }
           return { action: 'deny' };
         });
-        const dataUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(html);
-        await win.loadURL(dataUrl);
+
+        // Self-contained artifact HTML can be several megabytes — Auto Visualiser
+        // figures inline D3/Chart.js/Leaflet/Mermaid (a Mermaid diagram is ~3.3 MB,
+        // ~4.6 MB once percent-encoded). A `data:` URL would exceed Chromium's ~2 MB
+        // URL ceiling and silently abort the navigation (net::ERR_ABORTED), leaving a
+        // blank window with only the static markup. Write the HTML to a temp file and
+        // load it instead: no length limit, and a stable file:// origin so the figure's
+        // inline scripts run exactly as they do in the in-chat iframe. The `theme`
+        // query mirrors what the in-chat renderer passes so light/dark match.
+        const artifactDir = path.join(os.tmpdir(), 'biorouter-artifacts');
+        await fs.mkdir(artifactDir, { recursive: true });
+        const artifactFile = path.join(artifactDir, `artifact-${crypto.randomUUID()}.html`);
+        await fs.writeFile(artifactFile, html, 'utf-8');
+        // Remove the temp file once the window is gone (keeps it available across reloads).
+        win.on('closed', () => {
+          fs.unlink(artifactFile).catch(() => {});
+        });
+
+        await win.loadFile(artifactFile, { query: { theme: isDark ? 'dark' : 'light' } });
         return { ok: true };
       } catch (error) {
         console.error('Error opening artifact window:', error);

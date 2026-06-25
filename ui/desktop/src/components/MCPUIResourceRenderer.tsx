@@ -362,6 +362,7 @@ export default function MCPUIResourceRenderer({
         title: artifactTitle,
         width: prefW || 1100,
         height: prefH || 820,
+        theme: resolvedTheme,
       });
     } catch {
       toast.error('Could not open the artifact window.');
