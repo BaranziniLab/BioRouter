@@ -420,6 +420,15 @@ impl SessionManager {
             return Ok(());
         }
 
+        // Whether the session is still on a placeholder title. A session that
+        // already has a real, content-derived name should stop regenerating it
+        // after the first few turns (no churn); a session still showing the
+        // "New Session" placeholder must keep getting a chance to be named on
+        // every turn, no matter how long it grows — otherwise an early naming
+        // miss (e.g. an interrupted or errored first turn) leaves it stuck on
+        // "New Session" forever once it crosses the message-count threshold.
+        let still_default = is_default_session_name(&session.name);
+
         let conversation = session
             .conversation
             .ok_or_else(|| anyhow::anyhow!("No messages found"))?;
@@ -436,8 +445,9 @@ impl SessionManager {
         }
 
         // After the first few exchanges the name has settled; stop regenerating
-        // it so later turns don't churn the title.
-        if user_message_count > MSG_COUNT_FOR_SESSION_NAME_GENERATION {
+        // it so later turns don't churn the title — but only once it actually
+        // has a real name. While still on the placeholder, keep trying.
+        if user_message_count > MSG_COUNT_FOR_SESSION_NAME_GENERATION && !still_default {
             return Ok(());
         }
 

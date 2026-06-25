@@ -1295,9 +1295,6 @@ impl Agent {
 
         let provider = self.provider().await?;
         let session_manager = self.config.session_manager.clone();
-        let session_id_for_rename = session_config.id.clone();
-        let session_manager_for_rename = session_manager.clone();
-        let provider_for_rename = provider.clone();
 
         let working_dir = session.working_dir.clone();
         Ok(Box::pin(async_stream::try_stream! {
@@ -1977,22 +1974,42 @@ impl Agent {
                 tokio::task::yield_now().await;
             }
 
-            // Run LLM-driven session rename AFTER the reply stream has produced
-            // at least one assistant turn. Doing this at reply() entry (the
-            // previous behavior) saw only `[user_msg]` for tool-heavy first
-            // turns, since assistant text hadn't been emitted yet — so
-            // generate_session_name had nothing to work with and the window
-            // title stayed "New Session". Deferring guarantees the
-            // conversation contains the assistant response.
-            tokio::spawn(async move {
-                if let Err(e) = session_manager_for_rename
-                    .maybe_update_name(&session_id_for_rename, provider_for_rename)
-                    .await
-                {
-                    warn!("Failed to generate session description: {}", e);
-                }
-            });
+            // NOTE: LLM-driven session rename is intentionally NOT triggered here.
+            // This code sits after the last `yield` of a lazy `async_stream`, so it
+            // only runs if the consumer drains the stream all the way to `None`.
+            // The SSE consumer can `break` early (e.g. on client disconnect /
+            // cancellation) before that final poll, in which case the stream future
+            // is dropped and this tail never executes — leaving the session stuck on
+            // "New Session". The rename is now driven by the consumer instead, via
+            // `maybe_rename_session`, which is guaranteed to run after the reply loop
+            // ends regardless of how it ended. See routes/reply.rs and routes/apps.rs.
         }))
+    }
+
+    /// Best-effort LLM session rename, safe to call after a reply loop ends.
+    ///
+    /// Consumers of `reply()` call this once the stream loop exits (normal end,
+    /// error, or cancellation). Unlike a tail appended to the lazy reply stream,
+    /// this always runs, so a session with a real exchange is never left as the
+    /// "New Session" placeholder. `maybe_update_name` is itself idempotent and
+    /// guarded (it skips user-named sessions and stops after the first few
+    /// exchanges), so calling it once per reply is cheap and correct.
+    pub async fn maybe_rename_session(&self, session_id: &str) {
+        let provider = match self.provider().await {
+            Ok(provider) => provider,
+            Err(e) => {
+                warn!("Skipping session rename, no provider available: {}", e);
+                return;
+            }
+        };
+        if let Err(e) = self
+            .config
+            .session_manager
+            .maybe_update_name(session_id, provider)
+            .await
+        {
+            warn!("Failed to generate session description: {}", e);
+        }
     }
 
     pub async fn extend_system_prompt(&self, instruction: String) {

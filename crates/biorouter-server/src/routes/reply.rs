@@ -405,6 +405,20 @@ pub async fn reply(
             }
         }
 
+        // The reply loop has ended (normal completion, error, or cancellation).
+        // Trigger the best-effort LLM session rename here — this always runs,
+        // unlike a tail on the lazy reply stream which the early `break` above
+        // can skip, leaving the session stuck on "New Session".
+        {
+            let agent_for_rename = agent.clone();
+            let session_id_for_rename = session_id.clone();
+            tokio::spawn(async move {
+                agent_for_rename
+                    .maybe_rename_session(&session_id_for_rename)
+                    .await;
+            });
+        }
+
         let session_duration = session_start.elapsed();
 
         if let Ok(session) = state.session_manager().get_session(&session_id, true).await {

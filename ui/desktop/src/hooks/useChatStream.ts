@@ -395,7 +395,13 @@ export function useChatStream({
           (m) => m.role === 'user'
         ).length;
         if (userMessageCount <= 3) {
-          const pollDelays = [800, 1200, 2000, 3000];
+          // The backend names the session in a fire-and-forget task that makes
+          // its own LLM call AFTER the reply finishes. With a slower (e.g.
+          // reasoning) model that call can take well over 10s, so a short poll
+          // window would give up before the name lands and the title would sit
+          // on "New Session" until the next reload. Poll out to ~35s; the loop
+          // exits early as soon as a non-default name appears.
+          const pollDelays = [800, 1200, 2000, 3000, 4000, 6000, 8000, 10000];
           void (async () => {
             for (const delay of pollDelays) {
               await new Promise((r) => setTimeout(r, delay));
