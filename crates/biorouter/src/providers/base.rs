@@ -783,8 +783,12 @@ mod tests {
         use crate::providers::anthropic::AnthropicProvider;
         use crate::providers::google::GoogleProvider;
         use crate::providers::openai::OpenAiProvider;
-        use crate::providers::xiaomi_mimo::XiaomiMimoProvider;
 
+        // Note: Xiaomi MiMo is intentionally NOT covered here — its catalog has no
+        // vision-capable model. Only "omni" MiMo models accept image input; the
+        // text models (mimo-v2.5 / -pro, mimo-v2-pro) return 404 for images
+        // (live-verified — see xiaomi_mimo.rs `model_supports_vision`), so none of
+        // the known_models declare supports_vision: true.
         let cases: Vec<(ProviderMetadata, &str, &str)> = vec![
             (
                 AnthropicProvider::metadata(),
@@ -796,11 +800,6 @@ mod tests {
                 GoogleProvider::metadata(),
                 "gemini-2.5-pro",
                 "Google Gemini 2.5 Pro",
-            ),
-            (
-                XiaomiMimoProvider::metadata(),
-                "mimo-v2.5-pro",
-                "Xiaomi MiMo v2.5 Pro",
             ),
         ];
 
