@@ -605,23 +605,24 @@ pub async fn detect_provider(
 ) -> Json<DetectProviderResponse> {
     let api_key = detect_request.api_key.trim();
 
+    // The detection engine probes candidate /models endpoints using a task-local
+    // config override (never mutating the process env) and returns either the
+    // validated provider or a classified failure reason.
     match detect_provider_from_api_key(api_key).await {
-        Some((provider_name, models)) => {
-            let default_model = models.first().cloned();
-            Json(DetectProviderResponse {
-                provider_name: Some(provider_name),
-                models,
-                default_model,
-                extra_config: HashMap::new(),
-                reason: None,
-            })
-        }
-        None => Json(DetectProviderResponse {
+        Ok(detected) => Json(DetectProviderResponse {
+            provider_name: Some(detected.provider),
+            models: detected.models,
+            default_model: detected.default_model,
+            extra_config: detected.extra_config,
+            reason: None,
+        }),
+        Err(err) => Json(DetectProviderResponse {
             provider_name: None,
             models: Vec::new(),
             default_model: None,
             extra_config: HashMap::new(),
-            reason: Some("no_match".to_string()),
+            // "timeout" | "network" | "invalid_key" | "no_match"
+            reason: Some(err.code().to_string()),
         }),
     }
 }
