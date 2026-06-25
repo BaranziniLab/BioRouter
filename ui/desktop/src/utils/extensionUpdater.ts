@@ -17,6 +17,7 @@ import { spawnSync } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { compareVersions } from 'compare-versions';
 import AdmZip from 'adm-zip';
+import { safeExtractZip } from './safeZip';
 import log from './logger';
 import { SPAWN_ENV } from './dependencyChecker';
 
@@ -223,9 +224,9 @@ async function applyUpdate(info: ExtensionUpdateInfo, send: (e: ExtensionUpdateE
     });
     send({ type: 'update-progress', ext: info.name, percent: 100 });
 
-    // Extract into install dir (overwrite)
+    // Extract into install dir (zip-slip guarded: rejects entries escaping installDir)
     const zip = new AdmZip(tmpBrxt);
-    zip.extractAllTo(info.installDir, /* overwrite */ true);
+    safeExtractZip(zip, info.installDir);
 
     // Re-run uv sync to apply any dependency changes
     const uvResult = spawnSync('uv', ['sync'], {
