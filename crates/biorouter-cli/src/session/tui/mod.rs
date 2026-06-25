@@ -819,11 +819,11 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     // Line 2: skills · extensions · knowledge bases, with the context meter
     // right-aligned.
     let mut line2 = vec![
-        Span::styled(format!("{} skills", s.skills), dim),
+        Span::styled(pluralize(s.skills, "skill"), dim),
         sep(),
-        Span::styled(format!("{} extensions", s.extensions), dim),
+        Span::styled(pluralize(s.extensions, "extension"), dim),
         sep(),
-        Span::styled(format!("{} knowledge bases", s.knowledge_bases), dim),
+        Span::styled(pluralize(s.knowledge_bases, "knowledge base"), dim),
     ];
     let right = context_spans(app);
     let pad = (area.width as usize).saturating_sub(line_width(&line2) + line_width(&right) + 1);
@@ -1159,6 +1159,42 @@ fn count_skills() -> usize {
     list_skills().len()
 }
 
+/// The six foundational built-ins surfaced as their own "Capabilities" section
+/// in the GUI and intentionally excluded from the extension list/count there
+/// (see ui/desktop/.../capabilities/capabilities.ts). The CLI status line was
+/// counting them as extensions, so it showed e.g. 11 where the GUI shows 5.
+/// Keys are normalized like the GUI's `nameToKey` (whitespace removed, lowercased).
+const CAPABILITY_KEYS: [&str; 6] = [
+    "developer",
+    "extensionmanager",
+    "skills",
+    "todo",
+    "memory",
+    "knowledge",
+];
+
+fn name_to_key(name: &str) -> String {
+    name.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase()
+}
+
+/// Enabled extensions, excluding the foundational capabilities — matches the
+/// count the GUI shows.
+fn count_non_capability_extensions() -> usize {
+    biorouter::config::get_enabled_extensions()
+        .iter()
+        .filter(|ext| !CAPABILITY_KEYS.contains(&name_to_key(&ext.name()).as_str()))
+        .count()
+}
+
+/// Pluralize a noun for a count: "1 skill", "0 skills", "2 skills".
+fn pluralize(count: usize, singular: &str) -> String {
+    if count == 1 {
+        format!("{count} {singular}")
+    } else {
+        format!("{count} {singular}s")
+    }
+}
+
 /// Build the completion catalog shown in the slash-command popup: the TUI slash
 /// commands, plus references to skills, extensions, knowledge bases, and
 /// extension prompts. Selecting a reference inserts a templated natural-language
@@ -1359,7 +1395,7 @@ fn status_from_session(_session: &CliSession) -> StatusInfo {
             .map(|p| shorten_home(&p))
             .unwrap_or_default(),
         skills: count_skills(),
-        extensions: biorouter::config::get_enabled_extensions().len(),
+        extensions: count_non_capability_extensions(),
         knowledge_bases: databases,
         used_tokens: 0,
         context_limit: 0,
