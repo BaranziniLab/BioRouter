@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="assets/gsap.min.js"></script>
+    <link rel="stylesheet" href="assets/theme.css" />
+    <link rel="stylesheet" href="assets/app-mockups.css" />
+    <style>
+      .scene { position: absolute; inset: 0; opacity: 0; }
+
+      /* full-bleed brand scenes (title / outro) */
+      .brand { display: flex; flex-direction: column; justify-content: center; align-items: center; text-align: center; padding: 120px 150px; }
+      .brand .eyebrow { font-size: 22px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); margin-bottom: 14px; }
+      .brand .title { font-size: 84px; font-weight: 700; letter-spacing: -1.5px; color: var(--text); line-height: 1.08; }
+      .brand .lede { font-size: 34px; font-weight: 400; color: var(--text-2); margin-top: 20px; max-width: 1150px; line-height: 1.35; }
+      .brand .cta-u { font-size: 28px; color: var(--accent); font-weight: 700; margin-top: 30px; }
+
+      /* app-screen chapter scenes */
+      .appscene { display: flex; flex-direction: column; padding: 64px 110px 96px; }
+      .cap { text-align: center; margin-bottom: 24px; }
+      .cap .ey { font-size: 21px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); }
+      .cap .tt { font-size: 44px; font-weight: 700; letter-spacing: -0.5px; color: var(--text); margin-top: 8px; }
+      .stage { flex: 1; min-height: 0; display: grid; place-items: center; }
+      .stage .frame { display: block; }
+
+      .blob { position: absolute; border-radius: 50%; filter: blur(60px); opacity: 0.5; pointer-events: none; }
+      .blob.a { width: 620px; height: 620px; background: var(--accent-soft2); top: -180px; right: -120px; }
+      .blob.b { width: 520px; height: 520px; background: rgba(5,32,73,0.06); bottom: -200px; left: -120px; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="48" data-width="1920" data-height="1080">
+      <div class="blob a"></div>
+      <div class="blob b"></div>
+
+      <!-- TITLE -->
+      <section id="s-title" class="scene brand">
+        <span class="eyebrow">A guided tour</span>
+        <div class="title">See BioRouter end&#8209;to&#8209;end</div>
+        <div class="lede">Home · Chat · Dashboard · Knowledge · Workflows · Models — the real app, in two minutes.</div>
+      </section>
+
+      <!-- CHAPTERS (real app mockups) -->
+      <section id="c-home" class="scene appscene">
+        <div class="cap"><div class="ey">01 · Home</div><div class="tt">One place to start every investigation</div></div>
+        <div class="stage"><div class="frame"><div data-screen="home"></div></div></div>
+      </section>
+
+      <section id="c-chat" class="scene appscene">
+        <div class="cap"><div class="ey">02 · Chat</div><div class="tt">Chat that calls real tools</div></div>
+        <div class="stage"><div class="frame"><div data-screen="chat"></div></div></div>
+      </section>
+
+      <section id="c-dash" class="scene appscene">
+        <div class="cap"><div class="ey">03 · Dashboard mode</div><div class="tt">Run many agents at once</div></div>
+        <div class="stage"><div class="frame"><div data-screen="dashboard"></div></div></div>
+      </section>
+
+      <section id="c-know" class="scene appscene">
+        <div class="cap"><div class="ey">04 · Knowledge</div><div class="tt">Knowledge that builds its own graph</div></div>
+        <div class="stage"><div class="frame"><div data-screen="knowledge"></div></div></div>
+      </section>
+
+      <section id="c-work" class="scene appscene">
+        <div class="cap"><div class="ey">05 · Workflows</div><div class="tt">Package a task once, run it anywhere</div></div>
+        <div class="stage"><div class="frame"><div data-screen="workflows"></div></div></div>
+      </section>
+
+      <section id="c-models" class="scene appscene">
+        <div class="cap"><div class="ey">06 · Models</div><div class="tt">Local, institutional &amp; commercial — one router</div></div>
+        <div class="stage"><div class="frame"><div data-screen="models"></div></div></div>
+      </section>
+
+      <!-- OUTRO -->
+      <section id="s-out" class="scene brand">
+        <span class="eyebrow">That's BioRouter</span>
+        <div class="title">One environment.<br/>Every step of discovery.</div>
+        <div class="cta-u">Download free · biorouter.ucsf.edu</div>
+      </section>
+
+      <!-- HUD -->
+      <div id="hud" style="position:absolute; left:150px; right:150px; bottom:46px; display:flex; align-items:center; gap:20px;">
+        <div style="font-size:24px; font-weight:700; letter-spacing:-0.5px; color:var(--text); display:flex; align-items:center; gap:12px;">
+          <img src="assets/icon.svg" alt="" style="width:26px;height:26px;border-radius:7px;" />BioRouter <span style="color:var(--text-3);font-weight:600;">· Product tour</span>
+        </div>
+        <div style="flex:1;height:4px;background:var(--border-2);border-radius:4px;overflow:hidden;"><div id="pfill" style="height:100%;width:100%;background:var(--accent);border-radius:4px;transform:scaleX(0);transform-origin:left center;"></div></div>
+      </div>
+    </div>
+
+    <script src="assets/app-mockups.js"></script>
+    <script>
+      window.__timelines = window.__timelines || {};
+
+      // Scale every mounted app mockup to fit the chapter stage box (fits both
+      // width and height so tall screens like Chat don't overflow the frame).
+      function fitMock() {
+        var boxW = 1560, boxH = 780;
+        document.querySelectorAll('.appscene [data-screen]').forEach(function (m) {
+          var bw = m.querySelector('.bw'); if (!bw) return;
+          var natW = 1180, natH = bw.offsetHeight || 760;
+          var s = Math.min(boxW / natW, boxH / natH);
+          bw.style.transform = 'scale(' + s + ')';
+          m.style.width = (natW * s) + 'px';
+          m.style.height = (natH * s) + 'px';
+        });
+      }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fitMock);
+      else fitMock();
+      window.addEventListener('load', fitMock);
+
+      var tl = gsap.timeline({ paused: true });
+      tl.from("#hud", { opacity: 0, duration: 0.6 }, 0.3);
+      tl.to("#pfill", { scaleX: 1, ease: "none", duration: 47 }, 0.5);
+
+      function fade(sel, start, dur) {
+        tl.fromTo(sel, { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power2.out" }, start);
+        tl.to(sel, { opacity: 0, duration: 0.45, ease: "power2.in" }, start + dur - 0.45);
+      }
+      // chapter scene = caption rises, window eases up
+      function chapter(sel, start, dur) {
+        fade(sel, start, dur);
+        tl.from(sel + " .cap", { opacity: 0, y: 24, duration: 0.55, ease: "power3.out" }, start + 0.15);
+        tl.from(sel + " .stage", { opacity: 0, y: 34, scale: 0.985, duration: 0.6, ease: "power3.out" }, start + 0.25);
+      }
+
+      // TITLE (0 - 3)
+      fade("#s-title", 0, 3);
+      tl.from("#s-title .eyebrow", { opacity: 0, y: 20, duration: 0.5 }, 0.2);
+      tl.from("#s-title .title", { opacity: 0, y: 28, duration: 0.6 }, 0.45);
+      tl.from("#s-title .lede", { opacity: 0, y: 20, duration: 0.6 }, 0.85);
+
+      // 6 chapters, 7s each (page chapter chips seek to 3,10,17,24,31,38)
+      chapter("#c-home", 3, 7);
+      chapter("#c-chat", 10, 7);
+      chapter("#c-dash", 17, 7);
+      chapter("#c-know", 24, 7);
+      chapter("#c-work", 31, 7);
+      chapter("#c-models", 38, 8);
+
+      // OUTRO (46 - 48)
+      fade("#s-out", 46, 2);
+      tl.from("#s-out .eyebrow", { opacity: 0, y: 18, duration: 0.5 }, 46.2);
+      tl.from("#s-out .title", { opacity: 0, y: 26, scale: 0.96, duration: 0.6 }, 46.5);
+      tl.from("#s-out .cta-u", { opacity: 0, duration: 0.5 }, 47.0);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

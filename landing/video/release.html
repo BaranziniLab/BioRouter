@@ -1,0 +1,197 @@
+<!doctype html>
+<html
+  lang="en"
+  data-resolution="landscape"
+  data-composition-variables='[
+    {"id":"version","type":"string","label":"Version","default":"1.86.0"},
+    {"id":"date","type":"string","label":"Release date","default":"June 2026"},
+    {"id":"headline","type":"string","label":"Headline","default":"Capabilities by default, sharper vision & a faster TUI"},
+    {"id":"feat1","type":"string","label":"Feature 1","default":"Capabilities default-enable on upgrade — and stay out of the chat dropdown"},
+    {"id":"feat2","type":"string","label":"Feature 2","default":"MiMo vision fix — images render consistently again"},
+    {"id":"feat3","type":"string","label":"Feature 3","default":"CLI TUI: smooth scroll, collapsible tools & a queued-message pane"},
+    {"id":"feat4","type":"string","label":"Feature 4","default":"Removed the spammy completion-gate / todo-nudge loop"},
+    {"id":"feat5","type":"string","label":"Feature 5","default":""},
+    {"id":"feat6","type":"string","label":"Feature 6","default":""},
+    {"id":"feat7","type":"string","label":"Feature 7","default":""},
+    {"id":"feat8","type":"string","label":"Feature 8","default":""},
+    {"id":"featsTitleA","type":"string","label":"Features title A","default":"What changed"},
+    {"id":"featsTitleB","type":"string","label":"Features title B","default":"And more"}
+  ]'
+>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="assets/gsap.min.js"></script>
+    <link rel="stylesheet" href="assets/theme.css" />
+    <style>
+      .scene { position: absolute; inset: 0; padding: 120px 160px; display: flex; flex-direction: column; justify-content: center; opacity: 0; }
+
+      /* cover */
+      #s-cover { align-items: flex-start; }
+      .badge-new { font-size: 24px; font-weight: 700; letter-spacing: 3px; text-transform: uppercase; color: #fff; background: var(--accent); padding: 10px 20px; border-radius: 999px; }
+      .ver { font-size: 132px; font-weight: 700; letter-spacing: -3px; margin-top: 30px; }
+      .ver .v { color: var(--accent); }
+      .date { font-size: 36px; color: var(--ink-2); margin-top: 8px; }
+      .head { font-size: 44px; color: var(--ink); margin-top: 28px; max-width: 1300px; line-height: 1.25; font-weight: 600; }
+
+      /* features */
+      #s-feats { justify-content: center; }
+      .feat-eye { margin-bottom: 40px; }
+      .feat-eye .eyebrow { display: block; }
+      .feat-eye .title { margin-top: 12px; font-size: 56px; }
+      .flist { display: flex; flex-direction: column; gap: 22px; max-width: 1500px; }
+      .frow { display: flex; align-items: center; gap: 26px; background: var(--bg-2); border: 1px solid var(--border); border-radius: var(--radius-xl); box-shadow: var(--shadow-lg); padding: 26px 30px; }
+      .frow .ic { width: 54px; height: 54px; border-radius: 14px; background: var(--accent-soft); color: var(--accent); display: grid; place-items: center; font-size: 28px; font-weight: 700; flex-shrink: 0; }
+      .frow .tx { font-size: 30px; color: var(--ink); line-height: 1.3; font-weight: 600; }
+
+      /* cta */
+      #s-cta { align-items: center; text-align: center; }
+      .cta-t { font-size: 70px; font-weight: 700; letter-spacing: -1.5px; }
+      .cta-s { font-size: 34px; color: var(--ink-2); margin-top: 18px; }
+      .cta-btn { font-size: 30px; font-weight: 700; padding: 20px 40px; border-radius: 12px; background: var(--accent); color: #fff; box-shadow: var(--shadow-lg); margin-top: 38px; display: inline-block; }
+      .cta-u { font-size: 28px; color: var(--ink-3); font-weight: 600; margin-top: 26px; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="21" data-width="1920" data-height="1080">
+      <div class="blob a"></div>
+      <div class="blob b"></div>
+
+      <!-- COVER -->
+      <section id="s-cover" class="scene">
+        <span class="badge-new" id="c-badge">What's new</span>
+        <div class="ver" id="c-ver">BioRouter <span class="v" id="c-vnum">v1.86.0</span></div>
+        <div class="date" id="c-date">June 2026</div>
+        <div class="head" id="c-head">Capabilities by default, sharper vision &amp; a faster TUI</div>
+      </section>
+
+      <!-- FEATURES A -->
+      <section id="s-feats" class="scene">
+        <div class="feat-eye">
+          <span class="eyebrow" id="f-eye">Highlights · v1.86.0</span>
+          <div class="title" id="f-titleA">What changed</div>
+        </div>
+        <div class="flist">
+          <div class="frow" id="fr1"><span class="ic">✦</span><span class="tx" id="ft1"></span></div>
+          <div class="frow" id="fr2"><span class="ic">✦</span><span class="tx" id="ft2"></span></div>
+          <div class="frow" id="fr3"><span class="ic">✦</span><span class="tx" id="ft3"></span></div>
+          <div class="frow" id="fr4"><span class="ic">✦</span><span class="tx" id="ft4"></span></div>
+        </div>
+      </section>
+
+      <!-- FEATURES B -->
+      <section id="s-feats2" class="scene">
+        <div class="feat-eye">
+          <span class="eyebrow" id="f-eye2">Highlights · v1.86.0</span>
+          <div class="title" id="f-titleB">And more</div>
+        </div>
+        <div class="flist">
+          <div class="frow" id="fr5"><span class="ic">✦</span><span class="tx" id="ft5"></span></div>
+          <div class="frow" id="fr6"><span class="ic">✦</span><span class="tx" id="ft6"></span></div>
+          <div class="frow" id="fr7"><span class="ic">✦</span><span class="tx" id="ft7"></span></div>
+          <div class="frow" id="fr8"><span class="ic">✦</span><span class="tx" id="ft8"></span></div>
+        </div>
+      </section>
+
+      <!-- CTA -->
+      <section id="s-cta" class="scene">
+        <div class="cta-t">Update in one click</div>
+        <div class="cta-s">Restart &amp; Update on macOS, or download the latest build.</div>
+        <span class="cta-btn" id="cta-btn">Get BioRouter v1.86.0</span>
+        <div class="cta-u">biorouter.ucsf.edu/download</div>
+      </section>
+
+      <!-- HUD -->
+      <div id="hud">
+        <div id="wm"><span class="swatch"></span>BioRouter <span class="mut" id="wm-ver">· v1.86.0</span></div>
+        <div id="ptrack"><div id="pfill"></div></div>
+      </div>
+    </div>
+
+    <script>
+      window.__timelines = window.__timelines || {};
+
+      // ---- read variables (fall back to the DOM defaults if not injected) ----
+      var V = {};
+      try { V = (window.__hyperframes && window.__hyperframes.getVariables) ? window.__hyperframes.getVariables() : {}; } catch (e) { V = {}; }
+      function set(id, val) { if (val) { document.getElementById(id).textContent = val; } }
+      set("c-vnum", V.version ? ("v" + V.version) : null);
+      set("c-date", V.date);
+      set("c-head", V.headline);
+      var eyeTxt = V.version ? ("Highlights · v" + V.version) : null;
+      set("f-eye", eyeTxt);
+      set("f-eye2", eyeTxt);
+      set("f-titleA", V.featsTitleA);
+      set("f-titleB", V.featsTitleB);
+      set("wm-ver", V.version ? ("· v" + V.version) : null);
+      if (V.version) document.getElementById("cta-btn").textContent = "Get BioRouter v" + V.version;
+
+      // feature rows — populate; hide empty rows at init (layout decision, not animated)
+      var feats = [V.feat1, V.feat2, V.feat3, V.feat4, V.feat5, V.feat6, V.feat7, V.feat8];
+      var defaults = [
+        "Capabilities default-enable on upgrade — and stay out of the chat dropdown",
+        "MiMo vision fix — images render consistently again",
+        "CLI TUI: smooth scroll, collapsible tools & a queued-message pane",
+        "Removed the spammy completion-gate / todo-nudge loop",
+        "", "", "", ""
+      ];
+      var shownA = [], shownB = [];
+      for (var i = 0; i < 8; i++) {
+        var txt = feats[i] != null && feats[i] !== "" ? feats[i] : defaults[i];
+        var row = document.getElementById("fr" + (i + 1));
+        if (txt && txt.trim()) {
+          document.getElementById("ft" + (i + 1)).textContent = txt;
+          (i < 4 ? shownA : shownB).push("#fr" + (i + 1));
+        } else {
+          row.style.display = "none";
+        }
+      }
+      var hasB = shownB.length > 0;
+      if (!hasB) document.getElementById("s-feats2").style.display = "none";
+
+      // ---- timeline (scene starts computed so a 4-feature release skips scene B) ----
+      var COVER = 4, FDUR = 6.5, CTA = 3.5;
+      var fAStart = COVER;
+      var fBStart = fAStart + FDUR;
+      var ctaStart = (hasB ? fBStart + FDUR : fAStart + FDUR);
+      var total = ctaStart + CTA;
+
+      var tl = gsap.timeline({ paused: true });
+      tl.from("#hud", { opacity: 0, duration: 0.6 }, 0.3);
+      tl.to("#pfill", { scaleX: 1, ease: "none", duration: total - 1 }, 0.5);
+
+      function scene(sel, start, dur) {
+        tl.fromTo(sel, { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power2.out" }, start);
+        tl.to(sel, { opacity: 0, duration: 0.45, ease: "power2.in" }, start + dur - 0.45);
+      }
+
+      // COVER
+      scene("#s-cover", 0, COVER);
+      tl.from("#c-badge", { opacity: 0, y: 20, duration: 0.5 }, 0.2);
+      tl.from("#c-ver", { opacity: 0, y: 30, duration: 0.7, ease: "power3.out" }, 0.45);
+      tl.from("#c-date", { opacity: 0, y: 18, duration: 0.5 }, 0.9);
+      tl.from("#c-head", { opacity: 0, y: 22, duration: 0.6 }, 1.2);
+
+      // FEATURES A
+      scene("#s-feats", fAStart, FDUR);
+      tl.from("#s-feats .feat-eye", { opacity: 0, y: 24, duration: 0.55 }, fAStart + 0.2);
+      tl.from(shownA, { opacity: 0, x: -40, duration: 0.5, stagger: 0.42, ease: "power3.out" }, fAStart + 0.6);
+
+      // FEATURES B
+      if (hasB) {
+        scene("#s-feats2", fBStart, FDUR);
+        tl.from("#s-feats2 .feat-eye", { opacity: 0, y: 24, duration: 0.55 }, fBStart + 0.2);
+        tl.from(shownB, { opacity: 0, x: -40, duration: 0.5, stagger: 0.42, ease: "power3.out" }, fBStart + 0.6);
+      }
+
+      // CTA
+      scene("#s-cta", ctaStart, CTA);
+      tl.from("#s-cta .cta-t", { opacity: 0, y: 28, scale: 0.95, duration: 0.6 }, ctaStart + 0.2);
+      tl.from("#s-cta .cta-s", { opacity: 0, y: 20, duration: 0.5 }, ctaStart + 0.6);
+      tl.from("#cta-btn", { opacity: 0, y: 20, scale: 0.9, duration: 0.5, ease: "back.out(1.5)" }, ctaStart + 1.0);
+      tl.from("#s-cta .cta-u", { opacity: 0, duration: 0.5 }, ctaStart + 1.4);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

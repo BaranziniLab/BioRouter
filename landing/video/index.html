@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en" data-resolution="landscape">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=1920, height=1080" />
+    <script src="assets/gsap.min.js"></script>
+    <link rel="stylesheet" href="assets/theme.css" />
+    <link rel="stylesheet" href="assets/app-mockups.css" />
+    <style>
+      .scene { position: absolute; inset: 0; opacity: 0; }
+
+      /* brand (full-bleed) scenes */
+      .brand { display: flex; flex-direction: column; justify-content: center; padding: 120px 150px; }
+      .brand.center { align-items: center; text-align: center; }
+      .eyebrow { font-size: 22px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); }
+      .title { font-size: 64px; font-weight: 700; line-height: 1.08; letter-spacing: -1px; color: var(--text); }
+
+      /* app-screen scenes */
+      .appscene { display: flex; flex-direction: column; padding: 60px 110px 96px; }
+      .cap { text-align: center; margin-bottom: 22px; }
+      .cap .ey { font-size: 21px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: var(--accent); }
+      .cap .tt { font-size: 44px; font-weight: 700; letter-spacing: -0.5px; color: var(--text); margin-top: 8px; }
+      .stage { flex: 1; min-height: 0; display: grid; place-items: center; }
+      .stage .frame { display: block; }
+
+      .blob { position: absolute; border-radius: 50%; filter: blur(60px); opacity: 0.5; pointer-events: none; }
+      .blob.a { width: 620px; height: 620px; background: var(--accent-soft2); top: -180px; right: -120px; }
+      .blob.b { width: 520px; height: 520px; background: rgba(5,32,73,0.06); bottom: -200px; left: -120px; }
+
+      /* intro */
+      #s-intro .intro-eye { font-size: 22px; font-weight: 700; letter-spacing: 3px; text-transform: uppercase; color: var(--accent); margin-bottom: 34px; }
+      .logo { display: flex; align-items: center; gap: 26px; }
+      .logo .mark { width: 108px; height: 108px; border-radius: 24px; box-shadow: var(--shadow-lg); display: block; }
+      .logo .word { font-size: 92px; font-weight: 700; letter-spacing: -2px; color: var(--text); }
+      .intro-sub { font-size: 38px; color: var(--text-2); margin-top: 30px; max-width: 1200px; line-height: 1.3; }
+
+      /* formula */
+      #s-flow .eyebrow { display: block; }
+      #s-flow .title { margin-top: 12px; }
+      .formula { display: flex; align-items: center; justify-content: center; gap: 22px; flex-wrap: wrap; margin-top: 40px; }
+      .f-chip { font-size: 34px; font-weight: 700; padding: 20px 30px; border-radius: 16px; background: var(--bg-2); border: 1px solid var(--border); box-shadow: var(--shadow-lg); color: var(--text); }
+      .f-op { font-size: 40px; font-weight: 700; color: var(--text-3); }
+      .f-result { font-size: 34px; font-weight: 700; padding: 20px 34px; border-radius: 16px; background: var(--accent); color: #fff; box-shadow: var(--shadow-lg); }
+
+      /* cta */
+      .cta-title { font-size: 84px; font-weight: 700; letter-spacing: -1.5px; color: var(--text); }
+      .cta-sub { font-size: 36px; color: var(--text-2); margin-top: 22px; }
+      .cta-btns { display: flex; gap: 20px; margin-top: 44px; }
+      .cta-btn { font-size: 30px; font-weight: 700; padding: 20px 38px; border-radius: 12px; }
+      .cta-btn.primary { background: var(--accent); color: #fff; box-shadow: var(--shadow-lg); }
+      .cta-btn.ghost { background: var(--bg-2); color: var(--text); border: 1px solid var(--border-2); }
+      .cta-url { font-size: 28px; color: var(--text-3); margin-top: 30px; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <div id="root" data-composition-id="main" data-start="0" data-duration="32" data-width="1920" data-height="1080">
+      <div class="blob a"></div>
+      <div class="blob b"></div>
+
+      <!-- INTRO -->
+      <section id="s-intro" class="scene brand center">
+        <div class="intro-eye">UCSF · Baranzini Lab</div>
+        <div class="logo">
+          <img class="mark" src="assets/icon.svg" alt="BioRouter" />
+          <div class="word">BioRouter</div>
+        </div>
+        <div class="intro-sub">One AI research environment for biomedical discovery.</div>
+      </section>
+
+      <!-- CHAT (real mockup) -->
+      <section id="s-chat" class="scene appscene">
+        <div class="cap"><div class="ey">Reason over your data</div><div class="tt">Chat that calls real tools</div></div>
+        <div class="stage"><div class="frame"><div data-screen="chat"></div></div></div>
+      </section>
+
+      <!-- MODELS (real mockup) -->
+      <section id="s-models" class="scene appscene">
+        <div class="cap"><div class="ey">Route every prompt</div><div class="tt">Local, institutional &amp; commercial models</div></div>
+        <div class="stage"><div class="frame"><div data-screen="models"></div></div></div>
+      </section>
+
+      <!-- KNOWLEDGE (real mockup) -->
+      <section id="s-know" class="scene appscene">
+        <div class="cap"><div class="ey">Personal, LLM-maintained</div><div class="tt">Knowledge that builds its own graph</div></div>
+        <div class="stage"><div class="frame"><div data-screen="knowledge"></div></div></div>
+      </section>
+
+      <!-- DASHBOARD (real mockup) -->
+      <section id="s-dash" class="scene appscene">
+        <div class="cap"><div class="ey">Dashboard mode</div><div class="tt">Run many agents at once</div></div>
+        <div class="stage"><div class="frame"><div data-screen="dashboard"></div></div></div>
+      </section>
+
+      <!-- WORKFLOWS / FORMULA (brand) -->
+      <section id="s-flow" class="scene brand center">
+        <span class="eyebrow">Portable &amp; federated · BAAM marketplace</span>
+        <div class="title">Package it once. Share it everywhere.</div>
+        <div class="formula">
+          <span class="f-chip" id="fc1">Extensions</span><span class="f-op" id="fo1">+</span>
+          <span class="f-chip" id="fc2">Skills</span><span class="f-op" id="fo2">+</span>
+          <span class="f-chip" id="fc3">Knowledge</span><span class="f-op" id="fo3">+</span>
+          <span class="f-chip" id="fc4">Model</span><span class="f-op" id="feq">=</span>
+          <span class="f-result" id="fres">Workflow</span>
+        </div>
+      </section>
+
+      <!-- CTA -->
+      <section id="s-cta" class="scene brand center">
+        <div class="cta-title">BioRouter</div>
+        <div class="cta-sub">The integrated research environment for biomedical discovery.</div>
+        <div class="cta-btns">
+          <span class="cta-btn primary">Download free</span>
+          <span class="cta-btn ghost">Explore BAAM</span>
+        </div>
+        <div class="cta-url">biorouter.ucsf.edu</div>
+      </section>
+
+      <!-- HUD -->
+      <div id="hud" style="position:absolute; left:150px; right:150px; bottom:46px; display:flex; align-items:center; gap:20px;">
+        <div style="font-size:24px; font-weight:700; letter-spacing:-0.5px; color:var(--text); display:flex; align-items:center; gap:12px;">
+          <img src="assets/icon.svg" alt="" style="width:26px;height:26px;border-radius:7px;" />BioRouter <span style="color:var(--text-3);font-weight:600;">· UCSF</span>
+        </div>
+        <div style="flex:1;height:4px;background:var(--border-2);border-radius:4px;overflow:hidden;"><div id="pfill" style="height:100%;width:100%;background:var(--accent);border-radius:4px;transform:scaleX(0);transform-origin:left center;"></div></div>
+      </div>
+    </div>
+
+    <script src="assets/app-mockups.js"></script>
+    <script>
+      window.__timelines = window.__timelines || {};
+
+      function fitMock() {
+        var boxW = 1560, boxH = 768;
+        document.querySelectorAll('.appscene [data-screen]').forEach(function (m) {
+          var bw = m.querySelector('.bw'); if (!bw) return;
+          var natW = 1180, natH = bw.offsetHeight || 760;
+          var s = Math.min(boxW / natW, boxH / natH);
+          bw.style.transform = 'scale(' + s + ')';
+          m.style.width = (natW * s) + 'px';
+          m.style.height = (natH * s) + 'px';
+        });
+      }
+      if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fitMock);
+      else fitMock();
+      window.addEventListener('load', fitMock);
+
+      var tl = gsap.timeline({ paused: true });
+      tl.from("#hud", { opacity: 0, duration: 0.6 }, 0.3);
+      tl.to("#pfill", { scaleX: 1, ease: "none", duration: 31 }, 0.5);
+
+      function fade(sel, start, dur) {
+        tl.fromTo(sel, { opacity: 0 }, { opacity: 1, duration: 0.5, ease: "power2.out" }, start);
+        tl.to(sel, { opacity: 0, duration: 0.45, ease: "power2.in" }, start + dur - 0.45);
+      }
+      function appScene(sel, start, dur) {
+        fade(sel, start, dur);
+        tl.from(sel + " .cap", { opacity: 0, y: 22, duration: 0.5, ease: "power3.out" }, start + 0.12);
+        tl.from(sel + " .stage", { opacity: 0, y: 30, scale: 0.985, duration: 0.55, ease: "power3.out" }, start + 0.2);
+      }
+
+      // INTRO (0 - 4.5)
+      fade("#s-intro", 0, 4.5);
+      tl.from("#s-intro .intro-eye", { opacity: 0, y: 24, duration: 0.6 }, 0.2);
+      tl.from("#s-intro .mark", { opacity: 0, scale: 0.6, rotation: -12, duration: 0.7, ease: "back.out(1.6)" }, 0.45);
+      tl.from("#s-intro .word", { opacity: 0, x: -36, duration: 0.7, ease: "power3.out" }, 0.7);
+      tl.from("#s-intro .intro-sub", { opacity: 0, y: 26, duration: 0.7 }, 1.1);
+
+      // APP SCENES
+      appScene("#s-chat", 4.5, 5);
+      appScene("#s-models", 9.5, 4.5);
+      appScene("#s-know", 14, 4.5);
+      appScene("#s-dash", 18.5, 4.5);
+
+      // FORMULA (23 - 28)
+      fade("#s-flow", 23, 5);
+      tl.from("#s-flow .eyebrow", { opacity: 0, y: 22, duration: 0.5 }, 23.3);
+      tl.from("#s-flow .title", { opacity: 0, y: 28, duration: 0.6 }, 23.6);
+      tl.from(["#fc1", "#fo1", "#fc2", "#fo2", "#fc3", "#fo3", "#fc4"], { opacity: 0, y: 24, scale: 0.9, duration: 0.45, stagger: 0.12, ease: "back.out(1.5)" }, 24.2);
+      tl.from("#feq", { opacity: 0, duration: 0.3 }, 25.5);
+      tl.from("#fres", { opacity: 0, scale: 0.6, duration: 0.55, ease: "back.out(1.8)" }, 25.8);
+      tl.to("#fres", { scale: 1.06, duration: 0.5, yoyo: true, repeat: 1, ease: "power2.inOut" }, 26.4);
+
+      // CTA (28 - 32)
+      fade("#s-cta", 28, 4);
+      tl.from("#s-cta .cta-title", { opacity: 0, y: 30, scale: 0.94, duration: 0.7, ease: "power3.out" }, 28.2);
+      tl.from("#s-cta .cta-sub", { opacity: 0, y: 22, duration: 0.6 }, 28.6);
+      tl.from([".cta-btn.primary", ".cta-btn.ghost"], { opacity: 0, y: 20, duration: 0.5, stagger: 0.14 }, 29.0);
+      tl.from("#s-cta .cta-url", { opacity: 0, duration: 0.6 }, 29.6);
+
+      window.__timelines["main"] = tl;
+    </script>
+  </body>
+</html>

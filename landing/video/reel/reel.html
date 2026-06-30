@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=1920, initial-scale=1.0" />
+  <title>Biorouter Feature Reel</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="../../shared.css" />
+  <link rel="stylesheet" href="../../app-mockups.css" />
+  <style>
+    /* ─── Page / stage ──────────────────────────────────────────── */
+    html, body {
+      background: #efe9dd;          /* slightly deeper than --bg so the stage reads as a panel */
+      width: 100%; min-height: 100vh;
+      overflow: hidden;
+    }
+    body {
+      display: flex; align-items: center; justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+    }
+
+    #stage {
+      position: relative;
+      width: 1920px; height: 1080px;
+      flex: 0 0 auto;
+      overflow: hidden;
+      background: var(--bg);
+      /* soft radial wash for a touch of depth, still light + UCSF-clean */
+      background-image:
+        radial-gradient(1200px 700px at 78% -8%, rgba(5,32,73,0.05), transparent 60%),
+        radial-gradient(1100px 800px at 8% 108%, rgba(207,109,71,0.045), transparent 60%);
+    }
+
+    /* ─── Slides ────────────────────────────────────────────────── */
+    .slide {
+      position: absolute; inset: 0;
+      width: 1920px; height: 1080px;
+      display: none;
+      padding: 96px 128px;
+      box-sizing: border-box;
+    }
+    .slide.is-active { display: block; }
+
+    /* Entrance animation, retriggered each goto via the .anim class. */
+    @keyframes reelIn {
+      from { opacity: 0; transform: translateY(18px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .slide.is-active.anim .reel-anim {
+      animation: reelIn 0.6s cubic-bezier(0.16,1,0.3,1) both;
+    }
+    .slide.is-active.anim .reel-anim.d1 { animation-delay: 0.05s; }
+    .slide.is-active.anim .reel-anim.d2 { animation-delay: 0.12s; }
+    .slide.is-active.anim .reel-anim.d3 { animation-delay: 0.19s; }
+    .slide.is-active.anim .reel-anim.d4 { animation-delay: 0.26s; }
+    .slide.is-active.anim .reel-anim.d5 { animation-delay: 0.34s; }
+
+    /* ─── Shared text bits (echo .tour-eyebrow / .tour-tags) ─────── */
+    .reel-eyebrow {
+      display: inline-block;
+      font-size: 17px; font-weight: 700; letter-spacing: 2.6px;
+      text-transform: uppercase; color: var(--ucsf);
+      margin-bottom: 20px;
+    }
+    .reel-h {
+      font-size: 64px; font-weight: 700;
+      letter-spacing: -1.6px; line-height: 1.07;
+      color: var(--text);
+      margin-bottom: 22px;
+    }
+    .reel-p {
+      font-size: 26px; color: var(--text-2);
+      line-height: 1.55; font-weight: 400;
+    }
+    .reel-tags { display: flex; flex-wrap: wrap; gap: 12px; }
+    .reel-tag {
+      padding: 9px 18px; border-radius: var(--radius);
+      background: var(--bg-3); color: var(--text-2);
+      font-size: 18px; font-weight: 600; letter-spacing: 0.2px;
+    }
+    .reel-tag.ucsf { background: rgba(5,32,73,0.08); color: var(--ucsf); }
+
+    /* ─── Feature slide: text column + big mockup ───────────────── */
+    .feat {
+      display: grid;
+      grid-template-columns: 620px 1fr;
+      gap: 72px;
+      height: 100%;
+      align-items: center;
+    }
+    .feat-text { max-width: 600px; }
+    .feat-text .reel-tags { margin-top: 34px; }
+
+    /* The mockup column. We give the [data-screen] mount an explicit pixel
+       width; app-mockups.js scales the 1180px .bw down to that width and
+       sets the mount height to match (so it never clips). The wrapper just
+       centers it vertically inside the 888px-tall content area. */
+    .feat-media {
+      display: flex; align-items: center; justify-content: center;
+      height: 100%;
+    }
+    .feat-screen { width: 100%; max-width: 1040px; }
+
+    /* Variant: screen-forward (centered, even larger) for graph-heavy slides */
+    .feat.wide { grid-template-columns: 540px 1fr; gap: 60px; }
+    .feat.wide .feat-screen { max-width: 1180px; }
+
+    /* ─── Intro ─────────────────────────────────────────────────── */
+    .intro {
+      height: 100%;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center;
+    }
+    .intro-logo {
+      width: 168px; height: 168px; border-radius: 38px;
+      box-shadow: var(--shadow-lg);
+      margin-bottom: 48px;
+    }
+    .intro-badge {
+      display: inline-flex; align-items: center; gap: 9px;
+      padding: 9px 20px; border-radius: var(--radius);
+      background: var(--accent-soft); color: var(--accent);
+      font-size: 19px; font-weight: 700; letter-spacing: 0.6px;
+      margin-bottom: 36px;
+    }
+    .intro-badge .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); }
+    .intro h1 {
+      font-size: 132px; font-weight: 700; letter-spacing: -4px;
+      line-height: 1; color: var(--text); margin-bottom: 28px;
+    }
+    .intro-sub {
+      font-size: 34px; color: var(--text-2);
+      font-weight: 400; letter-spacing: -0.3px;
+    }
+
+    /* ─── Stat slide (performance) ──────────────────────────────── */
+    .stat-slide {
+      height: 100%;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center;
+    }
+    .stat-slide .reel-h { font-size: 78px; margin-bottom: 18px; }
+    .stat-slide .reel-p { max-width: 1000px; font-size: 28px; margin-bottom: 64px; }
+    .stat-grid { display: flex; gap: 40px; justify-content: center; margin-bottom: 56px; }
+    .stat-card {
+      background: var(--bg-2);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow-lg);
+      padding: 48px 56px;
+      min-width: 380px;
+      border-top: 4px solid var(--accent);
+    }
+    .stat-card .num {
+      font-size: 72px; font-weight: 700; letter-spacing: -2px;
+      color: var(--ucsf); line-height: 1; margin-bottom: 16px;
+    }
+    .stat-card .num .unit { font-size: 40px; color: var(--text-2); font-weight: 600; }
+    .stat-card .cap {
+      font-size: 22px; color: var(--text-2); font-weight: 600;
+    }
+    .stat-slide .reel-tags { justify-content: center; }
+
+    /* ─── Outro ─────────────────────────────────────────────────── */
+    .outro {
+      height: 100%;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center;
+    }
+    .outro-logo {
+      width: 132px; height: 132px; border-radius: 30px;
+      box-shadow: var(--shadow-lg);
+      margin-bottom: 44px;
+    }
+    .outro h1 {
+      font-size: 104px; font-weight: 700; letter-spacing: -3px;
+      line-height: 1.02; color: var(--text); margin-bottom: 34px;
+    }
+    .outro .url {
+      font-size: 52px; font-weight: 700; color: var(--ucsf);
+      letter-spacing: -0.5px; margin-bottom: 34px;
+    }
+    .outro .platforms {
+      display: inline-flex; align-items: center; gap: 16px;
+      font-size: 28px; font-weight: 600; color: var(--text-2);
+    }
+    .outro .platforms .sep { color: var(--text-3); font-weight: 400; }
+    .outro-cta {
+      display: inline-block; margin-top: 14px;
+      padding: 18px 44px; border-radius: var(--radius);
+      background: var(--accent); color: #fff;
+      font-size: 26px; font-weight: 700;
+    }
+  </style>
+</head>
+<body>
+  <div id="stage">
+
+    <!-- 1 ▸ INTRO -->
+    <section class="slide" data-slide>
+      <div class="intro">
+        <img class="intro-logo reel-anim d1" src="icon.svg" alt="Biorouter" />
+        <div class="intro-badge reel-anim d2"><span class="dot"></span>v1.86.1</div>
+        <h1 class="reel-anim d3">Biorouter</h1>
+        <div class="intro-sub reel-anim d4">Everything new since v1.80.0</div>
+      </div>
+    </section>
+
+    <!-- 2 ▸ Knowledge -->
+    <section class="slide" data-slide>
+      <div class="feat">
+        <div class="feat-text">
+          <span class="reel-eyebrow reel-anim d1">Knowledge</span>
+          <h2 class="reel-h reel-anim d2">Knowledge bases that maintain themselves</h2>
+          <p class="reel-p reel-anim d3">Personal, agent-curated knowledge bases backed by markdown + git. The agent ingests papers, notes, and URLs, then keeps them organized and linked.</p>
+          <div class="reel-tags reel-anim d4">
+            <span class="reel-tag">Auto-ingest</span>
+            <span class="reel-tag">Git history</span>
+            <span class="reel-tag">Credibility scoring</span>
+          </div>
+        </div>
+        <div class="feat-media reel-anim d3">
+          <div class="feat-screen"><div data-screen="knowledge"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3 ▸ Knowledge graph -->
+    <section class="slide" data-slide>
+      <div class="feat wide">
+        <div class="feat-text">
+          <span class="reel-eyebrow reel-anim d1">Knowledge graph</span>
+          <h2 class="reel-h reel-anim d2">See how your knowledge connects</h2>
+          <p class="reel-p reel-anim d3">An interactive force-graph derived from the cross-links the agent writes between pages, so you can explore concepts and their relationships.</p>
+          <div class="reel-tags reel-anim d4">
+            <span class="reel-tag">Force graph</span>
+            <span class="reel-tag">[[wiki-links]]</span>
+            <span class="reel-tag">BM25 search</span>
+          </div>
+        </div>
+        <div class="feat-media reel-anim d3">
+          <div class="feat-screen"><div data-screen="knowledge"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 4 ▸ Local models -->
+    <section class="slide" data-slide>
+      <div class="feat">
+        <div class="feat-text">
+          <span class="reel-eyebrow reel-anim d1">Local models</span>
+          <h2 class="reel-h reel-anim d2">Zero-setup local models</h2>
+          <p class="reel-p reel-anim d3">A bundled llama.cpp server runs open models on your machine, with no API key and no cloud. Plus 40+ commercial and institutional providers.</p>
+          <div class="reel-tags reel-anim d4">
+            <span class="reel-tag">Llama Server</span>
+            <span class="reel-tag">Offline</span>
+            <span class="reel-tag ucsf">40+ providers</span>
+          </div>
+        </div>
+        <div class="feat-media reel-anim d3">
+          <div class="feat-screen"><div data-screen="models"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 5 ▸ Agent Drafter -->
+    <section class="slide" data-slide>
+      <div class="feat">
+        <div class="feat-text">
+          <span class="reel-eyebrow reel-anim d1">Agent Drafter</span>
+          <h2 class="reel-h reel-anim d2">Draft custom agents from a conversation</h2>
+          <p class="reel-p reel-anim d3">Describe what you need and Agent Drafter builds a ready-to-run agent or mini-app, with no boilerplate.</p>
+          <div class="reel-tags reel-anim d4">
+            <span class="reel-tag">Agent Drafter</span>
+            <span class="reel-tag">App SDK</span>
+            <span class="reel-tag">Reusable</span>
+          </div>
+        </div>
+        <div class="feat-media reel-anim d3">
+          <div class="feat-screen"><div data-screen="chat"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 6 ▸ Auto Visualiser -->
+    <section class="slide" data-slide>
+      <div class="feat">
+        <div class="feat-text">
+          <span class="reel-eyebrow reel-anim d1">Auto Visualiser</span>
+          <h2 class="reel-h reel-anim d2">Publication-ready figures, automatically</h2>
+          <p class="reel-p reel-anim d3">33 interactive figure types, from volcano plots and Kaplan-Meier curves to networks and heatmaps, all rendered inline from your data.</p>
+          <div class="reel-tags reel-anim d4">
+            <span class="reel-tag ucsf">33 chart types</span>
+            <span class="reel-tag">Interactive</span>
+            <span class="reel-tag">Self-contained</span>
+          </div>
+        </div>
+        <div class="feat-media reel-anim d3">
+          <div class="feat-screen"><div data-screen="chat"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 7 ▸ App SDK & safety -->
+    <section class="slide" data-slide>
+      <div class="feat">
+        <div class="feat-text">
+          <span class="reel-eyebrow reel-anim d1">App SDK &amp; safety</span>
+          <h2 class="reel-h reel-anim d2">An App SDK with guardrails built in</h2>
+          <p class="reel-p reel-anim d3">Build apps on the agent with capabilities, an encrypted vault, human-in-the-loop approvals, and agents-as-tools.</p>
+          <div class="reel-tags reel-anim d4">
+            <span class="reel-tag">Capabilities</span>
+            <span class="reel-tag">HITL approvals</span>
+            <span class="reel-tag">Encrypted vault</span>
+          </div>
+        </div>
+        <div class="feat-media reel-anim d3">
+          <div class="feat-screen"><div data-screen="extensions"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 8 ▸ CLI -->
+    <section class="slide" data-slide>
+      <div class="feat">
+        <div class="feat-text">
+          <span class="reel-eyebrow reel-anim d1">Command line</span>
+          <h2 class="reel-h reel-anim d2">A first-class command-line interface</h2>
+          <p class="reel-p reel-anim d3">The full agent in your terminal, with an interactive TUI, lifecycle hooks, goals, recurring automations, and <code>biorouter doctor</code>.</p>
+          <div class="reel-tags reel-anim d4">
+            <span class="reel-tag">Interactive TUI</span>
+            <span class="reel-tag">Hooks</span>
+            <span class="reel-tag">Goals</span>
+          </div>
+        </div>
+        <div class="feat-media reel-anim d3">
+          <div class="feat-screen"><div data-screen="dashboard"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 9 ▸ Performance (stat slide, no screen) -->
+    <section class="slide" data-slide>
+      <div class="stat-slide">
+        <span class="reel-eyebrow reel-anim d1">Performance</span>
+        <h2 class="reel-h reel-anim d2">Leaner and faster</h2>
+        <p class="reel-p reel-anim d3">Memory-efficient agent loop, jemalloc allocator, and smaller stripped binaries. Same features, lighter footprint.</p>
+        <div class="stat-grid reel-anim d4">
+          <div class="stat-card">
+            <div class="num">~13<span class="unit">%</span></div>
+            <div class="cap">Smaller binaries</div>
+          </div>
+          <div class="stat-card">
+            <div class="num">Lower</div>
+            <div class="cap">Memory footprint</div>
+          </div>
+          <div class="stat-card">
+            <div class="num">Faster</div>
+            <div class="cap">Startup time</div>
+          </div>
+        </div>
+        <div class="reel-tags reel-anim d5">
+          <span class="reel-tag">jemalloc</span>
+          <span class="reel-tag">Stripped binaries</span>
+          <span class="reel-tag">Soft interrupt</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- 10 ▸ Automations -->
+    <section class="slide" data-slide>
+      <div class="feat">
+        <div class="feat-text">
+          <span class="reel-eyebrow reel-anim d1">Automations</span>
+          <h2 class="reel-h reel-anim d2">Schedule and automate your research</h2>
+          <p class="reel-p reel-anim d3">Cron-style recurring agent jobs and workflows that run on their own and report back.</p>
+          <div class="reel-tags reel-anim d4">
+            <span class="reel-tag">Scheduler</span>
+            <span class="reel-tag">Workflows</span>
+            <span class="reel-tag">Recurring</span>
+          </div>
+        </div>
+        <div class="feat-media reel-anim d3">
+          <div class="feat-screen"><div data-screen="scheduler"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 11 ▸ OUTRO -->
+    <section class="slide" data-slide>
+      <div class="outro">
+        <img class="outro-logo reel-anim d1" src="icon.svg" alt="Biorouter" />
+        <h1 class="reel-anim d2">Get Biorouter free</h1>
+        <div class="url reel-anim d3">biorouter.ucsf.edu</div>
+        <div class="platforms reel-anim d4">
+          <span>macOS</span><span class="sep">·</span><span>Windows</span><span class="sep">·</span><span>Linux</span>
+        </div>
+        <div class="outro-cta reel-anim d5">Download now</div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- App-screen mockup builder (mounts every [data-screen] on DOMContentLoaded) -->
+  <script src="../../app-mockups.js"></script>
+
+  <!-- ─── Deterministic capture API ─────────────────────────────── -->
+  <script>
+    (function () {
+      var slides = Array.prototype.slice.call(document.querySelectorAll('[data-slide]'));
+      window.__slideCount = slides.length;
+
+      function raf2() {
+        return new Promise(function (resolve) {
+          requestAnimationFrame(function () {
+            requestAnimationFrame(resolve);
+          });
+        });
+      }
+
+      function show(i) {
+        slides.forEach(function (s, idx) {
+          var on = idx === i;
+          s.classList.toggle('is-active', on);
+          // restart entrance animation cleanly each time the slide is shown
+          s.classList.remove('anim');
+        });
+      }
+
+      window.__goto = function (i) {
+        i = Math.max(0, Math.min(window.__slideCount - 1, i | 0));
+        show(i);
+        var slide = slides[i];
+        // Re-fit any app-screen mockups now that the slide is visible
+        // (the fitter needs a non-zero clientWidth, which hidden slides lack).
+        return (document.fonts && document.fonts.ready
+                  ? document.fonts.ready
+                  : Promise.resolve())
+          .then(function () {
+            window.dispatchEvent(new Event('resize'));
+            return raf2();
+          })
+          .then(function () {
+            // trigger entrance animation after layout has settled
+            // (kept off the critical path so __goto resolves promptly)
+            requestAnimationFrame(function () { slide.classList.add('anim'); });
+            // one more resize+rAF so the scaled mockup height is final
+            window.dispatchEvent(new Event('resize'));
+            return raf2();
+          });
+      };
+
+      // Default to slide 0 on load.
+      window.__goto(0);
+    })();
+  </script>
+</body>
+</html>

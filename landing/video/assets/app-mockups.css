@@ -1,0 +1,439 @@
+/* ───────────────────────────────────────────────────────────────
+   UCSF BioRouter — Hand-coded app UI mockups
+   Faithful, vector recreations of the BioRouter desktop app screens,
+   used in place of low-resolution screenshots on the landing page.
+   Text is sized for on-screen reading (≈ the website's own body
+   size), and everything is real DOM so it zooms without blurring.
+   Mirrors ui/desktop/src/styles/main.css design tokens.
+   ─────────────────────────────────────────────────────────────── */
+
+/* ─── Uniform scaler ─────────────────────────────────────────────
+   Each mockup is laid out once at a fixed design width (--bw-design-w)
+   and then scaled as a single unit to fill its column (app-mockups.js
+   sets the transform + the mount's height). Because the layout never
+   reflows, no button, key, or panel can fall out of place and nothing
+   is ever truncated — at any window width or browser zoom the whole
+   app screen scales together and stays razor-sharp (vector DOM). */
+/* No overflow:hidden here — it would clip the window's drop shadow (shadows
+   don't affect layout or scrolling, so letting them spill is safe and is what
+   separates the window from the same-colored page). */
+.frame > [data-screen] { position: relative; display: block; width: 100%; }
+.frame > [data-screen] > .bw { position: absolute; top: 0; left: 0; transform-origin: top left; }
+
+/* ─── Window shell ───────────────────────────────────────────── */
+.bw {
+  --side: 188px;
+  width: 1180px;            /* fixed design width; scaled to fit by JS */
+  position: relative;
+  background: var(--bg);
+  border-radius: 14px;
+  /* The app surface is the same cream as the page, so without elevation the
+     window edge dissolves into the background. Layered shadows (soft ambient +
+     a deeper directional cast) lift it off the page as a distinct floating app
+     window; a slightly darker hairline defines the edge and a 1px inner
+     highlight gives the top a crisp "glass" rim. Shadows scale with the
+     window's transform, so they're sized generously to read at any scale. */
+  border: 1px solid rgba(40, 30, 15, 0.14);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 1px 2px rgba(40, 30, 15, 0.06),
+    0 8px 18px rgba(40, 30, 15, 0.09),
+    0 26px 58px rgba(40, 30, 15, 0.17),
+    0 52px 96px rgba(40, 30, 15, 0.11);
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+@media (max-width: 640px) {
+  .bw {
+    --side: 164px;
+    width: 960px;
+  }
+  .bw-scroll { padding: 22px 24px 6px; }
+  .bw-nav .item { padding: 6px 8px; }
+  .bw-nav .sep { margin: 6px 8px; }
+}
+
+/* Title bar */
+.bw-bar {
+  display: flex; align-items: center; gap: 9px;
+  height: 38px; padding: 0 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+}
+.bw-lights { display: flex; gap: 7px; }
+.bw-lights i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+.bw-lights .r { background: #ff5f57; }
+.bw-lights .y { background: #febc2e; }
+.bw-lights .g { background: #28c840; }
+.bw-bar-icons { display: flex; align-items: center; gap: 13px; margin-left: 8px; color: var(--text-3); }
+.bw-bar-icons svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.7; }
+.bw-bar-center { flex: 1; display: flex; align-items: center; justify-content: center; gap: 18px;
+  font-size: 12px; font-weight: 600; color: var(--text-2); }
+.bw-bar-center .x { cursor: default; }
+.bw-bar-spacer { flex: 1; }
+.bw-bar-meta { font-size: 11px; color: var(--text-3); white-space: nowrap; }
+
+/* Mini toggle used in dashboard top bar */
+.bw-toggle { width: 26px; height: 15px; border-radius: 8px; background: var(--accent);
+  position: relative; display: inline-block; vertical-align: middle; }
+.bw-toggle::after { content: ""; position: absolute; top: 2px; right: 2px; width: 11px; height: 11px;
+  border-radius: 50%; background: #fff; }
+
+/* ─── Body: sidebar + main ───────────────────────────────────────
+   min-height (not a fixed height) so content-tall screens — the Knowledge
+   two-pane and the Provider list — grow to show everything instead of
+   clipping, while compact screens keep the standard window height. */
+.bw-body { display: flex; min-height: 452px; }
+.bw--nosidebar .bw-body { display: block; }
+
+.bw-side {
+  width: var(--side); flex-shrink: 0;
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  padding: 12px 10px 12px;
+  display: flex; flex-direction: column;
+}
+.bw-nav { display: flex; flex-direction: column; gap: 2px; }
+.bw-nav .sep { height: 1px; background: var(--border); margin: 8px 8px; }
+.bw-nav .item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 7px 10px; border-radius: 8px;
+  color: var(--text-2); font-size: 12.5px; font-weight: 500;
+}
+.bw-nav .item svg { width: 16px; height: 16px; stroke: currentColor; fill: none;
+  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+.bw-nav .item.active { background: var(--bg-4); color: var(--text); font-weight: 600; }
+.bw-side-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 8px 6px 2px; }
+.bw-side-foot img { width: 22px; height: 22px; border-radius: 5px; }
+.bw-side-foot b { font-size: 13px; font-weight: 700; }
+.bw-side-foot .status { width: 7px; height: 7px; border-radius: 50%; background: var(--accent);
+  margin-left: 1px; }
+
+/* Main content area */
+.bw-main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+.bw-scroll { flex: 1; overflow: hidden; padding: 26px 30px 6px; }
+.bw-head { margin-bottom: 4px; }
+.bw-head h2 { font-size: 21px; font-weight: 700; letter-spacing: -0.5px; color: var(--text); }
+.bw-head p { font-size: 12.5px; color: var(--text-2); margin-top: 4px; }
+.bw-head-actions { display: flex; gap: 8px; margin-top: 14px; }
+.bw-headrow { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.bw-sectionrule { height: 1px; background: var(--border); margin: 18px 0 0; }
+
+/* Buttons inside mock */
+.bw-btn { display: inline-flex; align-items: center; gap: 7px; padding: 7px 13px;
+  border-radius: var(--radius); font-size: 12px; font-weight: 600; cursor: default; white-space: nowrap; }
+.bw-btn svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 1.8;
+  stroke-linecap: round; stroke-linejoin: round; }
+.bw-btn.dark { background: #2a2520; color: #fff; }
+.bw-btn.soft { background: var(--bg-3); color: var(--text); }
+.bw-btn.accent { background: var(--accent); color: #fff; }
+.bw-eyebrow { font-size: 10px; font-weight: 700; letter-spacing: 1.1px; text-transform: uppercase;
+  color: var(--text-3); }
+
+/* ─── Composer (Home / Chat / Dashboard card) ────────────────── */
+.bw-composer { margin: 12px 14px 14px; background: var(--bg-2);
+  border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--shadow);
+  padding: 12px 14px 10px; }
+.bw-composer .ph { font-size: 12px; color: var(--text-3); margin-bottom: 12px; }
+.bw-composer .caret { display: inline-block; width: 1px; height: 12px; background: var(--text-3);
+  vertical-align: -2px; margin-left: 1px; animation: bw-blink 1.1s step-end infinite; }
+.bw-toolbar { display: flex; align-items: center; gap: 12px; font-size: 10.5px; color: var(--text-2); }
+.bw-toolbar .chip { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.bw-toolbar svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 1.7;
+  stroke-linecap: round; stroke-linejoin: round; opacity: 0.85; }
+.bw-toolbar .grow { flex: 1; }
+.bw-toolbar .chip.mode { color: var(--text); font-weight: 600; background: var(--bg-3);
+  padding: 3px 9px; border-radius: 6px; }
+/* Solid-fill icons (Attach, Send, Play) — override the default stroked look */
+.bw svg.bw-fill { fill: currentColor !important; stroke: none !important; }
+.bw-send svg { width: 12px; height: 12px; }
+.bw-send { display: inline-flex; align-items: center; gap: 5px; background: var(--bg-4);
+  color: var(--text-2); padding: 6px 12px; border-radius: var(--radius); font-weight: 600; font-size: 11px; }
+.bw-stop { width: 26px; height: 26px; border-radius: 50%; background: #2a2520; color: #fff;
+  display: inline-flex; align-items: center; justify-content: center; }
+.bw-stop i { width: 8px; height: 8px; background: #fff; border-radius: 1px; display: block; }
+
+/* ─── Home ───────────────────────────────────────────────────── */
+.bw-home .tiny { font-size: 11px; color: var(--text-2); margin-bottom: 6px; }
+.bw-home h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; line-height: 1.25;
+  color: var(--text); max-width: 560px; margin-bottom: 26px; }
+.bw-stats { display: flex; gap: 60px; margin-bottom: 26px; }
+.bw-stat .lbl { font-size: 10px; font-weight: 700; letter-spacing: 0.9px; color: var(--text-3);
+  text-transform: uppercase; margin-bottom: 10px; }
+.bw-stat .nums { display: flex; align-items: baseline; gap: 26px; }
+.bw-stat .n { font-size: 26px; font-weight: 300; font-variant-numeric: tabular-nums;
+  letter-spacing: -0.5px; color: var(--text); }
+.bw-stat .n.sm { font-size: 15px; color: var(--text-2); }
+.bw-stat .sub { font-size: 9px; letter-spacing: 0.6px; color: var(--text-3); text-transform: uppercase;
+  margin-top: 4px; }
+.bw-recent-head { display: flex; align-items: center; justify-content: space-between;
+  border-top: 1px solid var(--border); padding-top: 14px; margin-bottom: 6px; }
+.bw-recent-head .lbl { font-size: 10px; font-weight: 700; letter-spacing: 0.9px; color: var(--text-3);
+  text-transform: uppercase; }
+.bw-recent-head a { font-size: 11px; color: var(--text-2); }
+.bw-list-row { display: flex; align-items: center; gap: 11px; padding: 11px 4px;
+  border-bottom: 1px solid var(--border); }
+.bw-list-row:last-child { border-bottom: none; }
+.bw-list-row svg { width: 15px; height: 15px; stroke: var(--text-3); fill: none; stroke-width: 1.6;
+  stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+.bw-list-row .t { flex: 1; font-size: 13px; color: var(--text); }
+.bw-list-row .d { font-size: 11px; color: var(--text-3); }
+
+/* ─── Chat ───────────────────────────────────────────────────── */
+.bw-chat-title { font-size: 12px; color: var(--text-2); margin-bottom: 18px; }
+.bw-bubble { max-width: 62%; margin-left: auto; background: #2a2520; color: #f6f1e8;
+  padding: 9px 14px; border-radius: 14px; font-size: 12.5px; line-height: 1.45; }
+.bw-bubble-time { text-align: right; font-size: 10px; color: var(--text-3); margin: 5px 2px 16px; }
+.bw-tool { display: flex; align-items: center; gap: 10px; background: var(--bg-2);
+  border: 1px solid var(--border); border-radius: 10px; padding: 9px 13px; margin-bottom: 7px; }
+.bw-tool .ic { width: 15px; height: 15px; color: var(--text-2); flex-shrink: 0; }
+.bw-tool .ic svg { width: 15px; height: 15px; stroke: currentColor; fill: none; stroke-width: 1.6; }
+.bw-tool .t { flex: 1; font-size: 12px; color: var(--text); }
+.bw-tool .t b { font-weight: 600; }
+.bw-tool .t .arg { color: var(--text-3); }
+.bw-tool .chev { color: var(--text-3); }
+.bw-tool .chev svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 2; }
+.bw-working { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--text-2);
+  padding: 6px 2px 2px; }
+.bw-working .code { font-family: 'Menlo', monospace; color: var(--text-3); }
+.bw-working .shim { position: relative; overflow: hidden; }
+.bw-working .shim::after { content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(207,109,71,0.18), transparent);
+  transform: translateX(-100%); animation: bw-shimmer 1.6s ease-in-out infinite; }
+
+/* ─── Dashboard mode (canvas + windows + folded cards) ───────────
+   Mirrors src/components/Dashboard: a dotted world canvas holding one
+   focused open ChatWindow plus several windows folded into cards, each
+   tinted with its own accent from the ACCENT_PALETTE. */
+.bw-canvas { flex: 1; position: relative; overflow: hidden;
+  background-color: var(--bg);
+  background-image: radial-gradient(circle at 1px 1px, rgba(120,120,120,0.18) 1px, transparent 0);
+  background-size: 16px 16px; }
+
+/* Open / focused window */
+.bw-win { position: absolute; display: flex; flex-direction: column;
+  border: 1px solid var(--border-2); border-radius: 16px; overflow: hidden;
+  background: var(--bg-2); box-shadow: 0 18px 48px rgba(32,25,15,0.18), 0 2px 6px rgba(0,0,0,0.08); }
+.bw-win-bar { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 12px;
+  border-bottom: 1px solid var(--border); background: rgba(255,255,255,0.82);
+  backdrop-filter: blur(6px); border-radius: 16px 16px 0 0; }
+.bw-win-bar .dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.bw-win-bar .nm { flex: 1; font-size: 12.5px; font-weight: 600; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bw-win-bar .wb, .bw-fold-row .wb { display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 5px; color: var(--text-2); }
+.bw-win-bar .wb svg, .bw-fold-row .wb svg { width: 13px; height: 13px; stroke: currentColor;
+  fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.bw-win-body { flex: 1; min-height: 0; display: flex; flex-direction: column;
+  overflow: hidden; background: var(--bg); }
+.bw-win-greet { flex: 1; display: flex; align-items: center; justify-content: center;
+  text-align: center; padding: 18px 30px; font-size: 16px; font-weight: 600;
+  letter-spacing: -0.3px; line-height: 1.35; color: var(--text); }
+
+/* Folded card */
+.bw-fold { position: absolute; display: flex; flex-direction: column; border-radius: 16px;
+  border: 1px solid var(--border); overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.08); animation: bw-float 7s ease-in-out infinite; }
+.bw-fold-row { display: flex; align-items: center; gap: 8px; padding: 9px 12px 0; }
+.bw-fold-row .grow { flex: 1; }
+.bw-ring { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: transparent; }
+.bw-ring.busy { background: currentColor; animation: bw-breathe 1.4s ease-in-out infinite; }
+.bw-fold-name { padding: 6px 12px 0; font-size: 12.5px; font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bw-fold-cwd { padding: 2px 12px 11px; font-size: 10.5px; color: var(--text-2);
+  font-family: 'Menlo','Consolas',monospace; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+
+/* ─── History rows ───────────────────────────────────────────── */
+.bw-day { font-size: 10px; font-weight: 700; letter-spacing: 0.9px; color: var(--text-3);
+  text-transform: uppercase; margin: 16px 0 2px; }
+.bw-hrow { display: flex; align-items: center; gap: 14px; padding: 10px 4px;
+  border-bottom: 1px solid var(--border); }
+.bw-hrow .body { flex: 1; min-width: 0; }
+.bw-hrow .body .t { font-size: 13px; color: var(--text); }
+.bw-hrow .body .m { display: flex; align-items: center; gap: 12px; font-size: 10.5px;
+  color: var(--text-3); margin-top: 4px; }
+.bw-hrow .body .m svg { width: 11px; height: 11px; stroke: currentColor; fill: none; stroke-width: 1.6;
+  vertical-align: -1px; margin-right: 2px; }
+.bw-hrow .meta { display: flex; align-items: center; gap: 14px; font-size: 11px; color: var(--text-3); }
+.bw-hrow .meta span { display: inline-flex; align-items: center; gap: 4px; }
+.bw-hrow .meta svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 1.6; }
+
+/* ─── Workflow / Extension / Skill rows ──────────────────────── */
+.bw-wf { display: flex; align-items: flex-start; gap: 14px; padding: 16px 4px;
+  border-bottom: 1px solid var(--border); }
+.bw-wf .body { flex: 1; min-width: 0; }
+.bw-wf .body h4 { font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 5px; }
+.bw-wf .body p { font-size: 12px; color: var(--text-2); line-height: 1.55; max-width: 560px; }
+.bw-wf .body .date { font-size: 10.5px; color: var(--text-3); margin-top: 8px; }
+.bw-wf .body .date svg { width: 11px; height: 11px; stroke: currentColor; fill: none;
+  stroke-width: 1.7; vertical-align: -2px; margin-right: 3px; }
+.bw-actions { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+.bw-actions .a { width: 26px; height: 26px; border-radius: 6px; display: inline-flex;
+  align-items: center; justify-content: center; color: var(--text-2); background: transparent; }
+.bw-actions .a svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 1.7;
+  stroke-linecap: round; stroke-linejoin: round; }
+.bw-actions .a.play { background: #2a2520; color: #fff; }
+.bw-actions .a.del { color: #c0563a; }
+
+.bw-erow { display: flex; align-items: center; gap: 14px; padding: 13px 4px;
+  border-bottom: 1px solid var(--border); }
+.bw-erow .body { flex: 1; min-width: 0; }
+.bw-erow .body h4 { font-size: 13px; font-weight: 600; color: var(--text); }
+.bw-erow .body p { font-size: 11.5px; color: var(--text-2); margin-top: 2px; line-height: 1.5;
+  max-width: 640px; }
+.bw-switch { width: 32px; height: 18px; border-radius: 10px; background: var(--bg-4); position: relative;
+  flex-shrink: 0; transition: background var(--transition); }
+.bw-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+  transition: left var(--transition); }
+.bw-switch.on { background: var(--accent); }
+.bw-switch.on::after { left: 16px; }
+
+.bw-skill { padding: 13px 4px; border-bottom: 1px solid var(--border); }
+.bw-skill .top { display: flex; align-items: center; gap: 9px; }
+.bw-skill .top .nm { font-size: 13px; font-weight: 600; color: var(--text); }
+.bw-skill .top .ct { font-size: 10px; color: var(--text-3); background: var(--bg-3);
+  padding: 2px 7px; border-radius: 5px; }
+.bw-skill .top .chev { margin-left: auto; color: var(--text-3); }
+.bw-skill .top .chev svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 2; }
+.bw-skill .tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+.bw-skill .tags .tg { font-size: 10px; color: var(--text-2); background: var(--bg-3);
+  padding: 2px 8px; border-radius: 5px; }
+
+/* ─── Scheduler row (mirrors ScheduleCard) ───────────────────── */
+.bw-sched { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding: 15px 4px; border-bottom: 1px solid var(--border); }
+.bw-sched .body { min-width: 0; flex: 1; }
+.bw-sched .top { display: flex; align-items: center; gap: 8px; }
+.bw-sched .top .nm { font-size: 13px; color: var(--text); }
+.bw-sched .badge { font-size: 9.5px; font-weight: 600; letter-spacing: 0.2px; color: var(--text-2);
+  background: var(--bg-3); padding: 2px 8px; border-radius: 5px; }
+.bw-sched .cron { font-size: 11.5px; color: var(--text-2); margin-top: 3px; }
+.bw-sched .last { font-size: 10.5px; color: var(--text-3); margin-top: 5px; }
+.bw-sched .acts { display: flex; gap: 5px; flex-shrink: 0; }
+.bw-sched .acts .a { width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--border-2);
+  display: inline-flex; align-items: center; justify-content: center; color: var(--text-2); }
+.bw-sched .acts .a svg { width: 13px; height: 13px; stroke: currentColor; fill: none;
+  stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.bw-sched .acts .a.del { color: #c0563a; border-color: transparent; }
+
+/* ─── Empty state (scheduler) ────────────────────────────────── */
+.bw-empty { display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 12px; padding: 70px 0; color: var(--text-3); }
+.bw-empty .ring { width: 28px; height: 28px; border-radius: 50%; border: 2px dashed var(--text-3);
+  animation: bw-spin 7s linear infinite; }
+.bw-empty p { font-size: 13px; color: var(--text-2); }
+
+/* ─── Knowledge (ingest panel + force-graph panel) ───────────────
+   Mirrors KnowledgeView: left IngestPanel, right KnowledgeGraphPanel
+   (header with KB name + page/link counts + Refresh/Export/Change log/
+   Open folder, then the force graph + bottom-left legend). */
+.bw-know { display: flex; height: 430px; border-top: 1px solid var(--border); }
+.bw-ingest { width: 268px; flex-shrink: 0; border-right: 1px solid var(--border); padding: 18px 18px;
+  display: flex; flex-direction: column; gap: 13px; background: var(--bg); }
+.bw-ingest .ttl { font-size: 13.5px; font-weight: 700; }
+.bw-ingest .sub { font-size: 11.5px; color: var(--text-2); margin-top: -7px; line-height: 1.45; }
+.bw-drop { border: 1.5px dashed var(--border-2); border-radius: 12px; padding: 22px 14px;
+  text-align: center; background: var(--bg-2); }
+.bw-drop .di { width: 26px; height: 26px; margin: 0 auto 9px; color: var(--text-3); }
+.bw-drop .di svg { width: 26px; height: 26px; stroke: currentColor; fill: none; stroke-width: 1.4; }
+.bw-drop .l1 { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.bw-drop .l2 { font-size: 10.5px; color: var(--text-3); margin-top: 5px; line-height: 1.5; }
+.bw-paste { display: flex; align-items: center; justify-content: center; gap: 7px;
+  border: 1px solid var(--border-2); border-radius: 8px; padding: 10px; font-size: 12.5px;
+  font-weight: 600; color: var(--text); background: var(--bg-2); }
+.bw-paste svg { width: 13px; height: 13px; stroke: currentColor; fill: none; stroke-width: 1.7; }
+.bw-ingest .nothing { font-size: 11px; color: var(--text-3); text-align: center; margin-top: 2px; }
+.bw-digest { margin-top: auto; background: #2a2520; color: #fff; text-align: center;
+  padding: 11px; border-radius: 8px; font-size: 12.5px; font-weight: 600; }
+
+.bw-gpanel { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.bw-kbhead { display: flex; align-items: center; gap: 9px; padding: 11px 16px;
+  border-bottom: 1px solid var(--border); }
+.bw-kbhead .nm { font-size: 12.5px; font-weight: 600; color: var(--text); }
+.bw-kbhead .cnt { font-size: 11px; color: var(--text-3); }
+.bw-kbhead .grow { flex: 1; }
+.bw-kbhead .ic { display: inline-flex; align-items: center; justify-content: center; width: 26px;
+  height: 26px; border-radius: 6px; color: var(--text-2); }
+.bw-kbhead .ic svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.7;
+  stroke-linecap: round; stroke-linejoin: round; }
+.bw-gcanvas { flex: 1; position: relative; overflow: hidden;
+  background:
+    radial-gradient(circle at top left, rgba(214,176,106,0.10), transparent 34%),
+    radial-gradient(circle at top right, rgba(73,101,154,0.10), transparent 30%),
+    var(--bg-2); }
+.bw-gcanvas svg.net { width: 100%; height: 100%; display: block; }
+.bw-legend { position: absolute; left: 16px; bottom: 16px;
+  display: grid; grid-template-columns: 1fr 1fr; gap: 7px 16px;
+  font-size: 10.5px; color: var(--text); background: rgba(255,255,255,0.85);
+  padding: 9px 13px; border-radius: 14px; border: 1px solid var(--border);
+  backdrop-filter: blur(4px); }
+.bw-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.bw-legend i { width: 9px; height: 9px; border-radius: 50%; display: inline-block; }
+.bw-node { animation: bw-float 7s ease-in-out infinite; transform-box: fill-box;
+  transform-origin: center; }
+
+/* ─── Provider configuration (no sidebar) ────────────────────── */
+.bw-prov { max-width: 620px; margin: 0 auto; padding: 30px 28px 10px; }
+.bw-prov .back { display: inline-flex; align-items: center; gap: 6px; font-size: 12px;
+  color: var(--text-2); margin-bottom: 18px; }
+.bw-prov .back svg { width: 14px; height: 14px; stroke: currentColor; fill: none; stroke-width: 1.8; }
+.bw-prov h2 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+.bw-prov .lead { font-size: 12.5px; color: var(--text-2); margin: 5px 0 6px;
+  padding-bottom: 16px; border-bottom: 1px solid var(--border); }
+.bw-grp { font-size: 10px; font-weight: 700; letter-spacing: 0.9px; text-transform: uppercase;
+  color: var(--text-3); margin: 20px 0 4px; display: flex; align-items: center; gap: 7px; }
+.bw-grp i { width: 7px; height: 7px; border-radius: 50%; display: inline-block; }
+.bw-grp i.inst { background: var(--accent); }
+.bw-grp i.local { background: #4a9d6b; }
+.bw-grp i.comm { background: #e0a23a; }
+.bw-prow { display: flex; align-items: center; gap: 13px; padding: 12px 4px;
+  border-bottom: 1px solid var(--border); }
+.bw-prow .av { width: 30px; height: 30px; border-radius: 7px; background: var(--bg-3);
+  display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700;
+  color: var(--text-2); flex-shrink: 0; }
+.bw-prow .body { flex: 1; min-width: 0; }
+.bw-prow .body h4 { font-size: 13px; font-weight: 600; }
+.bw-prow .body p { font-size: 11px; color: var(--text-2); margin-top: 1px; }
+.bw-prow .ok { display: inline-flex; align-items: center; gap: 5px; font-size: 11px;
+  color: #4a9d6b; font-weight: 600; white-space: nowrap; }
+.bw-prow .ok svg { width: 12px; height: 12px; stroke: currentColor; fill: none; stroke-width: 2; }
+
+/* ─── Keyframes ──────────────────────────────────────────────── */
+@keyframes bw-blink { 0%, 50% { opacity: 1; } 51%, 100% { opacity: 0; } }
+@keyframes bw-shimmer { 0% { transform: translateX(-100%); } 60%, 100% { transform: translateX(100%); } }
+@keyframes bw-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-5px); } }
+@keyframes bw-breathe { 0%, 100% { opacity: 0.55; } 50% { opacity: 1; } }
+@keyframes bw-spin { to { transform: rotate(360deg); } }
+
+/* Staggered entrance for list rows once the screen is revealed */
+.reveal.in .bw-stagger { animation: bw-rowin 0.5s cubic-bezier(0.16,1,0.3,1) both; }
+.reveal.in .bw-stagger:nth-child(1) { animation-delay: 0.10s; }
+.reveal.in .bw-stagger:nth-child(2) { animation-delay: 0.16s; }
+.reveal.in .bw-stagger:nth-child(3) { animation-delay: 0.22s; }
+.reveal.in .bw-stagger:nth-child(4) { animation-delay: 0.28s; }
+.reveal.in .bw-stagger:nth-child(5) { animation-delay: 0.34s; }
+.reveal.in .bw-stagger:nth-child(6) { animation-delay: 0.40s; }
+.reveal.in .bw-stagger:nth-child(7) { animation-delay: 0.46s; }
+.reveal.in .bw-stagger:nth-child(8) { animation-delay: 0.52s; }
+.reveal.in .bw-stagger:nth-child(9) { animation-delay: 0.58s; }
+.reveal.in .bw-stagger:nth-child(10) { animation-delay: 0.64s; }
+.reveal.in .bw-stagger:nth-child(11) { animation-delay: 0.70s; }
+@keyframes bw-rowin { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+
+/* ─── Responsive ─────────────────────────────────────────────────
+   No per-width reflow rules: the whole window scales uniformly (see the
+   scaler above + app-mockups.js), so the internal layout is identical at
+   every width and nothing can shift or clip. */
+@media (prefers-reduced-motion: reduce) {
+  .bw-card.float, .bw-node, .bw-empty .ring, .bw-working .shim::after, .bw-composer .caret {
+    animation: none !important;
+  }
+  .reveal.in .bw-stagger { animation: none !important; }
+}

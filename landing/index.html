@@ -1,0 +1,732 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UCSF BioRouter</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="shared.css" />
+  <link rel="stylesheet" href="app-mockups.css" />
+  <style>
+    /* Scroll progress — shows how far through the page you are.
+       Sits on the navbar's bottom edge, in the coral accent. */
+    #scroll-progress {
+      position: fixed; top: 57px; left: 0;
+      height: 3px; width: 0;
+      z-index: 101;
+      background: linear-gradient(90deg, var(--accent), #e2956f);
+      box-shadow: 0 0 10px rgba(207,109,71,0.45);
+      border-radius: 0 3px 3px 0;
+      pointer-events: none;
+      transition: width 0.08s linear;
+    }
+    @media (prefers-reduced-motion: reduce) { #scroll-progress { transition: none; } }
+
+    .hero {
+      min-height: calc(100vh - 58px);
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      text-align: center;
+      padding: 80px 24px 60px;
+    }
+    .hero-logo {
+      width: 88px; height: 88px; border-radius: 20px;
+      margin-bottom: 32px;
+      box-shadow: var(--shadow-lg);
+    }
+    .hero-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 12px; border-radius: var(--radius);
+      background: var(--accent-soft);
+      color: var(--accent); font-size: 12px; font-weight: 600;
+      letter-spacing: 0.4px;
+      margin-bottom: 20px;
+    }
+    .hero-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+    .hero h1 {
+      font-size: clamp(40px, 7vw, 72px);
+      font-weight: 700; letter-spacing: -2.5px; line-height: 1.05;
+      color: var(--text);
+      margin-bottom: 20px;
+    }
+    .hero-sub {
+      font-size: clamp(16px, 2.2vw, 19px);
+      color: var(--text-2); max-width: 600px; margin: 0 auto 36px;
+      font-weight: 400; line-height: 1.6;
+    }
+    .hero-actions {
+      display: flex; align-items: center; gap: 10px;
+      flex-wrap: wrap; justify-content: center;
+    }
+
+    .features { padding: 56px 24px 72px; max-width: 1080px; margin: 0 auto; }
+    .stack-section { padding: 0 24px 72px; max-width: 1080px; margin: 0 auto; }
+    .cta-strip { text-align: center; padding: 0 24px 64px; }
+    .cta-strip .links {
+      display: inline-flex; flex-wrap: wrap; gap: 10px;
+      justify-content: center; align-items: center;
+    }
+
+    /* Slack invite — shared style for intro and about pages */
+    .slack-cta {
+      display: flex; align-items: center; gap: 22px;
+      background: var(--bg-2);
+      border-radius: var(--radius-xl);
+      padding: 22px 26px 22px 24px;
+      box-shadow: var(--shadow);
+      text-decoration: none; color: inherit;
+      max-width: 720px;
+      margin: 0 auto 8px;
+      transition: background var(--transition), transform var(--transition), box-shadow var(--transition);
+    }
+    .slack-cta:hover { background: var(--bg-3); transform: translateY(-1px); box-shadow: var(--shadow-lg); }
+    .slack-icon-wrap {
+      flex-shrink: 0; width: 44px; height: 44px;
+      border-radius: var(--radius);
+      background: var(--bg-3);
+      display: flex; align-items: center; justify-content: center;
+      color: var(--accent);
+    }
+    .slack-icon-wrap svg { width: 22px; height: 22px; }
+    .slack-cta-body { flex: 1; min-width: 0; }
+    .slack-cta-eyebrow {
+      font-size: 10.5px; font-weight: 700; letter-spacing: 1.3px;
+      text-transform: uppercase; color: var(--accent);
+      margin-bottom: 4px;
+    }
+    .slack-cta-body h3 {
+      font-size: 16px; font-weight: 700; margin-bottom: 3px;
+      letter-spacing: -0.2px;
+    }
+    .slack-cta-body p {
+      font-size: 13px; color: var(--text-2); margin: 0; line-height: 1.55;
+    }
+    .slack-cta-arrow {
+      flex-shrink: 0;
+      background: var(--accent-soft); color: var(--accent);
+      padding: 9px 16px; border-radius: var(--radius);
+      font-size: 12.5px; font-weight: 700; white-space: nowrap;
+      transition: background var(--transition), color var(--transition);
+    }
+    .slack-cta:hover .slack-cta-arrow { background: var(--accent); color: #fff; }
+
+    @media (max-width: 560px) {
+      .slack-cta { flex-direction: column; align-items: flex-start; gap: 14px; padding: 20px; }
+      .slack-cta-arrow { align-self: stretch; text-align: center; }
+    }
+
+    .slack-section { padding: 0 24px 40px; }
+
+    /* ─── Product tour (screenshot showcase) ─────────────────────── */
+    .tour { padding: 8px 24px 40px; max-width: 1200px; margin: 0 auto; }
+    .tour-group-label { margin-bottom: 18px; }
+
+    /* Flat showcase: no wrapping card. A centered caption sits above one
+       large screenshot, separated from the next feature by whitespace and
+       a hairline rule — so the page reads as a single flowing tour rather
+       than a stack of cards. The screenshot is the only floating layer;
+       its cream backdrop matches the page (no frame), and hover simply
+       deepens its shadow (no movement, so nothing collides with the text). */
+    .tour-row, .tour-row.reverse {
+      display: flex;
+      flex-direction: column;
+      padding: 64px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .tour-row:last-of-type { border-bottom: none; }
+    .tour-text {
+      order: 1;
+      max-width: 800px;
+      margin: 0 auto 42px;
+      text-align: center;
+    }
+    .tour-media { order: 2; }
+    /* The frame now holds a hand-coded, vector recreation of the actual
+       BioRouter app screen (see app-mockups.js) instead of a screenshot,
+       so it stays razor-sharp at any zoom and its text reads at the
+       website's own size. A faint hover lift gives it a touch of depth. */
+    .frame { display: block; }
+    .frame > [data-screen] {
+      display: block;
+      transition: transform 0.5s cubic-bezier(0.16,1,0.3,1);
+    }
+    .tour-media:hover .frame > [data-screen] { transform: translateY(-3px); }
+    @media (prefers-reduced-motion: reduce) {
+      .tour-media:hover .frame > [data-screen] { transform: none; }
+    }
+
+    .tour-eyebrow {
+      display: block;
+      font-size: 11px; font-weight: 700; letter-spacing: 1.6px;
+      text-transform: uppercase; color: var(--accent);
+      margin-bottom: 12px;
+    }
+    .tour-text h3 {
+      font-size: clamp(22px, 3.2vw, 31px); font-weight: 700;
+      letter-spacing: -0.7px; line-height: 1.16;
+      color: var(--text); margin-bottom: 13px;
+    }
+    .tour-text p { font-size: 15.5px; color: var(--text-2); line-height: 1.72; margin-bottom: 18px; }
+    .tour-tags { display: flex; flex-wrap: wrap; gap: 7px; justify-content: center; }
+    .tour-tag {
+      padding: 5px 11px; border-radius: var(--radius);
+      background: var(--bg-3); color: var(--text-2);
+      font-size: 12px; font-weight: 600; letter-spacing: 0.1px;
+    }
+
+    /* Workflow composition chips */
+    .compose {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+      justify-content: center;
+      margin-bottom: 18px;
+    }
+    .compose .c-chip {
+      padding: 6px 12px; border-radius: var(--radius);
+      background: var(--accent-soft); color: var(--accent);
+      font-size: 12.5px; font-weight: 700;
+    }
+    .compose .c-op { color: var(--text-3); font-weight: 700; font-size: 13px; }
+    .compose .c-result {
+      padding: 6px 13px; border-radius: var(--radius);
+      background: var(--accent); color: #fff;
+      font-size: 12.5px; font-weight: 700;
+    }
+
+    /* ─── Scroll-reveal animations ───────────────────────────────── */
+    .reveal {
+      opacity: 0;
+      transition: opacity 0.8s cubic-bezier(0.16,1,0.3,1), transform 0.8s cubic-bezier(0.16,1,0.3,1);
+      will-change: opacity, transform;
+    }
+    .reveal.up    { transform: translateY(36px); }
+    .reveal.left  { transform: translateX(-48px); }
+    .reveal.right { transform: translateX(48px); }
+    .reveal.zoom  { transform: scale(0.94); }
+    .reveal.in    { opacity: 1; transform: none; }
+    /* Centered captions read better rising straight up than sliding sideways */
+    .tour-text.reveal.left, .tour-text.reveal.right { transform: translateY(28px); }
+
+    /* Staggered cascade for the Why BioRouter tiles (opacity-only so the
+       grid's clipped corners stay clean) */
+    .feature-grid .reveal:nth-child(2) { transition-delay: 0.06s; }
+    .feature-grid .reveal:nth-child(3) { transition-delay: 0.12s; }
+    .feature-grid .reveal:nth-child(4) { transition-delay: 0.06s; }
+    .feature-grid .reveal:nth-child(5) { transition-delay: 0.12s; }
+    .feature-grid .reveal:nth-child(6) { transition-delay: 0.18s; }
+
+    @media (max-width: 820px) {
+      .tour-row, .tour-row.reverse { padding: 44px 0; }
+      .tour-text { margin-bottom: 30px; }
+      .reveal.left, .reveal.right { transform: translateY(36px); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .reveal { opacity: 1 !important; transform: none !important; transition: none; }
+      .frame img { transition: none; }
+    }
+  </style>
+</head>
+<body>
+
+<nav id="navbar">
+  <a class="nav-brand" href="./">
+    <img src="icon.svg" class="nav-logo" alt="BioRouter" />
+    <span class="nav-title">UCSF BioRouter</span>
+  </a>
+  <ul class="nav-tabs">
+    <li><a href="./" class="active">Introduction</a></li>
+    <li><a href="download.html">Download</a></li>
+    <li><a href="docs.html">Documentation</a></li>
+    <li><a href="baam.html">BAAM</a></li>
+    <li><a href="about.html">About</a></li>
+  </ul>
+  <div class="nav-right">
+    <a href="https://github.com/BaranziniLab/BioRouter" target="_blank" class="nav-gh-btn">
+      <svg class="icon icon-sm" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
+      GitHub
+    </a>
+  </div>
+  <button class="hamburger" onclick="toggleMobileMenu()" aria-label="Menu">
+    <span></span><span></span><span></span>
+  </button>
+</nav>
+<div id="scroll-progress"></div>
+<div class="mobile-menu" id="mobile-menu">
+  <a href="./" class="active">Introduction</a>
+  <a href="download.html">Download</a>
+  <a href="docs.html">Documentation</a>
+  <a href="baam.html">BAAM</a>
+  <a href="about.html">About</a>
+  <a href="https://github.com/BaranziniLab/BioRouter" target="_blank" style="margin-top:8px;">GitHub</a>
+</div>
+
+<main class="page">
+
+  <div class="hero">
+    <div class="hero-badge"><span class="dot"></span> <span id="hero-version">v1.86.1</span> available now</div>
+    <img src="icon.svg" class="hero-logo" alt="BioRouter" />
+    <h1>UCSF BioRouter</h1>
+    <p class="hero-sub">
+      An integrated research environment that connects commercial, institution-hosted, and local AI models in one interface, built for biomedical discovery.
+    </p>
+    <div class="hero-actions">
+      <a href="download.html" class="btn-primary">
+        <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Download free
+      </a>
+      <a href="docs.html" class="btn-secondary">Documentation</a>
+      <a href="https://github.com/BaranziniLab/BioRouter" target="_blank" class="btn-ghost">
+        <svg class="icon icon-sm" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
+        GitHub
+      </a>
+    </div>
+  </div>
+
+  <div class="hero-video reveal up">
+    <a class="video-card" href="#product-tour" aria-label="Watch the BioRouter product tour">
+      <video
+        autoplay muted loop playsinline preload="metadata"
+        poster="assets/videos/posters/biorouter-hero.jpg"
+        aria-label="BioRouter in motion — a 30-second overview of chat, secure model routing, knowledge, dashboard mode and workflows"
+      >
+        <source src="assets/videos/biorouter-hero.webm" type="video/webm" />
+        <source src="assets/videos/biorouter-hero.mp4" type="video/mp4" />
+      </video>
+    </a>
+    <div class="cap"><span>BioRouter in motion — 30s overview. <a href="#product-tour">Watch the full product tour ↓</a></span></div>
+  </div>
+
+  <div class="slack-section">
+    <a href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A" target="_blank" class="slack-cta">
+      <div class="slack-icon-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="4" y1="9" x2="20" y2="9"/>
+          <line x1="4" y1="15" x2="20" y2="15"/>
+          <line x1="10" y1="3" x2="8" y2="21"/>
+          <line x1="16" y1="3" x2="14" y2="21"/>
+        </svg>
+      </div>
+      <div class="slack-cta-body">
+        <div class="slack-cta-eyebrow">Community</div>
+        <h3>Join the BioRouter Slack</h3>
+        <p>Open community for issue reporting, feature requests, and discussion. <code style="font-size:11.5px;user-select:all;">join.slack.com/t/ucsfbiorouter</code></p>
+      </div>
+      <span class="slack-cta-arrow">Join the Slack →</span>
+    </a>
+  </div>
+
+  <div class="features">
+    <div class="section-label">
+      <p class="eyebrow">Why BioRouter</p>
+      <h2>Composable AI agents for biomedical research</h2>
+      <p>Build an agent from extensions, skills, knowledge, and the model you trust, then reuse it, schedule it, and share it. Made for sensitive data, reproducible results, and work that crosses institutions.</p>
+    </div>
+    <div class="feature-grid">
+
+      <div class="feature-tile reveal">
+        <div class="icon-tile">
+          <svg class="icon" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.6" y1="13.5" x2="15.4" y2="17.5"/><line x1="15.4" y1="6.5" x2="8.6" y2="10.5"/></svg>
+        </div>
+        <h3>Composable workflows</h3>
+        <p>Bundle extensions, skills, knowledge, and a model into one reusable unit. Share it across labs to run the same task on each site's own data. The workflow carries the instructions, not the records.</p>
+      </div>
+
+      <div class="feature-tile reveal">
+        <div class="icon-tile">
+          <svg class="icon" viewBox="0 0 24 24"><circle cx="5" cy="6" r="2.2"/><circle cx="19" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/><line x1="6.9" y1="7.1" x2="10.6" y2="16"/><line x1="17.1" y1="7.1" x2="13.4" y2="16"/><line x1="7.2" y1="6" x2="16.8" y2="6"/></svg>
+        </div>
+        <h3>Knowledge that compounds</h3>
+        <p>BioRouter helps you organize what you learn into a connected knowledge base. The agent reads from it in every chat, so it gets more useful the more you add.</p>
+      </div>
+
+      <div class="feature-tile reveal">
+        <div class="icon-tile">
+          <svg class="icon" viewBox="0 0 24 24"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+        </div>
+        <h3>Skills, the atomic unit</h3>
+        <p>A skill is a set of instructions that teaches the agent to do one thing the same way every time. Use them to repeat a method exactly, control what the agent reads, or walk through a procedure step by step.</p>
+      </div>
+
+      <div class="feature-tile reveal">
+        <div class="icon-tile">
+          <svg class="icon" viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 11v6c0 1.66 3.58 3 8 3s8-1.34 8-3v-6"/></svg>
+        </div>
+        <h3>Connect to any database</h3>
+        <p>Extensions connect the agent to outside systems over the Model Context Protocol: clinical data warehouses, biomedical knowledge graphs, literature APIs, and your own tools. Once added, they work in every session.</p>
+      </div>
+
+      <div class="feature-tile reveal">
+        <div class="icon-tile">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        </div>
+        <h3>Every model, your trust boundary</h3>
+        <p>Run institutional models on UCSF-hosted Azure OpenAI and Bedrock, local models with a built-in llama.cpp server (no setup) or Ollama, or commercial models like Claude, GPT, and Gemini. Pick what each task needs and switch from the same screen.</p>
+      </div>
+
+      <div class="feature-tile reveal">
+        <div class="icon-tile">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        </div>
+        <h3>Scale and automate</h3>
+        <p>Run many agents at once in Dashboard mode for coding, research, and analysis. Schedule workflows to run on their own, even when the app is closed.</p>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ─── Product tour ───────────────────────────────────────── -->
+  <div class="tour" id="product-tour">
+
+    <div class="section-label tour-group-label reveal up">
+      <p class="eyebrow">A guided tour</p>
+      <h2>Built for how researchers actually work</h2>
+      <p>From a single question to many agents at once, the whole workflow stays in one window.</p>
+    </div>
+
+    <!-- Chaptered tour player (video/tour.html, rendered with Hyperframes) -->
+    <div class="tour-player reveal up">
+      <div class="video-card">
+        <video
+          id="tour-video" controls muted playsinline preload="metadata"
+          poster="assets/videos/posters/biorouter-tour.jpg"
+          aria-label="A two-minute guided tour of BioRouter: Home, Chat, Dashboard, Knowledge, Workflows and Models"
+        >
+          <source src="assets/videos/biorouter-tour.webm" type="video/webm" />
+          <source src="assets/videos/biorouter-tour.mp4" type="video/mp4" />
+        </video>
+      </div>
+      <div class="tour-chapters" role="tablist" aria-label="Jump to a chapter">
+        <button class="tour-chip active" data-t="3"  type="button"><span class="n">01</span>Home</button>
+        <button class="tour-chip" data-t="10" type="button"><span class="n">02</span>Chat</button>
+        <button class="tour-chip" data-t="17" type="button"><span class="n">03</span>Dashboard</button>
+        <button class="tour-chip" data-t="24" type="button"><span class="n">04</span>Knowledge</button>
+        <button class="tour-chip" data-t="31" type="button"><span class="n">05</span>Workflows</button>
+        <button class="tour-chip" data-t="38" type="button"><span class="n">06</span>Models</button>
+      </div>
+    </div>
+
+    <!-- Home / command center -->
+    <div class="tour-row">
+      <div class="tour-media reveal zoom">
+        <div class="frame"><div data-screen="home" role="img" aria-label="BioRouter Home dashboard showing session and token analytics and recent chats"></div></div>
+      </div>
+      <div class="tour-text reveal right">
+        <span class="tour-eyebrow">Home</span>
+        <h3>One place to start every investigation</h3>
+        <p>The Home screen opens with a prompt and a summary of your work: how many sessions you've run, how many tokens you've used over the past day, month, and week, and the chats you opened most recently. Continue an analysis you started earlier or begin a new one.</p>
+        <div class="tour-tags">
+          <span class="tour-tag">Session analytics</span>
+          <span class="tour-tag">Token usage</span>
+          <span class="tour-tag">Recent activity</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Chat window -->
+    <div class="tour-row reverse">
+      <div class="tour-media reveal zoom">
+        <div class="frame"><div data-screen="chat" role="img" aria-label="BioRouter chat window issuing live OMOP SQL queries against a UCSF clinical warehouse"></div></div>
+      </div>
+      <div class="tour-text reveal left">
+        <span class="tour-eyebrow">Chat</span>
+        <h3>A conversation that reaches into your data</h3>
+        <p>Ask a question in plain language and the agent gets to work. In this session it writes and runs OMOP SQL against a UCSF clinical warehouse, reads from your knowledge base, and calls skills, showing each step as it goes. You can change models partway through, or save a useful chat as a workflow in one click.</p>
+        <div class="tour-tags">
+          <span class="tour-tag">Live tool calls</span>
+          <span class="tour-tag">Knowledge &amp; skill calling</span>
+          <span class="tour-tag">Model switching</span>
+          <span class="tour-tag">One-click workflow</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Dashboard mode -->
+    <div class="tour-row">
+      <div class="tour-media reveal zoom">
+        <div class="frame"><div data-screen="dashboard" role="img" aria-label="BioRouter dashboard mode showing many parallel agent sessions laid out on one canvas"></div></div>
+      </div>
+      <div class="tour-text reveal right">
+        <span class="tour-eyebrow">Dashboard mode</span>
+        <h3>Run many agents at once</h3>
+        <p>Dashboard mode lays out many sessions on one canvas so you can run them side by side. Split coding, literature review, and data analysis across dozens of agents working at the same time, and organize, fold, and watch them from a single view.</p>
+        <div class="tour-tags">
+          <span class="tour-tag">Parallel sessions</span>
+          <span class="tour-tag">High throughput</span>
+          <span class="tour-tag">Coding &amp; research</span>
+          <span class="tour-tag">Biomedical tasks</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- History -->
+    <div class="tour-row reverse">
+      <div class="tour-media reveal zoom">
+        <div class="frame"><div data-screen="history" role="img" aria-label="BioRouter chat history listing past sessions with message counts, token usage, and linked artifacts"></div></div>
+      </div>
+      <div class="tour-text reveal left">
+        <span class="tour-eyebrow">History</span>
+        <h3>Nothing gets lost</h3>
+        <p>Every session is saved, timestamped, and searchable, with message counts, token usage, and linked files grouped by day. Reopen last week's GWAS analysis, check how a result was produced, or import a colleague's session and run it yourself.</p>
+        <div class="tour-tags">
+          <span class="tour-tag">Full-text search</span>
+          <span class="tour-tag">Reproducible</span>
+          <span class="tour-tag">Importable sessions</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-label tour-group-label reveal up" style="margin-top:36px;">
+      <p class="eyebrow">The agentic stack</p>
+      <h2>Composable building blocks</h2>
+      <p>Every agent in BioRouter is built from the same parts: extensions, skills, knowledge, and models. Configure them once, then reuse and share.</p>
+    </div>
+
+    <!-- Workflows -->
+    <div class="tour-row">
+      <div class="tour-media reveal zoom">
+        <div class="frame"><div data-screen="workflows" role="img" aria-label="BioRouter Workflows screen showing a saved Scientific Article Writing and Reference Validator workflow"></div></div>
+      </div>
+      <div class="tour-text reveal right">
+        <span class="tour-eyebrow">Workflows</span>
+        <h3>Package an entire agent, not just a prompt</h3>
+        <p>A workflow holds everything an agent needs in one file, so the same setup runs the same way each time. Share it across labs and institutions to keep results consistent, and to run the same task on each site's data without moving the data itself.</p>
+        <div class="compose">
+          <span class="c-chip">Extensions</span><span class="c-op">+</span>
+          <span class="c-chip">Skills</span><span class="c-op">+</span>
+          <span class="c-chip">Knowledge</span><span class="c-op">+</span>
+          <span class="c-chip">Model</span><span class="c-op">=</span>
+          <span class="c-result">Workflow</span>
+        </div>
+        <div class="tour-tags">
+          <span class="tour-tag">Reproducible</span>
+          <span class="tour-tag">Shareable</span>
+          <span class="tour-tag">Federated</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Extensions -->
+    <div class="tour-row reverse">
+      <div class="tour-media reveal zoom">
+        <div class="frame"><div data-screen="extensions" role="img" aria-label="BioRouter Extensions library listing connectors for databases, knowledge graphs, memory, and tools"></div></div>
+      </div>
+      <div class="tour-text reveal left">
+        <span class="tour-eyebrow">Extensions</span>
+        <h3>Connect to any database or service</h3>
+        <p>Extensions give the agent access to outside systems. Over the Model Context Protocol, add clinical data warehouses, biomedical knowledge graphs, literature APIs, memory, and your own tools. Each extension adds abilities the agent can use in any chat.</p>
+        <div class="tour-tags">
+          <span class="tour-tag">MCP connections</span>
+          <span class="tour-tag">Databases</span>
+          <span class="tour-tag">Services &amp; APIs</span>
+          <span class="tour-tag">Custom tools</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Skills -->
+    <div class="tour-row">
+      <div class="tour-media reveal zoom">
+        <div class="frame"><div data-screen="skills" role="img" aria-label="BioRouter Skills library showing reusable instruction sets for clinical databases and data visualization"></div></div>
+      </div>
+      <div class="tour-text reveal right">
+        <span class="tour-eyebrow">Skills</span>
+        <h3>The smallest piece you build an agent from</h3>
+        <p>A skill is a set of instructions that teaches the agent how to do something and do it the same way every time. Skills are good for repeating a method exactly, controlling what the agent reads, and explaining or reproducing a process. Each one is small and shareable, and you can combine several for bigger jobs.</p>
+        <div class="tour-tags">
+          <span class="tour-tag">Replication</span>
+          <span class="tour-tag">Context engineering</span>
+          <span class="tour-tag">Explain &amp; reproduce</span>
+          <span class="tour-tag">Composable</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Knowledge -->
+    <div class="tour-row reverse">
+      <div class="tour-media reveal zoom">
+        <div class="frame"><div data-screen="knowledge" role="img" aria-label="BioRouter Knowledge base rendering a personal knowledge graph of biomedical concepts and sources"></div></div>
+      </div>
+      <div class="tour-text reveal left">
+        <span class="tour-eyebrow">Knowledge</span>
+        <h3>A personal knowledge base that gets more useful as you go</h3>
+        <p>BioRouter helps you build a personal knowledge base, organizing what you learn into a connected graph. The agent reads from it in every conversation, and it gets more useful as you add to it. Drop in documents and the agent can use them right away.</p>
+        <div class="tour-tags">
+          <span class="tour-tag">LLM-curated</span>
+          <span class="tour-tag">Knowledge graph</span>
+          <span class="tour-tag">Compounding context</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scheduler -->
+    <div class="tour-row">
+      <div class="tour-media reveal zoom">
+        <div class="frame"><div data-screen="scheduler" role="img" aria-label="BioRouter Scheduler screen for creating scheduled tasks that run workflows automatically"></div></div>
+      </div>
+      <div class="tour-text reveal right">
+        <span class="tour-eyebrow">Scheduler</span>
+        <h3>Put your research on autopilot</h3>
+        <p>Set workflows to run on a schedule you choose: a nightly literature check, a weekly data pull, a regular analysis. Set up the task once and it runs on its own, with the results ready when you come back.</p>
+        <div class="tour-tags">
+          <span class="tour-tag">Automation</span>
+          <span class="tour-tag">Cron schedules</span>
+          <span class="tour-tag">Recurring tasks</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Models -->
+    <div class="tour-row reverse">
+      <div class="tour-media reveal zoom">
+        <div class="frame"><div data-screen="models" role="img" aria-label="BioRouter provider configuration grouping models into institutional, local, and commercial tiers"></div></div>
+      </div>
+      <div class="tour-text reveal left">
+        <span class="tour-eyebrow">Models &amp; providers</span>
+        <h3>Every model, your choice of trust boundary</h3>
+        <p>BioRouter works with every major provider, grouped into three kinds. <strong>Institutional</strong> models run on UCSF-hosted Azure OpenAI and Bedrock for sensitive data. <strong>Local</strong> models run on a bundled llama.cpp server — no Ollama, no setup — or through Ollama, and never leave your machine. <strong>Commercial</strong> models include Claude, GPT, Gemini, and many more. Pick what a task needs, switch whenever you want, and your API keys stay encrypted on your device.</p>
+        <div class="provider-grid">
+          <div class="provider-chip highlight">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M3 21h18M5 21V8l7-4 7 4v13"/><path d="M9 9v.01M15 9v.01M9 13v.01M15 13v.01M9 17v.01M15 17v.01"/></svg>
+            UCSF Azure OpenAI
+          </div>
+          <div class="provider-chip highlight">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M3 21h18M5 21V8l7-4 7 4v13"/><path d="M9 9v.01M15 9v.01M9 13v.01M15 13v.01M9 17v.01M15 17v.01"/></svg>
+            UCSF Amazon Bedrock
+          </div>
+          <div class="provider-chip highlight">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/></svg>
+            Llama Server (local, built-in)
+          </div>
+          <div class="provider-chip">Ollama (local)</div>
+          <div class="provider-chip">Anthropic Claude</div>
+          <div class="provider-chip">OpenAI GPT</div>
+          <div class="provider-chip">Google Gemini</div>
+          <div class="provider-chip">X.AI Grok</div>
+          <div class="provider-chip">OpenRouter</div>
+          <div class="provider-chip">Databricks</div>
+          <div class="provider-chip">Z.AI &amp; more</div>
+          <div class="provider-chip">Custom endpoints</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="cta-strip">
+    <div class="links">
+      <a href="about.html" class="btn-ghost">About and acknowledgements</a>
+      <a href="https://github.com/BaranziniLab/BioRouter/releases/tag/v1.86.1" target="_blank" class="btn-ghost" id="release-notes-link"><span id="release-version">v1.86.1</span> release notes</a>
+      <a href="https://baranzinilab.ucsf.edu/" target="_blank" class="btn-ghost">Baranzini Lab</a>
+    </div>
+  </div>
+
+</main>
+
+<footer>
+  <p>UCSF BioRouter · Apache 2.0 License · <a href="https://github.com/BaranziniLab/BioRouter" target="_blank">GitHub</a> · <a href="https://baranzinilab.ucsf.edu/" target="_blank">Baranzini Lab</a> · <a href="https://www.ucsf.edu" target="_blank">UCSF</a></p>
+</footer>
+
+<script src="app-mockups.js"></script>
+<script>
+  function toggleMobileMenu() { document.getElementById('mobile-menu').classList.toggle('open'); }
+  document.addEventListener('click', e => {
+    const m = document.getElementById('mobile-menu');
+    const h = document.querySelector('.hamburger');
+    if (m.classList.contains('open') && !m.contains(e.target) && !h.contains(e.target)) m.classList.remove('open');
+  });
+
+  // Keep the version in sync with the latest GitHub release (same source the
+  // Download page uses). Falls back to the static version already in the HTML.
+  (function () {
+    fetch('https://api.github.com/repos/BaranziniLab/BioRouter/releases/latest', {
+      headers: { 'Accept': 'application/vnd.github+json' },
+    })
+      .then(res => { if (!res.ok) throw new Error('release fetch failed: ' + res.status); return res.json(); })
+      .then(data => {
+        const tag = data && data.tag_name;
+        if (!tag) return;
+        const heroV = document.getElementById('hero-version');
+        const relV = document.getElementById('release-version');
+        const relLink = document.getElementById('release-notes-link');
+        if (heroV) heroV.textContent = tag;
+        if (relV) relV.textContent = tag;
+        if (relLink) relLink.href = 'https://github.com/BaranziniLab/BioRouter/releases/tag/' + tag;
+      })
+      .catch(() => { /* keep the static version */ });
+  })();
+
+  // Scroll progress — fill the bar to match how far down the page you are.
+  (function () {
+    const bar = document.getElementById('scroll-progress');
+    if (!bar) return;
+    let ticking = false;
+    function update() {
+      const doc = document.documentElement;
+      const max = doc.scrollHeight - doc.clientHeight;
+      const pct = max > 0 ? Math.min(100, (doc.scrollTop || window.scrollY) / max * 100) : 0;
+      bar.style.width = pct + '%';
+      ticking = false;
+    }
+    function onScroll() {
+      if (!ticking) { window.requestAnimationFrame(update); ticking = true; }
+    }
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
+    update();
+  })();
+
+  // Scroll-reveal: zoom screenshots in and slide their captions alongside.
+  (function () {
+    const els = document.querySelectorAll('.reveal');
+    if (!('IntersectionObserver' in window) || !els.length) {
+      els.forEach(el => el.classList.add('in'));
+      return;
+    }
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('in');
+          io.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.18, rootMargin: '0px 0px -8% 0px' });
+    els.forEach(el => io.observe(el));
+  })();
+
+  // Chaptered product tour: chips seek the video; the active chip tracks playback.
+  (function () {
+    const video = document.getElementById('tour-video');
+    const chips = Array.from(document.querySelectorAll('.tour-chip'));
+    if (!video || !chips.length) return;
+    const times = chips.map(c => parseFloat(c.dataset.t));
+    function setActive(i) {
+      chips.forEach((c, j) => c.classList.toggle('active', j === i));
+    }
+    chips.forEach((chip, i) => {
+      chip.addEventListener('click', () => {
+        video.currentTime = times[i];
+        setActive(i);
+        const p = video.play();
+        if (p && p.catch) p.catch(() => {});
+      });
+    });
+    video.addEventListener('timeupdate', () => {
+      const t = video.currentTime;
+      let idx = 0;
+      for (let i = 0; i < times.length; i++) { if (t >= times[i] - 0.3) idx = i; }
+      setActive(idx);
+    });
+  })();
+
+  // Respect reduced-motion: pause autoplaying loops, show the poster instead.
+  (function () {
+    if (!window.matchMedia || !window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    document.querySelectorAll('video[autoplay]').forEach(v => {
+      v.removeAttribute('autoplay');
+      v.removeAttribute('loop');
+      v.setAttribute('controls', '');
+      try { v.pause(); v.currentTime = 0; } catch (e) {}
+    });
+  })();
+</script>
+</body>
+</html>

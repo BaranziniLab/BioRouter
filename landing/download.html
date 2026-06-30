@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UCSF BioRouter Download</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    .download-hero {
+      padding: 72px 24px 36px;
+      text-align: center;
+    }
+    .download-hero h1 { font-size: clamp(28px, 4vw, 44px); font-weight: 700; letter-spacing: -1.2px; margin-bottom: 10px; }
+    .download-hero p { color: var(--text-2); font-size: 16px; max-width: 500px; margin: 0 auto; line-height: 1.6; }
+    .version-badge {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 12px; border-radius: var(--radius);
+      background: var(--accent-soft);
+      color: var(--accent); font-size: 12px; font-weight: 600;
+      margin-bottom: 18px;
+    }
+
+    /* Detected platform — flat surface */
+    .detected-platform { padding: 32px 24px 16px; max-width: 720px; margin: 0 auto; text-align: center; }
+    .detected-card {
+      background: var(--bg-2);
+      border-radius: var(--radius-xl);
+      padding: 36px 32px;
+      box-shadow: var(--shadow-lg);
+    }
+    .detected-card .eyebrow { font-size: 11px; color: var(--accent); font-weight: 700; letter-spacing: 1.4px; text-transform: uppercase; margin-bottom: 12px; }
+    .detected-card h2 { font-size: 24px; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.4px; }
+    .detected-card .desc { color: var(--text-2); font-size: 14px; margin-bottom: 24px; }
+    .dl-btn-big {
+      display: inline-flex; align-items: center; gap: 10px;
+      padding: 14px 32px; border-radius: var(--radius);
+      background: var(--accent); color: #fff;
+      font-size: 16px; font-weight: 700;
+      text-decoration: none;
+      transition: background var(--transition), transform var(--transition);
+    }
+    .dl-btn-big:hover { background: var(--accent-hover); }
+    .dl-btn-big:active { transform: translateY(1px); }
+    .dl-btn-big svg { width: 18px; height: 18px; }
+    .detected-card .note { margin-top: 16px; font-size: 13px; color: var(--text-3); }
+    .detected-card .note a { color: var(--accent); text-decoration: none; }
+    .detected-card .note a:hover { text-decoration: underline; }
+
+    /* All platforms */
+    .all-platforms { padding: 32px 24px 0; max-width: 920px; margin: 0 auto; }
+    .all-platforms h3 { font-size: 17px; font-weight: 700; margin-bottom: 18px; color: var(--text); text-align: center; }
+    .platform-table {
+      width: 100%; border-collapse: collapse;
+      background: var(--bg-2);
+      border-radius: var(--radius-xl);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+    .platform-table th {
+      text-align: left; padding: 13px 18px;
+      font-size: 11px; font-weight: 700; letter-spacing: 0.8px;
+      text-transform: uppercase; color: var(--text-3);
+      background: var(--bg-3);
+      border-bottom: 1px solid var(--border);
+    }
+    .platform-table td { padding: 13px 18px; font-size: 14px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    .platform-table tr:last-child td { border-bottom: none; }
+    .platform-table tr:hover td { background: var(--bg-3); }
+    .platform-os { font-weight: 600; }
+    .platform-os small { display: block; font-size: 12px; color: var(--text-3); font-weight: 400; margin-top: 2px; }
+    .install-code {
+      font-family: 'Menlo', 'Consolas', 'Courier New', monospace;
+      font-size: 12px; color: var(--text-2);
+      background: var(--bg-3); padding: 3px 8px; border-radius: 4px;
+    }
+    .dl-chip {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 6px 13px; border-radius: var(--radius);
+      background: var(--accent-soft); color: var(--accent);
+      text-decoration: none;
+      font-size: 13px; font-weight: 600; white-space: nowrap;
+      transition: var(--transition);
+    }
+    .dl-chip:hover { background: var(--accent); color: #fff; }
+    .dl-chip:active { transform: translateY(1px); }
+
+    /* Setup section — flat tiles */
+    .setup-section {
+      max-width: 920px; margin: 40px auto 64px; padding: 0 24px;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 4px;
+      background: transparent;
+    }
+    .setup-tile {
+      background: var(--bg-2);
+      border-radius: var(--radius-xl);
+      padding: 22px 24px;
+      box-shadow: var(--shadow);
+      transition: background var(--transition);
+    }
+    .setup-tile:hover { background: var(--bg-3); }
+    .setup-tile .icon-tile { margin-bottom: 12px; }
+    .setup-tile h4 { font-size: 15px; font-weight: 700; margin-bottom: 8px; letter-spacing: -0.1px; }
+    .setup-tile p { font-size: 13px; color: var(--text-2); line-height: 1.65; }
+    .setup-tile a { color: var(--accent); text-decoration: none; font-weight: 600; }
+    .setup-tile a:hover { text-decoration: underline; }
+
+    @media (max-width: 640px) {
+      .all-platforms { padding-inline: 16px; }
+      .platform-table,
+      .platform-table tbody,
+      .platform-table tr,
+      .platform-table td { display: block; width: 100%; }
+      .platform-table { border-collapse: separate; background: transparent; box-shadow: none; overflow: visible; }
+      .platform-table thead { display: none; }
+      .platform-table tr {
+        background: var(--bg-2);
+        border-radius: var(--radius-xl);
+        box-shadow: var(--shadow);
+        margin-bottom: 10px;
+        overflow: hidden;
+      }
+      .platform-table td {
+        display: grid;
+        grid-template-columns: 94px minmax(0, 1fr);
+        gap: 12px;
+        align-items: center;
+        padding: 11px 14px;
+      }
+      .platform-table td::before {
+        color: var(--text-3);
+        content: "";
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.7px;
+        text-transform: uppercase;
+      }
+      .platform-table td:nth-child(1)::before { content: "Platform"; }
+      .platform-table td:nth-child(2)::before { content: "Installer"; }
+      .platform-table td:nth-child(3)::before { content: "Install"; }
+      .platform-table td:nth-child(4)::before { content: "Download"; }
+      .platform-table tr:hover td { background: var(--bg-2); }
+      .platform-table code,
+      .install-code { white-space: normal; overflow-wrap: anywhere; }
+      .dl-chip { width: max-content; }
+    }
+  </style>
+</head>
+<body>
+
+<nav id="navbar">
+  <a class="nav-brand" href="./">
+    <img src="icon.svg" class="nav-logo" alt="BioRouter" />
+    <span class="nav-title">UCSF BioRouter</span>
+  </a>
+  <ul class="nav-tabs">
+    <li><a href="./">Introduction</a></li>
+    <li><a href="download.html" class="active">Download</a></li>
+    <li><a href="docs.html">Documentation</a></li>
+    <li><a href="baam.html">BAAM</a></li>
+    <li><a href="about.html">About</a></li>
+  </ul>
+  <div class="nav-right">
+    <a href="https://github.com/BaranziniLab/BioRouter" target="_blank" class="nav-gh-btn">
+      <svg class="icon icon-sm" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
+      GitHub
+    </a>
+  </div>
+  <button class="hamburger" onclick="toggleMobileMenu()" aria-label="Menu">
+    <span></span><span></span><span></span>
+  </button>
+</nav>
+<div class="mobile-menu" id="mobile-menu">
+  <a href="./">Introduction</a>
+  <a href="download.html" class="active">Download</a>
+  <a href="docs.html">Documentation</a>
+  <a href="baam.html">BAAM</a>
+  <a href="about.html">About</a>
+  <a href="https://github.com/BaranziniLab/BioRouter" target="_blank" style="margin-top:8px;">GitHub</a>
+</div>
+
+<main class="page">
+
+  <div class="download-hero">
+    <div class="version-badge" id="version-badge">v1.86.1 · June 2026</div>
+    <h1>Download BioRouter</h1>
+    <p>Native installers for every major platform. Each one now bundles the <code>biorouter</code> command-line interface. Open source, free to use.</p>
+  </div>
+
+  <div class="detected-platform">
+    <div class="detected-card">
+      <p class="eyebrow" id="detected-label">Detecting your system</p>
+      <h2 id="detected-title">Preparing your download</h2>
+      <p class="desc" id="detected-desc">Finding the right installer for your operating system.</p>
+      <a id="detected-btn" href="#" class="dl-btn-big" target="_blank" style="display:none;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span id="detected-btn-text">Download</span>
+      </a>
+      <p class="note">
+        After installing, follow the <a href="docs.html">setup guide</a> to connect your AI provider.
+        See all platforms below.
+      </p>
+    </div>
+  </div>
+
+  <div class="all-platforms">
+    <h3>All platforms</h3>
+    <table class="platform-table">
+      <thead>
+        <tr>
+          <th>Platform</th>
+          <th>Installer</th>
+          <th>Install</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr data-row="mac-arm">
+          <td><div class="platform-os">macOS <small>Apple Silicon (M1/M2/M3/M4)</small></div></td>
+          <td><code class="file-name">BioRouter-1.86.1-arm64.dmg</code></td>
+          <td><span class="install-code">Drag to /Applications</span></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/BioRouter/releases/download/v1.86.1/BioRouter-1.86.1-arm64.dmg">↓ .dmg</a></td>
+        </tr>
+        <tr data-row="mac-intel">
+          <td><div class="platform-os">macOS <small>Intel (x86_64)</small></div></td>
+          <td><code class="file-name">BioRouter-1.86.1-x64.dmg</code></td>
+          <td><span class="install-code">Drag to /Applications</span></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/BioRouter/releases/download/v1.86.1/BioRouter-1.86.1-x64.dmg">↓ .dmg</a></td>
+        </tr>
+        <tr data-row="windows">
+          <td><div class="platform-os">Windows <small>x64</small></div></td>
+          <td><code class="file-name">BioRouter-win32-x64-1.86.1.zip</code></td>
+          <td><span class="install-code">Unzip, run BioRouter.exe</span></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/BioRouter/releases/download/v1.86.1/BioRouter-win32-x64-1.86.1.zip">↓ .zip</a></td>
+        </tr>
+        <tr data-row="linux-deb">
+          <td><div class="platform-os">Linux <small>Ubuntu / Pop!_OS (x64)</small></div></td>
+          <td><code class="file-name">biorouter_1.86.1_amd64.deb</code></td>
+          <td><span class="install-code">sudo dpkg -i *.deb</span></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/BioRouter/releases/download/v1.86.1/biorouter_1.86.1_amd64.deb">↓ .deb</a></td>
+        </tr>
+        <tr data-row="linux-rpm">
+          <td><div class="platform-os">Linux <small>Fedora / RHEL (x64)</small></div></td>
+          <td><code class="file-name">BioRouter-1.86.1-1.x86_64.rpm</code></td>
+          <td><span class="install-code">sudo rpm -i *.rpm</span></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/BioRouter/releases/download/v1.86.1/BioRouter-1.86.1-1.x86_64.rpm">↓ .rpm</a></td>
+        </tr>
+        <tr data-row="linux-cli-deb">
+          <td><div class="platform-os">Linux (CLI only) <small>Ubuntu / Debian (x64)</small></div></td>
+          <td><code class="file-name">biorouter-cli_1.86.1_amd64.deb</code></td>
+          <td><span class="install-code">sudo apt install ./*.deb</span></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/BioRouter/releases/download/v1.86.1/biorouter-cli_1.86.1_amd64.deb">↓ .deb</a></td>
+        </tr>
+        <tr data-row="linux-cli-rpm">
+          <td><div class="platform-os">Linux (CLI only) <small>Fedora / RHEL (x64)</small></div></td>
+          <td><code class="file-name">biorouter-cli-1.86.1-1.x86_64.rpm</code></td>
+          <td><span class="install-code">sudo dnf install ./*.rpm</span></td>
+          <td><a class="dl-chip dl-link" href="https://github.com/BaranziniLab/BioRouter/releases/download/v1.86.1/biorouter-cli-1.86.1-1.x86_64.rpm">↓ .rpm</a></td>
+        </tr>
+      </tbody>
+    </table>
+    <p class="note" style="margin-top:16px;">
+      <strong>The <code>biorouter</code> CLI ships with every desktop download.</strong>
+      After installing the app, accept the “Install Biorouter CLI” prompt (or run
+      <code>biorouter setup-path</code>) to call <code>biorouter</code> from any terminal.
+      The two <strong>CLI-only</strong> Linux packages install just the headless
+      binaries (<code>biorouter</code> + the <code>biorouterd</code> server) to
+      <code>/usr/bin</code> with no desktop GUI. They work well on servers, HPC nodes, and
+      containers. Run <code>biorouter doctor</code> after install to check optional
+      prerequisites.
+    </p>
+  </div>
+
+  <!-- Setup tiles -->
+  <div class="setup-section">
+    <div class="setup-tile">
+      <div class="icon-tile">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V8l7-4 7 4v13"/><path d="M9 9v.01M15 9v.01M9 13v.01M15 13v.01M9 17v.01M15 17v.01"/></svg>
+      </div>
+      <h4>UCSF affiliated</h4>
+      <p>Use <strong>UCSF Versa</strong>, the institutional AI platform, for secure, policy-compliant access.<br><br><a href="https://ai.ucsf.edu/platforms-tools-and-resources/ucsf-versa" target="_blank">Set up UCSF Versa →</a></p>
+    </div>
+    <div class="setup-tile">
+      <div class="icon-tile">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="3"/><line x1="6" y1="10" x2="6" y2="14"/><line x1="10" y1="10" x2="10" y2="14"/><line x1="14" y1="12" x2="14" y2="12"/><line x1="18" y1="12" x2="18" y2="12"/></svg>
+      </div>
+      <h4>Local and private</h4>
+      <p>Run AI on your device with BioRouter's bundled Llama Server, or use Ollama if you already have it installed. No API key, no data leaves your machine.<br><br><a href="docs.html#providers">Local model setup →</a></p>
+    </div>
+    <div class="setup-tile">
+      <div class="icon-tile">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6"/><path d="m15.5 7.5 3 3L22 7l-3-3"/></svg>
+      </div>
+      <h4>Commercial API keys</h4>
+      <p>Use your own Anthropic or OpenAI key for direct cloud access. Per institution policy, access to research databases may be limited with personal keys.<br><br><a href="https://platform.claude.com/" target="_blank">Anthropic</a> · <a href="https://openai.com/api/" target="_blank">OpenAI</a></p>
+    </div>
+    <div class="setup-tile">
+      <div class="icon-tile">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+      </div>
+      <h4>Need help?</h4>
+      <p>Follow the step-by-step setup guide for your platform and provider, including UCSF-specific configuration for Azure OpenAI and Amazon Bedrock.<br><br><a href="docs.html">Setup guide →</a></p>
+    </div>
+  </div>
+
+</main>
+
+<footer>
+  <p>UCSF BioRouter · Apache 2.0 License · <a href="https://github.com/BaranziniLab/BioRouter" target="_blank">GitHub</a> · <a href="https://baranzinilab.ucsf.edu/" target="_blank">Baranzini Lab</a> · <a href="https://www.ucsf.edu" target="_blank">UCSF</a></p>
+</footer>
+
+<script>
+  function toggleMobileMenu() { document.getElementById('mobile-menu').classList.toggle('open'); }
+  document.addEventListener('click', e => {
+    const m = document.getElementById('mobile-menu');
+    const h = document.querySelector('.hamburger');
+    if (m.classList.contains('open') && !m.contains(e.target) && !h.contains(e.target)) m.classList.remove('open');
+  });
+
+  const ROW_MATCHERS = {
+    'mac-arm':      /arm64\.dmg$/i,
+    'mac-intel':    /(x64|x86_64)\.dmg$/i,
+    'windows':      /win32-x64.*\.zip$/i,
+    // GUI packages start "biorouter_" / "BioRouter-<digit>"; the CLI-only
+    // packages start "biorouter-cli" — keep the two sets from cross-matching.
+    'linux-deb':     /^biorouter_[0-9].*amd64\.deb$/i,
+    'linux-rpm':     /^biorouter-[0-9].*x86_64\.rpm$/i,
+    'linux-cli-deb': /^biorouter-cli_.*amd64\.deb$/i,
+    'linux-cli-rpm': /^biorouter-cli-.*x86_64\.rpm$/i,
+  };
+
+  const OS_TO_ROW = {
+    'mac-arm':   { row: 'mac-arm',   label: 'macOS, Apple Silicon', title: 'Download for macOS (Apple Silicon)', desc: 'Open the DMG and drag BioRouter to /Applications' },
+    'mac-intel': { row: 'mac-intel', label: 'macOS, Intel',         title: 'Download for macOS (Intel)',         desc: 'Open the DMG and drag BioRouter to /Applications' },
+    'windows':   { row: 'windows',   label: 'Windows, x64',         title: 'Download for Windows',                desc: 'Unzip the archive and run BioRouter.exe' },
+    'linux':     { row: 'linux-deb', label: 'Linux, Ubuntu / Debian', title: 'Download for Linux (Debian)',       desc: 'Install with: sudo dpkg -i the downloaded .deb' },
+  };
+
+  // Infer the Mac CPU from the GPU renderer string. Apple Silicon reports an
+  // "Apple GPU"; Intel-era Macs report Intel / AMD / NVIDIA. Works in Safari
+  // and Firefox, where User-Agent Client Hints are unavailable.
+  function macArchFromWebGL() {
+    try {
+      const canvas = document.createElement('canvas');
+      const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+      if (!gl) return null;
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      const renderer = String(
+        (dbg && gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL)) || gl.getParameter(gl.RENDERER) || ''
+      ).toLowerCase();
+      if (!renderer) return null;
+      if (/intel|amd|radeon|nvidia|geforce/.test(renderer)) return 'mac-intel';
+      if (/apple/.test(renderer)) return 'mac-arm';
+    } catch (e) {}
+    return null;
+  }
+
+  async function detectMacArch() {
+    // 1) Chromium gives the CPU architecture directly, but only as a
+    //    high-entropy hint that must be requested asynchronously.
+    try {
+      if (navigator.userAgentData && navigator.userAgentData.getHighEntropyValues) {
+        const hints = await navigator.userAgentData.getHighEntropyValues(['architecture']);
+        const arch = (hints.architecture || '').toLowerCase();
+        if (arch === 'arm') return 'mac-arm';
+        if (arch === 'x86' || arch === 'x86_64' || arch === 'x64') return 'mac-intel';
+      }
+    } catch (e) {}
+    // 2) Fall back to the GPU renderer (Safari / Firefox).
+    return macArchFromWebGL();
+  }
+
+  async function detectOS() {
+    const ua   = navigator.userAgent.toLowerCase();
+    const plat = (navigator.userAgentData?.platform || navigator.platform || '').toLowerCase();
+    // navigator.platform reports "MacIntel" even on Apple Silicon, so the chip
+    // must be detected separately rather than guessed.
+    if (/mac/.test(plat) || /macintosh/.test(ua)) {
+      return (await detectMacArch()) || 'mac-unknown';
+    }
+    if (/win/.test(plat) || /windows/.test(ua)) return 'windows';
+    if (/linux/.test(plat) || /linux/.test(ua)) return 'linux';
+    return null;
+  }
+
+  async function renderDetectedCard(rowAssets) {
+    const os = await detectOS();
+    const lbl = document.getElementById('detected-label');
+    const ttl = document.getElementById('detected-title');
+    const dsc = document.getElementById('detected-desc');
+    const btn = document.getElementById('detected-btn');
+    const btx = document.getElementById('detected-btn-text');
+    const meta = OS_TO_ROW[os];
+    const asset = meta && rowAssets[meta.row];
+    if (meta && asset) {
+      lbl.textContent = 'Detected: ' + meta.label;
+      ttl.textContent = meta.title;
+      dsc.textContent = meta.desc;
+      btn.href = asset.url;
+      btx.textContent = 'Download ' + asset.name;
+      btn.style.display = 'inline-flex';
+    } else if (os === 'mac-unknown') {
+      lbl.textContent = 'Detected: macOS';
+      ttl.textContent = 'Choose your Mac download';
+      dsc.textContent = "We couldn't tell whether this Mac uses Apple Silicon or Intel. Apple Silicon covers M1 and newer; pick the matching build below.";
+      btn.style.display = 'none';
+    } else {
+      lbl.textContent = 'All platforms';
+      ttl.textContent = 'Choose your download';
+      dsc.textContent = 'Select your platform from the table below.';
+      btn.style.display = 'none';
+    }
+  }
+
+  function readStaticAssets() {
+    const out = {};
+    document.querySelectorAll('tr[data-row]').forEach(tr => {
+      const row = tr.dataset.row;
+      const fileEl = tr.querySelector('.file-name');
+      const linkEl = tr.querySelector('.dl-link');
+      if (fileEl && linkEl) out[row] = { name: fileEl.textContent.trim(), url: linkEl.href };
+    });
+    return out;
+  }
+
+  function applyAssets(rowAssets) {
+    Object.entries(rowAssets).forEach(([row, asset]) => {
+      const tr = document.querySelector(`tr[data-row="${row}"]`);
+      if (!tr) return;
+      const fileEl = tr.querySelector('.file-name');
+      const linkEl = tr.querySelector('.dl-link');
+      if (fileEl) fileEl.textContent = asset.name;
+      if (linkEl) linkEl.href = asset.url;
+    });
+  }
+
+  async function loadLatestRelease() {
+    const fallback = readStaticAssets();
+    try {
+      const res = await fetch('https://api.github.com/repos/BaranziniLab/BioRouter/releases/latest', {
+        headers: { 'Accept': 'application/vnd.github+json' },
+      });
+      if (!res.ok) throw new Error('release fetch failed: ' + res.status);
+      const data = await res.json();
+
+      const rowAssets = {};
+      Object.entries(ROW_MATCHERS).forEach(([row, re]) => {
+        const match = (data.assets || []).find(a => re.test(a.name));
+        if (match) rowAssets[row] = { name: match.name, url: match.browser_download_url };
+        else if (fallback[row]) rowAssets[row] = fallback[row];
+      });
+      applyAssets(rowAssets);
+
+      const badge = document.getElementById('version-badge');
+      if (badge && data.tag_name) {
+        const published = data.published_at ? new Date(data.published_at) : null;
+        const monthYear = published && !isNaN(published)
+          ? published.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+          : null;
+        badge.textContent = monthYear ? `${data.tag_name} · ${monthYear}` : data.tag_name;
+      }
+
+      await renderDetectedCard(rowAssets);
+    } catch (e) {
+      await renderDetectedCard(fallback);
+    }
+  }
+
+  loadLatestRelease();
+</script>
+</body>
+</html>

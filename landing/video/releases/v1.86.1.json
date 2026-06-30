@@ -1,0 +1,15 @@
+{
+  "version": "1.86.1",
+  "date": "June 2026",
+  "headline": "Everything new since v1.80.0: Knowledge, local models, Agent Drafter and more",
+  "featsTitleA": "What's new",
+  "featsTitleB": "And more",
+  "feat1": "Knowledge bases: personal, agent-maintained knowledge with an interactive graph",
+  "feat2": "Zero-setup local models: a bundled llama.cpp server runs open models offline",
+  "feat3": "Agent Drafter: build ready-to-run agents and apps from a conversation",
+  "feat4": "App SDK: capabilities, an encrypted vault, and human-in-the-loop approvals",
+  "feat5": "Auto Visualiser: 33 interactive figure types rendered inline from your data",
+  "feat6": "A first-class CLI: interactive TUI, lifecycle hooks, goals, and automations",
+  "feat7": "Leaner and faster: memory-efficient core, jemalloc, and smaller binaries",
+  "feat8": "One-click Restart and Update in place on macOS"
+}
