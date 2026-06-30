@@ -1,0 +1,8 @@
+# OS cruft
+.DS_Store
+
+# The repo-root .gitignore globally ignores *.png (to drop stray debug
+# screenshots from the Rust/Electron tree). The landing site legitimately
+# ships PNG assets (icons, posters, screenshots), so re-include them here.
+# Negations in a deeper .gitignore override the root pattern for this subtree.
+!*.png

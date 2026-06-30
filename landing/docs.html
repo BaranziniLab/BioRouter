@@ -1,0 +1,1098 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UCSF BioRouter Documentation</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    .docs-layout {
+      display: grid;
+      grid-template-columns: 220px 1fr;
+      max-width: 1080px; margin: 0 auto;
+      padding: 72px 24px 80px;
+      gap: 40px;
+      align-items: start;
+    }
+    .docs-sidebar { position: sticky; top: 80px; }
+    .docs-nav-group { margin-bottom: 6px; }
+    .docs-nav-label {
+      font-size: 11px; font-weight: 700; letter-spacing: 1px;
+      text-transform: uppercase; color: var(--text-3);
+      padding: 10px 12px 6px; display: block;
+    }
+    .docs-nav-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 12px; border-radius: var(--radius);
+      color: var(--text-2); text-decoration: none;
+      font-size: 14px; cursor: pointer;
+      transition: var(--transition);
+      background: none; border: none; width: 100%; text-align: left;
+      font-family: inherit;
+    }
+    .docs-nav-item:hover { color: var(--text); background: var(--bg-3); }
+    .docs-nav-item.active { color: var(--accent); background: var(--accent-soft); }
+    .docs-nav-item .icon { width: 16px; height: 16px; }
+    .docs-content { min-width: 0; }
+    .doc-page { display: none; }
+    .doc-page.active { display: block; animation: fadeIn 0.3s ease; }
+
+    @media (max-width: 860px) {
+      .docs-layout { grid-template-columns: 1fr; padding: 72px 16px 60px; gap: 0; }
+      .docs-sidebar { position: static; margin-bottom: 20px; display: flex; flex-wrap: wrap; gap: 4px; }
+      .docs-nav-label { display: none; }
+      .docs-nav-item { padding: 6px 10px; font-size: 13px; flex-shrink: 0; width: auto; background: var(--bg-3); }
+      .doc-table {
+        table-layout: fixed;
+        width: 100%;
+        max-width: 100%;
+      }
+      .doc-table th,
+      .doc-table td {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        word-break: normal;
+      }
+      code { overflow-wrap: anywhere; }
+      pre {
+        max-width: 100%;
+        overflow-x: auto;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+    }
+  </style>
+</head>
+<body>
+
+<nav id="navbar">
+  <a class="nav-brand" href="./">
+    <img src="icon.svg" class="nav-logo" alt="BioRouter" />
+    <span class="nav-title">UCSF BioRouter</span>
+  </a>
+  <ul class="nav-tabs">
+    <li><a href="./">Introduction</a></li>
+    <li><a href="download.html">Download</a></li>
+    <li><a href="docs.html" class="active">Documentation</a></li>
+    <li><a href="baam.html">BAAM</a></li>
+    <li><a href="about.html">About</a></li>
+  </ul>
+  <div class="nav-right">
+    <a href="https://github.com/BaranziniLab/BioRouter" target="_blank" class="nav-gh-btn">
+      <svg class="icon icon-sm" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2C6.48 2 2 6.48 2 12c0 4.42 2.87 8.17 6.84 9.49.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.64 0 0 .84-.27 2.75 1.02A9.56 9.56 0 0 1 12 6.8c.85 0 1.71.11 2.51.33 1.91-1.29 2.75-1.02 2.75-1.02.55 1.37.2 2.39.1 2.64.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.68-4.57 4.93.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10.01 10.01 0 0 0 22 12c0-5.52-4.48-10-10-10z"/></svg>
+      GitHub
+    </a>
+  </div>
+  <button class="hamburger" onclick="toggleMobileMenu()" aria-label="Menu">
+    <span></span><span></span><span></span>
+  </button>
+</nav>
+<div class="mobile-menu" id="mobile-menu">
+  <a href="./">Introduction</a>
+  <a href="download.html">Download</a>
+  <a href="docs.html" class="active">Documentation</a>
+  <a href="baam.html">BAAM</a>
+  <a href="about.html">About</a>
+</div>
+
+<main class="page">
+  <div class="docs-layout">
+
+    <!-- Sidebar -->
+    <aside class="docs-sidebar">
+      <div class="docs-nav-group">
+        <span class="docs-nav-label">Getting started</span>
+        <button class="docs-nav-item active" id="dnav-install" onclick="showDoc('install')">
+          <svg class="icon" viewBox="0 0 24 24"><line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+          Installation
+        </button>
+        <button class="docs-nav-item" id="dnav-ucsf" onclick="showDoc('ucsf')">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M3 21h18"/><path d="M5 21V8l7-4 7 4v13"/></svg>
+          UCSF setup guide
+        </button>
+      </div>
+      <div class="docs-nav-group">
+        <span class="docs-nav-label">Command line</span>
+        <button class="docs-nav-item" id="dnav-cli" onclick="showDoc('cli')">
+          <svg class="icon" viewBox="0 0 24 24"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+          CLI reference
+        </button>
+      </div>
+      <div class="docs-nav-group">
+        <span class="docs-nav-label">Core concepts</span>
+        <button class="docs-nav-item" id="dnav-providers" onclick="showDoc('providers')">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="10" rx="2"/><circle cx="12" cy="5" r="2"/><path d="M12 7v4"/></svg>
+          Providers and models
+        </button>
+        <button class="docs-nav-item" id="dnav-extensions" onclick="showDoc('extensions')">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          Extensions and skills
+        </button>
+        <button class="docs-nav-item" id="dnav-knowledge" onclick="showDoc('knowledge')">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          Knowledge bases
+        </button>
+        <button class="docs-nav-item" id="dnav-dashboard" onclick="showDoc('dashboard')">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+          Dashboard mode
+        </button>
+        <button class="docs-nav-item" id="dnav-workflows" onclick="showDoc('workflows')">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          Workflows and automation
+        </button>
+        <button class="docs-nav-item" id="dnav-privacy" onclick="showDoc('privacy')">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          Data privacy
+        </button>
+      </div>
+      <div class="docs-nav-group">
+        <span class="docs-nav-label">Advanced</span>
+        <button class="docs-nav-item" id="dnav-arch" onclick="showDoc('arch')">
+          <svg class="icon" viewBox="0 0 24 24"><polyline points="3 12 9 6 15 12 21 6"/><polyline points="3 18 9 12 15 18 21 12"/></svg>
+          Architecture
+        </button>
+        <button class="docs-nav-item" id="dnav-agents" onclick="showDoc('agents')">
+          <svg class="icon" viewBox="0 0 24 24"><circle cx="9" cy="7" r="4"/><circle cx="17" cy="7" r="4"/><path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/><path d="M21 21v-2a4 4 0 0 0-3-3.87"/></svg>
+          MCP agents
+        </button>
+        <button class="docs-nav-item" id="dnav-hooks" onclick="showDoc('hooks')">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M9 17H7A5 5 0 0 1 7 7h2"/><path d="M15 7h2a5 5 0 1 1 0 10h-2"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+          Hooks
+        </button>
+      </div>
+    </aside>
+
+    <!-- Content -->
+    <div class="docs-content">
+
+      <!-- INSTALLATION -->
+      <div class="doc-page active" id="doc-install">
+        <h1>Installation and setup</h1>
+        <p class="doc-intro">Get BioRouter running in three steps: download, install, and connect an AI provider. The whole process takes about five minutes.</p>
+
+        <div class="step-row">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <h3>Download BioRouter</h3>
+            <p>Download the installer for your platform from the <a href="download.html">Download page</a> or from <a href="https://github.com/BaranziniLab/BioRouter/releases" target="_blank">GitHub Releases</a>.</p>
+            <ul>
+              <li><strong>macOS:</strong> Open the <code>.dmg</code> and drag BioRouter to <code>/Applications</code></li>
+              <li><strong>Windows:</strong> Unzip and run <code>BioRouter.exe</code></li>
+              <li><strong>Linux (Debian):</strong> <code>sudo dpkg -i biorouter_*.deb</code></li>
+              <li><strong>Linux (RPM):</strong> <code>sudo rpm -i BioRouter-*.rpm</code></li>
+            </ul>
+            <div class="alert alert-info" style="margin-top:12px;">
+              <strong>macOS tip:</strong> If you see a security warning on Apple Silicon, run <code>chmod 755 ~/.config</code> in Terminal and relaunch.
+            </div>
+          </div>
+        </div>
+
+        <div class="step-row">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <h3>Connect an LLM provider</h3>
+            <p>BioRouter will guide you on first launch. Choose the option that fits your needs:</p>
+            <ul>
+              <li><strong>UCSF users:</strong> Select <em>Azure OpenAI</em> (UCSF ChatGPT) with endpoint <code>https://unified-api.ucsf.edu/general</code>, deployment <code>gpt-5.2-2025-12-11</code>, and your Versa API key. Or select <em>Amazon Bedrock</em> (UCSF Anthropic). Full details are in the <a href="#" onclick="showDoc('ucsf')">UCSF setup guide</a>.</li>
+              <li><strong>Commercial API:</strong> Enter your Anthropic, OpenAI, or Google API key.</li>
+              <li><strong>Fully local:</strong> Select <em>Llama Server</em> to use BioRouter's bundled llama.cpp runtime with no extra install, or select Ollama if you already run it. No API key, no data leaves your machine.</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="step-row">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <h3>Verify and explore</h3>
+            <p>Send a test message in the chat. If BioRouter responds, you're set. Open the Extensions sidebar to add agents, enable tools, and start building workflows.</p>
+          </div>
+        </div>
+
+        <h2>Configuration file</h2>
+        <p>All settings are stored in:</p>
+        <pre>~/.config/biorouter/config.yaml    # macOS / Linux</pre>
+        <p>API keys are stored encrypted.</p>
+
+        <h2>Troubleshooting</h2>
+        <table class="doc-table">
+          <thead><tr><th>Issue</th><th>Solution</th></tr></thead>
+          <tbody>
+            <tr><td>No window on launch (macOS M-chip)</td><td><code>chmod 755 ~/.config</code> then relaunch</td></tr>
+            <tr><td>Extension fails to activate</td><td>Ensure Node.js (<code>npx</code>) or Python/uv (<code>uvx</code>) is installed</td></tr>
+            <tr><td>API key not working</td><td>Verify the key is valid and has available quota</td></tr>
+            <tr><td>Logs</td><td><code>~/.config/biorouter/logs/</code></td></tr>
+          </tbody>
+        </table>
+      </div>
+
+      <!-- UCSF GUIDE -->
+      <div class="doc-page" id="doc-ucsf">
+        <h1>UCSF setup guide</h1>
+        <p class="doc-intro">BioRouter is built for UCSF researchers. Use your institutional AI access for secure, compliant workflows with managed models.</p>
+
+        <h2>Option A: UCSF Versa / Azure OpenAI (recommended)</h2>
+        <p>UCSF's institutional AI platform, accessed via Azure OpenAI. Get your API key at:</p>
+        <p><a href="https://ai.ucsf.edu/platforms-tools-and-resources/ucsf-versa" target="_blank">ai.ucsf.edu/platforms-tools-and-resources/ucsf-versa</a></p>
+        <ol>
+          <li>In BioRouter, go to <strong>Settings, Models, Azure OpenAI, Configure</strong></li>
+          <li>Enter the endpoint and credentials below, then click <strong>Save</strong></li>
+          <li>Click <strong>Launch</strong> to start chatting</li>
+        </ol>
+
+        <table class="doc-table">
+          <thead><tr><th>Field</th><th>Environment variable</th><th>Value</th></tr></thead>
+          <tbody>
+            <tr><td>Endpoint</td><td><code>AZURE_OPENAI_ENDPOINT</code></td><td><code>https://unified-api.ucsf.edu/general</code></td></tr>
+            <tr><td>Deployment Name</td><td><code>AZURE_OPENAI_DEPLOYMENT_NAME</code></td><td><code>gpt-5.2-2025-12-11</code></td></tr>
+            <tr><td>API Version</td><td><code>AZURE_OPENAI_API_VERSION</code></td><td><code>2025-01-01-preview</code></td></tr>
+            <tr><td>API Key</td><td><code>AZURE_OPENAI_API_KEY</code></td><td>Your UCSF Versa API key</td></tr>
+          </tbody>
+        </table>
+
+        <div class="alert alert-info">
+          <strong>Where to get your Versa API key:</strong> Sign in with your UCSF MyAccess credentials at the link above to generate or retrieve your API key.
+        </div>
+        <p>Data stays within UCSF's Azure tenant, safe for institution-approved use cases.</p>
+
+        <h2>Option B: Amazon Bedrock (UCSF MuleSoft proxy)</h2>
+        <p>UCSF provides access to Anthropic Claude models via Amazon Bedrock, routed through the UCSF MuleSoft gateway. Your data does not leave UCSF's infrastructure. BioRouter handles credential configuration for you; you only enter two values.</p>
+
+        <h3>Step 1: Obtain your credentials</h3>
+        <p>The UCSF Bedrock proxy uses a static AWS Access Key and Secret Key pair. These are <em>not</em> personal AWS SSO credentials. Obtain them from your lab's BioRouter onboarding document or contact the Baranzini Lab or UCSF Research IT for access.</p>
+
+        <table class="doc-table">
+          <thead><tr><th>What you need</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><strong>AWS Access Key ID</strong></td><td>32-character hex string provided by UCSF</td></tr>
+            <tr><td><strong>AWS Secret Access Key</strong></td><td>32-character mixed string provided by UCSF</td></tr>
+          </tbody>
+        </table>
+
+        <div class="alert alert-info">
+          <strong>That's it.</strong> BioRouter fills in the region (<code>us-west-2</code>) and UCSF proxy endpoint, and handles credential persistence across shell, <code>~/.aws</code> files, and the macOS system environment. You don't need to run any scripts.
+        </div>
+
+        <h3>Step 2: Enter credentials in BioRouter</h3>
+        <ol>
+          <li>Go to <strong>Settings, Models, Amazon Bedrock, Configure</strong></li>
+          <li>Enter a <strong>Profile Name</strong> (any name, e.g., <code>UCSF Bedrock</code>)</li>
+          <li>Enter your <strong>AWS Access Key ID</strong></li>
+          <li>Enter your <strong>AWS Secret Access Key</strong></li>
+          <li>Click <strong>Save</strong>. BioRouter writes the necessary credential files and injects environment variables at the OS level.</li>
+        </ol>
+
+        <h3>Step 3: Launch and verify</h3>
+        <ol>
+          <li>Set <strong>Model</strong> to <code>us.anthropic.claude-opus-4-6-v1</code> (default)</li>
+          <li>Click <strong>Launch</strong> and send a test message to verify</li>
+        </ol>
+
+        <h3>Available models</h3>
+        <table class="doc-table">
+          <thead><tr><th>Model</th><th>Model ID</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Claude Opus 4.6</strong> · default</td><td><code>us.anthropic.claude-opus-4-6-v1</code></td><td>Highest permitted UCSF Bedrock capability</td></tr>
+            <tr><td>Claude Sonnet 4.6</td><td><code>us.anthropic.claude-sonnet-4-6</code></td><td>Good speed and capability balance</td></tr>
+            <tr><td>Claude Opus 4.5</td><td><code>us.anthropic.claude-opus-4-5-20251101-v1:0</code></td><td>High-capability previous generation</td></tr>
+            <tr><td>Claude Haiku 4.5</td><td><code>us.anthropic.claude-haiku-4-5-20251001-v1:0</code></td><td>Fast, lower-cost option</td></tr>
+          </tbody>
+        </table>
+        <p>Only models permitted by UCSF's IAM policy are listed; selecting others returns an authentication error.</p>
+
+        <h3>Troubleshooting</h3>
+        <table class="doc-table">
+          <thead><tr><th>Error</th><th>Cause</th><th>Fix</th></tr></thead>
+          <tbody>
+            <tr><td>"The security token included in the request is invalid"</td><td>BioRouter is hitting real AWS (not the UCSF proxy) because the endpoint variable is missing</td><td>Re-run the setup; quit and relaunch BioRouter</td></tr>
+            <tr><td>"invalid model identifier"</td><td>Model ID is not one UCSF's proxy currently accepts</td><td>Use a model ID exactly as listed in the table above</td></tr>
+            <tr><td>Authentication error after configuring</td><td><code>launchctl</code> vars not set; the app doesn't inherit shell env until relaunched</td><td>Fully quit and relaunch BioRouter</td></tr>
+            <tr><td>"AccessDeniedException" on a specific model</td><td>Model not permitted by UCSF IAM policy</td><td>Switch to one of the four confirmed models above</td></tr>
+          </tbody>
+        </table>
+
+        <h2>Option C: Local (air-gapped)</h2>
+        <p>For maximum privacy. Nothing ever leaves your device:</p>
+        <ol>
+          <li>Select <strong>Llama Server</strong> to use the bundled local runtime. BioRouter downloads the model weights on first use and runs inference on-device.</li>
+          <li>Or install <a href="https://ollama.com/download" target="_blank">Ollama</a>, pull a model such as <code>qwen3</code>, and select <strong>Ollama</strong>.</li>
+          <li>No API key is required for either local path.</li>
+        </ol>
+
+        <h2>Other institutions</h2>
+        <p>Check with your institution's IT or compliance office for approved AI hosting options. For institutions without managed AI services, commercial API keys (Anthropic, OpenAI) or local inference with Llama Server or Ollama are options. Always verify compliance before processing any sensitive data.</p>
+
+        <div class="alert alert-warning">
+          <strong>Patient data and PHI:</strong> Never use personal commercial API keys with patient data, PHI, or other regulated research data. Use UCSF-managed services (Azure, Bedrock) or a local model only. Always verify with UCSF compliance before processing regulated data.
+        </div>
+      </div>
+
+      <!-- PROVIDERS -->
+      <div class="doc-page" id="doc-providers">
+        <h1>Providers and models</h1>
+        <p class="doc-intro">BioRouter connects to a range of LLM providers. Switch providers any time from Settings → Models without changing your workflows. Defaults below reflect <code>biorouter v1.86.1</code>.</p>
+
+        <h2>UCSF institutional providers</h2>
+        <table class="doc-table">
+          <thead><tr><th>Provider</th><th>Access</th><th>Default model</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Versa Azure OpenAI</strong> (UCSF ChatGPT)</td><td>UCSF Versa API key · <a href="#" onclick="showDoc('ucsf')">Setup guide →</a></td><td><code>gpt-5.2-2025-12-11</code></td></tr>
+            <tr><td><strong>Versa Bedrock</strong> (UCSF Anthropic)</td><td>UCSF Versa credentials · <a href="#" onclick="showDoc('ucsf')">Setup guide →</a></td><td><code>us.anthropic.claude-opus-4-6-v1</code></td></tr>
+          </tbody>
+        </table>
+
+        <h2>Commercial cloud providers</h2>
+        <table class="doc-table">
+          <thead><tr><th>Provider</th><th>Env variable</th><th>Default model</th><th>Get API key</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Anthropic</strong></td><td><code>ANTHROPIC_API_KEY</code></td><td><code>claude-opus-4-8</code></td><td><a href="https://platform.claude.com/" target="_blank">platform.claude.com</a></td></tr>
+            <tr><td><strong>OpenAI</strong></td><td><code>OPENAI_API_KEY</code></td><td><code>gpt-5.5</code></td><td><a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com</a></td></tr>
+            <tr><td><strong>Azure OpenAI</strong> (own tenant)</td><td><code>AZURE_OPENAI_API_KEY</code></td><td><code>gpt-5.4-2026-03-05</code></td><td>Your Azure portal</td></tr>
+            <tr><td><strong>Google Gemini</strong></td><td><code>GOOGLE_API_KEY</code></td><td><code>gemini-3.1-pro-preview</code></td><td><a href="https://aistudio.google.com" target="_blank">aistudio.google.com</a></td></tr>
+            <tr><td><strong>X.AI (Grok)</strong></td><td><code>XAI_API_KEY</code></td><td><code>grok-4.3</code></td><td><a href="https://console.x.ai" target="_blank">console.x.ai</a></td></tr>
+            <tr><td><strong>OpenRouter</strong></td><td><code>OPENROUTER_API_KEY</code></td><td><code>anthropic/claude-sonnet-4.6</code></td><td><a href="https://openrouter.ai/keys" target="_blank">openrouter.ai</a></td></tr>
+            <tr><td><strong>Amazon Bedrock</strong> (own AWS)</td><td>AWS IAM credentials</td><td><code>us.anthropic.claude-sonnet-4-6</code></td><td>Your AWS console</td></tr>
+          </tbody>
+        </table>
+        <p style="font-size:13px;color:var(--text-2);margin-top:-4px;">Every provider exposes its full model list once configured. The defaults above are what BioRouter selects when no model is specified.</p>
+
+        <h2>More providers</h2>
+        <p>BioRouter also ships connectors for many additional platforms. Configure any of them from <strong>Settings → Models</strong>:</p>
+        <ul>
+          <li><strong>Enterprise / cloud:</strong> Databricks, Google Vertex AI (GCP), Amazon SageMaker, Snowflake Cortex, GitHub Copilot, Tetrate Agent Router, Venice.ai.</li>
+          <li><strong>Proxies &amp; gateways:</strong> LiteLLM (with prompt caching), OpenRouter.</li>
+          <li><strong>Fast inference:</strong> Groq, DeepSeek, Mistral AI, Inception (Mercury).</li>
+          <li><strong>Open-weight model labs:</strong> Z.AI (GLM), Xiaomi MiMo, Venice.ai.</li>
+          <li><strong>Local CLI agents:</strong> Claude Code, OpenAI Codex, Cursor Agent, and Gemini CLI can be driven as providers too.</li>
+        </ul>
+        <p style="font-size:13px;color:var(--text-2);margin-top:-4px;">Run <code>biorouter models providers</code> to see the full, current list with default models. Several providers are defined declaratively, so the catalog grows without app updates.</p>
+
+        <h2>Multimodal (image) input</h2>
+        <p>Vision-capable models (across Anthropic, OpenAI, Gemini, Bedrock, and Databricks) accept image attachments in the desktop chat. BioRouter gates image upload per session based on the active model's capabilities.</p>
+
+        <h2>Local models — zero setup</h2>
+        <p>BioRouter ranks <strong>Local</strong> models ahead of institutional and commercial providers everywhere, because nothing leaves your machine. There are two ways to run them, and the first needs nothing installed at all.</p>
+
+        <h3>Llama Server (bundled, recommended)</h3>
+        <p>The desktop app ships a pinned <strong><a href="https://github.com/ggml-org/llama.cpp" target="_blank">llama.cpp</a> <code>llama-server</code></strong> binary and manages it as a sidecar process — so you can run capable local models <strong>without installing Ollama or anything else</strong>. Pick <strong>Llama Server</strong> in onboarding or Settings → Models, choose a model, and BioRouter downloads the weights from Hugging Face on first use and starts the server for you.</p>
+        <ul>
+          <li><strong>Curated catalog</strong> of Qwen 3.5 and Gemma 4 models (Q4_K_M from verified <code>unsloth/*-GGUF</code> repos); default <code>qwen3.5-4b</code>. Any other model works too as a raw <code>owner/repo:QUANT</code> Hugging Face spec.</li>
+          <li><strong>Reasoning on by default</strong>, a model-native context window, and a q8_0 KV cache. Per-platform builds use Metal (macOS), Vulkan with CPU fallback (Windows), and CPU (Linux); CUDA is opt-in.</li>
+          <li>Override anything with env vars — <code>LLAMACPP_CONTEXT_SIZE</code>, <code>LLAMACPP_ENABLE_THINKING</code>, <code>LLAMACPP_EXTRA_ARGS</code>, or point at your own server with <code>LLAMACPP_EXTERNAL_HOST</code>.</li>
+        </ul>
+        <p style="font-size:13px;color:var(--text-2);">Linux note: local models need glibc ≥ 2.35 plus <code>libssl3</code>/<code>libgomp1</code> (Debian 12+/Ubuntu 22.04+). The app itself still runs on older systems; only the bundled local models require this floor.</p>
+
+        <h3>Ollama</h3>
+        <p>If you already use <a href="https://ollama.com/library" target="_blank">Ollama</a>, BioRouter detects it automatically — install Ollama, pull any model, and select it. Everything stays on your machine. Default model: <code>qwen3</code>.</p>
+        <pre>ollama pull qwen3           # General-purpose default
+ollama pull llama3.2        # Fast lightweight option
+ollama pull deepseek-r1     # Strong reasoning model</pre>
+
+        <h2>Switching providers</h2>
+        <p>Open Settings → Models, select a provider card, then <em>Configure</em> or <em>Launch</em>.</p>
+      </div>
+
+      <!-- EXTENSIONS -->
+      <div class="doc-page" id="doc-extensions">
+        <h1>Extensions, skills, and MCP</h1>
+        <p class="doc-intro">Extend BioRouter with built-in capabilities, third-party MCP servers, and reusable skill bundles. Defaults reflect <code>biorouter v1.86.1</code> (<code>ui/desktop/src/components/settings/extensions/bundled-extensions.json</code>).</p>
+
+        <h2>Built-in extensions</h2>
+        <p>Ship with BioRouter, no install needed. Enable or disable any of them from <strong>Settings → Extensions</strong>.</p>
+        <table class="doc-table">
+          <thead><tr><th>Extension</th><th>What it does</th><th>Default</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Developer</strong></td><td>File operations, shell commands, code search, and text editing — the core agent toolkit</td><td><strong>On</strong></td></tr>
+            <tr><td><strong>Knowledge</strong></td><td>Ingest / query / lint your personal knowledge bases (incl. the built-in <a href="#" onclick="showDoc('knowledge')">Soul</a> base) from within any chat</td><td><strong>On</strong></td></tr>
+            <tr><td>Auto Visualiser</td><td>Turns structured data into self-contained interactive HTML figures (33 chart, scientific, network, diagram, and geo tools) rendered inline in chat</td><td>Off</td></tr>
+            <tr><td><strong>Computer Controller</strong></td><td>General computer-control tools for non-developer workflows (web, automation, files)</td><td><strong>On</strong></td></tr>
+            <tr><td><strong>Memory</strong></td><td>Persist preferences and context across sessions</td><td><strong>On</strong></td></tr>
+            <tr><td>Agent Drafter</td><td>Author interactive artifacts ("Claude artifacts" for BioRouter) that can embed a <em>live</em> agent over ACP</td><td>Off</td></tr>
+            <tr><td>Tutorial</td><td>Interactive in-app tutorials and guides</td><td>Off</td></tr>
+          </tbody>
+        </table>
+
+        <h2>Installing a <code>.brxt</code> extension</h2>
+        <p>BioRouter extensions are distributed as <code>.brxt</code> bundles: a zipped manifest plus a Python MCP server entry point. Installation is drag-and-drop; no terminal needed.</p>
+        <ol>
+          <li>Download a <code>.brxt</code> file from the <a href="baam.html">BAAM marketplace</a>.</li>
+          <li>In BioRouter, open <strong>Settings → Extensions → Add Extension</strong>.</li>
+          <li>Drag the <code>.brxt</code> file onto the drop zone (or click <em>Browse file…</em>). BioRouter validates the manifest and previews the extension's name, version, tool count, and any bundled skills.</li>
+          <li>Click <strong>Next: Configure →</strong> and fill in any required environment variables (API keys, endpoints). Secrets are stored in BioRouter's keyring; non-secret values are written into <code>config.yaml</code>.</li>
+          <li>Click <strong>Install</strong>. BioRouter unpacks the bundle, runs it via <code>uv run --directory &lt;installDir&gt; &lt;entry_point&gt;</code>, and enables it automatically.</li>
+        </ol>
+        <p style="font-size:13px;color:var(--text-2);">Any bundled skills inside the <code>.brxt</code> are installed alongside the extension and appear under BioRouter → Skills.</p>
+
+        <h2>Adding an external MCP server manually</h2>
+        <p><strong>Desktop:</strong> Settings → Extensions → Add custom extension. Pick the transport (stdio / SSE / streamable HTTP), then enter ID, name, command, args, and env vars.</p>
+        <p><strong>Config file</strong> (<code>~/.config/biorouter/config.yaml</code>):</p>
+        <pre>extensions:
+  github:
+    name: GitHub
+    cmd: npx
+    args: [-y, "@modelcontextprotocol/server-github"]
+    enabled: true
+    envs:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "&lt;your_token&gt;"
+    type: stdio
+    timeout: 300</pre>
+
+        <h2>Skills system</h2>
+        <p>A skill is a folder containing a <code>SKILL.md</code> file with YAML frontmatter (<code>name</code>, <code>description</code>, optional <code>user-invocable</code>) and freeform instructions. BioRouter loads every skill it finds under <code>~/.config/biorouter/skills/</code>, <code>~/.claude/skills/</code>, and <code>~/.config/agents/skills/</code>.</p>
+
+        <h3>Built-in skills</h3>
+        <p>A few skills ship with BioRouter and are installed automatically (and re-created if deleted):</p>
+        <table class="doc-table">
+          <thead><tr><th>Skill</th><th>What it teaches the agent</th></tr></thead>
+          <tbody>
+            <tr><td><code>about-biorouter</code></td><td>Authoritative self-knowledge — the agent answers questions about BioRouter itself (features, config, CLI, the desktop app) accurately instead of guessing.</td></tr>
+            <tr><td><code>develop-biorouter-extension</code></td><td>How to build, package, and publish a <code>.brxt</code> extension: ZIP structure, <code>manifest.json</code>, the Python MCP server, and bundled skills.</td></tr>
+            <tr><td><code>develop-biorouter-skill</code></td><td>How to author a high-quality skill: the <code>SKILL.md</code> format, writing descriptions that trigger reliably, progressive disclosure, and packaging.</td></tr>
+            <tr><td><code>update-soul</code></td><td>How the agent maintains your personal <a href="#" onclick="showDoc('knowledge')">Soul</a> base — what to capture about you and what to discard. Used by the Daily Meditation workflow.</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Installing a skill (drag-and-drop)</h3>
+        <ol>
+          <li>Download a skill <code>.zip</code> from the <a href="baam.html">BAAM marketplace</a> (or write your own <code>SKILL.md</code>).</li>
+          <li>In BioRouter, open <strong>Skills → Add Skill</strong>.</li>
+          <li>Drag the <code>.zip</code> (bundle of many skills) or a single <code>.md</code> file onto the drop zone. BioRouter parses the frontmatter, previews the skill(s), and on confirmation copies them into <code>~/.config/biorouter/skills/&lt;slug&gt;/</code>.</li>
+        </ol>
+        <p>Auto-applied skills activate whenever BioRouter encounters a relevant file or task. To bypass the GUI entirely, unzip a bundle and copy the folder into <code>~/.config/biorouter/skills/</code> directly. BioRouter picks it up on next launch.</p>
+        <p style="font-size:13px;color:var(--text-2);">Skill folders are plain text and reproducible. Share them across a lab or institution to standardize analysis style without sharing any underlying data.</p>
+      </div>
+
+      <!-- WORKFLOWS -->
+      <div class="doc-page" id="doc-workflows">
+        <h1>Workflows and automation</h1>
+        <p class="doc-intro">A <strong>Workflow</strong> is a portable YAML file that packages a prompt, the extensions and skills it needs, and an optional schedule. Workflows are the foundation of federated research collaboration in BioRouter: instructions travel between institutions, data does not. (Schema reference: <code>crates/biorouter/src/workflow/mod.rs</code>.)</p>
+
+        <h2>Workflow YAML format</h2>
+        <p>A minimum workflow needs three top-level fields: <code>version</code>, <code>title</code>, <code>description</code>, plus at least one of <code>instructions</code> or <code>prompt</code>. Everything else is optional.</p>
+        <pre>version: 1.0.0
+title: Literature review
+description: Summarize recent papers on a research topic.
+
+instructions: |
+  You are a scientific literature reviewer. Read the user-supplied
+  topic, search for relevant publications, and write a structured
+  summary focused on clinical relevance and methodology.
+
+prompt: |
+  Summarize the past {{ years }} years of work on {{ topic }}.
+
+# pin a provider/model/temperature for reproducibility
+settings:
+  biorouter_provider: versa_bedrock
+  biorouter_model: us.anthropic.claude-opus-4-6-v1
+  temperature: 0.2
+
+# pre-enable extensions the workflow expects to use
+extensions:
+  - type: builtin
+    name: developer
+
+# activity pills shown while the workflow loads
+activities:
+  - Fetch papers
+  - Summarize findings
+  - Cite sources
+
+# typed parameters surfaced in the app
+parameters:
+  - key: topic
+    input_type: string
+    requirement: required
+    description: Research topic to review.
+  - key: years
+    input_type: number
+    requirement: optional
+    default: 3
+
+# compose larger flows from smaller ones
+sub_workflows:
+  - name: cite-check
+    path: ./sub-workflows/cite-check.yaml
+
+# retry policy for transient failures
+retry:
+  max_attempts: 3</pre>
+
+        <h2>Running a workflow</h2>
+        <p>Open Sidebar → Workflows → select a workflow → fill parameters → Run. To import a workflow file, use <strong>Workflows → Import workflow</strong>.</p>
+
+        <h2>Creating a workflow from a session</h2>
+        <p>After an exploratory chat that produced a useful result, open <strong>Workflows → Create from session</strong>. BioRouter extracts the instructions, the extensions you actually used, and the model you ran on into a fresh YAML file you can edit, share, or schedule.</p>
+
+        <h2>Scheduling workflows</h2>
+        <p>Schedules are managed separately from the workflow file via BioRouter's scheduler (Sidebar → Schedules → New schedule). Pick a workflow, give it a cron expression, and BioRouter's background service runs it on cadence, even with the desktop app closed.</p>
+        <pre>cron: "0 8 * * 1"   # Every Monday at 8:00 AM</pre>
+
+        <h2>Sharing workflows</h2>
+        <p>Workflow files are plain YAML text. Commit them to a shared repository, publish them on GitHub, or email them. Recipients open them with <strong>Workflows → Import workflow</strong>. No data is embedded; only the instructions, extension list, and parameter schema travel.</p>
+      </div>
+
+      <!-- PRIVACY -->
+      <div class="doc-page" id="doc-privacy">
+        <h1>Data privacy guide</h1>
+        <p class="doc-intro">BioRouter routes your inputs to an LLM provider. Privacy properties depend on which provider you use. Here's how to choose the right one.</p>
+
+        <div class="alert alert-warning">
+          <strong>Patient data and PHI:</strong> Only use UCSF-managed services (Azure OpenAI, Amazon Bedrock) or a local model (Llama Server or Ollama) when working with patient data, PHI, or any regulated research data. Never use personal commercial API keys for sensitive data. Always verify compliance with your institution before processing regulated data.
+        </div>
+
+        <h2>Run local models with no extra software</h2>
+        <p>The strongest privacy guarantee is keeping the data on your own machine. BioRouter makes that the <em>default-easy</em> path: it bundles a <strong>llama.cpp <code>llama-server</code></strong> and manages it for you, so <strong>you don't need to install Ollama — or anything else — to use local models</strong>. Choose <strong>Llama Server</strong> in onboarding, pick a model, and BioRouter downloads the weights once and runs inference entirely on-device. Power users can still bring Ollama or point at their own server; either way no prompt or completion ever leaves the machine. See <a href="#" onclick="showDoc('providers')">Providers → Local models</a> for setup.</p>
+
+        <h2>Provider privacy properties</h2>
+        <table class="doc-table">
+          <thead><tr><th>Provider</th><th>Data stays within</th><th>Best for</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Llama Server (bundled, local)</strong></td><td>Your device only, no network after model download</td><td>Maximum privacy with zero setup — no Ollama required</td></tr>
+            <tr><td><strong>Ollama (local)</strong></td><td>Your device only, no network</td><td>Maximum privacy when you already run Ollama</td></tr>
+            <tr><td><strong>UCSF Azure OpenAI</strong></td><td>UCSF's Azure tenant</td><td>Institution-approved clinical use cases</td></tr>
+            <tr><td><strong>UCSF Amazon Bedrock</strong></td><td>UCSF's AWS environment</td><td>Institution-approved clinical use cases</td></tr>
+            <tr><td>Commercial APIs (personal)</td><td>Provider's cloud infrastructure</td><td>De-identified or non-sensitive data only</td></tr>
+          </tbody>
+        </table>
+
+        <h2>Best practices</h2>
+        <ul>
+          <li><strong>De-identify first.</strong> Remove names, dates of birth, MRNs, and other identifiers before any AI processing.</li>
+          <li><strong>Minimize data exposure.</strong> Provide only what's needed for the task.</li>
+          <li><strong>Prefer local models</strong> for exploratory work with real data.</li>
+          <li><strong>Protect your device.</strong> Session logs at <code>~/.config/biorouter/logs/</code> may contain your inputs.</li>
+          <li><strong>Never share sessions</strong> that contain patient or sensitive data.</li>
+          <li><strong>Always verify</strong> with UCSF IT or your compliance office before processing regulated data.</li>
+        </ul>
+
+        <h2>Where credentials are stored</h2>
+        <p>API keys and secrets are never written in plaintext by default. BioRouter supports three pluggable secret backends, selectable via <code>secrets_backend</code> in <code>config.yaml</code> (or the <code>BIOROUTER_SECRETS_BACKEND</code> env var):</p>
+        <table class="doc-table">
+          <thead><tr><th>Backend</th><th>Where secrets live</th></tr></thead>
+          <tbody>
+            <tr><td><strong>keyring</strong> (default)</td><td>Your OS credential store (macOS Keychain, etc.)</td></tr>
+            <tr><td><strong>encrypted-file</strong></td><td>A passphrase-encrypted <code>secrets.enc</code> (passphrase via prompt or <code>BIOROUTER_SECRETS_PASSPHRASE</code>)</td></tr>
+            <tr><td><strong>file</strong></td><td>Plaintext <code>secrets.yaml</code> (use only on trusted, isolated machines)</td></tr>
+          </tbody>
+        </table>
+        <p style="font-size:13px;color:var(--text-2);">Non-secret settings live in <code>~/.config/biorouter/config.yaml</code>; only secret values go to the chosen backend.</p>
+      </div>
+
+      <!-- ARCHITECTURE -->
+      <div class="doc-page" id="doc-arch">
+        <h1>Architecture</h1>
+        <p class="doc-intro">BioRouter is a modular, plugin-based system with a Rust backend and an Electron and React frontend, connected via a local REST API.</p>
+
+        <h2>Three-layer design</h2>
+        <ul>
+          <li><strong>Interface:</strong> Desktop GUI (Electron and React 19). Accepts user input and renders responses.</li>
+          <li><strong>Agent Core:</strong> Rust reasoning loop managing LLM interaction, tool execution, context, and session state.</li>
+          <li><strong>Extensions:</strong> Pluggable MCP servers that provide tools: file system, databases, web, code execution, and custom agents.</li>
+        </ul>
+
+        <h2>Backend Rust workspace</h2>
+        <p>The backend is a single Cargo workspace under <code>crates/</code>. Three of these crates compile to the three shipping binaries — and because the version lives in exactly one place (<code>[workspace.package].version</code>), the CLI, the daemon, and the core library can never disagree at build time.</p>
+        <table class="doc-table">
+          <thead><tr><th>Crate</th><th>Binary</th><th>Role</th></tr></thead>
+          <tbody>
+            <tr><td><code>biorouter</code></td><td>—</td><td>Core agent library. The main agent reasoning loop, the 40+ LLM provider implementations, the MCP extension manager, session/conversation state (SQLite), workflow definition + execution, context-window management, the scheduler, and the built-in Knowledge service (re-exported here). Everything else depends on this.</td></tr>
+            <tr><td><code>biorouter-cli</code></td><td><code>biorouter</code></td><td>The interactive terminal app and headless runner. Calls the core library's APIs directly; subcommands live in <code>src/commands/</code>.</td></tr>
+            <tr><td><code>biorouter-server</code></td><td><code>biorouterd</code></td><td>The local Axum REST + WebSocket server the desktop app talks to. Routes live in <code>src/routes/</code>; the OpenAPI spec is generated with utoipa, and the TypeScript API client is generated from it.</td></tr>
+            <tr><td><code>biorouter-mcp</code></td><td>—</td><td>The built-in MCP servers (Developer, Computer Controller, Memory, Auto Visualiser, Tutorial, Knowledge, Agent Drafter) plus the Knowledge engine (store, git, graph, credibility, file conversion, sub-agent macros).</td></tr>
+            <tr><td><code>biorouter-acp</code></td><td>—</td><td>An Agent Communication Protocol implementation for multi-agent orchestration — one BioRouter agent can drive another (used, for example, by Agent Drafter's live artifacts).</td></tr>
+            <tr><td><code>biorouter-bench</code></td><td>—</td><td>A benchmarking harness for evaluating agent and provider behavior.</td></tr>
+            <tr><td><code>biorouter-test</code></td><td>—</td><td>Cross-crate integration tests, including VCR-style recorded MCP cassettes.</td></tr>
+          </tbody>
+        </table>
+
+        <p style="font-size:13px;color:var(--text-2);">The desktop GUI keeps its own version in <code>package.json</code>; a CI guard (<code>check-version-consistency.sh</code>) fails the build if any copy drifts from the Cargo workspace version.</p>
+
+        <p>Key dependencies: tokio (async), axum (HTTP), rmcp (Model Context Protocol), serde/serde_json, tiktoken-rs (token counting), sqlx/SQLite (session persistence), minijinja (workflow/recipe templates), tokio-cron-scheduler (scheduling), and a vendored libgit2 (knowledge-base history, no system <code>git</code> needed).</p>
+
+        <h2>Frontend Electron and React</h2>
+        <p>Desktop app: Electron 39, React 19, TypeScript, built with Vite and Electron Forge. Communicates with the local <code>biorouterd</code> REST API.</p>
+
+        <h2>Model Context Protocol (MCP)</h2>
+        <p>All extensions use MCP, a standard protocol for LLM tool invocation. Any MCP-compatible server (local process or remote HTTP) can be added as a BioRouter extension. This enables a growing open ecosystem of research agents.</p>
+      </div>
+
+      <!-- MCP AGENTS -->
+      <div class="doc-page" id="doc-agents">
+        <h1>MCP agents</h1>
+        <p class="doc-intro">BioRouter connects to local and remote MCP agents for specialized research tasks. Browse the agent ecosystem in the <a href="baam.html">BAAM marketplace</a>.</p>
+
+        <h2>Adding an agent via desktop UI</h2>
+        <ol>
+          <li>Go to Sidebar, Extensions, <strong>Add custom extension</strong></li>
+          <li>Choose type: <em>Command-line (stdio)</em> for local agents or <em>Streamable HTTP</em> for remote</li>
+          <li>Enter the agent name and command (e.g., <code>uvx --from git+https://... agentname</code>)</li>
+          <li>Add any required environment variables</li>
+          <li>Click <strong>Add</strong> and enable the extension</li>
+        </ol>
+
+        <h2>Adding an agent via config YAML</h2>
+        <pre>extensions:
+  spokeagent:
+    name: SPOKEAgent
+    cmd: uvx
+    args:
+      - --from
+      - "git+https://github.com/BaranziniLab/SPOKEAgent"
+      - spokeagent
+    enabled: true
+    type: stdio
+    timeout: 300</pre>
+
+        <h2>Remote HTTP agents</h2>
+        <pre>extensions:
+  remote-agent:
+    name: My Remote Research Agent
+    url: https://my-agent.example.com/mcp
+    type: streamable_http
+    enabled: true
+    timeout: 300</pre>
+
+        <h2>Prerequisites</h2>
+        <p>Most UCSF agents use <code>uvx</code>, which requires Python and <a href="https://docs.astral.sh/uv/" target="_blank">uv</a>. Install with:</p>
+        <pre>curl -LsSf https://astral.sh/uv/install.sh | sh   # macOS / Linux
+# or: pip install uv</pre>
+        <p>Playwright MCP uses <code>npx</code>, which requires Node.js: <a href="https://nodejs.org" target="_blank">nodejs.org</a></p>
+
+        <h2>Available agents</h2>
+        <p>Browse all available agents, copy install commands, and find GitHub links in the <a href="baam.html">BAAM marketplace →</a></p>
+      </div>
+
+      <!-- CLI -->
+      <div class="doc-page" id="doc-cli">
+        <h1>Command-line interface (CLI)</h1>
+        <p class="doc-intro">Everything BioRouter does in the desktop app is also available from your terminal through the <code>biorouter</code> command: a full-screen interactive chat, headless scripted runs, and management commands for models, knowledge bases, extensions, skills, workflows, and schedules. The CLI and the desktop app share the same configuration, sessions, and agent core, so they stay in lockstep.</p>
+
+        <div class="alert alert-info">
+          <strong>One binary, two faces.</strong> Run <code>biorouter</code> (or <code>biorouter session</code>) for the interactive terminal UI, or use a subcommand like <code>biorouter run</code> / <code>biorouter models</code> for scripted, non-interactive work.</p>
+        </div>
+
+        <h2>Installing the CLI</h2>
+        <p>The <code>biorouter</code> CLI now <strong>ships inside every desktop download</strong> (macOS, Windows, and Linux). You get it onto your PATH in any of these ways:</p>
+        <ul>
+          <li><strong>From the desktop app:</strong> on startup the app prompts you to “Install Biorouter CLI” if it isn't already on your PATH (just like installing a missing dependency). One click symlinks/copies the bundled binary into the first writable, on-PATH location (<code>/usr/local/bin</code> → <code>~/.local/bin</code>, or <code>%LOCALAPPDATA%\BioRouter\bin</code> on Windows).</li>
+          <li><strong>From a terminal:</strong> run <code>biorouter setup-path</code> (alias <code>install-cli</code>) to do the same. If the target directory isn't on your PATH, it prints the exact line to add.</li>
+          <li><strong>Headless / servers:</strong> install a <a href="download.html">CLI-only Linux package</a> (<code>biorouter-cli_*.deb</code> / <code>biorouter-cli-*.rpm</code>). These ship just the <code>biorouter</code> CLI and the <code>biorouterd</code> server daemon to <code>/usr/bin</code> with no desktop GUI, ideal for servers, HPC nodes, and containers.</li>
+          <li><strong>From source:</strong> <code>cargo build -p biorouter-cli</code>.</li>
+        </ul>
+        <p>After installing, run <code>biorouter doctor</code> to check your prerequisites (git, uv, python, node, AWS CLI) with per-OS install commands, confirm the CLI is on your PATH, and check for updates. The desktop dependency setup and the CLI read the <em>same</em> prerequisite definitions, so they never drift.</p>
+        <pre>biorouter doctor                 # prerequisites + CLI-on-PATH + update check
+biorouter doctor --format json --no-update   # machine-readable, no network
+biorouter setup-path             # put `biorouter` on your PATH</pre>
+
+        <h2>Launching</h2>
+        <table class="doc-table">
+          <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><code>biorouter</code> · <code>biorouter session</code></td><td>Start the interactive full-screen terminal UI (default on a real terminal)</td></tr>
+            <tr><td><code>biorouter session --resume</code></td><td>Resume your most recent session (or use <code>--name</code> / <code>--session-id</code>)</td></tr>
+            <tr><td><code>biorouter run -t "your prompt"</code></td><td>One-shot headless run that prints the response and exits</td></tr>
+            <tr><td><code>echo "prompt" | biorouter run -i -</code></td><td>Read instructions from a file or stdin (<code>-i -</code>)</td></tr>
+            <tr><td><code>BIOROUTER_CLI_CLASSIC=1 biorouter session</code></td><td>Use the classic line-based REPL instead of the full-screen UI</td></tr>
+          </tbody>
+        </table>
+        <p style="font-size:13px;color:var(--text-2);margin-top:-4px;">When output is piped or redirected (not a TTY), the CLI automatically uses the classic, plain-text path so it scripts cleanly.</p>
+
+        <h2>The interactive terminal UI</h2>
+        <p>A Claude-Code-style layout: a scrolling conversation that grows downward, a pinned input box, and a two-line status bar. The greeting shows the <code>BIOROUTER</code> wordmark, your working directory, and a tagline.</p>
+        <ul>
+          <li><strong>Status line 1:</strong> the model and provider in use.</li>
+          <li><strong>Status line 2:</strong> counts of enabled <em>skills</em>, <em>extensions</em>, and <em>knowledge bases</em> for this chat, plus a live <em>context-window meter</em> (turns amber, then red, as the window fills).</li>
+          <li><strong>Tool calls</strong> render as a distinct <code>▸ tool call</code> badge with the tool name and namespace, so it's obvious when the model is acting.</li>
+          <li><strong>Permission prompts</strong> appear as an in-place modal: choose Allow / Always allow / Deny / Cancel.</li>
+        </ul>
+
+        <h3>Keyboard shortcuts</h3>
+        <table class="doc-table">
+          <thead><tr><th>Key</th><th>Action</th></tr></thead>
+          <tbody>
+            <tr><td><code>Enter</code></td><td>Send the message</td></tr>
+            <tr><td><code>Ctrl+J</code></td><td>Insert a newline (compose multi-line prompts)</td></tr>
+            <tr><td><code>↑</code> / <code>↓</code></td><td>Recall previous inputs</td></tr>
+            <tr><td><code>Tab</code></td><td>Accept the dimmed slash-command "ghost" suggestion</td></tr>
+            <tr><td><code>PageUp</code> / <code>PageDown</code> / mouse wheel</td><td>Scroll the conversation history</td></tr>
+            <tr><td><code>Ctrl+C</code></td><td>Cancel the in-flight response; clears the line, or quits when the line is empty</td></tr>
+          </tbody>
+        </table>
+        <p style="font-size:13px;color:var(--text-2);">Multi-line text pastes as a single block (it won't submit early), and the caret stays correctly placed even with wide characters (e.g. CJK).</p>
+
+        <h3>Slash commands</h3>
+        <p>Inside the interactive UI:</p>
+        <table class="doc-table">
+          <thead><tr><th>Command</th><th>Action</th></tr></thead>
+          <tbody>
+            <tr><td><code>/help</code>, <code>/?</code></td><td>Show commands and shortcuts</td></tr>
+            <tr><td><code>/compact</code></td><td>Condense the conversation to reclaim context</td></tr>
+            <tr><td><code>/clear</code></td><td>Clear the conversation (also resets the persisted session)</td></tr>
+            <tr><td><code>/exit</code>, <code>/quit</code></td><td>Leave the session</td></tr>
+          </tbody>
+        </table>
+        <p>The <strong>classic REPL</strong> (<code>BIOROUTER_CLI_CLASSIC=1</code>) additionally supports <code>/t</code> (theme), <code>/r</code> (full tool output), <code>/mode &lt;auto|approve|chat|smart_approve&gt;</code>, <code>/plan</code> … <code>/endplan</code>, <code>/prompts</code>, <code>/prompt &lt;name&gt;</code>, <code>/workflow</code>, <code>/extension</code>, and <code>/builtin</code>. Use it for elicitation-style interactive forms, which the full-screen UI defers to classic mode.</p>
+
+        <h2>Command reference</h2>
+        <table class="doc-table">
+          <thead><tr><th>Command</th><th>Purpose</th></tr></thead>
+          <tbody>
+            <tr><td><code>session</code> · <code>s</code></td><td>Start or resume an interactive chat session</td></tr>
+            <tr><td><code>run</code></td><td>Execute a prompt / instruction file headlessly</td></tr>
+            <tr><td><code>configure</code></td><td>Interactive setup wizard (providers, API keys)</td></tr>
+            <tr><td><code>models</code></td><td>Inspect and set the provider / model</td></tr>
+            <tr><td><code>knowledge</code> · <code>kb</code></td><td>Manage knowledge bases (ingest, lint, query, hide)</td></tr>
+            <tr><td><code>extension</code> · <code>ext</code></td><td>Install and manage extensions (<code>.brxt</code> bundles)</td></tr>
+            <tr><td><code>skill</code></td><td>Install and manage skills (<code>.zip</code>)</td></tr>
+            <tr><td><code>workflow</code></td><td>Install, validate, list, and open workflows</td></tr>
+            <tr><td><code>schedule</code> · <code>sched</code></td><td>Manage cron-scheduled jobs</td></tr>
+            <tr><td><code>project</code> · <code>projects</code></td><td>Open the last project directory / list recent ones</td></tr>
+            <tr><td><code>info</code></td><td>Show version, config, and path information (<code>--verbose</code> for config)</td></tr>
+            <tr><td><code>completion &lt;shell&gt;</code></td><td>Generate shell autocompletion (bash, zsh, fish, …)</td></tr>
+            <tr><td><code>doctor</code></td><td>Check prerequisites (git, uv, node, …), CLI-on-PATH status, and updates (<code>--format json</code>, <code>--no-update</code>)</td></tr>
+            <tr><td><code>setup-path</code> · <code>install-cli</code></td><td>Install the <code>biorouter</code> command onto your PATH</td></tr>
+            <tr><td><code>web</code> · <code>term</code></td><td>Experimental web chat server · terminal-integrated sessions</td></tr>
+            <tr><td><code>mcp</code> · <code>acp</code></td><td>Run a bundled MCP server · run as an ACP agent</td></tr>
+            <tr><td><code>update</code></td><td>Update the CLI (<code>--canary</code> for pre-release)</td></tr>
+          </tbody>
+        </table>
+        <p style="font-size:13px;color:var(--text-2);">Run <code>biorouter &lt;command&gt; --help</code> for the full flags of any command.</p>
+
+        <h3>Models and providers</h3>
+        <pre>biorouter models current                       # show configured provider + model
+biorouter models providers                     # list available providers
+biorouter models list anthropic                # known models for a provider
+biorouter models set --provider versa_azure --model gpt-5.2-2025-12-11
+biorouter configure                            # interactive provider / key wizard</pre>
+        <p>These read and write the same <code>~/.config/biorouter/config.yaml</code> the desktop app uses.</p>
+
+        <h3>Headless runs and output formats</h3>
+        <pre>biorouter run -t "Summarize the file ./notes.md in 5 bullets"
+biorouter run -i instructions.txt              # read instructions from a file
+biorouter run -t "..." --output-format json    # structured output for scripts
+biorouter run -t "..." --output-format stream-json   # streamed JSON events</pre>
+
+        <h2>Knowledge bases from the CLI</h2>
+        <p>Knowledge bases use a <strong>hide-from-the-agent</strong> model: every base is available to the agent unless you hide it. <code>knowledge list</code> marks each base as visible (●) or hidden (○).</p>
+        <pre>biorouter knowledge list                       # visible vs hidden bases
+biorouter knowledge create my-kb --name "My KB"
+biorouter knowledge ingest --kb my-kb --url https://example.com/paper
+biorouter knowledge ingest --kb my-kb --file ./report.pdf
+biorouter knowledge ingest --kb my-kb --text "a note to remember"
+biorouter knowledge query "what does the cohort show?" --kb my-kb --save
+biorouter knowledge lint --kb my-kb --fix      # find orphans/contradictions; --fix repairs
+biorouter knowledge hide my-kb                 # keep it on disk, hide from the agent
+biorouter knowledge unhide my-kb</pre>
+        <p style="font-size:13px;color:var(--text-2);">Ingest, query, and lint are backed by a bounded knowledge sub-agent using your configured model. The active base is shown in the interactive UI's status line.</p>
+
+        <h2>Installing extensions and skills</h2>
+        <p><strong>Extensions</strong> install from <code>.brxt</code> bundles, mirroring the desktop flow: extract, build the Python environment with <code>uv sync</code>, store secrets in the keyring, and register the extension:</p>
+        <pre>biorouter extension install ./my-extension.brxt
+biorouter extension install ./x.brxt --secret API_KEY=sk-... --env REGION=us
+biorouter extension list
+biorouter extension remove my-extension --purge</pre>
+        <div class="alert alert-info"><strong>Requires <code>uv</code>.</strong> <code>.brxt</code> install runs <code>uv sync</code>; install <a href="https://docs.astral.sh/uv/" target="_blank">uv</a> first. A missing <code>uv</code> produces a clear, actionable error.</div>
+        <p><strong>Skills</strong> install from a <code>.zip</code> (a single skill or a bundle of many) into <code>~/.config/biorouter/skills/</code>:</p>
+        <pre>biorouter skill install ./skills-bundle.zip
+biorouter skill list
+biorouter skill remove my-skill</pre>
+
+        <h2>Workflows and scheduling</h2>
+        <pre>biorouter workflow install ./review.yaml       # add to the workflow library
+biorouter workflow list
+biorouter workflow validate ./review.yaml
+biorouter run --workflow review                # run a workflow headlessly
+biorouter workflow open review                 # open it in the desktop app
+
+biorouter schedule add --schedule-id review-weekly --cron "0 8 * * 1" --workflow-source ./review.yaml
+biorouter schedule list
+biorouter schedule run-now --schedule-id review-weekly
+biorouter schedule cron-help                   # cron expression examples</pre>
+
+        <h2>Hooks</h2>
+        <p>BioRouter's <strong>hook</strong> system runs your own commands or prompt-checks at lifecycle events, and it works identically in the CLI, because hooks live in the shared agent core. Hooks fire in interactive sessions, headless <code>run</code>, and scheduled jobs.</p>
+        <p>Configure global hooks under a <code>hooks:</code> key in <code>~/.config/biorouter/config.yaml</code>, or per-project in <code>.biorouter/hooks.yaml</code> (opt-in via <code>allow_project_hooks: true</code> or <code>BIOROUTER_ALLOW_PROJECT_HOOKS=1</code>).</p>
+        <pre>hooks:
+  PreToolUse:
+    - matcher: "developer__shell"           # regex on the tool name
+      hooks:
+        - type: command
+          command: "./guard.sh"             # event JSON is piped to stdin
+          timeout: 30
+  UserPromptSubmit:
+    - hooks:
+        - type: prompt
+          prompt: "Block requests that touch files outside the project."</pre>
+        <p>Supported events: <code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>PreToolUse</code>, <code>PermissionRequest</code>, <code>PostToolUse</code>, <code>PostToolUseFailure</code>, <code>Notification</code>, <code>SubagentStart</code>, <code>SubagentStop</code>, <code>Stop</code>, <code>PreCompact</code>, <code>PostCompact</code>, and <code>SessionEnd</code>. Command hooks receive the event payload as JSON on stdin and can block or inject context; failures are fail-open (they never wedge a session).</p>
+
+        <h2>Notes and tips</h2>
+        <ul>
+          <li><strong>First launch is slower.</strong> A session starts your configured MCP extensions; subsequent turns are fast.</li>
+          <li><strong>Shared state.</strong> The CLI and desktop app share <code>~/.config/biorouter/config.yaml</code>, sessions, knowledge bases, skills, and workflows. Switch between them freely.</li>
+          <li><strong>Config &amp; logs.</strong> Config at <code>~/.config/biorouter/config.yaml</code>; logs under <code>~/.local/state/biorouter/logs/</code> (see <code>biorouter info</code>).</li>
+          <li><strong>Shell completions.</strong> <code>biorouter completion zsh &gt; ~/.zfunc/_biorouter</code> (or your shell's equivalent).</li>
+          <li><strong>Classic fallback.</strong> Interactive forms (elicitation), and any slash command not in the full-screen UI, are available under <code>BIOROUTER_CLI_CLASSIC=1</code>.</li>
+        </ul>
+      </div>
+
+      <!-- KNOWLEDGE -->
+      <!-- DASHBOARD -->
+      <div class="doc-page" id="doc-dashboard">
+        <h1>Dashboard mode</h1>
+        <p class="doc-intro">Dashboard mode turns BioRouter into an infinite spatial canvas where you run <strong>many chat sessions at once</strong>, side by side. Split coding, literature review, and data analysis across dozens of agents working in parallel — and organize, fold, and watch them all from a single view. Each window is an independent session with its own history and its own model.</p>
+
+        <h2>Opening the dashboard</h2>
+        <p>Click the <strong>grid icon</strong> in the top-left of the window chrome (next to the new-session and sidebar-toggle buttons) to enter Dashboard mode. A toolbar appears across the top of the canvas; the count of open conversations is shown on the right as <em>“N on canvas.”</em></p>
+
+        <h2>The toolbar</h2>
+        <table class="doc-table">
+          <thead><tr><th>Control</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Spawn</strong></td><td>Open a new conversation window on the canvas (also <strong>⌘⇧N</strong>). It appears focused and centered.</td></tr>
+            <tr><td><strong>Organize</strong></td><td>Resolve overlaps — tidy the windows into a clean layout and re-center the camera on the focused window.</td></tr>
+            <tr><td><strong>Fold</strong> <span style="font-size:12px;color:var(--text-2)">(toggle)</span></td><td>Collapse <em>every</em> window into a compact card so you can see them all at once; one card stays open at a time. Toggle it back off to return to full windows.</td></tr>
+            <tr><td><strong>Clear</strong></td><td>Close every conversation on the canvas.</td></tr>
+          </tbody>
+        </table>
+
+        <h2>Working with a window</h2>
+        <p>Each conversation is a draggable, resizable window with a colored accent (so you can tell them apart at a glance). Its title bar has four controls on the right:</p>
+        <table class="doc-table">
+          <thead><tr><th>Button</th><th>Action</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Fold</strong> (—)</td><td>Collapse this window into a card.</td></tr>
+            <tr><td><strong>Shrink</strong> (⤡)</td><td>Resize down to the minimum window size.</td></tr>
+            <tr><td><strong>Enlarge</strong> (⤢)</td><td>Resize up to the default comfortable chat size.</td></tr>
+            <tr><td><strong>Close</strong> (✕)</td><td>End this conversation and remove it from the canvas.</td></tr>
+          </tbody>
+        </table>
+        <ul>
+          <li><strong>Move:</strong> drag the title bar. <strong>Resize:</strong> drag the bottom-right corner handle.</li>
+          <li><strong>Focus:</strong> click any background window to bring it to the front (the focused window carries a deeper shadow).</li>
+          <li><strong>Rename:</strong> double-click the window's title. (New sessions are auto-named after the first exchange.)</li>
+          <li><strong>Switch models per window:</strong> each window keeps its own model, so you can run a fast local model in one and a frontier cloud model in another at the same time.</li>
+        </ul>
+
+        <h2>Moving around the canvas</h2>
+        <p>The canvas is effectively infinite. <strong>Pan</strong> by dragging any empty (dotted) area, or with a two-finger trackpad scroll. The camera <strong>auto-centers</strong> on the active window whenever you spawn, focus, enlarge/shrink, or hit <em>Organize</em> — so you never lose a window off-screen. Use <strong>Organize</strong> any time things get cluttered to snap everything back into a tidy, centered arrangement.</p>
+
+        <h2>Fold mode — see everything, run one</h2>
+        <p>Turn on <strong>Fold</strong> when you have many sessions and want an overview. Every window collapses into a small card showing its name, working directory, and a status indicator — a hollow ring when idle, a gently <em>breathing</em> dot when the agent is busy — plus a hover preview of the latest message. In fold mode:</p>
+        <ul>
+          <li><strong>Click a card</strong> to expand it into a full window (only one is open at a time).</li>
+          <li><strong>Click empty canvas</strong> to refold the open one, returning to the all-cards overview.</li>
+          <li>Cards still expose <strong>Expand / Shrink / Enlarge / Close</strong> controls, and you can drag them to rearrange.</li>
+        </ul>
+        <p>This makes it easy to fire off a dozen long-running agents, fold them all into cards, watch the busy indicators, and dip into whichever one needs you — then fold it away again.</p>
+      </div>
+
+      <div class="doc-page" id="doc-knowledge">
+        <h1>Knowledge bases</h1>
+        <p class="doc-intro">A knowledge base is a personal, <strong>LLM-maintained</strong> store of structured information: a folder of markdown pages backed by a full git history. You never hand-edit it: BioRouter reads your sources, writes cross-linked pages, classifies credibility, and commits every change. Because it's plain markdown under git, everything stays <strong>local on disk</strong>, readable, diffable, and reversible.</p>
+
+        <div class="alert alert-info">
+          <strong>Local by design.</strong> Knowledge bases live entirely under <code>~/.config/biorouter/knowledge/</code>. The only network calls are credibility lookups (Crossref / OpenAlex) and your configured LLM provider. Git is statically built in, so no system <code>git</code> is required.
+        </div>
+
+        <h2>How it works</h2>
+        <p>Each base is a folder of markdown pages organized into four namespaces, plus a hidden git repo that records every edit:</p>
+        <table class="doc-table">
+          <thead><tr><th>Page kind</th><th>Holds</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Sources</strong></td><td>One page per ingested source: summary, key claims, outbound links</td></tr>
+            <tr><td><strong>Entities</strong></td><td>Proper nouns: genes, drugs, datasets, people, methods</td></tr>
+            <tr><td><strong>Concepts</strong></td><td>Ideas, mechanisms, theories</td></tr>
+            <tr><td><strong>Notes / hubs</strong></td><td>Ad-hoc pages and cross-cutting "hub" pages at the top of the graph</td></tr>
+          </tbody>
+        </table>
+        <p>Pages cross-reference each other with Obsidian-style <code>[[wiki-links]]</code>, which form the knowledge graph. A bounded AI sub-agent does the writing; every operation commits atomically (it lands completely or not at all), so you can browse the history and roll back at any time.</p>
+
+        <h2>The three operations</h2>
+        <table class="doc-table">
+          <thead><tr><th>Operation</th><th>What it does</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Ingest</strong></td><td>Add a source: a <strong>URL, a file, or pasted text</strong>. BioRouter converts it (HTML, PDF, DOCX, CSV, spreadsheets, PPTX, plain text), classifies its credibility, then writes/updates source, entity, and concept pages with cross-links.</td></tr>
+            <tr><td><strong>Query</strong></td><td>Ask a question; BioRouter searches the base (BM25 + graph) and writes a <strong>cited answer</strong>. Optionally file the answer back into the base as a new page.</td></tr>
+            <tr><td><strong>Lint</strong></td><td>Hygiene scan that finds orphan pages, contradictions, stale sources, and missing concept pages. Run with autofix to let the sub-agent repair them.</td></tr>
+          </tbody>
+        </table>
+
+        <h2>Credibility &amp; retraction</h2>
+        <p>Every source is graded on a deterministic ladder: extract identifiers (DOI / arXiv / PMID / ISBN) → look up <strong>Crossref</strong> then <strong>OpenAlex</strong> → URL host patterns → publisher allow-list → an LLM fallback. Tiers run from <em>peer-reviewed</em> to <em>preprint</em>, <em>book</em>, <em>gray literature</em>, <em>web</em>, and <em>personal</em>. <strong>Retractions are flagged</strong> and shown as a badge on the graph. You can re-classify or override any source manually.</p>
+
+        <h2>The knowledge graph</h2>
+        <p>A force-directed graph is derived from the <code>[[links]]</code> in your pages. Nodes are colored by credibility tier, retracted sources are badged, and clicking a node previews its markdown. (If the graph shows nodes but no edges, the pages simply don't cross-reference each other yet.)</p>
+
+        <h2>Visibility: active and hidden bases</h2>
+        <p>BioRouter uses a <strong>hide-from-the-agent</strong> model. Every base is available to the chat agent unless you hide it; hidden bases stay fully editable but aren't searched during chat. One base is the <strong>active</strong> base (the default target for ingest/query and for chat grounding), and visibility can be scoped per chat window.</p>
+
+        <h2>Soul: a knowledge base about <em>you</em></h2>
+        <p>While ordinary knowledge bases hold your sources and findings, <strong>Soul</strong> holds knowledge about <strong>the user</strong>. It's a personal, initially-empty base (id <code>soul</code>, a warm parchment color) that BioRouter installs the first time you run it. Instead of facts about a topic, Soul accumulates durable facts about <em>how you work</em>:</p>
+        <ul>
+          <li>the way you approach different scientific questions,</li>
+          <li>the tools and extensions you reach for and how you call them,</li>
+          <li>the commands you run and the tool responses you actually rely on,</li>
+          <li>and personal details you reveal — name, role, affiliations, stated preferences and working style.</li>
+        </ul>
+        <p>Because the chat agent reads from visible bases on every turn, a well-fed Soul means the agent gradually <strong>understands you</strong> — your conventions, your stack, your standards — and needs less re-explaining over time. Soul is just a normal knowledge base underneath: plain markdown under git at <code>~/.config/biorouter/knowledge/soul/</code>, fully browsable, diffable, hideable, and reversible. If you ever delete it, BioRouter recreates it on next launch.</p>
+
+        <h3>The Daily Meditation workflow</h3>
+        <p>Soul fills itself through a built-in <strong>"Meditation"</strong> workflow driven by a built-in <code>update-soul</code> skill, run by a built-in scheduled job called <strong>Daily Meditation</strong> (every day at <strong>3:00 AM</strong> local time). Each run:</p>
+        <ol>
+          <li>uses the <code>chatrecall</code> tool to find your <em>real</em> recent chat sessions (skipping scheduled-job sessions),</li>
+          <li>ingests the most relevant ones into the <code>soul</code> base with <code>platform__ingest_conversation</code>,</li>
+          <li>distills the high-signal, durable details about you and <strong>discards the noise</strong> (greetings, chit-chat, one-off irrelevancies),</li>
+          <li>keeps Soul coherent — linking related pages with <code>[[wiki-links]]</code> and updating existing pages instead of duplicating.</li>
+        </ol>
+        <p>If there's nothing new worth recording, it makes no changes. You stay in control: it appears in the <strong>Scheduler</strong> with a "Built-in" badge where you can <strong>edit its cadence, pause it, or run it on demand</strong>, and you can read or roll back everything it writes from the Knowledge change-log. To take advantage of it, simply use BioRouter normally — the more you work, the better your agent understands you. You can also trigger a reflection any time by running the Meditation workflow yourself.</p>
+        <div class="alert alert-info">
+          <strong>Private by construction.</strong> Soul lives only on your disk under git, like every other base. What the meditation sends to your configured model is governed by your <a href="#" onclick="showDoc('privacy')">provider choice</a> — pick a local model (Llama Server or Ollama) to keep even the reflection fully on-device.
+        </div>
+
+        <h2>In the desktop app</h2>
+        <p>Open the <strong>Knowledge</strong> route in the sidebar, near Skills, Apps, and Settings. From there you can:</p>
+        <ul>
+          <li>Create or focus a base with the <strong>⌘K / Ctrl-K</strong> palette (id, name, color).</li>
+          <li>Add sources by <strong>dropping files/folders</strong>, <strong>pasting text</strong> (URLs are auto-extracted), or picking a model, then <em>Digest Staged Sources</em> with live, streamed progress and a Stop button.</li>
+          <li>Explore the <strong>graph</strong>, open the <strong>change-log</strong> to preview/restore any past commit, and <strong>export / import</strong> a base as a single <code>.brkb</code> archive.</li>
+          <li>Control chat visibility from the <strong>knowledge chip</strong> in the chat bottom menu, or scope a prompt to a base with the <code>/knowledge</code> slash command.</li>
+        </ul>
+
+        <h2>From the CLI</h2>
+        <pre>biorouter knowledge list                       # visible (●) vs hidden (○) bases
+biorouter knowledge create my-kb --name "My KB"
+biorouter knowledge ingest --kb my-kb --url https://example.com/paper
+biorouter knowledge ingest --kb my-kb --file ./report.pdf
+biorouter knowledge ingest --kb my-kb --text "a note to remember"
+biorouter knowledge query "what does the cohort show?" --kb my-kb --save
+biorouter knowledge lint  --kb my-kb --fix
+biorouter knowledge hide my-kb        # keep on disk, hide from the agent
+biorouter knowledge unhide my-kb</pre>
+
+        <h2>Storage layout</h2>
+        <p>Each base lives at <code>~/.config/biorouter/knowledge/&lt;kb-id&gt;/</code>:</p>
+        <pre>manifest.yaml          # id, name, color, created_at, schema_version
+schema.md              # maintenance instructions the sub-agent follows (editable)
+index.md               # catalog of pages           log.md   # change log
+knowledge/             # curated pages: sources/ entities/ concepts/ notes/
+raw/&lt;source-id&gt;/        # original upload + derived markdown + credibility meta
+.git/                  # full history (vendored libgit2)</pre>
+
+        <h2>Setup</h2>
+        <p>Nothing extra to install: Knowledge ships inside BioRouter. The only prerequisite is a <a href="#" onclick="showDoc('providers')">configured provider/model</a>, which ingest, query, and lint use. Create your first base from the ⌘K palette (or <code>biorouter knowledge create</code>) and ingest a source. There are no special config keys; macros use your default provider unless you pass <code>--provider</code>/<code>--model</code>.</p>
+      </div>
+
+      <!-- HOOKS -->
+      <div class="doc-page" id="doc-hooks">
+        <h1>Hooks</h1>
+        <p class="doc-intro">Hooks run <strong>your own shell command, or an LLM-judge prompt</strong>, at agent lifecycle events: before and after tool calls, when a prompt is submitted, around compaction, at session start and end. Use them to enforce guardrails, inject context, log activity, or trigger notifications. The schema mirrors Claude Code's, so existing hook scripts port over unchanged.</p>
+
+        <div class="alert alert-info">
+          <strong>Fail-open and opt-in.</strong> A crashing, timing-out, or misconfigured hook <em>never</em> blocks the agent; only an explicit decision does. And project-level hooks are <strong>off by default</strong>, so opening a repository can't run commands on your machine without your consent.
+        </div>
+
+        <h2>Two kinds of hook</h2>
+        <ul>
+          <li><strong>Command hook:</strong> runs a shell command (default 60 s timeout). The event payload is piped to the command as JSON on <code>stdin</code>, and <code>BIOROUTER_HOOK_EVENT</code>, <code>BIOROUTER_SESSION_ID</code>, and <code>BIOROUTER_PROJECT_DIR</code> are set in its environment. <strong>Exit 0</strong> = allow (stdout may be a JSON decision, or, for <code>UserPromptSubmit</code>/<code>SessionStart</code>, plain text injected as context); <strong>exit 2</strong> = block, with <code>stderr</code> as the reason; any other exit = non-blocking error.</li>
+          <li><strong>Prompt hook:</strong> an LLM judge (default 30 s). It receives your rule plus the event payload and answers allow/deny with a reason. Uses the agent's fast model, or a provider/model you pin on the hook.</li>
+        </ul>
+
+        <h2>Events</h2>
+        <table class="doc-table">
+          <thead><tr><th>Event</th><th>Fires</th><th>Can block?</th></tr></thead>
+          <tbody>
+            <tr><td><code>SessionStart</code></td><td>First prompt of a session (once)</td><td>context only</td></tr>
+            <tr><td><code>UserPromptSubmit</code></td><td>When you submit a prompt</td><td><strong>yes</strong></td></tr>
+            <tr><td><code>PreToolUse</code></td><td>Before a tool runs</td><td><strong>yes</strong> (deny / ask)</td></tr>
+            <tr><td><code>PermissionRequest</code></td><td>When a tool would prompt for approval</td><td><strong>yes</strong> (allow / deny / ask)</td></tr>
+            <tr><td><code>PostToolUse</code> / <code>PostToolUseFailure</code></td><td>After a tool succeeds / fails</td><td>context only</td></tr>
+            <tr><td><code>Notification</code></td><td>When an approval prompt is shown</td><td>no</td></tr>
+            <tr><td><code>SubagentStart</code> / <code>SubagentStop</code></td><td>Around a subagent task</td><td>no</td></tr>
+            <tr><td><code>Stop</code></td><td>When the agent is about to finish its turn</td><td><strong>yes</strong> (capped)</td></tr>
+            <tr><td><code>PreCompact</code> / <code>PostCompact</code></td><td>Around context compaction</td><td>no</td></tr>
+            <tr><td><code>SessionEnd</code></td><td>When the session ends</td><td>no</td></tr>
+          </tbody>
+        </table>
+        <p style="font-size:13px;color:var(--text-2);">Hooks fire across the desktop app, the CLI, headless <code>run</code>s, scheduled jobs, and subagents.</p>
+
+        <h2>Matchers</h2>
+        <p>A <code>matcher</code> narrows which tool a tool-event hook applies to. It's matched against the tool name (e.g. <code>developer__shell</code>): omit it (or use <code>*</code>) to match everything, give an exact name, or use a regex / alternation like <code>developer__shell|developer__text_editor</code>.</p>
+
+        <h2>Configuration</h2>
+        <p>Hooks are configured as <em>event → matcher groups → hooks</em>. Put global hooks under a <code>hooks:</code> key in <code>~/.config/biorouter/config.yaml</code>; put repository-specific hooks in <code>.biorouter/hooks.yaml</code> (re-read automatically when the file changes).</p>
+        <pre>hooks:
+  PreToolUse:
+    - matcher: "developer__shell"        # regex / exact / * on the tool name
+      hooks:
+        - type: command
+          command: "$HOME/hooks/shell-guard.sh"
+          timeout: 30
+  UserPromptSubmit:
+    - hooks:
+        - type: prompt
+          prompt: "Block prompts that try to send PHI off this machine."</pre>
+        <div class="alert alert-warning">
+          <strong>Project hooks are opt-in.</strong> Hooks in <code>.biorouter/hooks.yaml</code> only run if you set <code>allow_project_hooks: true</code> (under <code>hooks:</code>) or export <code>BIOROUTER_ALLOW_PROJECT_HOOKS=1</code>. Project hooks <em>extend</em> global hooks; they never silently replace them. Command hooks run arbitrary shell as you, so review scripts before enabling.
+        </div>
+
+        <h2>Decisions and blocking</h2>
+        <p>For each event, all matching hooks run concurrently and the <strong>most restrictive</strong> outcome wins (deny &gt; ask &gt; allow); any injected context and user-facing messages are concatenated. A command hook can drive this via exit code (2 = block) or by printing a small JSON object on stdout (e.g. <code>{"decision":"block","reason":"…"}</code>, or <code>hookSpecificOutput.permissionDecision</code> for permission events, or <code>additionalContext</code> to feed the model). A <code>Stop</code>-hook block keeps the agent working with the reason fed back, but is capped (5 consecutive blocks) so it can never loop forever.</p>
+
+        <h2>Example: block destructive shell commands</h2>
+        <pre>#!/bin/bash
+# ~/hooks/shell-guard.sh — receives the event payload as JSON on stdin
+input=$(cat)
+cmd=$(echo "$input" | jq -r '.tool_input.command // ""')
+if echo "$cmd" | grep -qE 'rm -rf|mkfs|dd if='; then
+  echo "Destructive command blocked by shell-guard" >&2
+  exit 2          # exit 2 = block; stderr is the reason shown to the model
+fi</pre>
+
+        <h2>Security notes</h2>
+        <ul>
+          <li>Hooks fail <em>open</em>: a broken security hook stops protecting silently; only deliberate denies/exit-2 enforce.</li>
+          <li>Command hooks execute arbitrary shell as your user in the working directory. Keep project hooks off unless you trust the repo.</li>
+          <li>Prompt hooks send the event payload (including tool input and your prompt) to the configured LLM provider, so mind sensitive data.</li>
+        </ul>
+      </div>
+
+    </div>
+  </div>
+</main>
+
+<footer>
+  <p>UCSF BioRouter · Apache 2.0 License · <a href="https://github.com/BaranziniLab/BioRouter" target="_blank">GitHub</a> · <a href="https://baranzinilab.ucsf.edu/" target="_blank">Baranzini Lab</a> · <a href="https://www.ucsf.edu" target="_blank">UCSF</a></p>
+</footer>
+
+<script>
+  function toggleMobileMenu() { document.getElementById('mobile-menu').classList.toggle('open'); }
+  document.addEventListener('click', e => {
+    const m = document.getElementById('mobile-menu');
+    const h = document.querySelector('.hamburger');
+    if (m.classList.contains('open') && !m.contains(e.target) && !h.contains(e.target)) m.classList.remove('open');
+  });
+
+  const DOC_PAGES = ['install','ucsf','cli','providers','extensions','dashboard','knowledge','hooks','workflows','privacy','arch','agents'];
+  function showDoc(name) {
+    DOC_PAGES.forEach(d => {
+      const p = document.getElementById('doc-' + d);
+      const n = document.getElementById('dnav-' + d);
+      if (p) p.classList.toggle('active', d === name);
+      if (n) n.classList.toggle('active', d === name);
+    });
+    if (DOC_PAGES.includes(name)) {
+      window.setTimeout(() => history.replaceState(null, '', '#' + name), 0);
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  const hash = location.hash.replace('#','');
+  if (hash && DOC_PAGES.includes(hash)) showDoc(hash);
+  window.addEventListener('hashchange', () => {
+    const next = location.hash.replace('#','');
+    if (next && DOC_PAGES.includes(next)) showDoc(next);
+  });
+</script>
+</body>
+</html>

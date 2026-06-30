@@ -1,0 +1,54 @@
+name: Deploy landing site
+
+# Publishes the static landing site in landing/ (the former biorouter-landing
+# repo, custom domain biorouter.ucsf.edu) to GitHub Pages. Runs on every push to
+# main that touches the site, so the landing page ships together with the app.
+#
+# One-time setup before the first successful run (see landing/README.md):
+#   1. Release the biorouter.ucsf.edu custom domain from the old
+#      BaranziniLab/biorouter-landing repo (Settings -> Pages -> remove domain).
+#   2. In THIS repo: Settings -> Pages -> Source = "GitHub Actions".
+# The CNAME file in landing/ re-asserts the custom domain on each deploy.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'landing/**'
+      - '.github/workflows/deploy-landing.yml'
+  workflow_dispatch: {}
+
+# Allow the workflow to mint the OIDC token Pages needs and publish.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two Pages deploys at once; let an in-flight deploy finish rather
+# than cancelling it (avoids leaving the live site half-published).
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload landing/ as the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          # Served as-is (no Jekyll). The CNAME inside sets the custom domain.
+          path: landing
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

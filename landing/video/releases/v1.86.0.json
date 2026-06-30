@@ -1,0 +1,9 @@
+{
+  "version": "1.86.0",
+  "date": "June 2026",
+  "headline": "Capabilities by default, sharper vision & a faster TUI",
+  "feat1": "Capabilities default-enable on upgrade — and stay out of the chat dropdown",
+  "feat2": "MiMo vision fix — multimodal images render consistently again",
+  "feat3": "CLI TUI: smooth scroll, collapsible tool calls & a queued-message pane",
+  "feat4": "Removed the spammy completion-gate / todo-nudge loop"
+}
