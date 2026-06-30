@@ -37,10 +37,10 @@ skills), zero console errors.
 
 - **Domain `biorouter.ucsf.edu` → `BaranziniLab/biorouter`** (this repo), served
   from `landing/` via the deploy workflow.
-- The old **`biorouter-landing`** repo still exists and its Pages is left alive at
-  `https://baranzinilab.github.io/biorouter-landing/` (domain released) as a
-  rollback. It is **no longer the deploy source**. A decision on deleting it is
-  the owner's to make.
+- The old **`biorouter-landing`** repo was **deleted** (remote + local) on
+  2026-06-29 after the cutover was verified. Its full 57-commit history was first
+  archived to a git bundle (`biorouter-landing-archive-2026-06-29.bundle`) kept
+  outside the repo as insurance.
 
 ## To update the site from now on
 
@@ -50,7 +50,12 @@ trigger it manually from the Actions tab (`workflow_dispatch`).
 
 ## Rollback (if ever needed)
 
-Re-add the `biorouter.ucsf.edu` custom domain on `biorouter-landing`
-(Settings → Pages, or `PUT .../biorouter-landing/pages {"cname":"biorouter.ucsf.edu"}`)
-and remove it from this repo. The old repo still has every file and its full
-history, so it can serve again within ~1 minute.
+The site now lives only in this repo, so rollback means redeploying from here:
+re-run the **Deploy landing site** workflow (Actions tab → Run workflow), or
+revert the offending `landing/` change and push. The custom domain and Pages
+config on this repo are unaffected by content rollbacks.
+
+If the *whole* old repo is ever needed back, restore it from the archived
+bundle: `git clone biorouter-landing-archive-2026-06-29.bundle`, then push to a
+fresh GitHub repo. (You would only re-add the `biorouter.ucsf.edu` domain to that
+repo if you also removed it from this one — a domain lives on one Pages site.)
