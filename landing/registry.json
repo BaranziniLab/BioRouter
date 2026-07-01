@@ -88,7 +88,7 @@
     {
       "id": "bioroffice",
       "name": "BiorOffice",
-      "organization": "Broccolito · UCSF",
+      "organization": "BaranziniLab · UCSF",
       "version": "v1.0.0",
       "description": "Create, read, and edit Word (.docx), Excel (.xlsx), and PowerPoint (.pptx) files from chat. Handles headings, tables, charts, and 150+ Excel functions with live formula evaluation. Built on the open-source OfficeCLI engine, so no Microsoft Office install is needed. Ships four bundled skills for the office suite, Word, Excel, and PowerPoint.",
       "tags": [
@@ -99,8 +99,8 @@
         "Excel",
         "PowerPoint"
       ],
-      "github": "https://github.com/Broccolito/BiorOffice",
-      "download": "https://github.com/Broccolito/BiorOffice/releases/download/v1.0.0/bioroffice.brxt",
+      "github": "https://github.com/BaranziniLab/BiorOffice",
+      "download": "https://github.com/BaranziniLab/BiorOffice/releases/download/v1.0.0/bioroffice.brxt",
       "filename": "bioroffice.brxt",
       "license": "Apache-2.0"
     },
@@ -264,6 +264,150 @@
       "github": "https://github.com/BaranziniLab/IDCAgent",
       "download": "https://github.com/BaranziniLab/IDCAgent/releases/download/v0.1.0-brxt/idcagent.brxt",
       "filename": "idcagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "literatureagent",
+      "name": "LiteratureAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP access pattern for PubMed, OpenAlex, Crossref, Semantic Scholar, and literature evidence workflows, with provenance-first search and guarded API calls.",
+      "tags": [
+        "MCP",
+        "Literature",
+        "PubMed",
+        "Evidence",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/LiteratureAgent",
+      "download": "https://github.com/BaranziniLab/LiteratureAgent/releases/download/v0.1.0-brxt/literatureagent.brxt",
+      "filename": "literatureagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "ncbiagent",
+      "name": "NCBIAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP access to NCBI database discovery and Entrez-style workflows for PubMed, Gene, SRA, GEO, ClinVar, dbSNP, and sequence metadata review.",
+      "tags": [
+        "MCP",
+        "NCBI",
+        "Entrez",
+        "Genomics",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/NCBIAgent",
+      "download": "https://github.com/BaranziniLab/NCBIAgent/releases/download/v0.1.0-brxt/ncbiagent.brxt",
+      "filename": "ncbiagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "clinicalvariantagent",
+      "name": "ClinicalVariantAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP access pattern for variant annotation resources such as ClinVar, VEP, MyVariant, and gnomAD, with normalization and clinical-evidence review safeguards.",
+      "tags": [
+        "MCP",
+        "ClinVar",
+        "Variants",
+        "Annotation",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/ClinicalVariantAgent",
+      "download": "https://github.com/BaranziniLab/ClinicalVariantAgent/releases/download/v0.1.0-brxt/clinicalvariantagent.brxt",
+      "filename": "clinicalvariantagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "workflowrunneragent",
+      "name": "WorkflowRunnerAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "Guarded MCP workflow runner for Nextflow, Snakemake, Cromwell/WDL, and CWL planning, validation, dry-run review, and confirmation-gated execution.",
+      "tags": [
+        "MCP",
+        "Nextflow",
+        "Snakemake",
+        "Workflow",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/WorkflowRunnerAgent",
+      "download": "https://github.com/BaranziniLab/WorkflowRunnerAgent/releases/download/v0.1.0-brxt/workflowrunneragent.brxt",
+      "filename": "workflowrunneragent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "ucsfhpcagent",
+      "name": "UCSFHPCAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP helper for UCSF CHPC/SLURM job planning, account inspection, file transfer checks, and confirmation-gated HPC command execution.",
+      "tags": [
+        "UCSF",
+        "MCP",
+        "HPC",
+        "SLURM",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/UCSFHPCAgent",
+      "download": "https://github.com/BaranziniLab/UCSFHPCAgent/releases/download/v0.1.0-brxt/ucsfhpcagent.brxt",
+      "filename": "ucsfhpcagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "chemoinformaticsagent",
+      "name": "ChemoinformaticsAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP helper for RDKit, PubChem, ChEMBL, SMILES/InChI normalization, molecular descriptors, and guarded local cheminformatics command planning.",
+      "tags": [
+        "MCP",
+        "RDKit",
+        "ChEMBL",
+        "Molecules",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/ChemoinformaticsAgent",
+      "download": "https://github.com/BaranziniLab/ChemoinformaticsAgent/releases/download/v0.1.0-brxt/chemoinformaticsagent.brxt",
+      "filename": "chemoinformaticsagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "proteinstructureagent",
+      "name": "ProteinStructureAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP access pattern for PDB, AlphaFold, UniProt, sequence-to-structure lookup, structure metadata review, and guarded local structure-tool planning.",
+      "tags": [
+        "MCP",
+        "PDB",
+        "AlphaFold",
+        "Proteins",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/ProteinStructureAgent",
+      "download": "https://github.com/BaranziniLab/ProteinStructureAgent/releases/download/v0.1.0-brxt/proteinstructureagent.brxt",
+      "filename": "proteinstructureagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "singlecellomicsagent",
+      "name": "SingleCellOmicsAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP helper for scanpy/anndata-style single-cell workflows, h5ad metadata inspection, QC planning, clustering review, and guarded local command execution.",
+      "tags": [
+        "MCP",
+        "Single-cell",
+        "Scanpy",
+        "Omics",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/SingleCellOmicsAgent",
+      "download": "https://github.com/BaranziniLab/SingleCellOmicsAgent/releases/download/v0.1.0-brxt/singlecellomicsagent.brxt",
+      "filename": "singlecellomicsagent.brxt",
       "license": "Apache-2.0"
     }
   ],
