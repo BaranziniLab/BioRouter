@@ -44,6 +44,7 @@ import { SessionNamePill } from './Dashboard/SessionNamePill';
 import { announceSessionName, renameSession } from '../utils/sessionNameSync';
 import { toastError } from '../toasts';
 import { errorMessage } from '../utils/conversionUtils';
+import { Greeting } from './common/Greeting';
 
 // Context for sharing current model info
 const CurrentModelContext = createContext<{ model: string; mode: string } | null>(null);
@@ -624,14 +625,13 @@ function BaseChatContent({
               data-drop-zone="true"
             >
               <div className="w-full max-w-[760px] flex flex-col items-center gap-6">
-                <h1
+                <Greeting
+                  key={sessionId}
                   className={cn(
-                    'text-center font-semibold tracking-tight text-text-default',
+                    'text-center font-semibold tracking-tight text-text-default animate-in fade-in duration-300',
                     compactPicker ? 'text-xl' : 'text-2xl'
                   )}
-                >
-                  What question will your data answer next?
-                </h1>
+                />
                 {renderChatInput()}
               </div>
             </div>
