@@ -374,12 +374,11 @@
   animation: fade-slide-up 0.15s ease-out forwards;
 }
 
-.biorouter-sidebar-depth {
-  position: relative;
+.biorouter-sidebar-shell {
   box-shadow: 8px 0 28px -26px rgba(32, 25, 15, 0.42);
 }
 
-.biorouter-sidebar-depth::after {
+.biorouter-sidebar-shell::after {
   content: '';
   position: absolute;
   top: 0;
@@ -396,11 +395,11 @@
   );
 }
 
-.dark .biorouter-sidebar-depth {
+.dark .biorouter-sidebar-shell {
   box-shadow: 8px 0 28px -24px rgba(0, 0, 0, 0.55);
 }
 
-.dark .biorouter-sidebar-depth::after {
+.dark .biorouter-sidebar-shell::after {
   background: linear-gradient(
     to bottom,
     transparent 0%,
