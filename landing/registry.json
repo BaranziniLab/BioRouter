@@ -2164,6 +2164,32 @@
       "license": "Apache-2.0"
     },
     {
+      "id": "develop-biorouter-extension",
+      "name": "Develop BioRouter Extension",
+      "category": "Developer",
+      "type": "User-invocable · /develop-biorouter-extension",
+      "description": "Step-by-step guide for building a .brxt extension: manifest, MCP server, packaging, validation, and bundled skills.",
+      "tags": [
+        "BRXT",
+        "Extensions",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "develop-biorouter-extension",
+        "brxt",
+        "extension",
+        "mcp",
+        "manifest",
+        "bundled",
+        "skills",
+        "packaging",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-develop-biorouter-extension/develop-biorouter-extension.zip",
+      "filename": "develop-biorouter-extension.zip",
+      "license": "Apache-2.0"
+    },
+    {
       "id": "hookify",
       "name": "Hookify (Hooks)",
       "category": "Developer",
