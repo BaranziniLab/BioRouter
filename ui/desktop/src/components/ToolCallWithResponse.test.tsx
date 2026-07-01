@@ -125,6 +125,7 @@ describe('summarizeToolCall', () => {
 
     expect(trigger).toHaveClass('h-6');
     expect(trigger).toHaveClass('min-h-0');
+    expect(trigger).toHaveClass('!px-0');
     expect(trigger.querySelector('svg:last-child')).toHaveClass('opacity-0');
     expect(screen.getByText(/Finished/)).toBeInTheDocument();
     expect(screen.queryByText('cmd')).not.toBeInTheDocument();
