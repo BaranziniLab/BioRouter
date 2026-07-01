@@ -210,27 +210,29 @@ export default function SkillsView() {
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-background-info flex-shrink-0" />
                   BioRouter Skills ({totalBR})
                 </h2>
-                {filteredBRBundles.map((bundle) => (
-                  <BundleItem
-                    key={bundle.folderPath}
-                    bundle={bundle}
-                    enabled={isSkillEnabled(bundle.bundleName)}
-                    onClick={() => handleOpenBundle(bundle)}
-                    onDelete={() => setBundleToDelete(bundle)}
-                    onToggle={(e) => handleBundleToggle(bundle, e)}
-                  />
-                ))}
-                {filteredBR.map((skill) => (
-                  <SkillItem
-                    key={skill.folderPath}
-                    skill={skill}
-                    enabled={isSkillEnabled(skill.name)}
-                    onClick={() => handleOpen(skill)}
-                    onDelete={() => setSkillToDelete(skill)}
-                    onShare={() => handleShare(skill)}
-                    onToggle={(e) => handleToggle(skill, e)}
-                  />
-                ))}
+                <div className="biorouter-list-shell">
+                  {filteredBRBundles.map((bundle) => (
+                    <BundleItem
+                      key={bundle.folderPath}
+                      bundle={bundle}
+                      enabled={isSkillEnabled(bundle.bundleName)}
+                      onClick={() => handleOpenBundle(bundle)}
+                      onDelete={() => setBundleToDelete(bundle)}
+                      onToggle={(e) => handleBundleToggle(bundle, e)}
+                    />
+                  ))}
+                  {filteredBR.map((skill) => (
+                    <SkillItem
+                      key={skill.folderPath}
+                      skill={skill}
+                      enabled={isSkillEnabled(skill.name)}
+                      onClick={() => handleOpen(skill)}
+                      onDelete={() => setSkillToDelete(skill)}
+                      onShare={() => handleShare(skill)}
+                      onToggle={(e) => handleToggle(skill, e)}
+                    />
+                  ))}
+                </div>
               </>
             )}
 
@@ -240,27 +242,29 @@ export default function SkillsView() {
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-background-strong flex-shrink-0" />
                   Skills From Other Agents ({totalOther})
                 </h2>
-                {filteredOtherBundles.map((bundle) => (
-                  <BundleItem
-                    key={bundle.folderPath}
-                    bundle={bundle}
-                    enabled={isSkillEnabled(bundle.bundleName)}
-                    onClick={() => handleOpenBundle(bundle)}
-                    onDelete={() => setBundleToDelete(bundle)}
-                    onToggle={(e) => handleBundleToggle(bundle, e)}
-                  />
-                ))}
-                {filteredOther.map((skill) => (
-                  <SkillItem
-                    key={skill.folderPath}
-                    skill={skill}
-                    enabled={isSkillEnabled(skill.name)}
-                    onClick={() => handleOpen(skill)}
-                    onDelete={() => setSkillToDelete(skill)}
-                    onShare={() => handleShare(skill)}
-                    onToggle={(e) => handleToggle(skill, e)}
-                  />
-                ))}
+                <div className="biorouter-list-shell">
+                  {filteredOtherBundles.map((bundle) => (
+                    <BundleItem
+                      key={bundle.folderPath}
+                      bundle={bundle}
+                      enabled={isSkillEnabled(bundle.bundleName)}
+                      onClick={() => handleOpenBundle(bundle)}
+                      onDelete={() => setBundleToDelete(bundle)}
+                      onToggle={(e) => handleBundleToggle(bundle, e)}
+                    />
+                  ))}
+                  {filteredOther.map((skill) => (
+                    <SkillItem
+                      key={skill.folderPath}
+                      skill={skill}
+                      enabled={isSkillEnabled(skill.name)}
+                      onClick={() => handleOpen(skill)}
+                      onDelete={() => setSkillToDelete(skill)}
+                      onShare={() => handleShare(skill)}
+                      onToggle={(e) => handleToggle(skill, e)}
+                    />
+                  ))}
+                </div>
               </>
             )}
 
@@ -345,7 +349,7 @@ interface BundleItemProps {
 function BundleItem({ bundle, enabled, onClick, onDelete, onToggle }: BundleItemProps) {
   return (
     <div
-      className="flex items-start py-3 border-b border-border-subtle last:border-b-0 hover:bg-background-medium/30 transition-colors group cursor-pointer gap-3 px-2"
+      className="biorouter-list-row flex cursor-pointer items-start gap-3 px-3 py-3 group"
       onClick={onClick}
     >
       <div className="flex-1 min-w-0">
