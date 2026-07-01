@@ -36,48 +36,80 @@ export type ViewOptions = {
   pendingScheduleDeepLink?: string;
 };
 
+type ViewTransitionDocument = Document & {
+  startViewTransition?: (callback: () => void) => { finished: Promise<void> };
+};
+
+const prefersReducedMotion = () =>
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+export const navigateWithViewTransition = (
+  navigate: NavigateFunction,
+  to: string,
+  state?: unknown,
+  options: { replace?: boolean } = {}
+) => {
+  const runNavigation = () => navigate(to, { replace: options.replace, state });
+  const doc = typeof document === 'undefined' ? undefined : (document as ViewTransitionDocument);
+  const transition = doc?.startViewTransition;
+  const disableAnimation =
+    typeof state === 'object' &&
+    state !== null &&
+    'disableAnimation' in state &&
+    Boolean((state as { disableAnimation?: unknown }).disableAnimation);
+
+  if (disableAnimation || prefersReducedMotion() || !transition) {
+    runNavigation();
+    return;
+  }
+
+  transition.call(doc, runNavigation);
+};
+
 export const createNavigationHandler = (navigate: NavigateFunction) => {
   return (view: View, options?: ViewOptions) => {
     switch (view) {
       case 'chat':
-        navigate('/', { state: options });
+        navigateWithViewTransition(navigate, '/', options);
         break;
       case 'pair':
-        navigate('/pair', { state: options });
+        navigateWithViewTransition(navigate, '/pair', options);
         break;
       case 'settings':
-        navigate('/settings', { state: options });
+        navigateWithViewTransition(navigate, '/settings', options);
         break;
       case 'sessions':
-        navigate('/sessions', { state: options });
+        navigateWithViewTransition(navigate, '/sessions', options);
         break;
       case 'schedules':
-        navigate('/schedules', { state: options });
+        navigateWithViewTransition(navigate, '/schedules', options);
         break;
       case 'workflows':
-        navigate('/workflows', { state: options });
+        navigateWithViewTransition(navigate, '/workflows', options);
         break;
       case 'skills':
-        navigate('/skills', { state: options });
+        navigateWithViewTransition(navigate, '/skills', options);
         break;
       case 'permission':
-        navigate('/permission', { state: options });
+        navigateWithViewTransition(navigate, '/permission', options);
         break;
       case 'ConfigureProviders':
-        navigate('/configure-providers', { state: options });
+        navigateWithViewTransition(navigate, '/configure-providers', options);
         break;
       case 'sharedSession':
-        navigate('/shared-session', { state: options });
+        navigateWithViewTransition(navigate, '/shared-session', options);
         break;
 
       case 'welcome':
-        navigate('/welcome', { state: options });
+        navigateWithViewTransition(navigate, '/welcome', options);
         break;
       case 'extensions':
-        navigate('/extensions', { state: options });
+        navigateWithViewTransition(navigate, '/extensions', options);
         break;
       default:
-        navigate('/', { state: options });
+        navigateWithViewTransition(navigate, '/', options);
     }
   };
 };

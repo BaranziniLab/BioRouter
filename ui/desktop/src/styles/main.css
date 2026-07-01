@@ -242,6 +242,19 @@
   }
 }
 
+@keyframes biorouter-route-morph-in {
+  from {
+    opacity: 0.82;
+    transform: translate3d(0, 8px, 0) scale(0.996);
+    filter: saturate(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    filter: saturate(1);
+  }
+}
+
 @keyframes biorouter-working-ring {
   0% {
     opacity: 0.5;
@@ -708,6 +721,38 @@ em > code.bg-inline-code {
   contain: layout style paint;
 }
 
+.biorouter-route-surface {
+  animation: biorouter-route-morph-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  view-transition-name: biorouter-route-surface;
+}
+
+.biorouter-composer-view-transition {
+  view-transition-name: biorouter-composer;
+}
+
+.biorouter-composer-motion {
+  transform-origin: top left;
+  will-change: transform, opacity;
+}
+
+::view-transition-group(biorouter-route-surface) {
+  animation-duration: 260ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-group(biorouter-composer) {
+  animation-duration: 420ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+::view-transition-old(biorouter-route-surface),
+::view-transition-new(biorouter-route-surface),
+::view-transition-old(biorouter-composer),
+::view-transition-new(biorouter-composer) {
+  border-radius: 16px;
+  overflow: clip;
+}
+
 /* Non-blocking page transitions */
 @keyframes page-fade-in {
   from {
@@ -724,6 +769,17 @@ em > code.bg-inline-code {
   animation: page-fade-in 0.08s ease-out forwards;
   /* Don't block interactions during animation */
   pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .biorouter-route-surface,
+  .page-transition {
+    animation: none;
+  }
+
+  .biorouter-composer-motion {
+    will-change: auto;
+  }
 }
 
 /* Sidebar transition optimizations */

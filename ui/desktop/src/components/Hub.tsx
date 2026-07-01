@@ -54,7 +54,6 @@ export default function Hub({
         });
 
         setView('pair', {
-          disableAnimation: true,
           resumeSessionId: session.id,
           initialMessage: combinedTextFromInput,
         });
@@ -74,7 +73,7 @@ export default function Hub({
       </div>
 
       <div className="absolute inset-x-4 sm:inset-x-6 bottom-4 z-10 pointer-events-none">
-        <div className="w-full max-w-[760px] mx-auto pointer-events-auto">
+        <div className="biorouter-composer-view-transition w-full max-w-[760px] mx-auto pointer-events-auto">
           {isCreatingSession && (
             <div className="mb-2.5 pl-2 pointer-events-none">
               <LoadingBioRouter chatState={ChatState.LoadingConversation} />

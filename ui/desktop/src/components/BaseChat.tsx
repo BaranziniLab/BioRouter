@@ -3,6 +3,7 @@ import React, {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -45,6 +46,7 @@ import { announceSessionName, renameSession } from '../utils/sessionNameSync';
 import { toastError } from '../toasts';
 import { errorMessage } from '../utils/conversionUtils';
 import { Greeting } from './common/Greeting';
+import { navigateWithViewTransition } from '../utils/navigationUtils';
 
 // Context for sharing current model info
 const CurrentModelContext = createContext<{ model: string; mode: string } | null>(null);
@@ -128,6 +130,8 @@ function BaseChatContent({
   const [hasNotAcceptedWorkflow, setHasNotAcceptedWorkflow] = useState<boolean>();
   const [hasWorkflowSecurityWarnings, setHasWorkflowSecurityWarnings] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const composerMotionRef = useRef<HTMLDivElement>(null);
+  const pendingComposerRectRef = useRef<DOMRect | null>(null);
 
   const isMobile = useIsMobile();
   const { state: sidebarState } = useSidebar();
@@ -165,6 +169,13 @@ function BaseChatContent({
     sessionId,
     onStreamFinish,
   });
+
+  const stageComposerMotion = useCallback(() => {
+    const rect = composerMotionRef.current?.getBoundingClientRect();
+    if (rect) {
+      pendingComposerRectRef.current = rect;
+    }
+  }, []);
 
   // Pipe chatState transitions to the parent (dashboard window). Busy = any
   // non-idle state (Thinking, Streaming, WaitingForUserInput, Compacting, etc.).
@@ -262,6 +273,9 @@ function BaseChatContent({
     const customEvent = e as unknown as CustomEvent;
     const textValue = customEvent.detail?.value || '';
     const attachments = customEvent.detail?.attachments ?? [];
+    if (textValue.trim() || (Array.isArray(attachments) && attachments.length > 0)) {
+      stageComposerMotion();
+    }
 
     // If no session exists, create one and navigate with the initial message
     if (!session && !sessionId && textValue.trim() && !isCreatingSession) {
@@ -270,14 +284,16 @@ function BaseChatContent({
         const newSession = await createSession(getInitialWorkingDir(), {
           allExtensions: extensionsList,
         });
-        navigate(`/pair?resumeSessionId=${newSession.id}`, {
-          replace: true,
-          state: {
+        navigateWithViewTransition(
+          navigate,
+          `/pair?resumeSessionId=${newSession.id}`,
+          {
             resumeSessionId: newSession.id,
             initialMessage: textValue,
             initialAttachments: attachments,
           },
-        });
+          { replace: true }
+        );
       } catch {
         setIsCreatingSession(false);
       }
@@ -515,8 +531,56 @@ function BaseChatContent({
     chatState === ChatState.Idle &&
     !isCreatingSession;
 
+  useLayoutEffect(() => {
+    if (isCleanConversation) return;
+
+    const from = pendingComposerRectRef.current;
+    const element = composerMotionRef.current;
+    pendingComposerRectRef.current = null;
+
+    const isReducedMotion =
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (!from || !element || isReducedMotion) {
+      return;
+    }
+
+    const to = element.getBoundingClientRect();
+    const deltaX = from.left - to.left;
+    const deltaY = from.top - to.top;
+    const scaleX = to.width > 0 ? from.width / to.width : 1;
+
+    if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1 && Math.abs(scaleX - 1) < 0.01) {
+      return;
+    }
+
+    const animation = element.animate(
+      [
+        {
+          opacity: 0.96,
+          transform: `translate3d(${deltaX}px, ${deltaY}px, 0) scaleX(${scaleX})`,
+        },
+        { opacity: 1, transform: 'translate3d(0, 0, 0) scaleX(1)' },
+      ],
+      {
+        duration: 420,
+        easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+      }
+    );
+
+    return () => animation.cancel();
+  }, [isCleanConversation]);
+
   const renderChatInput = () => (
-    <div className="w-full max-w-[760px] mx-auto">
+    <div
+      ref={composerMotionRef}
+      data-composer-shell="true"
+      className={cn(
+        'w-full max-w-[760px] mx-auto biorouter-composer-motion',
+        !compactPicker && 'biorouter-composer-view-transition'
+      )}
+    >
       <ChatInput
         sessionId={sessionId}
         handleSubmit={handleFormSubmit}

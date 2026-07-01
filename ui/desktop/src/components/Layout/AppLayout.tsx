@@ -88,19 +88,13 @@ const AppLayoutContent: React.FC = () => {
             <Plus className="w-4 h-4" />
           </Button>
           <Button
-            onClick={() =>
-              navigate(location.pathname === '/dashboard' ? '/' : '/dashboard')
-            }
+            onClick={() => navigate(location.pathname === '/dashboard' ? '/' : '/dashboard')}
             className={`no-drag hover:!bg-background-medium ${
               location.pathname === '/dashboard' ? 'bg-background-medium' : ''
             }`}
             variant="ghost"
             size="xs"
-            title={
-              location.pathname === '/dashboard'
-                ? 'Exit Dashboard'
-                : 'Open Dashboard'
-            }
+            title={location.pathname === '/dashboard' ? 'Exit Dashboard' : 'Open Dashboard'}
           >
             <LayoutDashboard className="w-4 h-4" />
           </Button>
@@ -114,7 +108,12 @@ const AppLayoutContent: React.FC = () => {
         />
       </Sidebar>
       <SidebarInset>
-        <Outlet />
+        <main
+          className="route-container biorouter-route-surface flex h-full min-h-0 min-w-0 flex-1 flex-col"
+          data-route-path={location.pathname}
+        >
+          <Outlet />
+        </main>
       </SidebarInset>
     </div>
   );
