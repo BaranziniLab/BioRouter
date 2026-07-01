@@ -406,6 +406,26 @@
   background: rgba(0, 0, 0, 0.48);
 }
 
+.biorouter-diagnostics-overlay {
+  background: rgba(246, 243, 237, 0.74);
+  backdrop-filter: blur(8px);
+}
+
+.dark .biorouter-diagnostics-overlay {
+  background: rgba(246, 243, 237, 0.7);
+}
+
+.biorouter-diagnostics-surface {
+  background: var(--color-white);
+  color: var(--color-black);
+  border: 1px solid rgba(32, 25, 15, 0.08);
+  border-radius: 16px;
+  box-shadow:
+    0px 22px 60px -18px rgba(32, 25, 15, 0.24),
+    0px 8px 24px -18px rgba(32, 25, 15, 0.16),
+    0px 0px 0px 1px rgba(32, 25, 15, 0.04);
+}
+
 .biorouter-modal-surface {
   background: var(--background-default);
   border: 1px solid color-mix(in srgb, var(--border-subtle) 44%, transparent);
