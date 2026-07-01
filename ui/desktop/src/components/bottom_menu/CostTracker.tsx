@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { DollarSign } from 'lucide-react';
+import { CircleDollarSign } from 'lucide-react';
 import { useModelAndProvider } from '../ModelAndProviderContext';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { fetchModelPricing } from '../../utils/pricing';
@@ -108,8 +108,7 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
   };
 
   const formatCost = (cost: number): string => {
-    // Always show 4 decimal places for consistency
-    return cost.toFixed(4);
+    return cost.toFixed(2);
   };
 
   // Show loading state or when we don't have model/provider info
@@ -138,8 +137,8 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
         <Tooltip>
           <TooltipTrigger asChild>
             <div className="flex items-center justify-center h-full text-text-default/70 hover:text-text-default transition-colors cursor-default translate-y-[1px]">
-              <DollarSign className="mr-0.5 h-4 w-4" strokeWidth={2.25} />
-              <span className="text-xs font-mono">0.0000</span>
+              <CircleDollarSign className="mr-0.5 h-4 w-4" strokeWidth={1.75} />
+              <span className="text-xs font-mono">0.00</span>
             </div>
           </TooltipTrigger>
           <TooltipContent>
@@ -161,8 +160,8 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
       <Tooltip>
         <TooltipTrigger asChild>
           <div className="flex items-center justify-center h-full transition-colors cursor-default translate-y-[1px] text-text-default/70 hover:text-text-default">
-            <DollarSign className="mr-0.5 h-4 w-4" strokeWidth={2.25} />
-            <span className="text-xs font-mono">0.0000</span>
+            <CircleDollarSign className="mr-0.5 h-4 w-4" strokeWidth={1.75} />
+            <span className="text-xs font-mono">0.00</span>
           </div>
         </TooltipTrigger>
         <TooltipContent>{getUnavailableTooltip()}</TooltipContent>
@@ -211,7 +210,7 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
     <Tooltip>
       <TooltipTrigger asChild>
         <div className="flex items-center justify-center h-full transition-colors cursor-default translate-y-[1px] text-text-default/70 hover:text-text-default">
-          <DollarSign className="mr-0.5 h-4 w-4" strokeWidth={2.25} />
+          <CircleDollarSign className="mr-0.5 h-4 w-4" strokeWidth={1.75} />
           <span className="text-xs font-mono">{formatCost(totalCost)}</span>
         </div>
       </TooltipTrigger>

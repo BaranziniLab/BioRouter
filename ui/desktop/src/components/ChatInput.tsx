@@ -1498,15 +1498,8 @@ export default function ChatInput({
         </div>
       )}
 
-      {/* Secondary actions and controls row below input.
-          Always-visible group on the left: DirSwitcher, Attach, Extensions, Skills.
-          A `>` / `<` chevron toggles a collapsible group containing Cost,
-          Model, Mode, Workflow, Diagnostics — letting the picker row stay narrow
-          enough for compact dashboard windows. Send button sits on the far right. */}
+      {/* Secondary actions and controls row below input. */}
       <div className="flex flex-row flex-nowrap items-center gap-1 px-2 pt-2 pb-0 relative overflow-x-auto">
-        {/* Always-visible group. The terminal launcher sits to the left of the
-            working-directory switcher so users can pop open the CLI rooted in
-            that exact folder. */}
         <LaunchTerminalButton workingDir={sessionWorkingDir ?? getInitialWorkingDir()} />
         <DirSwitcher
           className="mr-0"
@@ -1522,8 +1515,9 @@ export default function ChatInput({
           onRestartEnd={() => setChatState?.(ChatState.Idle)}
         />
         <div className="w-px h-4 bg-border-default mx-2" />
-        {currentModelSupportsVision && (
-          <>
+
+        <div className="flex flex-row items-center gap-2">
+          {currentModelSupportsVision && (
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -1539,30 +1533,24 @@ export default function ChatInput({
               </TooltipTrigger>
               <TooltipContent>Attach file or directory</TooltipContent>
             </Tooltip>
-            <div className="w-px h-4 bg-border-default mx-2" />
-          </>
+          )}
+          <BottomMenuExtensionSelection sessionId={sessionId} />
+          <BottomMenuSkillSelection sessionId={sessionId} />
+          <BottomMenuKnowledgeSelection />
+        </div>
+
+        <div className="w-px h-4 bg-border-default mx-2" />
+
+        {COST_TRACKING_ENABLED && (
+          <div className="flex items-center h-full">
+            <CostTracker
+              inputTokens={accumulatedInputTokens}
+              outputTokens={accumulatedOutputTokens}
+              sessionCosts={sessionCosts}
+            />
+          </div>
         )}
-        <BottomMenuExtensionSelection sessionId={sessionId} />
-        <div className="w-px h-4 bg-border-default mx-2" />
-        <BottomMenuSkillSelection sessionId={sessionId} />
-        <div className="w-px h-4 bg-border-default mx-2" />
-        <BottomMenuKnowledgeSelection />
-        {/* Group separator between the always-visible action group
-            (DirSwitcher / Attach / Extensions / Skills) and the
-            secondary picker controls (Cost / Context / Model / Mode).
-            Renders in both compact (dashboard chevron) and inline
-            (chat-tab) layouts so the visual rhythm matches the other
-            mx-2 dividers in the row. */}
-        <div className="w-px h-4 bg-border-default mx-2" />
 
-        {/* Secondary controls — context indicator + cost + model + mode +
-            workflow + diagnostics. In dashboard mode (`compactPicker`) we put
-            them behind a chevron popover so the row stays narrow. In the chat
-            tab (`!compactPicker`) we render them inline so users get every
-            control at a glance.
-
-            Either way the rows are built by the same helper below so a single
-            redesign drives both layouts. */}
         {compactPicker ? (
           <Popover open={pickerExpanded} onOpenChange={setPickerExpanded}>
             <PopoverTrigger asChild>
@@ -1581,18 +1569,6 @@ export default function ChatInput({
               </Button>
             </PopoverTrigger>
             <PopoverContent side="top" align="start" className="flex flex-col gap-0.5 w-72 p-1.5">
-              {/* Order: pricing first, then context (paired immediately with
-                  the model selector so they read as one group), then the
-                  conversation-style/mode selector last. */}
-              {COST_TRACKING_ENABLED && (
-                <PickerRow>
-                  <CostTracker
-                    inputTokens={accumulatedInputTokens}
-                    outputTokens={accumulatedOutputTokens}
-                    sessionCosts={sessionCosts}
-                  />
-                </PickerRow>
-              )}
               <ContextWindowGauge
                 totalTokens={totalTokens}
                 tokenLimit={tokenLimit}
@@ -1654,20 +1630,7 @@ export default function ChatInput({
             </PopoverContent>
           </Popover>
         ) : (
-          // Chat-tab mode: inline picker row, no chevron.
-          // Order: pricing → context → model selection (context sits
-          // immediately to the left of the model picker so they read as a
-          // single group) → conversation style / mode.
           <div className="flex flex-row items-center">
-            {COST_TRACKING_ENABLED && (
-              <div className="flex items-center h-full mr-1">
-                <CostTracker
-                  inputTokens={accumulatedInputTokens}
-                  outputTokens={accumulatedOutputTokens}
-                  sessionCosts={sessionCosts}
-                />
-              </div>
-            )}
             <ContextWindowIndicator
               totalTokens={totalTokens}
               tokenLimit={tokenLimit}

@@ -37,13 +37,12 @@ export function BottomMenuKnowledgeSelection() {
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
-          className="flex items-center cursor-pointer text-text-default/70 hover:text-text-default text-xs min-w-0"
-          title="Knowledge bases visible to chat discovery"
+          className="flex items-center cursor-pointer [&_svg]:size-4 text-text-default/70 hover:text-text-default hover:scale-100 hover:bg-transparent text-xs"
+          title={labelForVisibleCount(visibleBases.length)}
+          aria-label={labelForVisibleCount(visibleBases.length)}
         >
-          <BookOpen className="mr-1 h-4 w-4 flex-shrink-0" />
-          <span className="max-w-[160px] truncate">
-            {labelForVisibleCount(visibleBases.length)}
-          </span>
+          <BookOpen className="mr-1 h-4 w-4" />
+          <span>{visibleBases.length}</span>
         </button>
       </PopoverTrigger>
       <PopoverContent side="top" align="center" className="w-80 p-0">
