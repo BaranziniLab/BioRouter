@@ -12,7 +12,6 @@ import {
 import { cn, snakeToTitleCase } from '../utils';
 import { LoadingStatus } from './ui/Dot';
 import { ChevronRight, FlaskConical } from './icons/app-icons';
-import { TooltipWrapper } from './settings/providers/subcomponents/buttons/TooltipWrapper';
 import MCPUIResourceRenderer from './MCPUIResourceRenderer';
 import { isUIResource } from '@mcp-ui/client';
 import { CallToolResponse, Content, EmbeddedResource } from '../api';
@@ -246,13 +245,17 @@ function ToolCallExpandable({
     <div className={className}>
       <Button
         onClick={toggleExpand}
-        className="group w-full h-auto min-h-8 flex justify-between items-center px-2 py-1.5 transition-colors rounded-md hover:bg-background-medium/70"
+        className="group h-6 min-h-0 max-w-full justify-start px-1.5 py-0 text-left transition-colors rounded-md hover:bg-transparent focus-visible:bg-transparent"
         variant="ghost"
+        size="xs"
       >
-        <span className="flex items-center font-sans text-sm truncate flex-1 min-w-0">{label}</span>
+        <span className="flex min-w-0 max-w-full items-center overflow-hidden font-sans text-sm leading-6">
+          {label}
+        </span>
         <ChevronRight
           className={cn(
-            'group-hover:opacity-100 transition-transform opacity-50 size-3.5 ml-2',
+            'opacity-0 group-hover:opacity-70 group-focus-visible:opacity-70 transition-all size-3.5 ml-1.5 text-text-muted',
+            isExpanded && 'opacity-70',
             isExpanded && 'rotate-90'
           )}
         />
@@ -464,17 +467,6 @@ const getToolName = (toolCallName: string): string => {
   return toolCallName.substring(lastIndex + 2);
 };
 
-// Helper function to extract extension name for tooltip
-const getExtensionTooltip = (toolCallName: string): string | null => {
-  const lastIndex = toolCallName.lastIndexOf('__');
-  if (lastIndex === -1) return null;
-
-  const extensionName = toolCallName.substring(0, lastIndex);
-  if (!extensionName) return null;
-
-  return `${extensionName} extension`;
-};
-
 function ToolCallView({
   isCancelledMessage,
   toolCall,
@@ -555,9 +547,6 @@ function ToolCallView({
     (entries) => entries.sort((a, b) => b.progress - a.progress)[0]
   );
 
-  // Get extension tooltip for the current tool
-  const extensionTooltip = getExtensionTooltip(toolCall.name);
-
   // Map LoadingStatus to ToolCallStatus
   const getToolCallStatus = (loadingStatus: LoadingStatus): ToolCallStatus => {
     switch (loadingStatus) {
@@ -588,15 +577,14 @@ function ToolCallView({
             : null;
 
   const toolLabel = (
-    <span
-      className={cn(
-        'flex items-center gap-2 min-w-0 text-left',
-        extensionTooltip && 'cursor-pointer hover:opacity-80'
-      )}
-    >
-      <ToolIconWithStatus ToolIcon={getToolCallIcon(toolCall.name)} status={toolCallStatus} />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-text-muted">
+    <span className="flex items-center gap-2 min-w-0 text-left leading-6">
+      <ToolIconWithStatus
+        ToolIcon={getToolCallIcon(toolCall.name)}
+        status={toolCallStatus}
+        className="mt-px"
+      />
+      <span className="min-w-0 flex-1 truncate text-text-muted">
+        <span>
           {loadingStatus === 'loading'
             ? 'Working on'
             : loadingStatus === 'error'
@@ -606,31 +594,17 @@ function ToolCallView({
         </span>
         {liveDetail && (
           <span
-            className={cn(
-              'block truncate font-sans text-sm text-text-muted/80',
-              loadingStatus === 'loading' && 'animate-pulse'
-            )}
+            className={cn('text-text-muted/70', loadingStatus === 'loading' && 'animate-pulse')}
           >
-            {liveDetail}
+            {' '}
+            · {liveDetail}
           </span>
         )}
       </span>
     </span>
   );
   return (
-    <ToolCallExpandable
-      isStartExpanded={false}
-      isForceExpand={false}
-      label={
-        extensionTooltip ? (
-          <TooltipWrapper tooltipContent={extensionTooltip} side="top" align="start">
-            {toolLabel}
-          </TooltipWrapper>
-        ) : (
-          toolLabel
-        )
-      }
-    >
+    <ToolCallExpandable isStartExpanded={false} isForceExpand={false} label={toolLabel}>
       {(() => {
         const toolName = toolCall.name.substring(toolCall.name.lastIndexOf('__') + 2);
         const toolGraph = toolCall.arguments?.tool_graph as unknown as ToolGraphNode[] | undefined;
