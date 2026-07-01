@@ -48,7 +48,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
 
   return (
     <div className="relative flex h-full min-w-0 flex-col overflow-hidden">
-      <div className="m-3 mb-0 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border-subtle/70 bg-background-default/86 px-3.5 py-2.5 shadow-[0_10px_28px_-24px_rgba(32,25,15,0.34)] backdrop-blur-sm">
+      <div className="mx-3 mb-0 flex flex-wrap items-center justify-between gap-3 px-1 py-2.5">
         <div className="flex min-w-[220px] flex-1 items-baseline gap-2 text-xs text-text-muted">
           <span className="truncate text-sm font-semibold text-text-default">
             {activeKb?.name ?? 'No knowledge base in focus'}
@@ -68,7 +68,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             variant="secondary"
             size="sm"
             shape="round"
-            className="border border-border-subtle bg-background-medium/70 hover:border-border-default hover:bg-background-strong"
+            className="bg-background-muted/82 shadow-[0_8px_18px_-18px_rgba(32,25,15,0.32)] hover:bg-background-strong"
             onClick={() => void refresh()}
             disabled={!activeKbId || loading}
             title="Refresh graph"
@@ -78,7 +78,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
           <Button
             variant="secondary"
             size="sm"
-            className="border border-border-subtle bg-background-medium/70 font-medium hover:border-border-default hover:bg-background-strong"
+            className="bg-background-muted/82 font-medium shadow-[0_8px_18px_-18px_rgba(32,25,15,0.32)] hover:bg-background-strong"
             onClick={() => activeKb && void exportArchive(activeKb.id, activeKb.name)}
             disabled={!activeKb}
             title="Export current knowledge base as .brkb"
@@ -89,7 +89,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
           <Button
             variant="secondary"
             size="sm"
-            className="border border-border-subtle bg-background-medium/70 font-medium hover:border-border-default hover:bg-background-strong"
+            className="bg-background-muted/82 font-medium shadow-[0_8px_18px_-18px_rgba(32,25,15,0.32)] hover:bg-background-strong"
             onClick={onOpenChangeLog}
             disabled={!activeKbId}
             title="Open change log"
@@ -100,7 +100,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
           <Button
             variant="secondary"
             size="sm"
-            className="border border-border-subtle bg-background-medium/70 font-medium hover:border-border-default hover:bg-background-strong"
+            className="bg-background-muted/82 font-medium shadow-[0_8px_18px_-18px_rgba(32,25,15,0.32)] hover:bg-background-strong"
             onClick={() => void openKbFolder()}
             disabled={!activeKbId}
             title="Open the knowledge base folder (raw sources + markdown) in your file explorer"
