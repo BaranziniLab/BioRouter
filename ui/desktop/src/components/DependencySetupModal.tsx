@@ -255,8 +255,8 @@ export default function DependencySetupModal() {
     deps.length > 0 && deps.every((d) => d.installState === 'done' || d.info.installed);
 
   return (
-    <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/50">
-      <div className="bg-background-default border border-border-subtle rounded-xl shadow-xl w-[560px] max-h-[85vh] flex flex-col">
+    <div className="biorouter-modal-overlay fixed inset-0 z-[200] flex items-center justify-center">
+      <div className="biorouter-modal-surface bg-background-default w-[560px] max-h-[85vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="px-6 pt-5 pb-4 border-b border-border-subtle flex items-start justify-between">
           <div>
@@ -301,12 +301,12 @@ export default function DependencySetupModal() {
           {/* Biorouter CLI install card */}
           {(showCli || cliState === 'done') && (
             <div
-              className={`rounded-lg border px-4 py-3 ${
+              className={`rounded-xl border px-4 py-3 shadow-sm ${
                 cliState === 'done'
                   ? 'border-border-success/40 bg-background-success/10'
                   : cliState === 'error'
                     ? 'border-destructive/30 bg-destructive/5'
-                    : 'border-border-subtle bg-background-medium/20'
+                    : 'biorouter-modal-panel bg-background-medium/20'
               }`}
             >
               <div className="flex items-center justify-between">

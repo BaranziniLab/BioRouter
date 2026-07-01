@@ -87,10 +87,10 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 backdrop-blur-sm z-50 flex justify-center items-center animate-[fadein_200ms_ease-in]">
+    <div className="biorouter-modal-overlay fixed inset-0 z-50 flex justify-center items-center animate-[fadein_200ms_ease-in]">
       {showCancelOptions ? (
         // Cancel options modal
-        <div className="bg-background-default border border-border-subtle rounded-xl p-8 shadow-2xl w-full max-w-md">
+        <div className="biorouter-modal-surface bg-background-default p-8 w-full max-w-md">
           <h2 className="text-base font-semibold text-text-default mb-4">Cancel Workflow Setup</h2>
           <p className="text-text-default mb-6">What would you like to do?</p>
           <div className="flex flex-col gap-3">
@@ -114,7 +114,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
         </div>
       ) : (
         // Main parameter form
-        <div className="bg-background-default border border-border-subtle rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
+        <div className="biorouter-modal-surface bg-background-default w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden">
           <div className="p-8 pb-4 flex-shrink-0">
             <h2 className="text-base font-semibold text-text-default mb-6">Workflow Parameters</h2>
           </div>

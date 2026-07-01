@@ -9,6 +9,7 @@ import {
   type BaamRegistry,
   type RegistryExtension,
 } from './registry';
+import { useEscapeKey } from '../../hooks/useEscapeKey';
 
 interface Props {
   onClose: () => void;
@@ -24,6 +25,7 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
   const [search, setSearch] = useState('');
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [brxtPath, setBrxtPath] = useState<string | null>(null);
+  useEscapeKey(true, onClose);
 
   useEffect(() => {
     let cancelled = false;
@@ -75,8 +77,8 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-background-default rounded-xl border border-border-subtle shadow-lg w-[720px] max-w-[92vw] max-h-[86vh] flex flex-col">
+    <div className="biorouter-modal-overlay fixed inset-0 z-50 flex items-center justify-center">
+      <div className="biorouter-modal-surface bg-background-default w-[720px] max-w-[92vw] max-h-[86vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="px-6 pt-5 pb-4 border-b border-border-subtle flex items-start justify-between gap-4">
           <div>
@@ -102,7 +104,7 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search extensions by name, description, or tag…"
-            className="w-full border border-border-subtle rounded-lg px-3 py-2 text-sm bg-background-muted focus:outline-none focus:ring-2 focus:ring-ring"
+            className="biorouter-modal-panel w-full rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
           />
         </div>
 
@@ -130,9 +132,9 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
               return (
                 <div
                   key={ext.id}
-                  className="flex items-start gap-3 rounded-lg border border-border-subtle px-3 py-3 hover:bg-background-medium/30 transition-colors"
+                  className="biorouter-modal-row flex items-start gap-3 rounded-lg px-3 py-3 hover:bg-background-default transition-colors"
                 >
-                  <div className="flex-shrink-0 mt-0.5 w-9 h-9 rounded-lg bg-background-medium flex items-center justify-center">
+                  <div className="flex-shrink-0 mt-0.5 w-9 h-9 rounded-lg bg-background-default/80 flex items-center justify-center shadow-sm">
                     <Package className="w-5 h-5 text-text-muted" />
                   </div>
                   <div className="min-w-0 flex-1">
@@ -160,7 +162,7 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
                   </div>
                   <div className="flex-shrink-0 self-center">
                     {installed ? (
-                      <span className="text-[10px] uppercase tracking-wide text-background-info border border-background-info/40 rounded px-2 py-1">
+                      <span className="text-[10px] uppercase tracking-wide text-background-info bg-background-info/10 rounded px-2 py-1">
                         Installed
                       </span>
                     ) : (

@@ -58,11 +58,13 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-      <div className="bg-background-default rounded-xl border border-border-subtle shadow-lg w-[640px] max-h-[85vh] flex flex-col">
+    <div className="biorouter-modal-overlay fixed inset-0 z-50 flex items-center justify-center">
+      <div className="biorouter-modal-surface bg-background-default w-[640px] max-h-[85vh] flex flex-col overflow-hidden">
         <div className="px-6 pt-5 pb-4 border-b border-border-subtle flex items-center justify-between">
           <h2 className="text-base font-semibold">Add Custom Skill</h2>
-          <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={onClose}>✕</Button>
+          <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={onClose}>
+            ✕
+          </Button>
         </div>
 
         <div className="p-6 flex flex-col gap-3 flex-1 overflow-hidden">
@@ -72,7 +74,7 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
             in BioRouter Skills with a <code>SKILL.md</code> inside.
           </p>
           <textarea
-            className="flex-1 min-h-[300px] font-mono text-sm bg-background-medium/30 border border-border-subtle rounded-lg p-3 resize-none outline-none focus:ring-1 focus:ring-ring"
+            className="biorouter-modal-panel flex-1 min-h-[300px] font-mono text-sm rounded-lg p-3 resize-none outline-none focus:ring-1 focus:ring-ring"
             value={content}
             onChange={(e) => setContent(e.target.value)}
             spellCheck={false}
@@ -85,7 +87,9 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
         </div>
 
         <div className="px-6 py-4 border-t border-border-subtle flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button variant="outline" onClick={onClose}>
+            Cancel
+          </Button>
           <Button variant="default" onClick={handleSave} disabled={isSaving}>
             {isSaving ? 'Saving…' : 'Save Skill'}
           </Button>

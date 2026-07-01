@@ -207,7 +207,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
             Configure a lead model for planning and a worker model for execution.
           </p>
 
-          <div className="flex items-center justify-between gap-4 rounded-md bg-background-muted/60 px-3 py-2.5">
+          <div className="biorouter-modal-panel flex items-center justify-between gap-4 rounded-xl px-3 py-2.5">
             <div>
               <label htmlFor="enable-lead-worker" className="text-sm font-medium text-text-default">
                 Lead/worker mode
@@ -227,9 +227,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
           <div className={`space-y-4 ${!isEnabled ? 'opacity-60' : ''}`}>
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-text-default">
-                  Lead Model
-                </label>
+                <label className="text-sm font-medium text-text-default">Lead Model</label>
                 {isLeadCustomModel && (
                   <button
                     onClick={() => setIsLeadCustomModel(false)}
@@ -278,9 +276,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
 
             <div className="space-y-2">
               <div className="flex items-center justify-between">
-                <label className="text-sm font-medium text-text-default">
-                  Worker Model
-                </label>
+                <label className="text-sm font-medium text-text-default">Worker Model</label>
                 {isWorkerCustomModel && (
                   <button
                     onClick={() => setIsWorkerCustomModel(false)}
@@ -324,12 +320,10 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                   disabled={!isEnabled}
                 />
               )}
-              <p className="text-xs text-text-muted">
-                Fast model for routine execution tasks
-              </p>
+              <p className="text-xs text-text-muted">Fast model for routine execution tasks</p>
             </div>
 
-            <div className="grid grid-cols-3 gap-3 rounded-md bg-background-muted/60 p-3">
+            <div className="biorouter-modal-panel grid grid-cols-3 gap-3 rounded-xl p-3">
               <div className="space-y-2">
                 <label className="flex items-center gap-1 text-sm font-medium text-text-default">
                   Initial Lead Turns
@@ -343,9 +337,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                   className="w-full"
                   disabled={!isEnabled}
                 />
-                <p className="text-xs text-text-muted">
-                  Lead turns at start
-                </p>
+                <p className="text-xs text-text-muted">Lead turns at start</p>
               </div>
 
               <div className="space-y-2">
@@ -361,9 +353,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                   className="w-full"
                   disabled={!isEnabled}
                 />
-                <p className="text-xs text-text-muted">
-                  Failures before fallback
-                </p>
+                <p className="text-xs text-text-muted">Failures before fallback</p>
               </div>
 
               <div className="space-y-2">
@@ -379,9 +369,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
                   className="w-full"
                   disabled={!isEnabled}
                 />
-                <p className="text-xs text-text-muted">
-                  Lead turns during fallback
-                </p>
+                <p className="text-xs text-text-muted">Lead turns during fallback</p>
               </div>
             </div>
           </div>

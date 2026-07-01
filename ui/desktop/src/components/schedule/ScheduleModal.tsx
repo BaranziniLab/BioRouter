@@ -24,7 +24,6 @@ interface ScheduleModalProps {
   initialDeepLink?: string | null;
 }
 
-
 const modalLabelClassName = 'block text-sm font-medium text-text-default mb-1';
 
 export const ScheduleModal: React.FC<ScheduleModalProps> = ({
@@ -103,8 +102,8 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4">
-      <div className="w-full max-w-md bg-background-default border border-border-subtle rounded-xl z-50 flex flex-col max-h-[90vh] overflow-hidden" style={{ boxShadow: 'var(--shadow-popover)' }}>
+    <div className="biorouter-modal-overlay fixed inset-0 z-40 flex items-center justify-center p-4">
+      <div className="biorouter-modal-surface w-full max-w-md bg-background-default z-50 flex flex-col max-h-[90vh] overflow-hidden">
         <div className="px-6 pt-5 pb-4 flex-shrink-0 border-b border-border-subtle">
           <div className="flex items-center gap-3">
             <img src={ClockIcon} alt="Clock" className="w-7 h-7" />
@@ -151,7 +150,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
 
               <div>
                 <label className={modalLabelClassName}>Workflow File</label>
-                <div className="flex items-center rounded-lg border border-border-subtle bg-background-default focus-within:border-border-strong transition-colors duration-150">
+                <div className="biorouter-modal-panel flex items-center rounded-lg focus-within:ring-1 focus-within:ring-border-strong transition-colors duration-150">
                   <input
                     type="text"
                     value={workflowSourcePath}
@@ -171,7 +170,9 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                     <Folder className="w-4 h-4" />
                   </button>
                 </div>
-                <p className="mt-1 text-xs text-text-muted">Select a YAML workflow file (.yaml or .yml)</p>
+                <p className="mt-1 text-xs text-text-muted">
+                  Select a YAML workflow file (.yaml or .yml)
+                </p>
               </div>
             </>
           )}

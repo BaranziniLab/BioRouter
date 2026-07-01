@@ -85,7 +85,7 @@ export default function JsonSchemaEditor({
 
   return (
     <div
-      className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50"
+      className="biorouter-modal-overlay fixed inset-0 z-[400] flex items-center justify-center"
       onClick={(e) => {
         // Close modal when clicking backdrop
         if (e.target === e.currentTarget) {
@@ -93,7 +93,7 @@ export default function JsonSchemaEditor({
         }
       }}
     >
-      <div className="bg-background-default border border-border-subtle rounded-lg p-6 w-[800px] max-w-[90vw] max-h-[90vh] overflow-hidden flex flex-col">
+      <div className="biorouter-modal-surface bg-background-default p-6 w-[800px] max-w-[90vw] max-h-[90vh] overflow-hidden flex flex-col">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-base font-semibold text-text-default">JSON Schema Editor</h3>
           <Button type="button" variant="ghost" size="sm" onClick={handleCancel}>
@@ -129,8 +129,8 @@ export default function JsonSchemaEditor({
                 setLocalValue(e.target.value);
                 setLocalError('');
               }}
-              className={`w-full h-full min-h-[400px] px-3 py-2 text-sm border rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 resize-none font-mono ${
-                localError || error ? 'border-border-danger' : 'border-border-subtle'
+              className={`biorouter-modal-panel w-full h-full min-h-[400px] px-3 py-2 text-sm rounded-lg text-text-default placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-border-strong transition-colors duration-150 resize-none font-mono ${
+                localError || error ? '!border-border-danger' : ''
               }`}
               placeholder={`{
   "type": "object",

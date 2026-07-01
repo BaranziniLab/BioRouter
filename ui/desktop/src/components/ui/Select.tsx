@@ -21,7 +21,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
         // which is visibly larger than the 14px control. Setting text-sm on the
         // menu makes the inherit chain resolve to 14px.
         menu: () =>
-          'mt-1 bg-background-default rounded-md text-text-muted text-sm shadow-lg ring-1 ring-border-input select__menu z-[9999] absolute',
+          'biorouter-popover-surface mt-1 bg-background-default rounded-xl text-text-muted text-sm select__menu z-[9999] absolute',
         menuList: () => 'max-h-60 overflow-y-auto py-1',
         option: ({ isFocused, isSelected, isDisabled }) => {
           let classes = 'py-2 px-4 cursor-pointer';

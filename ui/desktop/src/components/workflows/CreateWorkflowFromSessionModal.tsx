@@ -83,13 +83,11 @@ export default function CreateWorkflowFromSessionModal({
       }, 800);
 
       // Pre-select session extensions immediately — independent of workflow analysis
-      getSessionExtensions({ path: { session_id: sessionId }, throwOnError: false }).then(
-        (res) => {
-          if (res.data?.extensions) {
-            setWorkflowExtensions(res.data.extensions);
-          }
+      getSessionExtensions({ path: { session_id: sessionId }, throwOnError: false }).then((res) => {
+        if (res.data?.extensions) {
+          setWorkflowExtensions(res.data.extensions);
         }
-      );
+      });
 
       Promise.all([
         listBases({ throwOnError: false }),
@@ -101,7 +99,7 @@ export default function CreateWorkflowFromSessionModal({
         const defaultId =
           activeRes.data?.active_kb && visible.includes(activeRes.data.active_kb)
             ? activeRes.data.active_kb
-            : visible[0] ?? null;
+            : (visible[0] ?? null);
 
         setKnowledgeBaseItems(
           bases.map((base) => ({
@@ -268,11 +266,12 @@ export default function CreateWorkflowFromSessionModal({
               }
             : undefined,
         settings: settingsConfig,
-        extensions: workflowExtensions.length > 0
-          ? workflowExtensions.map((ext) =>
-              'envs' in ext ? { ...ext, envs: undefined } : ext
-            ) as ExtensionConfig[]
-          : undefined,
+        extensions:
+          workflowExtensions.length > 0
+            ? (workflowExtensions.map((ext) =>
+                'envs' in ext ? { ...ext, envs: undefined } : ext
+              ) as ExtensionConfig[])
+            : undefined,
         knowledge_bases: knowledgeBases,
         skills: workflowSkillIds.length > 0 ? workflowSkillIds : undefined,
       };
@@ -324,13 +323,13 @@ export default function CreateWorkflowFromSessionModal({
   // an ancestor turns `fixed` into a constrained containing block).
   return createPortal(
     <div
-      className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50 p-4"
+      className="biorouter-modal-overlay fixed inset-0 z-[400] flex items-center justify-center p-4"
       data-testid="create-workflow-modal"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="flex h-full max-h-[90vh] w-full max-w-4xl flex-col rounded-xl bg-background-default shadow-2xl">
+      <div className="biorouter-modal-surface flex h-full max-h-[90vh] w-full max-w-4xl flex-col bg-background-default overflow-hidden">
         {/* Header */}
         <div
           className="flex shrink-0 items-center justify-between px-6 pb-3 pt-5"
@@ -367,10 +366,7 @@ export default function CreateWorkflowFromSessionModal({
                 data-testid="analysis-spinner"
               />
               <div className="text-center">
-                <p
-                  className="text-sm font-medium text-text-default"
-                  data-testid="analyzing-title"
-                >
+                <p className="text-sm font-medium text-text-default" data-testid="analyzing-title">
                   Analyzing your conversation
                 </p>
                 <p className="text-xs text-text-muted mt-1" data-testid="analysis-stage">

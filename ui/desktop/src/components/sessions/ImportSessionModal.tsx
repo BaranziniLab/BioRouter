@@ -85,17 +85,20 @@ export function ImportSessionModal({ isOpen, onClose, onImport }: ImportSessionM
         </DialogHeader>
 
         <div
-          onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+          onDragOver={(e) => {
+            e.preventDefault();
+            setIsDragging(true);
+          }}
           onDragLeave={() => setIsDragging(false)}
           onDrop={handleDrop}
           onClick={() => !isSubmitting && fileInputRef.current?.click()}
           className={[
-            'flex flex-col items-center justify-center gap-2 rounded-xl border py-10 cursor-pointer transition-colors duration-150 select-none',
+            'biorouter-modal-panel flex flex-col items-center justify-center gap-2 rounded-xl py-10 cursor-pointer transition-colors duration-150 select-none',
             isDragging
-              ? 'border-block-teal bg-block-teal/5'
+              ? '!border-block-teal bg-block-teal/5'
               : error
-              ? 'border-border-danger bg-background-danger/10'
-              : 'border-border-subtle bg-background-muted hover:border-border-strong hover:bg-background-medium',
+                ? '!border-border-danger bg-background-danger/10'
+                : 'hover:!border-border-strong hover:bg-background-medium',
           ].join(' ')}
         >
           <input
@@ -116,9 +119,7 @@ export function ImportSessionModal({ isOpen, onClose, onImport }: ImportSessionM
           )}
         </div>
 
-        {error && (
-          <p className="text-sm text-text-danger">{error}</p>
-        )}
+        {error && <p className="text-sm text-text-danger">{error}</p>}
 
         <DialogFooter>
           <Button variant="outline" onClick={handleClose} disabled={isSubmitting}>

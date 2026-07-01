@@ -15,7 +15,7 @@ function RuleItem({ title, description }: { title: string; description: string }
   return (
     <>
       <Button
-        className="flex items-center text-left gap-2 w-full justify-between"
+        className="biorouter-modal-row flex items-center text-left gap-2 w-full justify-between rounded-xl bg-background-muted/60 hover:!border-border-default hover:bg-background-default"
         onClick={() => setIsModalOpen(true)}
         variant="secondary"
         size="lg"

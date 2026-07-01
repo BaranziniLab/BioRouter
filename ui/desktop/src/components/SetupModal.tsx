@@ -31,8 +31,8 @@ export function SetupModal({
   }, [autoClose, onClose]);
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-background-default rounded-lg p-6 max-w-md w-full">
+    <div className="biorouter-modal-overlay fixed inset-0 flex items-center justify-center z-50">
+      <div className="biorouter-modal-surface bg-background-default p-6 max-w-md w-full">
         <h2 className="text-base font-semibold mb-4 text-text-default">{title}</h2>
         <p className="mb-6 text-text-default">{message}</p>
 

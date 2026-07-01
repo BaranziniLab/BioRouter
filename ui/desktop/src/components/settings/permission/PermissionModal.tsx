@@ -142,11 +142,11 @@ export default function PermissionModal({ extensionName, onClose }: PermissionMo
               </svg>
             </div>
           ) : (
-            <div className="space-y-4">
+            <div className="space-y-2">
               {tools.map((tool) => (
                 <div
                   key={tool.name}
-                  className="flex items-center justify-between grid grid-cols-12"
+                  className="biorouter-modal-row grid grid-cols-12 items-center justify-between gap-3 rounded-xl px-3 py-3"
                 >
                   <div className="flex flex-col col-span-8">
                     <label className="block text-sm font-medium text-text-default">
