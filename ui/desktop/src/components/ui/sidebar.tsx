@@ -215,7 +215,7 @@ function Sidebar({
       <div
         data-slot="sidebar-container"
         className={cn(
-          'fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-transform duration-300 ease-out will-change-transform md:flex',
+          'biorouter-sidebar-shell bg-sidebar fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-transform duration-300 ease-out will-change-transform md:flex',
           side === 'left'
             ? 'left-0 group-data-[collapsible=offcanvas]:translate-x-[-100%]'
             : 'right-0 group-data-[collapsible=offcanvas]:translate-x-[100%]',
@@ -233,7 +233,7 @@ function Sidebar({
         <div
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
-          className="biorouter-sidebar-depth bg-sidebar flex h-full w-full flex-col overflow-hidden group-data-[variant=floating]:rounded-2xl group-data-[variant=floating]:border"
+          className="bg-sidebar flex h-full w-full flex-col overflow-hidden group-data-[variant=floating]:rounded-2xl group-data-[variant=floating]:border"
         >
           {children}
         </div>
