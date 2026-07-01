@@ -402,8 +402,8 @@
   background: linear-gradient(
     to bottom,
     transparent 0%,
-    rgba(32, 25, 15, 0.08) 12%,
-    rgba(32, 25, 15, 0.1) 78%,
+    rgba(32, 25, 15, 0.04) 18%,
+    rgba(32, 25, 15, 0.045) 72%,
     transparent 100%
   );
 }
@@ -416,19 +416,19 @@
   background: linear-gradient(
     to bottom,
     transparent 0%,
-    rgba(255, 255, 255, 0.06) 12%,
-    rgba(255, 255, 255, 0.08) 78%,
+    rgba(255, 255, 255, 0.035) 18%,
+    rgba(255, 255, 255, 0.04) 72%,
     transparent 100%
   );
 }
 
 @media (min-width: 768px) {
   .biorouter-sidebar-inset-depth {
-    box-shadow: inset 12px 0 28px -30px rgba(32, 25, 15, 0.34);
+    box-shadow: none;
   }
 
   .dark .biorouter-sidebar-inset-depth {
-    box-shadow: inset 12px 0 28px -28px rgba(0, 0, 0, 0.58);
+    box-shadow: none;
   }
 }
 
