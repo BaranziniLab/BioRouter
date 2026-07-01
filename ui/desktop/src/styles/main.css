@@ -519,35 +519,30 @@
 .biorouter-list-shell {
   display: flex;
   flex-direction: column;
-  gap: 8px;
 }
 
 .biorouter-list-row {
-  background: color-mix(in srgb, var(--background-muted) 44%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border-subtle) 26%, transparent);
-  border-radius: 12px;
-  box-shadow: 0px 1px 2px rgba(32, 25, 15, 0.025);
+  background: transparent;
+  border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 62%, transparent);
+  border-radius: 0;
+  box-shadow: none;
   transition:
     background-color 160ms ease,
-    border-color 160ms ease,
-    box-shadow 160ms ease,
-    transform 160ms ease;
+    color 160ms ease;
+}
+
+.biorouter-list-row:last-child {
+  border-bottom-color: transparent;
 }
 
 .biorouter-list-row:hover {
-  background: color-mix(in srgb, var(--background-default) 82%, var(--background-muted));
-  border-color: color-mix(in srgb, var(--border-subtle) 42%, transparent);
-  box-shadow: 0px 8px 20px -18px rgba(32, 25, 15, 0.34);
+  background: color-mix(in srgb, var(--background-muted) 38%, transparent);
 }
 
 .dark .biorouter-page-block {
   box-shadow:
     0px 16px 34px -28px rgba(0, 0, 0, 0.7),
     inset 0 1px 0 rgba(255, 255, 255, 0.04);
-}
-
-.dark .biorouter-list-row:hover {
-  box-shadow: 0px 8px 22px -18px rgba(0, 0, 0, 0.72);
 }
 
 .biorouter-sidebar-shell {

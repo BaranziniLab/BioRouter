@@ -54,7 +54,7 @@ export default function ExtensionList({
             <span className="w-1.5 h-1.5 bg-background-success rounded-full flex-shrink-0"></span>
             Default Extensions ({sortedEnabledExtensions.length})
           </h2>
-          <div className="divide-y divide-border-subtle">
+          <div className="biorouter-list-shell">
             {sortedEnabledExtensions.map((extension) => (
               <ExtensionItem
                 key={extension.name}
@@ -74,7 +74,7 @@ export default function ExtensionList({
             <span className="w-1.5 h-1.5 bg-background-strong rounded-full flex-shrink-0"></span>
             Available Extensions ({sortedDisabledExtensions.length})
           </h2>
-          <div className="divide-y divide-border-subtle">
+          <div className="biorouter-list-shell">
             {sortedDisabledExtensions.map((extension) => (
               <ExtensionItem
                 key={extension.name}

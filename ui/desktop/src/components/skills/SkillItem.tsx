@@ -24,7 +24,7 @@ export default function SkillItem({
   const builtin = isBuiltinSkill(skill.name);
   return (
     <div
-      className="flex items-start py-3 border-b border-border-subtle last:border-b-0 hover:bg-background-medium/30 transition-colors group cursor-pointer gap-3 px-2"
+      className="biorouter-list-row flex cursor-pointer items-start gap-3 px-3 py-3 group"
       onClick={onClick}
     >
       <div className="flex-1 min-w-0">
