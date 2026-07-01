@@ -42,7 +42,7 @@ function KnowledgeViewInner() {
         className="flex flex-col min-w-0 flex-1 overflow-y-auto relative"
         data-search-scroll-area
       >
-        <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
+        <div className="biorouter-page-header px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
           <div className="flex flex-col page-transition">
             <h1 className="text-2xl font-semibold tracking-tight mb-1">Knowledge</h1>
             <p className="text-sm text-text-muted mb-0">
@@ -50,14 +50,14 @@ function KnowledgeViewInner() {
             </p>
           </div>
         </div>
-        <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[360px_minmax(0,1fr)]">
-          <div className="border-r border-border-subtle overflow-y-auto">
-            <div className="p-6">
+        <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 px-6 pb-6 pt-4 lg:grid-cols-[360px_minmax(0,1fr)]">
+          <div className="biorouter-page-block min-h-0 overflow-y-auto">
+            <div className="p-4 pb-0">
               <KBSelectorTrigger open={paletteOpen} onOpenChange={setPaletteOpen} />
             </div>
             <IngestPanel />
           </div>
-          <div className="min-h-0 min-w-0 overflow-hidden">
+          <div className="biorouter-page-block min-h-0 min-w-0 overflow-hidden">
             <KnowledgeGraphPanel
               onOpenChangeLog={() => setChangeLogOpen(true)}
               previewSha={previewSha}

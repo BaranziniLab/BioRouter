@@ -242,7 +242,9 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
     return (
       <div className="h-screen w-full flex flex-col items-center justify-center bg-background-muted text-text-default p-8">
         <BackButton onClick={onNavigateBack} />
-        <h1 className="text-2xl font-semibold tracking-tight text-text-default mt-4">Schedule Not Found</h1>
+        <h1 className="text-2xl font-semibold tracking-tight text-text-default mt-4">
+          Schedule Not Found
+        </h1>
         <p className="text-text-muted mt-2">No schedule ID provided. Return to schedules list.</p>
       </div>
     );
@@ -260,7 +262,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
 
   return (
     <div className="h-screen w-full flex flex-col bg-background-default text-text-default">
-      <div className="px-8 pt-6 pb-4 border-b border-border-subtle flex-shrink-0">
+      <div className="biorouter-page-header px-8 pt-6 pb-4 border-b border-border-subtle flex-shrink-0">
         <BackButton onClick={onNavigateBack} />
         <h1 className="text-2xl font-semibold tracking-tight mt-1 mb-1 pt-8">Schedule Details</h1>
         <p className="text-sm text-text-muted mb-1">Viewing Schedule ID: {scheduleId}</p>
@@ -269,7 +271,9 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
       <ScrollArea className="flex-grow">
         <div className="p-8 space-y-6">
           <section>
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">Schedule Information</h2>
+            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
+              Schedule Information
+            </h2>
             {isLoadingSchedule && (
               <div className="flex items-center text-text-muted">
                 <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading schedule...
@@ -333,7 +337,9 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
           </section>
 
           <section>
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">Actions</h2>
+            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
+              Actions
+            </h2>
             <div className="flex flex-col md:flex-row gap-2">
               <Button
                 onClick={handleRunNow}
@@ -418,7 +424,9 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
           </section>
 
           <section>
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-4">Recent Sessions</h2>
+            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-4">
+              Recent Sessions
+            </h2>
             {isLoadingSessions && <p className="text-text-muted">Loading sessions...</p>}
             {sessionsError && (
               <p className="text-text-danger text-sm p-3 bg-background-danger/10 border border-border-danger/40 rounded-md">

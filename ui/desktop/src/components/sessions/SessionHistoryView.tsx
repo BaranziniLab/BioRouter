@@ -61,7 +61,7 @@ const SessionHeader: React.FC<{
   actionButtons?: React.ReactNode;
 }> = ({ onBack, children, title, actionButtons }) => {
   return (
-    <div className="flex flex-col pb-8 border-b">
+    <div className="biorouter-page-header -mx-8 flex flex-col px-8 pb-8">
       <div className="flex items-center pt-0 mb-1">
         <BackButton onClick={onBack} />
       </div>

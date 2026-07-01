@@ -606,7 +606,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       return (
         <div
           onClick={handleCardClick}
-          className="session-item flex items-center gap-3 py-3 px-3 rounded-xl cursor-pointer transition-colors duration-150 relative group hover:bg-background-medium"
+          className="biorouter-list-row session-item flex items-center gap-3 py-3 px-3 cursor-pointer relative group"
           ref={(el) => setSessionRefs(session.id, el)}
         >
           {/* Title + metadata */}
@@ -788,7 +788,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                   {group.label}
                 </h2>
               </div>
-              <div className="session-grid divide-y divide-border-subtle">
+              <div className="session-grid biorouter-list-shell">
                 {group.sessions.map((session) => (
                   <SessionItem
                     key={session.id}
@@ -821,7 +821,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         <MainPanelLayout>
           <div className="flex-1 flex flex-col min-h-0">
             {/* Flat page header */}
-            <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
+            <div className="biorouter-page-header px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
               <div className="flex justify-between items-center mb-1 page-transition">
                 <h1 className="text-2xl font-semibold tracking-tight">Chat history</h1>
                 <Button

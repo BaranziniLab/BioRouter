@@ -16,16 +16,14 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
   // Support both controlled (open+onOpenChange) and uncontrolled usage.
   const isControlled = openProp !== undefined;
   const open = isControlled ? openProp : openInternal;
-  const setOpen = isControlled
-    ? (v: boolean) => onOpenChange?.(v)
-    : setOpenInternal;
+  const setOpen = isControlled ? (v: boolean) => onOpenChange?.(v) : setOpenInternal;
 
   return (
     <>
       <button
         data-testid="knowledge-kb-selector-trigger"
         onClick={() => setOpen(true)}
-        className="w-full inline-flex items-center gap-2 px-3 py-2 rounded-lg border border-border-subtle bg-background-surface hover:border-border-default transition-colors"
+        className="biorouter-list-row w-full inline-flex items-center gap-2 px-3 py-2.5 transition-colors"
       >
         <span
           className="w-2 h-2 rounded-full flex-shrink-0"

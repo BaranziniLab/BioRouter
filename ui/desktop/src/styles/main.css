@@ -497,6 +497,59 @@
     0px 0px 0px 1px rgba(255, 255, 255, 0.055);
 }
 
+.biorouter-page-header {
+  border-bottom-color: transparent !important;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--background-muted) 42%, transparent),
+    transparent
+  );
+  box-shadow: var(--shadow-modal-chrome-bottom);
+}
+
+.biorouter-page-block {
+  background: color-mix(in srgb, var(--background-default) 74%, var(--background-muted));
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 30%, transparent);
+  border-radius: 16px;
+  box-shadow:
+    0px 16px 34px -28px rgba(32, 25, 15, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.44);
+}
+
+.biorouter-list-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.biorouter-list-row {
+  background: color-mix(in srgb, var(--background-muted) 44%, transparent);
+  border: 1px solid color-mix(in srgb, var(--border-subtle) 26%, transparent);
+  border-radius: 12px;
+  box-shadow: 0px 1px 2px rgba(32, 25, 15, 0.025);
+  transition:
+    background-color 160ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease;
+}
+
+.biorouter-list-row:hover {
+  background: color-mix(in srgb, var(--background-default) 82%, var(--background-muted));
+  border-color: color-mix(in srgb, var(--border-subtle) 42%, transparent);
+  box-shadow: 0px 8px 20px -18px rgba(32, 25, 15, 0.34);
+}
+
+.dark .biorouter-page-block {
+  box-shadow:
+    0px 16px 34px -28px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.dark .biorouter-list-row:hover {
+  box-shadow: 0px 8px 22px -18px rgba(0, 0, 0, 0.72);
+}
+
 .biorouter-sidebar-shell {
   box-shadow: 8px 0 28px -26px rgba(32, 25, 15, 0.42);
 }
@@ -653,6 +706,11 @@ body {
 
 .no-drag {
   -webkit-app-region: no-drag;
+}
+
+body.dashboard-route-active .titlebar-drag-region {
+  -webkit-app-region: no-drag;
+  pointer-events: none;
 }
 
 .bg-inline-code {
