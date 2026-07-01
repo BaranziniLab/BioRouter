@@ -311,10 +311,10 @@ export function IngestPanel() {
       <Button
         data-testid="knowledge-ingest-paste-text"
         type="button"
-        variant="ghost"
+        variant="secondary"
         size="sm"
         onClick={() => setShowPasteBox(true)}
-        className="w-full bg-background-default/45 hover:bg-background-default"
+        className="h-10 w-full border border-border-subtle bg-background-default/85 font-medium shadow-[0_4px_14px_-14px_rgba(32,25,15,0.32)] hover:border-border-default hover:bg-background-default"
       >
         <Clipboard className="mr-1.5 h-4 w-4" />
         Paste text

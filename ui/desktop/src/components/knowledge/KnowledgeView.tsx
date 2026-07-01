@@ -50,14 +50,14 @@ function KnowledgeViewInner() {
             </p>
           </div>
         </div>
-        <div className="mx-6 mb-6 mt-2 grid min-h-0 flex-1 grid-cols-1 overflow-hidden rounded-2xl bg-background-default/45 shadow-[0_18px_46px_-38px_rgba(32,25,15,0.34)] lg:grid-cols-[340px_minmax(0,1fr)]">
-          <div className="min-h-0 overflow-y-auto bg-background-muted/45 p-4 lg:shadow-[8px_0_30px_-34px_rgba(32,25,15,0.34)]">
+        <div className="mx-6 mb-6 mt-2 grid min-h-0 flex-1 grid-cols-1 overflow-y-auto rounded-2xl bg-background-default/45 shadow-[0_18px_46px_-38px_rgba(32,25,15,0.34)] lg:grid-cols-[340px_minmax(0,1fr)] lg:overflow-hidden">
+          <div className="overflow-visible bg-background-muted/45 p-4 lg:min-h-0 lg:overflow-y-auto lg:shadow-[8px_0_30px_-34px_rgba(32,25,15,0.34)]">
             <div className="pb-1">
               <KBSelectorTrigger open={paletteOpen} onOpenChange={setPaletteOpen} />
             </div>
             <IngestPanel />
           </div>
-          <div className="min-h-0 min-w-0 overflow-hidden bg-background-default/60">
+          <div className="min-h-[520px] min-w-0 overflow-hidden bg-background-default/60 lg:min-h-0">
             <KnowledgeGraphPanel
               onOpenChangeLog={() => setChangeLogOpen(true)}
               previewSha={previewSha}
