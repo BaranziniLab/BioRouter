@@ -1128,6 +1128,311 @@
       "license": "Apache-2.0"
     },
     {
+      "id": "simulation-optimization",
+      "name": "Simulation and Optimization",
+      "category": "Core",
+      "type": "User-invocable · /simulation-optimization",
+      "description": "Plans discrete-event simulation, multi-objective optimization, sensitivity analysis, scheduling, and what-if modeling.",
+      "tags": [
+        "Simulation",
+        "Optimization",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "simulation-optimization",
+        "simpy",
+        "pymoo",
+        "fluidsim",
+        "optimization",
+        "sensitivity",
+        "scheduling",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-simulation-optimization/simulation-optimization.zip",
+      "filename": "simulation-optimization.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "physical-science-computing",
+      "name": "Physical Science Computing",
+      "category": "Core",
+      "type": "User-invocable · /physical-science-computing",
+      "description": "Routes astronomy, physics, units, coordinate systems, spectra, numerical experiments, and physical-science workflows.",
+      "tags": [
+        "Physics",
+        "Astronomy",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "physical-science-computing",
+        "astropy",
+        "physics",
+        "astronomy",
+        "units",
+        "spectra",
+        "numerical",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-physical-science-computing/physical-science-computing.zip",
+      "filename": "physical-science-computing.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "metabolic-modeling-cobrapy",
+      "name": "Metabolic Modeling with COBRApy",
+      "category": "Core",
+      "type": "User-invocable · /metabolic-modeling-cobrapy",
+      "description": "Guides COBRApy/FBA metabolic modeling with GPR rules, media constraints, knockouts, objectives, and provenance.",
+      "tags": [
+        "Metabolism",
+        "COBRApy",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "metabolic-modeling-cobrapy",
+        "cobrapy",
+        "fba",
+        "flux",
+        "balance",
+        "gpr",
+        "knockouts",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-metabolic-modeling-cobrapy/metabolic-modeling-cobrapy.zip",
+      "filename": "metabolic-modeling-cobrapy.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "drug-discovery-benchmarks",
+      "name": "Drug Discovery Benchmarks",
+      "category": "Core",
+      "type": "User-invocable · /drug-discovery-benchmarks",
+      "description": "Plans ADMET, virtual-screening, molecular-property, scaffold-split, leakage, and assay-provenance benchmark checks.",
+      "tags": [
+        "Drug Discovery",
+        "Benchmarks",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "drug-discovery-benchmarks",
+        "pytdc",
+        "torchdrug",
+        "molfeat",
+        "admet",
+        "scaffold",
+        "split",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-drug-discovery-benchmarks/drug-discovery-benchmarks.zip",
+      "filename": "drug-discovery-benchmarks.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "clinical-decision-support-review",
+      "name": "Clinical Decision Support Review",
+      "category": "Core",
+      "type": "User-invocable · /clinical-decision-support-review",
+      "description": "Reviews clinical decision support, treatment plans, and reports for evidence grounding, safety scope, and no-PHI handling.",
+      "tags": [
+        "Clinical",
+        "Safety",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "clinical-decision-support-review",
+        "pyhealth",
+        "treatment",
+        "plans",
+        "clinical",
+        "reports",
+        "cds",
+        "no",
+        "phi",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clinical-decision-support-review/clinical-decision-support-review.zip",
+      "filename": "clinical-decision-support-review.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "scientific-visual-communication",
+      "name": "Scientific Visual Communication",
+      "category": "Core",
+      "type": "User-invocable · /scientific-visual-communication",
+      "description": "Plans schematics, posters, slides, figure panels, infographics, visual abstracts, and source-to-visual traceability.",
+      "tags": [
+        "Visuals",
+        "Posters",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "scientific-visual-communication",
+        "schematics",
+        "infographics",
+        "posters",
+        "slides",
+        "visual",
+        "abstracts",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-scientific-visual-communication/scientific-visual-communication.zip",
+      "filename": "scientific-visual-communication.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "grant-funding-strategy",
+      "name": "Grant and Funding Strategy",
+      "category": "Core",
+      "type": "User-invocable · /grant-funding-strategy",
+      "description": "Structures research grants, specific aims, milestones, reviewer-risk responses, and funder-fit checks.",
+      "tags": [
+        "Grants",
+        "Funding",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "grant-funding-strategy",
+        "research",
+        "grants",
+        "specific",
+        "aims",
+        "milestones",
+        "funder",
+        "fit",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-grant-funding-strategy/grant-funding-strategy.zip",
+      "filename": "grant-funding-strategy.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "regulatory-quality-systems",
+      "name": "Regulatory and Quality Systems",
+      "category": "Core",
+      "type": "User-invocable · /regulatory-quality-systems",
+      "description": "Reviews scientific software, device, and lab processes against quality, validation, traceability, and design-control gates.",
+      "tags": [
+        "Regulatory",
+        "QMS",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "regulatory-quality-systems",
+        "iso",
+        "13485",
+        "qms",
+        "validation",
+        "design",
+        "controls",
+        "audit",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-regulatory-quality-systems/regulatory-quality-systems.zip",
+      "filename": "regulatory-quality-systems.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "gpu-compute-optimization",
+      "name": "GPU Compute Optimization",
+      "category": "Core",
+      "type": "User-invocable · /gpu-compute-optimization",
+      "description": "Plans GPU-bound training/inference, batching, profiling, memory pressure, mixed precision, and reproducible compute.",
+      "tags": [
+        "GPU",
+        "Performance",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "gpu-compute-optimization",
+        "cuda",
+        "pytorch",
+        "memory",
+        "profiling",
+        "mixed",
+        "precision",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-gpu-compute-optimization/gpu-compute-optimization.zip",
+      "filename": "gpu-compute-optimization.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "research-evaluation-venues",
+      "name": "Research Evaluation and Venues",
+      "category": "Core",
+      "type": "User-invocable · /research-evaluation-venues",
+      "description": "Evaluates papers, scholars, venues, impact claims, reviewer fit, and publication positioning.",
+      "tags": [
+        "Venues",
+        "Evaluation",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "research-evaluation-venues",
+        "scholar",
+        "evaluation",
+        "venue",
+        "templates",
+        "journals",
+        "impact",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-research-evaluation-venues/research-evaluation-venues.zip",
+      "filename": "research-evaluation-venues.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "qualitative-thematic-analysis",
+      "name": "Qualitative Thematic Analysis",
+      "category": "Core",
+      "type": "User-invocable · /qualitative-thematic-analysis",
+      "description": "Plans qualitative coding, thematic analysis, codebooks, memoing, inter-rater checks, and audit trails.",
+      "tags": [
+        "Qualitative",
+        "Codebooks",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "qualitative-thematic-analysis",
+        "thematic",
+        "analysis",
+        "codebook",
+        "interviews",
+        "memoing",
+        "audit",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-qualitative-thematic-analysis/qualitative-thematic-analysis.zip",
+      "filename": "qualitative-thematic-analysis.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "financial-accounting-econometrics",
+      "name": "Financial and Accounting Econometrics",
+      "category": "Core",
+      "type": "User-invocable · /financial-accounting-econometrics",
+      "description": "Plans empirical finance/accounting workflows with event studies, abnormal returns, panel data, and table replication.",
+      "tags": [
+        "Finance",
+        "Accounting",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "financial-accounting-econometrics",
+        "crsp",
+        "compustat",
+        "event",
+        "study",
+        "abnormal",
+        "returns",
+        "accounting",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-financial-accounting-econometrics/financial-accounting-econometrics.zip",
+      "filename": "financial-accounting-econometrics.zip",
+      "license": "Apache-2.0"
+    },
+    {
       "id": "anti-ai-writing",
       "name": "Anti-AI Writing",
       "category": "Core",
