@@ -560,7 +560,7 @@ export function AppInner() {
         aria-label="Toast notifications"
         toastClassName={() =>
           `relative min-h-16 mb-4 p-3 rounded-xl
-               flex justify-between overflow-hidden cursor-pointer
+               flex items-center justify-between overflow-hidden cursor-pointer
                text-white bg-neutral-800/95 backdrop-blur-md
                border border-white/10 shadow-lg
               `
