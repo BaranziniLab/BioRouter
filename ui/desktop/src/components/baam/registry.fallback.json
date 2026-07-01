@@ -553,6 +553,114 @@
       "download": "https://github.com/BaranziniLab/MarkItDownAgent/releases/download/v0.1.0-brxt/markitdownagent.brxt",
       "filename": "markitdownagent.brxt",
       "license": "Apache-2.0"
+    },
+    {
+      "id": "adaptyvbiofoundryagent",
+      "name": "AdaptyvBioFoundryAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP adapter for Adaptyv-style protein engineering design-build-test workflows, sequence libraries, experiment metadata, and result retrieval with guarded API calls.",
+      "tags": [
+        "MCP",
+        "Adaptyv",
+        "Protein Engineering",
+        "Biofoundry",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/AdaptyvBioFoundryAgent",
+      "download": "https://github.com/BaranziniLab/AdaptyvBioFoundryAgent/releases/download/v0.1.0-brxt/adaptyvbiofoundryagent.brxt",
+      "filename": "adaptyvbiofoundryagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "structuredpapersearchagent",
+      "name": "StructuredPaperSearchAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP adapter for structured paper and full-text metadata search across scholarly APIs, section-aware evidence extraction, and provenance-first literature queries.",
+      "tags": [
+        "MCP",
+        "Papers",
+        "Full Text",
+        "Evidence",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/StructuredPaperSearchAgent",
+      "download": "https://github.com/BaranziniLab/StructuredPaperSearchAgent/releases/download/v0.1.0-brxt/structuredpapersearchagent.brxt",
+      "filename": "structuredpapersearchagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "scientificwebresearchagent",
+      "name": "ScientificWebResearchAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP adapter for scientific web and deep-research workflows, web search APIs, source fetching, and provenance capture beyond scholarly APIs.",
+      "tags": [
+        "MCP",
+        "Web Research",
+        "Search",
+        "Sources",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/ScientificWebResearchAgent",
+      "download": "https://github.com/BaranziniLab/ScientificWebResearchAgent/releases/download/v0.1.0-brxt/scientificwebresearchagent.brxt",
+      "filename": "scientificwebresearchagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "tamarindbioagent",
+      "name": "TamarindBioAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP adapter for Tamarind Bio-style cloud protein, structure, docking, and design workflows with guarded API calls and result provenance.",
+      "tags": [
+        "MCP",
+        "Tamarind",
+        "Protein Design",
+        "Docking",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/TamarindBioAgent",
+      "download": "https://github.com/BaranziniLab/TamarindBioAgent/releases/download/v0.1.0-brxt/tamarindbioagent.brxt",
+      "filename": "tamarindbioagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "rowanmolecularmodelingagent",
+      "name": "RowanMolecularModelingAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP adapter for Rowan-style cloud molecular modeling: conformers, pKa, docking, analogue docking, cofolding, and medicinal chemistry calculation provenance.",
+      "tags": [
+        "MCP",
+        "Rowan",
+        "Molecular Modeling",
+        "MedChem",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/RowanMolecularModelingAgent",
+      "download": "https://github.com/BaranziniLab/RowanMolecularModelingAgent/releases/download/v0.1.0-brxt/rowanmolecularmodelingagent.brxt",
+      "filename": "rowanmolecularmodelingagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "unifiedpublicdatabaselookupagent",
+      "name": "UnifiedPublicDatabaseLookupAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP router for provenance-first public database lookups across biomedical, chemistry, materials, literature, regulatory, patent, and scientific data APIs.",
+      "tags": [
+        "MCP",
+        "Public Databases",
+        "Provenance",
+        "Lookup",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/UnifiedPublicDatabaseLookupAgent",
+      "download": "https://github.com/BaranziniLab/UnifiedPublicDatabaseLookupAgent/releases/download/v0.1.0-brxt/unifiedpublicdatabaselookupagent.brxt",
+      "filename": "unifiedpublicdatabaselookupagent.brxt",
+      "license": "Apache-2.0"
     }
   ],
   "skills": [
