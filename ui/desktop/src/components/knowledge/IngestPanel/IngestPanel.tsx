@@ -314,7 +314,7 @@ export function IngestPanel() {
         variant="secondary"
         size="sm"
         onClick={() => setShowPasteBox(true)}
-        className="h-10 w-full border border-border-subtle bg-background-default/85 font-medium shadow-[0_4px_14px_-14px_rgba(32,25,15,0.32)] hover:border-border-default hover:bg-background-default"
+        className="h-10 w-full bg-background-default/78 font-medium shadow-[0_8px_18px_-18px_rgba(32,25,15,0.32)] hover:bg-background-default"
       >
         <Clipboard className="mr-1.5 h-4 w-4" />
         Paste text

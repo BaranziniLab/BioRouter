@@ -145,7 +145,7 @@ export function IngestModelPicker({ value, onChange }: Props) {
         data-testid="knowledge-model-picker-trigger"
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex min-h-10 w-full items-center justify-between gap-2 rounded-xl border border-border-subtle bg-background-default/85 px-3 py-2 text-xs shadow-[0_4px_14px_-14px_rgba(32,25,15,0.32)] transition-colors hover:border-border-default hover:bg-background-default focus:outline-none focus:ring-1 focus:ring-ring"
+        className="inline-flex min-h-10 w-full items-center justify-between gap-2 rounded-xl bg-background-default/78 px-3 py-2 text-xs shadow-[0_8px_18px_-18px_rgba(32,25,15,0.32)] transition-colors hover:bg-background-default focus:outline-none focus:ring-1 focus:ring-ring"
       >
         <span className="flex min-w-0 items-center gap-2">
           <Brain className="h-3.5 w-3.5 shrink-0 text-text-muted" />
