@@ -48,7 +48,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
 
   return (
     <div className="relative flex h-full min-w-0 flex-col overflow-hidden">
-      <div className="flex flex-col gap-3 border-b border-border-subtle px-6 py-3 lg:flex-row lg:items-center lg:justify-between">
+      <div className="m-3 mb-0 flex flex-col gap-3 rounded-2xl bg-background-muted/55 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
         <div className="flex min-w-0 items-center gap-2 text-xs text-text-muted">
           <span className="truncate font-medium text-text-default">
             {activeKb?.name ?? 'No knowledge base in focus'}
@@ -63,7 +63,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             </span>
           )}
         </div>
-        <div className="flex w-full flex-wrap items-center justify-end gap-2 lg:w-auto lg:flex-nowrap">
+        <div className="flex w-full flex-wrap items-center gap-2">
           <Button
             variant="ghost"
             size="sm"
@@ -107,7 +107,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
       </div>
 
       {previewSha && (
-        <div className="px-6 py-2 bg-background-warning/10 border-b border-border-warning/40 text-xs text-text-warning flex items-center justify-between">
+        <div className="mx-3 mt-3 rounded-xl bg-background-warning/10 px-4 py-2 text-xs text-text-warning flex items-center justify-between">
           <span>Previewing commit {previewSha.slice(0, 7)} — read-only</span>
           <button onClick={onClearPreview} className="underline">
             Exit preview
@@ -150,7 +150,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
           />
         )}
         {activeKbId && graph && graph.nodes.length > 0 && (
-          <div className="absolute bottom-4 left-4 rounded-2xl border border-border-subtle bg-background-default/85 px-4 py-3 backdrop-blur-sm">
+          <div className="biorouter-popover-surface absolute bottom-4 left-4 rounded-2xl bg-background-default/85 px-4 py-3 backdrop-blur-sm">
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-text-default">
               <div className="flex items-center gap-2">
                 <span

@@ -17,11 +17,7 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
   }
 
   return (
-    <Collapsible
-      open={open}
-      onOpenChange={setOpen}
-      className="rounded-xl border border-border-subtle bg-background-surface"
-    >
+    <Collapsible open={open} onOpenChange={setOpen} className="biorouter-list-row overflow-hidden">
       <div className="flex items-center justify-between gap-3 px-3 py-2.5">
         <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-2 text-left">
           {open ? (
@@ -46,7 +42,7 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
         </button>
       </div>
 
-      <CollapsibleContent className="border-t border-border-subtle px-3 py-3">
+      <CollapsibleContent className="px-3 pb-3">
         <p className="mb-3 text-xs leading-5 text-text-muted">
           Keep readable, high-signal sources. Leave out installers, giant raw exports, and files
           that mostly contain IDs or machine noise.

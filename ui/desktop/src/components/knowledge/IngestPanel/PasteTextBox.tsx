@@ -26,13 +26,13 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
   }
 
   return (
-    <div className="bg-background-surface border border-border-subtle rounded-xl overflow-hidden">
+    <div className="biorouter-list-row overflow-hidden">
       <input
         type="text"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         placeholder="Optional title…"
-        className="w-full px-3 py-2 text-xs border-b border-border-subtle bg-transparent outline-none text-text-default placeholder:text-textPlaceholder"
+        className="w-full px-3 py-2 text-xs bg-transparent outline-none text-text-default placeholder:text-textPlaceholder"
       />
       <textarea
         value={text}
@@ -41,7 +41,7 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
         className="w-full min-h-[100px] px-3 py-2 text-xs bg-transparent outline-none resize-y text-text-default placeholder:text-textPlaceholder"
       />
       {detectedUrls.length > 0 && (
-        <div className="border-t border-border-subtle px-3 py-2 flex flex-wrap gap-1.5">
+        <div className="mx-3 mb-2 flex flex-wrap gap-1.5 rounded-xl bg-background-default/60 px-3 py-2">
           <span className="text-[11px] text-text-muted self-center mr-1">Will fetch:</span>
           {detectedUrls.map((u) => {
             const on = includeUrls[u] !== false;
@@ -61,7 +61,7 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
           })}
         </div>
       )}
-      <div className="border-t border-border-subtle px-3 py-2 flex justify-between items-center">
+      <div className="px-3 py-2 flex justify-between items-center">
         <span className="text-[11px] text-text-muted">{text.length} chars</span>
         <div className="flex gap-1.5">
           <button

@@ -37,7 +37,7 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
 
   return (
     <div className="biorouter-popover-surface absolute top-12 right-4 z-10 flex max-h-[calc(100%-5rem)] w-[360px] flex-col overflow-hidden rounded-2xl bg-background-default/90 backdrop-blur-md">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle">
+      <div className="flex items-center justify-between bg-background-muted/55 px-4 py-3 shadow-[inset_0_-1px_0_rgba(32,25,15,0.04)]">
         <div className="flex items-center gap-2 min-w-0">
           <span
             aria-hidden
@@ -63,8 +63,8 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
         {!loading && !error && content && (
           <div className="space-y-4">
             {parsed.frontmatter && (
-              <div className="overflow-hidden rounded-xl border border-border-subtle bg-background-muted/40">
-                <div className="flex items-center gap-2 border-b border-border-subtle px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+              <div className="overflow-hidden rounded-xl bg-background-muted/55">
+                <div className="flex items-center gap-2 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
                   <FileCode2 className="h-3 w-3" />
                   Overview
                 </div>
@@ -82,9 +82,7 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
         )}
         {!loading && !error && !content && <span className="text-text-muted">No content.</span>}
       </div>
-      <div className="border-t border-border-subtle px-4 py-2 text-xs text-text-muted">
-        {node.path}
-      </div>
+      <div className="bg-background-muted/45 px-4 py-2 text-xs text-text-muted">{node.path}</div>
     </div>
   );
 }

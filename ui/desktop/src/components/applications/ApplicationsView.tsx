@@ -178,7 +178,7 @@ export default function ApplicationsView() {
         data-search-scroll-area
       >
         {/* Header */}
-        <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
+        <div className="biorouter-page-header px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
           <div className="flex flex-col page-transition">
             <h1 className="text-2xl font-semibold tracking-tight mb-1">Applications</h1>
             <p className="text-sm text-text-muted mb-0">
@@ -220,16 +220,18 @@ export default function ApplicationsView() {
                 </p>
               </div>
             ) : (
-              filtered.map((app) => (
-                <ApplicationItem
-                  key={app.id}
-                  app={app}
-                  onLaunch={() => launch(app)}
-                  onOpenConversation={() => openConversation(app)}
-                  onExport={() => exportApp(app)}
-                  onDelete={() => setAppToDelete(app)}
-                />
-              ))
+              <div className="biorouter-list-shell">
+                {filtered.map((app) => (
+                  <ApplicationItem
+                    key={app.id}
+                    app={app}
+                    onLaunch={() => launch(app)}
+                    onOpenConversation={() => openConversation(app)}
+                    onExport={() => exportApp(app)}
+                    onDelete={() => setAppToDelete(app)}
+                  />
+                ))}
+              </div>
             )}
           </div>
         </SearchView>
@@ -271,7 +273,7 @@ function ApplicationItem({
   const model = app.agent?.model?.model;
   const kb = app.agent?.knowledge_base;
   return (
-    <div className="flex items-start py-3 border-b border-border-subtle last:border-b-0 hover:bg-background-medium/30 transition-colors group gap-3 px-2">
+    <div className="biorouter-list-row flex items-start py-3 px-3 group gap-3">
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           <p className="text-sm text-text-default truncate">{app.title}</p>

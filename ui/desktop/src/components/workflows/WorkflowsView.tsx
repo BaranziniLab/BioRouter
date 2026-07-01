@@ -450,7 +450,7 @@ export default function WorkflowsView() {
   }: {
     workflowManifestResponse: WorkflowManifest;
   }) => (
-    <div className="py-3 px-2 border-b border-border-subtle last:border-b-0 hover:bg-background-medium/30 transition-colors duration-150 group">
+    <div className="biorouter-list-row py-3 px-3 group">
       <div className="flex justify-between items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
@@ -600,7 +600,7 @@ export default function WorkflowsView() {
   );
 
   const WorkflowSkeleton = () => (
-    <div className="py-4 px-2 border-b border-border-subtle last:border-b-0">
+    <div className="biorouter-list-row py-4 px-3">
       <div className="flex justify-between items-start gap-4">
         <div className="min-w-0 flex-1">
           <Skeleton className="h-5 w-3/4 mb-2" />
@@ -667,7 +667,7 @@ export default function WorkflowsView() {
     }
 
     return (
-      <div>
+      <div className="biorouter-list-shell">
         {filteredWorkflows.map((workflowManifestResponse: WorkflowManifest) => (
           <WorkflowItem
             key={workflowManifestResponse.id}
@@ -683,7 +683,7 @@ export default function WorkflowsView() {
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
           {/* Flat page header */}
-          <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
+          <div className="biorouter-page-header px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
             <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">
               Workflows
             </h1>

@@ -108,10 +108,10 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
           if (dragCounterRef.current === 0) setDragging(false);
         }}
         onDrop={onDrop}
-        className={`relative cursor-pointer rounded-xl border p-6 text-center transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${
+        className={`relative cursor-pointer rounded-2xl p-6 text-center transition-all focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 ${
           dragging
-            ? 'border-block-teal bg-block-teal/5'
-            : 'border-border-subtle bg-background-muted hover:bg-background-medium'
+            ? 'bg-block-teal/10 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--block-teal)_48%,transparent)]'
+            : 'biorouter-list-row hover:bg-background-default'
         }`}
       >
         <input
@@ -147,7 +147,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
             'folders',
             'archives',
           ].map((label) => (
-            <span key={label} className="rounded px-1.5 py-0.5 ring-1 ring-border-subtle">
+            <span key={label} className="rounded-md bg-background-default/70 px-1.5 py-0.5">
               {label}
             </span>
           ))}

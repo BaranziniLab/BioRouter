@@ -141,19 +141,26 @@ export function SessionInsights() {
         ))}
       </div>
       <div className="px-8 pb-8">
-        <div className="flex justify-between items-center pb-3 border-b border-border-subtle">
-          <span className="text-xs font-medium text-text-muted uppercase tracking-wider">Recent chats</span>
-        </div>
-        <div className="space-y-0 min-h-[96px]">
-          {[200, 160, 220].map((w, i) => (
-            <div key={i} className="flex items-center justify-between py-3 border-b border-border-subtle last:border-0">
-              <div className="flex items-center space-x-2.5">
-                <Skeleton className="h-4 w-4 rounded-sm flex-shrink-0" />
-                <Skeleton style={{ width: w }} className="h-3.5" />
+        <div className="biorouter-page-block px-4 py-3">
+          <div className="flex justify-between items-center pb-2">
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              Recent chats
+            </span>
+          </div>
+          <div className="biorouter-list-shell min-h-[96px]">
+            {[200, 160, 220].map((w, i) => (
+              <div
+                key={i}
+                className="biorouter-list-row flex items-center justify-between px-3 py-2.5"
+              >
+                <div className="flex items-center space-x-2.5">
+                  <Skeleton className="h-4 w-4 rounded-sm flex-shrink-0" />
+                  <Skeleton style={{ width: w }} className="h-3.5" />
+                </div>
+                <Skeleton className="h-3.5 w-16" />
               </div>
-              <Skeleton className="h-3.5 w-16" />
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       </div>
     </div>
@@ -180,36 +187,38 @@ export function SessionInsights() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8 page-transition">
-            {([
-              {
-                heading: 'Sessions',
-                items: [
-                  { value: formatCount(insights?.totalSessions), label: 'Total' },
-                  {
-                    value: formatCount(insights?.sessionsLast30Days),
-                    label: 'Past 30 days',
-                  },
-                  {
-                    value: formatCount(insights?.sessionsLast7Days),
-                    label: 'Past 7 days',
-                  },
-                ],
-              },
-              {
-                heading: 'Tokens',
-                items: [
-                  { value: formatTokens(insights?.totalTokens), label: 'Total' },
-                  {
-                    value: formatTokens(insights?.tokensLast30Days),
-                    label: 'Past 30 days',
-                  },
-                  {
-                    value: formatTokens(insights?.tokensLast7Days),
-                    label: 'Past 7 days',
-                  },
-                ],
-              },
-            ] as const).map((group) => (
+            {(
+              [
+                {
+                  heading: 'Sessions',
+                  items: [
+                    { value: formatCount(insights?.totalSessions), label: 'Total' },
+                    {
+                      value: formatCount(insights?.sessionsLast30Days),
+                      label: 'Past 30 days',
+                    },
+                    {
+                      value: formatCount(insights?.sessionsLast7Days),
+                      label: 'Past 7 days',
+                    },
+                  ],
+                },
+                {
+                  heading: 'Tokens',
+                  items: [
+                    { value: formatTokens(insights?.totalTokens), label: 'Total' },
+                    {
+                      value: formatTokens(insights?.tokensLast30Days),
+                      label: 'Past 30 days',
+                    },
+                    {
+                      value: formatTokens(insights?.tokensLast7Days),
+                      label: 'Past 7 days',
+                    },
+                  ],
+                },
+              ] as const
+            ).map((group) => (
               <div key={group.heading}>
                 <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
                   {group.heading}
@@ -238,60 +247,65 @@ export function SessionInsights() {
         )}
       </div>
 
-      {/* Recent chats — flat list, no card wrapper */}
+      {/* Recent chats */}
       <div className="px-8 pb-8 page-transition">
-        <div className="flex justify-between items-center pb-3 border-b border-border-subtle">
-          <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
-            Recent chats
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="text-xs text-text-muted !px-0 hover:bg-transparent hover:underline hover:text-text-default"
-            onClick={navigateToSessionHistory}
-          >
-            See all
-          </Button>
-        </div>
+        <div className="biorouter-page-block px-4 py-3">
+          <div className="flex justify-between items-center pb-2">
+            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              Recent chats
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="text-xs text-text-muted !px-2 hover:bg-background-muted/60 hover:text-text-default"
+              onClick={navigateToSessionHistory}
+            >
+              See all
+            </Button>
+          </div>
 
-        <div className="min-h-[96px] transition-all duration-300 ease-in-out">
-          {isLoadingSessions ? (
-            [200, 160, 220].map((w, i) => (
-              <div key={i} className="flex items-center justify-between py-3 border-b border-border-subtle last:border-0">
-                <div className="flex items-center space-x-2.5">
-                  <Skeleton className="h-4 w-4 rounded-sm flex-shrink-0" />
-                  <Skeleton style={{ width: w }} className="h-3.5" />
+          <div className="biorouter-list-shell min-h-[96px] transition-all duration-300 ease-in-out">
+            {isLoadingSessions ? (
+              [200, 160, 220].map((w, i) => (
+                <div
+                  key={i}
+                  className="biorouter-list-row flex items-center justify-between px-3 py-2.5"
+                >
+                  <div className="flex items-center space-x-2.5">
+                    <Skeleton className="h-4 w-4 rounded-sm flex-shrink-0" />
+                    <Skeleton style={{ width: w }} className="h-3.5" />
+                  </div>
+                  <Skeleton className="h-3.5 w-16" />
                 </div>
-                <Skeleton className="h-3.5 w-16" />
-              </div>
-            ))
-          ) : recentSessions.length > 0 ? (
-            recentSessions.map((session, index) => (
-              <div
-                key={session.id}
-                className="flex items-center justify-between text-sm py-3 px-2 -mx-2 rounded-lg hover:bg-background-medium cursor-pointer transition-colors session-item border-b border-border-subtle last:border-0"
-                onClick={() => handleSessionClick(session)}
-                role="button"
-                tabIndex={0}
-                style={{ animationDelay: `${index * 0.1}s` }}
-                onKeyDown={async (e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    await handleSessionClick(session);
-                  }
-                }}
-              >
-                <div className="flex items-center space-x-2.5">
-                  <ChatSmart className="h-4 w-4 text-text-muted flex-shrink-0" />
-                  <span className="truncate max-w-[300px]">{session.name}</span>
+              ))
+            ) : recentSessions.length > 0 ? (
+              recentSessions.map((session, index) => (
+                <div
+                  key={session.id}
+                  className="biorouter-list-row session-item flex items-center justify-between text-sm px-3 py-2.5 cursor-pointer"
+                  onClick={() => handleSessionClick(session)}
+                  role="button"
+                  tabIndex={0}
+                  style={{ animationDelay: `${index * 0.1}s` }}
+                  onKeyDown={async (e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      await handleSessionClick(session);
+                    }
+                  }}
+                >
+                  <div className="flex items-center space-x-2.5 min-w-0">
+                    <ChatSmart className="h-4 w-4 text-text-muted flex-shrink-0" />
+                    <span className="truncate max-w-[300px]">{session.name}</span>
+                  </div>
+                  <span className="text-text-muted text-xs flex-shrink-0">
+                    {formatDateOnly(session.updated_at)}
+                  </span>
                 </div>
-                <span className="text-text-muted text-xs flex-shrink-0">
-                  {formatDateOnly(session.updated_at)}
-                </span>
-              </div>
-            ))
-          ) : (
-            <div className="text-text-muted text-sm py-3">No recent chat sessions found.</div>
-          )}
+              ))
+            ) : (
+              <div className="text-text-muted text-sm py-3">No recent chat sessions found.</div>
+            )}
+          </div>
         </div>
       </div>
     </div>

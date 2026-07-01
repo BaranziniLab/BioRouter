@@ -97,7 +97,7 @@ export function DispatchProgress({ state, onAbort }: Props) {
   if (state.status === 'idle') return null;
 
   return (
-    <div className="rounded-xl border border-border-subtle bg-background-surface">
+    <div className="biorouter-list-row overflow-hidden">
       <div className="flex items-center justify-between gap-3 px-3 py-2.5">
         <button
           type="button"
@@ -137,8 +137,8 @@ export function DispatchProgress({ state, onAbort }: Props) {
       </div>
 
       {open && (
-        <div className="border-t border-border-subtle px-3 py-3">
-          <div className="max-h-[260px] space-y-2 overflow-y-auto text-[11px] leading-5">
+        <div className="px-3 pb-3">
+          <div className="max-h-[260px] space-y-2 overflow-y-auto rounded-xl bg-background-default/60 px-3 py-3 text-[11px] leading-5">
             {lines.length === 0 && (
               <div className="flex items-start gap-2 text-text-muted">
                 <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
