@@ -48,7 +48,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
 
   return (
     <div className="relative flex h-full min-w-0 flex-col overflow-hidden">
-      <div className="m-3 mb-0 flex flex-col gap-3 rounded-2xl bg-background-muted/55 px-4 py-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.42)]">
+      <div className="m-3 mb-0 flex flex-wrap items-center justify-between gap-2 rounded-xl bg-background-default/72 px-3 py-2 shadow-[0_10px_28px_-24px_rgba(32,25,15,0.34)] backdrop-blur-sm">
         <div className="flex min-w-0 items-center gap-2 text-xs text-text-muted">
           <span className="truncate font-medium text-text-default">
             {activeKb?.name ?? 'No knowledge base in focus'}
@@ -63,10 +63,11 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             </span>
           )}
         </div>
-        <div className="flex w-full flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           <Button
             variant="ghost"
-            size="sm"
+            size="xs"
+            shape="round"
             onClick={() => void refresh()}
             disabled={!activeKbId || loading}
             title="Refresh graph"
@@ -74,8 +75,8 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
           </Button>
           <Button
-            variant="outline"
-            size="sm"
+            variant="ghost"
+            size="xs"
             onClick={() => activeKb && void exportArchive(activeKb.id, activeKb.name)}
             disabled={!activeKb}
             title="Export current knowledge base as .brkb"
@@ -84,8 +85,8 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             Export as .brkb
           </Button>
           <Button
-            variant="outline"
-            size="sm"
+            variant="ghost"
+            size="xs"
             onClick={onOpenChangeLog}
             disabled={!activeKbId}
             title="Open change log"
@@ -94,8 +95,8 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             Change log
           </Button>
           <Button
-            variant="outline"
-            size="sm"
+            variant="ghost"
+            size="xs"
             onClick={() => void openKbFolder()}
             disabled={!activeKbId}
             title="Open the knowledge base folder (raw sources + markdown) in your file explorer"
@@ -150,7 +151,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
           />
         )}
         {activeKbId && graph && graph.nodes.length > 0 && (
-          <div className="biorouter-popover-surface absolute bottom-4 left-4 rounded-2xl bg-background-default/85 px-4 py-3 backdrop-blur-sm">
+          <div className="biorouter-popover-surface absolute bottom-4 left-4 rounded-xl bg-background-default/80 px-3 py-2.5 backdrop-blur-sm">
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-text-default">
               <div className="flex items-center gap-2">
                 <span

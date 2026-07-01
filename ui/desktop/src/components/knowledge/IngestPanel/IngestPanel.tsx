@@ -306,14 +306,15 @@ export function IngestPanel() {
           : 'Digest Staged Sources';
 
   return (
-    <div className="flex flex-col gap-4 p-4">
+    <div className="flex flex-col gap-4 pt-3">
       <Dropzone onFiles={onFiles} onPathPickRequested={() => void onPathPickRequested()} />
       <Button
         data-testid="knowledge-ingest-paste-text"
         type="button"
-        variant="outline"
+        variant="ghost"
         size="sm"
         onClick={() => setShowPasteBox(true)}
+        className="w-full bg-background-default/45 hover:bg-background-default"
       >
         <Clipboard className="mr-1.5 h-4 w-4" />
         Paste text
