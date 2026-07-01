@@ -1688,6 +1688,8 @@ export default function ChatInput({
                       onClick={() => {
                         setDiagnosticsOpen(true);
                       }}
+                      aria-label="Generate diagnostics bundle"
+                      title="Generate diagnostics bundle"
                       variant="ghost"
                       size="sm"
                       className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer transition-colors"

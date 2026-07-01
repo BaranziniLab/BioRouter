@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { AlertTriangle, Download, Github } from '../icons/app-icons';
+import { AlertTriangle, Download, Github, Loader2 } from '../icons/app-icons';
 import { Button } from './button';
 import { toastError } from '../../toasts';
 import { diagnostics, systemInfo } from '../../api';
@@ -148,36 +148,44 @@ Add any other context about the problem here.
   // modal is rendered inside the dashboard's transformed world layer.
   return createPortal(
     <div
-      className="biorouter-modal-overlay fixed inset-0 flex items-center justify-center z-50"
+      className="biorouter-diagnostics-overlay fixed inset-0 flex items-center justify-center z-50 p-4"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="biorouter-modal-surface bg-background-default p-6 max-w-md mx-4">
+      <div className="biorouter-diagnostics-surface w-full max-w-md p-6">
         <div className="flex items-start gap-3 mb-4">
-          <AlertTriangle className="text-text-warning flex-shrink-0 mt-1" size={20} />
+          <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl bg-background-warning/40 text-text-warning shadow-[inset_0_0_0_1px_rgba(32,25,15,0.06)]">
+            <AlertTriangle size={20} />
+          </div>
           <div>
-            <h3 className="text-lg font-semibold text-text-default mb-2">Report a Problem</h3>
-            <p className="text-sm text-text-muted mb-3">
+            <h3 className="text-lg font-semibold text-black mb-2">Report a Problem</h3>
+            <p className="text-sm text-neutral-600 mb-3">
               You can download a diagnostics zip file to share with the team, or file a bug directly
               on GitHub with your system details pre-filled. A diagnostics report contains the
               following:
             </p>
-            <ul className="text-sm text-text-muted list-disc list-inside space-y-1 mb-3">
+            <ul className="text-sm text-neutral-600 list-disc list-inside space-y-1 mb-3">
               <li>Basic system info</li>
               <li>Your current session messages</li>
               <li>Recent log files</li>
               <li>Configuration settings</li>
             </ul>
-            <p className="text-sm text-text-muted">
+            <p className="text-sm text-neutral-600">
               <strong>Warning:</strong> If your session contains sensitive information, do not share
               the diagnostics file publicly.
             </p>
-            <p className="text-sm text-text-muted">
+            <p className="text-sm text-neutral-600">
               If you file a bug, consider attaching the diagnostics report to it.
             </p>
           </div>
         </div>
+        {isDownloading && (
+          <div className="mb-4 flex items-center gap-3 rounded-xl bg-neutral-100/80 px-3 py-2.5 text-sm text-neutral-700 shadow-[inset_0_0_0_1px_rgba(32,25,15,0.05)]">
+            <Loader2 className="h-4 w-4 animate-spin" />
+            Preparing diagnostics bundle...
+          </div>
+        )}
         <div className="flex gap-2 justify-end">
           <Button
             onClick={onClose}
