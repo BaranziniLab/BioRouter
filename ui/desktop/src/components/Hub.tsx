@@ -68,7 +68,7 @@ export default function Hub({
   };
 
   return (
-    <div className="flex flex-col h-full bg-background-muted">
+    <div className="relative flex flex-col h-full bg-background-muted">
       <div className="flex-1 flex flex-col mb-0 relative">
         <SessionInsights />
         {isCreatingSession && (
@@ -78,25 +78,27 @@ export default function Hub({
         )}
       </div>
 
-      <div className="mx-4 mb-4 rounded-xl overflow-hidden bg-background-default">
-        <ChatInput
-          sessionId={null}
-          handleSubmit={handleSubmit}
-          chatState={isCreatingSession ? ChatState.LoadingConversation : ChatState.Idle}
-          onStop={() => {}}
-          initialValue=""
-          setView={setView}
-          totalTokens={0}
-          accumulatedInputTokens={0}
-          accumulatedOutputTokens={0}
-          droppedFiles={[]}
-          onFilesProcessed={() => {}}
-          messages={[]}
-          disableAnimation={false}
-          sessionCosts={undefined}
-          toolCount={0}
-          onWorkingDirChange={setWorkingDir}
-        />
+      <div className="absolute inset-x-4 sm:inset-x-6 bottom-8 sm:bottom-10 z-10 pointer-events-none">
+        <div className="w-full max-w-[760px] mx-auto pointer-events-auto">
+          <ChatInput
+            sessionId={null}
+            handleSubmit={handleSubmit}
+            chatState={isCreatingSession ? ChatState.LoadingConversation : ChatState.Idle}
+            onStop={() => {}}
+            initialValue=""
+            setView={setView}
+            totalTokens={0}
+            accumulatedInputTokens={0}
+            accumulatedOutputTokens={0}
+            droppedFiles={[]}
+            onFilesProcessed={() => {}}
+            messages={[]}
+            disableAnimation={false}
+            sessionCosts={undefined}
+            toolCount={0}
+            onWorkingDirChange={setWorkingDir}
+          />
+        </div>
       </div>
     </div>
   );

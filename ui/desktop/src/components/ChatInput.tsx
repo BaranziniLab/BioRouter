@@ -1308,13 +1308,13 @@ export default function ChatInput({
 
   return (
     <div
-      className={`flex flex-col relative h-auto p-4 transition-colors ${
+      className={`flex flex-col relative h-auto px-4 pt-3 pb-2 transition-colors ${
         disableAnimation ? '' : 'page-transition'
       } ${
         isFocused
-          ? 'border-border-strong hover:border-border-strong'
-          : 'border-border-subtle hover:border-border-subtle'
-      } bg-background-default z-10 rounded-t-2xl`}
+          ? 'border-transparent hover:border-transparent shadow-[0_12px_32px_rgba(32,25,15,0.11),0_2px_10px_rgba(32,25,15,0.06)]'
+          : 'border-transparent hover:border-transparent shadow-[0_8px_24px_rgba(32,25,15,0.08),0_1px_6px_rgba(32,25,15,0.04)]'
+      } bg-background-default z-10 rounded-2xl border`}
       data-drop-zone="true"
       onDrop={handleLocalDrop}
       onDragOver={handleLocalDragOver}
@@ -1503,7 +1503,7 @@ export default function ChatInput({
           A `>` / `<` chevron toggles a collapsible group containing Cost,
           Model, Mode, Workflow, Diagnostics — letting the picker row stay narrow
           enough for compact dashboard windows. Send button sits on the far right. */}
-      <div className="flex flex-row flex-nowrap items-center gap-1 p-2 relative overflow-x-auto">
+      <div className="flex flex-row flex-nowrap items-center gap-1 px-2 pt-2 pb-0 relative overflow-x-auto">
         {/* Always-visible group. The terminal launcher sits to the left of the
             working-directory switcher so users can pop open the CLI rooted in
             that exact folder. */}

@@ -67,9 +67,7 @@ interface BaseChatProps {
   /** Optional: overrides the default rename behavior (which calls biorouterd updateSessionName). */
   onRenameSession?: (newName: string) => void;
   /** Notify parent when the underlying session object changes (e.g., biorouterd renamed it). */
-  onSessionUpdate?: (
-    session: { id: string; name: string; userSetName: boolean } | null
-  ) => void;
+  onSessionUpdate?: (session: { id: string; name: string; userSetName: boolean } | null) => void;
   /** Optional accent dot color (dashboard windows pass theirs). */
   accentColor?: string;
   /** Hide the SessionNamePill at the top of the chat. Dashboard windows pass this
@@ -370,9 +368,7 @@ function BaseChatContent({
     if (!focusTrigger) return;
     const raf = requestAnimationFrame(() => {
       scrollRef.current?.scrollToBottom?.();
-      window.dispatchEvent(
-        new CustomEvent('focus-chat-input', { detail: { sessionId } })
-      );
+      window.dispatchEvent(new CustomEvent('focus-chat-input', { detail: { sessionId } }));
     });
     return () => cancelAnimationFrame(raf);
   }, [focusTrigger, sessionId]);
@@ -432,7 +428,7 @@ function BaseChatContent({
 
   // Update the global chat context when session name changes
   const lastSetNameRef = useRef<string>('');
-  
+
   useEffect(() => {
     const currentSessionName = session?.name;
     if (currentSessionName && currentSessionName !== lastSetNameRef.current) {
@@ -511,6 +507,46 @@ function BaseChatContent({
   }
 
   const initialPrompt = workflowPrompt;
+  const isCleanConversation =
+    messages.length === 0 &&
+    !workflow &&
+    !initialPrompt &&
+    chatState === ChatState.Idle &&
+    !isCreatingSession;
+
+  const renderChatInput = () => (
+    <div className="w-full max-w-[760px] mx-auto">
+      <ChatInput
+        sessionId={sessionId}
+        handleSubmit={handleFormSubmit}
+        chatState={chatState}
+        setChatState={setChatState}
+        onStop={stopStreaming}
+        commandHistory={commandHistory}
+        initialValue={initialPrompt}
+        setView={setView}
+        totalTokens={tokenState?.totalTokens ?? session?.total_tokens ?? undefined}
+        accumulatedInputTokens={
+          tokenState?.accumulatedInputTokens ?? session?.accumulated_input_tokens ?? undefined
+        }
+        accumulatedOutputTokens={
+          tokenState?.accumulatedOutputTokens ?? session?.accumulated_output_tokens ?? undefined
+        }
+        droppedFiles={droppedFiles}
+        onFilesProcessed={() => setDroppedFiles([])} // Clear dropped files after processing
+        messages={messages}
+        disableAnimation={disableAnimation}
+        sessionCosts={sessionCosts}
+        workflow={workflow}
+        workflowAccepted={!hasNotAcceptedWorkflow}
+        initialPrompt={initialPrompt}
+        toolCount={toolCount || 0}
+        compactPicker={compactPicker}
+        supportsVisionOverride={sessionSupportsVision ?? undefined}
+        {...customChatInputProps}
+      />
+    </div>
+  );
 
   if (sessionLoadError) {
     return (
@@ -580,57 +616,78 @@ function BaseChatContent({
               />
             </div>
           )}
-          <ScrollArea
-            ref={scrollRef}
-            className={
-              coherent
-                ? `flex-1 min-h-0 relative ${contentClassName}`
-                : `flex-1 bg-background-default rounded-2xl min-h-0 relative ${contentClassName}`
-            }
-            autoScroll
-            onDrop={handleDrop}
-            onDragOver={handleDragOver}
-            data-drop-zone="true"
-            paddingX={6}
-            paddingY={0}
-          >
-            {workflow?.title && (
-              <div className="sticky top-0 z-10 bg-background-default px-0 -mx-6 mb-4 pt-2">
-                <WorkflowHeader title={workflow.title} />
+          {isCleanConversation ? (
+            <div
+              className="flex-1 min-h-0 flex items-center justify-center px-4 py-10 sm:px-6 sm:py-16"
+              onDrop={handleDrop}
+              onDragOver={handleDragOver}
+              data-drop-zone="true"
+            >
+              <div className="w-full max-w-[760px] flex flex-col items-center gap-6">
+                <h1
+                  className={cn(
+                    'text-center font-semibold tracking-tight text-text-default',
+                    compactPicker ? 'text-xl' : 'text-2xl'
+                  )}
+                >
+                  What question will your data answer next?
+                </h1>
+                {renderChatInput()}
               </div>
-            )}
+            </div>
+          ) : (
+            <ScrollArea
+              ref={scrollRef}
+              className={
+                coherent
+                  ? `flex-1 min-h-0 relative ${contentClassName}`
+                  : `flex-1 bg-background-default rounded-2xl min-h-0 relative ${contentClassName}`
+              }
+              autoScroll
+              onDrop={handleDrop}
+              onDragOver={handleDragOver}
+              data-drop-zone="true"
+              paddingX={6}
+              paddingY={0}
+            >
+              {workflow?.title && (
+                <div className="sticky top-0 z-10 bg-background-default px-0 -mx-6 mb-4 pt-2">
+                  <WorkflowHeader title={workflow.title} />
+                </div>
+              )}
 
-            {workflow && (
-              <div className={hasStartedUsingWorkflow ? 'mb-6' : ''}>
-                <WorkflowActivities
-                  append={(text: string) => handleSubmit(text)}
-                  activities={Array.isArray(workflow.activities) ? workflow.activities : null}
-                  title={workflow.title}
-                  parameterValues={session?.user_workflow_values || {}}
-                />
-              </div>
-            )}
-
-            {messages.length > 0 || workflow ? (
-              <>
-                <SearchView>
-                  <ProgressiveMessageList
-                    messages={messages}
-                    chat={{ sessionId }}
-                    toolCallNotifications={toolCallNotifications}
+              {workflow && (
+                <div className={hasStartedUsingWorkflow ? 'mb-6' : ''}>
+                  <WorkflowActivities
                     append={(text: string) => handleSubmit(text)}
-                    isUserMessage={(m: Message) => m.role === 'user'}
-                    isStreamingMessage={chatState !== ChatState.Idle}
-                    onRenderingComplete={handleRenderingComplete}
-                    onMessageUpdate={onMessageUpdate}
-                    submitElicitationResponse={submitElicitationResponse}
+                    activities={Array.isArray(workflow.activities) ? workflow.activities : null}
+                    title={workflow.title}
+                    parameterValues={session?.user_workflow_values || {}}
                   />
-                </SearchView>
+                </div>
+              )}
 
-                <div className="block h-8" />
-              </>
-            ) : null}
-          </ScrollArea>
+              {messages.length > 0 || workflow ? (
+                <>
+                  <SearchView>
+                    <ProgressiveMessageList
+                      messages={messages}
+                      chat={{ sessionId }}
+                      toolCallNotifications={toolCallNotifications}
+                      append={(text: string) => handleSubmit(text)}
+                      isUserMessage={(m: Message) => m.role === 'user'}
+                      isStreamingMessage={chatState !== ChatState.Idle}
+                      onRenderingComplete={handleRenderingComplete}
+                      onMessageUpdate={onMessageUpdate}
+                      submitElicitationResponse={submitElicitationResponse}
+                    />
+                  </SearchView>
+
+                  <div className="block h-8" />
+                </>
+              ) : null}
+            </ScrollArea>
+          )}
 
           {chatState !== ChatState.Idle && (
             <div className="absolute bottom-1 left-2 z-20 pointer-events-none">
@@ -646,43 +703,17 @@ function BaseChatContent({
           )}
         </div>
 
-        <div
-          className={
-            coherent
-              ? 'flex-shrink-0 rounded-b-2xl overflow-hidden bg-background-default border-t border-border-subtle/30'
-              : `mx-4 mb-4 rounded-2xl overflow-hidden flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`
-          }
-        >
-          <ChatInput
-            sessionId={sessionId}
-            handleSubmit={handleFormSubmit}
-            chatState={chatState}
-            setChatState={setChatState}
-            onStop={stopStreaming}
-            commandHistory={commandHistory}
-            initialValue={initialPrompt}
-            setView={setView}
-            totalTokens={tokenState?.totalTokens ?? session?.total_tokens ?? undefined}
-            accumulatedInputTokens={
-              tokenState?.accumulatedInputTokens ?? session?.accumulated_input_tokens ?? undefined
+        {!isCleanConversation && (
+          <div
+            className={
+              coherent
+                ? 'flex-shrink-0 px-4 sm:px-6 pb-4 pt-2 bg-background-default'
+                : `px-4 sm:px-6 pb-4 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`
             }
-            accumulatedOutputTokens={
-              tokenState?.accumulatedOutputTokens ?? session?.accumulated_output_tokens ?? undefined
-            }
-            droppedFiles={droppedFiles}
-            onFilesProcessed={() => setDroppedFiles([])} // Clear dropped files after processing
-            messages={messages}
-            disableAnimation={disableAnimation}
-            sessionCosts={sessionCosts}
-            workflow={workflow}
-            workflowAccepted={!hasNotAcceptedWorkflow}
-            initialPrompt={initialPrompt}
-            toolCount={toolCount || 0}
-            compactPicker={compactPicker}
-            supportsVisionOverride={sessionSupportsVision ?? undefined}
-            {...customChatInputProps}
-          />
-        </div>
+          >
+            {renderChatInput()}
+          </div>
+        )}
       </MainPanelLayout>
 
       {workflow && (

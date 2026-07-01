@@ -1,0 +1,102 @@
+import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import ToolCallWithResponse, { summarizeToolCall } from './ToolCallWithResponse';
+import type { ToolRequestMessageContent } from '../types/message';
+
+describe('summarizeToolCall', () => {
+  it('summarizes file editing tools as natural reading and editing actions', () => {
+    expect(
+      summarizeToolCall({
+        name: 'developer__text_editor',
+        arguments: { command: 'view', path: '/Users/wgu/Desktop/BioRouter/package.json' },
+      })
+    ).toBe('Reading package.json');
+
+    expect(
+      summarizeToolCall({
+        name: 'developer__text_editor',
+        arguments: { command: 'str_replace', path: 'ui/desktop/src/components/ChatInput.tsx' },
+      })
+    ).toBe('Editing ChatInput.tsx');
+  });
+
+  it('summarizes shell and browser-style tools without exposing raw parameter boxes', () => {
+    expect(
+      summarizeToolCall({
+        name: 'developer__exec_command',
+        arguments: { cmd: 'npm run typecheck' },
+      })
+    ).toBe('Running npm run typecheck');
+
+    expect(
+      summarizeToolCall({
+        name: 'browser__screenshot',
+        arguments: { fullPage: false },
+      })
+    ).toBe('Capturing a screenshot');
+  });
+
+  it('summarizes search and unknown MCP tools using the most helpful visible target', () => {
+    expect(
+      summarizeToolCall({
+        name: 'web__search_query',
+        arguments: { search_query: [{ q: 'BioRouter agent drafter guardrails' }] },
+      })
+    ).toBe('Searching for BioRouter agent drafter guardrails');
+
+    expect(
+      summarizeToolCall({
+        name: 'ucsfomopagent__cohort_lookup',
+        arguments: { cohort_id: 42, table: 'condition_occurrence' },
+      })
+    ).toBe('Cohort Lookup with cohort_id, table');
+  });
+
+  it('summarizes multi-step tool graphs as coordinated work', () => {
+    expect(
+      summarizeToolCall({
+        name: 'multi_tool_use__execute_code',
+        arguments: {
+          tool_graph: [
+            { tool: 'read', description: 'Read the manifest', depends_on: [] },
+            { tool: 'search', description: 'Find matching routes', depends_on: [0] },
+            { tool: 'edit', description: 'Patch the UI', depends_on: [1] },
+          ],
+        },
+      })
+    ).toBe('Coordinating 3 tool steps');
+  });
+
+  it('renders the friendly summary before raw details and reveals details on demand', () => {
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-1',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'developer__text_editor',
+          arguments: { command: 'view', path: '/Users/wgu/Desktop/BioRouter/package.json' },
+        },
+      },
+    };
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        isStreamingMessage={false}
+      />
+    );
+
+    expect(screen.getByText(/Reading package\.json/)).toBeInTheDocument();
+    expect(screen.queryByText('command')).not.toBeInTheDocument();
+    expect(screen.queryByText('/Users/wgu/Desktop/BioRouter/package.json')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText(/Reading package\.json/).closest('button') as HTMLElement);
+    fireEvent.click(screen.getByText('View tool details').closest('button') as HTMLElement);
+
+    expect(screen.getByText('command')).toBeInTheDocument();
+    expect(screen.getByText('view')).toBeInTheDocument();
+    expect(screen.getByText('/Users/wgu/Desktop/BioRouter/package.json')).toBeInTheDocument();
+  });
+});
