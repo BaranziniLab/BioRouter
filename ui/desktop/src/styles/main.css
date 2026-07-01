@@ -374,6 +374,52 @@
   animation: fade-slide-up 0.15s ease-out forwards;
 }
 
+.biorouter-sidebar-depth {
+  position: relative;
+  box-shadow: 8px 0 28px -26px rgba(32, 25, 15, 0.42);
+}
+
+.biorouter-sidebar-depth::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 1px;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(32, 25, 15, 0.08) 12%,
+    rgba(32, 25, 15, 0.1) 78%,
+    transparent 100%
+  );
+}
+
+.dark .biorouter-sidebar-depth {
+  box-shadow: 8px 0 28px -24px rgba(0, 0, 0, 0.55);
+}
+
+.dark .biorouter-sidebar-depth::after {
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    rgba(255, 255, 255, 0.06) 12%,
+    rgba(255, 255, 255, 0.08) 78%,
+    transparent 100%
+  );
+}
+
+@media (min-width: 768px) {
+  .biorouter-sidebar-inset-depth {
+    box-shadow: inset 12px 0 28px -30px rgba(32, 25, 15, 0.34);
+  }
+
+  .dark .biorouter-sidebar-inset-depth {
+    box-shadow: inset 12px 0 28px -28px rgba(0, 0, 0, 0.58);
+  }
+}
+
 /* Force scrollbars to be visible */
 [data-radix-scroll-area-viewport] {
   scrollbar-width: auto !important;

@@ -233,7 +233,7 @@ function Sidebar({
         <div
           data-sidebar="sidebar"
           data-slot="sidebar-inner"
-          className="bg-sidebar flex h-full w-full flex-col overflow-hidden group-data-[variant=floating]:rounded-2xl group-data-[variant=floating]:border"
+          className="biorouter-sidebar-depth bg-sidebar flex h-full w-full flex-col overflow-hidden group-data-[variant=floating]:rounded-2xl group-data-[variant=floating]:border"
         >
           {children}
         </div>
@@ -294,7 +294,7 @@ function SidebarInset({ className, ...props }: React.ComponentProps<'main'>) {
     <main
       data-slot="sidebar-inset"
       className={cn(
-        'bg-background relative flex w-full flex-1 flex-col min-w-0',
+        'biorouter-sidebar-inset-depth bg-background relative flex w-full flex-1 flex-col min-w-0',
         // For inset variant (used in the app)
         'md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm',
         // For offcanvas variant - ensure content doesn't go under sidebar
