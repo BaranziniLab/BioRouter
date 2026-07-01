@@ -409,6 +409,150 @@
       "download": "https://github.com/BaranziniLab/SingleCellOmicsAgent/releases/download/v0.1.0-brxt/singlecellomicsagent.brxt",
       "filename": "singlecellomicsagent.brxt",
       "license": "Apache-2.0"
+    },
+    {
+      "id": "opentronsagent",
+      "name": "OpentronsAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP adapter for Opentrons robot/run APIs, protocol metadata review, simulation planning, and guarded local Opentrons command execution.",
+      "tags": [
+        "MCP",
+        "Opentrons",
+        "Robotics",
+        "Protocols",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/OpentronsAgent",
+      "download": "https://github.com/BaranziniLab/OpentronsAgent/releases/download/v0.1.0-brxt/opentronsagent.brxt",
+      "filename": "opentronsagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "ginkgocloudlabagent",
+      "name": "GinkgoCloudLabAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP adapter for Ginkgo-style cloud lab project, run, sample, and protocol metadata with guarded authenticated API calls.",
+      "tags": [
+        "MCP",
+        "Ginkgo",
+        "Cloud Lab",
+        "Automation",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/GinkgoCloudLabAgent",
+      "download": "https://github.com/BaranziniLab/GinkgoCloudLabAgent/releases/download/v0.1.0-brxt/ginkgocloudlabagent.brxt",
+      "filename": "ginkgocloudlabagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "lamindbagent",
+      "name": "LaminDBAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP adapter for LaminDB instance metadata, datasets, artifacts, collections, and guarded API/CLI planning for scientific data registries.",
+      "tags": [
+        "MCP",
+        "LaminDB",
+        "Data Registry",
+        "Lineage",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/LaminDBAgent",
+      "download": "https://github.com/BaranziniLab/LaminDBAgent/releases/download/v0.1.0-brxt/lamindbagent.brxt",
+      "filename": "lamindbagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "cellxgenecensusagent",
+      "name": "CellxGeneCensusAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP adapter for CELLxGENE Census dataset and cell metadata discovery, with guarded API calls for single-cell atlas review.",
+      "tags": [
+        "MCP",
+        "CELLxGENE",
+        "Single-cell",
+        "Atlas",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/CellxGeneCensusAgent",
+      "download": "https://github.com/BaranziniLab/CellxGeneCensusAgent/releases/download/v0.1.0-brxt/cellxgenecensusagent.brxt",
+      "filename": "cellxgenecensusagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "depmapagent",
+      "name": "DepMapAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP adapter for DepMap portal/API metadata, datasets, cell lines, genes, compounds, and cancer dependency evidence review.",
+      "tags": [
+        "MCP",
+        "DepMap",
+        "Cancer",
+        "Dependencies",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/DepMapAgent",
+      "download": "https://github.com/BaranziniLab/DepMapAgent/releases/download/v0.1.0-brxt/depmapagent.brxt",
+      "filename": "depmapagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "primekgagent",
+      "name": "PrimeKGAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP adapter for PrimeKG-style biomedical knowledge graph files and APIs, with guarded metadata lookup and graph-resource summaries.",
+      "tags": [
+        "MCP",
+        "PrimeKG",
+        "Knowledge Graph",
+        "Biomedical",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/PrimeKGAgent",
+      "download": "https://github.com/BaranziniLab/PrimeKGAgent/releases/download/v0.1.0-brxt/primekgagent.brxt",
+      "filename": "primekgagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "zoteroagent",
+      "name": "ZoteroAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP adapter for Zotero libraries, collections, items, tags, and citation metadata with read-first and mutation-gated API access.",
+      "tags": [
+        "MCP",
+        "Zotero",
+        "Citations",
+        "Library",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/ZoteroAgent",
+      "download": "https://github.com/BaranziniLab/ZoteroAgent/releases/download/v0.1.0-brxt/zoteroagent.brxt",
+      "filename": "zoteroagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "markitdownagent",
+      "name": "MarkItDownAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP helper for MarkItDown-style document-to-Markdown conversion planning, status checks, and guarded local conversion commands.",
+      "tags": [
+        "MCP",
+        "MarkItDown",
+        "Documents",
+        "Markdown",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/MarkItDownAgent",
+      "download": "https://github.com/BaranziniLab/MarkItDownAgent/releases/download/v0.1.0-brxt/markitdownagent.brxt",
+      "filename": "markitdownagent.brxt",
+      "license": "Apache-2.0"
     }
   ],
   "skills": [
