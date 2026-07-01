@@ -245,7 +245,7 @@ function ToolCallExpandable({
     <div className={className}>
       <Button
         onClick={toggleExpand}
-        className="group h-6 min-h-0 max-w-full justify-start px-1.5 py-0 text-left transition-colors rounded-md hover:bg-transparent focus-visible:bg-transparent"
+        className="group h-6 min-h-0 max-w-full justify-start !px-0 py-0 text-left transition-colors rounded-md hover:bg-transparent focus-visible:bg-transparent"
         variant="ghost"
         size="xs"
       >
