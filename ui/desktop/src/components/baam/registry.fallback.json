@@ -1749,6 +1749,225 @@
       "license": "Apache-2.0"
     },
     {
+      "id": "autoskill-workflow-discovery",
+      "name": "Autoskill Workflow Discovery",
+      "category": "Core",
+      "type": "User-invocable · /autoskill-workflow-discovery",
+      "description": "Detects repeated workflows and drafts native BioRouter skills, hooks, checklist updates, or extension plans.",
+      "tags": [
+        "Skills",
+        "Hooks",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "autoskill-workflow-discovery",
+        "skill",
+        "creation",
+        "hooks",
+        "workflow",
+        "discovery",
+        "repeated",
+        "work",
+        "guardrails",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-autoskill-workflow-discovery/autoskill-workflow-discovery.zip",
+      "filename": "autoskill-workflow-discovery.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "arbor-optimization",
+      "name": "Arbor Optimization",
+      "category": "Core",
+      "type": "User-invocable · /arbor-optimization",
+      "description": "Runs evaluator-driven branch-and-prune exploration for improving research artifacts, prompts, analyses, and designs.",
+      "tags": [
+        "Optimization",
+        "Rubrics",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "arbor-optimization",
+        "evaluator",
+        "optimization",
+        "branch",
+        "prune",
+        "rubric",
+        "hypothesis",
+        "tree",
+        "alternatives",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-arbor-optimization/arbor-optimization.zip",
+      "filename": "arbor-optimization.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "hugging-science-resource-discovery",
+      "name": "Hugging Science Resource Discovery",
+      "category": "Core",
+      "type": "User-invocable · /hugging-science-resource-discovery",
+      "description": "Finds and evaluates Hugging Face scientific models, datasets, Spaces, and papers with license and provenance checks.",
+      "tags": [
+        "Hugging Face",
+        "Models",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "hugging-science-resource-discovery",
+        "hugging",
+        "face",
+        "models",
+        "datasets",
+        "spaces",
+        "model",
+        "cards",
+        "benchmark",
+        "license",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-hugging-science-resource-discovery/hugging-science-resource-discovery.zip",
+      "filename": "hugging-science-resource-discovery.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "molecular-dynamics",
+      "name": "Molecular Dynamics",
+      "category": "Core",
+      "type": "User-invocable · /molecular-dynamics",
+      "description": "Plans MD setup and trajectory analysis with OpenMM, GROMACS, AmberTools, MDAnalysis, MDTraj, and reproducibility checks.",
+      "tags": [
+        "MD",
+        "OpenMM",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "molecular-dynamics",
+        "openmm",
+        "gromacs",
+        "ambertools",
+        "mdanalysis",
+        "mdtraj",
+        "trajectory",
+        "force",
+        "fields",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-molecular-dynamics/molecular-dynamics.zip",
+      "filename": "molecular-dynamics.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "general-time-series-forecasting",
+      "name": "General Time-Series Forecasting",
+      "category": "Core",
+      "type": "User-invocable · /general-time-series-forecasting",
+      "description": "Plans non-omics forecasting with classical models, ML, foundation models, backtesting, leakage checks, and uncertainty.",
+      "tags": [
+        "Forecasting",
+        "Backtests",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "general-time-series-forecasting",
+        "arima",
+        "prophet",
+        "sktime",
+        "statsforecast",
+        "backtesting",
+        "leakage",
+        "uncertainty",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-general-time-series-forecasting/general-time-series-forecasting.zip",
+      "filename": "general-time-series-forecasting.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "bids-neuroimaging",
+      "name": "BIDS Neuroimaging",
+      "category": "Core",
+      "type": "User-invocable · /bids-neuroimaging",
+      "description": "Audits BIDS neuroimaging datasets, derivatives, validation, metadata, and reproducible preprocessing readiness.",
+      "tags": [
+        "BIDS",
+        "Neuroimaging",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "bids-neuroimaging",
+        "bids",
+        "fmri",
+        "mri",
+        "eeg",
+        "meg",
+        "ieeg",
+        "dicom",
+        "fmriprep",
+        "bids-validator",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-bids-neuroimaging/bids-neuroimaging.zip",
+      "filename": "bids-neuroimaging.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "clinical-ai-modeling",
+      "name": "Clinical AI Modeling",
+      "category": "Core",
+      "type": "User-invocable · /clinical-ai-modeling",
+      "description": "Plans clinical AI modeling workflows with EHR cohorts, validation, bias checks, calibration, safety, and no-PHI handling.",
+      "tags": [
+        "Clinical AI",
+        "Validation",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "clinical-ai-modeling",
+        "ehr",
+        "pyhealth",
+        "clinical",
+        "prediction",
+        "calibration",
+        "bias",
+        "fairness",
+        "no",
+        "phi",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clinical-ai-modeling/clinical-ai-modeling.zip",
+      "filename": "clinical-ai-modeling.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "computational-fluid-dynamics",
+      "name": "Computational Fluid Dynamics",
+      "category": "Core",
+      "type": "User-invocable · /computational-fluid-dynamics",
+      "description": "Plans CFD workflows with meshes, boundary conditions, turbulence models, solver validation, and convergence checks.",
+      "tags": [
+        "CFD",
+        "OpenFOAM",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "computational-fluid-dynamics",
+        "cfd",
+        "fluid",
+        "dynamics",
+        "navier",
+        "stokes",
+        "openfoam",
+        "mesh",
+        "turbulence",
+        "convergence",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-computational-fluid-dynamics/computational-fluid-dynamics.zip",
+      "filename": "computational-fluid-dynamics.zip",
+      "license": "Apache-2.0"
+    },
+    {
       "id": "anti-ai-writing",
       "name": "Anti-AI Writing",
       "category": "Core",
