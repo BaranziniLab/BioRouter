@@ -361,13 +361,32 @@
 }
 
 /* Toast close button styling */
+.Toastify__toast-body {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  line-height: 1.35;
+  margin: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.Toastify__toast-icon {
+  align-self: center;
+  margin-top: 0;
+  margin-inline-end: 10px;
+}
+
 .Toastify__close-button {
   color: var(--text-prominent-inverse) !important;
   opacity: 0.7;
   align-self: center;
-  margin-top: 0;
-  margin-right: 8px;
+  margin: 0;
   padding: 4px;
+  position: absolute !important;
+  right: 12px !important;
+  top: 50% !important;
+  transform: translateY(-50%) !important;
   border-radius: 4px;
   transition:
     opacity 0.2s ease,
