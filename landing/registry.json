@@ -16,7 +16,8 @@
       ],
       "github": "https://github.com/BaranziniLab/CDWAgent",
       "download": "https://github.com/BaranziniLab/CDWAgent/releases/download/v0.5.1-brxt/cdwagent.brxt",
-      "filename": "cdwagent.brxt"
+      "filename": "cdwagent.brxt",
+      "license": "Apache-2.0"
     },
     {
       "id": "ucsfomopagent",
@@ -32,7 +33,8 @@
       ],
       "github": "https://github.com/BaranziniLab/UCSFOMOPAgent",
       "download": "https://github.com/BaranziniLab/UCSFOMOPAgent/releases/download/v0.2.0-brxt/ucsfomopagent.brxt",
-      "filename": "ucsfomopagent.brxt"
+      "filename": "ucsfomopagent.brxt",
+      "license": "Apache-2.0"
     },
     {
       "id": "playwrightagent",
@@ -47,7 +49,8 @@
       ],
       "github": "https://github.com/BaranziniLab/PlaywrightAgent",
       "download": "https://github.com/BaranziniLab/PlaywrightAgent/releases/download/v0.1.0-brxt/playwrightagent.brxt",
-      "filename": "playwrightagent.brxt"
+      "filename": "playwrightagent.brxt",
+      "license": "Apache-2.0"
     },
     {
       "id": "spokeagent-0.4.1",
@@ -62,7 +65,8 @@
       ],
       "github": "https://github.com/BaranziniLab/SPOKEAgent",
       "download": "https://github.com/BaranziniLab/SPOKEAgent/releases/download/v0.4.1/spokeagent-0.4.1.brxt",
-      "filename": "spokeagent-0.4.1.brxt"
+      "filename": "spokeagent-0.4.1.brxt",
+      "license": "Apache-2.0"
     },
     {
       "id": "codegraphagent",
@@ -78,7 +82,8 @@
       ],
       "github": "https://github.com/Broccolito/CodeGraphAgent",
       "download": "https://github.com/Broccolito/CodeGraphAgent/releases/download/v0.1.0/codegraphagent.brxt",
-      "filename": "codegraphagent.brxt"
+      "filename": "codegraphagent.brxt",
+      "license": "Apache-2.0"
     },
     {
       "id": "bioroffice",
@@ -96,7 +101,170 @@
       ],
       "github": "https://github.com/Broccolito/BiorOffice",
       "download": "https://github.com/Broccolito/BiorOffice/releases/download/v1.0.0/bioroffice.brxt",
-      "filename": "bioroffice.brxt"
+      "filename": "bioroffice.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "benchlingagent",
+      "name": "BenchlingAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "Read-only and confirmation-gated MCP access to Benchling projects, registry records, notebook entries, and assay metadata for scientific workflow review.",
+      "tags": [
+        "MCP",
+        "Benchling",
+        "ELN",
+        "Registry",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/BenchlingAgent",
+      "download": "https://github.com/BaranziniLab/BenchlingAgent/releases/download/v0.1.0-brxt/benchlingagent.brxt",
+      "filename": "benchlingagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "dnanexusagent",
+      "name": "DNAnexusAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP access to DNAnexus project, file, app, workflow, and job metadata with guarded API calls for cloud bioinformatics runs.",
+      "tags": [
+        "MCP",
+        "DNAnexus",
+        "Cloud",
+        "Workflows",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/DNAnexusAgent",
+      "download": "https://github.com/BaranziniLab/DNAnexusAgent/releases/download/v0.1.0-brxt/dnanexusagent.brxt",
+      "filename": "dnanexusagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "latchbioagent",
+      "name": "LatchBioAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP access to LatchBio workspace, workflow, file, and execution metadata with guarded API request helpers for reproducible computational biology workflows.",
+      "tags": [
+        "MCP",
+        "LatchBio",
+        "Workflow",
+        "Compute",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/LatchBioAgent",
+      "download": "https://github.com/BaranziniLab/LatchBioAgent/releases/download/v0.1.0-brxt/latchbioagent.brxt",
+      "filename": "latchbioagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "labarchivesagent",
+      "name": "LabArchivesAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP access to LabArchives electronic lab notebook metadata and entries, with read-first notebook inspection and confirmation-gated API requests.",
+      "tags": [
+        "MCP",
+        "LabArchives",
+        "ELN",
+        "Notebook",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/LabArchivesAgent",
+      "download": "https://github.com/BaranziniLab/LabArchivesAgent/releases/download/v0.1.0-brxt/labarchivesagent.brxt",
+      "filename": "labarchivesagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "omeroagent",
+      "name": "OMEROAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP access pattern for OMERO image repositories, project/dataset/image metadata, and web/API endpoint inspection for microscopy data review.",
+      "tags": [
+        "MCP",
+        "OMERO",
+        "Imaging",
+        "Microscopy",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/OMEROAgent",
+      "download": "https://github.com/BaranziniLab/OMEROAgent/releases/download/v0.1.0-brxt/omeroagent.brxt",
+      "filename": "omeroagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "protocolsioagent",
+      "name": "ProtocolsIOAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP access to Protocols.io public and authenticated protocol metadata for method discovery, citation, and reproducible protocol review.",
+      "tags": [
+        "MCP",
+        "Protocols.io",
+        "Methods",
+        "Protocols",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/ProtocolsIOAgent",
+      "download": "https://github.com/BaranziniLab/ProtocolsIOAgent/releases/download/v0.1.0-brxt/protocolsioagent.brxt",
+      "filename": "protocolsioagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "opennotebookagent",
+      "name": "OpenNotebookAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP adapter for self-hosted or lab-hosted open-notebook systems, exposing guarded notebook entry search, retrieval, and provenance checks.",
+      "tags": [
+        "MCP",
+        "Open Notebook",
+        "Provenance",
+        "Notebook",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/OpenNotebookAgent",
+      "download": "https://github.com/BaranziniLab/OpenNotebookAgent/releases/download/v0.1.0-brxt/opennotebookagent.brxt",
+      "filename": "opennotebookagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "modalagent",
+      "name": "ModalAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP helper for Modal compute projects, deployment planning, environment validation, and guarded command/API invocation for cloud scientific jobs.",
+      "tags": [
+        "MCP",
+        "Modal",
+        "Compute",
+        "Jobs",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/ModalAgent",
+      "download": "https://github.com/BaranziniLab/ModalAgent/releases/download/v0.1.0-brxt/modalagent.brxt",
+      "filename": "modalagent.brxt",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "idcagent",
+      "name": "IDCAgent",
+      "organization": "BaranziniLab · BRXT",
+      "version": "v0.1.0",
+      "description": "MCP access to NCI Imaging Data Commons metadata endpoints for cancer imaging cohort discovery, DICOM collection review, and reproducible image-data queries.",
+      "tags": [
+        "MCP",
+        "IDC",
+        "Cancer Imaging",
+        "DICOM",
+        "Apache-2.0"
+      ],
+      "github": "https://github.com/BaranziniLab/IDCAgent",
+      "download": "https://github.com/BaranziniLab/IDCAgent/releases/download/v0.1.0-brxt/idcagent.brxt",
+      "filename": "idcagent.brxt",
+      "license": "Apache-2.0"
     }
   ],
   "skills": [
@@ -123,7 +291,223 @@
         "pubmed"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-scientific-research/scientific-research.zip",
-      "filename": "scientific-research.zip"
+      "filename": "scientific-research.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "empirical-research-router",
+      "name": "Empirical Research Router",
+      "category": "Core",
+      "type": "User-invocable · /empirical-research-router",
+      "description": "Stage-gated empirical research workflow: design register, data audit, identification, estimation, robustness, replication, and reporting.",
+      "tags": [
+        "Empirical",
+        "Research",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "empirical-research-router",
+        "empirical",
+        "research",
+        "causal",
+        "inference",
+        "econometrics",
+        "reproducibility",
+        "design",
+        "register",
+        "replication",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-empirical-research-router/empirical-research-router.zip",
+      "filename": "empirical-research-router.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "causal-identification-gates",
+      "name": "Causal Identification Gates",
+      "category": "Core",
+      "type": "User-invocable · /causal-identification-gates",
+      "description": "Audits whether RCT, observational, IV, RDD, DiD, synthetic-control, matching, DML, or survival designs support causal language.",
+      "tags": [
+        "Causal",
+        "Methods",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "causal-identification-gates",
+        "causal",
+        "inference",
+        "iv",
+        "rdd",
+        "did",
+        "synthetic",
+        "control",
+        "matching",
+        "dml",
+        "survival",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-causal-identification-gates/causal-identification-gates.zip",
+      "filename": "causal-identification-gates.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "replication-package-audit",
+      "name": "Replication Package Audit",
+      "category": "Core",
+      "type": "User-invocable · /replication-package-audit",
+      "description": "Checks research packages for clean-run reproducibility, relative paths, environment capture, seeds, logs, and table/figure mapping.",
+      "tags": [
+        "Reproducibility",
+        "Audit",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "replication-package-audit",
+        "reproducibility",
+        "package",
+        "relative",
+        "paths",
+        "seeds",
+        "logs",
+        "environment",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-replication-package-audit/replication-package-audit.zip",
+      "filename": "replication-package-audit.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "claim-evidence-integrity",
+      "name": "Claim Evidence Integrity",
+      "category": "Core",
+      "type": "User-invocable · /claim-evidence-integrity",
+      "description": "Verifies that manuscript claims, numbers, citations, figures, and tables are grounded in traceable evidence.",
+      "tags": [
+        "Claims",
+        "Evidence",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "claim-evidence-integrity",
+        "claims",
+        "evidence",
+        "manuscript",
+        "numbers",
+        "figures",
+        "tables",
+        "audit",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-claim-evidence-integrity/claim-evidence-integrity.zip",
+      "filename": "claim-evidence-integrity.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "citation-temporal-integrity",
+      "name": "Citation Temporal Integrity",
+      "category": "Core",
+      "type": "User-invocable · /citation-temporal-integrity",
+      "description": "Confirms citations are real, relevant, current enough for the claim, and temporally valid.",
+      "tags": [
+        "Citations",
+        "DOI",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "citation-temporal-integrity",
+        "citation",
+        "doi",
+        "pmid",
+        "openalex",
+        "pubmed",
+        "stale",
+        "claims",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-citation-temporal-integrity/citation-temporal-integrity.zip",
+      "filename": "citation-temporal-integrity.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "empirical-benchmark-harness",
+      "name": "Empirical Benchmark Harness",
+      "category": "Core",
+      "type": "User-invocable · /empirical-benchmark-harness",
+      "description": "Known-answer benchmark patterns for testing whether empirical-analysis agents avoid common causal and reproducibility failures.",
+      "tags": [
+        "Benchmarks",
+        "Eval",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "empirical-benchmark-harness",
+        "benchmark",
+        "eval",
+        "weak",
+        "iv",
+        "rdd",
+        "did",
+        "bad",
+        "controls",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-empirical-benchmark-harness/empirical-benchmark-harness.zip",
+      "filename": "empirical-benchmark-harness.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "scientific-artifacts",
+      "name": "Scientific Artifacts",
+      "category": "Core",
+      "type": "User-invocable · /scientific-artifacts",
+      "description": "Plans and verifies DOCX/PDF/PPTX/XLSX/LaTeX/scientific figure artifacts with source-to-exhibit mapping.",
+      "tags": [
+        "Documents",
+        "Slides",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "scientific-artifacts",
+        "docx",
+        "pdf",
+        "pptx",
+        "xlsx",
+        "latex",
+        "figures",
+        "slides",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-scientific-artifacts/scientific-artifacts.zip",
+      "filename": "scientific-artifacts.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "open-science-review",
+      "name": "Open Science Review",
+      "category": "Core",
+      "type": "User-invocable · /open-science-review",
+      "description": "Reviews data/code availability, reporting checklists, protocols, ethics/privacy notes, and open-science readiness.",
+      "tags": [
+        "Open Science",
+        "Checklist",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "open-science-review",
+        "prisma",
+        "consort",
+        "strobe",
+        "reporting",
+        "checklist",
+        "data",
+        "code",
+        "availability",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-open-science-review/open-science-review.zip",
+      "filename": "open-science-review.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "taste-skill",
@@ -147,7 +531,8 @@
         "anti-slop"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-taste-skill/taste-skill.zip",
-      "filename": "taste-skill.zip"
+      "filename": "taste-skill.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "anti-ai-writing",
@@ -160,7 +545,8 @@
       ],
       "keywords": [],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-anti-ai-writing/anti-ai-writing.zip",
-      "filename": "anti-ai-writing.zip"
+      "filename": "anti-ai-writing.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "ggplot-visualization",
@@ -174,7 +560,8 @@
       ],
       "keywords": [],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ggplot-visualization/ggplot-visualization.zip",
-      "filename": "ggplot-visualization.zip"
+      "filename": "ggplot-visualization.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "r-scripting",
@@ -188,7 +575,8 @@
       ],
       "keywords": [],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-r-scripting/r-scripting.zip",
-      "filename": "r-scripting.zip"
+      "filename": "r-scripting.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "python-scripting",
@@ -201,7 +589,8 @@
       ],
       "keywords": [],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-python-scripting/python-scripting.zip",
-      "filename": "python-scripting.zip"
+      "filename": "python-scripting.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "ralph",
@@ -215,7 +604,8 @@
       ],
       "keywords": [],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ralph/ralph.zip",
-      "filename": "ralph.zip"
+      "filename": "ralph.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "superpowers",
@@ -230,7 +620,8 @@
       ],
       "keywords": [],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-superpowers/superpowers.zip",
-      "filename": "superpowers.zip"
+      "filename": "superpowers.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "ucsf-hpc",
@@ -245,7 +636,8 @@
       ],
       "keywords": [],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ucsf-hpc/ucsf-hpc.zip",
-      "filename": "ucsf-hpc.zip"
+      "filename": "ucsf-hpc.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "code-review",
@@ -268,7 +660,8 @@
         "diff"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-code-review/code-review.zip",
-      "filename": "code-review.zip"
+      "filename": "code-review.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "code-simplifier",
@@ -288,7 +681,8 @@
         "clarity"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-code-simplifier/code-simplifier.zip",
-      "filename": "code-simplifier.zip"
+      "filename": "code-simplifier.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "commit-commands",
@@ -312,7 +706,8 @@
         "branches"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-commit-commands/commit-commands.zip",
-      "filename": "commit-commands.zip"
+      "filename": "commit-commands.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "skill-creator",
@@ -332,7 +727,8 @@
         "packaging"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-skill-creator/skill-creator.zip",
-      "filename": "skill-creator.zip"
+      "filename": "skill-creator.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "hookify",
@@ -353,7 +749,8 @@
         "rules"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-hookify/hookify.zip",
-      "filename": "hookify.zip"
+      "filename": "hookify.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "code-modernization",
@@ -374,7 +771,8 @@
         "refactor"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-code-modernization/code-modernization.zip",
-      "filename": "code-modernization.zip"
+      "filename": "code-modernization.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "playground",
@@ -395,7 +793,8 @@
         "preview"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-playground/playground.zip",
-      "filename": "playground.zip"
+      "filename": "playground.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "frontend-design",
@@ -416,7 +815,8 @@
         "design"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-frontend-design/frontend-design.zip",
-      "filename": "frontend-design.zip"
+      "filename": "frontend-design.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "alignment",
@@ -436,7 +836,8 @@
         "foldseek"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-alignment/alignment.zip",
-      "filename": "alignment.zip"
+      "filename": "alignment.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "alignment-files",
@@ -456,7 +857,8 @@
         "bam"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-alignment-files/alignment-files.zip",
-      "filename": "alignment-files.zip"
+      "filename": "alignment-files.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "alternative-splicing",
@@ -476,7 +878,8 @@
         "isoforms"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-alternative-splicing/alternative-splicing.zip",
-      "filename": "alternative-splicing.zip"
+      "filename": "alternative-splicing.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "atac-seq",
@@ -496,7 +899,8 @@
         "chrombpnet"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-atac-seq/atac-seq.zip",
-      "filename": "atac-seq.zip"
+      "filename": "atac-seq.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "causal-genomics",
@@ -516,13 +920,14 @@
         "twas"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-causal-genomics/causal-genomics.zip",
-      "filename": "causal-genomics.zip"
+      "filename": "causal-genomics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "chemoinformatics",
       "name": "Chemoinformatics",
       "category": "Biomedical",
-      "type": "7 skills · auto-applied",
+      "type": "9 skills · auto-applied",
       "description": "Molecular structure handling, descriptors, and drug-discovery utilities.",
       "tags": [
         "RDKit",
@@ -534,7 +939,8 @@
         "smiles"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-chemoinformatics/chemoinformatics.zip",
-      "filename": "chemoinformatics.zip"
+      "filename": "chemoinformatics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "chip-seq",
@@ -552,7 +958,8 @@
         "chipseeker"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-chip-seq/chip-seq.zip",
-      "filename": "chip-seq.zip"
+      "filename": "chip-seq.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "clinical-biostatistics",
@@ -572,7 +979,8 @@
         "lme4"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clinical-biostatistics/clinical-biostatistics.zip",
-      "filename": "clinical-biostatistics.zip"
+      "filename": "clinical-biostatistics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "clinical-databases",
@@ -592,7 +1000,8 @@
         "gnomad"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clinical-databases/clinical-databases.zip",
-      "filename": "clinical-databases.zip"
+      "filename": "clinical-databases.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "clip-seq",
@@ -610,7 +1019,8 @@
         "eclip"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clip-seq/clip-seq.zip",
-      "filename": "clip-seq.zip"
+      "filename": "clip-seq.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "comparative-genomics",
@@ -628,7 +1038,8 @@
         "synteny"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-comparative-genomics/comparative-genomics.zip",
-      "filename": "comparative-genomics.zip"
+      "filename": "comparative-genomics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "copy-number",
@@ -647,7 +1058,8 @@
         "cnv"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-copy-number/copy-number.zip",
-      "filename": "copy-number.zip"
+      "filename": "copy-number.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "crispr-screens",
@@ -665,13 +1077,14 @@
         "screens"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-crispr-screens/crispr-screens.zip",
-      "filename": "crispr-screens.zip"
+      "filename": "crispr-screens.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "data-visualization",
       "name": "Data Visualization",
       "category": "Biomedical",
-      "type": "12 skills · auto-applied",
+      "type": "13 skills · auto-applied",
       "description": "Publication-quality plots: heatmaps, volcano, Manhattan, dimplots.",
       "tags": [
         "ggplot2",
@@ -685,13 +1098,14 @@
         "complexheatmap"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-data-visualization/data-visualization.zip",
-      "filename": "data-visualization.zip"
+      "filename": "data-visualization.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "database-access",
       "name": "Database Access",
       "category": "Biomedical",
-      "type": "11 skills · auto-applied",
+      "type": "12 skills · auto-applied",
       "description": "NCBI, UniProt, Ensembl, and biological database APIs.",
       "tags": [
         "Entrez",
@@ -705,13 +1119,14 @@
         "ensembl"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-database-access/database-access.zip",
-      "filename": "database-access.zip"
+      "filename": "database-access.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "differential-expression",
       "name": "Differential Expression",
       "category": "Biomedical",
-      "type": "6 skills · auto-applied",
+      "type": "7 skills · auto-applied",
       "description": "RNA-seq DE testing with DESeq2, edgeR, and limma-voom.",
       "tags": [
         "DESeq2",
@@ -725,7 +1140,8 @@
         "limma"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-differential-expression/differential-expression.zip",
-      "filename": "differential-expression.zip"
+      "filename": "differential-expression.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "ecological-genomics",
@@ -743,7 +1159,8 @@
         "popgen"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ecological-genomics/ecological-genomics.zip",
-      "filename": "ecological-genomics.zip"
+      "filename": "ecological-genomics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "epidemiological-genomics",
@@ -761,7 +1178,8 @@
         "pathogens"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-epidemiological-genomics/epidemiological-genomics.zip",
-      "filename": "epidemiological-genomics.zip"
+      "filename": "epidemiological-genomics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "epitranscriptomics",
@@ -780,7 +1198,8 @@
         "mods"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-epitranscriptomics/epitranscriptomics.zip",
-      "filename": "epitranscriptomics.zip"
+      "filename": "epitranscriptomics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "experimental-design",
@@ -798,7 +1217,8 @@
         "design"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-experimental-design/experimental-design.zip",
-      "filename": "experimental-design.zip"
+      "filename": "experimental-design.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "expression-matrix",
@@ -816,7 +1236,8 @@
         "mygene"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-expression-matrix/expression-matrix.zip",
-      "filename": "expression-matrix.zip"
+      "filename": "expression-matrix.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "flow-cytometry",
@@ -834,7 +1255,8 @@
         "flowsom"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-flow-cytometry/flow-cytometry.zip",
-      "filename": "flow-cytometry.zip"
+      "filename": "flow-cytometry.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "gene-regulatory-networks",
@@ -852,7 +1274,8 @@
         "grnboost2"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-gene-regulatory-networks/gene-regulatory-networks.zip",
-      "filename": "gene-regulatory-networks.zip"
+      "filename": "gene-regulatory-networks.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "genome-annotation",
@@ -870,7 +1293,8 @@
         "interproscan"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-annotation/genome-annotation.zip",
-      "filename": "genome-annotation.zip"
+      "filename": "genome-annotation.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "genome-assembly",
@@ -890,7 +1314,8 @@
         "quast"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-assembly/genome-assembly.zip",
-      "filename": "genome-assembly.zip"
+      "filename": "genome-assembly.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "genome-engineering",
@@ -908,7 +1333,8 @@
         "cas9"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-engineering/genome-engineering.zip",
-      "filename": "genome-engineering.zip"
+      "filename": "genome-engineering.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "genome-intervals",
@@ -926,7 +1352,8 @@
         "pybedtools"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-intervals/genome-intervals.zip",
-      "filename": "genome-intervals.zip"
+      "filename": "genome-intervals.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "hi-c-analysis",
@@ -944,7 +1371,8 @@
         "hic-pro"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-hi-c-analysis/hi-c-analysis.zip",
-      "filename": "hi-c-analysis.zip"
+      "filename": "hi-c-analysis.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "imaging-mass-cytometry",
@@ -962,7 +1390,8 @@
         "steinbock"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-imaging-mass-cytometry/imaging-mass-cytometry.zip",
-      "filename": "imaging-mass-cytometry.zip"
+      "filename": "imaging-mass-cytometry.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "immunoinformatics",
@@ -980,7 +1409,8 @@
         "hla"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-immunoinformatics/immunoinformatics.zip",
-      "filename": "immunoinformatics.zip"
+      "filename": "immunoinformatics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "liquid-biopsy",
@@ -998,7 +1428,8 @@
         "ichorcna"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-liquid-biopsy/liquid-biopsy.zip",
-      "filename": "liquid-biopsy.zip"
+      "filename": "liquid-biopsy.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "long-read-sequencing",
@@ -1018,13 +1449,14 @@
         "minimap2"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-long-read-sequencing/long-read-sequencing.zip",
-      "filename": "long-read-sequencing.zip"
+      "filename": "long-read-sequencing.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "machine-learning",
       "name": "Machine Learning",
       "category": "Biomedical",
-      "type": "6 skills · auto-applied",
+      "type": "8 skills · auto-applied",
       "description": "Biomarker discovery, model training, and cross-validation pipelines.",
       "tags": [
         "scikit-learn",
@@ -1036,7 +1468,8 @@
         "ml"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-machine-learning/machine-learning.zip",
-      "filename": "machine-learning.zip"
+      "filename": "machine-learning.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "metabolomics",
@@ -1054,7 +1487,8 @@
         "metaboanalyst"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-metabolomics/metabolomics.zip",
-      "filename": "metabolomics.zip"
+      "filename": "metabolomics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "metagenomics",
@@ -1072,7 +1506,8 @@
         "metaphlan"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-metagenomics/metagenomics.zip",
-      "filename": "metagenomics.zip"
+      "filename": "metagenomics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "methylation-analysis",
@@ -1090,7 +1525,8 @@
         "methylkit"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-methylation-analysis/methylation-analysis.zip",
-      "filename": "methylation-analysis.zip"
+      "filename": "methylation-analysis.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "microbiome",
@@ -1108,7 +1544,8 @@
         "dada2"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-microbiome/microbiome.zip",
-      "filename": "microbiome.zip"
+      "filename": "microbiome.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "multi-omics-integration",
@@ -1126,7 +1563,8 @@
         "diablo"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-multi-omics-integration/multi-omics-integration.zip",
-      "filename": "multi-omics-integration.zip"
+      "filename": "multi-omics-integration.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "pathway-analysis",
@@ -1144,7 +1582,8 @@
         "gsea"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-pathway-analysis/pathway-analysis.zip",
-      "filename": "pathway-analysis.zip"
+      "filename": "pathway-analysis.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "phasing-imputation",
@@ -1162,7 +1601,8 @@
         "beagle"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-phasing-imputation/phasing-imputation.zip",
-      "filename": "phasing-imputation.zip"
+      "filename": "phasing-imputation.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "phylogenetics",
@@ -1180,7 +1620,8 @@
         "beast"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-phylogenetics/phylogenetics.zip",
-      "filename": "phylogenetics.zip"
+      "filename": "phylogenetics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "population-genetics",
@@ -1198,7 +1639,8 @@
         "gwas"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-population-genetics/population-genetics.zip",
-      "filename": "population-genetics.zip"
+      "filename": "population-genetics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "primer-design",
@@ -1216,7 +1658,8 @@
         "qpcr"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-primer-design/primer-design.zip",
-      "filename": "primer-design.zip"
+      "filename": "primer-design.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "proteomics",
@@ -1234,7 +1677,8 @@
         "fragpipe"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-proteomics/proteomics.zip",
-      "filename": "proteomics.zip"
+      "filename": "proteomics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "read-alignment",
@@ -1252,7 +1696,8 @@
         "star"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-read-alignment/read-alignment.zip",
-      "filename": "read-alignment.zip"
+      "filename": "read-alignment.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "read-qc",
@@ -1272,7 +1717,8 @@
         "kraken2"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-read-qc/read-qc.zip",
-      "filename": "read-qc.zip"
+      "filename": "read-qc.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "reporting",
@@ -1290,7 +1736,8 @@
         "rmarkdown"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-reporting/reporting.zip",
-      "filename": "reporting.zip"
+      "filename": "reporting.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "restriction-analysis",
@@ -1308,7 +1755,8 @@
         "digestion"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-restriction-analysis/restriction-analysis.zip",
-      "filename": "restriction-analysis.zip"
+      "filename": "restriction-analysis.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "ribo-seq",
@@ -1326,7 +1774,8 @@
         "ribo-tish"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ribo-seq/ribo-seq.zip",
-      "filename": "ribo-seq.zip"
+      "filename": "ribo-seq.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "rna-quantification",
@@ -1344,7 +1793,8 @@
         "kallisto"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-rna-quantification/rna-quantification.zip",
-      "filename": "rna-quantification.zip"
+      "filename": "rna-quantification.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "rna-structure",
@@ -1362,7 +1812,8 @@
         "viennarna"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-rna-structure/rna-structure.zip",
-      "filename": "rna-structure.zip"
+      "filename": "rna-structure.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "sequence-io",
@@ -1380,7 +1831,8 @@
         "seqkit"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-sequence-io/sequence-io.zip",
-      "filename": "sequence-io.zip"
+      "filename": "sequence-io.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "sequence-manipulation",
@@ -1398,7 +1850,8 @@
         "emboss"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-sequence-manipulation/sequence-manipulation.zip",
-      "filename": "sequence-manipulation.zip"
+      "filename": "sequence-manipulation.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "single-cell",
@@ -1418,7 +1871,8 @@
         "scvi"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-single-cell/single-cell.zip",
-      "filename": "single-cell.zip"
+      "filename": "single-cell.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "small-rna-seq",
@@ -1436,7 +1890,8 @@
         "isomirs"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-small-rna-seq/small-rna-seq.zip",
-      "filename": "small-rna-seq.zip"
+      "filename": "small-rna-seq.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "spatial-transcriptomics",
@@ -1454,13 +1909,14 @@
         "squidpy"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-spatial-transcriptomics/spatial-transcriptomics.zip",
-      "filename": "spatial-transcriptomics.zip"
+      "filename": "spatial-transcriptomics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "structural-biology",
       "name": "Structural Biology",
       "category": "Biomedical",
-      "type": "6 skills · auto-applied",
+      "type": "8 skills · auto-applied",
       "description": "PDB parsing, AlphaFold, ESMFold, and structure analysis.",
       "tags": [
         "AlphaFold",
@@ -1472,7 +1928,8 @@
         "pymol"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-structural-biology/structural-biology.zip",
-      "filename": "structural-biology.zip"
+      "filename": "structural-biology.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "systems-biology",
@@ -1490,7 +1947,8 @@
         "fba"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-systems-biology/systems-biology.zip",
-      "filename": "systems-biology.zip"
+      "filename": "systems-biology.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "tcr-bcr-analysis",
@@ -1508,7 +1966,8 @@
         "scirpy"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-tcr-bcr-analysis/tcr-bcr-analysis.zip",
-      "filename": "tcr-bcr-analysis.zip"
+      "filename": "tcr-bcr-analysis.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "temporal-genomics",
@@ -1526,7 +1985,8 @@
         "jtk_cycle"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-temporal-genomics/temporal-genomics.zip",
-      "filename": "temporal-genomics.zip"
+      "filename": "temporal-genomics.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "variant-calling",
@@ -1546,13 +2006,14 @@
         "manta"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-variant-calling/variant-calling.zip",
-      "filename": "variant-calling.zip"
+      "filename": "variant-calling.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "workflow-management",
       "name": "Workflow Management",
       "category": "Biomedical",
-      "type": "4 skills · auto-applied",
+      "type": "5 skills · auto-applied",
       "description": "Snakemake, Nextflow, CWL, WDL pipeline scaffolding.",
       "tags": [
         "Snakemake",
@@ -1564,7 +2025,8 @@
         "nextflow"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-workflow-management/workflow-management.zip",
-      "filename": "workflow-management.zip"
+      "filename": "workflow-management.zip",
+      "license": "Apache-2.0"
     },
     {
       "id": "workflows",
@@ -1582,7 +2044,8 @@
         "end-to-end"
       ],
       "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-workflows/workflows.zip",
-      "filename": "workflows.zip"
+      "filename": "workflows.zip",
+      "license": "Apache-2.0"
     }
   ]
 }
