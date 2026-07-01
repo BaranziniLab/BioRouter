@@ -180,8 +180,12 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
         </div>
 
         {/* Scroll indicator */}
-        {showScrollIndicator && (
-          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 pointer-events-none transition-opacity duration-300 opacity-50 animate-bounce">
+        <div className="h-10 flex-shrink-0 bg-background-muted flex items-center justify-center">
+          <div
+            className={`pointer-events-none transition-opacity duration-300 ${
+              showScrollIndicator ? 'opacity-50 animate-bounce' : 'opacity-0'
+            }`}
+          >
             <div className="flex flex-col items-center gap-1 text-text-muted">
               <span className="text-xs">Scroll for more</span>
               <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -194,7 +198,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
               </svg>
             </div>
           </div>
-        )}
+        </div>
 
         {showSwitchModelModal && (
           <SwitchModelModal
