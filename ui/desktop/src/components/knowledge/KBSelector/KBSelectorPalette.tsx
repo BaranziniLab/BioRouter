@@ -185,7 +185,7 @@ export function KBSelectorPalette({ onClose }: Props) {
         </DialogHeader>
 
         <div className="px-6 py-4 border-b border-border-subtle">
-          <div className="flex items-center gap-2 rounded-xl border border-border-subtle bg-background-default px-3 py-2">
+          <div className="biorouter-modal-panel flex items-center gap-2 rounded-xl px-3 py-2">
             <Search className="h-4 w-4 text-text-muted" />
             <input
               data-testid="knowledge-kb-search"
@@ -234,7 +234,7 @@ export function KBSelectorPalette({ onClose }: Props) {
           </div>
 
           {draftMode && (
-            <div className="mt-4 rounded-xl border border-border-subtle bg-background-surface p-4">
+            <div className="biorouter-modal-panel mt-4 rounded-xl p-4">
               <div className="mb-2 text-sm font-medium">
                 {draftMode.kind === 'create'
                   ? 'Name your new knowledge base'
@@ -277,7 +277,7 @@ export function KBSelectorPalette({ onClose }: Props) {
 
         <div className="max-h-[420px] overflow-y-auto px-4 py-4">
           {filtered.length === 0 ? (
-            <div className="rounded-xl border border-border-subtle bg-background-muted px-4 py-10 text-center text-sm text-text-muted">
+            <div className="biorouter-modal-panel rounded-xl px-4 py-10 text-center text-sm text-text-muted">
               No knowledge bases match this search.
             </div>
           ) : (
@@ -290,10 +290,10 @@ export function KBSelectorPalette({ onClose }: Props) {
                 return (
                   <div
                     key={base.id}
-                    className={`flex items-center gap-3 rounded-xl border px-3 py-3 transition-all ${
+                    className={`biorouter-modal-row flex items-center gap-3 rounded-xl px-3 py-3 transition-all ${
                       isActive
-                        ? 'border-border-default bg-background-muted'
-                        : 'border-border-subtle bg-background-surface hover:border-border-default hover:bg-background-muted/50'
+                        ? '!border-border-default bg-background-muted shadow-sm'
+                        : 'hover:!border-border-default hover:bg-background-muted/50'
                     }`}
                   >
                     <button
@@ -334,7 +334,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                     </button>
 
                     <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-2 rounded-md border border-border-subtle px-2 py-1">
+                      <div className="flex items-center gap-2 rounded-md bg-background-default/70 px-2 py-1 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_55%,transparent)]">
                         <EyeOff className="h-3.5 w-3.5 text-text-muted" />
                         <Switch
                           checked={!hidden}

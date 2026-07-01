@@ -33,13 +33,10 @@ function splitFrontmatter(content: string): { frontmatter: string | null; body: 
 
 export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
   const { content, loading, error } = usePagePreview(kbId, node.path, previewSha);
-  const parsed = useMemo(
-    () => splitFrontmatter(content ?? ''),
-    [content]
-  );
+  const parsed = useMemo(() => splitFrontmatter(content ?? ''), [content]);
 
   return (
-    <div className="absolute top-12 right-4 z-10 flex max-h-[calc(100%-5rem)] w-[360px] flex-col overflow-hidden rounded-2xl border border-border-subtle bg-background-default/90 shadow-2xl backdrop-blur-md">
+    <div className="biorouter-popover-surface absolute top-12 right-4 z-10 flex max-h-[calc(100%-5rem)] w-[360px] flex-col overflow-hidden rounded-2xl bg-background-default/90 backdrop-blur-md">
       <div className="flex items-center justify-between px-4 py-3 border-b border-border-subtle">
         <div className="flex items-center gap-2 min-w-0">
           <span
@@ -48,9 +45,7 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
             style={{ background: nodeFill(node) }}
           />
           <div className="flex flex-col min-w-0">
-            <div className="text-sm font-medium truncate">
-              {prettyLabel(node.label, node.kind)}
-            </div>
+            <div className="text-sm font-medium truncate">{prettyLabel(node.label, node.kind)}</div>
             <div className="text-xs text-text-muted truncate">
               {node.kind}
               {node.credibility_tier ? ` · ${node.credibility_tier.replace('_', ' ')}` : ''}

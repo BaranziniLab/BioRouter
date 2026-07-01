@@ -140,7 +140,9 @@ export default function CreateEditWorkflowModal({
 
     // Build settings — only include if at least one value is set
     const settingsConfig =
-      settings?.biorouter_provider || settings?.biorouter_model || settings?.temperature !== undefined
+      settings?.biorouter_provider ||
+      settings?.biorouter_model ||
+      settings?.temperature !== undefined
         ? {
             biorouter_provider: settings?.biorouter_provider || undefined,
             biorouter_model: settings?.biorouter_model || undefined,
@@ -159,11 +161,12 @@ export default function CreateEditWorkflowModal({
       response: responseConfig,
       settings: settingsConfig,
       // Strip envs to avoid leaking secrets
-      extensions: workflowExtensions.length > 0
-        ? workflowExtensions.map((extension) =>
-            'envs' in extension ? { ...extension, envs: undefined } : extension
-          ) as ExtensionConfig[]
-        : undefined,
+      extensions:
+        workflowExtensions.length > 0
+          ? (workflowExtensions.map((extension) =>
+              'envs' in extension ? { ...extension, envs: undefined } : extension
+            ) as ExtensionConfig[])
+          : undefined,
     };
   }, [
     workflow,
@@ -367,12 +370,12 @@ export default function CreateEditWorkflowModal({
   // the overlay to the small chat window).
   return createPortal(
     <div
-      className="fixed inset-0 z-[400] flex items-center justify-center bg-black/50"
+      className="biorouter-modal-overlay fixed inset-0 z-[400] flex items-center justify-center"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose(false);
       }}
     >
-      <div className="bg-background-default border border-border-subtle rounded-lg w-[90vw] max-w-4xl h-[90vh] flex flex-col">
+      <div className="biorouter-modal-surface bg-background-default w-[90vw] max-w-4xl h-[90vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-5 border-b border-border-subtle flex-shrink-0">
           <div>
@@ -382,7 +385,7 @@ export default function CreateEditWorkflowModal({
             <p className="text-xs text-text-muted mt-0.5">
               {isCreateMode
                 ? 'Define agent behavior and capabilities for reusable chat sessions.'
-                : "Edit the workflow to change agent behavior."}{' '}
+                : 'Edit the workflow to change agent behavior.'}{' '}
               <a
                 href="http://biorouter.ucsf.edu/docs"
                 target="_blank"
@@ -414,7 +417,7 @@ export default function CreateEditWorkflowModal({
 
           {/* Deep Link Display */}
           {requiredFieldsAreFilled() && (
-            <div className="w-full p-4 bg-background-medium rounded-lg mt-6">
+            <div className="biorouter-modal-panel w-full p-4 rounded-lg mt-6">
               <div className="flex items-center justify-between mb-2">
                 <div className="text-sm text-text-muted">
                   Copy this link to share with friends or paste directly in Chrome to open

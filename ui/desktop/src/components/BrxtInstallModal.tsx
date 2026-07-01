@@ -1,19 +1,14 @@
 // ui/desktop/src/components/BrxtInstallModal.tsx
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Package } from './icons/app-icons';
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from './ui/dialog';
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog';
 import { Button } from './ui/button';
 import { BrxtEnvVar, BrxtManifest } from '../types/brxt';
 import { useConfig } from './ConfigContext';
 import { activateExtensionDefault } from './settings/extensions';
 import { upsertConfig } from '../api';
 import { toastService } from '../toasts';
+import { useEscapeKey } from '../hooks/useEscapeKey';
 
 interface EnvEntry {
   key: string;
@@ -47,6 +42,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
   const [showOptional, setShowOptional] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { addExtension } = useConfig();
+  useEscapeKey(true, onClose);
 
   const processFile = useCallback(async (fp: string) => {
     setError(null);
@@ -171,7 +167,9 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
       onInstalled();
       onClose();
     } catch {
-      setError('Extension installed but failed to register. Try adding it manually from the Extensions tab.');
+      setError(
+        'Extension installed but failed to register. Try adding it manually from the Extensions tab.'
+      );
       setIsInstalling(false);
     }
   };
@@ -198,14 +196,17 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
             {/* Drop zone */}
             <div
               className={[
-                'border rounded-xl p-10 text-center transition-colors cursor-pointer select-none',
+                'biorouter-modal-panel rounded-xl p-10 text-center transition-colors cursor-pointer select-none',
                 isDragging
-                  ? 'border-block-teal bg-block-teal/5'
+                  ? '!border-block-teal bg-block-teal/5'
                   : error
-                  ? 'border-border-danger bg-background-danger/10'
-                  : 'border-border-subtle bg-background-muted hover:bg-background-medium',
+                    ? '!border-border-danger bg-background-danger/10'
+                    : 'hover:bg-background-medium',
               ].join(' ')}
-              onDragOver={(e) => { e.preventDefault(); setIsDragging(true); }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setIsDragging(true);
+              }}
               onDragLeave={() => setIsDragging(false)}
               onDrop={handleDrop}
               onClick={() => fileInputRef.current?.click()}
@@ -248,7 +249,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
 
             {/* Manifest preview card */}
             {manifest && !error && (
-              <div className="bg-background-medium border border-border-subtle rounded-lg p-4">
+              <div className="biorouter-modal-panel rounded-xl p-4">
                 <p className="text-xs text-text-muted uppercase tracking-wide mb-2">
                   Detected from bundle
                 </p>
@@ -265,7 +266,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
                 </p>
                 <p className="text-sm text-text-default mt-2">{manifest.description}</p>
                 {skillsPreview.length > 0 && (
-                  <div className="mt-2 pt-2 border-t border-border-subtle">
+                  <div className="mt-2 pt-2 shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]">
                     <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-1">
                       Skills included
                     </p>
@@ -311,7 +312,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
                     </label>
                     <input
                       type={entry.secret ? 'password' : 'text'}
-                      className="w-full border border-border-subtle rounded-md px-3 py-2 text-sm bg-background-default focus:outline-none focus:ring-2 focus:ring-ring"
+                      className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
                       placeholder={entry.description}
                       value={entry.value}
                       onChange={(e) => setEnvValue(entry.key, e.target.value)}
@@ -344,7 +345,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
                         </label>
                         <input
                           type={entry.secret ? 'password' : 'text'}
-                          className="w-full border border-border-subtle rounded-md px-3 py-2 text-sm bg-background-muted focus:outline-none focus:ring-2 focus:ring-ring"
+                          className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
                           placeholder={entry.description}
                           value={entry.value}
                           onChange={(e) => setEnvValue(entry.key, e.target.value)}
@@ -366,7 +367,10 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
             <DialogFooter>
               <Button
                 variant="outline"
-                onClick={() => { setStep('drop'); setError(null); }}
+                onClick={() => {
+                  setStep('drop');
+                  setError(null);
+                }}
               >
                 ← Back
               </Button>

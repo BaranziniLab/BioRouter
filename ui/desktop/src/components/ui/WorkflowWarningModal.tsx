@@ -37,7 +37,7 @@ export function WorkflowWarningModal({
         <DialogOverlay />
         <DialogPrimitive.Content
           className={cn(
-            'bg-background-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border p-6 shadow-lg duration-200 sm:max-w-[80vw] max-h-[80vh] flex flex-col p-0'
+            'biorouter-modal-surface bg-background-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 duration-200 sm:max-w-[80vw] max-h-[80vh] flex flex-col p-0 overflow-hidden'
           )}
           onPointerDownOutside={(e) => e.preventDefault()}
           onEscapeKeyDown={(e) => e.preventDefault()}
@@ -55,13 +55,13 @@ export function WorkflowWarningModal({
 
           {hasSecurityWarnings && (
             <div className="px-6">
-              <div className="bg-background-warning/10 border border-border-warning/40 rounded-lg p-4">
+              <div className="rounded-xl border border-border-warning/40 bg-background-warning/10 p-4 shadow-sm">
                 <div className="flex items-start">
                   <div className="ml-3">
                     <div className="mt-2 text-sm text-text-warning">
                       <p>
-                        This workflow contains hidden characters that will be ignored for your safety,
-                        as they could be used for malicious purposes.
+                        This workflow contains hidden characters that will be ignored for your
+                        safety, as they could be used for malicious purposes.
                       </p>
                     </div>
                   </div>
@@ -71,7 +71,7 @@ export function WorkflowWarningModal({
           )}
 
           <div className="flex-1 overflow-y-auto p-6 pt-4">
-            <div className="bg-background-muted p-4 rounded-lg">
+            <div className="biorouter-modal-panel p-4 rounded-xl">
               <h3 className="font-medium mb-3 text-text-default">Workflow Preview:</h3>
               <div className="space-y-4">
                 {workflowDetails.title && (

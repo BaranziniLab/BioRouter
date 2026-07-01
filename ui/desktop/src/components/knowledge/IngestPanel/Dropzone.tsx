@@ -177,7 +177,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
                 setChooserOpen(false);
                 inputRef.current?.click();
               }}
-              className="rounded-2xl border border-border-subtle bg-background-surface px-4 py-4 text-left transition-colors hover:border-border-default hover:bg-background-default"
+              className="biorouter-modal-row rounded-2xl px-4 py-4 text-left transition-colors hover:!border-border-default hover:bg-background-default"
             >
               <FileStack className="h-5 w-5 text-text-muted" />
               <div className="mt-3 text-sm font-medium">Choose files</div>
@@ -193,7 +193,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
                 setChooserOpen(false);
                 void onPathPickRequested();
               }}
-              className="rounded-2xl border border-border-subtle bg-background-surface px-4 py-4 text-left transition-colors hover:border-border-default hover:bg-background-default"
+              className="biorouter-modal-row rounded-2xl px-4 py-4 text-left transition-colors hover:!border-border-default hover:bg-background-default"
             >
               <FolderTree className="h-5 w-5 text-text-muted" />
               <div className="mt-3 text-sm font-medium">Choose folder or archive</div>

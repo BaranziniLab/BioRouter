@@ -138,8 +138,8 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
     if (!isOpen || !session) return null;
 
     return (
-      <div className="fixed inset-0 z-[300] flex items-center justify-center bg-black/50">
-        <div className="bg-background-default border border-border-subtle rounded-lg p-6 w-[500px] max-w-[90vw]">
+      <div className="biorouter-modal-overlay fixed inset-0 z-[300] flex items-center justify-center">
+        <div className="biorouter-modal-surface bg-background-default p-6 w-[500px] max-w-[90vw]">
           <h3 className="text-lg font-medium text-text-default mb-4">Edit Session Description</h3>
 
           <div className="space-y-4">
@@ -149,7 +149,7 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
                 type="text"
                 value={description}
                 onChange={handleInputChange}
-                className="w-full p-3 border border-border-subtle rounded-lg bg-background-default text-text-default focus:outline-none focus:ring-2 focus:ring-border-strong"
+                className="biorouter-modal-panel w-full p-3 rounded-lg text-text-default focus:outline-none focus:ring-1 focus:ring-border-strong"
                 placeholder="Enter session description"
                 autoFocus
                 maxLength={200}

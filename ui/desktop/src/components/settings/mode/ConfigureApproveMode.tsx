@@ -1,5 +1,4 @@
 import React, { useEffect, useState } from 'react';
-import { Card } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { BioRouterMode, ModeSelectionItem } from './ModeSelectionItem';
 
@@ -49,8 +48,8 @@ export function ConfigureApproveMode({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/30">
-      <Card className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[440px] bg-background-default rounded-xl overflow-hidden p-[16px] pt-[24px] pb-0">
+    <div className="biorouter-modal-overlay fixed inset-0 z-[999]">
+      <div className="biorouter-modal-surface fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[440px] bg-background-default overflow-hidden p-[16px] pt-[24px] pb-0">
         <div className="px-4 pb-0 space-y-6">
           {/* Header */}
           <div className="flex">
@@ -100,7 +99,7 @@ export function ConfigureApproveMode({
             </Button>
           </div>
         </div>
-      </Card>
+      </div>
     </div>
   );
 }

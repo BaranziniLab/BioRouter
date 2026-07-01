@@ -337,7 +337,7 @@ export default function ExtensionModal({
           ) : (
             <div className="py-4 space-y-6">
               {formData.installation_notes && (
-                <div className="bg-background-medium border border-border-subtle rounded-lg p-4">
+                <div className="biorouter-modal-panel rounded-xl p-4">
                   <div className="flex items-start gap-2">
                     <Info className="h-5 w-5 text-text-info shrink-0 mt-0.5" />
                     <div>
@@ -366,7 +366,7 @@ export default function ExtensionModal({
                     )}
                   </div>
 
-                  <hr className="border-t border-border-subtle" />
+                  <div className="h-px shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]" />
 
                   <ExtensionTimeoutField
                     timeout={formData.timeout || 300}
@@ -385,7 +385,7 @@ export default function ExtensionModal({
                     submitAttempted={submitAttempted}
                   />
 
-                  <hr className="border-t border-border-subtle" />
+                  <div className="h-px shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]" />
 
                   {/* Command */}
                   <div>
@@ -409,7 +409,7 @@ export default function ExtensionModal({
 
               {!isBuiltin && formData.type === 'stdio' && (
                 <>
-                  <hr className="border-t border-border-subtle" />
+                  <div className="h-px shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]" />
 
                   <div>
                     <EnvVarsSection
@@ -427,7 +427,7 @@ export default function ExtensionModal({
               {!isBuiltin && formData.type === 'streamable_http' && (
                 <>
                   {/* Divider */}
-                  <hr className="border-t border-border-subtle" />
+                  <div className="h-px shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]" />
 
                   <div>
                     <HeadersSection

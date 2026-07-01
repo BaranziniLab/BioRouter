@@ -1,5 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { AlertTriangle, StopCircle, PauseCircle, RotateCcw, Zap, AlertCircle } from './icons/app-icons';
+import {
+  AlertTriangle,
+  StopCircle,
+  PauseCircle,
+  RotateCcw,
+  Zap,
+  AlertCircle,
+} from './icons/app-icons';
 import { Button } from './ui/button';
 import { InterruptionMatch } from '../utils/interruptionDetector';
 
@@ -124,7 +131,7 @@ export const InterruptionHandler: React.FC<InterruptionHandlerProps> = ({
 
   return (
     <div
-      className={`fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4 ${className}`}
+      className={`biorouter-modal-overlay fixed inset-0 flex items-center justify-center z-50 p-4 ${className}`}
     >
       <div
         className={`w-full max-w-md mx-auto transition-all duration-300 ease-out ${
@@ -133,7 +140,7 @@ export const InterruptionHandler: React.FC<InterruptionHandlerProps> = ({
       >
         {/* Main card */}
         <div
-          className={`rounded-xl border shadow-2xl backdrop-blur-xl ${colors.bg} ${colors.border}`}
+          className={`biorouter-modal-surface rounded-2xl backdrop-blur-xl ${colors.bg} ${colors.border}`}
         >
           {/* Header */}
           <div className="p-6 border-b border-current/10">

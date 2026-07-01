@@ -116,7 +116,10 @@ Add any other context about the problem here.
         labels: 'bug',
       });
 
-      window.open(`https://github.com/BaranziniLab/BioRouter/issues/new?${params.toString()}`, '_blank');
+      window.open(
+        `https://github.com/BaranziniLab/BioRouter/issues/new?${params.toString()}`,
+        '_blank'
+      );
       onClose();
     } catch {
       toastError({
@@ -145,12 +148,12 @@ Add any other context about the problem here.
   // modal is rendered inside the dashboard's transformed world layer.
   return createPortal(
     <div
-      className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50"
+      className="biorouter-modal-overlay fixed inset-0 flex items-center justify-center z-50"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div className="bg-background-default border border-border-subtle rounded-lg p-6 max-w-md mx-4">
+      <div className="biorouter-modal-surface bg-background-default p-6 max-w-md mx-4">
         <div className="flex items-start gap-3 mb-4">
           <AlertTriangle className="text-text-warning flex-shrink-0 mt-1" size={20} />
           <div>

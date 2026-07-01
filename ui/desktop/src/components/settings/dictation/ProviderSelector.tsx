@@ -83,7 +83,7 @@ export const ProviderSelector = ({ settings, onProviderChange }: ProviderSelecto
           </button>
 
           {showProviderDropdown && (
-            <div className="absolute right-0 mt-1 w-48 bg-background-default border border-border-default rounded-md shadow-lg z-10">
+            <div className="biorouter-popover-surface absolute right-0 mt-1 w-48 rounded-xl bg-background-default z-10 overflow-hidden">
               <button
                 onClick={() => handleProviderChange('openai')}
                 className={`w-full px-3 py-2 text-left text-sm transition-colors hover:bg-background-subtle text-text-default ${!VOICE_DICTATION_ELEVENLABS_ENABLED ? 'first:rounded-t-md last:rounded-b-md' : 'first:rounded-t-md'}`}

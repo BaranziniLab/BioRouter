@@ -57,6 +57,16 @@ const referenceInsert = (item: DisplayItem) => {
   }
 };
 
+export const getMentionInsertText = (item: DisplayItem) => {
+  const clientInsert = CLIENT_INSERT_COMMANDS[item.name];
+  if (clientInsert) return clientInsert.insert;
+
+  const insertedReference = referenceInsert(item);
+  if (insertedReference) return insertedReference;
+
+  return ['Builtin', 'Workflow'].includes(item.itemType) ? `/${item.name}` : item.extra;
+};
+
 export interface DisplayItem {
   name: string;
   extra: string;
@@ -499,17 +509,7 @@ const MentionPopover = forwardRef<
         selectFile: (index: number) => {
           const item = displayItems[index];
           if (!item) return;
-          const clientInsert = CLIENT_INSERT_COMMANDS[item.name];
-          if (clientInsert) {
-            onSelect(clientInsert.insert);
-          } else {
-            const insertedReference = referenceInsert(item);
-            if (insertedReference) {
-              onSelect(insertedReference);
-            } else {
-              onSelect(item.extra);
-            }
-          }
+          onSelect(getMentionInsertText(item));
           onClose();
         },
       }),
@@ -652,18 +652,7 @@ const MentionPopover = forwardRef<
       if (index >= 0 && index < displayItems.length) {
         onSelectedIndexChange(index);
         const displayItem = displayItems[index];
-        const clientInsert = CLIENT_INSERT_COMMANDS[displayItem.name];
-        if (clientInsert) {
-          onSelect(clientInsert.insert);
-        } else if (referenceInsert(displayItem)) {
-          onSelect(referenceInsert(displayItem) as string);
-        } else {
-          onSelect(
-            ['Builtin', 'Workflow'].includes(displayItem.itemType)
-              ? '/' + displayItem.name
-              : displayItem.extra
-          );
-        }
+        onSelect(getMentionInsertText(displayItem));
         onClose();
       }
     };
@@ -679,7 +668,7 @@ const MentionPopover = forwardRef<
     const menu = (
       <div
         ref={popoverRef}
-        className="fixed z-50 bg-background-default border border-border-subtle rounded-md shadow-lg max-h-72 overflow-hidden"
+        className="biorouter-popover-surface fixed z-50 bg-background-default rounded-xl max-h-72 overflow-hidden"
         style={{
           left: menuLeft,
           top: position.y - 8,

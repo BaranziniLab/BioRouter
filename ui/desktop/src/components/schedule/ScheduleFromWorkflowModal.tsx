@@ -73,8 +73,8 @@ export const ScheduleFromWorkflowModal: React.FC<ScheduleFromWorkflowModalProps>
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 bg-black/50 z-40 flex items-center justify-center p-4">
-      <Card className="w-full max-w-md bg-background-default shadow-xl rounded-xl z-50 flex flex-col">
+    <div className="biorouter-modal-overlay fixed inset-0 z-40 flex items-center justify-center p-4">
+      <Card className="biorouter-modal-surface w-full max-w-md bg-background-default z-50 flex flex-col">
         <div className="px-6 pt-6 pb-4">
           <h2 className="text-base font-semibold text-text-default">
             Create Schedule from Workflow
@@ -86,10 +86,8 @@ export const ScheduleFromWorkflowModal: React.FC<ScheduleFromWorkflowModalProps>
 
         <div className="px-6 py-4 space-y-4">
           <div>
-            <h3 className="text-sm font-medium text-text-default mb-2">
-              Workflow Details:
-            </h3>
-            <div className="bg-background-muted p-3 rounded-md">
+            <h3 className="text-sm font-medium text-text-default mb-2">Workflow Details:</h3>
+            <div className="biorouter-modal-panel p-3 rounded-md">
               <p className="text-sm font-medium text-text-default">{workflow.title}</p>
               <p className="text-xs text-text-muted mt-1">{workflow.description}</p>
             </div>
