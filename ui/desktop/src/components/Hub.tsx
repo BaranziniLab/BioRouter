@@ -72,7 +72,7 @@ export default function Hub({
         <SessionInsights />
       </div>
 
-      <div className="absolute inset-x-4 sm:inset-x-6 bottom-4 z-10 pointer-events-none">
+      <div className="absolute inset-x-4 sm:inset-x-6 bottom-6 z-10 pointer-events-none">
         <div className="biorouter-composer-view-transition w-full max-w-[760px] mx-auto pointer-events-auto">
           {isCreatingSession && (
             <div className="mb-2.5 pl-2 pointer-events-none">
