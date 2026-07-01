@@ -71,15 +71,15 @@ export default function Hub({
     <div className="relative flex flex-col h-full bg-background-muted">
       <div className="flex-1 flex flex-col mb-0 relative">
         <SessionInsights />
-        {isCreatingSession && (
-          <div className="absolute bottom-1 left-4 z-20 pointer-events-none">
-            <LoadingBioRouter chatState={ChatState.LoadingConversation} />
-          </div>
-        )}
       </div>
 
       <div className="absolute inset-x-4 sm:inset-x-6 bottom-4 z-10 pointer-events-none">
         <div className="w-full max-w-[760px] mx-auto pointer-events-auto">
+          {isCreatingSession && (
+            <div className="mb-2.5 pl-2 pointer-events-none">
+              <LoadingBioRouter chatState={ChatState.LoadingConversation} />
+            </div>
+          )}
           <ChatInput
             sessionId={null}
             handleSubmit={handleSubmit}

@@ -21,7 +21,7 @@
   --color-block-orange: #b85a32;
 
   /* Warm cream-gray neutral palette — calmer than the yellow-cast original */
-  --color-neutral-50:  #faf8f3;
+  --color-neutral-50: #faf8f3;
   --color-neutral-100: #f4f0e6;
   --color-neutral-200: #e8e1d2;
   --color-neutral-300: #d4cab6;
@@ -100,12 +100,8 @@
   --sidebar-ring: var(--border-default);
 
   /* custom shadow — flat by default; popover for elevated menus/modals */
-  --shadow-default:
-    0px 1px 3px 0px rgba(0, 0, 0, 0.06),
-    0px 0px 1px 0px rgba(0, 0, 0, 0.12);
-  --shadow-popover:
-    0px 8px 24px 0px rgba(32, 25, 15, 0.10),
-    0px 0px 1px 0px rgba(0, 0, 0, 0.15);
+  --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.06), 0px 0px 1px 0px rgba(0, 0, 0, 0.12);
+  --shadow-popover: 0px 8px 24px 0px rgba(32, 25, 15, 0.1), 0px 0px 1px 0px rgba(0, 0, 0, 0.15);
   --border-subtle: var(--color-neutral-200);
 }
 
@@ -156,12 +152,8 @@
   --sidebar-border: var(--border-default);
   --sidebar-ring: var(--border-default);
 
-  --shadow-default:
-    0px 1px 3px 0px rgba(0, 0, 0, 0.25),
-    0px 0px 1px 0px rgba(0, 0, 0, 0.35);
-  --shadow-popover:
-    0px 8px 24px 0px rgba(0, 0, 0, 0.4),
-    0px 0px 1px 0px rgba(0, 0, 0, 0.5);
+  --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
+  --shadow-popover: 0px 8px 24px 0px rgba(0, 0, 0, 0.4), 0px 0px 1px 0px rgba(0, 0, 0, 0.5);
   --border-subtle: var(--color-neutral-800);
 }
 
@@ -247,6 +239,33 @@
   to {
     opacity: 1;
     transform: translateY(0);
+  }
+}
+
+@keyframes biorouter-working-ring {
+  0% {
+    opacity: 0.5;
+    transform: scale(0.5);
+  }
+  70% {
+    opacity: 0;
+    transform: scale(1.55);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.55);
+  }
+}
+
+@keyframes biorouter-working-glow {
+  0%,
+  100% {
+    opacity: 0.2;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 0.55;
+    transform: scale(1.18);
   }
 }
 
@@ -752,17 +771,27 @@ em > code.bg-inline-code {
   display: block;
 }
 
-
 .katex-error {
   color: var(--text-danger);
 }
 
 @keyframes breathe {
-  0%, 100% { opacity: 1; }
-  50%      { opacity: 0.55; }
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.55;
+  }
 }
 
 @keyframes breathe-pulse {
-  0%   { transform: scale(1);   opacity: 0.45; }
-  100% { transform: scale(1.6); opacity: 0;    }
+  0% {
+    transform: scale(1);
+    opacity: 0.45;
+  }
+  100% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
 }

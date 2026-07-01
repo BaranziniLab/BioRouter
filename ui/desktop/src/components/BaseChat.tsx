@@ -549,6 +549,21 @@ function BaseChatContent({
     </div>
   );
 
+  const renderWorkingStatus = () => {
+    if (chatState === ChatState.Idle) return null;
+
+    return (
+      <div className="w-full max-w-[760px] mx-auto mb-2.5 pl-2 pointer-events-none">
+        <LoadingBioRouter
+          chatState={chatState}
+          message={
+            messages.length > 0 ? getThinkingMessage(messages[messages.length - 1]) : undefined
+          }
+        />
+      </div>
+    );
+  };
+
   if (sessionLoadError) {
     return (
       <div className="h-full flex flex-col min-h-0">
@@ -688,19 +703,6 @@ function BaseChatContent({
               ) : null}
             </ScrollArea>
           )}
-
-          {chatState !== ChatState.Idle && (
-            <div className="absolute bottom-1 left-2 z-20 pointer-events-none">
-              <LoadingBioRouter
-                chatState={chatState}
-                message={
-                  messages.length > 0
-                    ? getThinkingMessage(messages[messages.length - 1])
-                    : undefined
-                }
-              />
-            </div>
-          )}
         </div>
 
         {!isCleanConversation && (
@@ -711,6 +713,7 @@ function BaseChatContent({
                 : `px-4 sm:px-6 pb-4 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`
             }
           >
+            {renderWorkingStatus()}
             {renderChatInput()}
           </div>
         )}
