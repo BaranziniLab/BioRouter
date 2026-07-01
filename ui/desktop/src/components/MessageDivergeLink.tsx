@@ -48,7 +48,7 @@ export default function MessageDivergeLink({
           ? 'Branch this conversation into a new chat box (keeps full history)'
           : 'Branch this conversation into a new window (keeps full history)'
       }
-      className="flex font-mono items-center gap-1 text-xs text-text-muted hover:cursor-pointer hover:text-text-default transition-all duration-200 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 disabled:opacity-50 disabled:cursor-default"
+      className="flex font-sans items-center gap-1 text-sm text-text-muted hover:cursor-pointer hover:text-text-default transition-all duration-200 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 disabled:opacity-50 disabled:cursor-default"
     >
       <GitBranch className="h-3 w-3" />
       <span>{busy ? 'Diverging…' : 'Diverge'}</span>

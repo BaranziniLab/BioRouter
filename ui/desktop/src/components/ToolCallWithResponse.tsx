@@ -607,7 +607,7 @@ function ToolCallView({
         {liveDetail && (
           <span
             className={cn(
-              'block truncate text-xs text-text-muted/80',
+              'block truncate font-sans text-sm text-text-muted/80',
               loadingStatus === 'loading' && 'animate-pulse'
             )}
           >
@@ -739,7 +739,7 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
 
   return (
     <div className="px-4 py-2">
-      <pre className="font-mono text-xs text-text-muted whitespace-pre-wrap">{renderGraph()}</pre>
+      <pre className="font-sans text-sm text-text-muted whitespace-pre-wrap">{renderGraph()}</pre>
       {code && (
         <div className="border-t border-border-subtle -mx-4 mt-2">
           <ToolCallExpandable
@@ -748,7 +748,7 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
             }
             isStartExpanded={false}
           >
-            <pre className="font-mono text-xs text-text-muted whitespace-pre-wrap overflow-x-auto px-4 py-2">
+            <pre className="font-sans text-sm text-text-muted whitespace-pre-wrap overflow-x-auto px-4 py-2">
               {code}
             </pre>
           </ToolCallExpandable>

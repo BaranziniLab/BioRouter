@@ -83,7 +83,7 @@ export function ToolCallArguments({ args }: ToolCallArgumentsProps) {
       <div className="mb-2">
         <div className="flex flex-row font-sans text-sm">
           <span className="text-text-muted min-w-[140px]">{key}</span>
-          <pre className="whitespace-pre-wrap text-text-muted overflow-x-auto max-w-full">
+          <pre className="font-sans text-sm whitespace-pre-wrap text-text-muted overflow-x-auto max-w-full">
             {content}
           </pre>
         </div>

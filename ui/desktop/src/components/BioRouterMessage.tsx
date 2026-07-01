@@ -92,8 +92,7 @@ export default function BioRouterMessage({
   const toolRequests = getToolRequests(message);
   // Use the index passed by the parent list when available (O(1)); only fall
   // back to the O(n) scan when rendered standalone.
-  const messageIndex =
-    messageIndexProp ?? messages.findIndex((msg) => msg.id === message.id);
+  const messageIndex = messageIndexProp ?? messages.findIndex((msg) => msg.id === message.id);
   const toolConfirmationContent = getToolConfirmationContent(message);
   const elicitationContent = getElicitationContent(message);
   // Prefer the parent's single precomputed chain map; only recompute locally
@@ -175,7 +174,7 @@ export default function BioRouterMessage({
             {toolRequests.length === 0 && (
               <div className="relative flex justify-start">
                 {!isStreaming && (
-                  <div className="text-xs font-mono text-text-muted pt-1 transition-all duration-200 group-hover:-translate-y-4 group-hover:opacity-0">
+                  <div className="font-sans text-sm text-text-muted pt-1 transition-all duration-200 group-hover:-translate-y-4 group-hover:opacity-0">
                     {timestamp}
                   </div>
                 )}
@@ -208,7 +207,7 @@ export default function BioRouterMessage({
                   </div>
                 ))}
               </div>
-              <div className="text-xs text-text-muted transition-all duration-200 group-hover:-translate-y-4 group-hover:opacity-0 pt-1">
+              <div className="font-sans text-sm text-text-muted transition-all duration-200 group-hover:-translate-y-4 group-hover:opacity-0 pt-1">
                 {!isStreaming && !hideTimestamp && timestamp}
               </div>
             </div>
