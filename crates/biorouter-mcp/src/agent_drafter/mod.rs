@@ -679,8 +679,8 @@ impl AgentDrafterServer {
             .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
         let path = p.path.clone().unwrap_or_else(|| manifest.entry.clone());
 
-        if let Some(content) = p.content {
-            store.write_file(&p.id, &path, &content).map_err(internal)?;
+        let updated_content = if let Some(content) = p.content {
+            content
         } else if let (Some(old), Some(new)) = (p.old_str.as_ref(), p.new_str.as_ref()) {
             let current = store
                 .read_file(&p.id, &path)
@@ -691,14 +691,35 @@ impl AgentDrafterServer {
                     format!("old_str not found in {path}"),
                 ));
             }
-            let updated = current.replacen(old.as_str(), new.as_str(), 1);
-            store.write_file(&p.id, &path, &updated).map_err(internal)?;
+            current.replacen(old.as_str(), new.as_str(), 1)
         } else {
             return Err(err(
                 ErrorCode::INVALID_PARAMS,
                 "provide either `content` or both `old_str` and `new_str`",
             ));
+        };
+
+        if path == "manifest.json" {
+            let parsed: Manifest = serde_json::from_str(&updated_content).map_err(|e| {
+                err(
+                    ErrorCode::INVALID_PARAMS,
+                    format!("manifest.json must be valid Agent Drafter manifest JSON: {e}"),
+                )
+            })?;
+            if parsed.id != p.id {
+                return Err(err(
+                    ErrorCode::INVALID_PARAMS,
+                    format!(
+                        "manifest.json id '{}' must match the app id '{}'",
+                        parsed.id, p.id
+                    ),
+                ));
+            }
         }
+
+        store
+            .write_file(&p.id, &path, &updated_content)
+            .map_err(internal)?;
         // Editing sources invalidates the build.
         if path.starts_with("src/") {
             manifest.built_at = None;
@@ -706,7 +727,12 @@ impl AgentDrafterServer {
         }
         store.touch(&p.id).map_err(internal)?;
 
-        if path == manifest.entry {
+        if path == "manifest.json" {
+            Ok(CallToolResult::success(vec![Content::text(format!(
+                "Updated manifest.json in '{}'.",
+                p.id
+            ))]))
+        } else if path == manifest.entry {
             self.card_result(&manifest, &format!("Updated {path} in '{}'.", p.id))
         } else {
             let hint = if path.starts_with("src/") {
@@ -812,6 +838,18 @@ impl AgentDrafterServer {
             }
             manifest.built_at = Some(now_secs());
             store.save_manifest(&manifest).map_err(internal)?;
+        }
+
+        let lint = bundle::lint_app(&store.artifact_dir(&p.id));
+        if lint.iter().any(|f| f.level == bundle::LintLevel::Error) {
+            return Err(err(
+                ErrorCode::INTERNAL_ERROR,
+                format!(
+                    "harness ERRORs block launch for '{}':\n{}",
+                    p.id,
+                    bundle::format_lint(&lint)
+                ),
+            ));
         }
 
         let path = format!("/apps/{}/", manifest.id);
@@ -933,6 +971,21 @@ impl AgentDrafterServer {
         params: Parameters<ExportAppParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
+        let store = self.store();
+        if !store.exists(&p.id) {
+            return Err(err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)));
+        }
+        let lint = bundle::lint_app(&store.artifact_dir(&p.id));
+        if lint.iter().any(|f| f.level == bundle::LintLevel::Error) {
+            return Err(err(
+                ErrorCode::INTERNAL_ERROR,
+                format!(
+                    "harness ERRORs block export for '{}':\n{}",
+                    p.id,
+                    bundle::format_lint(&lint)
+                ),
+            ));
+        }
         let scaffold = export_scaffold(self.root(), &p.id, p.endpoint.as_deref())
             .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
 
@@ -1118,6 +1171,341 @@ mod tests {
         assert_eq!(a.skills, vec!["scientific-research"]);
         assert_eq!(a.knowledge_base.unwrap(), "my-kb");
         assert_eq!(a.max_turns, Some(40));
+    }
+
+    #[tokio::test]
+    async fn creates_static_and_agentic_kinds_with_expected_defaults() {
+        let (_d, s) = server();
+        s.create_app_inner(create("Plain Widget", Some("static")), None)
+            .await
+            .unwrap();
+        s.create_app_inner(create("Agent Workspace", Some("agentic")), None)
+            .await
+            .unwrap();
+
+        let static_manifest = s.store().load_manifest("plain-widget").unwrap();
+        assert_eq!(static_manifest.kind, ArtifactKind::Static);
+        assert!(static_manifest.agent.is_none());
+        assert!(!s.store().file_exists("plain-widget", "src/main.ts"));
+
+        let agentic_manifest = s.store().load_manifest("agent-workspace").unwrap();
+        assert_eq!(agentic_manifest.kind, ArtifactKind::Agentic);
+        assert!(agentic_manifest.agent.is_some());
+        assert!(s.store().file_exists("agent-workspace", "src/main.ts"));
+        assert!(s.store().file_exists("agent-workspace", "src/sdk.ts"));
+    }
+
+    #[tokio::test]
+    async fn custom_layout_and_workflow_prompt_build_and_pass_launch_harness() {
+        let (_d, s) = server();
+        let mut p = create("Cohort Review Console", None);
+        p.id = Some("cohort-review-console".into());
+        p.description = "Control-driven clinical cohort review workflow".into();
+        p.extensions = vec!["knowledge".into(), "developer".into()];
+        p.skills = vec!["clinical-biostatistics".into()];
+        p.knowledge_base = Some("trial-kb".into());
+        p.system_prompt = Some(
+            "Follow this workflow: 1. inspect the selected cohort; 2. search the knowledge base; \
+             3. delegate statistical checks to the stats sub-agent when appropriate; 4. if context \
+             usage is above 80%, summarize before continuing; 5. never download external assets."
+                .into(),
+        );
+        p.html = Some(
+            r#"<html>
+              <head><title>Cohort Review Console</title></head>
+              <body>
+                <main class="br-container">
+                  <section class="br-card">
+                    <label class="br-label" for="assay">Assay</label>
+                    <select id="assay" class="br-select">
+                      <option>single-cell RNA-seq</option>
+                      <option>flow cytometry</option>
+                    </select>
+                    <label class="br-label" for="cohorts">Cohorts to compare</label>
+                    <input id="cohorts" class="br-input" value="responders vs non-responders" />
+                    <button id="run" class="br-btn">Run workflow</button>
+                  </section>
+                  <section id="out" class="br-output" data-placeholder="Workflow output"></section>
+                </main>
+              </body>
+            </html>"#
+                .into(),
+        );
+        p.files = vec![FileSpec {
+            path: "src/main.ts".into(),
+            content: r##"import { createApp } from "./sdk";
+
+const br = createApp({ autoChat: false });
+const assay = document.getElementById("assay") as HTMLSelectElement;
+const cohorts = document.getElementById("cohorts") as HTMLInputElement;
+const run = document.getElementById("run") as HTMLButtonElement;
+
+run.addEventListener("click", async () => {
+  const ctx = await br.context.tokens();
+  const contextPlan =
+    ctx.ratio > 0.8
+      ? "First compact/summarize the working context before continuing."
+      : "Continue without compaction unless the context grows past 80%.";
+  await br.run(
+    `Run the cohort review workflow for ${cohorts.value} using ${assay.value}. ${contextPlan} Use the configured tools and sub-agents when useful, and do not download external assets.`,
+    "#out"
+  );
+});
+"##
+            .into(),
+        }];
+
+        s.create_app_inner(p, None).await.unwrap();
+        s.configure_app(Parameters(ConfigureAppParams {
+            id: "cohort-review-console".into(),
+            system_prompt: None,
+            greeting: Some("Choose a cohort and run the review.".into()),
+            model: None,
+            extensions: None,
+            skills: None,
+            knowledge_base: None,
+            max_turns: Some(72),
+        }))
+        .await
+        .unwrap();
+
+        let build = s
+            .build_app(Parameters(AppIdParams {
+                id: "cohort-review-console".into(),
+            }))
+            .await
+            .unwrap();
+        let build_text = text_of(&build);
+        assert!(build_text.contains("dist/app.js"));
+        assert!(build_text.contains("passes all guardrails"));
+
+        let launch = s
+            .launch_app(Parameters(AppIdParams {
+                id: "cohort-review-console".into(),
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&launch).contains("/apps/cohort-review-console/"));
+
+        let manifest = s.store().load_manifest("cohort-review-console").unwrap();
+        let agent = manifest.agent.unwrap();
+        assert_eq!(agent.max_turns, Some(72));
+        assert_eq!(agent.extensions, vec!["knowledge", "developer"]);
+        assert_eq!(agent.skills, vec!["clinical-biostatistics"]);
+        assert_eq!(agent.knowledge_base.as_deref(), Some("trial-kb"));
+        assert!(agent.system_prompt.contains("above 80%"));
+    }
+
+    #[tokio::test]
+    async fn manifest_update_supports_advanced_workflow_and_security_config() {
+        use crate::agent_drafter::manifest::{
+            Capabilities, ComputeCapability, FilesCapability, GuardrailsConfig, PiiMode,
+            ReliabilityConfig, SubAgentManifest, WorkflowManifest, WorkflowStep,
+        };
+        use std::collections::HashMap;
+
+        let (_d, s) = server();
+        s.create_app_inner(create("Advanced Agent", None), None)
+            .await
+            .unwrap();
+        let mut manifest = s.store().load_manifest("advanced-agent").unwrap();
+        let agent = manifest.agent.as_mut().unwrap();
+
+        let mut capabilities = Capabilities::default();
+        capabilities.files = Some(FilesCapability {
+            entries: Vec::new(),
+            max_file_bytes: Some(256 * 1024),
+        });
+        capabilities.compute = Some(ComputeCapability {
+            sandbox: "docker".into(),
+            timeout_s: 45,
+            network: "none".into(),
+            max_mem: Some("512m".into()),
+            cpus: Some(1.0),
+            image: None,
+        });
+        capabilities.events = vec!["tool".into(), "compaction".into(), "handoff".into()];
+        agent.capabilities = capabilities;
+        agent.guardrails = Some(GuardrailsConfig {
+            goal: Some("finish with a cited risk summary".into()),
+            business_scope: Some("clinical research workflow drafting".into()),
+            pii: PiiMode::Block,
+            needs_approval: vec!["compute__exec".into(), "developer__shell".into()],
+            approvals_require_persistence: true,
+            ..Default::default()
+        });
+        agent.reliability = Some(ReliabilityConfig {
+            tool_timeout_s: Some(30),
+            parallel_tools: true,
+            ..Default::default()
+        });
+        agent.output_type = Some(serde_json::json!({
+            "type": "object",
+            "required": ["summary", "next_steps"],
+            "properties": {
+                "summary": { "type": "string" },
+                "next_steps": { "type": "array", "items": { "type": "string" } }
+            }
+        }));
+
+        let mut sub_agents = HashMap::new();
+        sub_agents.insert(
+            "stats".into(),
+            SubAgentManifest {
+                description: "Biostatistics specialist".into(),
+                system_prompt: "Check statistical assumptions and effect sizes.".into(),
+                skills: vec!["clinical-biostatistics".into()],
+                max_steps: Some(8),
+                max_wall_s: Some(120),
+                ..Default::default()
+            },
+        );
+        let mut workflows = HashMap::new();
+        workflows.insert(
+            "triage".into(),
+            WorkflowManifest {
+                steps: vec![
+                    WorkflowStep::Agent {
+                        agent: "stats".into(),
+                        input_template: "{{cohort_summary}}".into(),
+                        guardrail: None,
+                        on_error: "abort".into(),
+                    },
+                    WorkflowStep::Tool {
+                        tool: "knowledge__query".into(),
+                        args_template: serde_json::json!({ "q": "{{finding}}" }),
+                        guardrail: Some(serde_json::json!({ "kind": "pii", "mode": "block" })),
+                        on_error: "continue".into(),
+                    },
+                ],
+            },
+        );
+        agent.orchestration.sub_agents = sub_agents;
+        agent.orchestration.workflows = workflows;
+
+        s.update_app(Parameters(UpdateAppParams {
+            id: "advanced-agent".into(),
+            path: Some("manifest.json".into()),
+            content: Some(serde_json::to_string_pretty(&manifest).unwrap()),
+            old_str: None,
+            new_str: None,
+        }))
+        .await
+        .unwrap();
+
+        let read = s
+            .read_app(Parameters(ReadAppParams {
+                id: "advanced-agent".into(),
+                path: None,
+            }))
+            .await
+            .unwrap();
+        let roundtrip: Manifest = serde_json::from_str(&text_of(&read)).unwrap();
+        let cfg = roundtrip.agent.unwrap();
+        assert_eq!(cfg.capabilities.compute.as_ref().unwrap().network, "none");
+        assert!(cfg.capabilities.advertised().contains(&"files".to_string()));
+        assert!(cfg
+            .capabilities
+            .advertised()
+            .contains(&"compute".to_string()));
+        assert!(cfg
+            .capabilities
+            .advertised()
+            .contains(&"event:compaction".to_string()));
+        assert_eq!(cfg.guardrails.as_ref().unwrap().pii, PiiMode::Block);
+        assert!(cfg
+            .guardrails
+            .as_ref()
+            .unwrap()
+            .needs_approval
+            .contains(&"compute__exec".to_string()));
+        assert!(cfg.reliability.as_ref().unwrap().parallel_tools);
+        assert!(cfg.orchestration.sub_agents.contains_key("stats"));
+        assert!(cfg.orchestration.workflows.contains_key("triage"));
+        assert!(cfg.output_type.is_some());
+    }
+
+    #[tokio::test]
+    async fn manifest_update_rejects_invalid_json_and_id_mismatch() {
+        let (_d, s) = server();
+        s.create_app_inner(create("Manifest Safe", None), None)
+            .await
+            .unwrap();
+        let original = s.store().load_manifest("manifest-safe").unwrap();
+
+        assert!(s
+            .update_app(Parameters(UpdateAppParams {
+                id: "manifest-safe".into(),
+                path: Some("manifest.json".into()),
+                content: Some("{ not json".into()),
+                old_str: None,
+                new_str: None,
+            }))
+            .await
+            .is_err());
+
+        let mut wrong_id = original.clone();
+        wrong_id.id = "other-app".into();
+        assert!(s
+            .update_app(Parameters(UpdateAppParams {
+                id: "manifest-safe".into(),
+                path: Some("manifest.json".into()),
+                content: Some(serde_json::to_string_pretty(&wrong_id).unwrap()),
+                old_str: None,
+                new_str: None,
+            }))
+            .await
+            .is_err());
+
+        let still_valid = s.store().load_manifest("manifest-safe").unwrap();
+        assert_eq!(still_valid.id, original.id);
+        assert_eq!(still_valid.title, original.title);
+    }
+
+    #[tokio::test]
+    async fn harness_errors_block_launch_and_export() {
+        let (_d, s) = server();
+        let mut p = create("Broken Harness", None);
+        p.html = Some(
+            r#"<html><body><main class="br-container"><button id="go" class="br-btn">Run</button></main></body></html>"#
+                .into(),
+        );
+        p.files = vec![FileSpec {
+            path: "src/main.ts".into(),
+            content: r##"import { createApp } from "./sdk";
+const br = createApp({ autoChat: false });
+br.run("hello", "#missing");
+"##
+            .into(),
+        }];
+        s.create_app_inner(p, None).await.unwrap();
+
+        let build = s
+            .build_app(Parameters(AppIdParams {
+                id: "broken-harness".into(),
+            }))
+            .await
+            .unwrap();
+        let build_text = text_of(&build);
+        assert!(build_text.contains("ERROR"));
+        assert!(build_text.contains("#missing"));
+
+        assert!(s
+            .launch_app(Parameters(AppIdParams {
+                id: "broken-harness".into(),
+            }))
+            .await
+            .is_err());
+
+        let out = TempDir::new().unwrap();
+        assert!(s
+            .export_app(Parameters(ExportAppParams {
+                id: "broken-harness".into(),
+                target_dir: out.path().to_string_lossy().to_string(),
+                endpoint: None,
+            }))
+            .await
+            .is_err());
     }
 
     #[tokio::test]
