@@ -798,6 +798,311 @@
       "license": "Apache-2.0"
     },
     {
+      "id": "scientific-data-engineering",
+      "name": "Scientific Data Engineering",
+      "category": "Core",
+      "type": "User-invocable · /scientific-data-engineering",
+      "description": "Plans scalable scientific data workflows with Polars, Dask, Zarr, TileDB, Arrow/Parquet, HDF5, and dataset versioning.",
+      "tags": [
+        "Data",
+        "Pipelines",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "scientific-data-engineering",
+        "polars",
+        "dask",
+        "zarr",
+        "tiledb",
+        "parquet",
+        "hdf5",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-scientific-data-engineering/scientific-data-engineering.zip",
+      "filename": "scientific-data-engineering.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "statistical-modeling-bayes",
+      "name": "Statistical Modeling and Bayes",
+      "category": "Core",
+      "type": "User-invocable · /statistical-modeling-bayes",
+      "description": "Designs and critiques statistical, Bayesian, survival, hierarchical, power, and uncertainty-reporting workflows.",
+      "tags": [
+        "Statistics",
+        "Bayes",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "statistical-modeling-bayes",
+        "pymc",
+        "statsmodels",
+        "survival",
+        "power",
+        "bayesian",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-statistical-modeling-bayes/statistical-modeling-bayes.zip",
+      "filename": "statistical-modeling-bayes.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "scientific-machine-learning",
+      "name": "Scientific Machine Learning",
+      "category": "Core",
+      "type": "User-invocable · /scientific-machine-learning",
+      "description": "Plans scientific ML with leakage checks, transformers, graph neural networks, active learning, SHAP, and reproducibility gates.",
+      "tags": [
+        "ML",
+        "Explainability",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "scientific-machine-learning",
+        "transformers",
+        "torch",
+        "graph",
+        "neural",
+        "networks",
+        "shap",
+        "leakage",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-scientific-machine-learning/scientific-machine-learning.zip",
+      "filename": "scientific-machine-learning.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "geospatial-science",
+      "name": "Geospatial Science",
+      "category": "Core",
+      "type": "User-invocable · /geospatial-science",
+      "description": "Handles geospatial analysis with CRS checks, spatial joins, rasters/vectors, maps, and spatial statistics.",
+      "tags": [
+        "Geospatial",
+        "Maps",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "geospatial-science",
+        "geopandas",
+        "raster",
+        "vector",
+        "crs",
+        "maps",
+        "spatial",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-geospatial-science/geospatial-science.zip",
+      "filename": "geospatial-science.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "neurophysiology-analysis",
+      "name": "Neurophysiology Analysis",
+      "category": "Core",
+      "type": "User-invocable · /neurophysiology-analysis",
+      "description": "Plans biosignal and neural-recording analysis: ECG/EDA/PPG, spike sorting, Neuropixels metadata, and peri-event QC.",
+      "tags": [
+        "Signals",
+        "Neural",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "neurophysiology-analysis",
+        "neurokit",
+        "neuropixels",
+        "ecg",
+        "eda",
+        "ppg",
+        "spike",
+        "sorting",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-neurophysiology-analysis/neurophysiology-analysis.zip",
+      "filename": "neurophysiology-analysis.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "quantum-scientific-computing",
+      "name": "Quantum Scientific Computing",
+      "category": "Core",
+      "type": "User-invocable · /quantum-scientific-computing",
+      "description": "Routes quantum and scientific simulation work across Qiskit, Cirq, PennyLane, QuTiP, and validation checks.",
+      "tags": [
+        "Quantum",
+        "Simulation",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "quantum-scientific-computing",
+        "qiskit",
+        "cirq",
+        "pennylane",
+        "qutip",
+        "hamiltonian",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-quantum-scientific-computing/quantum-scientific-computing.zip",
+      "filename": "quantum-scientific-computing.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "materials-informatics",
+      "name": "Materials Informatics",
+      "category": "Core",
+      "type": "User-invocable · /materials-informatics",
+      "description": "Guides computational materials workflows with structures, crystals, compositions, phase diagrams, and dataset provenance.",
+      "tags": [
+        "Materials",
+        "Crystals",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "materials-informatics",
+        "pymatgen",
+        "crystals",
+        "compositions",
+        "phase",
+        "diagrams",
+        "descriptors",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-materials-informatics/materials-informatics.zip",
+      "filename": "materials-informatics.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "biomedical-imaging-pathology",
+      "name": "Biomedical Imaging and Pathology",
+      "category": "Core",
+      "type": "User-invocable · /biomedical-imaging-pathology",
+      "description": "Plans DICOM/pathology/PACS workflows with tiling, metadata, QC, cohort provenance, and privacy-safe reporting.",
+      "tags": [
+        "Imaging",
+        "Pathology",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "biomedical-imaging-pathology",
+        "dicom",
+        "pathology",
+        "pacs",
+        "pathml",
+        "histolab",
+        "privacy",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-biomedical-imaging-pathology/biomedical-imaging-pathology.zip",
+      "filename": "biomedical-imaging-pathology.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "citation-library-management",
+      "name": "Citation Library Management",
+      "category": "Core",
+      "type": "User-invocable · /citation-library-management",
+      "description": "Builds, cleans, verifies, and deduplicates Zotero/BibTeX/RIS/CSL citation libraries.",
+      "tags": [
+        "Citations",
+        "Zotero",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "citation-library-management",
+        "zotero",
+        "bibtex",
+        "ris",
+        "csl",
+        "doi",
+        "deduplicate",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-citation-library-management/citation-library-management.zip",
+      "filename": "citation-library-management.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "laboratory-automation-planning",
+      "name": "Laboratory Automation Planning",
+      "category": "Core",
+      "type": "User-invocable · /laboratory-automation-planning",
+      "description": "Plans Opentrons/cloud-lab workflows with plate maps, protocol simulation, sample metadata, and execution gates.",
+      "tags": [
+        "Lab Automation",
+        "Protocols",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "laboratory-automation-planning",
+        "opentrons",
+        "ginkgo",
+        "cloud",
+        "lab",
+        "plate",
+        "maps",
+        "protocols",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-laboratory-automation-planning/laboratory-automation-planning.zip",
+      "filename": "laboratory-automation-planning.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "econometrics-toolkit",
+      "name": "Econometrics Toolkit",
+      "category": "Core",
+      "type": "User-invocable · /econometrics-toolkit",
+      "description": "Plans applied econometrics in Python, R, or Stata: panel data, IV, DiD, RDD, clustering, and replication tables.",
+      "tags": [
+        "Econometrics",
+        "Causal",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "econometrics-toolkit",
+        "stata",
+        "r",
+        "python",
+        "panels",
+        "fixed",
+        "effects",
+        "iv",
+        "did",
+        "rdd",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-econometrics-toolkit/econometrics-toolkit.zip",
+      "filename": "econometrics-toolkit.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "systematic-review-prisma",
+      "name": "Systematic Review and PRISMA",
+      "category": "Core",
+      "type": "User-invocable · /systematic-review-prisma",
+      "description": "Runs systematic-review workflows: PICO, search strings, screening logs, PRISMA flow, extraction, risk of bias, and synthesis.",
+      "tags": [
+        "PRISMA",
+        "Review",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "systematic-review-prisma",
+        "pico",
+        "screening",
+        "prisma",
+        "extraction",
+        "risk",
+        "bias",
+        "evidence",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-systematic-review-prisma/systematic-review-prisma.zip",
+      "filename": "systematic-review-prisma.zip",
+      "license": "Apache-2.0"
+    },
+    {
       "id": "taste-skill",
       "name": "Taste (Frontend Design)",
       "category": "Core",
