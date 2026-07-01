@@ -37,10 +37,9 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
   // Remove image paths and injected context blocks from display text
   const displayText = useMemo(
     () =>
-      removeImagePathsFromText(textContent, imagePaths).replace(
-        /<info-msg>[\s\S]*?<\/info-msg>(\s*\\?")?/gi,
-        ''
-      ).trim(),
+      removeImagePathsFromText(textContent, imagePaths)
+        .replace(/<info-msg>[\s\S]*?<\/info-msg>(\s*\\?")?/gi, '')
+        .trim(),
     [textContent, imagePaths]
   );
 
@@ -220,7 +219,10 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
             <div className="flex-col max-w-[85%] w-fit">
               <div className="flex flex-col group">
                 <div className="flex bg-background-accent text-text-on-accent rounded-xl py-2.5 px-4">
-                  <div ref={contentRef} className="text-sm text-text-on-accent whitespace-pre-wrap break-words leading-relaxed">
+                  <div
+                    ref={contentRef}
+                    className="text-sm text-text-on-accent whitespace-pre-wrap break-words leading-relaxed"
+                  >
                     {displayText}
                   </div>
                 </div>
@@ -251,7 +253,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                 )}
 
                 <div className="relative h-[22px] flex justify-end text-right">
-                  <div className="absolute w-40 font-mono right-0 text-xs text-text-muted pt-1 transition-all duration-200 group-hover:-translate-y-4 group-hover:opacity-0">
+                  <div className="absolute w-40 font-sans right-0 text-sm text-text-muted pt-1 transition-all duration-200 group-hover:-translate-y-4 group-hover:opacity-0">
                     {timestamp}
                   </div>
                   <div className="absolute right-0 pt-1 flex items-center gap-2">
@@ -263,7 +265,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                           handleEditClick();
                         }
                       }}
-                      className="flex items-center gap-1 text-xs text-text-muted hover:cursor-pointer hover:text-text-default transition-all duration-200 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-opacity-50 rounded"
+                      className="flex items-center gap-1 font-sans text-sm text-text-muted hover:cursor-pointer hover:text-text-default transition-all duration-200 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-opacity-50 rounded"
                       aria-label={`Edit message: ${displayText.substring(0, 50)}${displayText.length > 50 ? '...' : ''}`}
                       aria-expanded={isEditing}
                       title="Edit message"
@@ -281,7 +283,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
 
         {/* Edited indicator */}
         {hasBeenEdited && !isEditing && (
-          <div className="text-xs text-text-muted mt-1 text-right transition-opacity duration-200">
+          <div className="font-sans text-sm text-text-muted mt-1 text-right transition-opacity duration-200">
             Edited
           </div>
         )}

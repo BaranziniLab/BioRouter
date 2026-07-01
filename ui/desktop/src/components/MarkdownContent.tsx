@@ -15,14 +15,14 @@ const warmLightTheme = {
     ...oneLight['code[class*="language-"]'],
     color: '#2a2520',
     background: 'transparent',
-    fontSize: '13.5px',
+    fontSize: '14px',
     lineHeight: '1.6',
   },
   'pre[class*="language-"]': {
     ...oneLight['pre[class*="language-"]'],
     color: '#2a2520',
     background: 'transparent',
-    fontSize: '13.5px',
+    fontSize: '14px',
     lineHeight: '1.6',
     margin: 0,
     padding: 0,
@@ -100,8 +100,8 @@ const CodeBlock = memo(function CodeBlock({
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
             overflowWrap: 'break-word',
-            fontFamily: 'var(--font-mono)',
-            fontSize: '13.5px',
+            fontFamily: 'var(--font-sans)',
+            fontSize: '14px',
             lineHeight: '1.6',
           },
         }}
@@ -131,9 +131,7 @@ const CodeBlock = memo(function CodeBlock({
         </button>
       </div>
       {/* Code body */}
-      <div className="w-full overflow-x-auto bg-background-medium">
-        {memoizedSyntaxHighlighter}
-      </div>
+      <div className="w-full overflow-x-auto bg-background-medium">{memoizedSyntaxHighlighter}</div>
     </div>
   );
 });
@@ -147,14 +145,17 @@ const MarkdownCode = memo(
     return !inline && match ? (
       <CodeBlock language={match[1]}>{String(children).replace(/\n$/, '')}</CodeBlock>
     ) : (
-      <code ref={ref} {...props} className="break-all bg-inline-code whitespace-pre-wrap font-mono">
+      <code ref={ref} {...props} className="break-all bg-inline-code whitespace-pre-wrap font-sans">
         {children}
       </code>
     );
   })
 );
 
-const MarkdownParagraph = ({ children, ...props }: React.HTMLAttributes<globalThis.HTMLParagraphElement>) => {
+const MarkdownParagraph = ({
+  children,
+  ...props
+}: React.HTMLAttributes<globalThis.HTMLParagraphElement>) => {
   const childArray = React.Children.toArray(children);
   const meaningfulChildren = childArray.filter(
     (child) => !(typeof child === 'string' && child.trim() === '')
@@ -162,8 +163,8 @@ const MarkdownParagraph = ({ children, ...props }: React.HTMLAttributes<globalTh
   const isDisplayMath =
     meaningfulChildren.length === 1 &&
     React.isValidElement(meaningfulChildren[0]) &&
-    typeof (meaningfulChildren[0] as React.ReactElement<{ className?: string }>).props?.className ===
-      'string' &&
+    typeof (meaningfulChildren[0] as React.ReactElement<{ className?: string }>).props
+      ?.className === 'string' &&
     (meaningfulChildren[0] as React.ReactElement<{ className?: string }>).props.className!.includes(
       'katex'
     );
@@ -197,9 +198,9 @@ const MarkdownContent = memo(function MarkdownContent({
     <div
       className={`w-full overflow-x-hidden prose prose-sm text-text-default dark:prose-invert max-w-full word-break font-sans
       prose-pre:p-0 prose-pre:m-0 prose-pre:bg-transparent prose-pre:rounded-none !p-0
-      prose-code:break-words prose-code:whitespace-pre-wrap prose-code:font-mono
+      prose-code:break-words prose-code:whitespace-pre-wrap prose-code:font-sans
       prose-code:text-text-default prose-code:bg-background-medium
-      prose-code:rounded prose-code:px-1 prose-code:py-0.5 prose-code:text-[0.85em]
+      prose-code:rounded prose-code:px-1 prose-code:py-0.5 prose-code:text-[1em]
       prose-code:before:content-none prose-code:after:content-none
       prose-a:break-all prose-a:overflow-wrap-anywhere
       prose-table:table prose-table:w-full
