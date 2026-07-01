@@ -157,17 +157,46 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
 fn referenced_ids(main: &str) -> Vec<String> {
     use std::collections::BTreeSet;
     let mut ids: BTreeSet<String> = BTreeSet::new();
+    let main = strip_js_comments(main);
     if let Ok(re) = regex::Regex::new(r#"getElementById\(\s*["']([A-Za-z0-9_-]+)["']"#) {
-        for c in re.captures_iter(main) {
+        for c in re.captures_iter(&main) {
             ids.insert(c[1].to_string());
         }
     }
     if let Ok(re) = regex::Regex::new(r#"["']#([A-Za-z0-9_-]+)["']"#) {
-        for c in re.captures_iter(main) {
+        for c in re.captures_iter(&main) {
             ids.insert(c[1].to_string());
         }
     }
     ids.into_iter().collect()
+}
+
+fn strip_js_comments(source: &str) -> String {
+    let mut out = String::with_capacity(source.len());
+    let mut in_block = false;
+    for line in source.lines() {
+        let mut rest = line;
+        loop {
+            if in_block {
+                if let Some(end) = rest.find("*/") {
+                    rest = &rest[end + 2..];
+                    in_block = false;
+                } else {
+                    break;
+                }
+            } else if let Some(start) = rest.find("/*") {
+                out.push_str(&rest[..start]);
+                rest = &rest[start + 2..];
+                in_block = true;
+            } else {
+                let code = rest.split_once("//").map(|(code, _)| code).unwrap_or(rest);
+                out.push_str(code);
+                break;
+            }
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// Format findings for inclusion in a tool result.
@@ -397,10 +426,17 @@ fn strip_module_syntax(ts: &str) -> String {
         loop {
             let ls = l.trim_start();
             let indent_len = l.len() - ls.len();
-            let modifier = ["private ", "public ", "protected ", "readonly ", "abstract ", "override "]
-                .iter()
-                .find(|kw| ls.starts_with(**kw))
-                .map(|kw| kw.len());
+            let modifier = [
+                "private ",
+                "public ",
+                "protected ",
+                "readonly ",
+                "abstract ",
+                "override ",
+            ]
+            .iter()
+            .find(|kw| ls.starts_with(**kw))
+            .map(|kw| kw.len());
             match modifier {
                 Some(n) => l = format!("{}{}", &l[..indent_len], &ls[n..]),
                 None => break,
@@ -455,11 +491,15 @@ fn strip_non_null_assertions(line: &str) -> String {
         }
         if c == '!' {
             let prev = if i > 0 { chars[i - 1] } else { ' ' };
-            let next = if i + 1 < chars.len() { chars[i + 1] } else { ' ' };
+            let next = if i + 1 < chars.len() {
+                chars[i + 1]
+            } else {
+                ' '
+            };
             let postfix_operand =
                 prev.is_alphanumeric() || prev == '_' || prev == ')' || prev == ']';
-            let member_or_end = matches!(next, '.' | ')' | ';' | ',' | ']' | '(' | '[')
-                || next.is_whitespace();
+            let member_or_end =
+                matches!(next, '.' | ')' | ';' | ',' | ']' | '(' | '[') || next.is_whitespace();
             if postfix_operand && member_or_end && next != '=' {
                 i += 1; // drop the assertion `!`
                 continue;
@@ -630,7 +670,9 @@ fn strip_colon_types(line: &str) -> String {
                         ')' if par > 0 => par -= 1,
                         '[' => brk += 1,
                         ']' if brk > 0 => brk -= 1,
-                        _ if ang == 0 && par == 0 && brk == 0
+                        _ if ang == 0
+                            && par == 0
+                            && brk == 0
                             && matches!(d, '=' | ',' | ')' | ';' | '{' | '\n') =>
                         {
                             break;
@@ -811,5 +853,37 @@ mod tests {
         assert!(report.ok, "build failed: {}", report.log);
         let js = std::fs::read_to_string(dir.path().join("dist/app.js")).unwrap();
         assert!(js.contains("BioRouter") || js.contains("createApp"));
+    }
+
+    #[test]
+    fn lint_app_flags_portability_wiring_and_runtime_breakers() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            r#"<html><head><script src="https://cdn.example/app.js"></script></head>
+               <body><main class="br-container"><button id="run" class="br-btn">Run</button></main></body></html>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("main.ts"),
+            r##"import confetti from "canvas-confetti";
+import { createApp } from "./sdk";
+const br = createApp({ autoChat: false });
+br.run("go", "#missing");
+"##,
+        )
+        .unwrap();
+
+        let findings = lint_app(dir.path());
+        let formatted = format_lint(&findings);
+        assert!(
+            findings.iter().any(|f| f.level == LintLevel::Error),
+            "{formatted}"
+        );
+        assert!(formatted.contains("external <script"), "{formatted}");
+        assert!(formatted.contains("non-local import"), "{formatted}");
+        assert!(formatted.contains("#missing"), "{formatted}");
     }
 }

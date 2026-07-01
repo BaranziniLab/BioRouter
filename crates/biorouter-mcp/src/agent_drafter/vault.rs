@@ -41,7 +41,9 @@ impl std::fmt::Display for VaultError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             VaultError::Encrypt => write!(f, "vault: encryption failed"),
-            VaultError::Decrypt => write!(f, "vault: decryption failed (wrong key or tampered data)"),
+            VaultError::Decrypt => {
+                write!(f, "vault: decryption failed (wrong key or tampered data)")
+            }
             VaultError::Malformed => write!(f, "vault: malformed ciphertext"),
             VaultError::Io(e) => write!(f, "vault: io error: {e}"),
             VaultError::Unknown(n) => write!(f, "vault: unknown secret '{n}'"),
@@ -105,7 +107,13 @@ impl Vault {
         // Names are flat identifiers; sanitize to a safe filename.
         let safe: String = name
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
         self.dir.join(format!("{safe}.enc"))
     }

@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use std::path::{Component, Path, PathBuf};
 
-use super::manifest::{Capabilities, GuardrailsConfig, ModelSettings, Orchestration, ReliabilityConfig};
+use super::manifest::{
+    Capabilities, GuardrailsConfig, ModelSettings, Orchestration, ReliabilityConfig,
+};
 
 /// Whether an artifact embeds live agent capability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -481,9 +483,15 @@ mod tests {
         assert!(agent.capabilities.files.is_none());
         assert!(agent.capabilities.data.is_none());
         assert!(agent.capabilities.compute.is_none());
-        assert_eq!(agent.capabilities.memory.mode, crate::agent_drafter::manifest::MemoryMode::Off);
+        assert_eq!(
+            agent.capabilities.memory.mode,
+            crate::agent_drafter::manifest::MemoryMode::Off
+        );
         assert!(!agent.capabilities.tracing.enabled);
-        assert!(agent.capabilities.tracing.redact, "tracing redaction defaults ON");
+        assert!(
+            agent.capabilities.tracing.redact,
+            "tracing redaction defaults ON"
+        );
         assert!(agent.guardrails.is_none());
         assert!(agent.reliability.is_none());
         assert!(agent.output_type.is_none());
@@ -557,12 +565,24 @@ mod tests {
             back.guardrails.as_ref().unwrap().goal.as_deref(),
             Some("cite the KB")
         );
-        assert_eq!(back.guardrails.as_ref().unwrap().needs_approval, vec!["send_email"]);
         assert_eq!(
-            back.model.as_ref().unwrap().settings.as_ref().unwrap().temperature,
+            back.guardrails.as_ref().unwrap().needs_approval,
+            vec!["send_email"]
+        );
+        assert_eq!(
+            back.model
+                .as_ref()
+                .unwrap()
+                .settings
+                .as_ref()
+                .unwrap()
+                .temperature,
             Some(0.2)
         );
-        assert_eq!(back.capabilities.compute.as_ref().unwrap().sandbox, "docker");
+        assert_eq!(
+            back.capabilities.compute.as_ref().unwrap().sandbox,
+            "docker"
+        );
         assert!(back.reliability.as_ref().unwrap().parallel_tools);
 
         // Advertises exactly the granted capabilities (deny-by-default elsewhere).
@@ -572,7 +592,10 @@ mod tests {
         assert!(adv.contains(&"memory".to_string()));
         assert!(adv.contains(&"tracing".to_string()));
         assert!(adv.contains(&"event:tool".to_string()));
-        assert!(!adv.contains(&"data".to_string()), "data not granted → not advertised");
+        assert!(
+            !adv.contains(&"data".to_string()),
+            "data not granted → not advertised"
+        );
     }
 
     #[test]
