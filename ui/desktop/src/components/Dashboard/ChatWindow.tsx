@@ -132,13 +132,13 @@ export const ChatWindow: React.FC<Props> = ({
   const popStyle = {};
   void boardSize;
   const focusClasses = isFocused
-    ? 'shadow-[0_12px_40px_rgb(0,0,0,0.22)]'
-    : 'shadow-[0_4px_14px_rgb(0,0,0,0.10)]';
+    ? 'shadow-[0_18px_54px_rgba(32,25,15,0.20),0_2px_10px_rgba(32,25,15,0.10)]'
+    : 'shadow-[0_10px_30px_rgba(32,25,15,0.10),0_1px_4px_rgba(32,25,15,0.06)]';
   void isSolo;
 
   return (
     <div
-      className={`absolute top-0 left-0 rounded-2xl bg-background-default border border-border-subtle/30 overflow-hidden transition-shadow ${focusClasses}`}
+      className={`absolute top-0 left-0 rounded-2xl bg-background-default border border-border-subtle/45 overflow-hidden transition-shadow ${focusClasses}`}
       style={{ ...stylePos, ...popStyle }}
       onMouseDown={(e) => {
         if (isFocused) return;
