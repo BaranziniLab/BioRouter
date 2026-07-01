@@ -81,7 +81,7 @@ includes(docs, '--schedule-id review-weekly', 'scheduler docs should use named s
 includes(docs, '--workflow-source ./review.yaml', 'scheduler docs should show workflow source argument');
 includes(docs, "history.replaceState(null, '', '#' + name)", 'docs navigation should keep URL hash in sync');
 const baamBeforeScript = baam.split('<script>')[0];
-check(registry.extensions.length === (baamBeforeScript.match(/<div class="ext-card(?:\s|">)/g) || []).length, 'registry extension count should match BAAM fallback cards');
+check(registry.extensions.length === (baamBeforeScript.match(/<div[^>]*class="ext-card(?:\s|")/g) || []).length, 'registry extension count should match BAAM fallback cards');
 
 for (const stale of ['v1.85.0', 'v1.80.0', 'claude-opus-4-1', 'claude-sonnet-4-20250514', 'grok-code-fast-1</code>', 'gpt-5.2</code>']) {
   check(!index.includes(stale) && !download.includes(stale) && !docs.includes(stale), `stale token remains: ${stale}`);

@@ -15,6 +15,7 @@ export interface RegistryExtension {
   github: string;
   download: string;
   filename: string;
+  license?: string;
 }
 
 export type SkillCategory = 'Core' | 'Developer' | 'Biomedical';
@@ -29,6 +30,7 @@ export interface RegistrySkill {
   keywords: string[];
   download: string;
   filename: string;
+  license?: string;
 }
 
 export interface BaamRegistry {
@@ -71,7 +73,8 @@ export function skillMatches(skill: RegistrySkill, q: string): boolean {
     skill.description.toLowerCase().includes(needle) ||
     skill.category.toLowerCase().includes(needle) ||
     skill.tags.some((t) => t.toLowerCase().includes(needle)) ||
-    skill.keywords.some((t) => t.toLowerCase().includes(needle))
+    skill.keywords.some((t) => t.toLowerCase().includes(needle)) ||
+    (skill.license?.toLowerCase().includes(needle) ?? false)
   );
 }
 
@@ -83,6 +86,7 @@ export function extensionMatches(ext: RegistryExtension, q: string): boolean {
     ext.name.toLowerCase().includes(needle) ||
     ext.description.toLowerCase().includes(needle) ||
     ext.organization.toLowerCase().includes(needle) ||
-    ext.tags.some((t) => t.toLowerCase().includes(needle))
+    ext.tags.some((t) => t.toLowerCase().includes(needle)) ||
+    (ext.license?.toLowerCase().includes(needle) ?? false)
   );
 }

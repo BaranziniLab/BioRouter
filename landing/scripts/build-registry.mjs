@@ -99,6 +99,7 @@ const extensions = pickCards(extScope, 'ext-card').map((card) => {
   const github = first(/<a href="([^"]+)"[^>]*class="ext-gh-link"/, card);
   const download = first(/<a href="([^"]+)"[^>]*class="brxt-chip"/, card);
   const tags = allTags(/<div class="ext-tags">([\s\S]*?)<\/div>/, card);
+  const license = first(/data-license="([^"]+)"/, card) || 'Apache-2.0';
   // org looks like "BaranziniLab · UCSF · v0.4.3"
   const parts = org.split('·').map((p) => p.trim());
   const version = parts.find((p) => /^v?\d/.test(p)) || '';
@@ -113,6 +114,7 @@ const extensions = pickCards(extScope, 'ext-card').map((card) => {
     github,
     download: absolutize(download),
     filename: download.split('/').pop(),
+    license,
   };
 });
 
@@ -125,6 +127,7 @@ function parseSkillGrid(id, category) {
     const description = stripTags(first(/<p class="skill-desc">([\s\S]*?)<\/p>/, card));
     const download = first(/<a href="([^"]+)"[^>]*class="skill-dl-btn"/, card);
     const tags = allTags(/<div class="skill-tags">([\s\S]*?)<\/div>/, card);
+    const license = first(/data-license="([^"]+)"/, card) || 'Apache-2.0';
     const dataTags = first(/<div class="skill-card[^"]*" data-tags="([^"]*)"/, card)
       .split(/\s+/)
       .filter(Boolean);
@@ -138,6 +141,7 @@ function parseSkillGrid(id, category) {
       keywords: dataTags,
       download: absolutize(download),
       filename: download.split('/').pop(),
+      license,
     };
   });
 }
