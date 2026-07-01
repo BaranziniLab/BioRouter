@@ -99,4 +99,40 @@ describe('summarizeToolCall', () => {
     expect(screen.getByText('view')).toBeInTheDocument();
     expect(screen.getByText('/Users/wgu/Desktop/BioRouter/package.json')).toBeInTheDocument();
   });
+
+  it('keeps the tool call trigger compact while preserving click-to-expand details', () => {
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-2',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'developer__exec_command',
+          arguments: { cmd: 'npm run typecheck' },
+        },
+      },
+    };
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        isStreamingMessage={false}
+      />
+    );
+
+    const trigger = screen.getByText(/Running npm run typecheck/).closest('button') as HTMLElement;
+
+    expect(trigger).toHaveClass('h-6');
+    expect(trigger).toHaveClass('min-h-0');
+    expect(trigger.querySelector('svg:last-child')).toHaveClass('opacity-0');
+    expect(screen.getByText(/Finished/)).toBeInTheDocument();
+    expect(screen.queryByText('cmd')).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByText('View tool details').closest('button') as HTMLElement);
+
+    expect(screen.getByText('cmd')).toBeInTheDocument();
+    expect(screen.getByText('npm run typecheck')).toBeInTheDocument();
+  });
 });
