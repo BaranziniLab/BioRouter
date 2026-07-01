@@ -23,18 +23,21 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
       <button
         data-testid="knowledge-kb-selector-trigger"
         onClick={() => setOpen(true)}
-        className="inline-flex w-full items-center gap-2 rounded-xl bg-background-default/60 px-3 py-2.5 shadow-[0_1px_2px_rgba(32,25,15,0.025)] transition-colors hover:bg-background-default focus:outline-none focus:ring-1 focus:ring-ring"
+        className="inline-flex w-full items-center gap-3 rounded-xl border border-border-subtle bg-background-default/90 px-3 py-3 shadow-[0_6px_18px_-16px_rgba(32,25,15,0.34)] transition-colors hover:border-border-default hover:bg-background-default focus:outline-none focus:ring-1 focus:ring-ring"
       >
         <span
           className="w-2 h-2 rounded-full flex-shrink-0"
           style={{ background: activeKb?.color ?? 'var(--text-muted)' }}
         />
         <span className="flex-1 text-left min-w-0">
-          <span className="block text-sm font-medium truncate">
+          <span className="block text-sm font-semibold truncate">
             {activeKb?.name ?? 'Focus a knowledge base'}
           </span>
         </span>
-        <ChevronDown className="w-3 h-3 text-text-muted flex-shrink-0" />
+        <span className="flex shrink-0 items-center gap-1 rounded-md bg-background-muted px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+          KB
+          <ChevronDown className="w-3 h-3" />
+        </span>
       </button>
       {open && <KBSelectorPalette onClose={() => setOpen(false)} />}
     </>
