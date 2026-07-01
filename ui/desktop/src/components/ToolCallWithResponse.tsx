@@ -177,7 +177,7 @@ export default function ToolCallWithResponse({
     <>
       <div
         className={cn(
-          'w-full text-sm font-sans rounded-lg overflow-hidden border-border-subtle border bg-background-muted'
+          'w-full text-sm font-sans rounded-lg overflow-hidden border border-transparent bg-transparent'
         )}
       >
         <ToolCallView
@@ -246,13 +246,13 @@ function ToolCallExpandable({
     <div className={className}>
       <Button
         onClick={toggleExpand}
-        className="group w-full flex justify-between items-center pr-2 transition-colors rounded-none"
+        className="group w-full h-auto min-h-8 flex justify-between items-center px-2 py-1.5 transition-colors rounded-md hover:bg-background-medium/70"
         variant="ghost"
       >
         <span className="flex items-center font-sans text-sm truncate flex-1 min-w-0">{label}</span>
         <ChevronRight
           className={cn(
-            'group-hover:opacity-100 transition-transform opacity-70',
+            'group-hover:opacity-100 transition-transform opacity-50 size-3.5 ml-2',
             isExpanded && 'rotate-90'
           )}
         />
@@ -278,6 +278,159 @@ interface Progress {
   progressToken: string;
   total?: number;
   message?: string;
+}
+
+export type ToolCallSummaryInput = {
+  name: string;
+  arguments?: Record<string, unknown>;
+};
+
+const MAX_SUMMARY_VALUE_LENGTH = 96;
+
+const humanize = (value: string): string => snakeToTitleCase(value.replace(/[-.]/g, '_'));
+
+const stringifySummaryValue = (value: unknown): string => {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value === null || value === undefined) return '';
+  return JSON.stringify(value);
+};
+
+const compactValue = (value: unknown, maxLength = MAX_SUMMARY_VALUE_LENGTH): string => {
+  const text = stringifySummaryValue(value).replace(/\s+/g, ' ').trim();
+  if (text.length <= maxLength) return text;
+  const keep = Math.max(12, Math.floor((maxLength - 1) / 2));
+  return `${text.slice(0, keep)}…${text.slice(-keep)}`;
+};
+
+const basename = (value: unknown): string => {
+  const text = compactValue(value);
+  const parts = text.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] || text;
+};
+
+const firstPresent = (args: Record<string, unknown>, keys: string[]): unknown => {
+  for (const key of keys) {
+    if (args[key] !== undefined && args[key] !== null && args[key] !== '') {
+      return args[key];
+    }
+  }
+  return undefined;
+};
+
+const summarizeSearchQuery = (value: unknown): string | null => {
+  if (!value) return null;
+  if (typeof value === 'string') return compactValue(value);
+  if (Array.isArray(value)) {
+    const first = value[0] as Record<string, unknown> | undefined;
+    return first ? compactValue(first.q ?? first.query ?? first.search_query ?? value) : null;
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return compactValue(record.q ?? record.query ?? record.search_query ?? value);
+  }
+  return compactValue(value);
+};
+
+export function summarizeToolCall(toolCall: ToolCallSummaryInput): string {
+  const args = toolCall.arguments ?? {};
+  const toolName = getToolName(toolCall.name);
+  const displayName = humanize(toolName);
+  const target = firstPresent(args, [
+    'path',
+    'file',
+    'file_path',
+    'filename',
+    'name',
+    'uri',
+    'url',
+    'ref_id',
+    'documentId',
+    'spreadsheetId',
+    'threadId',
+    'id',
+  ]);
+  const targetName = target ? basename(target) : null;
+  const command = firstPresent(args, ['cmd', 'command', 'script']);
+  const operation = firstPresent(args, ['operation', 'action', 'method']);
+
+  if (toolName === 'text_editor' || toolName.includes('editor')) {
+    if (args.command === 'view' && targetName) return `Reading ${targetName}`;
+    if (args.command === 'write' && targetName) return `Writing ${targetName}`;
+    if (args.command === 'str_replace' && targetName) return `Editing ${targetName}`;
+    if (targetName) return `Updating ${targetName}`;
+  }
+
+  if (toolName === 'shell' || toolName === 'exec_command' || toolName.includes('command')) {
+    return command ? `Running ${compactValue(command)}` : `Running a command`;
+  }
+
+  if (toolName === 'apply_patch') return `Applying a code patch`;
+  if (toolName === 'view_image')
+    return targetName ? `Inspecting ${targetName}` : `Inspecting an image`;
+  if (toolName.includes('screenshot')) return `Capturing a screenshot`;
+  if (toolName.includes('imagegen')) return `Generating an image`;
+
+  if (toolName.includes('read') || toolName.includes('open') || toolName.includes('fetch')) {
+    return targetName ? `Reading ${targetName}` : `${displayName}`;
+  }
+
+  if (toolName.includes('write') || toolName.includes('update') || toolName.includes('edit')) {
+    return targetName ? `Updating ${targetName}` : `${displayName}`;
+  }
+
+  if (toolName.includes('create')) {
+    return targetName ? `Creating ${targetName}` : `${displayName}`;
+  }
+
+  if (toolName.includes('delete') || toolName.includes('remove')) {
+    return targetName ? `Removing ${targetName}` : `${displayName}`;
+  }
+
+  if (toolName.includes('list')) {
+    return targetName ? `Listing ${targetName}` : `${displayName}`;
+  }
+
+  if (toolName.includes('search') || toolName.includes('query')) {
+    const query = summarizeSearchQuery(
+      firstPresent(args, ['q', 'query', 'search_query', 'image_query', 'pattern', 'name'])
+    );
+    return query ? `Searching for ${query}` : `${displayName}`;
+  }
+
+  if (toolName.includes('download')) {
+    return targetName ? `Downloading ${targetName}` : `${displayName}`;
+  }
+
+  if (toolName.includes('send') || toolName.includes('post')) {
+    return targetName ? `Sending to ${targetName}` : `${displayName}`;
+  }
+
+  if (toolName === 'sheets_tool' || toolName.includes('sheet')) {
+    return operation ? `${humanize(compactValue(operation))} in a spreadsheet` : displayName;
+  }
+
+  if (toolName === 'docs_tool' || toolName.includes('doc')) {
+    return operation ? `${humanize(compactValue(operation))} in a document` : displayName;
+  }
+
+  if (toolName === 'execute_code') {
+    const toolGraph = args.tool_graph as unknown as ToolGraphNode[] | undefined;
+    if (Array.isArray(toolGraph) && toolGraph.length > 0) {
+      if (toolGraph.length === 1) return compactValue(toolGraph[0].description);
+      return `Coordinating ${toolGraph.length} tool steps`;
+    }
+    return `Executing code`;
+  }
+
+  if (targetName) return `${displayName} for ${targetName}`;
+
+  const keys = Object.keys(args).filter((key) => !['content', 'text', 'body'].includes(key));
+  if (keys.length > 0) {
+    return `${displayName} with ${keys.slice(0, 3).join(', ')}${keys.length > 3 ? '…' : ''}`;
+  }
+
+  return displayName;
 }
 
 const logToString = (logMessage: NotificationEvent) => {
@@ -346,16 +499,6 @@ function ToolCallView({
     };
   }, []);
 
-  const isExpandToolDetails = (() => {
-    switch (responseStyle) {
-      case 'concise':
-        return false;
-      case 'detailed':
-      default:
-        return true;
-    }
-  })();
-
   const isToolDetails = toolCall?.arguments && Object.entries(toolCall.arguments).length > 0;
 
   // Check if streaming has finished but no tool response was received
@@ -412,180 +555,9 @@ function ToolCallView({
     (entries) => entries.sort((a, b) => b.progress - a.progress)[0]
   );
 
-  const isRenderingProgress =
-    loadingStatus === 'loading' && (progressEntries.length > 0 || (logs || []).length > 0);
-
-  // Function to create a descriptive representation of what the tool is doing
-  const getToolDescription = (): string | null => {
-    const args = toolCall.arguments as Record<string, ToolCallArgumentValue>;
-    const toolName = getToolName(toolCall.name);
-
-    const getStringValue = (value: ToolCallArgumentValue): string => {
-      return typeof value === 'string' ? value : JSON.stringify(value);
-    };
-
-    // Generate descriptive text based on tool type
-    switch (toolName) {
-      case 'text_editor':
-        if (args.command === 'write' && args.path) {
-          return `writing ${getStringValue(args.path)}`;
-        }
-        if (args.command === 'view' && args.path) {
-          return `reading ${getStringValue(args.path)}`;
-        }
-        if (args.command === 'str_replace' && args.path) {
-          return `editing ${getStringValue(args.path)}`;
-        }
-        if (args.command && args.path) {
-          return `${getStringValue(args.command)} ${getStringValue(args.path)}`;
-        }
-        break;
-
-      case 'shell':
-        if (args.command) {
-          return `running ${getStringValue(args.command)}`;
-        }
-        break;
-
-      case 'search':
-        if (args.name) {
-          return `searching for "${getStringValue(args.name)}"`;
-        }
-        if (args.mimeType) {
-          return `searching for ${getStringValue(args.mimeType)} files`;
-        }
-        break;
-
-      case 'read': {
-        if (args.uri) {
-          const uri = getStringValue(args.uri);
-          const fileId = uri.replace('gdrive:///', '');
-          return `reading file ${fileId}`;
-        }
-        if (args.url) {
-          return `reading ${getStringValue(args.url)}`;
-        }
-        break;
-      }
-
-      case 'create_file':
-        if (args.name) {
-          return `creating ${getStringValue(args.name)}`;
-        }
-        break;
-
-      case 'update_file':
-        if (args.fileId) {
-          return `updating file ${getStringValue(args.fileId)}`;
-        }
-        break;
-
-      case 'sheets_tool': {
-        if (args.operation && args.spreadsheetId) {
-          const operation = getStringValue(args.operation);
-          const sheetId = getStringValue(args.spreadsheetId);
-          return `${operation} in sheet ${sheetId}`;
-        }
-        break;
-      }
-
-      case 'docs_tool': {
-        if (args.operation && args.documentId) {
-          const operation = getStringValue(args.operation);
-          const docId = getStringValue(args.documentId);
-          return `${operation} in document ${docId}`;
-        }
-        break;
-      }
-
-      case 'web_scrape':
-        if (args.url) {
-          return `scraping ${getStringValue(args.url)}`;
-        }
-        break;
-
-      case 'remember_memory':
-        if (args.category && args.data) {
-          return `storing ${getStringValue(args.category)}: ${getStringValue(args.data)}`;
-        }
-        break;
-
-      case 'retrieve_memories':
-        if (args.category) {
-          return `retrieving ${getStringValue(args.category)} memories`;
-        }
-        break;
-
-      case 'screen_capture':
-        if (args.window_title) {
-          return `capturing window "${getStringValue(args.window_title)}"`;
-        }
-        return `capturing screen`;
-
-      case 'automation_script':
-        if (args.language) {
-          return `running ${getStringValue(args.language)} script`;
-        }
-        break;
-
-      case 'final_output':
-        return 'final output';
-
-      case 'computer_control':
-        return `poking around...`;
-
-      case 'execute_code': {
-        const toolGraph = args.tool_graph as unknown as ToolGraphNode[] | undefined;
-        if (toolGraph && Array.isArray(toolGraph) && toolGraph.length > 0) {
-          if (toolGraph.length === 1) {
-            return `${toolGraph[0].description}`;
-          }
-          if (toolGraph.length === 2) {
-            return `${toolGraph[0].tool}, ${toolGraph[1].tool}`;
-          }
-          return `${toolGraph.length} tools used`;
-        }
-        return 'executing code';
-      }
-
-      default: {
-        // Generic fallback for unknown tools: ToolName + CompactArguments
-        // This ensures any MCP tool works without explicit handling
-        const toolDisplayName = snakeToTitleCase(toolName);
-        const entries = Object.entries(args);
-
-        if (entries.length === 0) {
-          return `${toolDisplayName}`;
-        }
-
-        // For a single parameter, show key and truncated value
-        if (entries.length === 1) {
-          const [key, value] = entries[0];
-          const stringValue = getStringValue(value);
-          return `${toolDisplayName} ${key}: ${stringValue}`;
-        }
-
-        // For multiple parameters, show tool name and keys
-        const keys = entries.map(([key]) => key).join(', ');
-        return `${toolDisplayName} ${keys}`;
-      }
-    }
-
-    return null;
-  };
-
   // Get extension tooltip for the current tool
   const extensionTooltip = getExtensionTooltip(toolCall.name);
 
-  // Extract tool label content to avoid duplication
-  const getToolLabelContent = () => {
-    const description = getToolDescription();
-    if (description) {
-      return description;
-    }
-    // Fallback tool name formatting
-    return snakeToTitleCase(getToolName(toolCall.name));
-  };
   // Map LoadingStatus to ToolCallStatus
   const getToolCallStatus = (loadingStatus: LoadingStatus): ToolCallStatus => {
     switch (loadingStatus) {
@@ -601,21 +573,53 @@ function ToolCallView({
   };
 
   const toolCallStatus = getToolCallStatus(loadingStatus);
+  const toolSummary = summarizeToolCall(toolCall);
+  const latestProgress = progressEntries[0]?.message;
+  const latestLog = logs && logs.length > 0 ? logs[logs.length - 1] : undefined;
+  const liveDetail =
+    loadingStatus === 'loading'
+      ? compactValue(latestProgress || latestLog || 'Working through the tool call')
+      : loadingStatus === 'error'
+        ? 'Tool call failed'
+        : toolResults.length > 0
+          ? `${toolResults.length} result${toolResults.length === 1 ? '' : 's'} ready`
+          : shouldShowAsComplete
+            ? 'Finished'
+            : null;
 
   const toolLabel = (
     <span
       className={cn(
-        'flex items-center gap-2 min-w-0',
+        'flex items-center gap-2 min-w-0 text-left',
         extensionTooltip && 'cursor-pointer hover:opacity-80'
       )}
     >
       <ToolIconWithStatus ToolIcon={getToolCallIcon(toolCall.name)} status={toolCallStatus} />
-      <span className="truncate flex-1 min-w-0">{getToolLabelContent()}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-text-muted">
+          {loadingStatus === 'loading'
+            ? 'Working on'
+            : loadingStatus === 'error'
+              ? 'Problem with'
+              : 'Ran'}{' '}
+          <span className="text-text-default">{toolSummary}</span>
+        </span>
+        {liveDetail && (
+          <span
+            className={cn(
+              'block truncate text-xs text-text-muted/80',
+              loadingStatus === 'loading' && 'animate-pulse'
+            )}
+          >
+            {liveDetail}
+          </span>
+        )}
+      </span>
     </span>
   );
   return (
     <ToolCallExpandable
-      isStartExpanded={isRenderingProgress}
+      isStartExpanded={false}
       isForceExpand={false}
       label={
         extensionTooltip ? (
@@ -648,7 +652,7 @@ function ToolCallView({
         if (isToolDetails) {
           return (
             <div className="border-t border-border-subtle">
-              <ToolDetailsView toolCall={toolCall} isStartExpanded={isExpandToolDetails} />
+              <ToolDetailsView toolCall={toolCall} isStartExpanded={false} />
             </div>
           );
         }
@@ -701,10 +705,10 @@ interface ToolDetailsViewProps {
 function ToolDetailsView({ toolCall, isStartExpanded }: ToolDetailsViewProps) {
   return (
     <ToolCallExpandable
-      label={<span className="pl-4 font-sans text-sm">Tool Details</span>}
+      label={<span className="pl-2 font-sans text-sm text-text-muted">View tool details</span>}
       isStartExpanded={isStartExpanded}
     >
-      <div className="pr-4 pl-8">
+      <div className="pr-4 pl-6 pb-2">
         {toolCall.arguments && (
           <ToolCallArguments args={toolCall.arguments as Record<string, ToolCallArgumentValue>} />
         )}
@@ -739,7 +743,9 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
       {code && (
         <div className="border-t border-border-subtle -mx-4 mt-2">
           <ToolCallExpandable
-            label={<span className="pl-4 font-sans text-sm">Code</span>}
+            label={
+              <span className="pl-2 font-sans text-sm text-text-muted">View generated code</span>
+            }
             isStartExpanded={false}
           >
             <pre className="font-mono text-xs text-text-muted whitespace-pre-wrap overflow-x-auto px-4 py-2">
@@ -771,7 +777,7 @@ function ToolResultView({ result, isStartExpanded }: ToolResultViewProps) {
 
   return (
     <ToolCallExpandable
-      label={<span className="pl-4 py-1 font-sans text-sm">Output</span>}
+      label={<span className="pl-2 py-1 font-sans text-sm text-text-muted">View output</span>}
       isStartExpanded={isStartExpanded}
     >
       <div className="pl-4 pr-4 py-4">
@@ -827,8 +833,8 @@ function ToolLogsView({
   return (
     <ToolCallExpandable
       label={
-        <span className="pl-4 py-1 font-sans text-sm flex items-center">
-          <span>Logs</span>
+        <span className="pl-2 py-1 font-sans text-sm flex items-center text-text-muted">
+          <span>View live logs</span>
           {working && (
             <div className="mx-2 inline-block">
               <span
