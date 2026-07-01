@@ -21,6 +21,12 @@ describe('normalizeVersion', () => {
     expect(normalizeVersion(undefined)).toBe('');
     expect(normalizeVersion(null)).toBe('');
   });
+
+  it('tolerates version-like values from runtime bridges', () => {
+    expect(normalizeVersion({ version: 'v1.86.1' })).toBe('1.86.1');
+    expect(normalizeVersion({ version: 2 })).toBe('2');
+    expect(normalizeVersion({ raw: 'v1.86.1' })).toBe('');
+  });
 });
 
 describe('isNewerVersion', () => {
@@ -122,7 +128,10 @@ describe('reduceUpdaterEvent — errors', () => {
     expect(s.error).toBe('boom');
   });
   it('captures an Error instance message', () => {
-    const s = reduceUpdaterEvent(initialUpdaterState, { event: 'error', data: new Error('kaboom') });
+    const s = reduceUpdaterEvent(initialUpdaterState, {
+      event: 'error',
+      data: new Error('kaboom'),
+    });
     expect(s.error).toBe('kaboom');
   });
   it('falls back to a generic message', () => {

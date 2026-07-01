@@ -47,8 +47,19 @@ export interface UpdaterEventPayload {
   data?: unknown;
 }
 
-export function normalizeVersion(v: string | undefined | null): string {
-  return (v ?? '').replace(/^v/i, '').trim();
+export function normalizeVersion(v: unknown): string {
+  if (typeof v === 'string' || typeof v === 'number') {
+    return String(v).replace(/^v/i, '').trim();
+  }
+
+  if (v && typeof v === 'object' && 'version' in v) {
+    const version = (v as { version?: unknown }).version;
+    if (typeof version === 'string' || typeof version === 'number') {
+      return String(version).replace(/^v/i, '').trim();
+    }
+  }
+
+  return '';
 }
 
 /**
@@ -96,10 +107,7 @@ function percentFromData(data: unknown): number | undefined {
  * Fold one main-process `updater-event` into the view state. Pure: returns a
  * new object and never mutates `prev`.
  */
-export function reduceUpdaterEvent(
-  prev: UpdaterState,
-  payload: UpdaterEventPayload
-): UpdaterState {
+export function reduceUpdaterEvent(prev: UpdaterState, payload: UpdaterEventPayload): UpdaterState {
   switch (payload.event) {
     case 'checking-for-update':
       // Don't clobber a finished download with a later background re-check.
@@ -159,9 +167,7 @@ export function reduceUpdaterEvent(
 
 /** Should the startup modal be visible for this state? */
 export function shouldShowUpdateModal(state: UpdaterState): boolean {
-  return (
-    state.phase === 'available' || state.phase === 'downloaded' || state.phase === 'error'
-  );
+  return state.phase === 'available' || state.phase === 'downloaded' || state.phase === 'error';
 }
 
 /**
@@ -194,7 +200,8 @@ export function stateFromSnapshot(
   return {
     phase,
     latestVersion,
-    percent: typeof snapshot.percent === 'number' ? snapshot.percent : phase === 'downloaded' ? 100 : 0,
+    percent:
+      typeof snapshot.percent === 'number' ? snapshot.percent : phase === 'downloaded' ? 100 : 0,
     usingFallback: !!snapshot.usingFallback,
     error: snapshot.error,
   };
