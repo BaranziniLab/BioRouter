@@ -16,7 +16,7 @@ import { useIsMobile } from '../../hooks/use-mobile';
 
 const SIDEBAR_COOKIE_NAME = 'sidebar_state';
 const SIDEBAR_COOKIE_MAX_AGE = 60 * 60 * 24 * 7;
-const SIDEBAR_WIDTH = '12rem';
+const SIDEBAR_WIDTH = '13rem';
 const SIDEBAR_WIDTH_MOBILE = 'fit-content';
 const SIDEBAR_WIDTH_ICON = '38px';
 const SIDEBAR_KEYBOARD_SHORTCUT = 'b';
