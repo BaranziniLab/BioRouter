@@ -78,7 +78,7 @@ export default function Hub({
         )}
       </div>
 
-      <div className="absolute inset-x-4 sm:inset-x-6 bottom-8 sm:bottom-10 z-10 pointer-events-none">
+      <div className="absolute inset-x-4 sm:inset-x-6 bottom-4 z-10 pointer-events-none">
         <div className="w-full max-w-[760px] mx-auto pointer-events-auto">
           <ChatInput
             sessionId={null}
