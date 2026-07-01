@@ -21,9 +21,38 @@
     .baam-hero h1 { font-size: clamp(24px, 3.5vw, 38px); font-weight: 700; letter-spacing: -1px; margin-bottom: 10px; }
     .baam-hero p { color: var(--text-2); font-size: 15px; max-width: 540px; margin: 0 auto 24px; line-height: 1.6; }
 
-    .search-wrap { max-width: 480px; margin: 0 auto; position: relative; }
+    .nav-item-dropdown { position: relative; }
+    .nav-item-dropdown > a { display: inline-flex; align-items: center; gap: 5px; }
+    .nav-caret { width: 12px; height: 12px; }
+    .nav-dropdown {
+      position: absolute; top: calc(100% + 10px); left: 0;
+      min-width: 210px; padding: 7px;
+      background: rgba(255,255,255,0.96);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+      opacity: 0; transform: translateY(-4px);
+      pointer-events: none;
+      transition: var(--transition);
+    }
+    .nav-item-dropdown:hover .nav-dropdown,
+    .nav-item-dropdown:focus-within .nav-dropdown {
+      opacity: 1; transform: translateY(0); pointer-events: auto;
+    }
+    .nav-dropdown a {
+      display: block;
+      padding: 9px 10px;
+      border-radius: var(--radius);
+      color: var(--text-2);
+      font-size: 12.5px;
+      font-weight: 650;
+      text-decoration: none;
+    }
+    .nav-dropdown a:hover { color: var(--text); background: var(--bg-3); }
+
+    .search-wrap { max-width: 560px; margin: 0; position: relative; }
     .search-icon { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); width: 16px; height: 16px; color: var(--text-3); pointer-events: none; }
-    #agent-search {
+    #agent-search, #workflow-search, #skill-search {
       width: 100%; padding: 11px 16px 11px 42px;
       background: var(--bg-2);
       border: none;
@@ -34,8 +63,116 @@
       box-shadow: var(--shadow);
       transition: var(--transition);
     }
-    #agent-search:focus { box-shadow: var(--shadow), 0 0 0 3px var(--accent-soft); }
-    #agent-search::placeholder { color: var(--text-3); }
+    #agent-search:focus, #workflow-search:focus, #skill-search:focus { box-shadow: var(--shadow), 0 0 0 3px var(--accent-soft); }
+    #agent-search::placeholder, #workflow-search::placeholder, #skill-search::placeholder { color: var(--text-3); }
+
+    .baam-directory {
+      max-width: 1080px;
+      margin: 34px auto 10px;
+      padding: 0 24px 18px;
+    }
+    .baam-directory-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+    .baam-directory-head h2 {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.2px;
+      margin-bottom: 3px;
+    }
+    .baam-directory-head p {
+      color: var(--text-2);
+      font-size: 13.5px;
+      line-height: 1.6;
+      max-width: 610px;
+    }
+    .baam-jump-menu { position: relative; flex-shrink: 0; }
+    .baam-jump-menu summary {
+      list-style: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 14px;
+      border-radius: var(--radius);
+      background: var(--accent);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      user-select: none;
+    }
+    .baam-jump-menu summary::-webkit-details-marker { display: none; }
+    .baam-jump-menu[open] summary { background: var(--accent-hover); }
+    .baam-jump-links {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 8px);
+      z-index: 5;
+      width: 230px;
+      padding: 7px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-lg);
+    }
+    .baam-jump-links a {
+      display: block;
+      padding: 9px 10px;
+      color: var(--text-2);
+      text-decoration: none;
+      border-radius: var(--radius);
+      font-size: 13px;
+      font-weight: 650;
+    }
+    .baam-jump-links a:hover { color: var(--text); background: var(--bg-3); }
+    .baam-directory-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .directory-card {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      min-height: 128px;
+      padding: 17px 18px;
+      border-radius: var(--radius-xl);
+      background: var(--bg-2);
+      box-shadow: var(--shadow);
+      color: var(--text);
+      text-decoration: none;
+      transition: var(--transition);
+    }
+    .directory-card:hover { background: var(--bg-3); transform: translateY(-1px); }
+    .directory-card .directory-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .directory-card h3 { font-size: 14px; font-weight: 700; letter-spacing: -0.1px; }
+    .directory-card p { color: var(--text-2); font-size: 12.5px; line-height: 1.55; }
+    .directory-card .directory-count { color: var(--text-3); font-size: 11px; font-weight: 700; }
+
+    .section-search-panel {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      margin: 18px 0 20px;
+      padding: 16px 18px;
+      background: rgba(255,255,255,0.62);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+    }
+    .section-search-copy { max-width: 380px; }
+    .section-search-copy strong { display: block; font-size: 13px; color: var(--text); margin-bottom: 2px; }
+    .section-search-copy span { display: block; font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
+    .section-search-panel .search-wrap,
+    .section-search-panel .skills-search-wrap {
+      flex: 1;
+      min-width: 280px;
+      max-width: 620px;
+    }
 
     .baam-section { max-width: 1080px; margin: 0 auto; padding: 32px 24px 40px; }
     .baam-section-header {
@@ -162,27 +299,13 @@
     .install-note strong { color: var(--text); }
     .install-note code { font-size: 12px; }
 
-    /* Skills search bar (mirrors the agent search at the top) */
     .skills-search-wrap {
-      max-width: 100%; margin: 0 0 14px; position: relative;
+      max-width: 100%; margin: 0; position: relative;
     }
     .skills-search-wrap .search-icon {
       position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
       width: 15px; height: 15px; color: var(--text-3); pointer-events: none;
     }
-    #skill-search {
-      width: 100%; padding: 10px 14px 10px 40px;
-      background: var(--bg-2);
-      border: none;
-      border-radius: var(--radius);
-      color: var(--text);
-      font-size: 13.5px; font-family: inherit;
-      outline: none;
-      box-shadow: var(--shadow);
-      transition: var(--transition);
-    }
-    #skill-search:focus { box-shadow: var(--shadow), 0 0 0 3px var(--accent-soft); }
-    #skill-search::placeholder { color: var(--text-3); }
 
     /* Subsection titles inside the Skills section */
     .subsection-title {
@@ -235,8 +358,46 @@
     }
     .federation-banner strong { color: var(--ucsf); }
 
+    .contribution-section {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 24px 24px 58px;
+    }
+    .contribution-head {
+      text-align: center;
+      margin-bottom: 18px;
+    }
+    .contribution-head h2 { font-size: 18px; font-weight: 700; margin-bottom: 5px; }
+    .contribution-head p { color: var(--text-2); font-size: 13.5px; line-height: 1.6; }
+    .contribution-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .contribution-card {
+      background: var(--bg-2);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: 174px;
+    }
+    .contribution-card h3 { font-size: 14px; font-weight: 700; }
+    .contribution-card p { color: var(--text-2); font-size: 12.5px; line-height: 1.6; flex: 1; }
+    .contribution-card a { align-self: flex-start; }
+
+    @media (max-width: 860px) {
+      .baam-directory-head, .section-search-panel { align-items: stretch; flex-direction: column; }
+      .baam-jump-menu { align-self: flex-start; }
+      .baam-jump-links { left: 0; right: auto; }
+      .baam-directory-grid, .contribution-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
     @media (max-width: 480px) {
-      .ext-grid, .skill-grid { grid-template-columns: 1fr; }
+      .ext-grid, .skill-grid, .baam-directory-grid, .contribution-grid { grid-template-columns: 1fr; }
+      .section-search-panel { padding: 14px; }
     }
   </style>
 </head>
@@ -251,7 +412,17 @@
     <li><a href="./">Introduction</a></li>
     <li><a href="download.html">Download</a></li>
     <li><a href="docs.html">Documentation</a></li>
-    <li><a href="baam.html" class="active">BAAM</a></li>
+    <li class="nav-item-dropdown">
+      <a href="baam.html" class="active">BAAM
+        <svg class="nav-caret" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+      </a>
+      <div class="nav-dropdown" aria-label="BAAM sections">
+        <a href="baam.html#marketplace-directory">Marketplace overview</a>
+        <a href="baam.html#extensions-section">Extensions</a>
+        <a href="baam.html#workflows-section">Workflows</a>
+        <a href="baam.html#skills-section">Skills</a>
+      </div>
+    </li>
     <li><a href="about.html">About</a></li>
   </ul>
   <div class="nav-right">
@@ -269,6 +440,10 @@
   <a href="download.html">Download</a>
   <a href="docs.html">Documentation</a>
   <a href="baam.html" class="active">BAAM</a>
+  <a href="baam.html#marketplace-directory">Marketplace overview</a>
+  <a href="baam.html#extensions-section">Extensions</a>
+  <a href="baam.html#workflows-section">Workflows</a>
+  <a href="baam.html#skills-section">Skills</a>
   <a href="about.html">About</a>
 </div>
 
@@ -295,11 +470,67 @@
     <div class="cap"><span>Extensions + Skills + Knowledge + Model = a portable agent you can share and run anywhere.</span></div>
   </div>
 
-  <!-- Search comes after the video so visitors watch the explainer first,
-       then search without scrolling past it. -->
-  <div class="search-wrap" style="margin-bottom:28px">
-    <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-    <input type="text" id="agent-search" placeholder="Search extensions by name, capability, or keyword" oninput="filterAgents()" />
+  <div class="baam-directory" id="marketplace-directory">
+    <div class="baam-directory-head">
+      <div>
+        <h2>Choose the BAAM shelf you want to browse</h2>
+        <p>The explainer above introduces portable agents. The directory below separates installable extensions, reusable skills, and shareable workflows so every search box is attached to the list it filters.</p>
+      </div>
+      <details class="baam-jump-menu">
+        <summary>
+          Browse BAAM
+          <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
+        </summary>
+        <div class="baam-jump-links">
+          <a href="#marketplace-directory">Marketplace overview</a>
+          <a href="#extensions-section">Go to extensions</a>
+          <a href="#workflows-section">Go to workflows</a>
+          <a href="#skills-section">Go to skills</a>
+        </div>
+      </details>
+    </div>
+    <div class="baam-directory-grid">
+      <a class="directory-card" href="#extensions-section">
+        <div class="directory-top">
+          <div class="icon-tile icon-tile-sm">
+            <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          </div>
+          <span class="directory-count">.brxt</span>
+        </div>
+        <h3>Extensions</h3>
+        <p>Install tools and data connectors, each with its own GitHub repository.</p>
+      </a>
+      <a class="directory-card" href="#workflows-section">
+        <div class="directory-top">
+          <div class="icon-tile icon-tile-sm">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          </div>
+          <span class="directory-count">YAML</span>
+        </div>
+        <h3>Workflows</h3>
+        <p>Download portable analysis recipes from the BioRouter workflows repository.</p>
+      </a>
+      <a class="directory-card" href="#skills-section">
+        <div class="directory-top">
+          <div class="icon-tile icon-tile-sm">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-1.04Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-1.04Z"/></svg>
+          </div>
+          <span class="directory-count">.zip</span>
+        </div>
+        <h3>Skills</h3>
+        <p>Find instruction bundles for research, code, writing, and biomedical analysis.</p>
+      </a>
+      <a class="directory-card" href="#contribute-section">
+        <div class="directory-top">
+          <div class="icon-tile icon-tile-sm">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M12 2v20"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7H14a3.5 3.5 0 0 1 0 7H6"/></svg>
+          </div>
+          <span class="directory-count">GitHub</span>
+        </div>
+        <h3>Contribute</h3>
+        <p>Route updates to the BioRouter app, skills repo, workflow repo, or extension repo.</p>
+      </a>
+    </div>
   </div>
 
   <!-- EXTENSIONS -->
@@ -310,6 +541,17 @@
       <span class="count">.brxt · One-click install</span>
     </div>
     <p class="section-lead">Download a <code>.brxt</code> bundle and drag it into BioRouter, Extensions, Add Extension. BioRouter installs the virtual environment, configures the tool, and adds it to your session. No terminal needed.</p>
+
+    <div class="section-search-panel">
+      <div class="section-search-copy">
+        <strong>Search extensions</strong>
+        <span>This field filters only the extension cards below.</span>
+      </div>
+      <div class="search-wrap">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input type="text" id="agent-search" placeholder="Search extension name, capability, data source, or keyword" oninput="filterAgents()" />
+      </div>
+    </div>
 
     <div class="ext-grid" id="extensions-grid">
 
@@ -869,7 +1111,7 @@
   </div>
 
   <!-- WORKFLOWS -->
-  <div class="baam-section">
+  <div class="baam-section" id="workflows-section">
     <div class="baam-section-header">
       <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
       <h2>Community workflows</h2>
@@ -879,7 +1121,18 @@
       <strong>Federated collaboration:</strong> Workflows let researchers share analytical pipelines without sharing sensitive data. A workflow is a portable YAML file that carries the instructions, not the underlying patient records or proprietary datasets. A colleague imports your workflow and runs it against their own institutional data to replicate and extend your research.
     </div>
 
-    <div class="wf-card">
+    <div class="section-search-panel">
+      <div class="section-search-copy">
+        <strong>Search workflows</strong>
+        <span>This field filters only the workflow recipes in this section.</span>
+      </div>
+      <div class="search-wrap">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input type="text" id="workflow-search" placeholder="Search workflows by disease, data model, output, or tool" oninput="filterWorkflows()" />
+      </div>
+    </div>
+
+    <div class="wf-card" data-tags="ehr diabetes demographics reporting dashboard omop cdm r shiny federated cohort html report">
       <div class="wf-card-header">
         <div class="icon-tile">
           <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
@@ -924,6 +1177,7 @@ extensions: []</pre>
         <a href="https://github.com/Broccolito/biorouter-workflows" target="_blank" class="btn-ghost btn-sm">More workflows →</a>
       </div>
     </div>
+    <div class="no-results" id="workflows-no-results" style="display:none;">No workflows match your search.</div>
   </div>
 
   <!-- SKILLS -->
@@ -938,10 +1192,15 @@ extensions: []</pre>
       <strong>Skills</strong> are reusable instruction bundles that shape how BioRouter writes code, drafts documents, and reasons about a problem. <strong>To install:</strong> download a <code>.zip</code> below, then in BioRouter open <strong>Skills → Add Skill</strong> and drag the <code>.zip</code> (or a single <code>SKILL.md</code>) into the drop zone. BioRouter unpacks the bundle into <code>~/.config/biorouter/skills/</code> and registers every <code>SKILL.md</code> inside. You can also unzip manually and copy the folder into <code>~/.config/biorouter/skills/</code>. Skills appear under BioRouter → Skills automatically; auto-applied skills activate when relevant files are touched.
     </div>
 
-    <!-- Skills search bar -->
-    <div class="skills-search-wrap">
-      <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
-      <input type="text" id="skill-search" placeholder="Search skills by name, category, capability, or tool (e.g. GATK, scanpy, MAFFT)" oninput="filterSkills()" />
+    <div class="section-search-panel">
+      <div class="section-search-copy">
+        <strong>Search skills</strong>
+        <span>This field filters only the skill collections in this section.</span>
+      </div>
+      <div class="skills-search-wrap">
+        <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        <input type="text" id="skill-search" placeholder="Search skills by name, category, capability, or tool (e.g. GATK, scanpy, MAFFT)" oninput="filterSkills()" />
+      </div>
     </div>
 
     <!-- Core BioRouter skills subsection -->
@@ -952,7 +1211,7 @@ extensions: []</pre>
 
     <div class="skill-grid" id="core-skill-grid">
 
-      <div class="skill-card" data-tags="scientific-research auto research literature review hypothesis verification citations pubmed">
+      <div class="skill-card" data-tags="scientific-research auto research literature review hypothesis verification citations pubmed" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><circle cx="11.5" cy="14.5" r="2.5"/><path d="M13.3 16.3 15 18"/></svg>
@@ -1096,7 +1355,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card" data-tags="taste-skill design frontend ui landing page dashboard anti-slop">
+      <div class="skill-card" data-tags="taste-skill design frontend ui landing page dashboard anti-slop" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M12 3l1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3z"/></svg>
@@ -1112,7 +1371,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card">
+      <div class="skill-card" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
@@ -1128,7 +1387,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card">
+      <div class="skill-card" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><line x1="12" y1="20" x2="12" y2="10"/><line x1="18" y1="20" x2="18" y2="4"/><line x1="6" y1="20" x2="6" y2="16"/></svg>
@@ -1144,7 +1403,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card">
+      <div class="skill-card" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/></svg>
@@ -1160,7 +1419,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card">
+      <div class="skill-card" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
@@ -1176,7 +1435,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card">
+      <div class="skill-card" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -1192,7 +1451,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card">
+      <div class="skill-card" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
@@ -1208,7 +1467,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card">
+      <div class="skill-card" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/><path d="M7 8h2M7 12h2M13 8l2 2-2 2"/></svg>
@@ -1233,7 +1492,7 @@ extensions: []</pre>
 
     <div class="skill-grid" id="dev-skill-grid">
 
-      <div class="skill-card" data-tags="code-review pull request pr gh confidence diff">
+      <div class="skill-card" data-tags="code-review pull request pr gh confidence diff" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M9 4H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-3"/><rect x="9" y="2" width="6" height="4" rx="1"/><path d="m9 14 2 2 4-4"/></svg>
@@ -1249,7 +1508,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card" data-tags="code-simplifier refactor cleanup simplify clarity">
+      <div class="skill-card" data-tags="code-simplifier refactor cleanup simplify clarity" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="14" y1="10" x2="21" y2="3"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
@@ -1265,7 +1524,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card" data-tags="commit-commands git commit push pr worktree gone branches">
+      <div class="skill-card" data-tags="commit-commands git commit push pr worktree gone branches" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><line x1="3" y1="12" x2="9" y2="12"/><line x1="15" y1="12" x2="21" y2="12"/></svg>
@@ -1281,7 +1540,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card" data-tags="skill-creator authoring meta frontmatter packaging">
+      <div class="skill-card" data-tags="skill-creator authoring meta frontmatter packaging" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="m12 3 1.9 5.8a2 2 0 0 0 1.3 1.3L21 12l-5.8 1.9a2 2 0 0 0-1.3 1.3L12 21l-1.9-5.8a2 2 0 0 0-1.3-1.3L3 12l5.8-1.9a2 2 0 0 0 1.3-1.3z"/></svg>
@@ -1297,7 +1556,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card" data-tags="hookify guardrails warn block safety rules">
+      <div class="skill-card" data-tags="hookify guardrails warn block safety rules" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
@@ -1313,7 +1572,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card" data-tags="code-modernization legacy migration cobol monolith refactor">
+      <div class="skill-card" data-tags="code-modernization legacy migration cobol monolith refactor" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>
@@ -1329,7 +1588,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card" data-tags="playground interactive html explorer controls preview">
+      <div class="skill-card" data-tags="playground interactive html explorer controls preview" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
@@ -1345,7 +1604,7 @@ extensions: []</pre>
         </div>
       </div>
 
-      <div class="skill-card" data-tags="frontend-design ui anti-slop aesthetic css design">
+      <div class="skill-card" data-tags="frontend-design ui anti-slop aesthetic css design" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="21" x2="9" y2="9"/></svg>
@@ -1370,7 +1629,7 @@ extensions: []</pre>
 
     <div class="skill-grid skill-grid-compact" id="bio-skill-grid">
 
-      <div class="skill-card bio-card" data-tags="alignment mafft biopython foldseek">
+      <div class="skill-card bio-card" data-tags="alignment mafft biopython foldseek" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1386,7 +1645,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-alignment/alignment.zip" download="alignment.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="alignment-files samtools pysam bam">
+      <div class="skill-card bio-card" data-tags="alignment-files samtools pysam bam" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1402,7 +1661,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-alignment-files/alignment-files.zip" download="alignment-files.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="alternative-splicing rmats suppa2 isoforms">
+      <div class="skill-card bio-card" data-tags="alternative-splicing rmats suppa2 isoforms" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1418,7 +1677,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-alternative-splicing/alternative-splicing.zip" download="alternative-splicing.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="atac-seq macs3 tobias chrombpnet">
+      <div class="skill-card bio-card" data-tags="atac-seq macs3 tobias chrombpnet" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1434,7 +1693,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-atac-seq/atac-seq.zip" download="atac-seq.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="causal-genomics mr coloc twas">
+      <div class="skill-card bio-card" data-tags="causal-genomics mr coloc twas" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1450,7 +1709,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-causal-genomics/causal-genomics.zip" download="causal-genomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="chemoinformatics rdkit smiles">
+      <div class="skill-card bio-card" data-tags="chemoinformatics rdkit smiles" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1466,7 +1725,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-chemoinformatics/chemoinformatics.zip" download="chemoinformatics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="chip-seq macs2 chipseeker">
+      <div class="skill-card bio-card" data-tags="chip-seq macs2 chipseeker" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1482,7 +1741,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-chip-seq/chip-seq.zip" download="chip-seq.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="clinical-biostatistics survival r lme4">
+      <div class="skill-card bio-card" data-tags="clinical-biostatistics survival r lme4" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1498,7 +1757,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clinical-biostatistics/clinical-biostatistics.zip" download="clinical-biostatistics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="clinical-databases clinvar omim gnomad">
+      <div class="skill-card bio-card" data-tags="clinical-databases clinvar omim gnomad" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1514,7 +1773,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clinical-databases/clinical-databases.zip" download="clinical-databases.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="clip-seq pureclip eclip">
+      <div class="skill-card bio-card" data-tags="clip-seq pureclip eclip" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1530,7 +1789,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-clip-seq/clip-seq.zip" download="clip-seq.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="comparative-genomics orthofinder synteny">
+      <div class="skill-card bio-card" data-tags="comparative-genomics orthofinder synteny" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1546,7 +1805,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-comparative-genomics/comparative-genomics.zip" download="comparative-genomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="copy-number cnvkit gatk cnv">
+      <div class="skill-card bio-card" data-tags="copy-number cnvkit gatk cnv" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1562,7 +1821,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-copy-number/copy-number.zip" download="copy-number.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="crispr-screens mageck screens">
+      <div class="skill-card bio-card" data-tags="crispr-screens mageck screens" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1578,7 +1837,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-crispr-screens/crispr-screens.zip" download="crispr-screens.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="data-visualization ggplot2 matplotlib complexheatmap">
+      <div class="skill-card bio-card" data-tags="data-visualization ggplot2 matplotlib complexheatmap" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1594,7 +1853,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-data-visualization/data-visualization.zip" download="data-visualization.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="database-access entrez uniprot ensembl">
+      <div class="skill-card bio-card" data-tags="database-access entrez uniprot ensembl" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1610,7 +1869,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-database-access/database-access.zip" download="database-access.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="differential-expression deseq2 edger limma">
+      <div class="skill-card bio-card" data-tags="differential-expression deseq2 edger limma" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1626,7 +1885,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-differential-expression/differential-expression.zip" download="differential-expression.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="ecological-genomics edna popgen">
+      <div class="skill-card bio-card" data-tags="ecological-genomics edna popgen" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1642,7 +1901,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ecological-genomics/ecological-genomics.zip" download="ecological-genomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="epidemiological-genomics nextstrain pathogens">
+      <div class="skill-card bio-card" data-tags="epidemiological-genomics nextstrain pathogens" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1658,7 +1917,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-epidemiological-genomics/epidemiological-genomics.zip" download="epidemiological-genomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="epitranscriptomics m6a rna mods">
+      <div class="skill-card bio-card" data-tags="epitranscriptomics m6a rna mods" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1674,7 +1933,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-epitranscriptomics/epitranscriptomics.zip" download="epitranscriptomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="experimental-design power design">
+      <div class="skill-card bio-card" data-tags="experimental-design power design" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1690,7 +1949,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-experimental-design/experimental-design.zip" download="experimental-design.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="expression-matrix tpm mygene">
+      <div class="skill-card bio-card" data-tags="expression-matrix tpm mygene" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1706,7 +1965,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-expression-matrix/expression-matrix.zip" download="expression-matrix.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="flow-cytometry flowcore flowsom">
+      <div class="skill-card bio-card" data-tags="flow-cytometry flowcore flowsom" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1722,7 +1981,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-flow-cytometry/flow-cytometry.zip" download="flow-cytometry.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="gene-regulatory-networks scenic grnboost2">
+      <div class="skill-card bio-card" data-tags="gene-regulatory-networks scenic grnboost2" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1738,7 +1997,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-gene-regulatory-networks/gene-regulatory-networks.zip" download="gene-regulatory-networks.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="genome-annotation augustus interproscan">
+      <div class="skill-card bio-card" data-tags="genome-annotation augustus interproscan" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1754,7 +2013,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-annotation/genome-annotation.zip" download="genome-annotation.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="genome-assembly flye hifiasm quast">
+      <div class="skill-card bio-card" data-tags="genome-assembly flye hifiasm quast" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1770,7 +2029,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-assembly/genome-assembly.zip" download="genome-assembly.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="genome-engineering crispor cas9">
+      <div class="skill-card bio-card" data-tags="genome-engineering crispor cas9" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1786,7 +2045,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-engineering/genome-engineering.zip" download="genome-engineering.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="genome-intervals bedtools pybedtools">
+      <div class="skill-card bio-card" data-tags="genome-intervals bedtools pybedtools" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1802,7 +2061,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-genome-intervals/genome-intervals.zip" download="genome-intervals.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="hi-c-analysis cooler hic-pro">
+      <div class="skill-card bio-card" data-tags="hi-c-analysis cooler hic-pro" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1818,7 +2077,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-hi-c-analysis/hi-c-analysis.zip" download="hi-c-analysis.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="imaging-mass-cytometry imc steinbock">
+      <div class="skill-card bio-card" data-tags="imaging-mass-cytometry imc steinbock" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1834,7 +2093,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-imaging-mass-cytometry/imaging-mass-cytometry.zip" download="imaging-mass-cytometry.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="immunoinformatics netmhc hla">
+      <div class="skill-card bio-card" data-tags="immunoinformatics netmhc hla" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1850,7 +2109,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-immunoinformatics/immunoinformatics.zip" download="immunoinformatics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="liquid-biopsy cfdna ichorcna">
+      <div class="skill-card bio-card" data-tags="liquid-biopsy cfdna ichorcna" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1866,7 +2125,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-liquid-biopsy/liquid-biopsy.zip" download="liquid-biopsy.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="long-read-sequencing nanopore pacbio minimap2">
+      <div class="skill-card bio-card" data-tags="long-read-sequencing nanopore pacbio minimap2" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1882,7 +2141,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-long-read-sequencing/long-read-sequencing.zip" download="long-read-sequencing.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="machine-learning scikit-learn ml">
+      <div class="skill-card bio-card" data-tags="machine-learning scikit-learn ml" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1898,7 +2157,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-machine-learning/machine-learning.zip" download="machine-learning.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="metabolomics xcms metaboanalyst">
+      <div class="skill-card bio-card" data-tags="metabolomics xcms metaboanalyst" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1914,7 +2173,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-metabolomics/metabolomics.zip" download="metabolomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="metagenomics kraken2 metaphlan">
+      <div class="skill-card bio-card" data-tags="metagenomics kraken2 metaphlan" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1930,7 +2189,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-metagenomics/metagenomics.zip" download="metagenomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="methylation-analysis bismark methylkit">
+      <div class="skill-card bio-card" data-tags="methylation-analysis bismark methylkit" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1946,7 +2205,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-methylation-analysis/methylation-analysis.zip" download="methylation-analysis.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="microbiome qiime2 dada2">
+      <div class="skill-card bio-card" data-tags="microbiome qiime2 dada2" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1962,7 +2221,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-microbiome/microbiome.zip" download="microbiome.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="multi-omics-integration mofa diablo">
+      <div class="skill-card bio-card" data-tags="multi-omics-integration mofa diablo" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1978,7 +2237,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-multi-omics-integration/multi-omics-integration.zip" download="multi-omics-integration.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="pathway-analysis clusterprofiler gsea">
+      <div class="skill-card bio-card" data-tags="pathway-analysis clusterprofiler gsea" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -1994,7 +2253,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-pathway-analysis/pathway-analysis.zip" download="pathway-analysis.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="phasing-imputation shapeit beagle">
+      <div class="skill-card bio-card" data-tags="phasing-imputation shapeit beagle" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2010,7 +2269,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-phasing-imputation/phasing-imputation.zip" download="phasing-imputation.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="phylogenetics iq-tree beast">
+      <div class="skill-card bio-card" data-tags="phylogenetics iq-tree beast" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2026,7 +2285,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-phylogenetics/phylogenetics.zip" download="phylogenetics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="population-genetics plink gwas">
+      <div class="skill-card bio-card" data-tags="population-genetics plink gwas" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2042,7 +2301,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-population-genetics/population-genetics.zip" download="population-genetics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="primer-design primer3 qpcr">
+      <div class="skill-card bio-card" data-tags="primer-design primer3 qpcr" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2058,7 +2317,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-primer-design/primer-design.zip" download="primer-design.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="proteomics maxquant fragpipe">
+      <div class="skill-card bio-card" data-tags="proteomics maxquant fragpipe" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2074,7 +2333,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-proteomics/proteomics.zip" download="proteomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="read-alignment bwa-mem2 star">
+      <div class="skill-card bio-card" data-tags="read-alignment bwa-mem2 star" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2090,7 +2349,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-read-alignment/read-alignment.zip" download="read-alignment.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="read-qc fastqc fastp kraken2">
+      <div class="skill-card bio-card" data-tags="read-qc fastqc fastp kraken2" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2106,7 +2365,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-read-qc/read-qc.zip" download="read-qc.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="reporting quarto rmarkdown">
+      <div class="skill-card bio-card" data-tags="reporting quarto rmarkdown" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2122,7 +2381,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-reporting/reporting.zip" download="reporting.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="restriction-analysis rebase digestion">
+      <div class="skill-card bio-card" data-tags="restriction-analysis rebase digestion" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2138,7 +2397,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-restriction-analysis/restriction-analysis.zip" download="restriction-analysis.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="ribo-seq ribowaltz ribo-tish">
+      <div class="skill-card bio-card" data-tags="ribo-seq ribowaltz ribo-tish" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2154,7 +2413,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-ribo-seq/ribo-seq.zip" download="ribo-seq.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="rna-quantification salmon kallisto">
+      <div class="skill-card bio-card" data-tags="rna-quantification salmon kallisto" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2170,7 +2429,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-rna-quantification/rna-quantification.zip" download="rna-quantification.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="rna-structure rnafold viennarna">
+      <div class="skill-card bio-card" data-tags="rna-structure rnafold viennarna" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2186,7 +2445,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-rna-structure/rna-structure.zip" download="rna-structure.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="sequence-io biopython seqkit">
+      <div class="skill-card bio-card" data-tags="sequence-io biopython seqkit" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2202,7 +2461,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-sequence-io/sequence-io.zip" download="sequence-io.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="sequence-manipulation biopython emboss">
+      <div class="skill-card bio-card" data-tags="sequence-manipulation biopython emboss" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2218,7 +2477,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-sequence-manipulation/sequence-manipulation.zip" download="sequence-manipulation.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="single-cell scanpy seurat scvi">
+      <div class="skill-card bio-card" data-tags="single-cell scanpy seurat scvi" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2234,7 +2493,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-single-cell/single-cell.zip" download="single-cell.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="small-rna-seq mirdeep2 isomirs">
+      <div class="skill-card bio-card" data-tags="small-rna-seq mirdeep2 isomirs" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2250,7 +2509,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-small-rna-seq/small-rna-seq.zip" download="small-rna-seq.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="spatial-transcriptomics visium squidpy">
+      <div class="skill-card bio-card" data-tags="spatial-transcriptomics visium squidpy" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2266,7 +2525,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-spatial-transcriptomics/spatial-transcriptomics.zip" download="spatial-transcriptomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="structural-biology alphafold pymol">
+      <div class="skill-card bio-card" data-tags="structural-biology alphafold pymol" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2282,7 +2541,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-structural-biology/structural-biology.zip" download="structural-biology.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="systems-biology cobrapy fba">
+      <div class="skill-card bio-card" data-tags="systems-biology cobrapy fba" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2298,7 +2557,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-systems-biology/systems-biology.zip" download="systems-biology.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="tcr-bcr-analysis mixcr scirpy">
+      <div class="skill-card bio-card" data-tags="tcr-bcr-analysis mixcr scirpy" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2314,7 +2573,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-tcr-bcr-analysis/tcr-bcr-analysis.zip" download="tcr-bcr-analysis.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="temporal-genomics metacycle jtk_cycle">
+      <div class="skill-card bio-card" data-tags="temporal-genomics metacycle jtk_cycle" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2330,7 +2589,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-temporal-genomics/temporal-genomics.zip" download="temporal-genomics.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="variant-calling gatk deepvariant manta">
+      <div class="skill-card bio-card" data-tags="variant-calling gatk deepvariant manta" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2346,7 +2605,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-variant-calling/variant-calling.zip" download="variant-calling.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="workflow-management snakemake nextflow">
+      <div class="skill-card bio-card" data-tags="workflow-management snakemake nextflow" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2362,7 +2621,7 @@ extensions: []</pre>
           <a href="https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-workflow-management/workflow-management.zip" download="workflow-management.zip" class="skill-dl-btn"><svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg> .zip</a>
         </div>
       </div>
-      <div class="skill-card bio-card" data-tags="workflows pipelines end-to-end">
+      <div class="skill-card bio-card" data-tags="workflows pipelines end-to-end" data-license="Apache-2.0">
         <div class="skill-card-header">
           <div class="icon-tile icon-tile-sm">
             <svg class="icon" viewBox="0 0 24 24"><path d="M4 4c4 4 12 4 16 0M4 8c4 4 12 4 16 0M4 12c4 4 12 4 16 0M4 16c4 4 12 4 16 0M4 20c4 4 12 4 16 0"/></svg>
@@ -2384,10 +2643,45 @@ extensions: []</pre>
     <div class="no-results" id="skills-no-results" style="display:none;">No skills match your search.</div>
   </div>
 
-  <!-- CTA -->
-  <div style="text-align:center; padding: 20px 24px 56px;">
-    <p style="color:var(--text-3); font-size:13px; margin-bottom:12px;">Have an agent, workflow, or skill to share with the BioRouter community?</p>
-    <a href="https://github.com/BaranziniLab/BioRouter" target="_blank" class="btn-secondary btn-sm">Contribute on GitHub</a>
+  <div class="contribution-section" id="contribute-section">
+    <div class="contribution-head">
+      <h2>Contribute to the right repository</h2>
+      <p>BAAM content is split across the BioRouter app, the BioRouter Skills repository, the BioRouter Workflows repository, and separate extension repositories.</p>
+    </div>
+    <div class="contribution-grid">
+      <div class="contribution-card">
+        <div class="icon-tile icon-tile-sm">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 20h8"/><path d="M12 18v2"/></svg>
+        </div>
+        <h3>BioRouter app and landing site</h3>
+        <p>Use the main BioRouter repository for application code, desktop UI, server code, documentation, and this landing website.</p>
+        <a href="https://github.com/BaranziniLab/BioRouter" target="_blank" class="btn-secondary btn-sm">BioRouter GitHub</a>
+      </div>
+      <div class="contribution-card">
+        <div class="icon-tile icon-tile-sm">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-1.04Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-1.04Z"/></svg>
+        </div>
+        <h3>BioRouter Skills</h3>
+        <p>Add, update, package, or discuss reusable skill bundles in the dedicated skills repository.</p>
+        <a href="https://github.com/BaranziniLab/biorouter-skills" target="_blank" class="btn-secondary btn-sm">Skills GitHub</a>
+      </div>
+      <div class="contribution-card">
+        <div class="icon-tile icon-tile-sm">
+          <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        </div>
+        <h3>BioRouter Workflows</h3>
+        <p>Contribute portable YAML workflows, examples, and federated analysis recipes in the workflows repository.</p>
+        <a href="https://github.com/Broccolito/biorouter-workflows" target="_blank" class="btn-secondary btn-sm">Workflows GitHub</a>
+      </div>
+      <div class="contribution-card">
+        <div class="icon-tile icon-tile-sm">
+          <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+        </div>
+        <h3>Extension repositories</h3>
+        <p>Each extension is maintained in its own repository. Open the GitHub icon on that extension card to file issues, send PRs, or update releases.</p>
+        <a href="#extensions-section" class="btn-secondary btn-sm">Browse extension repos</a>
+      </div>
+    </div>
   </div>
 
 </main>
@@ -2471,8 +2765,20 @@ extensions: []</pre>
       const text = (c.textContent + ' ' + (c.dataset.tags || '')).toLowerCase();
       c.style.display = !q || text.includes(q) ? '' : 'none';
     });
-    const section = document.getElementById('extensions-section');
-    if (q && section) section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function filterWorkflows() {
+    const q = document.getElementById('workflow-search').value.toLowerCase().trim();
+    const cards = document.querySelectorAll('#workflows-section .wf-card');
+    let visibleTotal = 0;
+    cards.forEach(c => {
+      const haystack = (c.textContent + ' ' + (c.dataset.tags || '')).toLowerCase();
+      const show = !q || haystack.includes(q);
+      c.style.display = show ? '' : 'none';
+      if (show) visibleTotal++;
+    });
+    const noResults = document.getElementById('workflows-no-results');
+    if (noResults) noResults.style.display = (q && visibleTotal === 0) ? '' : 'none';
   }
 
   function filterSkills() {
