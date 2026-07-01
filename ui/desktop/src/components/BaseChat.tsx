@@ -773,8 +773,8 @@ function BaseChatContent({
           <div
             className={
               coherent
-                ? 'flex-shrink-0 px-4 sm:px-6 pb-4 pt-2 bg-background-default'
-                : `px-4 sm:px-6 pb-4 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`
+                ? 'flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-default'
+                : `px-4 sm:px-6 pb-6 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`
             }
           >
             {renderWorkingStatus()}
