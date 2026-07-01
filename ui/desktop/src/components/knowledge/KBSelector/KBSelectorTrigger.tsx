@@ -23,7 +23,7 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
       <button
         data-testid="knowledge-kb-selector-trigger"
         onClick={() => setOpen(true)}
-        className="biorouter-list-row w-full inline-flex items-center gap-2 px-3 py-2.5 transition-colors"
+        className="inline-flex w-full items-center gap-2 rounded-xl bg-background-default/60 px-3 py-2.5 shadow-[0_1px_2px_rgba(32,25,15,0.025)] transition-colors hover:bg-background-default focus:outline-none focus:ring-1 focus:ring-ring"
       >
         <span
           className="w-2 h-2 rounded-full flex-shrink-0"
