@@ -58,53 +58,6 @@ export class TextSplitter {
   }
 }
 
-// Text animation class for hover effects
-const lettersAndSymbols = [
-  'a',
-  'b',
-  'c',
-  'd',
-  'e',
-  'f',
-  'g',
-  'h',
-  'i',
-  'j',
-  'k',
-  'l',
-  'm',
-  'n',
-  'o',
-  'p',
-  'q',
-  'r',
-  's',
-  't',
-  'u',
-  'v',
-  'w',
-  'x',
-  'y',
-  'z',
-  '!',
-  '@',
-  '#',
-  '$',
-  '%',
-  '^',
-  '&',
-  '*',
-  '-',
-  '_',
-  '+',
-  '=',
-  ';',
-  ':',
-  '<',
-  '>',
-  ',',
-];
-
 export class TextAnimator {
   textElement: HTMLElement;
   splitter!: TextSplitter;
@@ -134,59 +87,45 @@ export class TextAnimator {
     const chars = this.splitter.getChars();
 
     chars.forEach((char, position) => {
-      const initialText = char.textContent || '';
-
-      char.style.opacity = '1';
+      char.style.opacity = '0';
       char.style.display = 'inline-block';
       char.style.position = 'relative';
+      char.style.transform = 'translateX(-0.18em)';
+      char.style.filter = 'blur(2px)';
 
       const animation = char.animate(
         [
           {
-            opacity: 1,
-            color: '#666',
+            opacity: 0,
+            transform: 'translateX(-0.18em)',
+            filter: 'blur(2px)',
           },
           {
-            opacity: 0.5,
-            color: '#999',
+            opacity: 0.7,
+            transform: 'translateX(-0.04em)',
+            filter: 'blur(0.6px)',
           },
           {
             opacity: 1,
-            color: 'inherit',
+            transform: 'translateX(0)',
+            filter: 'blur(0)',
           },
         ],
         {
-          duration: 300, // Total duration for all iterations
-          easing: 'ease-in-out',
-          delay: position * 30, // Stagger the start of each animation
+          duration: 420,
+          easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+          delay: position * 12,
           iterations: 1,
+          fill: 'forwards',
         }
       );
 
       this.activeAnimations.push(animation);
 
-      let iteration = 0;
-      const maxIterations = 2;
-
-      const animateCharacterChange = () => {
-        if (iteration < maxIterations) {
-          char.textContent =
-            lettersAndSymbols[Math.floor(Math.random() * lettersAndSymbols.length)];
-          const timeoutId = setTimeout(animateCharacterChange, 100);
-          this.activeTimeouts.push(timeoutId);
-          iteration++;
-        } else {
-          char.textContent = initialText;
-        }
-      };
-
-      const timeoutId = setTimeout(animateCharacterChange, position * 30);
-      this.activeTimeouts.push(timeoutId);
-
       animation.onfinish = () => {
-        char.textContent = initialText;
-        char.style.color = '';
         char.style.opacity = '1';
+        char.style.transform = '';
+        char.style.filter = '';
       };
     });
   }
@@ -206,6 +145,9 @@ export class TextAnimator {
       if (this.originalChars[index]) {
         char.textContent = this.originalChars[index];
       }
+      char.style.opacity = '';
+      char.style.transform = '';
+      char.style.filter = '';
     });
   }
 }
@@ -215,11 +157,15 @@ interface UseTextAnimatorProps {
 }
 
 export function useTextAnimator({ text }: UseTextAnimatorProps) {
-  const elementRef = useRef<HTMLDivElement>(null);
+  const elementRef = useRef<HTMLSpanElement>(null);
   const animator = useRef<TextAnimator | null>(null);
 
   useEffect(() => {
     if (!elementRef.current) return;
+
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      return;
+    }
 
     // Create animator
     animator.current = new TextAnimator(elementRef.current);
