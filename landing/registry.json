@@ -1433,6 +1433,214 @@
       "license": "Apache-2.0"
     },
     {
+      "id": "stata-research-workbench",
+      "name": "Stata Research Workbench",
+      "category": "Core",
+      "type": "User-invocable · /stata-research-workbench",
+      "description": "Plans Stata .do/.dta research workflows: audits, logs, tables, graph export, replication, and R&R updates.",
+      "tags": [
+        "Stata",
+        "Replication",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "stata-research-workbench",
+        "stata",
+        "do",
+        "files",
+        "dta",
+        "logs",
+        "tables",
+        "replication",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-stata-research-workbench/stata-research-workbench.zip",
+      "filename": "stata-research-workbench.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "survey-weights-complex-samples",
+      "name": "Survey Weights and Complex Samples",
+      "category": "Core",
+      "type": "User-invocable · /survey-weights-complex-samples",
+      "description": "Handles complex survey designs with strata, PSUs, replicate weights, domain analysis, calibration, and weighted inference.",
+      "tags": [
+        "Surveys",
+        "Weights",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "survey-weights-complex-samples",
+        "cps",
+        "acs",
+        "nhanes",
+        "strata",
+        "psu",
+        "replicate",
+        "weights",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-survey-weights-complex-samples/survey-weights-complex-samples.zip",
+      "filename": "survey-weights-complex-samples.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "psychometrics-sem-measurement",
+      "name": "Psychometrics, SEM, and Measurement",
+      "category": "Core",
+      "type": "User-invocable · /psychometrics-sem-measurement",
+      "description": "Plans reliability, CFA/SEM, mediation/moderation, invariance, item analysis, and APA-style measurement reporting.",
+      "tags": [
+        "SEM",
+        "Measurement",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "psychometrics-sem-measurement",
+        "reliability",
+        "cfa",
+        "sem",
+        "mediation",
+        "moderation",
+        "invariance",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-psychometrics-sem-measurement/psychometrics-sem-measurement.zip",
+      "filename": "psychometrics-sem-measurement.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "social-science-text-as-data",
+      "name": "Social Science Text as Data",
+      "category": "Core",
+      "type": "User-invocable · /social-science-text-as-data",
+      "description": "Plans dictionaries, topic models, embeddings, sentiment, supervised coding, LLM-label validation, and measurement-error checks.",
+      "tags": [
+        "Text as Data",
+        "NLP",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "social-science-text-as-data",
+        "topic",
+        "models",
+        "embeddings",
+        "sentiment",
+        "dictionaries",
+        "llm",
+        "coding",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-social-science-text-as-data/social-science-text-as-data.zip",
+      "filename": "social-science-text-as-data.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "econ-finance-data-sources",
+      "name": "Economics and Finance Data Sources",
+      "category": "Core",
+      "type": "User-invocable · /econ-finance-data-sources",
+      "description": "Routes empirical econ/finance sources including WRDS, CRSP, Compustat, SEC/EDGAR, NBER, SSRN, and public datasets.",
+      "tags": [
+        "Data Sources",
+        "Finance",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "econ-finance-data-sources",
+        "wrds",
+        "crsp",
+        "compustat",
+        "edgar",
+        "nber",
+        "ssrn",
+        "openalex",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-econ-finance-data-sources/econ-finance-data-sources.zip",
+      "filename": "econ-finance-data-sources.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "empirical-paper-submission-rr",
+      "name": "Empirical Paper Submission and R&R",
+      "category": "Core",
+      "type": "User-invocable · /empirical-paper-submission-rr",
+      "description": "Plans journal targeting, referee reports, response letters, revise-and-resubmit execution, and appendix organization.",
+      "tags": [
+        "R&R",
+        "Submission",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "empirical-paper-submission-rr",
+        "referee",
+        "reports",
+        "response",
+        "letters",
+        "journal",
+        "targeting",
+        "revision",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-empirical-paper-submission-rr/empirical-paper-submission-rr.zip",
+      "filename": "empirical-paper-submission-rr.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "structural-economics-theory",
+      "name": "Structural Economics and Theory",
+      "category": "Core",
+      "type": "User-invocable · /structural-economics-theory",
+      "description": "Routes game theory, equilibrium, DSGE/HANK, structural IO, calibration, simulation, and identification-proof workflows.",
+      "tags": [
+        "Structural",
+        "Theory",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "structural-economics-theory",
+        "game",
+        "theory",
+        "dsge",
+        "hank",
+        "structural",
+        "io",
+        "equilibrium",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-structural-economics-theory/structural-economics-theory.zip",
+      "filename": "structural-economics-theory.zip",
+      "license": "Apache-2.0"
+    },
+    {
+      "id": "causal-heterogeneity-policy-learning",
+      "name": "Causal Heterogeneity and Policy Learning",
+      "category": "Core",
+      "type": "User-invocable · /causal-heterogeneity-policy-learning",
+      "description": "Plans CATE, causal forests, meta-learners, policy learning, conformal causal inference, fairness, and subgroup reporting.",
+      "tags": [
+        "CATE",
+        "Policy",
+        "Apache-2.0"
+      ],
+      "keywords": [
+        "causal-heterogeneity-policy-learning",
+        "cate",
+        "causal",
+        "forests",
+        "meta",
+        "learners",
+        "policy",
+        "learning",
+        "fairness",
+        "apache"
+      ],
+      "download": "https://github.com/BaranziniLab/biorouter-skills/releases/download/skill-causal-heterogeneity-policy-learning/causal-heterogeneity-policy-learning.zip",
+      "filename": "causal-heterogeneity-policy-learning.zip",
+      "license": "Apache-2.0"
+    },
+    {
       "id": "anti-ai-writing",
       "name": "Anti-AI Writing",
       "category": "Core",
