@@ -1216,6 +1216,10 @@ export type SetActiveBody = {
     session_id?: string | null;
 };
 
+export type SetDefaultModelBody = {
+    model?: ModelRef | null;
+};
+
 export type SetProviderRequest = {
     model: string;
     provider: string;
@@ -2777,6 +2781,38 @@ export type GetBaseResponses = {
 };
 
 export type GetBaseResponse = GetBaseResponses[keyof GetBaseResponses];
+
+export type SetDefaultModelData = {
+    body: SetDefaultModelBody;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/default-model';
+};
+
+export type SetDefaultModelErrors = {
+    /**
+     * Bad request
+     */
+    400: unknown;
+    /**
+     * Not found
+     */
+    404: unknown;
+};
+
+export type SetDefaultModelResponses = {
+    /**
+     * Updated knowledge base default model
+     */
+    200: Manifest;
+};
+
+export type SetDefaultModelResponse = SetDefaultModelResponses[keyof SetDefaultModelResponses];
 
 export type ExportBrkbData = {
     body?: never;

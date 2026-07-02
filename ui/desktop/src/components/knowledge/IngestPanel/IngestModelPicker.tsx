@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Brain, Check, ChevronDown } from 'lucide-react';
+import { Brain, Check, ChevronDown, LoaderCircle } from 'lucide-react';
 import type { ProviderDetails } from '../../../api';
 import type { ModelRef } from '../../../api/types.gen';
 import { useConfig } from '../../ConfigContext';
@@ -20,13 +20,15 @@ import {
 interface Props {
   value: ModelRef;
   onChange: (v: ModelRef) => void;
+  disabled?: boolean;
+  saving?: boolean;
 }
 
 interface ProviderModelsSection extends OrderedProviderGroup {
   modelsByProvider: Record<string, string[]>;
 }
 
-export function IngestModelPicker({ value, onChange }: Props) {
+export function IngestModelPicker({ value, onChange, disabled = false, saving = false }: Props) {
   const { getProviders, getProviderModels } = useConfig();
   const [open, setOpen] = useState(false);
   const [sections, setSections] = useState<ProviderModelsSection[]>([]);
@@ -102,11 +104,11 @@ export function IngestModelPicker({ value, onChange }: Props) {
     }
 
     return (
-      <section key={provider.name} className="space-y-2">
-        <div className="text-[11px] font-medium uppercase tracking-wider text-text-muted">
+      <section key={provider.name} className="space-y-1.5">
+        <div className="px-1 text-[11px] font-medium uppercase tracking-wider text-text-muted">
           {providerDisplayNames[provider.name] ?? provider.name}
         </div>
-        <div className="grid gap-2 sm:grid-cols-2">
+        <div className="space-y-0.5">
           {models.map((model) => {
             const selected = value.provider === provider.name && value.model === model;
             return (
@@ -117,10 +119,10 @@ export function IngestModelPicker({ value, onChange }: Props) {
                   onChange({ provider: provider.name, model });
                   setOpen(false);
                 }}
-                className={`flex items-center gap-3 rounded-xl border px-3 py-3 text-left transition-colors ${
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-[background-color,box-shadow] duration-150 ${
                   selected
-                    ? 'border-border-default bg-background-default'
-                    : 'border-border-subtle bg-background-surface hover:border-border-default hover:bg-background-default'
+                    ? 'bg-background-medium/82 shadow-[0_8px_20px_-22px_rgba(32,25,15,0.38)]'
+                    : 'hover:bg-background-medium/62 hover:shadow-[0_8px_18px_-24px_rgba(32,25,15,0.3)]'
                 }`}
               >
                 <Brain className="h-4 w-4 shrink-0 text-text-muted" />
@@ -144,44 +146,51 @@ export function IngestModelPicker({ value, onChange }: Props) {
       <button
         data-testid="knowledge-model-picker-trigger"
         type="button"
-        onClick={() => setOpen(true)}
-        className="inline-flex min-h-10 w-full items-center justify-between gap-2 rounded-xl bg-background-default/78 px-3 py-2 text-xs shadow-[0_8px_18px_-18px_rgba(32,25,15,0.32)] transition-colors hover:bg-background-default focus:outline-none focus:ring-1 focus:ring-ring"
+        onClick={() => {
+          if (!disabled) setOpen(true);
+        }}
+        disabled={disabled}
+        className="group inline-flex min-h-10 w-full items-center justify-between gap-2 rounded-xl bg-background-default/76 px-3 py-2 text-left shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_34%,transparent),0_10px_24px_-24px_rgba(32,25,15,0.38)] transition-[background-color,box-shadow] duration-150 hover:bg-background-medium/82 hover:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_46%,transparent),0_12px_26px_-22px_rgba(32,25,15,0.42)] focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
       >
-        <span className="flex min-w-0 items-center gap-2">
-          <Brain className="h-3.5 w-3.5 shrink-0 text-text-muted" />
-          <span className="min-w-0 truncate">
+        <span className="flex min-w-0 flex-1 items-center gap-2">
+          <Brain className="h-4 w-4 shrink-0 text-text-muted" />
+          <span className="shrink-0 text-[11px] font-medium uppercase tracking-wider text-text-muted">
+            Model
+          </span>
+          <span className="min-w-0 truncate text-xs font-medium text-text-default">
             {selectedProvider
               ? `${currentProviderLabel} / ${value.model}`
               : `${value.provider} / ${value.model}`}
           </span>
         </span>
-        <span className="flex shrink-0 items-center gap-1 text-[11px] uppercase tracking-wider text-text-muted">
-          Model
-          <ChevronDown className="h-3.5 w-3.5" />
+        <span className="flex shrink-0 items-center gap-1.5 rounded-lg bg-background-medium/64 px-2 py-1 text-[11px] font-medium text-text-default shadow-[0_8px_18px_-18px_rgba(32,25,15,0.32)] transition-colors group-hover:bg-background-default/76">
+          {saving && <LoaderCircle className="h-3.5 w-3.5 animate-spin text-text-muted" />}
+          {saving ? 'Saving' : 'Set default'}
+          {!saving && <ChevronDown className="h-3.5 w-3.5 text-text-muted" />}
         </span>
       </button>
 
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="flex max-h-[80vh] flex-col overflow-hidden p-0 sm:max-w-[760px]">
-          <DialogHeader className="px-6 pt-6 pb-0">
-            <DialogTitle>Choose ingest model</DialogTitle>
+        <DialogContent className="flex max-h-[82vh] flex-col overflow-hidden p-0 sm:max-w-[760px]">
+          <DialogHeader className="px-6 pb-3 pt-6">
+            <DialogTitle>Choose knowledge model</DialogTitle>
             <DialogDescription>
-              Pick from configured, available models only. The list follows the model settings
-              order: institutional providers first, then local, then commercial.
+              This model digests staged sources and scheduled knowledge curation. Conversation
+              replies still use the model selected in the chat composer.
             </DialogDescription>
           </DialogHeader>
 
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-2">
             {!hasModels && (
-              <div className="rounded-xl border border-border-subtle bg-background-surface px-4 py-3 text-sm text-text-muted">
+              <div className="rounded-lg bg-background-medium/52 px-4 py-3 text-sm text-text-muted">
                 No configured providers have available models yet.
               </div>
             )}
 
             <div className="space-y-6">
               {sections.map((section) => (
-                <section key={section.key} className="space-y-4">
-                  <div className="text-xs font-medium uppercase tracking-wider text-text-muted flex items-center gap-2">
+                <section key={section.key} className="space-y-3">
+                  <div className="flex items-center gap-2 px-1 text-xs font-medium uppercase tracking-wider text-text-muted">
                     <span className={`h-1.5 w-1.5 rounded-full ${section.accentClassName}`} />
                     {section.label}
                   </div>
@@ -193,8 +202,8 @@ export function IngestModelPicker({ value, onChange }: Props) {
             </div>
           </div>
 
-          <div className="border-t border-border-subtle px-6 py-3">
-            <Button type="button" variant="outline" size="sm" onClick={() => setOpen(false)}>
+          <div className="px-6 pb-5 pt-3">
+            <Button type="button" variant="secondary" size="sm" onClick={() => setOpen(false)}>
               Close
             </Button>
           </div>

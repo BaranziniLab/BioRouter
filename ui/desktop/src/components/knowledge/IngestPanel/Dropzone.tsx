@@ -111,7 +111,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
         className={`relative cursor-pointer rounded-xl px-4 py-5 text-center transition-all focus:outline-none focus:ring-1 focus:ring-ring ${
           dragging
             ? 'bg-block-teal/10 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--block-teal)_38%,transparent),0_12px_24px_-24px_rgba(32,25,15,0.38)]'
-            : 'bg-background-default/34 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_36%,transparent)] hover:bg-background-default/62 hover:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--block-teal)_20%,transparent),0_10px_22px_-24px_rgba(32,25,15,0.28)]'
+            : 'bg-[color-mix(in_srgb,var(--background-default)_78%,var(--background-medium))] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_42%,transparent),0_12px_26px_-28px_rgba(32,25,15,0.3)] hover:bg-background-default hover:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--block-teal)_22%,transparent),0_12px_26px_-24px_rgba(32,25,15,0.34)]'
         }`}
       >
         <input
@@ -153,7 +153,10 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
             'folders',
             'archives',
           ].map((label) => (
-            <span key={label} className="rounded-md bg-background-default/55 px-1.5 py-0.5">
+            <span
+              key={label}
+              className="rounded-md bg-background-medium/74 px-1.5 py-0.5 text-text-default/80"
+            >
               {label}
             </span>
           ))}

@@ -2,7 +2,7 @@ use crate::knowledge::{
     convert, credibility,
     git::GitRepo,
     manifest, paths, raw, registry,
-    types::{Manifest, RegistryEntry, SourceMeta},
+    types::{Manifest, ModelRef, RegistryEntry, SourceMeta},
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -388,6 +388,15 @@ impl KnowledgeService {
         Ok(out)
     }
 
+    pub fn get_base(&self, id: &str) -> Result<Manifest> {
+        paths::validate_kb_id(id)?;
+        let kb_root = paths::kb_root(&self.root, id);
+        if !kb_root.exists() {
+            anyhow::bail!("kb '{id}' not found");
+        }
+        manifest::load(&kb_root)
+    }
+
     pub fn update_base(
         &self,
         id: &str,
@@ -475,6 +484,30 @@ impl KnowledgeService {
             self.rebuild_graph_cache(&current.id)?;
         }
 
+        Ok(current)
+    }
+
+    pub fn set_default_model(&self, id: &str, model: Option<ModelRef>) -> Result<Manifest> {
+        let _lock = self.lock_root()?;
+        paths::validate_kb_id(id)?;
+        let kb_root = paths::kb_root(&self.root, id);
+        if !kb_root.exists() {
+            anyhow::bail!("kb '{id}' not found");
+        }
+
+        let mut current = manifest::load(&kb_root)?;
+        if current.default_model == model {
+            return Ok(current);
+        }
+
+        current.default_model = model;
+        manifest::save(&kb_root, &current)?;
+        let repo = GitRepo::open(&kb_root)?;
+        repo.commit_all(
+            crate::knowledge::types::ChangeKind::Manual,
+            &format!("set default knowledge model for {id}"),
+            None,
+        )?;
         Ok(current)
     }
 

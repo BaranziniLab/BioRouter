@@ -146,7 +146,8 @@ export function ForceGraphCanvas({
     fgWithForce.d3Force('y', forceY(0).strength(0.07));
 
     const timeout = window.setTimeout(() => {
-      fg.zoomToFit?.(500, 84);
+      const fitPadding = Math.max(112, Math.min(size.width, size.height) * 0.16);
+      fg.zoomToFit?.(500, fitPadding);
     }, 900);
 
     return () => window.clearTimeout(timeout);
