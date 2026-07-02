@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { Clipboard } from 'lucide-react';
 import type { ModelRef } from '../../../api/types.gen';
 import { checkModel } from '../../../api/sdk.gen';
-import { useModelAndProvider } from '../../ModelAndProviderContext';
+import { toastError, toastSuccess } from '../../../toasts';
 import { Button } from '../../ui/button';
 import { DispatchProgress } from '../DispatchProgress';
 import { useKnowledge } from '../KnowledgeContext';
-import { expandKnowledgePath } from '../hooks/knowledgeRequest';
+import { expandKnowledgePath, knowledgeFetch } from '../hooks/knowledgeRequest';
 import { useIngestStream } from '../hooks/useIngestStream';
 import { useStagedSources } from '../hooks/useStagedSources';
 import { Dropzone } from './Dropzone';
@@ -17,7 +17,6 @@ import { StagedList } from './StagedList';
 import type { FileDropWarning, StagedFileCandidate } from './fileValidation';
 import { validateDroppedFiles } from './fileValidation';
 
-// TODO Plan 6: read default from config via useConfig once model picker is real
 const FALLBACK_MODEL: ModelRef = { provider: 'anthropic', model: 'claude-sonnet-4-6' };
 
 function genId(): string {
@@ -25,8 +24,7 @@ function genId(): string {
 }
 
 export function IngestPanel() {
-  const { activeKbId, triggerGraphRefresh } = useKnowledge();
-  const { currentModel, currentProvider } = useModelAndProvider();
+  const { activeKbId, activeKb, refresh, triggerGraphRefresh } = useKnowledge();
   const { items, add, remove, update, clear } = useStagedSources();
   const stream = useIngestStream();
   const [showPasteBox, setShowPasteBox] = useState(false);
@@ -34,15 +32,46 @@ export function IngestPanel() {
     'idle'
   );
   const [warnings, setWarnings] = useState<FileDropWarning[]>([]);
+  const [savingDefaultModel, setSavingDefaultModel] = useState(false);
   const stopRequestedRef = useRef(false);
 
-  // Seed the model from the existing config-backed context; fall back to hardcoded default
   const [model, setModel] = useState<ModelRef>(FALLBACK_MODEL);
   useEffect(() => {
-    if (currentModel && currentProvider) {
-      setModel({ model: currentModel, provider: currentProvider });
+    setModel(activeKb?.default_model ?? FALLBACK_MODEL);
+  }, [activeKb?.default_model]);
+
+  async function onDefaultModelChange(next: ModelRef) {
+    const previous = model;
+    setModel(next);
+    if (!activeKbId) {
+      return;
     }
-  }, [currentModel, currentProvider]);
+
+    setSavingDefaultModel(true);
+    try {
+      const response = await knowledgeFetch(`/knowledge/bases/${activeKbId}/default-model`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: next }),
+      });
+      if (!response.ok) {
+        throw new Error(await response.text());
+      }
+      await refresh();
+      toastSuccess({
+        title: 'Knowledge model updated',
+        msg: `${next.provider} / ${next.model} will digest staged sources and scheduled knowledge jobs.`,
+      });
+    } catch (err) {
+      setModel(previous);
+      toastError({
+        title: 'Could not save knowledge model',
+        msg: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      setSavingDefaultModel(false);
+    }
+  }
 
   async function stageExpandedPath(path: string) {
     const expanded = await expandKnowledgePath(path);
@@ -314,7 +343,7 @@ export function IngestPanel() {
         variant="secondary"
         size="sm"
         onClick={() => setShowPasteBox(true)}
-        className="h-10 w-full bg-background-default/78 font-medium shadow-[0_8px_18px_-18px_rgba(32,25,15,0.32)] hover:bg-background-default"
+        className="h-10 w-full bg-background-default/74 font-medium shadow-[0_8px_18px_-18px_rgba(32,25,15,0.32)] transition-[background-color,box-shadow] duration-150 hover:bg-background-medium/82 hover:shadow-[0_12px_26px_-22px_rgba(32,25,15,0.42)]"
       >
         <Clipboard className="mr-1.5 h-4 w-4" />
         Paste text
@@ -341,7 +370,12 @@ export function IngestPanel() {
       <DispatchProgress state={stream} onAbort={onAbort} />
 
       <div className="flex flex-col gap-2 pt-1">
-        <IngestModelPicker value={model} onChange={setModel} />
+        <IngestModelPicker
+          value={model}
+          onChange={(next) => void onDefaultModelChange(next)}
+          disabled={!activeKbId || savingDefaultModel}
+          saving={savingDefaultModel}
+        />
         <Button
           data-testid="knowledge-digest-button"
           variant="default"

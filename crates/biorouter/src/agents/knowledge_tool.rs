@@ -3,7 +3,9 @@
 //! Lets the user, mid-conversation, fold chat history into a knowledge base by
 //! "just saying the word". It resolves the target KB (existing / new / active),
 //! loads the requested sessions (defaulting to the current one), and runs the
-//! shared [`conversation_ingest`] pipeline using the agent's own provider.
+//! shared [`conversation_ingest`] pipeline. Normal chat-side ingestion uses the
+//! agent's own provider; scheduled knowledge jobs prefer the target KB's default
+//! model when one is configured.
 
 use rmcp::model::{Content, ErrorCode, ErrorData};
 use serde_json::Value;
@@ -12,9 +14,11 @@ use super::Agent;
 use crate::knowledge::conversation_ingest::{ingest_conversation, ConversationIngestArgs};
 use crate::knowledge::ProviderCompleter;
 use crate::mcp_utils::ToolResult;
-use crate::session::session_manager::Session;
+use crate::model::ModelConfig;
+use crate::session::session_manager::{Session, SessionType};
 use biorouter_mcp::knowledge::service::KnowledgeService;
-use biorouter_mcp::knowledge::subagent::loop_::SubAgentBounds;
+use biorouter_mcp::knowledge::subagent::loop_::{Completer, SubAgentBounds};
+use biorouter_mcp::knowledge::types::ModelRef;
 
 impl Agent {
     pub async fn handle_ingest_conversation(
@@ -52,12 +56,9 @@ impl Agent {
             }
         }
 
-        let provider = self.provider().await.map_err(|e| {
-            internal(format!(
-                "a model provider is required to digest conversations: {e}"
-            ))
-        })?;
-        let completer = Box::new(ProviderCompleter::new(provider));
+        let completer = self
+            .conversation_ingest_completer(&svc, &kb_id, session)
+            .await?;
 
         let result = ingest_conversation(
             &svc,
@@ -124,6 +125,47 @@ impl Agent {
             "no target knowledge base: pass kb_id, new_kb_name, or set an active knowledge base first"
         )
     }
+
+    async fn conversation_ingest_completer(
+        &self,
+        svc: &KnowledgeService,
+        kb_id: &str,
+        session: &Session,
+    ) -> Result<Box<dyn Completer>, ErrorData> {
+        if should_use_knowledge_default_model(session) {
+            let manifest = svc.get_base(kb_id).map_err(internal)?;
+            if let Some(model) = manifest.default_model {
+                return build_model_ref_completer(&model).await.map_err(|e| {
+                    internal(format!(
+                        "the default knowledge model for '{kb_id}' could not be used: {e}"
+                    ))
+                });
+            }
+        }
+
+        let provider = self.provider().await.map_err(|e| {
+            internal(format!(
+                "a model provider is required to digest conversations: {e}"
+            ))
+        })?;
+        Ok(Box::new(ProviderCompleter::new(provider)))
+    }
+}
+
+fn should_use_knowledge_default_model(session: &Session) -> bool {
+    session.session_type == SessionType::Scheduled || session.schedule_id.is_some()
+}
+
+async fn build_model_ref_completer(model: &ModelRef) -> anyhow::Result<Box<dyn Completer>> {
+    if biorouter_mcp::knowledge::test_mode::env_enabled() {
+        return Ok(Box::new(
+            biorouter_mcp::knowledge::test_mode::TestModeCompleter,
+        ));
+    }
+
+    let model_config = ModelConfig::new(&model.model)?;
+    let provider = crate::providers::create(&model.provider, model_config).await?;
+    Ok(Box::new(ProviderCompleter::new(provider)))
 }
 
 /// Slugify a display name into a valid KB id (lowercase, a-z0-9-, no leading /
@@ -154,7 +196,9 @@ fn invalid_params(e: impl std::fmt::Display) -> ErrorData {
 
 #[cfg(test)]
 mod tests {
-    use super::slugify_kb_name;
+    use super::{should_use_knowledge_default_model, slugify_kb_name};
+    use crate::session::session_manager::{Session, SessionType};
+    use std::path::PathBuf;
 
     #[test]
     fn slugify_produces_valid_ids() {
@@ -162,5 +206,44 @@ mod tests {
         assert_eq!(slugify_kb_name("  Soul  "), "soul");
         assert_eq!(slugify_kb_name("a / b -- c"), "a-b-c");
         assert!(slugify_kb_name("***").is_empty());
+    }
+
+    #[test]
+    fn knowledge_default_model_is_reserved_for_scheduled_contexts() {
+        let user = test_session(SessionType::User, None);
+        assert!(!should_use_knowledge_default_model(&user));
+
+        let scheduled = test_session(SessionType::Scheduled, None);
+        assert!(should_use_knowledge_default_model(&scheduled));
+
+        let scheduled_by_id = test_session(SessionType::User, Some("daily-meditation"));
+        assert!(should_use_knowledge_default_model(&scheduled_by_id));
+    }
+
+    fn test_session(session_type: SessionType, schedule_id: Option<&str>) -> Session {
+        Session {
+            id: "s".to_string(),
+            working_dir: PathBuf::from("."),
+            name: "Test".to_string(),
+            user_set_name: false,
+            session_type,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            extension_data: Default::default(),
+            total_tokens: None,
+            input_tokens: None,
+            output_tokens: None,
+            accumulated_total_tokens: None,
+            accumulated_input_tokens: None,
+            accumulated_output_tokens: None,
+            schedule_id: schedule_id.map(ToOwned::to_owned),
+            workflow: None,
+            user_workflow_values: None,
+            conversation: None,
+            message_count: 0,
+            provider_name: None,
+            model_config: None,
+            diverged_from: None,
+        }
     }
 }

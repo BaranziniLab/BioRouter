@@ -23,7 +23,7 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
       <button
         data-testid="knowledge-kb-selector-trigger"
         onClick={() => setOpen(true)}
-        className="inline-flex w-full items-center gap-3 rounded-xl bg-background-default/82 px-3 py-3 shadow-[0_8px_20px_-18px_rgba(32,25,15,0.36)] transition-colors hover:bg-background-default focus:outline-none focus:ring-1 focus:ring-ring"
+        className="group inline-flex w-full items-center gap-3 rounded-xl bg-background-default/76 px-3 py-3 shadow-[0_8px_20px_-18px_rgba(32,25,15,0.36)] transition-[background-color,box-shadow] duration-150 hover:bg-background-medium/82 hover:shadow-[0_12px_26px_-22px_rgba(32,25,15,0.42)] focus:outline-none focus:ring-1 focus:ring-ring"
       >
         <span
           className="w-2 h-2 rounded-full flex-shrink-0"
@@ -34,7 +34,7 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
             {activeKb?.name ?? 'Focus a knowledge base'}
           </span>
         </span>
-        <span className="flex shrink-0 items-center gap-1 rounded-md bg-background-muted px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+        <span className="flex shrink-0 items-center gap-1 rounded-md bg-background-muted px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-text-muted transition-colors group-hover:bg-background-default/72 group-hover:text-text-default">
           KB
           <ChevronDown className="w-3 h-3" />
         </span>

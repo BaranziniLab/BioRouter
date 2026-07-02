@@ -48,7 +48,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
 
   return (
     <div className="relative flex h-full min-w-0 flex-col overflow-hidden">
-      <div className="mx-3 mb-0 flex flex-wrap items-center justify-between gap-3 px-1 py-2.5">
+      <div className="mb-0 flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <div className="flex min-w-[220px] flex-1 items-baseline gap-2 text-xs text-text-muted">
           <span className="truncate text-sm font-semibold text-text-default">
             {activeKb?.name ?? 'No knowledge base in focus'}
@@ -112,7 +112,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
       </div>
 
       {previewSha && (
-        <div className="mx-3 mt-3 rounded-xl bg-background-warning/10 px-4 py-2 text-xs text-text-warning flex items-center justify-between">
+        <div className="mx-4 mt-1 rounded-xl bg-background-warning/10 px-4 py-2 text-xs text-text-warning flex items-center justify-between">
           <span>Previewing commit {previewSha.slice(0, 7)} — read-only</span>
           <button onClick={onClearPreview} className="underline">
             Exit preview
@@ -120,7 +120,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
         </div>
       )}
 
-      <div className="flex-1 relative min-h-0">
+      <div className="relative min-h-0 flex-1 overflow-hidden bg-[color-mix(in_srgb,var(--background-default)_68%,transparent)]">
         {!activeKbId && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-text-muted">
             Focus a knowledge base to see its graph.

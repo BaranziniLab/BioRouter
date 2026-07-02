@@ -413,6 +413,7 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::knowledge::list_bases,
         super::routes::knowledge::create_base,
         super::routes::knowledge::get_base,
+        super::routes::knowledge::set_default_model,
         super::routes::knowledge::delete_base,
         super::routes::knowledge::get_graph,
         super::routes::knowledge::get_location,
@@ -613,6 +614,7 @@ derive_utoipa!(Icon as IconSchema);
         biorouter_mcp::knowledge::store::PageContent,
         // knowledge route DTOs
         super::routes::knowledge::CreateBaseBody,
+        super::routes::knowledge::SetDefaultModelBody,
         super::routes::knowledge::ListPagesQuery,
         super::routes::knowledge::ReadPageQuery,
         super::routes::knowledge::ReadPageResponse,

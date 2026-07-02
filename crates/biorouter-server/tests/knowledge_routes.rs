@@ -138,6 +138,57 @@ async fn create_then_get_base() {
 }
 
 #[tokio::test]
+async fn set_default_model_persists_on_manifest() {
+    let (_d, app) = build_test_router();
+    create_kb(app.clone(), "models", "Models").await;
+
+    let body = serde_json::to_vec(&serde_json::json!({
+        "model": {
+            "provider": "versa_azure",
+            "model": "gpt-5.5-2026-04-24"
+        }
+    }))
+    .unwrap();
+
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/bases/models/default-model")
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let manifest: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(manifest["default_model"]["provider"], "versa_azure");
+    assert_eq!(manifest["default_model"]["model"], "gpt-5.5-2026-04-24");
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/bases/models")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let manifest: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(manifest["default_model"]["provider"], "versa_azure");
+    assert_eq!(manifest["default_model"]["model"], "gpt-5.5-2026-04-24");
+}
+
+#[tokio::test]
 async fn update_base_metadata_roundtrip() {
     let (_d, app) = build_test_router();
     let create_body =

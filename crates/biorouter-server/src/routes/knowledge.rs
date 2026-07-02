@@ -34,6 +34,7 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
             "/bases/{id}",
             get(get_base).put(update_base).delete(delete_base),
         )
+        .route("/bases/{id}/default-model", put(set_default_model))
         .route("/bases/{id}/graph", get(get_graph))
         .route("/bases/{id}/location", get(get_location))
         .route("/bases/{id}/page", get(get_page_body))
@@ -189,6 +190,12 @@ pub struct UpdateBaseBody {
     pub name: Option<String>,
     #[serde(default)]
     pub color: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct SetDefaultModelBody {
+    #[serde(default)]
+    pub model: Option<ModelRef>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -366,14 +373,9 @@ pub async fn get_base(
     State(svc): State<Arc<KnowledgeService>>,
     Path(id): Path<String>,
 ) -> Result<Json<Manifest>, (StatusCode, String)> {
-    let bases = svc
-        .list_bases()
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    bases
-        .into_iter()
-        .find(|b| b.id == id)
+    svc.get_base(&id)
         .map(Json)
-        .ok_or((StatusCode::NOT_FOUND, format!("kb '{id}' not found")))
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))
 }
 
 #[utoipa::path(
@@ -401,6 +403,32 @@ pub async fn update_base(
                 (StatusCode::BAD_REQUEST, msg)
             }
         })?;
+    Ok(Json(manifest))
+}
+
+#[utoipa::path(
+    put, path = "/knowledge/bases/{id}/default-model",
+    request_body = SetDefaultModelBody,
+    params(("id" = String, Path, description = "Knowledge base ID")),
+    responses(
+        (status = 200, description = "Updated knowledge base default model", body = Manifest),
+        (status = 400, description = "Bad request"),
+        (status = 404, description = "Not found"),
+    )
+)]
+pub async fn set_default_model(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+    Json(body): Json<SetDefaultModelBody>,
+) -> Result<Json<Manifest>, (StatusCode, String)> {
+    let manifest = svc.set_default_model(&id, body.model).map_err(|e| {
+        let msg = e.to_string();
+        if msg.contains("not found") {
+            (StatusCode::NOT_FOUND, msg)
+        } else {
+            (StatusCode::BAD_REQUEST, msg)
+        }
+    })?;
     Ok(Json(manifest))
 }
 
