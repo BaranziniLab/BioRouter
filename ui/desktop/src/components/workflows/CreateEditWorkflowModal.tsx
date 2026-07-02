@@ -434,7 +434,7 @@ export default function CreateEditWorkflowModal({
                   {copied ? (
                     <Check className="w-4 h-4 text-text-success" />
                   ) : (
-                    <Copy className="w-4 h-4 text-iconSubtle" />
+                    <Copy className="w-4 h-4 text-text-muted" />
                   )}
                   <span className="ml-1 text-sm text-text-muted">
                     {copied ? 'Copied!' : 'Copy'}

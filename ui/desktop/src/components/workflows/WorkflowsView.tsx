@@ -803,21 +803,21 @@ export default function WorkflowsView() {
             </DialogHeader>
             <div className="space-y-4">
               <div>
-                <p className="text-sm text-muted-foreground mb-3">
+                <p className="text-sm text-text-muted mb-3">
                   Set a slash command to quickly run this workflow from any chat
                 </p>
                 <div className="flex gap-2 items-center">
-                  <span className="text-muted-foreground">/</span>
+                  <span className="text-text-muted">/</span>
                   <input
                     type="text"
                     value={slashCommand}
                     onChange={(e) => setSlashCommand(e.target.value)}
                     placeholder="command-name"
-                    className="flex-1 px-3 py-2 border rounded text-sm"
+                    className="flex-1 px-3 py-2 border border-border-subtle rounded text-sm"
                   />
                 </div>
                 {slashCommand && (
-                  <p className="text-xs text-muted-foreground mt-2">
+                  <p className="text-xs text-text-muted mt-2">
                     Use /{slashCommand} in any chat to run this workflow
                   </p>
                 )}
