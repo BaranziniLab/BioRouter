@@ -134,7 +134,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   if (isChecking) {
     return (
-      <div className="h-screen w-full bg-background-default flex items-center justify-center">
+      <div className="h-screen w-full bg-background-muted flex items-center justify-center">
         <WelcomeBioRouterLogo />
       </div>
     );
