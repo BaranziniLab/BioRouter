@@ -676,7 +676,7 @@ function BaseChatContent({
         <div
           className={
             coherent
-              ? 'flex flex-col flex-1 min-h-0 relative rounded-t-2xl overflow-hidden bg-background-default'
+              ? 'flex flex-col flex-1 min-h-0 relative rounded-t-2xl overflow-hidden bg-background-muted'
               : 'flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden'
           }
         >
@@ -733,7 +733,7 @@ function BaseChatContent({
             >
               <div className="biorouter-chat-column mx-auto w-full max-w-[920px]">
                 {workflow?.title && (
-                  <div className="sticky top-0 z-10 bg-background-default mb-4 pt-2">
+                  <div className="sticky top-0 z-10 bg-background-muted mb-4 pt-2">
                     <WorkflowHeader title={workflow.title} />
                   </div>
                 )}
@@ -777,7 +777,7 @@ function BaseChatContent({
           <div
             className={
               coherent
-                ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-default'
+                ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-muted'
                 : `px-4 sm:px-6 pb-6 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`
             }
           >
