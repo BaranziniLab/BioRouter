@@ -262,7 +262,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
 
   return (
     <div className="h-screen w-full flex flex-col bg-background-default text-text-default">
-      <div className="biorouter-page-header px-8 pt-6 pb-4 border-b border-border-subtle flex-shrink-0">
+      <div className="px-8 pt-6 pb-4 border-b border-border-subtle flex-shrink-0">
         <BackButton onClick={onNavigateBack} />
         <h1 className="text-2xl font-semibold tracking-tight mt-1 mb-1 pt-8">Schedule Details</h1>
         <p className="text-sm text-text-muted mb-1">Viewing Schedule ID: {scheduleId}</p>
