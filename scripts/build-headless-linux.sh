@@ -6,8 +6,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT="$ROOT/dist/headless-linux-x64"
-TARGET_DIR="${BIOROUTER_HEADLESS_TARGET_DIR:-/tmp/biorouter-target}"
-RUST_IMAGE="${BIOROUTER_HEADLESS_RUST_IMAGE:-rust:1.92}"
+TARGET_DIR="${BIOROUTER_HEADLESS_TARGET_DIR:-/tmp/biorouter-headless-bullseye-target}"
+RUST_IMAGE="${BIOROUTER_HEADLESS_RUST_IMAGE:-rust:1.92-bullseye}"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 

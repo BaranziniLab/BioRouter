@@ -16,8 +16,10 @@
 #   mac-intel <ver>   Package + sign + NOTARIZE the Intel .dmg.
 #   windows <ver>     Package the Windows .zip.
 #   linux <ver>       Package the Linux .deb + .rpm.
-#   verify <ver>      Verify all 5 artifacts (arch, notarization, dmg format).
-#   publish <ver>     Create the GitHub release with the 5 assets + notes.
+#   headless-linux <ver>
+#                     Build the browser-served headless Linux artifact.
+#   verify <ver>      Verify all release artifacts (arch, notarization, dmg format).
+#   publish <ver>     Create the GitHub release with assets + notes.
 #   all <ver>         Run every phase in order (bump → … → publish).
 #
 # Hard-won invariants (see CLAUDE.md for the long version):
@@ -238,6 +240,19 @@ cmd_cli-linux() {
   log "cli rpm: $ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
 }
 
+# ── Headless browser Linux artifact ───────────────────────────────────────────
+# Independent of the Electron GUI packages. Produces the server/browser bundle
+# used for Debian/Ubuntu deployments and verifies that no local profiles or
+# credential material were packaged.
+cmd_headless-linux() {
+  local v="$1"; ensure_docker
+  log "building headless Linux browser artifact"
+  "$ROOT/scripts/package-headless-linux.sh"
+  local tarball="$ROOT/dist/biorouter-headless-linux-x64.tar.gz"
+  [ -f "$tarball" ] || die "headless artifact missing: $tarball"
+  log "headless tarball: $tarball ($(du -h "$tarball" | cut -f1))"
+}
+
 # ── verify ────────────────────────────────────────────────────────────────────
 cmd_verify() {
   local v="$1" ok=1
@@ -248,11 +263,13 @@ cmd_verify() {
   local rpm="$DESK/out/make/rpm/x64/BioRouter-$v-1.x86_64.rpm"
   local clideb="$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb"
   local clirpm="$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
+  local headless="$ROOT/dist/biorouter-headless-linux-x64.tar.gz"
   local armzip="$DESK/out/make/$ARM64_ZIP_REL/BioRouter-darwin-arm64-$v.zip"
   local x64zip="$DESK/out/make/$X64_ZIP_REL/BioRouter-darwin-x64-$v.zip"
-  for f in "$arm" "$x64" "$armzip" "$x64zip" "$win" "$deb" "$rpm" "$clideb" "$clirpm"; do
+  for f in "$arm" "$x64" "$armzip" "$x64zip" "$win" "$deb" "$rpm" "$clideb" "$clirpm" "$headless"; do
     [ -f "$f" ] && log "present: $(basename "$f") ($(du -h "$f" | cut -f1))" || { printf 'MISSING: %s\n' "$f"; ok=0; }
   done
+  "$ROOT/scripts/verify-headless-artifact.sh" >/dev/null || ok=0
   # The electron-updater manifest is generated at publish time; verify it if
   # already present (and that it references both arch zips).
   local yml="$DESK/out/make/latest-mac.yml"
@@ -309,7 +326,8 @@ cmd_publish() {
     "$DESK/out/make/deb/x64/biorouter_${v}_amd64.deb" \
     "$DESK/out/make/rpm/x64/BioRouter-$v-1.x86_64.rpm" \
     "$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb" \
-    "$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
+    "$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm" \
+    "$ROOT/dist/biorouter-headless-linux-x64.tar.gz"
   log "published: $(gh release view "v$v" --json url --jq .url)"
 }
 
@@ -318,13 +336,14 @@ cmd_all() {
   cmd_bump "$v"; cmd_backends "$v"
   cmd_mac-arm64 "$v"; cmd_mac-intel "$v"; cmd_windows "$v"; cmd_linux "$v"
   cmd_cli-linux "$v"                                                    # headless CLI deb/rpm
+  cmd_headless-linux "$v"                                                # browser-served headless Linux
   ( cd "$DESK" && rm -rf node_modules && npm install >/dev/null 2>&1 )  # un-Linux node_modules
   cmd_verify "$v"; cmd_publish "$v"
 }
 
 CMD="${1:-}"; VER="${2:-}"
 case "$CMD" in
-  bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|verify|publish|all)
+  bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|headless-linux|verify|publish|all)
     need_version "$VER"; "cmd_${CMD}" "$VER" ;;
-  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|verify|publish|all} <version>" ;;
+  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|headless-linux|verify|publish|all} <version>" ;;
 esac
