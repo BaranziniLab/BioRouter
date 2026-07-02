@@ -110,8 +110,8 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
         onDrop={onDrop}
         className={`relative cursor-pointer rounded-xl px-4 py-5 text-center transition-all focus:outline-none focus:ring-1 focus:ring-ring ${
           dragging
-            ? 'bg-block-teal/10 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--block-teal)_38%,transparent)]'
-            : 'hover:bg-background-default/70'
+            ? 'bg-block-teal/10 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--block-teal)_38%,transparent),0_12px_24px_-24px_rgba(32,25,15,0.38)]'
+            : 'bg-background-default/34 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_36%,transparent)] hover:bg-background-default/62 hover:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--block-teal)_20%,transparent),0_10px_22px_-24px_rgba(32,25,15,0.28)]'
         }`}
       >
         <input
@@ -128,7 +128,13 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
             e.target.value = '';
           }}
         />
-        <Upload className="mx-auto h-7 w-7 text-text-muted" />
+        <div
+          className={`mx-auto flex h-10 w-10 items-center justify-center rounded-full transition-colors ${
+            dragging ? 'bg-block-teal/15 text-block-teal' : 'bg-background-muted text-text-muted'
+          }`}
+        >
+          <Upload className="h-5 w-5" />
+        </div>
         <div className="mt-2 text-sm font-medium">Drag and drop to stage</div>
         <div className="mt-1 text-xs leading-5 text-text-muted">
           Drop readable files directly, or click to choose files, folders, and archives for backend

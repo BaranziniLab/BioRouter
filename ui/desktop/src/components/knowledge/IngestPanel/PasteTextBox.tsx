@@ -26,22 +26,25 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
   }
 
   return (
-    <div className="biorouter-list-row overflow-hidden">
-      <input
-        type="text"
-        value={title}
-        onChange={(e) => setTitle(e.target.value)}
-        placeholder="Optional title…"
-        className="w-full px-3 py-2 text-xs bg-transparent outline-none text-text-default placeholder:text-textPlaceholder"
-      />
-      <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="Paste knowledge, snippets, or a chunk of prose. URLs will be extracted and offered for ingestion."
-        className="w-full min-h-[100px] px-3 py-2 text-xs bg-transparent outline-none resize-y text-text-default placeholder:text-textPlaceholder"
-      />
+    <div className="biorouter-list-row overflow-hidden px-3 pt-3">
+      <div className="overflow-hidden rounded-xl bg-background-default/72 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_42%,transparent),0_8px_18px_-22px_rgba(32,25,15,0.32)] transition-shadow focus-within:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--block-teal)_28%,transparent),0_10px_22px_-22px_rgba(32,25,15,0.34)]">
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Optional title…"
+          className="w-full bg-background-muted/38 px-3 py-2 text-xs text-text-default outline-none placeholder:text-textPlaceholder"
+        />
+        <div className="h-px bg-[color-mix(in_srgb,var(--border-subtle)_38%,transparent)]" />
+        <textarea
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Paste knowledge, snippets, or a chunk of prose. URLs will be extracted and offered for ingestion."
+          className="w-full min-h-[100px] resize-y bg-background-muted/22 px-3 py-2 text-xs text-text-default outline-none placeholder:text-textPlaceholder"
+        />
+      </div>
       {detectedUrls.length > 0 && (
-        <div className="mx-3 mb-2 flex flex-wrap gap-1.5 rounded-xl bg-background-default/60 px-3 py-2">
+        <div className="mt-2 flex flex-wrap gap-1.5 rounded-xl bg-background-default/60 px-3 py-2">
           <span className="text-[11px] text-text-muted self-center mr-1">Will fetch:</span>
           {detectedUrls.map((u) => {
             const on = includeUrls[u] !== false;
@@ -61,7 +64,7 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
           })}
         </div>
       )}
-      <div className="px-3 py-2 flex justify-between items-center">
+      <div className="py-2 flex justify-between items-center">
         <span className="text-[11px] text-text-muted">{text.length} chars</span>
         <div className="flex gap-1.5">
           <button
