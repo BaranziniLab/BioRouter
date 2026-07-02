@@ -148,7 +148,7 @@ function RunningChatItem({
     <button
       type="button"
       onClick={() => onOpen(entry.sessionId)}
-      className={`w-full min-w-0 flex items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-all duration-500 hover:bg-background-medium ${
+      className={`w-full min-w-0 flex items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-all duration-500 hover:bg-sidebar-hover ${
         completed ? 'opacity-0 translate-y-1' : 'opacity-100 translate-y-0'
       }`}
       title={entry.title}
@@ -257,7 +257,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
                 onClick={() => handleNavigation(entry.path)}
                 isActive={isActivePath(entry.path)}
                 tooltip={entry.tooltip}
-                className="w-full justify-start px-3 py-2 rounded-lg text-sm hover:bg-background-medium transition-colors duration-150 data-[active=true]:bg-background-strong data-[active=true]:font-medium"
+                className="w-full justify-start px-3 py-2 rounded-lg text-sm hover:bg-sidebar-hover transition-colors duration-150 data-[active=true]:bg-sidebar-active data-[active=true]:font-medium"
               >
                 <IconComponent className="w-4 h-4" />
                 <span>{entry.label}</span>
