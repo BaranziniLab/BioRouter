@@ -292,7 +292,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                     key={base.id}
                     className={`biorouter-modal-row flex items-center gap-3 rounded-xl px-3 py-3 transition-all ${
                       isActive
-                        ? '!border-border-default bg-background-muted shadow-sm'
+                        ? '!border-border-default bg-background-muted'
                         : 'hover:!border-border-default hover:bg-background-muted/50'
                     }`}
                   >
@@ -305,7 +305,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                       className="flex min-w-0 flex-1 items-center gap-3 text-left"
                     >
                       <span
-                        className="h-3 w-3 rounded-full border border-black/10"
+                        className="h-3 w-3 rounded-full border border-border-subtle"
                         style={{ background: base.color }}
                       />
                       <div className="min-w-0 flex-1">
@@ -334,7 +334,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                     </button>
 
                     <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-2 rounded-md bg-background-default/70 px-2 py-1 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_55%,transparent)]">
+                      <div className="flex items-center gap-2 rounded-md border border-border-subtle bg-background-default/70 px-2 py-1">
                         <EyeOff className="h-3.5 w-3.5 text-text-muted" />
                         <Switch
                           checked={!hidden}

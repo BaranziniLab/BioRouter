@@ -108,10 +108,10 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
           if (dragCounterRef.current === 0) setDragging(false);
         }}
         onDrop={onDrop}
-        className={`relative cursor-pointer rounded-xl px-4 py-5 text-center transition-all focus:outline-none focus:ring-1 focus:ring-ring ${
+        className={`relative cursor-pointer rounded-xl border px-4 py-5 text-center transition-all focus:outline-none focus:ring-1 focus:ring-ring ${
           dragging
-            ? 'bg-block-teal/10 shadow-[0_12px_24px_-24px_rgba(32,25,15,0.38)]'
-            : 'bg-[color-mix(in_srgb,var(--background-default)_60%,var(--background-medium))] shadow-[0_12px_26px_-28px_rgba(32,25,15,0.3)] hover:bg-background-default/72 hover:shadow-[0_12px_26px_-24px_rgba(32,25,15,0.34)]'
+            ? 'border-block-teal bg-background-medium'
+            : 'border-border-subtle bg-[color-mix(in_srgb,var(--background-default)_60%,var(--background-medium))] hover:bg-background-default/72'
         }`}
       >
         <input
@@ -130,7 +130,9 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
         />
         <div
           className={`mx-auto flex h-10 w-10 items-center justify-center rounded-full transition-colors ${
-            dragging ? 'bg-block-teal/15 text-block-teal' : 'bg-background-muted text-text-muted'
+            dragging
+              ? 'bg-background-strong text-text-default'
+              : 'bg-background-muted text-text-muted'
           }`}
         >
           <Upload className="h-5 w-5" />

@@ -43,7 +43,10 @@ function KnowledgeViewInner() {
         className="flex flex-col min-w-0 flex-1 overflow-y-auto relative"
         data-search-scroll-area
       >
-        <ReadableContent size="graph" className="px-8 pt-12 pb-4 flex-shrink-0">
+        <ReadableContent
+          size="graph"
+          className="px-8 pt-12 pb-6 border-b border-border-subtle flex-shrink-0"
+        >
           <div className="flex flex-col page-transition">
             <h1 className="text-2xl font-semibold tracking-tight mb-1">Knowledge</h1>
             <p className="text-sm text-text-muted mb-0">
@@ -61,7 +64,7 @@ function KnowledgeViewInner() {
             </div>
             <IngestPanel />
           </div>
-          <div className="flex min-h-[520px] min-w-0 overflow-hidden rounded-2xl bg-[color-mix(in_srgb,var(--background-muted)_72%,var(--background-default))] shadow-[inset_0_1px_0_rgba(255,255,255,0.58),0_18px_46px_-36px_rgba(32,25,15,0.34)] lg:h-full lg:min-h-0">
+          <div className="flex min-h-[520px] min-w-0 overflow-hidden rounded-2xl border border-border-subtle bg-[color-mix(in_srgb,var(--background-muted)_72%,var(--background-default))] lg:h-full lg:min-h-0">
             <KnowledgeGraphPanel
               onOpenChangeLog={() => setChangeLogOpen(true)}
               previewSha={previewSha}
