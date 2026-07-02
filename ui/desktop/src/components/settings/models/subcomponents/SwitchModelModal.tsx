@@ -392,7 +392,7 @@ export const SwitchModelModal = ({
                       className={[
                         'biorouter-modal-row flex items-start gap-3 py-2.5 px-3 rounded-xl cursor-pointer transition-colors duration-150',
                         isSelected
-                          ? '!border-border-default bg-background-medium shadow-sm'
+                          ? '!border-border-default bg-background-medium'
                           : 'hover:!border-border-default hover:bg-background-medium',
                       ].join(' ')}
                     >
