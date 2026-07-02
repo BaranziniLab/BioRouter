@@ -125,7 +125,7 @@ export default function ExtensionsView({
         data-search-scroll-area
       >
         {/* Flat page header */}
-        <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
+        <div className="biorouter-page-header px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
           <div className="flex flex-col page-transition">
             <h1 className="text-2xl font-semibold tracking-tight mb-1">Extensions</h1>
             <p className="text-sm text-text-muted mb-0">
