@@ -538,10 +538,8 @@
 
 .biorouter-list-row:hover,
 .biorouter-list-row:focus-within {
-  background: color-mix(in srgb, var(--background-muted) 54%, transparent);
-  box-shadow:
-    inset 0 0 0 1px color-mix(in srgb, var(--border-subtle) 36%, transparent),
-    0 10px 24px -24px rgba(32, 25, 15, 0.34);
+  background: color-mix(in srgb, var(--background-medium) 42%, transparent);
+  box-shadow: 0 8px 22px -22px rgba(32, 25, 15, 0.38);
 }
 
 .dark .biorouter-page-block {
