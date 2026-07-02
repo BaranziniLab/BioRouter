@@ -22,9 +22,7 @@ const CustomProviderCard = memo(function CustomProviderCard({ onClick }: { onCli
     <button
       data-testid="add-custom-provider-card"
       onClick={onClick}
-      className="w-full flex items-center gap-3 py-3 px-4 rounded-xl
-        cursor-pointer hover:bg-background-medium
-        transition-colors duration-150 text-left"
+      className="biorouter-settings-row w-full flex items-center gap-3 px-3 py-2.5 cursor-pointer text-left"
     >
       <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0">
         <Plus className="w-4 h-4 text-text-muted" />
@@ -200,33 +198,39 @@ function ProviderCards({
   const title = (editingProvider ? (editable ? 'Edit' : 'Configure') : 'Add') + '  Provider';
   return (
     <>
-      <div className="space-y-8">
+      <div>
         {localCards.length > 0 && (
-          <div>
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 bg-background-success rounded-full flex-shrink-0" />
-              Local Models
-            </h2>
-            <div className="divide-y divide-border-subtle">{localCards}</div>
+          <div className="biorouter-settings-section">
+            <div className="biorouter-settings-section-header">
+              <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider flex items-center gap-2">
+                <span className="w-1.5 h-1.5 bg-background-success rounded-full flex-shrink-0" />
+                Local Models
+              </h2>
+            </div>
+            <div className="biorouter-settings-list">{localCards}</div>
           </div>
         )}
 
         {institutionalCards.length > 0 && (
-          <div>
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 bg-background-info rounded-full flex-shrink-0" />
-              Institutional Models
-            </h2>
-            <div className="divide-y divide-border-subtle">{institutionalCards}</div>
+          <div className="biorouter-settings-section">
+            <div className="biorouter-settings-section-header">
+              <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider flex items-center gap-2">
+                <span className="w-1.5 h-1.5 bg-background-info rounded-full flex-shrink-0" />
+                Institutional Models
+              </h2>
+            </div>
+            <div className="biorouter-settings-list">{institutionalCards}</div>
           </div>
         )}
 
-        <div>
-          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
-            <span className="w-1.5 h-1.5 bg-background-warning rounded-full flex-shrink-0" />
-            Commercial Models
-          </h2>
-          <div className="divide-y divide-border-subtle">
+        <div className="biorouter-settings-section">
+          <div className="biorouter-settings-section-header">
+            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider flex items-center gap-2">
+              <span className="w-1.5 h-1.5 bg-background-warning rounded-full flex-shrink-0" />
+              Commercial Models
+            </h2>
+          </div>
+          <div className="biorouter-settings-list">
             {commercialCards}
             <CustomProviderCard onClick={() => setShowCustomProviderModal(true)} />
           </div>

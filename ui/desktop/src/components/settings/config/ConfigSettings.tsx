@@ -142,15 +142,17 @@ export default function ConfigSettings() {
   }, [originalKeyOrder, configValues, currentProvider]);
 
   return (
-    <div>
-      <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
-        Configuration
-      </h2>
-      <p className="text-xs text-text-muted mb-4">
-        Edit your BioRouter configuration settings
-        {currentProvider && ` (current settings for ${currentProvider})`}
-      </p>
-      <div className="border-t border-border-subtle pt-3">
+    <div className="biorouter-settings-section">
+      <div className="biorouter-settings-section-header">
+        <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+          Configuration
+        </h2>
+        <p className="text-xs text-text-muted">
+          Edit your BioRouter configuration settings
+          {currentProvider && ` (current settings for ${currentProvider})`}
+        </p>
+      </div>
+      <div className="biorouter-settings-control-strip">
         <Dialog open={isModalOpen} onOpenChange={handleModalClose}>
           <DialogTrigger asChild>
             <Button className="flex items-center gap-2" variant="secondary">

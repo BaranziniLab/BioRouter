@@ -542,6 +542,63 @@
   box-shadow: 0 8px 22px -22px rgba(32, 25, 15, 0.38);
 }
 
+.biorouter-settings-tabs {
+  background: color-mix(in srgb, var(--background-default) 68%, transparent);
+  box-shadow:
+    0 10px 24px -24px rgba(32, 25, 15, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+}
+
+.biorouter-settings-section {
+  padding-block: 14px;
+}
+
+.biorouter-settings-section + .biorouter-settings-section {
+  margin-top: 10px;
+}
+
+.biorouter-settings-section-header {
+  margin-bottom: 8px;
+}
+
+.biorouter-settings-list {
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--background-default) 46%, transparent);
+  box-shadow: 0 10px 24px -26px rgba(32, 25, 15, 0.28);
+}
+
+.biorouter-settings-control-strip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--background-default) 46%, transparent);
+  padding: 12px;
+  box-shadow: 0 10px 24px -26px rgba(32, 25, 15, 0.28);
+}
+
+.biorouter-settings-row {
+  border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 48%, transparent);
+  border-radius: 8px;
+  transition:
+    background-color 160ms ease,
+    box-shadow 160ms ease,
+    color 160ms ease;
+}
+
+.biorouter-settings-row:last-child {
+  border-bottom-color: transparent;
+}
+
+.biorouter-settings-row:hover,
+.biorouter-settings-row:focus-within {
+  background: color-mix(in srgb, var(--background-medium) 38%, transparent);
+  box-shadow: 0 8px 22px -22px rgba(32, 25, 15, 0.34);
+}
+
 .dark .biorouter-page-block {
   box-shadow:
     0px 16px 34px -28px rgba(0, 0, 0, 0.7),

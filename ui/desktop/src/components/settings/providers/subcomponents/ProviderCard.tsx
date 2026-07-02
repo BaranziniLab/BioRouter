@@ -37,9 +37,8 @@ export const ProviderCard = function ProviderCard({
       data-testid={`provider-card-${provider.name.toLowerCase()}`}
       onClick={!isGrayedOut ? handleCardClick : undefined}
       className={[
-        'flex items-center gap-3 py-3 px-4 rounded-xl',
-        'transition-colors duration-150 group',
-        isGrayedOut ? 'cursor-default' : 'cursor-pointer hover:bg-background-medium',
+        'biorouter-settings-row flex items-center gap-3 px-3 py-2.5 group',
+        isGrayedOut ? 'cursor-default' : 'cursor-pointer',
       ].join(' ')}
     >
       {/* Provider initial avatar (dimmed when unconfigured, but not the action buttons) */}

@@ -120,14 +120,16 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
   };
 
   return (
-    <div className="space-y-8 pb-8">
+    <div className="pb-8">
       {/* Appearance */}
-      <div>
-        <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
-          Appearance
-        </h2>
-        <div className="border-t border-border-subtle divide-y divide-border-subtle">
-          <div className="flex items-center justify-between py-3">
+      <div className="biorouter-settings-section">
+        <div className="biorouter-settings-section-header">
+          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            Appearance
+          </h2>
+        </div>
+        <div className="biorouter-settings-list">
+          <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
             <div>
               <p className="text-sm font-medium text-text-default">Notifications</p>
               <p className="text-xs text-text-muted mt-0.5 max-w-md">
@@ -155,7 +157,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
             </Button>
           </div>
 
-          <div className="flex items-center justify-between py-3">
+          <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
             <div>
               <p className="text-sm font-medium text-text-default">Menu bar icon</p>
               <p className="text-xs text-text-muted mt-0.5">Show BioRouter in the menu bar</p>
@@ -168,7 +170,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
           </div>
 
           {isMacOS && (
-            <div className="flex items-center justify-between py-3">
+            <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
               <div>
                 <p className="text-sm font-medium text-text-default">Dock icon</p>
                 <p className="text-xs text-text-muted mt-0.5">Show BioRouter in the dock</p>
@@ -182,7 +184,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
             </div>
           )}
 
-          <div className="flex items-center justify-between py-3">
+          <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
             <div>
               <p className="text-sm font-medium text-text-default">Prevent Sleep</p>
               <p className="text-xs text-text-muted mt-0.5 max-w-md">
@@ -197,7 +199,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
           </div>
 
           {COST_TRACKING_ENABLED && (
-            <div className="flex items-center justify-between py-3">
+            <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">
               <div>
                 <p className="text-sm font-medium text-text-default">Cost Tracking</p>
                 <p className="text-xs text-text-muted mt-0.5">Show model pricing and usage costs</p>
@@ -213,23 +215,29 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
       </div>
 
       {/* Theme */}
-      <div>
-        <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">Theme</h2>
-        <p className="text-xs text-text-muted mb-4">Customize the look and feel of BioRouter</p>
-        <div className="border-t border-border-subtle pt-3">
+      <div className="biorouter-settings-section">
+        <div className="biorouter-settings-section-header">
+          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+            Theme
+          </h2>
+          <p className="text-xs text-text-muted">Customize the look and feel of BioRouter</p>
+        </div>
+        <div className="biorouter-settings-control-strip">
           <ThemeSelector className="w-auto" hideTitle horizontal />
         </div>
       </div>
 
       {/* Help & Feedback */}
-      <div>
-        <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
-          Help &amp; Feedback
-        </h2>
-        <p className="text-xs text-text-muted mb-4">
-          Help us improve BioRouter by reporting issues or requesting new features
-        </p>
-        <div className="border-t border-border-subtle pt-3 flex gap-3">
+      <div className="biorouter-settings-section">
+        <div className="biorouter-settings-section-header">
+          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+            Help &amp; Feedback
+          </h2>
+          <p className="text-xs text-text-muted">
+            Help us improve BioRouter by reporting issues or requesting new features
+          </p>
+        </div>
+        <div className="biorouter-settings-control-strip">
           <Button
             onClick={() => {
               window.open(
@@ -257,11 +265,13 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
 
       {/* Version */}
       {!shouldShowUpdates && (
-        <div>
-          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
-            Version
-          </h2>
-          <div className="border-t border-border-subtle pt-3">
+        <div className="biorouter-settings-section">
+          <div className="biorouter-settings-section-header">
+            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider">
+              Version
+            </h2>
+          </div>
+          <div className="biorouter-settings-control-strip">
             <div className="flex items-center gap-3">
               <img
                 src={isDarkMode ? BlockLogoWhite : BlockLogoBlack}
@@ -278,14 +288,16 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
 
       {/* Updates */}
       {UPDATES_ENABLED && shouldShowUpdates && (
-        <div ref={updateSectionRef}>
-          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
-            Updates
-          </h2>
-          <p className="text-xs text-text-muted mb-4">
-            Check for and install updates to keep BioRouter running at its best
-          </p>
-          <div className="border-t border-border-subtle pt-3">
+        <div ref={updateSectionRef} className="biorouter-settings-section">
+          <div className="biorouter-settings-section-header">
+            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+              Updates
+            </h2>
+            <p className="text-xs text-text-muted">
+              Check for and install updates to keep BioRouter running at its best
+            </p>
+          </div>
+          <div className="biorouter-settings-control-strip">
             <UpdateSection />
           </div>
         </div>

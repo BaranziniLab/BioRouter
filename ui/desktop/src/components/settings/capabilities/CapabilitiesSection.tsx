@@ -28,8 +28,8 @@ function CapabilityItem({ meta, entry, onToggle }: CapabilityItemProps) {
 
   return (
     <div
-      className={`flex items-center justify-between text-text-default py-3 px-2 -mx-2 rounded-lg transition-colors duration-150 ${
-        enabled ? 'bg-background-medium' : 'hover:bg-background-medium'
+      className={`biorouter-settings-row flex items-center justify-between text-text-default px-3 py-2.5 ${
+        enabled ? 'bg-background-medium/70' : ''
       }`}
     >
       <div className="flex">
