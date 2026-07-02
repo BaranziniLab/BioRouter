@@ -72,11 +72,10 @@ export const FoldedCard: React.FC<Props> = ({
       onMouseLeave={() => setHovered(false)}
     >
       <div
-        className="h-full w-full rounded-2xl overflow-hidden select-none cursor-grab active:cursor-grabbing flex flex-col border border-border-subtle/30 transition-[transform,box-shadow] duration-200 ease-out"
+        className="h-full w-full rounded-2xl overflow-hidden select-none cursor-grab active:cursor-grabbing flex flex-col border border-border-subtle transition-transform duration-200 ease-out"
         style={{
           background: bg,
           transform: hovered ? 'translateY(-1px)' : 'translateY(0)',
-          boxShadow: hovered ? '0 8px 24px rgba(0,0,0,0.14)' : '0 2px 8px rgba(0,0,0,0.08)',
         }}
         onPointerDown={(e) => {
           if ((e.target as HTMLElement).closest('button')) return;
@@ -172,7 +171,7 @@ export const FoldedCard: React.FC<Props> = ({
           transition: 'opacity 140ms ease-out, transform 140ms ease-out',
         }}
       >
-        <div className="rounded-lg border border-border-subtle/40 bg-background-default/95 backdrop-blur-sm shadow-lg px-3 py-2 text-[11px] leading-snug text-text-default/90 max-h-32 overflow-hidden">
+        <div className="rounded-lg border border-border-subtle bg-background-default/95 backdrop-blur-sm shadow-[var(--shadow-popover)] px-3 py-2 text-[11px] leading-snug text-text-default/90 max-h-32 overflow-hidden">
           {previewTail && previewTail.trim().length > 0 ? (
             <div className="whitespace-pre-wrap break-words">
               {isBusy ? <span className="text-text-muted/80">… </span> : null}

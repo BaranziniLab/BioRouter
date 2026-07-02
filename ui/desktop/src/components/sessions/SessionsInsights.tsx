@@ -230,7 +230,7 @@ export function SessionInsights() {
                       <p
                         className={
                           idx === 0
-                            ? 'text-2xl font-medium leading-none mb-1.5 tabular-nums'
+                            ? 'text-3xl font-mono font-light leading-none mb-1.5 tabular-nums'
                             : 'text-lg font-medium leading-none mb-1.5 text-text-muted tabular-nums'
                         }
                       >
