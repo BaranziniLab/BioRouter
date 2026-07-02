@@ -15,7 +15,7 @@ const AppLayoutContent: React.FC = () => {
   const { isMobile, openMobile } = useSidebar();
 
   // Calculate padding based on sidebar state and macOS
-  const headerPadding = safeIsMacOS ? 'pl-21' : 'pl-4';
+  const headerPadding = safeIsMacOS ? 'pl-[100px]' : 'pl-4';
   // const headerPadding = '';
 
   // Hide buttons when mobile sheet is showing
@@ -76,6 +76,7 @@ const AppLayoutContent: React.FC = () => {
       {!shouldHideButtons && (
         <div className={`${headerPadding} absolute top-3 z-100 flex items-center`}>
           <SidebarTrigger
+            shape="round"
             className={`no-drag hover:border-border-strong hover:text-text-default hover:!bg-background-medium hover:scale-105`}
           />
           <Button
@@ -83,6 +84,7 @@ const AppLayoutContent: React.FC = () => {
             className="no-drag hover:!bg-background-medium"
             variant="ghost"
             size="xs"
+            shape="round"
             title="Start a new session in a new window"
           >
             <Plus className="w-4 h-4" />
@@ -94,6 +96,7 @@ const AppLayoutContent: React.FC = () => {
             }`}
             variant="ghost"
             size="xs"
+            shape="round"
             title={location.pathname === '/dashboard' ? 'Exit Dashboard' : 'Open Dashboard'}
           >
             <LayoutDashboard className="w-4 h-4" />
