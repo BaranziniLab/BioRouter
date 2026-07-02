@@ -82,6 +82,7 @@
 
   --text-default: #2a2520;
   --text-muted: #7a736c;
+  --text-subtle: #948d83;
   --text-inverse: var(--color-white);
   --text-danger: var(--color-red-200);
   --text-success: var(--color-green-200);
@@ -145,6 +146,7 @@
 
   --text-default: var(--color-white);
   --text-muted: var(--color-neutral-400);
+  --text-subtle: var(--color-neutral-500);
   --text-inverse: var(--color-black);
   --text-danger: var(--color-red-100);
   --text-success: var(--color-green-100);
@@ -206,6 +208,7 @@
 
   --color-text-default: var(--text-default);
   --color-text-muted: var(--text-muted);
+  --color-text-subtle: var(--text-subtle);
   --color-text-inverse: var(--text-inverse);
   --color-text-danger: var(--text-danger);
   --color-text-success: var(--text-success);
@@ -550,7 +553,6 @@
 .biorouter-list-row:hover,
 .biorouter-list-row:focus-within {
   background: color-mix(in srgb, var(--background-medium) 42%, transparent);
-  box-shadow: 0 8px 22px -22px rgba(32, 25, 15, 0.38);
 }
 
 .biorouter-settings-tabs {
@@ -605,7 +607,6 @@
 .biorouter-settings-row:hover,
 .biorouter-settings-row:focus-within {
   background: color-mix(in srgb, var(--background-medium) 38%, transparent);
-  box-shadow: 0 8px 22px -22px rgba(32, 25, 15, 0.34);
 }
 
 .dark .biorouter-page-block {
@@ -615,7 +616,9 @@
 }
 
 .biorouter-sidebar-shell {
-  box-shadow: 8px 0 28px -26px rgba(32, 25, 15, 0.42);
+  /* flat two-tone: a hairline edge instead of an elevation shadow —
+     the sidebar's warm-beige surface already separates it from the canvas */
+  box-shadow: 1px 0 0 0 var(--sidebar-border);
 }
 
 .biorouter-sidebar-shell::after {
