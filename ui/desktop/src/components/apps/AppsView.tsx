@@ -149,7 +149,7 @@ export default function AppsView() {
               {apps.map((app) => (
                 <div
                   key={`${app.uri}-${app.mcpServer}`}
-                  className="flex flex-col p-4 border border-border-subtle rounded-xl bg-background-default hover:border-border-strong transition-colors"
+                  className="flex flex-col p-4 border border-border-subtle rounded-xl bg-background-default transition-[background-color,border-color,box-shadow] duration-150 hover:border-border-default hover:bg-background-muted/54 hover:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_28%,transparent),0_10px_24px_-24px_rgba(32,25,15,0.34)]"
                 >
                   <div className="flex-1 mb-4">
                     <h3 className="font-medium text-text-default mb-2">{app.name}</h3>
