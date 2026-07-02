@@ -1,0 +1,15 @@
+{
+  "version": "1.87.0",
+  "date": "July 2026",
+  "headline": "Everything new in v1.87.0: calmer UI, stronger agents, BAAM growth and headless Linux",
+  "featsTitleA": "What's new in v1.87.0",
+  "featsTitleB": "Built for deployment",
+  "feat1": "Cohesive desktop polish: calmer panels, compact tool calls, cleaner find bars and toasts",
+  "feat2": "Knowledge defaults: pick a model for ingestion while chats keep their active model",
+  "feat3": "Agent Drafter: stronger app scaffolds, workflow planning and safety harnesses",
+  "feat4": "Runtime hardening: steadier agent loop, sandbox, scheduler, providers and MCP surfaces",
+  "feat5": "BAAM growth: Apache-2.0 skills plus .brxt extensions for scientific platforms",
+  "feat6": "Headless Linux: run BioRouter from a Debian/Ubuntu server and open it in a browser",
+  "feat7": "Release packaging: signed macOS builds, Linux GUI packages and CLI-only installs",
+  "feat8": "UI reliability: responsive knowledge graphs, refined sidebars and safer update handling"
+}
