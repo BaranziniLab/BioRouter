@@ -124,7 +124,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
       {/* Appearance */}
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
-          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider">
+          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider">
             Appearance
           </h2>
         </div>
@@ -217,7 +217,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
       {/* Theme */}
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
-          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-1">
             Theme
           </h2>
           <p className="text-xs text-text-muted">Customize the look and feel of BioRouter</p>
@@ -230,7 +230,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
       {/* Help & Feedback */}
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
-          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-1">
             Help &amp; Feedback
           </h2>
           <p className="text-xs text-text-muted">
@@ -267,7 +267,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
       {!shouldShowUpdates && (
         <div className="biorouter-settings-section">
           <div className="biorouter-settings-section-header">
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider">
               Version
             </h2>
           </div>
@@ -290,7 +290,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
       {UPDATES_ENABLED && shouldShowUpdates && (
         <div ref={updateSectionRef} className="biorouter-settings-section">
           <div className="biorouter-settings-section-header">
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+            <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-1">
               Updates
             </h2>
             <p className="text-xs text-text-muted">
