@@ -703,7 +703,7 @@ function BaseChatContent({
               onDragOver={handleDragOver}
               data-drop-zone="true"
             >
-              <div className="w-full max-w-[760px] flex flex-col items-center gap-6">
+              <div className="w-full max-w-[760px] flex flex-col items-center gap-6 -translate-y-10 sm:-translate-y-12">
                 <Greeting
                   key={sessionId}
                   className={cn(
