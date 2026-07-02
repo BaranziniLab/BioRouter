@@ -40,7 +40,7 @@ export default function WorkflowInfoModal({
         <div className="flex flex-col flex-grow overflow-y-auto space-y-8">
           <textarea
             ref={textareaRef}
-            className="biorouter-modal-panel w-full flex-grow resize-none min-h-[300px] max-h-[calc(100vh-300px)] rounded-lg p-3 text-text-default focus:outline-none focus:ring-1 focus:ring-borderProminent"
+            className="biorouter-modal-panel w-full flex-grow resize-none min-h-[300px] max-h-[calc(100vh-300px)] rounded-lg p-3 text-text-default focus:outline-none focus:ring-1 focus:ring-border-strong"
             value={value}
             onChange={(e) => setValue(e.target.value)}
             placeholder={`Enter ${infoLabel.toLowerCase()}...`}

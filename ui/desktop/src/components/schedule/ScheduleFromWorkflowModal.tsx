@@ -102,7 +102,8 @@ export const ScheduleFromWorkflowModal: React.FC<ScheduleFromWorkflowModalProps>
               <Button
                 type="button"
                 onClick={handleCopy}
-                className="ml-2 px-3 py-2 bg-background-accent text-text-on-accent rounded-md hover:bg-background-accent/90 flex items-center"
+                variant="outline"
+                className="ml-2 px-3 py-2 rounded-md flex items-center"
               >
                 {copied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
               </Button>
