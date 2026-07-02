@@ -72,8 +72,9 @@ export default function ExtensionsView({
           behavior: 'smooth',
           block: 'center',
         });
-        // Add a subtle highlight effect
-        element.style.boxShadow = '0 0 0 2px rgba(59, 130, 246, 0.5)';
+        // Add a subtle, temporary coral highlight ring
+        element.style.boxShadow =
+          '0 0 0 2px color-mix(in srgb, var(--color-block-teal) 45%, transparent)';
         setTimeout(() => {
           element.style.boxShadow = '';
         }, 2000);

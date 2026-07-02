@@ -163,43 +163,41 @@ export default function SkillsView() {
         data-search-scroll-area
       >
         {/* Header */}
-        <div className="flex-shrink-0 border-b border-border-subtle">
-          <ReadableContent className="px-8 pt-12 pb-6">
-            <div className="flex flex-col page-transition">
-              <h1 className="text-2xl font-semibold tracking-tight mb-1">Skills</h1>
-              <p className="text-sm text-text-muted mb-0">
-                Reusable instruction sets that guide BioRouter's behavior.{' '}
-                {getSearchShortcutText()} to search.
-              </p>
-            </div>
-            <div className="flex gap-3 mt-5">
-              <Button
-                className="flex items-center gap-2"
-                variant="default"
-                onClick={() => setIsAddModalOpen(true)}
-              >
-                <Upload className="h-4 w-4" />
-                Add Skill
-              </Button>
-              <Button
-                className="flex items-center gap-2"
-                variant="outline"
-                onClick={() => setIsBrowseModalOpen(true)}
-              >
-                <Globe className="h-4 w-4" />
-                Browse Skills
-              </Button>
-              <Button
-                className="flex items-center gap-2"
-                variant="outline"
-                onClick={() => setIsCustomModalOpen(true)}
-              >
-                <Plus className="h-4 w-4" />
-                Add Custom Skill
-              </Button>
-            </div>
-          </ReadableContent>
-        </div>
+        <ReadableContent className="px-8 pt-12 pb-6 border-b border-border-subtle flex-shrink-0">
+          <div className="flex flex-col page-transition">
+            <h1 className="text-2xl font-semibold tracking-tight mb-1">Skills</h1>
+            <p className="text-sm text-text-muted mb-0">
+              Reusable instruction sets that guide BioRouter's behavior. {getSearchShortcutText()}{' '}
+              to search.
+            </p>
+          </div>
+          <div className="flex gap-3 mt-5">
+            <Button
+              className="flex items-center gap-2"
+              variant="default"
+              onClick={() => setIsAddModalOpen(true)}
+            >
+              <Upload className="h-4 w-4" />
+              Add Skill
+            </Button>
+            <Button
+              className="flex items-center gap-2"
+              variant="outline"
+              onClick={() => setIsBrowseModalOpen(true)}
+            >
+              <Globe className="h-4 w-4" />
+              Browse Skills
+            </Button>
+            <Button
+              className="flex items-center gap-2"
+              variant="outline"
+              onClick={() => setIsCustomModalOpen(true)}
+            >
+              <Plus className="h-4 w-4" />
+              Add Custom Skill
+            </Button>
+          </div>
+        </ReadableContent>
 
         {/* List */}
         <SearchView
