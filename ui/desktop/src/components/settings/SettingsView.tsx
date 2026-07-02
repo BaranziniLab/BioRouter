@@ -71,23 +71,21 @@ export default function SettingsView({
     <>
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
-          {/* Flat page header */}
           <div className="px-8 pt-12 pb-0 flex-shrink-0">
             <h1 className="text-2xl font-semibold tracking-tight page-transition">Settings</h1>
           </div>
 
-          {/* Tabs directly on canvas — no card wrapper */}
           <div className="flex-1 min-h-0 flex flex-col">
             <Tabs
               value={activeTab}
               onValueChange={handleTabChange}
               className="h-full flex flex-col"
             >
-              <div className="px-8 pt-4 border-b border-border-subtle">
-                <TabsList className="justify-start bg-transparent gap-1 p-0 h-auto mb-0">
+              <div className="px-8 pt-4">
+                <TabsList className="biorouter-settings-tabs justify-start gap-1 rounded-xl p-1 h-auto w-fit">
                   <TabsTrigger
                     value="models"
-                    className="flex gap-2 rounded-none border-b-2 border-transparent data-[state=active]:border-text-default data-[state=active]:bg-transparent bg-transparent px-3 pb-3 text-sm"
+                    className="flex gap-2 rounded-lg bg-transparent px-3 py-2 text-sm data-[state=active]:bg-background-medium data-[state=active]:shadow-none"
                     data-testid="settings-models-tab"
                   >
                     <Brain className="h-4 w-4" />
@@ -95,7 +93,7 @@ export default function SettingsView({
                   </TabsTrigger>
                   <TabsTrigger
                     value="chat"
-                    className="flex gap-2 rounded-none border-b-2 border-transparent data-[state=active]:border-text-default data-[state=active]:bg-transparent bg-transparent px-3 pb-3 text-sm"
+                    className="flex gap-2 rounded-lg bg-transparent px-3 py-2 text-sm data-[state=active]:bg-background-medium data-[state=active]:shadow-none"
                     data-testid="settings-chat-tab"
                   >
                     <MessageSquare className="h-4 w-4" />
@@ -103,7 +101,7 @@ export default function SettingsView({
                   </TabsTrigger>
                   <TabsTrigger
                     value="app"
-                    className="flex gap-2 rounded-none border-b-2 border-transparent data-[state=active]:border-text-default data-[state=active]:bg-transparent bg-transparent px-3 pb-3 text-sm"
+                    className="flex gap-2 rounded-lg bg-transparent px-3 py-2 text-sm data-[state=active]:bg-background-medium data-[state=active]:shadow-none"
                     data-testid="settings-app-tab"
                   >
                     <Monitor className="h-4 w-4" />
@@ -113,7 +111,7 @@ export default function SettingsView({
               </div>
 
               <ScrollArea className="flex-1" paddingX={1}>
-                <div className="px-8 py-6">
+                <div className="px-8 py-5">
                   <TabsContent value="models" className="mt-0 focus-visible:outline-none">
                     <ModelsSection setView={setView} />
                   </TabsContent>
@@ -121,7 +119,7 @@ export default function SettingsView({
                     <ChatSettingsSection />
                   </TabsContent>
                   <TabsContent value="app" className="mt-0 focus-visible:outline-none">
-                    <div className="space-y-8">
+                    <div>
                       {CONFIGURATION_ENABLED && <ConfigSettings />}
                       <AppSettingsSection scrollToSection={viewOptions.section} />
                     </div>

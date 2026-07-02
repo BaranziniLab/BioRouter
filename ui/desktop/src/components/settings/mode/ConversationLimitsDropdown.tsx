@@ -18,10 +18,10 @@ export const ConversationLimitsDropdown = ({
   };
 
   return (
-    <div className="pt-4">
+    <div>
       <button
         onClick={toggleExpanded}
-        className="w-full flex items-center justify-between py-3 px-2 -mx-2 rounded-lg hover:bg-background-medium transition-colors duration-150 group"
+        className="biorouter-settings-row w-full flex items-center justify-between px-3 py-2.5 group"
       >
         <h3 className="text-text-default">Conversation Limits</h3>
 
@@ -37,8 +37,8 @@ export const ConversationLimitsDropdown = ({
           isExpanded ? 'max-h-96 opacity-100 mt-2' : 'max-h-0 opacity-0 mt-0'
         }`}
       >
-        <div className="space-y-3 pb-2">
-          <div className="flex items-center justify-between py-3 px-2 bg-background-medium rounded-lg">
+        <div className="px-3 pb-3">
+          <div className="flex items-center justify-between rounded-lg bg-background-medium/55 px-3 py-2.5">
             <div>
               <h4 className="text-text-default text-sm">Max Turns</h4>
               <p className="text-xs text-text-muted mt-[2px]">

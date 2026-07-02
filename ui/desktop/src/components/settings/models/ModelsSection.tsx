@@ -80,30 +80,36 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
   }, [currentModel, currentProvider, loadModelData]);
 
   return (
-    <section id="models" className="space-y-8 pb-8">
-      <div>
-        <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
-          Current Model
-        </h2>
-        <div className="border-t border-border-subtle pt-3">
-          {isLoading ? (
-            <>
-              <div className="h-5 mb-1.5 bg-background-medium rounded w-48 animate-pulse"></div>
-              <div className="h-4 bg-background-medium rounded w-32 animate-pulse"></div>
-            </>
-          ) : (
-            <div className="animate-in fade-in duration-100">
-              <p className="text-sm font-medium text-text-default">{displayModelName}</p>
-              <p className="text-xs text-text-muted mt-0.5">{provider}</p>
-            </div>
-          )}
-          <ModelSettingsButtons setView={setView} />
+    <section id="models" className="pb-8">
+      <div className="biorouter-settings-section">
+        <div className="biorouter-settings-section-header">
+          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider">
+            Current Model
+          </h2>
+        </div>
+        <div className="biorouter-settings-list">
+          <div className="biorouter-settings-row px-3 py-3">
+            {isLoading ? (
+              <>
+                <div className="h-5 mb-1.5 bg-background-medium rounded w-48 animate-pulse"></div>
+                <div className="h-4 bg-background-medium rounded w-32 animate-pulse"></div>
+              </>
+            ) : (
+              <div className="animate-in fade-in duration-100">
+                <p className="text-sm font-medium text-text-default">{displayModelName}</p>
+                <p className="text-xs text-text-muted mt-0.5">{provider}</p>
+              </div>
+            )}
+            <ModelSettingsButtons setView={setView} />
+          </div>
         </div>
       </div>
 
-      <div>
-        <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">Reset</h2>
-        <div className="border-t border-border-subtle pt-3">
+      <div className="biorouter-settings-section">
+        <div className="biorouter-settings-section-header">
+          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider">Reset</h2>
+        </div>
+        <div className="biorouter-settings-list">
           <ResetProviderSection setView={setView} />
         </div>
       </div>

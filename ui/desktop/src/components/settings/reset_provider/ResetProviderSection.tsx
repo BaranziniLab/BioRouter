@@ -23,7 +23,7 @@ export default function ResetProviderSection(_props: ResetProviderSectionProps) 
   };
 
   return (
-    <div>
+    <div className="biorouter-settings-row px-3 py-3">
       <p className="text-sm text-text-default mb-1">Reset Provider and Model</p>
       <p className="text-xs text-text-muted mb-4">
         This will clear your selected model and provider settings. If no defaults are available,
