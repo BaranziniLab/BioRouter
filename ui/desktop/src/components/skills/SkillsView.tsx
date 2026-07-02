@@ -19,6 +19,7 @@ import BrowseSkillsModal from '../baam/BrowseSkillsModal';
 import { toastSuccess, toastError } from '../../toasts';
 import { SearchView } from '../conversation/SearchView';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
+import { ReadableContent } from '../Layout/ReadableContent';
 import {
   loadSkillOverrides,
   saveSkillOverrides,
@@ -162,40 +163,42 @@ export default function SkillsView() {
         data-search-scroll-area
       >
         {/* Header */}
-        <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
-          <div className="flex flex-col page-transition">
-            <h1 className="text-2xl font-semibold tracking-tight mb-1">Skills</h1>
-            <p className="text-sm text-text-muted mb-0">
-              Reusable instruction sets that guide BioRouter's behavior. {getSearchShortcutText()}{' '}
-              to search.
-            </p>
-          </div>
-          <div className="flex gap-3 mt-5">
-            <Button
-              className="flex items-center gap-2"
-              variant="default"
-              onClick={() => setIsAddModalOpen(true)}
-            >
-              <Upload className="h-4 w-4" />
-              Add Skill
-            </Button>
-            <Button
-              className="flex items-center gap-2"
-              variant="outline"
-              onClick={() => setIsBrowseModalOpen(true)}
-            >
-              <Globe className="h-4 w-4" />
-              Browse Skills
-            </Button>
-            <Button
-              className="flex items-center gap-2"
-              variant="outline"
-              onClick={() => setIsCustomModalOpen(true)}
-            >
-              <Plus className="h-4 w-4" />
-              Add Custom Skill
-            </Button>
-          </div>
+        <div className="flex-shrink-0 border-b border-border-subtle">
+          <ReadableContent className="px-8 pt-12 pb-6">
+            <div className="flex flex-col page-transition">
+              <h1 className="text-2xl font-semibold tracking-tight mb-1">Skills</h1>
+              <p className="text-sm text-text-muted mb-0">
+                Reusable instruction sets that guide BioRouter's behavior.{' '}
+                {getSearchShortcutText()} to search.
+              </p>
+            </div>
+            <div className="flex gap-3 mt-5">
+              <Button
+                className="flex items-center gap-2"
+                variant="default"
+                onClick={() => setIsAddModalOpen(true)}
+              >
+                <Upload className="h-4 w-4" />
+                Add Skill
+              </Button>
+              <Button
+                className="flex items-center gap-2"
+                variant="outline"
+                onClick={() => setIsBrowseModalOpen(true)}
+              >
+                <Globe className="h-4 w-4" />
+                Browse Skills
+              </Button>
+              <Button
+                className="flex items-center gap-2"
+                variant="outline"
+                onClick={() => setIsCustomModalOpen(true)}
+              >
+                <Plus className="h-4 w-4" />
+                Add Custom Skill
+              </Button>
+            </div>
+          </ReadableContent>
         </div>
 
         {/* List */}
@@ -203,7 +206,7 @@ export default function SkillsView() {
           onSearch={(term, _caseSensitive) => setSearchTerm(term)}
           placeholder="Search skills..."
         >
-          <div key={overrideTrigger} className="px-6 py-4">
+          <ReadableContent key={overrideTrigger} className="px-8 py-4">
             {totalBR > 0 && (
               <>
                 <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
@@ -275,7 +278,7 @@ export default function SkillsView() {
                   : 'No skills found. Add one to get started.'}
               </p>
             )}
-          </div>
+          </ReadableContent>
         </SearchView>
       </div>
 

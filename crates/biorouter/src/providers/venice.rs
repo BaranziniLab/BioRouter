@@ -66,9 +66,9 @@ pub const VENICE_DEFAULT_MODELS_PATH: &str = "api/v1/models";
 
 // Fallback models to use when API is unavailable
 const FALLBACK_MODELS: [&str; 3] = [
-    "llama-3.2-3b",   // Small model with function calling
-    "llama-3.3-70b",  // Default model with function calling
-    "mistral-31-24b", // Another model with function calling
+    "llama-3.2-3b",  // Small model with function calling
+    "llama-3.3-70b", // Default model with function calling
+    "mistral-small-3-2-24b-instruct",
 ];
 
 #[derive(Debug, Serialize)]
@@ -142,7 +142,7 @@ impl VeniceProvider {
                             if errors.to_string().contains("not supported by this model") {
                                 let model_name = self.model.model_name.clone();
                                 return Err(ProviderError::RequestFailed(
-                                    format!("The selected model '{}' does not support tool calls. Please select a model that supports tools, such as 'llama-3.3-70b' or 'mistral-31-24b'.", model_name)
+                                    format!("The selected model '{}' does not support tool calls. Please select a model that supports tools, such as 'llama-3.3-70b' or 'mistral-small-3-2-24b-instruct'.", model_name)
                                 ));
                             }
                         }
@@ -159,7 +159,7 @@ impl VeniceProvider {
                                     if message.contains("tools is not supported by this model") {
                                         let model_name = self.model.model_name.clone();
                                         return Err(ProviderError::RequestFailed(
-                                            format!("The selected model '{}' does not support tool calls. Please select a model that supports tools, such as 'llama-3.3-70b' or 'mistral-31-24b'.", model_name)
+                                            format!("The selected model '{}' does not support tool calls. Please select a model that supports tools, such as 'llama-3.3-70b' or 'mistral-small-3-2-24b-instruct'.", model_name)
                                         ));
                                     }
                                 }
@@ -211,6 +211,7 @@ impl Provider for VeniceProvider {
                 ),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

@@ -20,12 +20,13 @@ use crate::subprocess::configure_command_no_window;
 use rmcp::model::Role;
 use rmcp::model::Tool;
 
-// The Gemini CLI defaults to "Auto" routing; these are the explicitly
-// selectable models per its docs (June 2026). The 2.5 family is deprecated
-// upstream (shutdown Oct 16, 2026) but still selectable in the CLI.
-pub const GEMINI_CLI_DEFAULT_MODEL: &str = "gemini-2.5-pro";
+// The Gemini CLI defaults to "Auto" routing; these are explicitly selectable
+// Gemini API model IDs per current public docs (June 2026).
+pub const GEMINI_CLI_DEFAULT_MODEL: &str = "gemini-3.5-flash";
 pub const GEMINI_CLI_KNOWN_MODELS: &[&str] = &[
-    "gemini-3.1-pro-preview",
+    "gemini-3.5-flash",
+    "gemini-3.1-pro",
+    "gemini-3.1-flash-lite",
     "gemini-3-flash-preview",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
@@ -251,6 +252,7 @@ impl Provider for GeminiCliProvider {
             GEMINI_CLI_DOC_URL,
             vec![ConfigKey::from_value_type::<GeminiCliCommand>(true, false)],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

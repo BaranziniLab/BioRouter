@@ -11,6 +11,7 @@ import { useState, useEffect } from 'react';
 import { toast } from 'react-toastify';
 import { EmbeddedResource } from '../api';
 import { useTheme } from '../contexts/ThemeContext';
+import { Maximize2 } from './icons/app-icons';
 
 interface MCPUIResourceRendererProps {
   content: EmbeddedResource & { type: 'resource' };
@@ -370,25 +371,19 @@ export default function MCPUIResourceRenderer({
   };
 
   return (
-    <div className="mt-3 p-3 border border-border-subtle rounded-lg bg-background-muted">
-      <div className="flex items-center justify-between mb-2 px-1">
-        <span className="text-xs text-text-muted font-medium truncate">{artifactTitle}</span>
+    <div className="group relative mt-3 overflow-hidden rounded-lg bg-transparent shadow-[0_10px_28px_rgba(15,23,42,0.08)]">
+      <div className="absolute right-2 top-2 z-10 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
         <button
           type="button"
           onClick={handleExpand}
+          aria-label={`Open ${artifactTitle} in a larger standalone window`}
           title="Open in a larger standalone window"
-          className="inline-flex items-center gap-1.5 text-xs text-text-muted hover:text-text-default transition-colors cursor-pointer rounded px-1.5 py-0.5"
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle/70 bg-background-default/85 text-text-muted shadow-sm backdrop-blur transition-colors hover:text-text-default cursor-pointer"
         >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <path d="M15 3h6v6" />
-            <path d="M9 21H3v-6" />
-            <path d="M21 3l-7 7" />
-            <path d="M3 21l7-7" />
-          </svg>
-          Expand
+          <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
         </button>
       </div>
-      <div className="overflow-hidden rounded-md bg-background-default" style={{ minHeight: 320 }}>
+      <div className="overflow-hidden rounded-lg bg-transparent" style={{ minHeight: 320 }}>
         <UIResourceRenderer
           resource={content.resource}
           onUIAction={handleUIAction}

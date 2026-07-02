@@ -6,6 +6,7 @@ import { IngestPanel } from './IngestPanel/IngestPanel';
 import { KnowledgeGraphPanel } from './graph/KnowledgeGraphPanel';
 import { ChangeLogDrawer } from './changelog/ChangeLogDrawer';
 import { useKnowledge } from './KnowledgeContext';
+import { ReadableContent } from '../Layout/ReadableContent';
 
 export default function KnowledgeView() {
   return <KnowledgeViewInner />;
@@ -42,15 +43,18 @@ function KnowledgeViewInner() {
         className="flex flex-col min-w-0 flex-1 overflow-y-auto relative"
         data-search-scroll-area
       >
-        <div className="px-8 pt-12 pb-4 flex-shrink-0">
+        <ReadableContent size="graph" className="px-8 pt-12 pb-4 flex-shrink-0">
           <div className="flex flex-col page-transition">
             <h1 className="text-2xl font-semibold tracking-tight mb-1">Knowledge</h1>
             <p className="text-sm text-text-muted mb-0">
               Personal, LLM-maintained knowledge bases.
             </p>
           </div>
-        </div>
-        <div className="mx-6 mb-6 mt-2 grid min-h-[640px] flex-1 grid-cols-1 items-stretch gap-4 overflow-y-auto lg:min-h-0 lg:grid-cols-[340px_minmax(0,1fr)] lg:overflow-hidden">
+        </ReadableContent>
+        <ReadableContent
+          size="graph"
+          className="mb-6 mt-2 grid min-h-[640px] flex-1 grid-cols-1 items-stretch gap-4 overflow-y-auto px-8 lg:min-h-0 lg:grid-cols-[340px_minmax(0,1fr)] lg:overflow-hidden"
+        >
           <div className="flex min-h-0 flex-col overflow-visible px-4 pb-4 pt-0 lg:h-full lg:overflow-y-auto">
             <div className="pb-1">
               <KBSelectorTrigger open={paletteOpen} onOpenChange={setPaletteOpen} />
@@ -64,7 +68,7 @@ function KnowledgeViewInner() {
               onClearPreview={() => setPreviewSha(null)}
             />
           </div>
-        </div>
+        </ReadableContent>
         <ChangeLogDrawer
           open={changeLogOpen}
           onOpenChange={setChangeLogOpen}

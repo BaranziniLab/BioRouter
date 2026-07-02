@@ -402,6 +402,7 @@ impl Provider for ClaudeCodeProvider {
             CLAUDE_CODE_DOC_URL,
             vec![ConfigKey::from_value_type::<ClaudeCodeCommand>(true, false)],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

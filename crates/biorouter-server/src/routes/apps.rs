@@ -97,11 +97,9 @@ async fn serve_index(Path(id): Path<String>) -> Response {
     // Ensure a bundle exists for agentic apps (build on demand).
     if manifest.kind == ArtifactKind::Agentic && !st.file_exists(&id, "dist/app.js") {
         let dir = st.artifact_dir(&id);
-        if let Ok(report) = tokio::task::spawn_blocking(move || bundle::build_app(&dir)).await {
-            if let Ok(r) = report {
-                if !r.ok {
-                    warn!(app = %id, "on-demand build failed: {}", r.log);
-                }
+        if let Ok(Ok(r)) = tokio::task::spawn_blocking(move || bundle::build_app(&dir)).await {
+            if !r.ok {
+                warn!(app = %id, "on-demand build failed: {}", r.log);
             }
         }
     }
@@ -247,14 +245,14 @@ enum ClientFrame {
     /// BRSDK HITL: approve a pending tool. `action` ∈ {allow_once, always_allow}.
     Approve {
         request: String,
-        #[serde(default)]
-        action: String,
+        #[serde(default, rename = "action")]
+        _action: String,
     },
     /// BRSDK HITL: reject a pending tool, with an optional human reason.
     Reject {
         request: String,
-        #[serde(default)]
-        reason: Option<String>,
+        #[serde(default, rename = "reason")]
+        _reason: Option<String>,
     },
     /// BRSDK widgets: a submit/button action from an agent-rendered widget, fed
     /// back into the agent as the next turn (closing the interactive loop).
@@ -309,6 +307,21 @@ impl BrsdkSettings {
     pub(crate) fn current() -> Self {
         Self::from_config(biorouter::config::Config::global())
     }
+}
+
+fn advertised_app_capabilities(manifest: &Manifest, settings: BrsdkSettings) -> Vec<String> {
+    let mut capabilities = manifest
+        .agent
+        .as_ref()
+        .map(|a| a.capabilities.advertised())
+        .unwrap_or_default();
+
+    capabilities.retain(|capability| match capability.as_str() {
+        "vault" => settings.encryption,
+        "tracing" => settings.tracing,
+        _ => true,
+    });
+    capabilities
 }
 
 /// Load (or create + persist) the per-app AES-256 vault key from the OS keyring.
@@ -420,7 +433,9 @@ fn resolve_sql_sources(
         if src.kind != "sql" {
             continue; // extension-backed sources (knowledge/spoke/…) are wired elsewhere
         }
-        let Some(file) = src.file.as_ref() else { continue };
+        let Some(file) = src.file.as_ref() else {
+            continue;
+        };
         match jail.resolve(file, false) {
             Ok(path) if path.exists() => {
                 if sources.contains_key(&src.name) {
@@ -439,6 +454,7 @@ fn resolve_sql_sources(
 /// Configure a freshly-created session's agent from the app manifest: model,
 /// extensions, skills, knowledge base, and persona. Errors are logged, not fatal
 /// (the agent falls back to the global config where possible).
+#[allow(clippy::too_many_lines)]
 async fn configure_agent(
     agent: &biorouter::agents::Agent,
     state: &AppState,
@@ -594,8 +610,7 @@ async fn configure_agent(
                 let workspace = store().artifact_dir(&manifest.id).join("workspace");
                 let _ = std::fs::create_dir_all(&workspace);
                 if let Some(key) = load_or_create_vault_key(&manifest.id) {
-                    let vault =
-                        biorouter_mcp::agent_drafter::vault::Vault::new(&workspace, key);
+                    let vault = biorouter_mcp::agent_drafter::vault::Vault::new(&workspace, key);
                     let secrets = load_vault_secrets(&vault, &vault_cap.encrypted);
                     if !secrets.is_empty() {
                         agent
@@ -705,6 +720,7 @@ async fn configure_agent(
     }
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_agent_socket(
     mut socket: WebSocket,
     state: Arc<AppState>,
@@ -733,7 +749,11 @@ async fn handle_agent_socket(
             {
                 Ok(pair) => pair,
                 Err(e) => {
-                    let _ = send_json(&mut socket, json!({"type":"error","message": format!("session: {e}")})).await;
+                    let _ = send_json(
+                        &mut socket,
+                        json!({"type":"error","message": format!("session: {e}")}),
+                    )
+                    .await;
                     return;
                 }
             }
@@ -745,7 +765,11 @@ async fn handle_agent_socket(
         {
             Ok(s) => (s, false),
             Err(e) => {
-                let _ = send_json(&mut socket, json!({"type":"error","message": format!("session: {e}")})).await;
+                let _ = send_json(
+                    &mut socket,
+                    json!({"type":"error","message": format!("session: {e}")}),
+                )
+                .await;
                 return;
             }
         },
@@ -770,11 +794,7 @@ async fn handle_agent_socket(
     // BRSDK protocol v2: advertise capabilities so old apps ignore frames they
     // don't understand and new apps can feature-detect. Deny-by-default — only
     // capabilities the manifest declared are advertised.
-    let capabilities = manifest
-        .agent
-        .as_ref()
-        .map(|a| a.capabilities.advertised())
-        .unwrap_or_default();
+    let capabilities = advertised_app_capabilities(&manifest, BrsdkSettings::current());
     if !send_json(
         &mut socket,
         json!({
@@ -835,7 +855,8 @@ async fn handle_agent_socket(
                 // already bound to the resolved session, so there's no id to
                 // guess and no cross-session access.
                 let messages = backlog_for(&state, &session_id).await;
-                let _ = send_json(&mut socket, json!({"type":"history","messages": messages})).await;
+                let _ =
+                    send_json(&mut socket, json!({"type":"history","messages": messages})).await;
                 continue;
             }
             ClientFrame::ModelSelect { provider, model } => {
@@ -1169,12 +1190,8 @@ async fn handle_action_required(
     let permission = loop {
         match socket.next().await {
             Some(Ok(WsMessage::Text(t))) => match serde_json::from_str::<ClientFrame>(&t) {
-                Ok(ClientFrame::Approve { request, action }) if request == *id => {
-                    break if action == "always_allow" {
-                        Permission::AlwaysAllow
-                    } else {
-                        Permission::AllowOnce
-                    };
+                Ok(ClientFrame::Approve { request, .. }) if request == *id => {
+                    break Permission::AllowOnce;
                 }
                 Ok(ClientFrame::Reject { request, .. }) if request == *id => {
                     break Permission::DenyOnce;
@@ -1368,7 +1385,10 @@ mod tests {
         match out {
             PiiOutcome::Masked { text, reason } => {
                 assert!(!text.contains("A1234567"), "PHI must be masked");
-                assert!(text.contains("ivacaftor 150mg"), "clinical content preserved");
+                assert!(
+                    text.contains("ivacaftor 150mg"),
+                    "clinical content preserved"
+                );
                 assert!(reason.contains("MRN"));
             }
             other => panic!("expected Masked, got {:?}", std::mem::discriminant(&other)),
@@ -1391,8 +1411,8 @@ mod tests {
     }
 
     // --- data-source jail boundary (the security boundary of the data feature) ---
-    use biorouter_mcp::agent_drafter::manifest::{DataCapability, DataSource};
     use super::resolve_sql_sources;
+    use biorouter_mcp::agent_drafter::manifest::{DataCapability, DataSource};
 
     fn src(name: &str, kind: &str, file: Option<&str>) -> DataSource {
         DataSource {
@@ -1415,19 +1435,29 @@ mod tests {
 
         let data = DataCapability {
             sources: vec![
-                src("ok", "sql", Some("sub/cohort.db")),          // in-workspace, exists → kept
-                src("escape", "sql", Some("../secret.db")),       // traversal → rejected
-                src("abs", "sql", Some("/etc/hosts")),            // absolute-outside → rejected
-                src("missing", "sql", Some("nope.db")),           // in-jail but absent → dropped
-                src("notsql", "knowledge", Some("sub/cohort.db")),// non-sql → skipped
-                src("nofile", "sql", None),                       // no file → skipped
+                src("ok", "sql", Some("sub/cohort.db")), // in-workspace, exists → kept
+                src("escape", "sql", Some("../secret.db")), // traversal → rejected
+                src("abs", "sql", Some("/etc/hosts")),   // absolute-outside → rejected
+                src("missing", "sql", Some("nope.db")),  // in-jail but absent → dropped
+                src("notsql", "knowledge", Some("sub/cohort.db")), // non-sql → skipped
+                src("nofile", "sql", None),              // no file → skipped
             ],
         };
         let resolved = resolve_sql_sources(&ws, &data);
-        assert_eq!(resolved.len(), 1, "only the in-workspace existing sql source survives: {resolved:?}");
+        assert_eq!(
+            resolved.len(),
+            1,
+            "only the in-workspace existing sql source survives: {resolved:?}"
+        );
         assert!(resolved.contains_key("ok"));
-        assert!(!resolved.contains_key("escape"), "traversal source must not escape the workspace");
-        assert!(!resolved.contains_key("abs"), "absolute-outside source must be rejected");
+        assert!(
+            !resolved.contains_key("escape"),
+            "traversal source must not escape the workspace"
+        );
+        assert!(
+            !resolved.contains_key("abs"),
+            "absolute-outside source must be rejected"
+        );
     }
 
     #[tokio::test]
@@ -1475,6 +1505,65 @@ mod tests {
         assert!(s.llm_guardrails, "LLM-guardrail opt-in honored");
         assert!(!s.pii_guardrail, "un-set flags stay off");
         assert!(!s.tracing);
+    }
+
+    fn manifest_with_brsdk_capabilities() -> biorouter_mcp::agent_drafter::store::Manifest {
+        use biorouter_mcp::agent_drafter::{
+            manifest::{Capabilities, TracingCapability, VaultCapability},
+            store::{AgentConfig, ArtifactKind, Manifest},
+        };
+
+        let capabilities = Capabilities {
+            vault: Some(VaultCapability {
+                encrypted: vec!["API_KEY".to_string()],
+            }),
+            tracing: TracingCapability {
+                enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        Manifest {
+            id: "demo".to_string(),
+            title: "Demo".to_string(),
+            description: String::new(),
+            kind: ArtifactKind::Agentic,
+            entry: "index.html".to_string(),
+            created_at: 0,
+            updated_at: 0,
+            agent: Some(AgentConfig {
+                capabilities,
+                ..Default::default()
+            }),
+            width: None,
+            height: None,
+            built_at: None,
+            session_id: None,
+        }
+    }
+
+    #[test]
+    fn advertised_app_capabilities_hide_gated_features_until_enabled() {
+        let manifest = manifest_with_brsdk_capabilities();
+        let caps = super::advertised_app_capabilities(&manifest, super::BrsdkSettings::default());
+        assert!(!caps.contains(&"vault".to_string()));
+        assert!(!caps.contains(&"tracing".to_string()));
+    }
+
+    #[test]
+    fn advertised_app_capabilities_include_gated_features_when_enabled() {
+        let manifest = manifest_with_brsdk_capabilities();
+        let caps = super::advertised_app_capabilities(
+            &manifest,
+            super::BrsdkSettings {
+                encryption: true,
+                tracing: true,
+                ..Default::default()
+            },
+        );
+        assert!(caps.contains(&"vault".to_string()));
+        assert!(caps.contains(&"tracing".to_string()));
     }
 
     #[test]

@@ -32,6 +32,7 @@ import BackButton from '../ui/BackButton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { Message, Session } from '../../api';
 import { useNavigation } from '../../hooks/useNavigation';
+import { ReadableContent } from '../Layout/ReadableContent';
 
 const isUserMessage = (message: Message): boolean => {
   if (message.role === 'assistant') {
@@ -260,7 +261,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
   return (
     <>
       <MainPanelLayout>
-        <div className="flex-1 flex flex-col min-h-0 px-8">
+        <ReadableContent className="flex-1 flex flex-col min-h-0 px-8">
           <SessionHeader
             onBack={onBack}
             title={session.name}
@@ -307,7 +308,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
             error={error}
             onRetry={onRetry}
           />
-        </div>
+        </ReadableContent>
       </MainPanelLayout>
 
       <Dialog open={isShareModalOpen} onOpenChange={setIsShareModalOpen}>

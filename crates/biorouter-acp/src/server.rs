@@ -1052,7 +1052,7 @@ pub const DEFAULT_WS_ADDR: &str = "127.0.0.1:11577";
 
 /// Map a tungstenite error into `std::io::Error` for sacp's `Lines` transport.
 fn ws_io_err(e: tokio_tungstenite::tungstenite::Error) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, e)
+    std::io::Error::other(e)
 }
 
 /// Serve ACP over a single WebSocket connection.

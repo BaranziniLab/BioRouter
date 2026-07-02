@@ -57,7 +57,7 @@ fn test_cpp_functions_and_classes() {
     );
 
     assert!(result.imports.iter().any(|i| i.contains("vector")));
-    assert_eq!(result.main_line.is_some(), true);
+    assert!(result.main_line.is_some());
 }
 
 #[test]

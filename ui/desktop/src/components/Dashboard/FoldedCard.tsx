@@ -16,8 +16,7 @@ interface Props {
   onPointerDownDrag: (e: React.PointerEvent<HTMLDivElement>) => void;
 }
 
-const iconBtnClass =
-  'flex-shrink-0 p-1 rounded hover:bg-background-medium/60 transition-colors';
+const iconBtnClass = 'flex-shrink-0 p-1 rounded hover:bg-background-medium/60 transition-colors';
 
 // Pointer movement (in CSS px) below which a pointerdown→pointerup counts as
 // a click rather than a drag. Matches the canvas pan threshold so the two
@@ -45,10 +44,7 @@ export const FoldedCard: React.FC<Props> = ({
   const downRef = useRef<{ x: number; y: number; t: number } | null>(null);
 
   const indicator = isBusy ? (
-    <span
-      className="relative inline-flex w-2.5 h-2.5 flex-shrink-0"
-      aria-label="busy"
-    >
+    <span className="relative inline-flex w-2.5 h-2.5 flex-shrink-0" aria-label="busy">
       <span
         className="absolute inset-0 rounded-full"
         style={{ backgroundColor: accentColor, animation: 'breathe 1.4s ease-in-out infinite' }}
@@ -80,9 +76,7 @@ export const FoldedCard: React.FC<Props> = ({
         style={{
           background: bg,
           transform: hovered ? 'translateY(-1px)' : 'translateY(0)',
-          boxShadow: hovered
-            ? '0 8px 24px rgba(0,0,0,0.14)'
-            : '0 2px 8px rgba(0,0,0,0.08)',
+          boxShadow: hovered ? '0 8px 24px rgba(0,0,0,0.14)' : '0 2px 8px rgba(0,0,0,0.08)',
         }}
         onPointerDown={(e) => {
           if ((e.target as HTMLElement).closest('button')) return;
@@ -105,7 +99,7 @@ export const FoldedCard: React.FC<Props> = ({
         onPointerCancel={() => {
           downRef.current = null;
         }}
-        title="Click to expand · drag to move"
+        title="Click to expand · drag to move · ⌘⌥Enter"
       >
         {/* Row 1: status indicator + control buttons. No title here so even
             short cards never crop the name. */}
@@ -115,15 +109,21 @@ export const FoldedCard: React.FC<Props> = ({
           <button
             type="button"
             className={iconBtnClass}
-            onClick={(e) => { e.stopPropagation(); onUnfold(); }}
-            title="Expand"
+            onClick={(e) => {
+              e.stopPropagation();
+              onUnfold();
+            }}
+            title="Expand (⌘⌥Enter)"
           >
             <Minus className="w-3.5 h-3.5" />
           </button>
           <button
             type="button"
             className={iconBtnClass}
-            onClick={(e) => { e.stopPropagation(); onShrink(); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onShrink();
+            }}
             title="Shrink to minimum size"
           >
             <Minimize2 className="w-3.5 h-3.5" />
@@ -131,7 +131,10 @@ export const FoldedCard: React.FC<Props> = ({
           <button
             type="button"
             className={iconBtnClass}
-            onClick={(e) => { e.stopPropagation(); onEnlarge(); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onEnlarge();
+            }}
             title="Enlarge"
           >
             <Maximize2 className="w-3.5 h-3.5" />
@@ -139,16 +142,17 @@ export const FoldedCard: React.FC<Props> = ({
           <button
             type="button"
             className={iconBtnClass}
-            onClick={(e) => { e.stopPropagation(); onClose(); }}
-            title="Close"
+            onClick={(e) => {
+              e.stopPropagation();
+              onClose();
+            }}
+            title="Remove from dashboard (⌘⌥⌫)"
           >
             <X className="w-3.5 h-3.5" />
           </button>
         </div>
         {/* Row 2: title — own line, plenty of horizontal room. */}
-        <div className="px-3 mt-1 text-sm font-medium leading-snug truncate">
-          {name}
-        </div>
+        <div className="px-3 mt-1 text-sm font-medium leading-snug truncate">{name}</div>
         {/* Row 3: working directory. Extra bottom padding so the descenders
             and the leading don't visually clip at small heights. */}
         <div className="px-3 pb-2 mt-0.5 text-[11px] font-mono text-text-muted/80 leading-snug truncate">
@@ -168,9 +172,7 @@ export const FoldedCard: React.FC<Props> = ({
           transition: 'opacity 140ms ease-out, transform 140ms ease-out',
         }}
       >
-        <div
-          className="rounded-lg border border-border-subtle/40 bg-background-default/95 backdrop-blur-sm shadow-lg px-3 py-2 text-[11px] leading-snug text-text-default/90 max-h-32 overflow-hidden"
-        >
+        <div className="rounded-lg border border-border-subtle/40 bg-background-default/95 backdrop-blur-sm shadow-lg px-3 py-2 text-[11px] leading-snug text-text-default/90 max-h-32 overflow-hidden">
           {previewTail && previewTail.trim().length > 0 ? (
             <div className="whitespace-pre-wrap break-words">
               {isBusy ? <span className="text-text-muted/80">… </span> : null}

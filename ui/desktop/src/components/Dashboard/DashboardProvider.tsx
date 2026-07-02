@@ -16,35 +16,21 @@ import {
 import { isDefaultSessionName, subscribeSessionNameChanges } from '../../utils/sessionNameSync';
 import { findSpawnPosition, organize as organizeLayout } from './canvasLayout';
 import { createSession } from '../../sessions';
-import { deleteSession, getSession, stopAgent } from '../../api';
+import { getSession, stopAgent } from '../../api';
 import { getInitialWorkingDir } from '../../utils/workingDir';
 import { toastError } from '../../toasts';
 import { errorMessage } from '../../utils/conversionUtils';
+import { snapSizeToDevicePixel, snapToDevicePixel } from './pixelSnap';
+import { useChatStreamRegistry } from '../../hooks/chatStreamStore';
 
 /**
- * Reap a session whose dashboard window was just closed.
+ * Release a session whose dashboard window was just removed.
  *
- * Closing a canvas window must NEVER destroy a real conversation — that was the
- * old "history seemingly deleted / chat cannot be loaded" bug. So:
- *  - Always `stopAgent` to evict the in-memory agent from the AgentManager LRU
- *    (the original reason close used to delete — a zombie agent can hold its
- *    write-lock and block future spawns). This does NOT touch the DB.
- *  - Only `deleteSession` (which removes history) when the window CREATED the
- *    session itself AND it never received a message — a throwaway empty spawn.
- *    Resumed and diverged sessions (createdHere=false) are always preserved.
+ * Removing a canvas window must not destroy conversation history. We only stop
+ * the in-memory agent so it cannot hold a write-lock or LRU slot after the
+ * dashboard card/window is gone.
  */
-async function reapDashboardSession(sessionId: string, createdHere: boolean): Promise<void> {
-  if (createdHere) {
-    try {
-      const res = await getSession({ path: { session_id: sessionId }, throwOnError: false });
-      if (res.data && res.data.message_count === 0) {
-        await deleteSession({ path: { session_id: sessionId }, throwOnError: false });
-        return;
-      }
-    } catch {
-      // Fall through to stopAgent — never escalate to a delete on uncertainty.
-    }
-  }
+async function releaseDashboardSession(sessionId: string): Promise<void> {
   try {
     await stopAgent({ body: { session_id: sessionId }, throwOnError: false });
   } catch {
@@ -66,6 +52,20 @@ export const CARD_H = 96;
 
 function nextWindowId(): string {
   return 'dw_' + Math.random().toString(36).slice(2, 10);
+}
+
+function snapPoint(point: { x: number; y: number }): { x: number; y: number } {
+  return {
+    x: snapToDevicePixel(point.x),
+    y: snapToDevicePixel(point.y),
+  };
+}
+
+function snapSize(size: { w: number; h: number }): { w: number; h: number } {
+  return {
+    w: snapSizeToDevicePixel(size.w),
+    h: snapSizeToDevicePixel(size.h),
+  };
 }
 
 function serialize(state: DashboardState): SerializedDashboardState {
@@ -119,6 +119,7 @@ interface DashboardProviderProps {
 }
 
 export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }) => {
+  const chatStreamRegistry = useChatStreamRegistry();
   const [state, setState] = useState<DashboardState>(() => hydrate());
   const debouncedSaveRef = useRef(debounceSave(250));
   const animationTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -306,7 +307,7 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         userSetName: Boolean(overrideName),
         badge: prev.windows.reduce((m, w) => Math.max(m, w.badge), 0) + 1,
         accentColor: pickAccentColor(usedColors),
-        position: pos,
+        position: snapPoint(pos),
         size: { w: MIN_WINDOW_W, h: MIN_WINDOW_H },
         isManuallyPlaced: true,
         cwd,
@@ -325,24 +326,26 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     });
   }, []);
 
-  const closeWindow: DashboardApi['closeWindow'] = useCallback((windowId) => {
-    // Closing a window removes it from the canvas but must NOT destroy the
-    // underlying conversation. reapDashboardSession frees the in-memory agent
-    // and only deletes genuinely-empty throwaway spawns (see its doc comment).
-    const target = stateRef.current.windows.find((w) => w.windowId === windowId);
-    if (target?.sessionId) {
-      void reapDashboardSession(target.sessionId, target.createdHere ?? false);
-    }
-    setState((prev) => {
-      const remaining = prev.windows.filter((w) => w.windowId !== windowId);
-      let focusedWindowId = prev.focusedWindowId;
-      if (focusedWindowId === windowId) {
-        const candidates = [...remaining].sort((a, b) => b.lastInteraction - a.lastInteraction);
-        focusedWindowId = candidates[0]?.windowId ?? null;
+  const closeWindow: DashboardApi['closeWindow'] = useCallback(
+    (windowId) => {
+      // Removing a window only takes it off the dashboard. Conversation history
+      // stays in History; releaseDashboardSession only frees the in-memory agent.
+      const target = stateRef.current.windows.find((w) => w.windowId === windowId);
+      if (target?.sessionId && !chatStreamRegistry.isSessionRunning(target.sessionId)) {
+        void releaseDashboardSession(target.sessionId);
       }
-      return { ...prev, windows: remaining, focusedWindowId };
-    });
-  }, []);
+      setState((prev) => {
+        const remaining = prev.windows.filter((w) => w.windowId !== windowId);
+        let focusedWindowId = prev.focusedWindowId;
+        if (focusedWindowId === windowId) {
+          const candidates = [...remaining].sort((a, b) => b.lastInteraction - a.lastInteraction);
+          focusedWindowId = candidates[0]?.windowId ?? null;
+        }
+        return { ...prev, windows: remaining, focusedWindowId };
+      });
+    },
+    [chatStreamRegistry]
+  );
 
   const focusWindow: DashboardApi['focusWindow'] = useCallback((windowId) => {
     setState((prev) => ({
@@ -398,8 +401,8 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         w.windowId === windowId
           ? {
               ...w,
-              position,
-              size: size ?? w.size,
+              position: snapPoint(position),
+              size: size ? snapSize(size) : w.size,
               isManuallyPlaced: true,
               lastInteraction: Date.now(),
             }
@@ -418,8 +421,8 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         return {
           ...w,
           isManuallyPlaced: true,
-          position: { x: r.x, y: r.y },
-          size: { w: r.w, h: r.h },
+          position: snapPoint({ x: r.x, y: r.y }),
+          size: snapSize({ w: r.w, h: r.h }),
         };
       }),
     }));
@@ -432,8 +435,8 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         w.windowId === windowId
           ? {
               ...w,
-              size,
-              position: position ?? w.position,
+              size: snapSize(size),
+              position: position ? snapPoint(position) : w.position,
               isManuallyPlaced: true,
               lastInteraction: Date.now(),
             }
@@ -466,7 +469,7 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         ...prev,
         windows: prev.windows.map((w) => {
           const r = byId.get(w.windowId);
-          return r ? { ...w, position: { x: r.x, y: r.y } } : w;
+          return r ? { ...w, position: snapPoint({ x: r.x, y: r.y }) } : w;
         }),
         organizeTick: prev.organizeTick + 1,
       };
@@ -479,14 +482,14 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     // explicitly cleared the canvas.
     spawnGenerationRef.current += 1;
     // Clear the canvas, freeing each window's agent from the AgentManager LRU.
-    // Real conversations (resumed/diverged, or created-here chats that were
-    // actually used) are preserved in history; only empty throwaway spawns are
-    // deleted. See reapDashboardSession.
+    // Conversations remain available in History.
     for (const w of stateRef.current.windows) {
-      void reapDashboardSession(w.sessionId, w.createdHere ?? false);
+      if (!chatStreamRegistry.isSessionRunning(w.sessionId)) {
+        void releaseDashboardSession(w.sessionId);
+      }
     }
     setState((prev) => ({ ...prev, windows: [], focusedWindowId: null }));
-  }, []);
+  }, [chatStreamRegistry]);
 
   const panBy: DashboardApi['panBy'] = useCallback((dx, dy) => {
     setState((prev) => {
@@ -518,8 +521,8 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
         return {
           ...prev,
           cameraOffset: {
-            x: Math.round(viewport.width / 2 - cx),
-            y: Math.round(viewport.height / 2 - cy),
+            x: snapToDevicePixel(viewport.width / 2 - cx),
+            y: snapToDevicePixel(viewport.height / 2 - cy),
           },
         };
       });
@@ -593,6 +596,7 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     flashAnimating();
     setState((prev) => ({
       ...prev,
+      foldMode: false,
       windows: prev.windows.map((w) => (!w.folded ? w : { ...w, folded: false })),
     }));
   }, [flashAnimating]);

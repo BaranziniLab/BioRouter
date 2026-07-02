@@ -10,6 +10,7 @@ import { Brain, Monitor, MessageSquare } from '../icons/app-icons';
 import { useState, useEffect } from 'react';
 import ChatSettingsSection from './chat/ChatSettingsSection';
 import { CONFIGURATION_ENABLED } from '../../updates';
+import { ReadableContent } from '../Layout/ReadableContent';
 
 export type SettingsViewOptions = {
   deepLinkConfig?: ExtensionConfig;
@@ -71,9 +72,9 @@ export default function SettingsView({
     <>
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
-          <div className="px-8 pt-12 pb-0 flex-shrink-0">
+          <ReadableContent className="px-8 pt-12 pb-0 flex-shrink-0">
             <h1 className="text-2xl font-semibold tracking-tight page-transition">Settings</h1>
-          </div>
+          </ReadableContent>
 
           <div className="flex-1 min-h-0 flex flex-col">
             <Tabs
@@ -81,7 +82,7 @@ export default function SettingsView({
               onValueChange={handleTabChange}
               className="h-full flex flex-col"
             >
-              <div className="px-8 pt-4">
+              <ReadableContent className="px-8 pt-4">
                 <TabsList className="biorouter-settings-tabs justify-start gap-1 rounded-xl p-1 h-auto w-fit">
                   <TabsTrigger
                     value="models"
@@ -108,10 +109,10 @@ export default function SettingsView({
                     App
                   </TabsTrigger>
                 </TabsList>
-              </div>
+              </ReadableContent>
 
               <ScrollArea className="flex-1" paddingX={1}>
-                <div className="px-8 py-5">
+                <ReadableContent className="px-8 py-5">
                   <TabsContent value="models" className="mt-0 focus-visible:outline-none">
                     <ModelsSection setView={setView} />
                   </TabsContent>
@@ -124,7 +125,7 @@ export default function SettingsView({
                       <AppSettingsSection scrollToSection={viewOptions.section} />
                     </div>
                   </TabsContent>
-                </div>
+                </ReadableContent>
               </ScrollArea>
             </Tabs>
           </div>

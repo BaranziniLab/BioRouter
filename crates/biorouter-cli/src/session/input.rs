@@ -393,6 +393,10 @@ fn print_help() {
             "Ctrl+_KEY_",
             "Insert a newline (set via BIOROUTER_CLI_NEWLINE_KEY)",
         ),
+        (
+            "Tab",
+            "Complete slash commands and /skill: or /ext: references",
+        ),
         ("↑ / ↓", "Navigate command history"),
     ];
 

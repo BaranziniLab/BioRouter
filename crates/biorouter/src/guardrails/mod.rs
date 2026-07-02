@@ -31,7 +31,10 @@ pub enum GuardrailVerdict {
     /// Allowed unchanged.
     Pass,
     /// Allowed after rewriting (e.g. PII masked); `finding` summarizes what.
-    Mask { masked_text: String, finding: String },
+    Mask {
+        masked_text: String,
+        finding: String,
+    },
     /// Tripped. `blocked` drives block-vs-warn behavior at the call site.
     Trip { reason: String, blocked: bool },
 }

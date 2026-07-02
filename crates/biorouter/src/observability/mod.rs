@@ -19,15 +19,40 @@ use serde::{Deserialize, Serialize};
 pub enum ObsEvent {
     TurnStart,
     TurnEnd,
-    ToolStart { id: String, name: String },
-    ToolEnd { id: String, ok: bool },
-    LlmStart { model: String },
-    LlmEnd { model: String, input_tokens: u32, output_tokens: u32 },
-    SubAgentStart { name: String },
-    SubAgentEnd { name: String },
-    CompactionStart { trigger: String },
-    CompactionEnd { trigger: String, before: u32, after: u32 },
-    Guardrail { name: String, blocked: bool },
+    ToolStart {
+        id: String,
+        name: String,
+    },
+    ToolEnd {
+        id: String,
+        ok: bool,
+    },
+    LlmStart {
+        model: String,
+    },
+    LlmEnd {
+        model: String,
+        input_tokens: u32,
+        output_tokens: u32,
+    },
+    SubAgentStart {
+        name: String,
+    },
+    SubAgentEnd {
+        name: String,
+    },
+    CompactionStart {
+        trigger: String,
+    },
+    CompactionEnd {
+        trigger: String,
+        before: u32,
+        after: u32,
+    },
+    Guardrail {
+        name: String,
+        blocked: bool,
+    },
     SessionStart,
     SessionEnd,
 }
@@ -110,14 +135,16 @@ impl TraceBuilder {
             ObsEvent::SessionStart => {
                 self.open_span(SpanKind::Session, "session".into(), ts_ms, None)
             }
-            ObsEvent::SessionEnd => {
-                self.close_span(SpanKind::Session, None, ts_ms, SpanStatus::Ok)
-            }
+            ObsEvent::SessionEnd => self.close_span(SpanKind::Session, None, ts_ms, SpanStatus::Ok),
             ObsEvent::ToolStart { id, name } => {
                 self.open_named(SpanKind::Tool, name, Some(id), ts_ms, None);
             }
             ObsEvent::ToolEnd { id, ok } => {
-                let status = if ok { SpanStatus::Ok } else { SpanStatus::Error };
+                let status = if ok {
+                    SpanStatus::Ok
+                } else {
+                    SpanStatus::Error
+                };
                 self.close_span(SpanKind::Tool, Some(&id), ts_ms, status);
             }
             ObsEvent::LlmStart { model } => {
@@ -146,7 +173,13 @@ impl TraceBuilder {
                 self.close_named(SpanKind::SubAgent, &name, ts_ms, SpanStatus::Ok)
             }
             ObsEvent::CompactionStart { trigger } => {
-                self.open_named(SpanKind::Compaction, format!("compaction:{trigger}"), None, ts_ms, None);
+                self.open_named(
+                    SpanKind::Compaction,
+                    format!("compaction:{trigger}"),
+                    None,
+                    ts_ms,
+                    None,
+                );
             }
             ObsEvent::CompactionEnd {
                 trigger,
@@ -167,8 +200,18 @@ impl TraceBuilder {
                 } else {
                     Some(serde_json::json!({ "blocked": blocked }))
                 };
-                let status = if blocked { SpanStatus::Error } else { SpanStatus::Ok };
-                let idx = self.open_named(SpanKind::Guardrail, format!("guardrail:{name}"), None, ts_ms, detail);
+                let status = if blocked {
+                    SpanStatus::Error
+                } else {
+                    SpanStatus::Ok
+                };
+                let idx = self.open_named(
+                    SpanKind::Guardrail,
+                    format!("guardrail:{name}"),
+                    None,
+                    ts_ms,
+                    detail,
+                );
                 self.spans[idx].end_ms = Some(ts_ms);
                 self.spans[idx].status = status;
                 self.open.pop(); // immediately closed
@@ -176,7 +219,13 @@ impl TraceBuilder {
         }
     }
 
-    fn open_span(&mut self, kind: SpanKind, name: String, ts: u64, attrs: Option<serde_json::Value>) {
+    fn open_span(
+        &mut self,
+        kind: SpanKind,
+        name: String,
+        ts: u64,
+        attrs: Option<serde_json::Value>,
+    ) {
         self.open_named(kind, name, None, ts, attrs);
     }
 
@@ -193,7 +242,11 @@ impl TraceBuilder {
         let parent = self.open.last().map(|&i| self.spans[i].id);
         let id = self.next_id;
         self.next_id += 1;
-        let attrs = if self.redact { redact_attrs(attrs) } else { attrs };
+        let attrs = if self.redact {
+            redact_attrs(attrs)
+        } else {
+            attrs
+        };
         self.spans.push(Span {
             id,
             parent,
@@ -220,7 +273,8 @@ impl TraceBuilder {
         // (and id, when given).
         if let Some(pos) = self.open.iter().rposition(|&i| {
             self.spans[i].kind == kind
-                && match_id.is_none_or(|mid| self.match_ids.get(&i).map(|s| s.as_str()) == Some(mid))
+                && match_id
+                    .is_none_or(|mid| self.match_ids.get(&i).map(|s| s.as_str()) == Some(mid))
         }) {
             let idx = self.open.remove(pos);
             self.spans[idx].end_ms = Some(ts);
@@ -248,7 +302,7 @@ impl TraceBuilder {
             .enumerate()
             .filter(|(_, s)| s.kind == kind && s.end_ms.is_some())
             .map(|(i, _)| i)
-            .last()
+            .next_back()
     }
 
     pub fn spans(&self) -> &[Span] {

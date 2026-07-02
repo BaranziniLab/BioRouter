@@ -220,6 +220,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "arboard"
+version = "3.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0348a1c054491f4bfe6ab86a7b6ab1e44e45d899005de92f58b3df180b36ddaf"
+dependencies = [
+ "clipboard-win",
+ "image 0.25.9",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation",
+ "parking_lot",
+ "percent-encoding",
+ "windows-sys 0.60.2",
+ "x11rb",
+]
+
+[[package]]
 name = "arraydeque"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -917,7 +937,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter"
-version = "1.86.1"
+version = "1.87.0"
 dependencies = [
  "agent-client-protocol-schema",
  "ahash",
@@ -1000,7 +1020,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-acp"
-version = "1.86.1"
+version = "1.87.0"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -1025,7 +1045,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-bench"
-version = "1.86.1"
+version = "1.87.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1048,10 +1068,11 @@ dependencies = [
 
 [[package]]
 name = "biorouter-cli"
-version = "1.86.1"
+version = "1.87.0"
 dependencies = [
  "anstream",
  "anyhow",
+ "arboard",
  "async-trait",
  "axum",
  "base64 0.22.1",
@@ -1104,8 +1125,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "biorouter-headless"
+version = "1.87.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "dirs 6.0.0",
+ "http-body-util",
+ "mime_guess",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "tower-http 0.5.2",
+ "tracing",
+ "tracing-subscriber",
+ "zip 8.6.0",
+]
+
+[[package]]
 name = "biorouter-mcp"
-version = "1.86.1"
+version = "1.87.0"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -1190,7 +1232,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-sandbox"
-version = "1.86.1"
+version = "1.87.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1204,7 +1246,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-server"
-version = "1.86.1"
+version = "1.87.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1253,7 +1295,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-test"
-version = "1.86.1"
+version = "1.87.0"
 dependencies = [
  "clap",
  "serde_json",
@@ -3150,6 +3192,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 
 [[package]]
+name = "fax"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caf1079563223d5d59d83c85886a56e586cfd5c1a26292e971a0fa266531ac5a"
+
+[[package]]
 name = "fd-lock"
 version = "4.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3492,6 +3540,16 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
+]
+
+[[package]]
+name = "gethostname"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bd49230192a3797a9a4d6abe9b3eed6f7fa4c8a8a4947977c6f80025f92cbd8"
+dependencies = [
+ "rustix 1.1.3",
+ "windows-link 0.2.1",
 ]
 
 [[package]]
@@ -4175,7 +4233,7 @@ dependencies = [
  "num-traits",
  "png 0.17.16",
  "qoi",
- "tiff",
+ "tiff 0.9.1",
 ]
 
 [[package]]
@@ -4189,6 +4247,7 @@ dependencies = [
  "moxcms",
  "num-traits",
  "png 0.18.0",
+ "tiff 0.10.3",
 ]
 
 [[package]]
@@ -6336,6 +6395,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "quick-error"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a993555f31e5a609f617c12db6250dedcac1b0a85076912c436e6fc9b2c8e6a3"
+
+[[package]]
 name = "quick-xml"
 version = "0.30.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8426,6 +8491,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tiff"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af9605de7fee8d9551863fd692cce7637f548dbd9db9180fcc07ccc6d26c336f"
+dependencies = [
+ "fax",
+ "flate2",
+ "half",
+ "quick-error",
+ "weezl",
+ "zune-jpeg",
+]
+
+[[package]]
 name = "tiktoken-rs"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10444,6 +10523,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9edde0db4769d2dc68579893f2306b26c6ecfbe0ef499b013d731b7b9247e0b9"
 
 [[package]]
+name = "x11rb"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9993aa5be5a26815fe2c3eacfc1fde061fc1a1f094bf1ad2a18bf9c495dd7414"
+dependencies = [
+ "gethostname",
+ "rustix 1.1.3",
+ "x11rb-protocol",
+]
+
+[[package]]
+name = "x11rb-protocol"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
+
+[[package]]
 name = "xattr"
 version = "1.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10822,10 +10918,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "zune-core"
+version = "0.4.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f423a2c17029964870cfaabb1f13dfab7d092a62a29a89264f4d36990ca414a"
+
+[[package]]
 name = "zune-inflate"
 version = "0.2.54"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "73ab332fe2f6680068f3582b16a24f90ad7096d5d39b974d1c0aff0125116f02"
 dependencies = [
  "simd-adler32",
+]
+
+[[package]]
+name = "zune-jpeg"
+version = "0.4.21"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "29ce2c8a9384ad323cf564b67da86e21d3cfdff87908bc1223ed5c99bc792713"
+dependencies = [
+ "zune-core",
 ]

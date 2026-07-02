@@ -539,6 +539,7 @@ fn parse_custom_headers(s: String) -> HashMap<String, String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod alias_tests {
     use super::*;
     use crate::providers::api_client::{ApiClient, AuthMethod};

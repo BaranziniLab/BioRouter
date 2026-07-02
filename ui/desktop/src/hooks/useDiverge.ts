@@ -62,7 +62,7 @@ export function useDiverge(): UseDivergeResult {
         } else {
           // In a normal chat: open a NEW focused Electron window for the
           // branch. The current window is never navigated or changed.
-          window.electron.createChatWindow(undefined, workingDir, undefined, newSessionId, 'pair');
+          window.electron.createDivergedChatWindow(workingDir, newSessionId);
         }
         return newSessionId;
       } catch (err) {

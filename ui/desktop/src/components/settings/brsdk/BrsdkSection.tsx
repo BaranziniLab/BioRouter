@@ -23,13 +23,12 @@ const BRSDK_TOGGLES: BrsdkToggleMeta[] = [
     key: 'brsdk_pii_guardrail',
     label: 'PII / PHI guardrail',
     description:
-      'Mask personal and health information on your device before it reaches an Agent-Drafter app.',
+      'Mask personal and health information before an app message reaches the model or conversation.',
   },
   {
     key: 'brsdk_llm_guardrails',
-    label: 'LLM guardrails',
-    description:
-      'Run LLM safety checks, including the goal Stop-hook judge, for Agent-Drafter apps.',
+    label: 'Goal stop-hook guardrail',
+    description: 'Run the goal Stop-hook judge for Agent-Drafter apps that declare a goal.',
   },
   {
     key: 'brsdk_encryption',
@@ -39,7 +38,7 @@ const BRSDK_TOGGLES: BrsdkToggleMeta[] = [
   {
     key: 'brsdk_tracing',
     label: 'Agent tracing',
-    description: 'Record a trace timeline for Agent-Drafter apps so you can see what ran and when.',
+    description: 'Permit trace timeline support for Agent-Drafter apps that declare tracing.',
   },
 ];
 

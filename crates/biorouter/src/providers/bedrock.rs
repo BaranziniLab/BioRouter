@@ -28,9 +28,11 @@ pub const BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-sonnet-4-6";
 // Versioned IDs (v1:0 suffix) are the full inference-profile ARN names.
 // Removed: claude-sonnet-4-20250514 (Bedrock Legacy since Apr 2026, retired
 // by Anthropic Jun 15, 2026) and claude-opus-4-1 (deprecated, retires Aug
-// 2026). Opus 4.7/4.8/Fable 5 are only served via the newer bedrock-mantle
-// Messages API path and have no us.* inference-profile IDs.
+// 2026).
 pub const BEDROCK_KNOWN_MODELS: &[&str] = &[
+    // Claude Sonnet 5 / Opus 4.8 — newest public Bedrock Claude models
+    "us.anthropic.claude-sonnet-5",
+    "us.anthropic.claude-opus-4-8",
     // Claude Sonnet 4.6 — latest, preferred default (1M context)
     "us.anthropic.claude-sonnet-4-6",
     // Claude Opus 4.6 (1M context)
@@ -237,6 +239,7 @@ impl Provider for BedrockProvider {
                 ConfigKey::new("AWS_REGION", true, false, Some("us-west-2")),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

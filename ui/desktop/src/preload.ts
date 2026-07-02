@@ -85,6 +85,7 @@ type ElectronAPI = {
     viewType?: string,
     workflowId?: string
   ) => void;
+  createDivergedChatWindow: (dir: string | undefined, resumeSessionId: string) => void;
   logInfo: (txt: string) => void;
   showNotification: (data: NotificationData) => void;
   showMessageBox: (options: MessageBoxOptions) => Promise<MessageBoxResponse>;
@@ -278,6 +279,8 @@ const electronAPI: ElectronAPI = {
       viewType,
       workflowId
     ),
+  createDivergedChatWindow: (dir: string | undefined, resumeSessionId: string) =>
+    ipcRenderer.send('create-diverged-chat-window', dir, resumeSessionId),
   logInfo: (txt: string) => ipcRenderer.send('logInfo', txt),
   showNotification: (data: NotificationData) => ipcRenderer.send('notify', data),
   showMessageBox: (options: MessageBoxOptions) => ipcRenderer.invoke('show-message-box', options),

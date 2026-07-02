@@ -40,15 +40,25 @@ const DEFAULT_TIMEOUT_SECS: u64 = 600;
 pub const DATABRICKS_DEFAULT_MODEL: &str = "databricks-claude-sonnet-4-6";
 const DATABRICKS_DEFAULT_FAST_MODEL: &str = "databricks-gemini-3-5-flash";
 pub const DATABRICKS_KNOWN_MODELS: &[&str] = &[
+    "databricks-claude-fable-5",
     "databricks-claude-sonnet-4-6",
     "databricks-claude-opus-4-8",
+    "databricks-claude-opus-4-7",
     "databricks-claude-opus-4-6",
+    "databricks-claude-opus-4-5",
     "databricks-claude-sonnet-4-5",
     "databricks-claude-haiku-4-5",
     "databricks-gpt-5-5",
+    "databricks-gpt-5-5-pro",
     "databricks-gpt-5-4",
+    "databricks-gpt-5-4-mini",
+    "databricks-gpt-5-4-nano",
     "databricks-gemini-3-5-flash",
     "databricks-gemini-3-1-pro",
+    "databricks-gemini-3-1-flash-lite",
+    "databricks-gemini-3-flash",
+    "databricks-gemini-2-5-pro",
+    "databricks-gemini-2-5-flash",
     "databricks-meta-llama-3-3-70b-instruct",
     "databricks-llama-4-maverick",
 ];
@@ -254,8 +264,25 @@ impl Provider for DatabricksProvider {
         // Only Databricks-served Claude variants are vision-capable.
         // Llama-3 instruct and DBRX are text-only.
         const DATABRICKS_VISION_MODELS: &[&str] = &[
+            "databricks-claude-fable-5",
+            "databricks-claude-sonnet-4-6",
+            "databricks-claude-opus-4-8",
+            "databricks-claude-opus-4-7",
+            "databricks-claude-opus-4-6",
+            "databricks-claude-opus-4-5",
             "databricks-claude-sonnet-4-5",
-            "databricks-claude-3-7-sonnet",
+            "databricks-claude-haiku-4-5",
+            "databricks-gpt-5-5",
+            "databricks-gpt-5-5-pro",
+            "databricks-gpt-5-4",
+            "databricks-gpt-5-4-mini",
+            "databricks-gpt-5-4-nano",
+            "databricks-gemini-3-5-flash",
+            "databricks-gemini-3-1-pro",
+            "databricks-gemini-3-1-flash-lite",
+            "databricks-gemini-3-flash",
+            "databricks-gemini-2-5-pro",
+            "databricks-gemini-2-5-flash",
         ];
         let models: Vec<ModelInfo> = DATABRICKS_KNOWN_MODELS
             .iter()
@@ -281,6 +308,7 @@ impl Provider for DatabricksProvider {
                 ConfigKey::new("DATABRICKS_TOKEN", false, true, None),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

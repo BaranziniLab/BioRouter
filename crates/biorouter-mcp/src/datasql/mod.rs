@@ -29,7 +29,10 @@ impl std::fmt::Display for DataError {
         match self {
             DataError::Open(e) => write!(f, "data: cannot open database: {e}"),
             DataError::NotReadOnly => {
-                write!(f, "data: only a single read-only SELECT/PRAGMA query is allowed")
+                write!(
+                    f,
+                    "data: only a single read-only SELECT/PRAGMA query is allowed"
+                )
             }
             DataError::Query(e) => write!(f, "data: query failed: {e}"),
         }
@@ -98,7 +101,11 @@ impl DataSql {
 
         let mut columns: Vec<String> = Vec::new();
         if let Some(first) = fetched.first() {
-            columns = first.columns().iter().map(|c| c.name().to_string()).collect();
+            columns = first
+                .columns()
+                .iter()
+                .map(|c| c.name().to_string())
+                .collect();
         }
         let truncated = fetched.len() > max_rows;
         let mut rows = Vec::with_capacity(fetched.len().min(max_rows));
@@ -122,7 +129,8 @@ impl DataSql {
         if !table.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || table.is_empty() {
             return Err(DataError::NotReadOnly);
         }
-        self.query(&format!("SELECT * FROM {table} LIMIT 5"), 5).await
+        self.query(&format!("SELECT * FROM {table} LIMIT 5"), 5)
+            .await
     }
 }
 
@@ -180,7 +188,7 @@ mod tests {
         assert!(is_read_only_sql("WITH c AS (SELECT 1) SELECT * FROM c"));
         assert!(is_read_only_sql("PRAGMA table_info(t)"));
         assert!(is_read_only_sql("SELECT 1;")); // trailing semicolon ok
-        // Mutations + injection rejected.
+                                                // Mutations + injection rejected.
         assert!(!is_read_only_sql("DROP TABLE t"));
         assert!(!is_read_only_sql("UPDATE t SET x = 1"));
         assert!(!is_read_only_sql("DELETE FROM t"));
@@ -193,7 +201,10 @@ mod tests {
         let (_d, path) = seed_db().await;
         let db = DataSql::open_readonly(&path).await.unwrap();
         let res = db
-            .query("SELECT gene, vaf FROM patients WHERE vaf > 0.3 ORDER BY vaf DESC", 100)
+            .query(
+                "SELECT gene, vaf FROM patients WHERE vaf > 0.3 ORDER BY vaf DESC",
+                100,
+            )
             .await
             .unwrap();
         assert_eq!(res.columns, vec!["gene", "vaf"]);

@@ -40,6 +40,7 @@ pub struct LintFinding {
 /// Validate a built app's authored files against the harness guardrails.
 /// Returns findings (Errors block readiness; Warns are nudges). Pure string
 /// analysis — safe to run on every build/preview.
+#[allow(clippy::too_many_lines)]
 pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     let mut out = Vec::new();
     let mut err = |m: &str| {
@@ -89,6 +90,19 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
         out.push(LintFinding {
             level: LintLevel::Warn,
             msg: "src/main.ts never calls the agent (br.run / br.prompt / br.ask) and doesn't enable autoChat. Wire a control to br.run(prompt, \"#out\").".into(),
+        });
+    }
+    let has_progress_surface = main.contains("br.run")
+        || main.contains("autoChat: true")
+        || main.contains("createApp();")
+        || main.contains("mountTimeline")
+        || il.contains("data-br-progress")
+        || il.contains("br-run-status")
+        || il.contains("data-br-chat");
+    if calls_agent && !has_progress_surface {
+        out.push(LintFinding {
+            level: LintLevel::Error,
+            msg: "Long-running agent work must expose visible step progress. Use br.run(...), the default [data-br-chat] panel, mountTimeline(br, \"#progress\"), or an equivalent br-run-status/debug surface.".into(),
         });
     }
 
@@ -149,6 +163,50 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     if !il.contains("br-output") && !il.contains("data-br-chat") {
         warn("No result surface found. Add a <div class=\"br-output\" id=\"out\"></div> (target for br.run) or a [data-br-chat] panel.");
     }
+    let authored = format!("{}\n{}", il, main.to_lowercase());
+    let contains_word = |word: &str| {
+        regex::Regex::new(&format!(r"\b{}\b", regex::escape(word)))
+            .map(|re| re.is_match(&authored))
+            .unwrap_or(false)
+    };
+    let visual_claim = [
+        "visual",
+        "visualize",
+        "visualizes",
+        "visualized",
+        "visualizing",
+        "visualization",
+        "visualizations",
+        "chart",
+        "charts",
+        "diagram",
+        "diagrams",
+        "figure",
+        "figures",
+    ]
+    .iter()
+    .any(|word| contains_word(word))
+        || authored.contains("graph visual")
+        || authored.contains("visual graph")
+        || authored.contains("network visual")
+        || authored.contains("knowledge map");
+    let asks_for_rendered_visual = [
+        "```chart",
+        "```graph",
+        "```diagram",
+        "```network",
+        "\\`\\`\\`chart",
+        "\\`\\`\\`graph",
+        "\\`\\`\\`diagram",
+        "\\`\\`\\`network",
+        "renderchart",
+        "rendergraph",
+    ]
+    .iter()
+    .any(|needle| authored.contains(needle));
+    if calls_agent && visual_claim && !asks_for_rendered_visual {
+        warn("This app appears to promise visual output, but its prompt/UI does not require a rendered ```chart or ```graph/diagram block. Ask the agent to emit one so the result surface shows an actual visualization, not only tool logs or prose.");
+    }
     out
 }
 
@@ -179,14 +237,17 @@ fn strip_js_comments(source: &str) -> String {
         loop {
             if in_block {
                 if let Some(end) = rest.find("*/") {
-                    rest = &rest[end + 2..];
+                    let (_, after) = rest.split_at(end + 2);
+                    rest = after;
                     in_block = false;
                 } else {
                     break;
                 }
             } else if let Some(start) = rest.find("/*") {
-                out.push_str(&rest[..start]);
-                rest = &rest[start + 2..];
+                let (before, marker_and_after) = rest.split_at(start);
+                out.push_str(before);
+                let (_, after) = marker_and_after.split_at(2);
+                rest = after;
                 in_block = true;
             } else {
                 let code = rest.split_once("//").map(|(code, _)| code).unwrap_or(rest);
@@ -416,7 +477,7 @@ fn strip_module_syntax(ts: &str) -> String {
         // Strip a leading `export ` keyword but keep the declaration.
         let mut l = line.to_string();
         if let Some(rest) = l.trim_start().strip_prefix("export ") {
-            let indent = &l[..l.len() - l.trim_start().len()];
+            let (indent, _) = l.split_at(l.len() - l.trim_start().len());
             l = format!("{indent}{rest}");
         }
         // Strip TS-only class-member modifiers (e.g. `private`, `readonly`),
@@ -438,7 +499,11 @@ fn strip_module_syntax(ts: &str) -> String {
             .find(|kw| ls.starts_with(**kw))
             .map(|kw| kw.len());
             match modifier {
-                Some(n) => l = format!("{}{}", &l[..indent_len], &ls[n..]),
+                Some(n) => {
+                    let (indent, _) = l.split_at(indent_len);
+                    let (_, after_modifier) = ls.split_at(n);
+                    l = format!("{indent}{after_modifier}");
+                }
                 None => break,
             }
         }
@@ -885,5 +950,60 @@ br.run("go", "#missing");
         assert!(formatted.contains("external <script"), "{formatted}");
         assert!(formatted.contains("non-local import"), "{formatted}");
         assert!(formatted.contains("#missing"), "{formatted}");
+    }
+
+    #[test]
+    fn lint_app_requires_visible_progress_for_manual_prompt_loops() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            r#"<html><body><main class="br-container">
+               <button id="run" class="br-btn">Run</button>
+               <div id="out" class="br-output"></div>
+               </main></body></html>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("main.ts"),
+            r#"import { createApp } from "./sdk";
+const br = createApp({ autoChat: false });
+document.getElementById("run")!.addEventListener("click", () => br.prompt("go"));
+"#,
+        )
+        .unwrap();
+
+        let formatted = format_lint(&lint_app(dir.path()));
+        assert!(formatted.contains("visible step progress"), "{formatted}");
+    }
+
+    #[test]
+    fn lint_app_warns_when_visual_app_lacks_rendered_visual_contract() {
+        let dir = TempDir::new().unwrap();
+        let src = dir.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(
+            dir.path().join("index.html"),
+            r#"<html><body><main class="br-container">
+               <button id="run" class="br-btn">Build graph</button>
+               <div id="out" class="br-output"></div>
+               </main></body></html>"#,
+        )
+        .unwrap();
+        std::fs::write(
+            src.join("main.ts"),
+            r##"import { createApp } from "./sdk";
+const br = createApp({ autoChat: false });
+document.getElementById("run")!.addEventListener("click", () => br.run("visualize the graph as prose", "#out"));
+"##,
+        )
+        .unwrap();
+
+        let formatted = format_lint(&lint_app(dir.path()));
+        assert!(
+            formatted.contains("rendered ```chart or ```graph"),
+            "{formatted}"
+        );
     }
 }

@@ -155,6 +155,7 @@ impl Provider for LiteLLMProvider {
                 ConfigKey::new("LITELLM_TIMEOUT", false, false, Some("600")),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

@@ -446,7 +446,12 @@ async fn test_mermaid_blob_has_escaped_code() {
             // The injected JS string literal must not contain a literal </script>.
             let marker = "const mermaidCode =";
             let start = html.find(marker).unwrap();
-            let snippet = &html[start..start + 200];
+            let snippet: String = html
+                .get(start..)
+                .unwrap_or_default()
+                .chars()
+                .take(200)
+                .collect();
             assert!(!snippet.contains("</script>"));
         }
     }

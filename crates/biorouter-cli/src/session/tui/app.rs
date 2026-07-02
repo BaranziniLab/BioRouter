@@ -5,6 +5,7 @@
 use std::collections::VecDeque;
 
 use biorouter::conversation::message::{Message, MessageContent};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -88,6 +89,12 @@ pub struct App {
     pub input: String,
     /// Cursor position as a byte offset into `input`.
     pub cursor: usize,
+    /// Selection anchor as a byte offset. When it differs from `cursor`, the
+    /// selected range is the byte range between them.
+    pub selection_anchor: Option<usize>,
+    pub mouse_selecting: bool,
+    pub last_input_inner: Option<Rect>,
+    pub last_input_text_width: usize,
     /// Past submissions for Up/Down recall.
     pub history: Vec<String>,
     pub hist_idx: Option<usize>,
@@ -137,6 +144,10 @@ impl App {
             scrollback: Vec::new(),
             input: String::new(),
             cursor: 0,
+            selection_anchor: None,
+            mouse_selecting: false,
+            last_input_inner: None,
+            last_input_text_width: 1,
             history: Vec::new(),
             hist_idx: None,
             scroll: 0,
@@ -452,6 +463,7 @@ impl App {
     // ── input editing ─────────────────────────────────────────────────────
 
     pub fn insert_char(&mut self, c: char) {
+        self.delete_selection();
         self.input.insert(self.cursor, c);
         self.cursor += c.len_utf8();
         self.hist_idx = None;
@@ -465,13 +477,18 @@ impl App {
     /// Insert pasted text at the cursor as a single edit. Embedded newlines stay
     /// literal (they do NOT submit), so multi-line pastes compose correctly.
     pub fn paste(&mut self, text: &str) {
-        let clean: String = text.replace('\r', "");
+        let clean = Self::normalize_pasted_text(text);
+        self.delete_selection();
         self.input.insert_str(self.cursor, &clean);
         self.cursor += clean.len();
         self.hist_idx = None;
+        self.completion_dismissed = false;
     }
 
     pub fn backspace(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
         if self.cursor == 0 {
             return;
         }
@@ -487,7 +504,30 @@ impl App {
         self.completion_dismissed = false;
     }
 
-    pub fn move_left(&mut self) {
+    pub fn delete_forward(&mut self) {
+        if self.delete_selection() {
+            return;
+        }
+        let Some(c) = self.input.get(self.cursor..).and_then(|s| s.chars().next()) else {
+            return;
+        };
+        self.input
+            .replace_range(self.cursor..self.cursor + c.len_utf8(), "");
+        self.hist_idx = None;
+        self.completion_dismissed = false;
+    }
+
+    pub fn move_left_extending(&mut self, extend: bool) {
+        if !extend {
+            if let Some((start, _)) = self.selection_range() {
+                self.cursor = start;
+                self.clear_selection();
+                return;
+            }
+            self.clear_selection();
+        } else {
+            self.ensure_selection_anchor();
+        }
         if let Some((i, _)) = self
             .input
             .get(..self.cursor)
@@ -495,35 +535,159 @@ impl App {
         {
             self.cursor = i;
         }
+        self.normalize_selection();
     }
 
-    pub fn move_right(&mut self) {
+    pub fn move_right_extending(&mut self, extend: bool) {
+        if !extend {
+            if let Some((_, end)) = self.selection_range() {
+                self.cursor = end;
+                self.clear_selection();
+                return;
+            }
+            self.clear_selection();
+        } else {
+            self.ensure_selection_anchor();
+        }
         if let Some(c) = self.input.get(self.cursor..).and_then(|s| s.chars().next()) {
             self.cursor += c.len_utf8();
         }
+        self.normalize_selection();
     }
 
-    pub fn move_home(&mut self) {
+    pub fn move_home_extending(&mut self, extend: bool) {
+        if extend {
+            self.ensure_selection_anchor();
+        } else {
+            self.clear_selection();
+        }
         self.cursor = self
             .input
             .get(..self.cursor)
             .and_then(|s| s.rfind('\n'))
             .map(|i| i + 1)
             .unwrap_or(0);
+        self.normalize_selection();
     }
 
-    pub fn move_end(&mut self) {
+    pub fn move_end_extending(&mut self, extend: bool) {
+        if extend {
+            self.ensure_selection_anchor();
+        } else {
+            self.clear_selection();
+        }
         self.cursor = self
             .input
             .get(self.cursor..)
             .and_then(|s| s.find('\n'))
             .map(|i| self.cursor + i)
             .unwrap_or(self.input.len());
+        self.normalize_selection();
+    }
+
+    pub fn set_cursor(&mut self, cursor: usize, extend: bool) {
+        let cursor = self.snap_to_char_boundary(cursor.min(self.input.len()));
+        if extend {
+            self.ensure_selection_anchor();
+        } else {
+            self.clear_selection();
+        }
+        self.cursor = cursor;
+        self.normalize_selection();
+    }
+
+    pub fn start_mouse_selection(&mut self, cursor: usize) {
+        let cursor = self.snap_to_char_boundary(cursor.min(self.input.len()));
+        self.cursor = cursor;
+        self.selection_anchor = Some(cursor);
+        self.mouse_selecting = true;
+        self.hist_idx = None;
+    }
+
+    pub fn drag_mouse_selection(&mut self, cursor: usize) {
+        if self.mouse_selecting {
+            self.cursor = self.snap_to_char_boundary(cursor.min(self.input.len()));
+            self.normalize_selection();
+        }
+    }
+
+    pub fn finish_mouse_selection(&mut self) {
+        self.mouse_selecting = false;
+        self.normalize_selection();
+    }
+
+    pub fn select_all(&mut self) {
+        if self.input.is_empty() {
+            self.clear_selection();
+            return;
+        }
+        self.selection_anchor = Some(0);
+        self.cursor = self.input.len();
+    }
+
+    pub fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection_range()?;
+        Some(self.input.get(start..end).unwrap_or_default().to_string())
+    }
+
+    pub fn cut_selection(&mut self) -> Option<String> {
+        let selected = self.selected_text()?;
+        self.delete_selection();
+        Some(selected)
+    }
+
+    pub fn selection_range(&self) -> Option<(usize, usize)> {
+        let anchor = self.selection_anchor?;
+        if anchor == self.cursor {
+            return None;
+        }
+        Some(if anchor < self.cursor {
+            (anchor, self.cursor)
+        } else {
+            (self.cursor, anchor)
+        })
+    }
+
+    pub fn delete_selection(&mut self) -> bool {
+        let Some((start, end)) = self.selection_range() else {
+            return false;
+        };
+        self.input.replace_range(start..end, "");
+        self.cursor = start;
+        self.clear_selection();
+        self.hist_idx = None;
+        self.completion_dismissed = false;
+        true
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selection_anchor = None;
+        self.mouse_selecting = false;
+    }
+
+    fn ensure_selection_anchor(&mut self) {
+        if self.selection_anchor.is_none() {
+            self.selection_anchor = Some(self.cursor);
+        }
+    }
+
+    fn normalize_selection(&mut self) {
+        if self.selection_anchor == Some(self.cursor) {
+            self.selection_anchor = None;
+        }
+    }
+
+    fn snap_to_char_boundary(&self, mut cursor: usize) -> usize {
+        while cursor > 0 && !self.input.is_char_boundary(cursor) {
+            cursor -= 1;
+        }
+        cursor
     }
 
     pub fn clear_input(&mut self) {
         self.input.clear();
         self.cursor = 0;
+        self.clear_selection();
         self.hist_idx = None;
         self.completion = None;
         self.completion_dismissed = false;
@@ -533,6 +697,7 @@ impl App {
     pub fn set_input(&mut self, s: String) {
         self.cursor = s.len();
         self.input = s;
+        self.clear_selection();
     }
 
     pub fn history_prev(&mut self) {
@@ -578,10 +743,55 @@ impl App {
     pub fn accept_ghost(&mut self) {
         if let Some(g) = self.ghost() {
             let g = g.to_string();
+            self.delete_selection();
             self.input.push_str(&g);
             self.input.push(' ');
             self.cursor = self.input.len();
+            self.clear_selection();
         }
+    }
+
+    // ── paste/drop normalization ──────────────────────────────────────────
+
+    fn normalize_pasted_text(text: &str) -> String {
+        let clean = text.replace('\r', "");
+        match Self::dragged_file_paths(&clean) {
+            Some(paths) => paths
+                .into_iter()
+                .map(|path| {
+                    shlex::try_quote(&path.clone()).map_or(path, |quoted| quoted.into_owned())
+                })
+                .collect::<Vec<String>>()
+                .join(" "),
+            None => clean,
+        }
+    }
+
+    fn dragged_file_paths(text: &str) -> Option<Vec<String>> {
+        let lines = text
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .collect::<Vec<&str>>();
+        if lines.is_empty() || !lines.iter().all(|line| line.starts_with("file://")) {
+            return None;
+        }
+
+        let mut paths = Vec::with_capacity(lines.len());
+        for line in lines {
+            paths.push(Self::file_uri_to_path(line)?);
+        }
+        Some(paths)
+    }
+
+    fn file_uri_to_path(uri: &str) -> Option<String> {
+        let rest = uri.strip_prefix("file://")?;
+        let path = rest
+            .strip_prefix("localhost/")
+            .map(|local| format!("/{local}"))
+            .or_else(|| rest.starts_with('/').then(|| rest.to_string()))?;
+        let decoded = urlencoding::decode(&path).ok()?;
+        Some(decoded.into_owned())
     }
 
     // ── scrolling ───────────────────────────────────────────────────────────

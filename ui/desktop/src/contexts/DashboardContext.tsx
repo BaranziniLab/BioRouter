@@ -68,6 +68,7 @@ export interface SpawnWindowOptions {
 export interface DashboardApi {
   state: DashboardState;
   spawnWindow: (options?: SpawnWindowOptions) => Promise<void>;
+  /** Remove the window from the dashboard canvas. Conversation history stays saved. */
   closeWindow: (windowId: string) => void;
   focusWindow: (windowId: string) => void;
   renameWindow: (windowId: string, name: string) => void;

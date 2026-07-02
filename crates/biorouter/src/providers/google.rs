@@ -126,6 +126,7 @@ impl Provider for GoogleProvider {
                 ConfigKey::new("GOOGLE_HOST", false, false, Some(GOOGLE_API_HOST)),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

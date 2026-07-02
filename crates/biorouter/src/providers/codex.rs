@@ -495,6 +495,7 @@ impl Provider for CodexProvider {
                 ConfigKey::from_value_type::<CodexSkipGitCheck>(false, false),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

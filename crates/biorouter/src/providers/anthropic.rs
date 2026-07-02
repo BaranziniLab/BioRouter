@@ -30,6 +30,7 @@ const ANTHROPIC_DEFAULT_FAST_MODEL: &str = "claude-haiku-4-5";
 const ANTHROPIC_KNOWN_MODELS: &[&str] = &[
     // Claude 4.8 (latest Opus tier)
     "claude-opus-4-8",
+    "claude-sonnet-5",
     // Claude Fable 5 (tier above Opus; pricier — deliberately not the default)
     "claude-fable-5",
     // Claude 4.7

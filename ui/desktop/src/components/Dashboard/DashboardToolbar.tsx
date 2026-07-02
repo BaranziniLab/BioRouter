@@ -22,12 +22,12 @@ export const DashboardToolbar: React.FC = () => {
     (foldMode ? 'left-[12px]' : 'left-[2px]');
 
   return (
-    <div className="relative z-[60] flex items-center gap-2 px-4 py-1.5 border-b border-border-subtle/30 bg-background-muted/40 backdrop-blur-sm">
+    <div className="relative z-[100] no-drag flex items-center gap-2 px-4 py-1.5 border-b border-border-subtle/30 bg-background-muted/40 backdrop-blur-sm">
       <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 no-drag">
         <button
           type="button"
           onClick={() => dashboard.spawnWindow()}
-          title="Spawn (⌘⇧N)"
+          title="Spawn (⌘⌥N)"
           className={btnClass}
         >
           Spawn
@@ -35,7 +35,7 @@ export const DashboardToolbar: React.FC = () => {
         <button
           type="button"
           onClick={() => dashboard.organize()}
-          title="Resolve overlaps and center on focused window"
+          title="Resolve overlaps and center on focused window (⌘⌥O)"
           className={btnClass}
         >
           Organize
@@ -43,7 +43,7 @@ export const DashboardToolbar: React.FC = () => {
         <button
           type="button"
           onClick={() => dashboard.setFoldMode(!foldMode)}
-          title={foldMode ? 'Leave fold mode' : 'Fold all to cards (one open at a time)'}
+          title={foldMode ? 'Leave fold mode (⌘⌥F)' : 'Fold all to cards, one open at a time (⌘⌥F)'}
           aria-pressed={foldMode}
           className={`${btnClass} inline-flex items-center gap-2`}
           disabled={onCanvas === 0}
@@ -56,7 +56,7 @@ export const DashboardToolbar: React.FC = () => {
         <button
           type="button"
           onClick={() => dashboard.clearAll()}
-          title="Close all"
+          title="Remove all from dashboard"
           className={btnClass}
         >
           Clear

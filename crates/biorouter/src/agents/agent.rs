@@ -28,7 +28,7 @@ use crate::agents::subagent_tool::{
 use crate::agents::types::SessionConfig;
 use crate::agents::types::{FrontendTool, SharedProvider, ToolResultReceiver};
 use crate::config::permission::PermissionManager;
-use crate::config::{get_enabled_extensions, BioRouterMode, Config};
+use crate::config::{BioRouterMode, Config};
 use crate::context_mgmt::{
     check_if_compaction_needed, compact_messages, DEFAULT_COMPACTION_THRESHOLD,
 };
@@ -1293,7 +1293,6 @@ impl Agent {
         let reply_span = tracing::Span::current();
         self.reset_retry_attempts().await;
 
-        let provider = self.provider().await?;
         let session_manager = self.config.session_manager.clone();
 
         let working_dir = session.working_dir.clone();
@@ -2215,64 +2214,65 @@ impl Agent {
             .trim()
             .to_string();
 
-        let (instructions, activities) =
-            if let Ok(json_content) = serde_json::from_str::<Value>(&clean_content) {
-                let instructions = json_content
-                    .get("instructions")
-                    .ok_or_else(|| anyhow!("Missing 'instructions' in json response"))?
-                    .as_str()
-                    .ok_or_else(|| anyhow!("instructions' is not a string"))?
-                    .to_string();
+        let json_content = serde_json::from_str::<Value>(&clean_content).ok();
 
-                let activities = json_content
-                    .get("activities")
-                    .ok_or_else(|| anyhow!("Missing 'activities' in json response"))?
-                    .as_array()
-                    .ok_or_else(|| anyhow!("'activities' is not an array'"))?
-                    .iter()
-                    .map(|act| {
-                        act.as_str()
-                            .map(|s| s.to_string())
-                            .ok_or(anyhow!("'activities' array element is not a string"))
-                    })
-                    .collect::<Result<_, _>>()?;
+        let (instructions, activities) = if let Some(json_content) = json_content.as_ref() {
+            let instructions = json_content
+                .get("instructions")
+                .ok_or_else(|| anyhow!("Missing 'instructions' in json response"))?
+                .as_str()
+                .ok_or_else(|| anyhow!("instructions' is not a string"))?
+                .to_string();
 
-                (instructions, activities)
-            } else {
-                tracing::warn!("Failed to parse JSON, falling back to string parsing");
-                // If we can't get valid JSON, try string parsing
-                // Use split_once to get the content after "Instructions:".
-                let after_instructions = content
-                    .split_once("instructions:")
-                    .map(|(_, rest)| rest)
-                    .unwrap_or(&content);
+            let activities = json_content
+                .get("activities")
+                .ok_or_else(|| anyhow!("Missing 'activities' in json response"))?
+                .as_array()
+                .ok_or_else(|| anyhow!("'activities' is not an array'"))?
+                .iter()
+                .map(|act| {
+                    act.as_str()
+                        .map(|s| s.to_string())
+                        .ok_or(anyhow!("'activities' array element is not a string"))
+                })
+                .collect::<Result<_, _>>()?;
 
-                // Split once more to separate instructions from activities.
-                let (instructions_part, activities_text) = after_instructions
-                    .split_once("activities:")
-                    .unwrap_or((after_instructions, ""));
+            (instructions, activities)
+        } else {
+            tracing::warn!("Failed to parse JSON, falling back to string parsing");
+            // If we can't get valid JSON, try string parsing
+            // Use split_once to get the content after "Instructions:".
+            let after_instructions = content
+                .split_once("instructions:")
+                .map(|(_, rest)| rest)
+                .unwrap_or(&content);
 
-                let instructions = instructions_part
-                    .trim_end_matches(|c: char| c.is_whitespace() || c == '#')
-                    .trim()
-                    .to_string();
-                let activities_text = activities_text.trim();
+            // Split once more to separate instructions from activities.
+            let (instructions_part, activities_text) = after_instructions
+                .split_once("activities:")
+                .unwrap_or((after_instructions, ""));
 
-                // Regex to remove bullet markers or numbers with an optional dot.
-                let bullet_re = Regex::new(r"^[•\-*\d]+\.?\s*").expect("Invalid regex");
+            let instructions = instructions_part
+                .trim_end_matches(|c: char| c.is_whitespace() || c == '#')
+                .trim()
+                .to_string();
+            let activities_text = activities_text.trim();
 
-                // Process each line in the activities section.
-                let activities: Vec<String> = activities_text
-                    .lines()
-                    .map(|line| bullet_re.replace(line, "").to_string())
-                    .map(|s| s.trim().to_string())
-                    .filter(|line| !line.is_empty())
-                    .collect();
+            // Regex to remove bullet markers or numbers with an optional dot.
+            let bullet_re = Regex::new(r"^[•\-*\d]+\.?\s*").expect("Invalid regex");
 
-                (instructions, activities)
-            };
+            // Process each line in the activities section.
+            let activities: Vec<String> = activities_text
+                .lines()
+                .map(|line| bullet_re.replace(line, "").to_string())
+                .map(|s| s.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect();
 
-        let extension_configs = get_enabled_extensions();
+            (instructions, activities)
+        };
+
+        let extension_configs = self.get_extension_configs().await;
 
         let author = Author {
             contact: std::env::var("USER")
@@ -2300,41 +2300,59 @@ impl Agent {
             extension_configs.len()
         );
 
-        let (title, description) =
-            if let Ok(json_content) = serde_json::from_str::<Value>(&clean_content) {
-                let title = json_content
-                    .get("title")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or("Custom workflow from chat")
-                    .to_string();
+        let (title, description) = if let Some(json_content) = json_content.as_ref() {
+            let title = json_content
+                .get("title")
+                .and_then(|t| t.as_str())
+                .unwrap_or("Custom workflow from chat")
+                .to_string();
 
-                let description = json_content
-                    .get("description")
-                    .and_then(|d| d.as_str())
-                    .unwrap_or("a custom workflow instance from this chat session")
-                    .to_string();
+            let description = json_content
+                .get("description")
+                .and_then(|d| d.as_str())
+                .unwrap_or("a custom workflow instance from this chat session")
+                .to_string();
 
-                (title, description)
-            } else {
-                (
-                    "Custom workflow from chat".to_string(),
-                    "a custom workflow instance from this chat session".to_string(),
-                )
-            };
+            (title, description)
+        } else {
+            (
+                "Custom workflow from chat".to_string(),
+                "a custom workflow instance from this chat session".to_string(),
+            )
+        };
 
-        let workflow = Workflow::builder()
+        let skills = json_content
+            .as_ref()
+            .and_then(|json| json.get("skills"))
+            .and_then(|skills| skills.as_array())
+            .map(|skills| {
+                skills
+                    .iter()
+                    .filter_map(|skill| skill.as_str())
+                    .map(str::trim)
+                    .filter(|skill| !skill.is_empty())
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
+        let mut workflow_builder = Workflow::builder()
             .title(title)
             .description(description)
             .instructions(instructions)
             .activities(activities)
             .extensions(extension_configs)
             .settings(settings)
-            .author(author)
-            .build()
-            .map_err(|e| {
-                tracing::error!("Failed to build workflow: {}", e);
-                anyhow!("Workflow build failed: {}", e)
-            })?;
+            .author(author);
+
+        if !skills.is_empty() {
+            workflow_builder = workflow_builder.skills(skills);
+        }
+
+        let workflow = workflow_builder.build().map_err(|e| {
+            tracing::error!("Failed to build workflow: {}", e);
+            anyhow!("Workflow build failed: {}", e)
+        })?;
 
         tracing::info!("Workflow creation completed successfully");
         Ok(workflow)

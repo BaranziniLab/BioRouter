@@ -35,7 +35,10 @@ async fn local_exec_propagates_nonzero_exit() {
     let dir = ws();
     let sb = LocalProcessSandbox::new(SandboxSpec::new(dir.path()));
     let out = sb
-        .exec(&["sh".into(), "-c".into(), "echo oops >&2; exit 3".into()], None)
+        .exec(
+            &["sh".into(), "-c".into(), "echo oops >&2; exit 3".into()],
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(out.code, 3);
@@ -47,17 +50,28 @@ async fn local_exec_propagates_nonzero_exit() {
 async fn local_exec_feeds_stdin() {
     let dir = ws();
     let sb = LocalProcessSandbox::new(SandboxSpec::new(dir.path()));
-    let out = sb.exec(&["cat".into()], Some("piped-input-value")).await.unwrap();
+    let out = sb
+        .exec(&["cat".into()], Some("piped-input-value"))
+        .await
+        .unwrap();
     assert_eq!(out.stdout, "piped-input-value");
 }
 
 #[tokio::test]
 async fn local_exec_injects_env_without_leaking_to_wire() {
     let dir = ws();
-    let spec = SandboxSpec::new(dir.path()).with_env(vec![("VAULT_SECRET".into(), "s3cr3t".into())]);
+    let spec =
+        SandboxSpec::new(dir.path()).with_env(vec![("VAULT_SECRET".into(), "s3cr3t".into())]);
     let sb = LocalProcessSandbox::new(spec);
     let out = sb
-        .exec(&["sh".into(), "-c".into(), "printf %s \"$VAULT_SECRET\"".into()], None)
+        .exec(
+            &[
+                "sh".into(),
+                "-c".into(),
+                "printf %s \"$VAULT_SECRET\"".into(),
+            ],
+            None,
+        )
         .await
         .unwrap();
     assert_eq!(out.stdout, "s3cr3t");
@@ -89,7 +103,11 @@ async fn local_exec_drains_large_output_without_deadlock() {
     let sb = LocalProcessSandbox::new(SandboxSpec::new(dir.path()));
     let out = sb
         .exec(
-            &["sh".into(), "-c".into(), "yes x | head -n 100000 | tr -d '\\n'".into()],
+            &[
+                "sh".into(),
+                "-c".into(),
+                "yes x | head -n 100000 | tr -d '\\n'".into(),
+            ],
             None,
         )
         .await
@@ -119,7 +137,10 @@ async fn local_exec_handles_20_concurrent_commands() {
 async fn local_exec_empty_argv_is_error() {
     let dir = ws();
     let sb = LocalProcessSandbox::new(SandboxSpec::new(dir.path()));
-    assert!(matches!(sb.exec(&[], None).await, Err(SandboxError::Exec(_))));
+    assert!(matches!(
+        sb.exec(&[], None).await,
+        Err(SandboxError::Exec(_))
+    ));
 }
 
 // --------------------------- LOCAL: file jail ---------------------------
@@ -128,7 +149,9 @@ async fn local_exec_empty_argv_is_error() {
 async fn local_files_roundtrip_and_list() {
     let dir = ws();
     let sb = LocalProcessSandbox::new(SandboxSpec::new(dir.path()));
-    sb.write("sub/dir/data.txt", b"contents-here").await.unwrap();
+    sb.write("sub/dir/data.txt", b"contents-here")
+        .await
+        .unwrap();
     let read = sb.read("sub/dir/data.txt").await.unwrap();
     assert_eq!(read, b"contents-here");
     let listed = sb.list("sub/dir").await.unwrap();
@@ -181,7 +204,13 @@ async fn snapshot_returns_workspace_handle() {
     let dir = ws();
     let sb = LocalProcessSandbox::new(SandboxSpec::new(dir.path()));
     let handle = sb.snapshot().await.unwrap();
-    assert!(handle.contains(&dir.path().file_name().unwrap().to_string_lossy().to_string()));
+    assert!(handle.contains(
+        &dir.path()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .to_string()
+    ));
 }
 
 // --------------------------- DOCKER: arg builder ---------------------------
@@ -197,7 +226,10 @@ fn docker_run_args_apply_isolation_hardening() {
     assert!(joined.contains("run --rm"), "{joined}");
     assert!(joined.contains("--network none"), "{joined}");
     assert!(joined.contains("--cap-drop ALL"), "{joined}");
-    assert!(joined.contains("--security-opt no-new-privileges"), "{joined}");
+    assert!(
+        joined.contains("--security-opt no-new-privileges"),
+        "{joined}"
+    );
     assert!(joined.contains("--user 65534:65534"), "{joined}");
     assert!(joined.contains("--pids-limit 256"), "{joined}");
     assert!(joined.contains("--memory 512m"), "{joined}");
@@ -259,7 +291,10 @@ async fn docker_exec_real_roundtrip() {
         return;
     }
     let out = sb
-        .exec(&["sh".into(), "-c".into(), "echo from-container".into()], None)
+        .exec(
+            &["sh".into(), "-c".into(), "echo from-container".into()],
+            None,
+        )
         .await
         .unwrap();
     assert!(out.stdout.contains("from-container"), "{out:?}");

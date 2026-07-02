@@ -505,28 +505,30 @@ mod tests {
     #[test]
     fn full_brsdk_manifest_roundtrips_and_advertises() {
         use crate::agent_drafter::manifest::*;
-        let mut caps = Capabilities::default();
-        caps.files = Some(FilesCapability::default());
-        caps.compute = Some(ComputeCapability {
-            sandbox: "docker".into(),
-            timeout_s: 120,
-            network: "none".into(),
-            max_mem: Some("1g".into()),
-            cpus: Some(2.0),
-            image: None,
-        });
-        caps.memory = MemoryCapability {
-            kb: Some("lab".into()),
-            mode: MemoryMode::ReadWrite,
-            shared_kb: None,
-            distill: true,
+        let caps = Capabilities {
+            files: Some(FilesCapability::default()),
+            compute: Some(ComputeCapability {
+                sandbox: "docker".into(),
+                timeout_s: 120,
+                network: "none".into(),
+                max_mem: Some("1g".into()),
+                cpus: Some(2.0),
+                image: None,
+            }),
+            memory: MemoryCapability {
+                kb: Some("lab".into()),
+                mode: MemoryMode::ReadWrite,
+                shared_kb: None,
+                distill: true,
+            },
+            tracing: TracingCapability {
+                enabled: true,
+                redact: true,
+                processor: None,
+            },
+            events: vec!["tool".into(), "llm".into()],
+            ..Default::default()
         };
-        caps.tracing = TracingCapability {
-            enabled: true,
-            redact: true,
-            processor: None,
-        };
-        caps.events = vec!["tool".into(), "llm".into()];
 
         let agent = AgentConfig {
             system_prompt: "clinical assistant".into(),

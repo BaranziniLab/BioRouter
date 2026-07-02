@@ -16,6 +16,7 @@ import { client } from '../../api/client.gen';
 import { SearchView } from '../conversation/SearchView';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { toastSuccess, toastError } from '../../toasts';
+import { ReadableContent } from '../Layout/ReadableContent';
 
 /** An Agent-Drafter-built app, as returned by biorouterd `GET /apps`. */
 interface AppManifest {
@@ -178,21 +179,23 @@ export default function ApplicationsView() {
         data-search-scroll-area
       >
         {/* Header */}
-        <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
-          <div className="flex flex-col page-transition">
-            <h1 className="text-2xl font-semibold tracking-tight mb-1">Applications</h1>
-            <p className="text-sm text-text-muted mb-0">
-              Apps you built with Agent Drafter. Each one runs a full BioRouter agent with its own
-              model, extensions, skills, and knowledge, and opens in your browser.{' '}
-              {getSearchShortcutText()} to search.
-            </p>
-          </div>
-          <div className="flex gap-3 mt-5">
-            <Button variant="outline" className="flex items-center gap-2" onClick={load}>
-              <RefreshCw className="h-4 w-4" />
-              Refresh
-            </Button>
-          </div>
+        <div className="flex-shrink-0 border-b border-border-subtle">
+          <ReadableContent className="px-8 pt-12 pb-6">
+            <div className="flex flex-col page-transition">
+              <h1 className="text-2xl font-semibold tracking-tight mb-1">Applications</h1>
+              <p className="text-sm text-text-muted mb-0">
+                Apps you built with Agent Drafter. Each one runs a full BioRouter agent with its
+                own model, extensions, skills, and knowledge, and opens in your browser.{' '}
+                {getSearchShortcutText()} to search.
+              </p>
+            </div>
+            <div className="flex gap-3 mt-5">
+              <Button variant="outline" className="flex items-center gap-2" onClick={load}>
+                <RefreshCw className="h-4 w-4" />
+                Refresh
+              </Button>
+            </div>
+          </ReadableContent>
         </div>
 
         {/* List */}
@@ -200,7 +203,7 @@ export default function ApplicationsView() {
           onSearch={(term, _caseSensitive) => setSearchTerm(term)}
           placeholder="Search applications..."
         >
-          <div className="px-6 py-4">
+          <ReadableContent className="px-8 py-4">
             {loading ? (
               <p className="text-sm text-text-muted mt-10 text-center">Loading applications…</p>
             ) : error && apps.length === 0 ? (
@@ -233,7 +236,7 @@ export default function ApplicationsView() {
                 ))}
               </div>
             )}
-          </div>
+          </ReadableContent>
         </SearchView>
       </div>
 

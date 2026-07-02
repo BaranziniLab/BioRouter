@@ -84,6 +84,7 @@ interface BiorouterProcessEnv {
   PATH: string;
   BIOROUTER_PORT: string;
   BIOROUTER_SERVER__SECRET_KEY?: string;
+  BIOROUTER_DISABLE_KEYRING?: string;
 }
 
 export interface StartBiorouterdOptions {
@@ -130,6 +131,9 @@ export const startBiorouterd = async (options: StartBiorouterdOptions): Promise<
     PATH: `${path.dirname(resolvedBiorouterdPath)}${path.delimiter}${process.env.PATH || ''}`,
     BIOROUTER_PORT: String(port),
     BIOROUTER_SERVER__SECRET_KEY: serverSecret,
+    // Dev Electron rebuilds should not trigger macOS Keychain prompts; packaged
+    // builds keep the normal OS credential-store behavior.
+    BIOROUTER_DISABLE_KEYRING: process.env.BIOROUTER_DISABLE_KEYRING ?? (!app.isPackaged ? 'true' : undefined),
     // Default Auto Visualiser to CDN-referenced assets so each figure's persisted
     // HTML blob is a few KB instead of megabytes of inlined D3/Chart.js/Leaflet/
     // Mermaid — keeps figure-heavy sessions light in the renderer heap and SQLite.

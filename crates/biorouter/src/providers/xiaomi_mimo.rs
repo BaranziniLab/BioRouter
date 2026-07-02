@@ -159,6 +159,7 @@ impl Provider for XiaomiMimoProvider {
                 ConfigKey::new("XIAOMI_MIMO_HOST", false, false, Some(XIAOMI_MIMO_API_HOST)),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

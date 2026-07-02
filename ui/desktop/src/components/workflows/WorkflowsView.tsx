@@ -49,6 +49,7 @@ import {
   DropdownMenuSeparator,
 } from '../ui/dropdown-menu';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
+import { ReadableContent } from '../Layout/ReadableContent';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import { BUILTIN_RECREATED_TITLE, isBuiltinWorkflow } from '../../utils/builtins';
 
@@ -683,28 +684,30 @@ export default function WorkflowsView() {
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
           {/* Flat page header */}
-          <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
-            <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">
-              Workflows
-            </h1>
-            <p className="text-sm text-text-muted mb-0">
-              View and manage your saved workflows to quickly start new sessions with predefined
-              configurations. {getSearchShortcutText()} to search.
-            </p>
-            <div className="flex gap-3 mt-5">
-              <Button
-                onClick={() => setShowCreateDialog(true)}
-                variant="default"
-                className="flex items-center gap-2"
-              >
-                <FileText className="w-4 h-4" />
-                Create Workflow
-              </Button>
-              <ImportWorkflowButton onClick={() => setShowImportDialog(true)} />
-            </div>
+          <div className="flex-shrink-0 border-b border-border-subtle">
+            <ReadableContent className="px-8 pt-12 pb-6">
+              <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">
+                Workflows
+              </h1>
+              <p className="text-sm text-text-muted mb-0">
+                View and manage your saved workflows to quickly start new sessions with predefined
+                configurations. {getSearchShortcutText()} to search.
+              </p>
+              <div className="flex gap-3 mt-5">
+                <Button
+                  onClick={() => setShowCreateDialog(true)}
+                  variant="default"
+                  className="flex items-center gap-2"
+                >
+                  <FileText className="w-4 h-4" />
+                  Create Workflow
+                </Button>
+                <ImportWorkflowButton onClick={() => setShowImportDialog(true)} />
+              </div>
+            </ReadableContent>
           </div>
 
-          <div className="flex-1 min-h-0 relative px-8 pt-6">
+          <ReadableContent className="flex-1 min-h-0 relative px-8 pt-6">
             <ScrollArea className="h-full">
               <SearchView
                 onSearch={(term) => setSearchTerm(term)}
@@ -719,7 +722,7 @@ export default function WorkflowsView() {
                 </div>
               </SearchView>
             </ScrollArea>
-          </div>
+          </ReadableContent>
         </div>
       </MainPanelLayout>
 

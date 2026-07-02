@@ -2,6 +2,7 @@ import React, { useEffect } from 'react';
 import { useDashboard } from '../../contexts/DashboardContext';
 import { DashboardBoard } from './DashboardBoard';
 import { DashboardToolbar } from './DashboardToolbar';
+import { getDashboardShortcutAction } from './dashboardShortcuts';
 
 // Module-level state for the maximize/unmaximize lifecycle. We use a mount counter
 // + a deferred-exit timer so React StrictMode's mount→unmount→mount in dev doesn't
@@ -44,6 +45,13 @@ export const DashboardRoute: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    document.body.classList.add('dashboard-route-active');
+    return () => {
+      document.body.classList.remove('dashboard-route-active');
+    };
+  }, []);
+
   // No auto-spawn on mount: previously this fired when windows.length === 0,
   // which (because the guarding ref lived on the route component) re-fired
   // after Clear + navigate-away + navigate-back, undoing the user's explicit
@@ -51,23 +59,60 @@ export const DashboardRoute: React.FC = () => {
   // (see DashboardBoard) — that's the explicit user-initiated path to create
   // the first window.
 
-  // Keyboard shortcuts. Cmd+N and Cmd+W are owned by the Electron menu
-  // ("New Window" / OS "Close Window") and never reach the renderer first, so
-  // we use Shift modifiers to stay out of their way:
-  //   Cmd/Ctrl+Shift+N : spawn a window on the board
-  //   Cmd/Ctrl+Shift+W : close the focused window
+  // Dashboard-scoped shortcuts. Cmd+N and Cmd+W are owned by the Electron menu,
+  // so canvas controls use Cmd/Ctrl+Alt plus a mnemonic key.
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      const meta = e.metaKey || e.ctrlKey;
-      if (!meta || !e.shiftKey) return;
-      if (e.key === 'N' || e.key === 'n') {
-        e.preventDefault();
-        void dashboard.spawnWindow();
-      } else if (e.key === 'W' || e.key === 'w') {
-        if (dashboard.state.focusedWindowId) {
-          e.preventDefault();
-          dashboard.closeWindow(dashboard.state.focusedWindowId);
+    const handler = (e: globalThis.KeyboardEvent) => {
+      const action = getDashboardShortcutAction(
+        e,
+        dashboard.state.windows,
+        dashboard.state.focusedWindowId
+      );
+      if (!action) return;
+      e.preventDefault();
+
+      switch (action.type) {
+        case 'spawn':
+          void dashboard.spawnWindow();
+          break;
+        case 'remove-focused':
+          if (dashboard.state.focusedWindowId) {
+            dashboard.closeWindow(dashboard.state.focusedWindowId);
+          }
+          break;
+        case 'focus-window':
+          dashboard.focusWindow(action.windowId);
+          break;
+        case 'toggle-window-fold': {
+          const win = dashboard.state.windows.find((w) => w.windowId === action.windowId);
+          if (win) {
+            if (win.folded) dashboard.focusWindow(win.windowId);
+            dashboard.foldWindow(win.windowId, !win.folded);
+          }
+          break;
         }
+        case 'toggle-focused-fold': {
+          const win = dashboard.state.windows.find(
+            (w) => w.windowId === dashboard.state.focusedWindowId
+          );
+          if (win) {
+            if (win.folded) dashboard.focusWindow(win.windowId);
+            dashboard.foldWindow(win.windowId, !win.folded);
+          }
+          break;
+        }
+        case 'toggle-fold-mode':
+          dashboard.setFoldMode(!dashboard.state.foldMode);
+          break;
+        case 'fold-all':
+          dashboard.foldAll();
+          break;
+        case 'unfold-all':
+          dashboard.unfoldAll();
+          break;
+        case 'organize':
+          dashboard.organize();
+          break;
       }
     };
     window.addEventListener('keydown', handler);

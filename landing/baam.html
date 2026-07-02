@@ -20,10 +20,10 @@
     }
     .baam-hero h1 { font-size: clamp(24px, 3.5vw, 38px); font-weight: 700; letter-spacing: -1px; margin-bottom: 10px; }
     .baam-hero p { color: var(--text-2); font-size: 15px; max-width: 540px; margin: 0 auto 24px; line-height: 1.6; }
+    .baam-video-break { margin-bottom: 26px; }
 
     .nav-item-dropdown { position: relative; }
     .nav-item-dropdown > a { display: inline-flex; align-items: center; gap: 5px; }
-    .nav-caret { width: 12px; height: 12px; }
     .nav-dropdown {
       position: absolute; top: calc(100% + 10px); left: 0;
       min-width: 210px; padding: 7px;
@@ -68,15 +68,19 @@
 
     .baam-directory {
       max-width: 1080px;
-      margin: 34px auto 10px;
-      padding: 0 24px 18px;
+      margin: 0 auto 16px;
+      padding: 24px;
+      background: rgba(255,255,255,0.58);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
     }
     .baam-directory-head {
       display: flex;
       justify-content: space-between;
       align-items: flex-end;
       gap: 16px;
-      margin-bottom: 14px;
+      margin-bottom: 18px;
     }
     .baam-directory-head h2 {
       font-size: 18px;
@@ -131,40 +135,59 @@
     .baam-jump-links a:hover { color: var(--text); background: var(--bg-3); }
     .baam-directory-grid {
       display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 10px;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 12px;
     }
     .directory-card {
       display: flex;
       flex-direction: column;
       gap: 7px;
-      min-height: 128px;
+      min-height: 146px;
+      min-width: 0;
       padding: 17px 18px;
-      border-radius: var(--radius-xl);
+      border-radius: var(--radius-lg);
       background: var(--bg-2);
+      border: 1px solid transparent;
       box-shadow: var(--shadow);
       color: var(--text);
       text-decoration: none;
       transition: var(--transition);
     }
-    .directory-card:hover { background: var(--bg-3); transform: translateY(-1px); }
+    .directory-card:hover { background: var(--bg-3); border-color: var(--border-2); transform: translateY(-1px); }
     .directory-card .directory-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
     .directory-card h3 { font-size: 14px; font-weight: 700; letter-spacing: -0.1px; }
     .directory-card p { color: var(--text-2); font-size: 12.5px; line-height: 1.55; }
     .directory-card .directory-count { color: var(--text-3); font-size: 11px; font-weight: 700; }
+    .directory-action {
+      margin-top: auto;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+    }
 
     .section-search-panel {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 18px;
-      margin: 18px 0 20px;
+      margin: 20px 0 22px;
       padding: 16px 18px;
-      background: rgba(255,255,255,0.62);
+      background: var(--bg-2);
       border: 1px solid var(--border);
+      border-left: 3px solid var(--accent);
       border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
     }
     .section-search-copy { max-width: 380px; }
+    .section-kicker {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--accent);
+      font-size: 10.5px;
+      font-weight: 800;
+      letter-spacing: 1.4px;
+      text-transform: uppercase;
+    }
     .section-search-copy strong { display: block; font-size: 13px; color: var(--text); margin-bottom: 2px; }
     .section-search-copy span { display: block; font-size: 12.5px; color: var(--text-2); line-height: 1.55; }
     .section-search-panel .search-wrap,
@@ -174,7 +197,13 @@
       max-width: 620px;
     }
 
-    .baam-section { max-width: 1080px; margin: 0 auto; padding: 32px 24px 40px; }
+    .baam-section {
+      max-width: 1080px;
+      margin: 0 auto;
+      padding: 42px 24px 44px;
+      scroll-margin-top: 76px;
+    }
+    .baam-section + .baam-section { border-top: 1px solid var(--border); }
     .baam-section-header {
       display: flex; align-items: center; gap: 10px;
       margin-bottom: 18px; padding-bottom: 12px;
@@ -205,6 +234,7 @@
       border-radius: var(--radius-xl);
       box-shadow: var(--shadow);
       padding: 22px 24px;
+      min-width: 0;
       display: flex; flex-direction: column; gap: 12px;
       transition: background var(--transition);
     }
@@ -213,6 +243,13 @@
     .ext-meta { flex: 1; min-width: 0; }
     .ext-meta h3 { font-size: 15px; font-weight: 700; margin-bottom: 2px; letter-spacing: -0.1px; }
     .ext-meta .ext-org { font-size: 11.5px; color: var(--text-3); font-weight: 500; }
+    .ext-card .brxt-chip {
+      max-width: 100%;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .ext-card .brxt-chip svg { flex-shrink: 0; }
     .ext-gh-link {
       flex-shrink: 0; width: 30px; height: 30px; border-radius: var(--radius);
       background: var(--bg-3);
@@ -230,6 +267,7 @@
       border-radius: var(--radius-xl);
       box-shadow: var(--shadow);
       padding: 22px 24px;
+      min-width: 0;
       display: flex; flex-direction: column; gap: 12px;
     }
     .wf-card-header { display: flex; align-items: flex-start; gap: 12px; }
@@ -267,6 +305,7 @@
       border-radius: var(--radius-xl);
       box-shadow: var(--shadow);
       padding: 20px 22px;
+      min-width: 0;
       display: flex; flex-direction: column; gap: 10px;
       transition: background var(--transition);
     }
@@ -279,10 +318,13 @@
     .skill-tags { display: flex; gap: 5px; flex-wrap: wrap; }
     .skill-dl-btn {
       display: inline-flex; align-items: center; gap: 5px;
+      max-width: 100%;
       padding: 6px 12px; border-radius: var(--radius);
       background: var(--accent-soft); color: var(--accent);
       text-decoration: none;
       font-size: 11.5px; font-weight: 700; white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
       transition: var(--transition);
     }
     .skill-dl-btn:hover { background: var(--accent); color: #fff; }
@@ -362,6 +404,7 @@
       max-width: 1080px;
       margin: 0 auto;
       padding: 24px 24px 58px;
+      scroll-margin-top: 76px;
     }
     .contribution-head {
       text-align: center;
@@ -379,6 +422,7 @@
       border-radius: var(--radius-xl);
       box-shadow: var(--shadow);
       padding: 18px;
+      min-width: 0;
       display: flex;
       flex-direction: column;
       gap: 10px;
@@ -387,15 +431,34 @@
     .contribution-card h3 { font-size: 14px; font-weight: 700; }
     .contribution-card p { color: var(--text-2); font-size: 12.5px; line-height: 1.6; flex: 1; }
     .contribution-card a { align-self: flex-start; }
+    .repo-pill {
+      display: inline-flex;
+      width: fit-content;
+      max-width: 100%;
+      padding: 3px 8px;
+      border-radius: 100px;
+      background: var(--bg-3);
+      color: var(--text-2);
+      font-family: 'Menlo', 'Consolas', 'Courier New', monospace;
+      font-size: 10.5px;
+      line-height: 1.4;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
 
     @media (max-width: 860px) {
+      .baam-directory { margin-left: 24px; margin-right: 24px; }
       .baam-directory-head, .section-search-panel { align-items: stretch; flex-direction: column; }
       .baam-jump-menu { align-self: flex-start; }
       .baam-jump-links { left: 0; right: auto; }
       .baam-directory-grid, .contribution-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .section-search-panel .search-wrap,
+      .section-search-panel .skills-search-wrap { min-width: 0; }
     }
 
     @media (max-width: 480px) {
+      .baam-directory { margin-left: 16px; margin-right: 16px; padding: 18px; }
       .ext-grid, .skill-grid, .baam-directory-grid, .contribution-grid { grid-template-columns: 1fr; }
       .section-search-panel { padding: 14px; }
     }
@@ -413,14 +476,12 @@
     <li><a href="download.html">Download</a></li>
     <li><a href="docs.html">Documentation</a></li>
     <li class="nav-item-dropdown">
-      <a href="baam.html" class="active">BAAM
-        <svg class="nav-caret" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
-      </a>
+      <a href="baam.html" class="active">BAAM</a>
       <div class="nav-dropdown" aria-label="BAAM sections">
-        <a href="baam.html#marketplace-directory">Marketplace overview</a>
-        <a href="baam.html#extensions-section">Extensions</a>
-        <a href="baam.html#workflows-section">Workflows</a>
-        <a href="baam.html#skills-section">Skills</a>
+        <a href="baam.html#marketplace-directory">Go to marketplace</a>
+        <a href="baam.html#skills-section">Go to skills</a>
+        <a href="baam.html#workflows-section">Go to workflows</a>
+        <a href="baam.html#extensions-section">Go to extensions</a>
       </div>
     </li>
     <li><a href="about.html">About</a></li>
@@ -440,10 +501,10 @@
   <a href="download.html">Download</a>
   <a href="docs.html">Documentation</a>
   <a href="baam.html" class="active">BAAM</a>
-  <a href="baam.html#marketplace-directory">Marketplace overview</a>
-  <a href="baam.html#extensions-section">Extensions</a>
-  <a href="baam.html#workflows-section">Workflows</a>
-  <a href="baam.html#skills-section">Skills</a>
+  <a href="baam.html#marketplace-directory">Go to marketplace</a>
+  <a href="baam.html#skills-section">Go to skills</a>
+  <a href="baam.html#workflows-section">Go to workflows</a>
+  <a href="baam.html#extensions-section">Go to extensions</a>
   <a href="about.html">About</a>
 </div>
 
@@ -456,7 +517,7 @@
   </div>
 
   <!-- What BAAM is: composable-agent motion graphic (video/baam.html) -->
-  <div class="hero-video" style="margin-bottom:8px">
+  <div class="hero-video baam-video-break">
     <div class="video-card">
       <video
         autoplay muted loop playsinline preload="metadata"
@@ -474,22 +535,33 @@
     <div class="baam-directory-head">
       <div>
         <h2>Choose the BAAM shelf you want to browse</h2>
-        <p>The explainer above introduces portable agents. The directory below separates installable extensions, reusable skills, and shareable workflows so every search box is attached to the list it filters.</p>
+        <p>The video above is only the explainer. Start here when you want to search or download: each shelf has its own section, its own search box, and its own contribution path.</p>
       </div>
       <details class="baam-jump-menu">
         <summary>
           Browse BAAM
-          <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></svg>
         </summary>
         <div class="baam-jump-links">
-          <a href="#marketplace-directory">Marketplace overview</a>
-          <a href="#extensions-section">Go to extensions</a>
-          <a href="#workflows-section">Go to workflows</a>
+          <a href="#marketplace-directory">Go to marketplace</a>
           <a href="#skills-section">Go to skills</a>
+          <a href="#workflows-section">Go to workflows</a>
+          <a href="#extensions-section">Go to extensions</a>
+          <a href="#contribute-section">Go to repository guide</a>
         </div>
       </details>
     </div>
     <div class="baam-directory-grid">
+      <a class="directory-card" href="#marketplace-directory">
+        <div class="directory-top">
+          <div class="icon-tile icon-tile-sm">
+            <svg class="icon" viewBox="0 0 24 24"><path d="M4 6h16"/><path d="M4 12h16"/><path d="M4 18h16"/></svg>
+          </div>
+          <span class="directory-count">Map</span>
+        </div>
+        <h3>Marketplace</h3>
+        <p>Use this overview to decide which shelf and search box you need.</p>
+        <span class="directory-action">Go to marketplace</span>
+      </a>
       <a class="directory-card" href="#extensions-section">
         <div class="directory-top">
           <div class="icon-tile icon-tile-sm">
@@ -499,6 +571,7 @@
         </div>
         <h3>Extensions</h3>
         <p>Install tools and data connectors, each with its own GitHub repository.</p>
+        <span class="directory-action">Go to extensions</span>
       </a>
       <a class="directory-card" href="#workflows-section">
         <div class="directory-top">
@@ -509,6 +582,7 @@
         </div>
         <h3>Workflows</h3>
         <p>Download portable analysis recipes from the BioRouter workflows repository.</p>
+        <span class="directory-action">Go to workflows</span>
       </a>
       <a class="directory-card" href="#skills-section">
         <div class="directory-top">
@@ -519,6 +593,7 @@
         </div>
         <h3>Skills</h3>
         <p>Find instruction bundles for research, code, writing, and biomedical analysis.</p>
+        <span class="directory-action">Go to skills</span>
       </a>
       <a class="directory-card" href="#contribute-section">
         <div class="directory-top">
@@ -529,6 +604,7 @@
         </div>
         <h3>Contribute</h3>
         <p>Route updates to the BioRouter app, skills repo, workflow repo, or extension repo.</p>
+        <span class="directory-action">Go to repository guide</span>
       </a>
     </div>
   </div>
@@ -544,6 +620,7 @@
 
     <div class="section-search-panel">
       <div class="section-search-copy">
+        <span class="section-kicker">Extension search</span>
         <strong>Search extensions</strong>
         <span>This field filters only the extension cards below.</span>
       </div>
@@ -1460,6 +1537,7 @@
 
     <div class="section-search-panel">
       <div class="section-search-copy">
+        <span class="section-kicker">Workflow search</span>
         <strong>Search workflows</strong>
         <span>This field filters only the workflow recipes in this section.</span>
       </div>
@@ -1531,6 +1609,7 @@ extensions: []</pre>
 
     <div class="section-search-panel">
       <div class="section-search-copy">
+        <span class="section-kicker">Skill search</span>
         <strong>Search skills</strong>
         <span>This field filters only the skill collections in this section.</span>
       </div>
@@ -3647,6 +3726,7 @@ extensions: []</pre>
           <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 20h8"/><path d="M12 18v2"/></svg>
         </div>
         <h3>BioRouter app and landing site</h3>
+        <span class="repo-pill">BaranziniLab/BioRouter</span>
         <p>Use the main BioRouter repository for application code, desktop UI, server code, documentation, and this landing website.</p>
         <a href="https://github.com/BaranziniLab/BioRouter" target="_blank" class="btn-secondary btn-sm">BioRouter GitHub</a>
       </div>
@@ -3655,6 +3735,7 @@ extensions: []</pre>
           <svg class="icon" viewBox="0 0 24 24"><path d="M9.5 2A2.5 2.5 0 0 1 12 4.5v15a2.5 2.5 0 0 1-4.96.44 2.5 2.5 0 0 1-2.96-3.08 3 3 0 0 1-.34-5.58 2.5 2.5 0 0 1 1.32-4.24 2.5 2.5 0 0 1 4.44-1.04Z"/><path d="M14.5 2A2.5 2.5 0 0 0 12 4.5v15a2.5 2.5 0 0 0 4.96.44 2.5 2.5 0 0 0 2.96-3.08 3 3 0 0 0 .34-5.58 2.5 2.5 0 0 0-1.32-4.24 2.5 2.5 0 0 0-4.44-1.04Z"/></svg>
         </div>
         <h3>BioRouter Skills</h3>
+        <span class="repo-pill">BaranziniLab/biorouter-skills</span>
         <p>Add, update, package, or discuss reusable skill bundles in the dedicated skills repository.</p>
         <a href="https://github.com/BaranziniLab/biorouter-skills" target="_blank" class="btn-secondary btn-sm">Skills GitHub</a>
       </div>
@@ -3663,6 +3744,7 @@ extensions: []</pre>
           <svg class="icon" viewBox="0 0 24 24"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
         </div>
         <h3>BioRouter Workflows</h3>
+        <span class="repo-pill">Broccolito/biorouter-workflows</span>
         <p>Contribute portable YAML workflows, examples, and federated analysis recipes in the workflows repository.</p>
         <a href="https://github.com/Broccolito/biorouter-workflows" target="_blank" class="btn-secondary btn-sm">Workflows GitHub</a>
       </div>
@@ -3671,6 +3753,7 @@ extensions: []</pre>
           <svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
         </div>
         <h3>Extension repositories</h3>
+        <span class="repo-pill">one repository per extension</span>
         <p>Each extension is maintained in its own repository. Open the GitHub icon on that extension card to file issues, send PRs, or update releases.</p>
         <a href="#extensions-section" class="btn-secondary btn-sm">Browse extension repos</a>
       </div>

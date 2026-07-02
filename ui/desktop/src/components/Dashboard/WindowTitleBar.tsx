@@ -39,8 +39,7 @@ export const WindowTitleBar: React.FC<Props> = ({
     setEditing(false);
   };
 
-  const iconBtnClass =
-    'flex-shrink-0 p-1 rounded hover:bg-background-medium transition-colors';
+  const iconBtnClass = 'flex-shrink-0 p-1 rounded hover:bg-background-medium transition-colors';
 
   return (
     <div
@@ -83,7 +82,7 @@ export const WindowTitleBar: React.FC<Props> = ({
         type="button"
         className={iconBtnClass}
         onClick={onFold}
-        title="Fold to card"
+        title="Fold to card (⌘⌥Enter)"
       >
         <Minus className="w-3.5 h-3.5" />
       </button>
@@ -107,7 +106,7 @@ export const WindowTitleBar: React.FC<Props> = ({
         type="button"
         className={iconBtnClass}
         onClick={onClose}
-        title="Close conversation"
+        title="Remove from dashboard (⌘⌥⌫)"
       >
         <X className="w-3.5 h-3.5" />
       </button>

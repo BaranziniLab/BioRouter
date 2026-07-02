@@ -47,6 +47,7 @@ import {
 } from '../../api';
 import { formatExtensionName } from '../settings/extensions/subcomponents/ExtensionList';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
+import { ReadableContent } from '../Layout/ReadableContent';
 
 function getSessionExtensionNames(extensionData: ExtensionData): string[] {
   try {
@@ -821,25 +822,27 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         <MainPanelLayout>
           <div className="flex-1 flex flex-col min-h-0">
             {/* Flat page header */}
-            <div className="biorouter-page-header px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
-              <div className="flex justify-between items-center mb-1 page-transition">
-                <h1 className="text-2xl font-semibold tracking-tight">Chat history</h1>
-                <Button
-                  onClick={handleImportClick}
-                  variant="outline"
-                  className="flex items-center gap-2"
-                >
-                  <Upload className="w-4 h-4" />
-                  Import Session
-                </Button>
-              </div>
-              <p className="text-sm text-text-muted">
-                View and search your past conversations with BioRouter. {getSearchShortcutText()} to
-                search.
-              </p>
+            <div className="flex-shrink-0 border-b border-border-subtle">
+              <ReadableContent className="px-8 pt-12 pb-6">
+                <div className="flex justify-between items-center mb-1 page-transition">
+                  <h1 className="text-2xl font-semibold tracking-tight">Chat history</h1>
+                  <Button
+                    onClick={handleImportClick}
+                    variant="outline"
+                    className="flex items-center gap-2"
+                  >
+                    <Upload className="w-4 h-4" />
+                    Import Session
+                  </Button>
+                </div>
+                <p className="text-sm text-text-muted">
+                  View and search your past conversations with BioRouter. {getSearchShortcutText()}{' '}
+                  to search.
+                </p>
+              </ReadableContent>
             </div>
 
-            <div className="flex-1 min-h-0 relative px-8 pt-6 pb-8">
+            <ReadableContent className="flex-1 min-h-0 relative px-8 pt-6 pb-8">
               <ScrollArea
                 handleScroll={handleScroll}
                 className="h-full"
@@ -911,7 +914,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                   </SearchView>
                 </div>
               </ScrollArea>
-            </div>
+            </ReadableContent>
           </div>
         </MainPanelLayout>
 

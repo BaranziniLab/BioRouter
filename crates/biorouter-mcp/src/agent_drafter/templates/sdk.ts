@@ -40,9 +40,19 @@ export interface PromptOptions {
   images?: ImageInput[];
 }
 
+export interface TimelineOptions {
+  maxItems?: number;
+}
+
+export interface TimelineSummary {
+  label: string;
+  detail: string;
+  state: string;
+}
+
 /** Events emitted while the agent answers a prompt. */
 export type AgentEvent =
-  | { type: "ready"; protocol?: number; capabilities?: string[]; sessionId?: string }
+  | { type: "ready"; protocol?: number; capabilities?: string[]; sessionId?: string; resumed?: boolean; messageCount?: number }
   | { type: "message"; delta: string }
   | { type: "thought"; delta: string }
   | { type: "tool"; name: string; status: string; id?: string }
@@ -367,16 +377,6 @@ export class BioRouterClient {
     return false;
   }
 
-  /** Approve a pending human-in-the-loop tool request (BRSDK Phase 5). */
-  approve(id: string): void {
-    this.send({ type: "approve", id });
-  }
-
-  /** Reject a pending human-in-the-loop tool request, with an optional reason. */
-  reject(id: string, reason?: string): void {
-    this.send({ type: "reject", id, reason });
-  }
-
   /**
    * Send a prompt to the agent. Resolves when the agent finishes its turn
    * (`done`); reject on error. Streamed output arrives via `on("message", …)`.
@@ -463,32 +463,37 @@ export class BioRouterClient {
         : target;
     if (!el) throw new Error("run(): target element not found");
     let buf = "";
-    el.innerHTML = '<span class="br-spinner"></span>';
+    el.innerHTML =
+      '<div class="br-run-status"></div><div class="br-run-answer"><span class="br-spinner"></span> Starting agent run…</div>';
+    const statusEl = el.querySelector<HTMLElement>(".br-run-status")!;
+    const answerEl = el.querySelector<HTMLElement>(".br-run-answer")!;
+    const stopTimeline = mountTimeline(this, statusEl, { maxItems: 18 });
     const onMsg: Listener = (ev) => {
       if (ev.type === "message") {
         buf += ev.delta;
-        el.innerHTML = this.renderMarkdown(buf);
+        answerEl.innerHTML = this.renderMarkdown(buf);
       }
     };
     const onTool: Listener = (ev) => {
       if (ev.type === "tool" && !buf) {
-        el.innerHTML = `<span class="br-spinner"></span> <span class="br-msg--tool">⚙ ${ev.name}…</span>`;
+        answerEl.innerHTML = `<span class="br-spinner"></span> <span class="br-msg--tool">${ev.name}…</span>`;
       }
     };
     this.on("message", onMsg);
     this.on("tool", onTool);
     try {
       await this.prompt(text, opts);
-      if (!buf) el.innerHTML = "";
+      if (!buf) answerEl.innerHTML = "";
     } catch (e) {
       // Hoisted out of the template literal so the no-esbuild fallback stripper
       // (which treats `${…}` as part of the string) can strip the `as` cast.
       const emsg = (e as Error).message || "request failed";
-      el.innerHTML = `<div class="br-msg br-msg--agent">⚠ ${emsg}</div>`;
+      answerEl.innerHTML = `<div class="br-msg br-msg--agent">Failed: ${emsg}</div>`;
       throw e;
     } finally {
       this.off("message", onMsg);
       this.off("tool", onTool);
+      stopTimeline();
     }
     return buf;
   }
@@ -527,9 +532,33 @@ interface ChartPoint {
   value: number;
 }
 interface ChartSpec {
-  type?: "bar" | "line";
+  type?: "bar" | "line" | "pie";
   title?: string;
   data: ChartPoint[];
+}
+
+interface GraphNode {
+  id: string;
+  label?: string;
+  group?: string;
+}
+interface GraphEdge {
+  source: string;
+  target: string;
+  label?: string;
+}
+interface GraphSpec {
+  title?: string;
+  nodes?: Array<GraphNode | string>;
+  edges?: Array<GraphEdge | string>;
+}
+interface ParsedGraph {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+}
+interface GraphPoint {
+  x: number;
+  y: number;
 }
 
 /**
@@ -651,6 +680,134 @@ export function renderChart(json: string): string {
   return svg(axis + body + labels + yMax);
 }
 
+function parseGraphEdges(text: string): ParsedGraph {
+  const nodeMap = new Map<string, GraphNode>();
+  const edges: GraphEdge[] = [];
+  const ensure = (id: string) => {
+    const clean = id.trim().replace(/^["'`[]+|["'`\]]+$/g, "");
+    if (!clean) return "";
+    if (!nodeMap.has(clean)) nodeMap.set(clean, { id: clean, label: clean });
+    return clean;
+  };
+  for (const raw of text.split("\n")) {
+    const line = raw
+      .trim()
+      .replace(/;$/, "")
+      .replace(/^\s*(graph|flowchart)\s+(TD|TB|BT|LR|RL)\s*/i, "");
+    if (!line || line.startsWith("#")) continue;
+    const match = line.match(/^(.+?)\s*(?:-->|---|--|->)\s*(.+?)(?:\s*[:|]\s*(.+))?$/);
+    if (!match) continue;
+    const source = ensure(match[1].replace(/\[.*?\]|\(.*?\)/g, ""));
+    const target = ensure(match[2].replace(/\[.*?\]|\(.*?\)/g, ""));
+    if (source && target) edges.push({ source, target, label: match[3]?.trim() });
+  }
+  return { nodes: Array.from(nodeMap.values()), edges };
+}
+
+function normalizeGraph(input: string): GraphSpec | null {
+  try {
+    const spec = JSON.parse(input) as GraphSpec;
+    const nodes = Array.isArray(spec.nodes) ? spec.nodes : [];
+    const edges = Array.isArray(spec.edges) ? spec.edges : [];
+    if (nodes.length || edges.length) return spec;
+  } catch {
+    // Edge-list and Mermaid-ish blocks are parsed below.
+  }
+  const parsed = parseGraphEdges(input);
+  return parsed.nodes.length || parsed.edges.length ? parsed : null;
+}
+
+/**
+ * Render a graph/diagram block as dependency-free SVG. Accepts either:
+ * ```graph JSON ({ nodes, edges, title }) or a simple edge list:
+ * A -> B : relationship
+ */
+export function renderGraph(input: string): string {
+  const spec = normalizeGraph(input);
+  if (!spec) return '<div class="br-visual br-visual--pending"></div>';
+  const rawNodes = Array.isArray(spec.nodes) ? spec.nodes : [];
+  const rawEdges = Array.isArray(spec.edges) ? spec.edges : [];
+  const nodes = new Map<string, GraphNode>();
+  const ensureNode = (id: string, label?: string) => {
+    const clean = String(id || "").trim();
+    if (!clean) return;
+    if (!nodes.has(clean)) nodes.set(clean, { id: clean, label: label || clean });
+  };
+  for (const n of rawNodes) {
+    if (typeof n === "string") ensureNode(n);
+    else ensureNode(n.id, n.label);
+  }
+  const edges: GraphEdge[] = [];
+  for (const e of rawEdges) {
+    if (typeof e === "string") {
+      const parsed = parseGraphEdges(e);
+      for (const n of parsed.nodes) ensureNode(n.id, n.label);
+      edges.push(...parsed.edges);
+    } else if (e?.source && e?.target) {
+      ensureNode(e.source);
+      ensureNode(e.target);
+      edges.push({ source: e.source, target: e.target, label: e.label });
+    }
+  }
+  if (!nodes.size) {
+    for (const e of edges) {
+      ensureNode(e.source);
+      ensureNode(e.target);
+    }
+  }
+  const list = Array.from(nodes.values()).slice(0, 18);
+  const visible = new Set(list.map((n) => n.id));
+  const visibleEdges = edges.filter((e) => visible.has(e.source) && visible.has(e.target)).slice(0, 28);
+  if (!list.length) return '<div class="br-visual br-visual--pending"></div>';
+
+  const W = 640;
+  const H = 360;
+  const cx = W / 2;
+  const cy = H / 2 + 8;
+  const radius = Math.min(132, 52 + list.length * 9);
+  const esc = (s: string) => escapeHtml(String(s));
+  const pos = new Map<string, GraphPoint>();
+  list.forEach((n, i) => {
+    const angle = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(list.length, 1);
+    pos.set(n.id, {
+      x: cx + Math.cos(angle) * radius,
+      y: cy + Math.sin(angle) * radius,
+    });
+  });
+  const title = spec.title
+    ? `<text x="${cx}" y="24" font-size="13" font-weight="650" text-anchor="middle" fill="var(--br-text)">${esc(spec.title)}</text>`
+    : "";
+  const edgeEls = visibleEdges
+    .map((e) => {
+      const a = pos.get(e.source);
+      const b = pos.get(e.target);
+      if (!a || !b) return "";
+      const mx = (a.x + b.x) / 2;
+      const my = (a.y + b.y) / 2;
+      const label = e.label
+        ? `<text x="${mx.toFixed(1)}" y="${(my - 5).toFixed(1)}" font-size="10" text-anchor="middle" fill="var(--br-text-muted)">${esc(
+            e.label
+          ).slice(0, 26)}</text>`
+        : "";
+      return `<line x1="${a.x.toFixed(1)}" y1="${a.y.toFixed(1)}" x2="${b.x.toFixed(1)}" y2="${b.y.toFixed(
+        1
+      )}" stroke="var(--br-visual-line)" stroke-width="1.4"/>${label}`;
+    })
+    .join("");
+  const nodeEls = list
+    .map((n, i) => {
+      const p = pos.get(n.id)!;
+      const fill = i % 3 === 0 ? "var(--br-coral)" : i % 3 === 1 ? "var(--br-accent)" : "var(--br-n500)";
+      return `<g><circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="18" fill="${fill}"/><text x="${p.x.toFixed(
+        1
+      )}" y="${(p.y + 4).toFixed(1)}" font-size="10" text-anchor="middle" fill="var(--br-on-accent)">${esc(
+        n.label || n.id
+      ).slice(0, 10)}</text></g>`;
+    })
+    .join("");
+  return `<div class="br-visual br-graph"><svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" role="img">${title}${edgeEls}${nodeEls}</svg></div>`;
+}
+
 export function renderMarkdown(md: string): string {
   const src = escapeHtml(md || "");
   const lines = src.split("\n");
@@ -668,7 +825,7 @@ export function renderMarkdown(md: string): string {
   while (i < lines.length) {
     const line = lines[i];
     // fenced code block
-    const fence = line.match(/^```(\w*)\s*$/);
+    const fence = line.match(/^```([A-Za-z0-9_-]*)(?:\s+.*)?\s*$/);
     if (fence) {
       closeList();
       const code: string[] = [];
@@ -678,9 +835,12 @@ export function renderMarkdown(md: string): string {
         i++;
       }
       i++; // skip closing fence
-      // A ```chart block is an AI-generated visualization: render it as SVG.
-      if (fence[1] === "chart") {
+      const fenceKind = (fence[1] || "").toLowerCase();
+      // AI-generated visualization blocks render as themed SVG.
+      if (fenceKind === "chart") {
         out.push(renderChart(code.join("\n")));
+      } else if (["graph", "diagram", "network", "map", "mermaid"].includes(fenceKind)) {
+        out.push(renderGraph(code.join("\n")));
       } else {
         out.push(`<pre><code>${code.join("\n")}</code></pre>`);
       }
@@ -781,6 +941,123 @@ export function fileToImageInput(file: File): Promise<ImageInput> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+function eventSummary(ev: AgentEvent): TimelineSummary | null {
+  switch (ev.type) {
+    case "ready":
+      return {
+        label: ev.resumed ? "Session resumed" : "Session ready",
+        detail: ev.capabilities?.length ? ev.capabilities.join(", ") : "Agent connection open",
+        state: "done",
+      };
+    case "tool":
+      return {
+        label: ev.status === "completed" ? "Tool completed" : ev.status === "failed" ? "Tool failed" : "Tool running",
+        detail: ev.name || "tool",
+        state: ev.status === "completed" ? "done" : ev.status === "failed" ? "error" : "active",
+      };
+    case "tool_call":
+      return { label: "Tool call queued", detail: ev.name, state: "active" };
+    case "guardrail":
+      return {
+        label: ev.blocked ? "Guardrail blocked" : "Guardrail checked",
+        detail: [ev.name, ev.stage, ev.reason].filter(Boolean).join(" · "),
+        state: ev.blocked ? "error" : "done",
+      };
+    case "approval":
+      return { label: "Approval needed", detail: ev.tool, state: "active" };
+    case "handoff":
+      return {
+        label: "Agent handoff",
+        detail: [ev.from, ev.to].filter(Boolean).join(" → "),
+        state: "active",
+      };
+    case "compaction":
+      return {
+        label: "Context compaction",
+        detail: [ev.phase, ev.trigger].filter(Boolean).join(" · "),
+        state: ev.phase === "done" ? "done" : "active",
+      };
+    case "context":
+      return {
+        label: "Context checked",
+        detail: ev.limit ? `${ev.used || 0}/${ev.limit} tokens (${Math.round((ev.ratio || 0) * 100)}%)` : "Token usage unavailable",
+        state: "done",
+      };
+    case "model":
+      return {
+        label: ev.ok ? "Model selected" : "Model switch failed",
+        detail: [ev.provider, ev.model].filter(Boolean).join(" / "),
+        state: ev.ok ? "done" : "error",
+      };
+    case "widget":
+      return { label: "Interface updated", detail: ev.id, state: "done" };
+    case "done":
+      return { label: "Run complete", detail: "", state: "done" };
+    case "error":
+      return { label: "Run error", detail: ev.message, state: "error" };
+    default:
+      return null;
+  }
+}
+
+/** Mount a visible execution timeline for long-running agent work. Generated
+ * apps should include this when they call `prompt()` / `ask()` directly; `run()`
+ * and the default chat mount it automatically. */
+export function mountTimeline(
+  client: BioRouterClient,
+  target: HTMLElement | string,
+  options: TimelineOptions = {}
+) {
+  const host =
+    typeof target === "string"
+      ? (document.querySelector(target) as HTMLElement | null)
+      : target;
+  if (!host) return () => undefined;
+  host.classList.add("br-run-status");
+  const maxItems = options.maxItems || 16;
+  const entries: HTMLElement[] = [];
+  const add = (ev: AgentEvent) => {
+    const s = eventSummary(ev);
+    if (!s) return;
+    const row = document.createElement("div");
+    row.className = "br-run-step br-run-step--" + s.state;
+    const label = document.createElement("span");
+    label.className = "br-run-step__label";
+    label.textContent = s.label;
+    row.appendChild(label);
+    if (s.detail) {
+      const detail = document.createElement("span");
+      detail.className = "br-run-step__detail";
+      detail.textContent = s.detail;
+      row.appendChild(detail);
+    }
+    host.appendChild(row);
+    entries.push(row);
+    while (entries.length > maxItems) {
+      const old = entries.shift();
+      if (old) old.remove();
+    }
+  };
+  const kinds: EventKind[] = [
+    "ready",
+    "tool",
+    "tool_call",
+    "guardrail",
+    "approval",
+    "handoff",
+    "compaction",
+    "context",
+    "model",
+    "widget",
+    "done",
+    "error",
+  ];
+  for (const kind of kinds) client.on(kind, add);
+  return () => {
+    for (const kind of kinds) client.off(kind, add);
+  };
 }
 
 // ── Interactive widgets ─────────────────────────────────────────────────────
@@ -971,6 +1248,8 @@ export function mountChat(client: BioRouterClient, host: HTMLElement): void {
   log.className = "br-chat__log";
   const form = document.createElement("div");
   form.className = "br-chat__form";
+  const status = document.createElement("div");
+  status.className = "br-run-status";
   const input = document.createElement("input");
   input.className = "br-input";
   input.placeholder = "Ask the agent…";
@@ -981,7 +1260,9 @@ export function mountChat(client: BioRouterClient, host: HTMLElement): void {
   form.appendChild(input);
   form.appendChild(send);
   host.appendChild(log);
+  host.appendChild(status);
   host.appendChild(form);
+  mountTimeline(client, status, { maxItems: 12 });
 
   const add = (cls: string, html: boolean, content: string): HTMLElement => {
     const el = document.createElement("div");
@@ -1025,11 +1306,11 @@ export function mountChat(client: BioRouterClient, host: HTMLElement): void {
     log.scrollTop = log.scrollHeight;
   });
   client.on("tool", (ev) => {
-    if (ev.type === "tool") add("tool", false, "⚙ " + ev.name + " (" + ev.status + ")");
+    if (ev.type === "tool") add("tool", false, ev.name + " (" + ev.status + ")");
   });
   client.on("error", () => {
     clearTyping();
-    add("agent", false, "⚠ Could not reach the agent.");
+    add("agent", false, "Could not reach the agent.");
   });
 
   const submit = async () => {
@@ -1043,7 +1324,7 @@ export function mountChat(client: BioRouterClient, host: HTMLElement): void {
       await client.prompt(text);
     } catch {
       clearTyping();
-      add("agent", false, "⚠ Failed to get a response.");
+      add("agent", false, "Failed to get a response.");
     }
   };
   send.addEventListener("click", submit);

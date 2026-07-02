@@ -1,5 +1,16 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Clock, Home, Layers, Puzzle, History, AppWindow, MessageSquare, Pipeline, Settings, KnowledgeIcon } from '../icons/app-icons';
+import {
+  Clock,
+  Home,
+  Layers,
+  Puzzle,
+  History,
+  AppWindow,
+  MessageSquare,
+  Pipeline,
+  Settings,
+  KnowledgeIcon,
+} from '../icons/app-icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   SidebarContent,
@@ -17,6 +28,7 @@ import { useChatContext } from '../../contexts/ChatContext';
 import { DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
 import EnvironmentBadge from './EnvironmentBadge';
 import { listApps } from '../../api';
+import { useRunningChats, RunningChatEntry } from '../../hooks/chatStreamStore';
 
 interface SidebarProps {
   onSelectSession: (sessionId: string) => void;
@@ -123,10 +135,46 @@ const menuItems: NavigationEntry[] = [
   },
 ];
 
+function RunningChatItem({
+  entry,
+  onOpen,
+}: {
+  entry: RunningChatEntry;
+  onOpen: (sessionId: string) => void;
+}) {
+  const completed = Boolean(entry.completedAt);
+
+  return (
+    <button
+      type="button"
+      onClick={() => onOpen(entry.sessionId)}
+      className={`w-full min-w-0 flex items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-all duration-500 hover:bg-background-medium ${
+        completed ? 'opacity-0 translate-y-1' : 'opacity-100 translate-y-0'
+      }`}
+      title={entry.title}
+    >
+      <span
+        aria-hidden="true"
+        className="relative flex h-4 w-4 flex-shrink-0 items-center justify-center text-text-default/80"
+      >
+        {!completed && (
+          <>
+            <span className="absolute h-4 w-4 rounded-full border border-current animate-[biorouter-working-ring_1.8s_ease-out_infinite]" />
+            <span className="absolute h-2.5 w-2.5 rounded-full bg-current opacity-20 animate-[biorouter-working-glow_1.8s_ease-in-out_infinite]" />
+          </>
+        )}
+        <span className="h-1.5 w-1.5 rounded-full bg-current opacity-70" />
+      </span>
+      <span className="min-w-0 flex-1 truncate font-medium text-text-default">{entry.title}</span>
+    </button>
+  );
+}
+
 const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const chatContext = useChatContext();
+  const runningChats = useRunningChats();
   const lastSessionIdRef = useRef<string | null>(null);
   const currentSessionId = currentPath === '/pair' ? searchParams.get('resumeSessionId') : null;
   const [hasApps, setHasApps] = useState(false);
@@ -187,6 +235,11 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     }
   };
 
+  const handleOpenRunningChat = (sessionId: string) => {
+    lastSessionIdRef.current = sessionId;
+    navigate(`/pair?resumeSessionId=${sessionId}`);
+  };
+
   const renderMenuItem = (entry: NavigationEntry, index: number) => {
     if (entry.type === 'separator') {
       return <SidebarSeparator key={index} />;
@@ -210,6 +263,17 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
                 <span>{entry.label}</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
+            {entry.path === '/sessions' && runningChats.length > 0 && (
+              <div className="ml-7 mt-0.5 mb-1 space-y-0.5">
+                {runningChats.map((running) => (
+                  <RunningChatItem
+                    key={running.sessionId}
+                    entry={running}
+                    onOpen={handleOpenRunningChat}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </SidebarGroupContent>
       </SidebarGroup>

@@ -92,6 +92,7 @@ impl Provider for XaiProvider {
                 ConfigKey::new("XAI_HOST", false, false, Some(XAI_API_HOST)),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

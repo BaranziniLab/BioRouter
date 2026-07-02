@@ -25,15 +25,15 @@ interface DefaultProviderSetupFormProps {
 const PROVIDER_KEY_DEFAULTS: Record<string, Record<string, string>> = {
   azure_openai: {
     AZURE_OPENAI_ENDPOINT: 'https://unified-api.ucsf.edu/general',
-    AZURE_OPENAI_API_VERSION: '2024-10-21',
+    AZURE_OPENAI_API_VERSION: '2025-01-01-preview',
   },
   aws_bedrock: {
     AWS_REGION: 'us-west-2',
   },
   versa_azure: {
     AZURE_OPENAI_ENDPOINT: 'https://unified-api.ucsf.edu/general',
-    AZURE_OPENAI_DEPLOYMENT_NAME: 'gpt-5.2-2025-12-11',
-    AZURE_OPENAI_API_VERSION: '2024-10-21',
+    AZURE_OPENAI_DEPLOYMENT_NAME: 'gpt-5.5-2026-04-24',
+    AZURE_OPENAI_API_VERSION: '2025-01-01-preview',
   },
   versa_bedrock: {
     AWS_ENDPOINT_URL_BEDROCK: 'https://unified-api.ucsf.edu/general/awsai',

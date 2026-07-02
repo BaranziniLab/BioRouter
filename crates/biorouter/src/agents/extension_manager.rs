@@ -1760,7 +1760,10 @@ mod tests {
             .expect("dispatch ok");
         let output = dispatched.result.await.expect("tool result ok");
         let text = serde_json::to_string(&output).unwrap();
-        assert!(text.contains("CFTR"), "expected query rows in output: {text}");
+        assert!(
+            text.contains("CFTR"),
+            "expected query rows in output: {text}"
+        );
         assert!(!text.contains("TP53"), "WHERE filter must apply: {text}");
 
         // (2b) The in-process server's synthetic config is EXCLUDED from
@@ -1774,9 +1777,12 @@ mod tests {
 
         // (2c) Re-injection is idempotent (configure_agent re-runs per connect).
         let before = em.get_prefixed_tools(None).await.unwrap().len();
-        em.add_inprocess_server("datasql", DataSqlServer::new(std::collections::HashMap::new()))
-            .await
-            .expect("idempotent re-inject");
+        em.add_inprocess_server(
+            "datasql",
+            DataSqlServer::new(std::collections::HashMap::new()),
+        )
+        .await
+        .expect("idempotent re-inject");
         let after = em.get_prefixed_tools(None).await.unwrap().len();
         assert_eq!(before, after, "re-injecting an existing server is a no-op");
 

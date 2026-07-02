@@ -12,6 +12,7 @@ import {
 } from '../../api';
 import { resumeSession } from '../../sessions';
 import { useNavigation } from '../../hooks/useNavigation';
+import { ReadableContent } from '../Layout/ReadableContent';
 
 export function SessionInsights() {
   const [insights, setInsights] = useState<ApiSessionInsights | null>(null);
@@ -120,10 +121,10 @@ export function SessionInsights() {
 
   const renderSkeleton = () => (
     <div className="bg-background-muted flex flex-col h-full">
-      <div className="px-8 pt-16 pb-4">
+      <ReadableContent className="px-8 pt-16 pb-4">
         <Greeting />
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8 px-8 pb-8">
+      </ReadableContent>
+      <ReadableContent className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8 px-8 pb-8">
         {(['Sessions', 'Tokens'] as const).map((group) => (
           <div key={group}>
             <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
@@ -139,8 +140,8 @@ export function SessionInsights() {
             </div>
           </div>
         ))}
-      </div>
-      <div className="px-8 pb-8">
+      </ReadableContent>
+      <ReadableContent className="px-8 pb-8">
         <div>
           <div className="flex justify-between items-center pb-2">
             <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
@@ -162,7 +163,7 @@ export function SessionInsights() {
             ))}
           </div>
         </div>
-      </div>
+      </ReadableContent>
     </div>
   );
 
@@ -173,13 +174,13 @@ export function SessionInsights() {
   return (
     <div className="bg-background-muted flex flex-col h-full">
       {/* Hero — text directly on canvas */}
-      <div className="px-8 pt-16 pb-6">
+      <ReadableContent className="px-8 pt-16 pb-6">
         <p className="text-xs font-medium text-text-muted tracking-widest mb-3">UCSF Biorouter</p>
         <Greeting />
-      </div>
+      </ReadableContent>
 
       {/* Grouped stats — Sessions / Tokens, each with Total · Past 30d · Past 7d */}
-      <div className="px-8 pb-8">
+      <ReadableContent className="px-8 pb-8">
         {error ? (
           <div className="flex items-center gap-2 text-xs text-text-warning">
             <div className="w-2 h-2 bg-background-warning rounded-full flex-shrink-0" />
@@ -245,10 +246,10 @@ export function SessionInsights() {
             ))}
           </div>
         )}
-      </div>
+      </ReadableContent>
 
       {/* Recent chats */}
-      <div className="px-8 pb-8 page-transition">
+      <ReadableContent className="px-8 pb-8 page-transition">
         <div>
           <div className="flex justify-between items-center pb-2">
             <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
@@ -307,7 +308,7 @@ export function SessionInsights() {
             )}
           </div>
         </div>
-      </div>
+      </ReadableContent>
     </div>
   );
 }

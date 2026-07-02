@@ -61,12 +61,15 @@ static EMAIL: Lazy<Regex> =
 // 9-digit ids. The `regex` crate has no lookahead, so structural validity
 // (area not 000/666/900-999, group not 00, serial not 0000) is checked in code
 // by `ssn_valid` rather than in the pattern.
-static SSN: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\b\d{3}[- ]\d{2}[- ]\d{4}\b").unwrap());
+static SSN: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d{3}[- ]\d{2}[- ]\d{4}\b").unwrap());
 
 /// Reject structurally-invalid SSNs (never-issued area/group/serial values).
 fn ssn_valid(s: &str) -> bool {
-    let digits: Vec<u8> = s.bytes().filter(|b| b.is_ascii_digit()).map(|b| b - b'0').collect();
+    let digits: Vec<u8> = s
+        .bytes()
+        .filter(|b| b.is_ascii_digit())
+        .map(|b| b - b'0')
+        .collect();
     if digits.len() != 9 {
         return false;
     }
@@ -77,9 +80,8 @@ fn ssn_valid(s: &str) -> bool {
 }
 
 // NANP phone numbers in common written formats (optional +1, separators).
-static PHONE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b").unwrap()
-});
+static PHONE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b").unwrap());
 
 // MRN: keyword-anchored (MRNs have no universal format), capturing the id.
 static MRN: Lazy<Regex> =
@@ -95,11 +97,11 @@ static DOB: Lazy<Regex> = Lazy::new(|| {
 
 // Candidate card numbers (13–19 digits, optional space/dash separators);
 // validated with Luhn before being reported.
-static CC_CANDIDATE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\b(?:\d[ -]?){13,19}\b").unwrap());
+static CC_CANDIDATE: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b(?:\d[ -]?){13,19}\b").unwrap());
 
-static IPV4: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b").unwrap());
+static IPV4: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b").unwrap()
+});
 
 // Conservative person-name pass: a title or explicit "name:"/"patient" keyword
 // followed by 1–2 Capitalized words. Keyword-anchored to keep precision high.
@@ -129,7 +131,7 @@ fn luhn_ok(digits: &str) -> bool {
         sum += v;
         dbl = !dbl;
     }
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 /// The local detector. Cheap to construct (patterns are shared statics).
@@ -221,11 +223,11 @@ impl PiiDetector {
         let mut out = String::with_capacity(text.len());
         let mut last = 0usize;
         for m in &matches {
-            out.push_str(&text[last..m.start]);
+            out.push_str(text.get(last..m.start).unwrap_or_default());
             out.push_str(&format!("[REDACTED:{}]", m.kind.tag()));
             last = m.end;
         }
-        out.push_str(&text[last..]);
+        out.push_str(text.get(last..).unwrap_or_default());
         (out, matches)
     }
 }
@@ -235,7 +237,11 @@ mod tests {
     use super::*;
 
     fn kinds(text: &str) -> Vec<PiiKind> {
-        PiiDetector::new().scan(text).into_iter().map(|m| m.kind).collect()
+        PiiDetector::new()
+            .scan(text)
+            .into_iter()
+            .map(|m| m.kind)
+            .collect()
     }
 
     #[test]
@@ -331,7 +337,10 @@ mod tests {
             PiiKind::Phone,
             PiiKind::Email,
         ] {
-            assert!(found.contains(&k), "expected to detect {k:?} in the clinical note");
+            assert!(
+                found.contains(&k),
+                "expected to detect {k:?} in the clinical note"
+            );
         }
     }
 

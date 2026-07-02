@@ -77,7 +77,12 @@ impl DockerSandbox {
         for m in &self.spec.mounts {
             let mode = if m.writable { "rw" } else { "ro" };
             a.push("-v".into());
-            a.push(format!("{}:{}:{}", m.host.display(), m.guest.display(), mode));
+            a.push(format!(
+                "{}:{}:{}",
+                m.host.display(),
+                m.guest.display(),
+                mode
+            ));
         }
 
         // Env (vault-resolved secrets land here).

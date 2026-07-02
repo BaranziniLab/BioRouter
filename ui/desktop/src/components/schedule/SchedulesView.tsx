@@ -37,6 +37,7 @@ import {
   isBuiltinSchedule,
   scheduleDisplayName,
 } from '../../utils/builtins';
+import { ReadableContent } from '../Layout/ReadableContent';
 
 interface SchedulesViewProps {
   onClose?: () => void;
@@ -443,38 +444,40 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
           {/* Flat page header */}
-          <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
-            <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">
-              Scheduler
-            </h1>
-            <p className="text-sm text-text-muted mb-0">
-              Create and manage scheduled tasks to run workflows automatically at specified times.
-            </p>
-            <div className="flex gap-3 mt-5">
-              <Button
-                onClick={() => {
-                  setSubmitApiError(null);
-                  setIsModalOpen(true);
-                }}
-                variant="default"
-                className="flex items-center gap-2"
-              >
-                <Plus className="h-4 w-4" />
-                Create Schedule
-              </Button>
-              <Button
-                onClick={handleRefresh}
-                disabled={isRefreshing || isLoading}
-                variant="outline"
-                className="flex items-center gap-2"
-              >
-                <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
-                {isRefreshing ? 'Refreshing...' : 'Refresh'}
-              </Button>
-            </div>
+          <div className="flex-shrink-0 border-b border-border-subtle">
+            <ReadableContent className="px-8 pt-12 pb-6">
+              <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">
+                Scheduler
+              </h1>
+              <p className="text-sm text-text-muted mb-0">
+                Create and manage scheduled tasks to run workflows automatically at specified times.
+              </p>
+              <div className="flex gap-3 mt-5">
+                <Button
+                  onClick={() => {
+                    setSubmitApiError(null);
+                    setIsModalOpen(true);
+                  }}
+                  variant="default"
+                  className="flex items-center gap-2"
+                >
+                  <Plus className="h-4 w-4" />
+                  Create Schedule
+                </Button>
+                <Button
+                  onClick={handleRefresh}
+                  disabled={isRefreshing || isLoading}
+                  variant="outline"
+                  className="flex items-center gap-2"
+                >
+                  <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+                  {isRefreshing ? 'Refreshing...' : 'Refresh'}
+                </Button>
+              </div>
+            </ReadableContent>
           </div>
 
-          <div className="flex-1 min-h-0 relative px-8 pt-6">
+          <ReadableContent className="flex-1 min-h-0 relative px-8 pt-6">
             <ScrollArea className="h-full">
               <div className="h-full relative">
                 {apiError && (
@@ -520,7 +523,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
                 )}
               </div>
             </ScrollArea>
-          </div>
+          </ReadableContent>
         </div>
       </MainPanelLayout>
 

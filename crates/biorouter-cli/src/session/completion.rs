@@ -4,9 +4,12 @@ use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
 use rustyline::{Context, Helper, Result};
 use std::borrow::Cow;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use super::CompletionCache;
+use biorouter::config::{get_enabled_extensions, paths::Paths};
 
 /// Available in-session slash commands, in the order they should be offered.
 /// Keep in sync with `input::handle_slash_command`.
@@ -32,6 +35,181 @@ pub(crate) const SLASH_COMMANDS: &[&str] = &[
     "/quit",
     "/?",
 ];
+
+fn strip_yaml_quotes(value: &str) -> String {
+    let value = value.trim();
+    if let Some(inner) = value.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+        return inner.trim().to_string();
+    }
+    if let Some(inner) = value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')) {
+        return inner.trim().to_string();
+    }
+    value.to_string()
+}
+
+fn frontmatter_name(contents: &str) -> Option<String> {
+    let mut lines = contents.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed == "---" {
+            break;
+        }
+        if let Some(value) = trimmed.strip_prefix("name:") {
+            let name = strip_yaml_quotes(value);
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    None
+}
+
+fn skill_name_from_file(skill_md: &Path, fallback: &str) -> String {
+    std::fs::read_to_string(skill_md)
+        .ok()
+        .and_then(|contents| frontmatter_name(&contents))
+        .unwrap_or_else(|| fallback.to_string())
+}
+
+fn configured_skill_dirs() -> Vec<PathBuf> {
+    let mut dirs = BTreeSet::new();
+
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        dirs.insert(home.join(".config/biorouter/skills"));
+        dirs.insert(home.join(".claude/skills"));
+        dirs.insert(home.join(".config/agents/skills"));
+    }
+    dirs.insert(Paths::config_dir().join("skills"));
+
+    dirs.into_iter().collect()
+}
+
+fn skill_reference_names_from_dirs(dirs: &[PathBuf]) -> Vec<String> {
+    let mut names = BTreeSet::new();
+
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let folder = entry.path();
+            if !folder.is_dir() {
+                continue;
+            }
+            let fallback = entry.file_name().to_string_lossy().to_string();
+            let skill_md = folder.join("SKILL.md");
+            if skill_md.is_file() {
+                names.insert(skill_name_from_file(&skill_md, &fallback));
+                continue;
+            }
+
+            let Ok(sub_entries) = std::fs::read_dir(&folder) else {
+                continue;
+            };
+            if sub_entries
+                .flatten()
+                .any(|sub| sub.path().join("SKILL.md").is_file())
+            {
+                names.insert(fallback);
+            }
+        }
+    }
+
+    names.into_iter().collect()
+}
+
+pub(crate) fn list_skill_reference_names() -> Vec<String> {
+    skill_reference_names_from_dirs(&configured_skill_dirs())
+}
+
+fn enabled_extension_reference_names() -> Vec<String> {
+    let mut names: Vec<String> = get_enabled_extensions()
+        .into_iter()
+        .map(|extension| extension.name())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn is_subsequence(needle: &str, haystack: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+
+    let mut chars = needle.chars();
+    let Some(mut current) = chars.next() else {
+        return true;
+    };
+    for hay in haystack.chars() {
+        if hay == current {
+            if let Some(next) = chars.next() {
+                current = next;
+            } else {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn reference_matches_query(query: &str, key: &str, name: &str, kind: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+
+    let searchable = format!("{key} {kind} {name}").to_lowercase();
+    let compact_searchable = searchable
+        .chars()
+        .filter(|c| !matches!(c, ':' | '-' | '_' | '/' | ' '))
+        .collect::<String>();
+    let compact_query = query
+        .chars()
+        .filter(|c| !matches!(c, ':' | '-' | '_' | '/' | ' '))
+        .collect::<String>();
+
+    searchable.contains(query) || is_subsequence(&compact_query, &compact_searchable)
+}
+
+fn reference_pairs_from_names<I, J>(line: &str, skills: I, extensions: J) -> Vec<Pair>
+where
+    I: IntoIterator<Item = String>,
+    J: IntoIterator<Item = String>,
+{
+    let query = line.trim_start_matches('/').to_lowercase();
+    let mut pairs = Vec::new();
+
+    for name in skills {
+        let key = format!("skill:{name}");
+        if reference_matches_query(&query, &key.to_lowercase(), &name.to_lowercase(), "skill") {
+            pairs.push(Pair {
+                display: format!("/{key}"),
+                replacement: format!("Use the \"{}\" skill for this request, ", name),
+            });
+        }
+    }
+
+    for name in extensions {
+        let key = format!("ext:{name}");
+        if reference_matches_query(
+            &query,
+            &key.to_lowercase(),
+            &name.to_lowercase(),
+            "extension",
+        ) {
+            pairs.push(Pair {
+                display: format!("/{key}"),
+                replacement: format!("Use the \"{}\" extension for this request, ", name),
+            });
+        }
+    }
+
+    pairs
+}
 
 /// Completer for biorouter CLI commands
 pub struct BioRouterCompleter {
@@ -147,7 +325,7 @@ impl BioRouterCompleter {
     /// Complete slash commands
     fn complete_slash_commands(&self, line: &str) -> Result<(usize, Vec<Pair>)> {
         // Find commands that match the prefix
-        let matching_commands: Vec<Pair> = SLASH_COMMANDS
+        let mut matching_commands: Vec<Pair> = SLASH_COMMANDS
             .iter()
             .filter(|cmd| cmd.starts_with(line))
             .map(|cmd| Pair {
@@ -155,6 +333,19 @@ impl BioRouterCompleter {
                 replacement: format!("{} ", cmd), // Add a space after the command
             })
             .collect();
+
+        if matching_commands
+            .iter()
+            .any(|candidate| candidate.display == line)
+        {
+            return Ok((0, matching_commands));
+        }
+
+        matching_commands.extend(reference_pairs_from_names(
+            line,
+            list_skill_reference_names(),
+            enabled_extension_reference_names(),
+        ));
 
         if !matching_commands.is_empty() {
             return Ok((0, matching_commands));
@@ -541,6 +732,66 @@ mod tests {
         // Test no match
         let (_pos, candidates) = completer.complete_slash_commands("/nonexistent").unwrap();
         assert_eq!(candidates.len(), 0);
+    }
+
+    #[test]
+    fn test_reference_pairs_complete_to_visible_request_text() {
+        let pairs = reference_pairs_from_names(
+            "/skill:lit",
+            vec!["literature-review".to_string(), "debugging".to_string()],
+            vec!["pubmed".to_string()],
+        );
+
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(pairs[0].display, "/skill:literature-review");
+        assert_eq!(
+            pairs[0].replacement,
+            "Use the \"literature-review\" skill for this request, "
+        );
+
+        let pairs = reference_pairs_from_names(
+            "/pm",
+            vec!["literature-review".to_string()],
+            vec!["pubmed".to_string()],
+        );
+        assert_eq!(pairs.len(), 1);
+        assert_eq!(
+            pairs[0].replacement,
+            "Use the \"pubmed\" extension for this request, "
+        );
+    }
+
+    #[test]
+    fn test_skill_reference_names_match_desktop_skill_layout() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let root = temp_dir.path().join("skills");
+        std::fs::create_dir(&root).unwrap();
+
+        let single = root.join("lit-review");
+        std::fs::create_dir(&single).unwrap();
+        std::fs::write(
+            single.join("SKILL.md"),
+            "---\nname: literature-review\ndescription: Search papers\n---\n",
+        )
+        .unwrap();
+
+        let bundle = root.join("analysis-bundle");
+        let bundled_skill = bundle.join("summarize");
+        std::fs::create_dir_all(&bundled_skill).unwrap();
+        std::fs::write(
+            bundled_skill.join("SKILL.md"),
+            "---\nname: summarizer\ndescription: Summarize\n---\n",
+        )
+        .unwrap();
+
+        let names = skill_reference_names_from_dirs(&[root]);
+        assert_eq!(
+            names,
+            vec![
+                "analysis-bundle".to_string(),
+                "literature-review".to_string()
+            ]
+        );
     }
 
     #[test]
