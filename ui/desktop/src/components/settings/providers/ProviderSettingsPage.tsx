@@ -61,7 +61,8 @@ export default function ProviderSettings({
   return (
     <div className="h-screen w-full flex flex-col bg-background-muted text-text-default">
       <ScrollArea className="flex-1 w-full">
-        <div className="w-full px-8 pt-12 pb-5">
+        {/* Flat page header */}
+        <div className="w-full max-w-3xl mx-auto px-8 pt-10 pb-6 border-b border-border-subtle">
           <div className="flex items-center mb-4 no-drag">
             <BackButton onClick={onClose} />
           </div>
@@ -78,7 +79,8 @@ export default function ProviderSettings({
           </p>
         </div>
 
-        <div className="w-full px-8 py-2">
+        {/* Provider list */}
+        <div className="w-full max-w-3xl mx-auto px-8 py-6">
           {loading ? (
             <div className="text-sm text-text-muted">Loading providers…</div>
           ) : (
