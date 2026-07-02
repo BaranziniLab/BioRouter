@@ -683,7 +683,7 @@ export default function WorkflowsView() {
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
           {/* Flat page header */}
-          <div className="biorouter-page-header px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
+          <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
             <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">
               Workflows
             </h1>

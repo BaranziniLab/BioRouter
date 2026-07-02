@@ -51,7 +51,7 @@ function KnowledgeViewInner() {
           </div>
         </div>
         <div className="mx-6 mb-6 mt-2 grid min-h-0 flex-1 grid-cols-1 gap-4 overflow-y-auto lg:grid-cols-[340px_minmax(0,1fr)] lg:overflow-hidden">
-          <div className="overflow-visible rounded-2xl bg-background-muted/34 p-4 shadow-[0_18px_42px_-36px_rgba(32,25,15,0.28)] lg:min-h-0 lg:overflow-y-auto">
+          <div className="overflow-visible rounded-2xl bg-background-muted/34 px-4 pb-4 pt-0 shadow-[0_18px_42px_-36px_rgba(32,25,15,0.28)] lg:min-h-0 lg:overflow-y-auto">
             <div className="pb-1">
               <KBSelectorTrigger open={paletteOpen} onOpenChange={setPaletteOpen} />
             </div>

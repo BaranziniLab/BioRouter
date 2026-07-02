@@ -141,7 +141,7 @@ export function SessionInsights() {
         ))}
       </div>
       <div className="px-8 pb-8">
-        <div className="biorouter-page-block px-4 py-3">
+        <div>
           <div className="flex justify-between items-center pb-2">
             <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
               Recent chats
@@ -249,7 +249,7 @@ export function SessionInsights() {
 
       {/* Recent chats */}
       <div className="px-8 pb-8 page-transition">
-        <div className="biorouter-page-block px-4 py-3">
+        <div>
           <div className="flex justify-between items-center pb-2">
             <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
               Recent chats
