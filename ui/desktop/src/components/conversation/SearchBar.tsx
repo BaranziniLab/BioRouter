@@ -146,11 +146,14 @@ export const SearchBar: React.FC<SearchBarProps> = ({
 
   return (
     <div
-      className={`sticky top-0 bg-background-default border-b border-border-subtle z-[60] mb-4 ${
+      className={`pointer-events-none sticky top-0 z-[60] mb-4 flex justify-center px-3 pt-2 ${
         isExiting ? 'search-bar-exit' : 'search-bar-enter'
       }`}
     >
-      <div className="flex w-full items-center">
+      <div
+        data-testid="conversation-search-bar"
+        className="pointer-events-auto flex w-full max-w-[720px] items-center overflow-hidden rounded-xl bg-background-default/90 shadow-[0_18px_44px_-34px_rgba(32,25,15,0.42),0_1px_0_rgba(32,25,15,0.04)] backdrop-blur-md"
+      >
         <div className="relative flex flex-1 items-center h-full min-w-0">
           <SearchIcon className="no-drag h-4 w-4 text-text-muted absolute left-3" />
           <div className="w-full">
@@ -180,7 +183,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center justify-center h-auto px-4 gap-2 flex-shrink-0">
+        <div className="flex items-center justify-center h-auto px-3 gap-1.5 flex-shrink-0">
           <Button
             onClick={toggleCaseSensitive}
             variant="ghost"
