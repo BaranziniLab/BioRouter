@@ -33,7 +33,7 @@ use rmcp::{
     service::RequestContext,
     tool, tool_handler, tool_router, RoleServer, ServerHandler,
 };
-use serde::Deserialize;
+use serde::{de::DeserializeOwned, Deserialize};
 use std::path::PathBuf;
 
 /// Meta key the agent loop uses to pass the current chat session id into MCP
@@ -42,6 +42,7 @@ use std::path::PathBuf;
 /// the same way `knowledge::server` does).
 const SESSION_ID_META_KEY: &str = "biorouter-session-id";
 
+use manifest::{Capabilities, GuardrailsConfig, ModelSettings, Orchestration, ReliabilityConfig};
 use store::{AgentConfig, ArtifactKind, ArtifactStore, Manifest, ModelSelection};
 
 /// Optional suggestions only. Apps are **provider-agnostic**: by default an app
@@ -64,6 +65,20 @@ pub struct FileSpec {
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Default)]
+pub struct ModelSettingsParam {
+    #[serde(default)]
+    pub temperature: Option<f32>,
+    #[serde(default)]
+    pub max_tokens: Option<i32>,
+    #[serde(default)]
+    pub top_p: Option<f32>,
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    #[serde(default)]
+    pub verbosity: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, Default)]
 pub struct ModelParam {
     /// Provider name (e.g. "xiaomi_mimo", "anthropic", "openai").
     #[serde(default)]
@@ -71,6 +86,9 @@ pub struct ModelParam {
     /// Model name (e.g. "mimo-v2.5", "claude-opus-4-8").
     #[serde(default)]
     pub model: Option<String>,
+    /// Optional provider-agnostic generation settings.
+    #[serde(default)]
+    pub settings: Option<ModelSettingsParam>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -116,6 +134,25 @@ pub struct CreateAppParams {
     /// Knowledge base id to scope the agent to.
     #[serde(default)]
     pub knowledge_base: Option<String>,
+    /// Deny-by-default capability grants: files, data/knowledge sources,
+    /// compute, vault, memory, tracing, and lifecycle event subscriptions.
+    #[serde(default)]
+    pub capabilities: Option<serde_json::Value>,
+    /// Declarative goal, content guardrails, and human approval requirements.
+    #[serde(default)]
+    pub guardrails: Option<serde_json::Value>,
+    /// Tool-loop reliability settings such as timeouts and parallel tool use.
+    #[serde(default)]
+    pub reliability: Option<serde_json::Value>,
+    /// Multi-agent sub-agents, handoff targets, and named workflows.
+    #[serde(default)]
+    pub orchestration: Option<serde_json::Value>,
+    /// JSON Schema for the agent's final structured output.
+    #[serde(default)]
+    pub output_type: Option<serde_json::Value>,
+    /// Durable/resumable per-app sessions. Omit to keep the default enabled.
+    #[serde(default)]
+    pub durable_session: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -145,6 +182,25 @@ pub struct ConfigureAppParams {
     /// snappy. Unset → a safe server default.
     #[serde(default)]
     pub max_turns: Option<u32>,
+    /// Replace deny-by-default capability grants: files, data/knowledge sources,
+    /// compute, vault, memory, tracing, and lifecycle event subscriptions.
+    #[serde(default)]
+    pub capabilities: Option<serde_json::Value>,
+    /// Replace declarative goal, content guardrails, and approval requirements.
+    #[serde(default)]
+    pub guardrails: Option<serde_json::Value>,
+    /// Replace tool-loop reliability settings.
+    #[serde(default)]
+    pub reliability: Option<serde_json::Value>,
+    /// Replace multi-agent sub-agents, handoff targets, and named workflows.
+    #[serde(default)]
+    pub orchestration: Option<serde_json::Value>,
+    /// Replace the final-answer JSON Schema contract.
+    #[serde(default)]
+    pub output_type: Option<serde_json::Value>,
+    /// Set durable/resumable per-app sessions.
+    #[serde(default)]
+    pub durable_session: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -249,9 +305,33 @@ impl From<ModelParam> for ModelSelection {
         ModelSelection {
             provider: p.provider.filter(|s| !s.trim().is_empty()),
             model: p.model.filter(|s| !s.trim().is_empty()),
-            ..Default::default()
+            settings: p.settings.map(Into::into),
         }
     }
+}
+
+impl From<ModelSettingsParam> for ModelSettings {
+    fn from(p: ModelSettingsParam) -> Self {
+        Self {
+            temperature: p.temperature,
+            max_tokens: p.max_tokens,
+            top_p: p.top_p,
+            reasoning_effort: p.reasoning_effort.filter(|s| !s.trim().is_empty()),
+            verbosity: p.verbosity.filter(|s| !s.trim().is_empty()),
+        }
+    }
+}
+
+fn decode_agent_field<T: DeserializeOwned>(
+    value: serde_json::Value,
+    field: &str,
+) -> Result<T, ErrorData> {
+    serde_json::from_value(value).map_err(|e| {
+        err(
+            ErrorCode::INVALID_PARAMS,
+            format!("{field} must match the Agent Drafter manifest schema: {e}"),
+        )
+    })
 }
 
 fn now_secs() -> u64 {
@@ -343,6 +423,7 @@ impl AgentDrafterServer {
             .map(str::to_string)
     }
 
+    #[allow(clippy::too_many_lines)]
     pub fn with_root(root: PathBuf) -> Self {
         let instructions = formatdoc! {r#"
             Agent Drafter builds interactive **BioRouter apps** for the user:
@@ -366,31 +447,45 @@ impl AgentDrafterServer {
               auto-mount a chat panel into any element with `data-br-chat`.
             - `dist/app.js` — the esbuild bundle (produced by `build_app`).
 
-            AESTHETICS — default to BioRouter's look unless the user asks for a
-            different style. BioRouter's design language is calm, minimal, and
-            informative: a warm neutral palette (cream/taupe), white cards on a
-            light ground, generous whitespace, thin hairline borders, soft flat
-            shadows, a restrained near-black accent with a single coral spark,
-            modest radii (6px controls / 12px cards), a plain system typeface, and
-            quiet hover transitions. The design system is injected automatically.
-            ALWAYS compose with the provided classes (`br-container`, `br-card`,
-            `br-btn` [+ `--secondary`/`--ghost`], `br-input`, `br-textarea`,
-            `br-label`, `br-field`, `br-row`, `br-badge`, `br-chat`) and CSS
-            variables (`var(--br-text)`, `var(--br-accent)`, `var(--br-coral)`,
-            `var(--br-border)`, `var(--br-muted)`, …).
-            Do NOT: paste your own color values or fonts, pull in external CSS
-            frameworks/CDNs, use gradients/neon/glassmorphism, emoji-stuffed
-            headings, or other flashy "generic AI" looks. Prefer filled shades
-            over outlines, clear hierarchy, and restraint. Aim for taste:
-            well-aligned, breathable layouts that look native to BioRouter and feel
-            simple yet polished. If (and only if) the user specifies a different
-            visual style — now or later in the conversation — follow their
-            direction instead.
+            DESIGN CONTRACT — the user's requested product design is the source of
+            truth. Do not force a pre-designed app pattern, dashboard structure, or
+            visual style when the user specified something else. BioRouter injects
+            a design system only as a dependable primitive set and fallback. Use
+            its classes (`br-container`, `br-card`, `br-btn`, `br-input`,
+            `br-textarea`, `br-label`, `br-field`, `br-row`, `br-badge`,
+            `br-panel`, `br-slab`, `br-swatch`, `br-chat`, `br-output`,
+            `br-run-status`) and CSS variables for portability, but choose layout,
+            information architecture, controls, visualization grammar, and
+            interaction flow from the user's brief. Favor filled surfaces, shaded
+            blocks, quiet token-backed color fields, and useful visual hierarchy.
+            Avoid making the app look like a wireframe: do not outline every UI
+            element, do not rely on line-drawn boxes as the main design language,
+            and keep borders faint unless the user explicitly asks for a technical
+            schematic look. If the user has not specified a visual direction, ask
+            only when it would materially change the result; otherwise use a calm,
+            readable BioRouter-native style and keep it easy to revise.
+
+            AGENT DESIGN CONTRACT — before or while authoring an agentic app,
+            make the agent's operational choices explicit:
+            - preferred provider/model and generation settings (`model.settings`);
+              omit the model only when the user wants to inherit BioRouter's global
+              provider/model.
+            - knowledge bases and data sources (`knowledge_base` and
+              `capabilities.data.sources`, including `kind: "knowledge"`).
+            - extensions, skills, and which of them are user-changeable in the app.
+            - the ordered workflow, where multi-agent collaboration is needed
+              (`orchestration.sub_agents` / `orchestration.workflows`), where
+              compaction or memory should happen, and which guardrails/approvals
+              apply.
+            - what freedom the final app user should receive: include UI controls
+              for model switching via `br.model.list()` / `br.model.select(...)`
+              when allowed, and expose behavior/skill/extension choices as normal
+              controls that are folded into the prompt or workflow.
 
             Driving the agent from `src/main.ts`:
               import {{ createApp }} from "./sdk";
               const br = createApp({{ autoChat: false }});   // false → build your OWN UI
-              await br.run("...prompt...", '#out');            // stream markdown+charts into the result element
+              await br.run("...prompt...", '#out');            // stream markdown+visuals into the result element
               const text = await br.ask("...");               // collect full reply as a string
               await br.prompt("...", {{ images: [{{ mimeType, data }}] }}); // multimodal
               br.on("message", (e) => {{ if (e.type === "message") {{}} }}); // low-level stream
@@ -415,8 +510,9 @@ impl AgentDrafterServer {
 
             Typical workflow:
             1. `create_app` (title, description, optional html/files, system_prompt,
-               greeting, model, extensions, skills, knowledge_base). A preview card
-               is shown to the user.
+              greeting, model, extensions, skills, knowledge_base, capabilities,
+              guardrails, reliability, orchestration, output_type). A preview card
+              is shown to the user.
             2. Author the UI: `update_app` the entry HTML and `src/main.ts`.
             3. `configure_app` to change the model/extensions/skills/knowledge/persona.
             4. `build_app` to bundle the TypeScript.
@@ -432,10 +528,33 @@ impl AgentDrafterServer {
             an app can encode a real pipeline. Design one by: (a) giving it the
             extensions/skills/knowledge it needs, (b) writing a system_prompt that
             spells out the ordered procedure ("1. search … 2. extract … 3.
-            summarize as a table … 4. emit a ```chart block"), and (c) raising
+            summarize as a table … 4. emit a ```chart or ```graph block"), and (c) raising
             `max_turns` (via `configure_app`) so it can chain enough tool calls.
             `max_turns` also bounds the loop (a guardrail against runaway/cost).
-            The app surfaces each step to the user as a tool event.
+            The app must surface each step to the user. `br.run(...)` and the
+            default chat panel automatically show a detailed `br-run-status`
+            timeline for tool calls, guardrails, handoffs, compaction, context,
+            model switches, completion, and errors. If you drive `br.prompt(...)`
+            or `br.ask(...)` manually, mount the same timeline with
+            `mountTimeline(br, '#progress')` or build an equivalent visible
+            progress/debug panel. Never leave long-running agent work as only a
+            spinner.
+
+            VISUALIZATION CONTRACT — when an app claims to create visualizations,
+            the final answer must contain at least one rendered visualization
+            block in the visible result surface, not only a table, code snippet,
+            or tool-call transcript. The SDK renders these fenced blocks:
+            - ```chart with JSON `{{ "type": "bar" | "line" | "pie", "title": "...",
+              "data": [{{ "label": "...", "value": 3 }}] }}`
+            - ```graph / ```diagram / ```network with JSON `{{ "title": "...",
+              "nodes": [{{ "id": "A", "label": "..." }}], "edges": [
+              {{ "source": "A", "target": "B", "label": "..." }}] }}`
+            - ```graph / ```diagram / ```mermaid with simple edge lines like
+              `A -> B : relationship`
+            For graph, map, chart, figure, dashboard, timeline, or analysis tools,
+            put the required fence format directly in the agent system prompt and
+            in the UI-built run prompt. Tables are useful evidence, but they do
+            not satisfy the visualization requirement by themselves.
 
             BUILD HARNESS / guardrails: `build_app` (and `lint_app`) run a
             validation harness on whatever you generate and report findings. It
@@ -444,9 +563,11 @@ impl AgentDrafterServer {
                agent (`br.run`/`br.prompt`/`br.ask`) or enables autoChat.
             2. Self-contained: no external `<script>`/`<link>`/CDN in index.html
                and no non-local imports in `src/main.ts` (so exports run offline).
-            3. On-theme: uses `br-*` classes/CSS variables, not raw hex colors or
-               a custom `<style>` theme; includes a result surface (`.br-output`
-               or `[data-br-chat]`).
+            3. On-theme and user-directed: uses `br-*` classes/CSS variables for
+               portability, while following the user's specified design.
+            4. Observable: long-running agent work exposes a visible progress
+               surface (`br.run`, `[data-br-chat]`, `br-run-status`, or
+               `mountTimeline`) so users can debug step-by-step execution.
             Always `build_app` after editing `src/`, address the harness findings,
             and verify via `launch_app` before `export_app`.
         "#};
@@ -573,7 +694,7 @@ impl AgentDrafterServer {
             // specific provider+model only when the caller explicitly chose one —
             // any BioRouter-supported provider works.
             let model = p.model.map(ModelSelection::from).filter(|m| m.is_set());
-            manifest.agent = Some(AgentConfig {
+            let mut agent = AgentConfig {
                 system_prompt: p.system_prompt.unwrap_or_default(),
                 greeting: p.greeting,
                 tools: Vec::new(),
@@ -583,7 +704,27 @@ impl AgentDrafterServer {
                 knowledge_base: p.knowledge_base.filter(|s| !s.trim().is_empty()),
                 max_turns: None,
                 ..Default::default()
-            });
+            };
+            if let Some(v) = p.capabilities {
+                agent.capabilities = decode_agent_field::<Capabilities>(v, "capabilities")?;
+            }
+            if let Some(v) = p.guardrails {
+                agent.guardrails = Some(decode_agent_field::<GuardrailsConfig>(v, "guardrails")?);
+            }
+            if let Some(v) = p.reliability {
+                agent.reliability =
+                    Some(decode_agent_field::<ReliabilityConfig>(v, "reliability")?);
+            }
+            if let Some(v) = p.orchestration {
+                agent.orchestration = decode_agent_field::<Orchestration>(v, "orchestration")?;
+            }
+            if let Some(v) = p.output_type {
+                agent.output_type = Some(v);
+            }
+            if let Some(durable) = p.durable_session {
+                agent.durable_session = Some(durable);
+            }
+            manifest.agent = Some(agent);
             store.save_manifest(&manifest).map_err(internal)?;
         } else if session_id.is_some() {
             // Static apps were already persisted by `create`; re-save so the
@@ -637,6 +778,24 @@ impl AgentDrafterServer {
         }
         if let Some(mt) = p.max_turns {
             agent.max_turns = Some(mt).filter(|&n| n > 0);
+        }
+        if let Some(v) = p.capabilities {
+            agent.capabilities = decode_agent_field::<Capabilities>(v, "capabilities")?;
+        }
+        if let Some(v) = p.guardrails {
+            agent.guardrails = Some(decode_agent_field::<GuardrailsConfig>(v, "guardrails")?);
+        }
+        if let Some(v) = p.reliability {
+            agent.reliability = Some(decode_agent_field::<ReliabilityConfig>(v, "reliability")?);
+        }
+        if let Some(v) = p.orchestration {
+            agent.orchestration = decode_agent_field::<Orchestration>(v, "orchestration")?;
+        }
+        if let Some(v) = p.output_type {
+            agent.output_type = Some(v);
+        }
+        if let Some(durable) = p.durable_session {
+            agent.durable_session = Some(durable);
         }
         manifest.agent = Some(agent);
         store.save_manifest(&manifest).map_err(internal)?;
@@ -1090,6 +1249,12 @@ mod tests {
             extensions: vec![],
             skills: vec![],
             knowledge_base: None,
+            capabilities: None,
+            guardrails: None,
+            reliability: None,
+            orchestration: None,
+            output_type: None,
+            durable_session: None,
         }
     }
 
@@ -1155,11 +1320,18 @@ mod tests {
             model: Some(ModelParam {
                 provider: Some("anthropic".into()),
                 model: Some("claude-opus-4-8".into()),
+                settings: None,
             }),
             extensions: Some(vec!["developer".into(), "knowledge".into()]),
             skills: Some(vec!["scientific-research".into()]),
             knowledge_base: Some("my-kb".into()),
             max_turns: Some(40),
+            capabilities: None,
+            guardrails: None,
+            reliability: None,
+            orchestration: None,
+            output_type: None,
+            durable_session: None,
         }))
         .await
         .unwrap();
@@ -1171,6 +1343,114 @@ mod tests {
         assert_eq!(a.skills, vec!["scientific-research"]);
         assert_eq!(a.knowledge_base.unwrap(), "my-kb");
         assert_eq!(a.max_turns, Some(40));
+    }
+
+    #[tokio::test]
+    async fn configure_app_sets_advanced_agent_design_fields() {
+        let (_d, s) = server();
+        s.create_app_inner(create("Harnessed", None), None)
+            .await
+            .unwrap();
+        s.configure_app(Parameters(ConfigureAppParams {
+            id: "harnessed".into(),
+            system_prompt: Some("Use the visible workflow and cite each step.".into()),
+            greeting: None,
+            model: Some(ModelParam {
+                provider: Some("openrouter".into()),
+                model: Some("anthropic/claude-sonnet-4".into()),
+                settings: Some(ModelSettingsParam {
+                    temperature: Some(0.2),
+                    max_tokens: Some(4096),
+                    reasoning_effort: Some("medium".into()),
+                    ..Default::default()
+                }),
+            }),
+            extensions: Some(vec!["knowledge".into(), "autovisualiser".into()]),
+            skills: Some(vec!["graph-visualization".into()]),
+            knowledge_base: Some("kb-science".into()),
+            max_turns: Some(96),
+            capabilities: Some(serde_json::json!({
+                "data": {
+                    "sources": [
+                        { "name": "science", "kind": "knowledge", "ref_id": "kb-science" }
+                    ]
+                },
+                "memory": { "kb": "kb-science", "mode": "read_write", "distill": true },
+                "events": ["tool", "handoff", "compaction", "guardrail"]
+            })),
+            guardrails: Some(serde_json::json!({
+                "goal": "produce a knowledge-map answer with citations and a chart",
+                "pii": "block",
+                "needs_approval": ["developer__shell"],
+                "approvals_require_persistence": true
+            })),
+            reliability: Some(serde_json::json!({
+                "tool_timeout_s": 45,
+                "parallel_tools": true,
+                "error_to_output": true
+            })),
+            orchestration: Some(serde_json::json!({
+                "sub_agents": {
+                    "mapper": {
+                        "description": "Knowledge graph mapper",
+                        "system_prompt": "Extract entities and relationships.",
+                        "extensions": ["knowledge"],
+                        "max_steps": 8
+                    }
+                },
+                "workflows": {
+                    "map_then_visualize": {
+                        "steps": [
+                            { "type": "agent", "agent": "mapper", "input_template": "{{query}}" },
+                            { "type": "tool", "tool": "autovisualiser__visualise", "args_template": { "format": "graph" } }
+                        ]
+                    }
+                },
+                "lazy_tools": true
+            })),
+            output_type: Some(serde_json::json!({
+                "type": "object",
+                "required": ["summary", "visualization"],
+                "properties": {
+                    "summary": { "type": "string" },
+                    "visualization": { "type": "string" }
+                }
+            })),
+            durable_session: Some(false),
+        }))
+        .await
+        .unwrap();
+
+        let m = s.store().load_manifest("harnessed").unwrap();
+        let a = m.agent.unwrap();
+        let model = a.model.unwrap();
+        assert_eq!(model.provider.as_deref(), Some("openrouter"));
+        assert_eq!(
+            model
+                .settings
+                .as_ref()
+                .and_then(|s| s.reasoning_effort.as_deref()),
+            Some("medium")
+        );
+        assert_eq!(
+            a.capabilities.data.as_ref().unwrap().sources[0]
+                .ref_id
+                .as_deref(),
+            Some("kb-science")
+        );
+        assert!(a
+            .capabilities
+            .advertised()
+            .contains(&"event:compaction".to_string()));
+        assert_eq!(
+            a.guardrails.unwrap().pii,
+            crate::agent_drafter::manifest::PiiMode::Block
+        );
+        assert!(a.reliability.unwrap().parallel_tools);
+        assert!(a.orchestration.sub_agents.contains_key("mapper"));
+        assert!(a.orchestration.workflows.contains_key("map_then_visualize"));
+        assert!(a.output_type.is_some());
+        assert_eq!(a.durable_session, Some(false));
     }
 
     #[tokio::test]
@@ -1265,6 +1545,12 @@ run.addEventListener("click", async () => {
             skills: None,
             knowledge_base: None,
             max_turns: Some(72),
+            capabilities: None,
+            guardrails: None,
+            reliability: None,
+            orchestration: None,
+            output_type: None,
+            durable_session: None,
         }))
         .await
         .unwrap();
@@ -1311,20 +1597,22 @@ run.addEventListener("click", async () => {
         let mut manifest = s.store().load_manifest("advanced-agent").unwrap();
         let agent = manifest.agent.as_mut().unwrap();
 
-        let mut capabilities = Capabilities::default();
-        capabilities.files = Some(FilesCapability {
-            entries: Vec::new(),
-            max_file_bytes: Some(256 * 1024),
-        });
-        capabilities.compute = Some(ComputeCapability {
-            sandbox: "docker".into(),
-            timeout_s: 45,
-            network: "none".into(),
-            max_mem: Some("512m".into()),
-            cpus: Some(1.0),
-            image: None,
-        });
-        capabilities.events = vec!["tool".into(), "compaction".into(), "handoff".into()];
+        let capabilities = Capabilities {
+            files: Some(FilesCapability {
+                entries: Vec::new(),
+                max_file_bytes: Some(256 * 1024),
+            }),
+            compute: Some(ComputeCapability {
+                sandbox: "docker".into(),
+                timeout_s: 45,
+                network: "none".into(),
+                max_mem: Some("512m".into()),
+                cpus: Some(1.0),
+                image: None,
+            }),
+            events: vec!["tool".into(), "compaction".into(), "handoff".into()],
+            ..Default::default()
+        };
         agent.capabilities = capabilities;
         agent.guardrails = Some(GuardrailsConfig {
             goal: Some("finish with a cited risk summary".into()),

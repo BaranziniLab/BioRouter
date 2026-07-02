@@ -210,8 +210,11 @@ describe('DashboardProvider (canvas mode)', () => {
       });
       act(() => result.current.foldAll());
       expect(result.current.state.windows.every((w) => w.folded)).toBe(true);
+      act(() => result.current.setFoldMode(true));
+      expect(result.current.state.foldMode).toBe(true);
       act(() => result.current.unfoldAll());
       expect(result.current.state.windows.every((w) => !w.folded)).toBe(true);
+      expect(result.current.state.foldMode).toBe(false);
     });
 
     it('allFolded reflects derived state', async () => {

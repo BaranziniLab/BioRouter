@@ -91,6 +91,7 @@ impl Provider for ZaiProvider {
                 ConfigKey::new("ZAI_HOST", false, false, Some(ZAI_API_HOST)),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

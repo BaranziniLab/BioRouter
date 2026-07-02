@@ -195,7 +195,9 @@ pub fn create(spec: SandboxSpec, kind: &str) -> Result<std::sync::Arc<dyn Sandbo
     match kind {
         "local" => Ok(std::sync::Arc::new(LocalProcessSandbox::new(spec))),
         "docker" => Ok(std::sync::Arc::new(DockerSandbox::new(spec))),
-        other => Err(SandboxError::Other(format!("unknown sandbox kind '{other}'"))),
+        other => Err(SandboxError::Other(format!(
+            "unknown sandbox kind '{other}'"
+        ))),
     }
 }
 
@@ -206,15 +208,26 @@ pub fn create(spec: SandboxSpec, kind: &str) -> Result<std::sync::Arc<dyn Sandbo
 /// is still checked against where it would land), and the resolved real path
 /// must remain under the canonicalized workspace. This defeats both `../`
 /// traversal and a symlink inside the workspace that points outside it.
-pub fn resolve_in_workspace(workspace: &Path, guest_path: &str, _need_write: bool) -> Result<PathBuf> {
+pub fn resolve_in_workspace(
+    workspace: &Path,
+    guest_path: &str,
+    _need_write: bool,
+) -> Result<PathBuf> {
     let rel = Path::new(guest_path);
     if rel.components().any(|c| matches!(c, Component::ParentDir)) {
         return Err(SandboxError::PathEscape(guest_path.to_string()));
     }
-    let ws = workspace
-        .canonicalize()
-        .map_err(|e| SandboxError::Other(format!("workspace '{}' not found: {e}", workspace.display())))?;
-    let candidate = if rel.is_absolute() { rel.to_path_buf() } else { ws.join(rel) };
+    let ws = workspace.canonicalize().map_err(|e| {
+        SandboxError::Other(format!(
+            "workspace '{}' not found: {e}",
+            workspace.display()
+        ))
+    })?;
+    let candidate = if rel.is_absolute() {
+        rel.to_path_buf()
+    } else {
+        ws.join(rel)
+    };
     let real = canonicalize_existing_ancestor(&candidate)?;
     if !real.starts_with(&ws) {
         return Err(SandboxError::PathEscape(guest_path.to_string()));

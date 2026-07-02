@@ -21,8 +21,8 @@ const VERSA_BEDROCK_DEFAULTS = {
 
 const VERSA_AZURE_DEFAULTS = {
   AZURE_OPENAI_ENDPOINT: 'https://unified-api.ucsf.edu/general',
-  AZURE_OPENAI_DEPLOYMENT_NAME: 'gpt-5.2-2025-12-11',
-  AZURE_OPENAI_API_VERSION: '2024-10-21',
+  AZURE_OPENAI_DEPLOYMENT_NAME: 'gpt-5.5-2026-04-24',
+  AZURE_OPENAI_API_VERSION: '2025-01-01-preview',
 };
 
 const TABS: { id: VersaFlavor; label: string }[] = [

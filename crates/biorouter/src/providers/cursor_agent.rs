@@ -335,6 +335,7 @@ impl Provider for CursorAgentProvider {
                 true, false,
             )],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

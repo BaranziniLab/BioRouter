@@ -52,6 +52,7 @@ import { DashboardProvider } from './components/Dashboard/DashboardProvider';
 import { DashboardRoute } from './components/Dashboard/DashboardRoute';
 import { errorMessage } from './utils/conversionUtils';
 import { getInitialWorkingDir } from './utils/workingDir';
+import { ChatStreamProvider } from './hooks/chatStreamStore';
 
 // Route Components
 const HubRouteWrapper = () => {
@@ -83,7 +84,9 @@ const PairRouteWrapper = ({
 
   const resumeSessionId = searchParams.get('resumeSessionId') ?? undefined;
   const workflowId = searchParams.get('workflowId') ?? undefined;
-  const workflowDeeplinkFromConfig = window.appConfig?.get('workflowDeeplink') as string | undefined;
+  const workflowDeeplinkFromConfig = window.appConfig?.get('workflowDeeplink') as
+    | string
+    | undefined;
 
   // Session ID and initialMessage come from route state (Hub, fork) or URL params (refresh, deeplink)
   const sessionIdFromState = routeState.resumeSessionId;
@@ -155,7 +158,14 @@ const PairRouteWrapper = ({
         state: { resumeSessionId: sessionIdFromState, initialMessage, initialAttachments },
       });
     }
-  }, [sessionId, resumeSessionId, navigate, sessionIdFromState, initialMessage, initialAttachments]);
+  }, [
+    sessionId,
+    resumeSessionId,
+    navigate,
+    sessionIdFromState,
+    initialMessage,
+    initialAttachments,
+  ]);
 
   // Clear captured initialMessage when session changes (to prevent re-sending on navigation)
   useEffect(() => {
@@ -316,7 +326,11 @@ const SharedSessionRouteWrapper = ({
         if (shareToken && baseUrl) {
           setIsLoadingSharedSession(true);
           try {
-            await openSharedSessionFromDeepLink(`biorouter://sessions/${shareToken}`, setView, baseUrl);
+            await openSharedSessionFromDeepLink(
+              `biorouter://sessions/${shareToken}`,
+              setView,
+              baseUrl
+            );
           } catch (error) {
             console.error('Failed to retry loading shared session:', error);
           } finally {
@@ -575,60 +589,62 @@ export function AppInner() {
       <ExtensionInstallModal addExtension={addExtension} setView={setView} />
       <div className="relative w-screen h-screen overflow-hidden bg-background-muted flex flex-col">
         <div className="titlebar-drag-region" />
-        <DashboardProvider>
-          <KnowledgeProvider sessionId={chat.sessionId || null}>
-            <Routes>
-            <Route path="launcher" element={<LauncherView />} />
-            <Route
-              path="welcome"
-              element={<WelcomeRoute onSelectProvider={() => setDidSelectProvider(true)} />}
-            />
-            <Route path="configure-providers" element={<ConfigureProvidersRoute />} />
-            <Route path="standalone-app" element={<StandaloneAppView />} />
-            <Route
-              path="/"
-              element={
-                <ProviderGuard didSelectProvider={didSelectProvider}>
-                  <ChatProvider chat={chat} setChat={setChat} contextKey="hub">
-                    <AppLayout />
-                  </ChatProvider>
-                </ProviderGuard>
-              }
-            >
-              <Route index element={<HubRouteWrapper />} />
-              <Route path="pair" element={<PairRouteWrapper chat={chat} setChat={setChat} />} />
-              <Route path="settings" element={<SettingsRoute />} />
-              <Route
-                path="extensions"
-                element={
-                  <ChatProvider chat={chat} setChat={setChat} contextKey="extensions">
-                    <ExtensionsRoute />
-                  </ChatProvider>
-                }
-              />
-              <Route path="apps" element={<AppsView />} />
-              <Route path="applications" element={<ApplicationsView />} />
-              <Route path="sessions" element={<SessionsRoute />} />
-              <Route path="schedules" element={<SchedulesRoute />} />
-              <Route path="workflows" element={<WorkflowsRoute />} />
-              <Route path="skills" element={<SkillsRoute />} />
-              <Route path="knowledge" element={<KnowledgeRoute />} />
-              <Route path="dashboard" element={<DashboardRoute />} />
-              <Route
-                path="shared-session"
-                element={
-                  <SharedSessionRouteWrapper
-                    isLoadingSharedSession={isLoadingSharedSession}
-                    setIsLoadingSharedSession={setIsLoadingSharedSession}
-                    sharedSessionError={sharedSessionError}
+        <ChatStreamProvider>
+          <DashboardProvider>
+            <KnowledgeProvider sessionId={chat.sessionId || null}>
+              <Routes>
+                <Route path="launcher" element={<LauncherView />} />
+                <Route
+                  path="welcome"
+                  element={<WelcomeRoute onSelectProvider={() => setDidSelectProvider(true)} />}
+                />
+                <Route path="configure-providers" element={<ConfigureProvidersRoute />} />
+                <Route path="standalone-app" element={<StandaloneAppView />} />
+                <Route
+                  path="/"
+                  element={
+                    <ProviderGuard didSelectProvider={didSelectProvider}>
+                      <ChatProvider chat={chat} setChat={setChat} contextKey="hub">
+                        <AppLayout />
+                      </ChatProvider>
+                    </ProviderGuard>
+                  }
+                >
+                  <Route index element={<HubRouteWrapper />} />
+                  <Route path="pair" element={<PairRouteWrapper chat={chat} setChat={setChat} />} />
+                  <Route path="settings" element={<SettingsRoute />} />
+                  <Route
+                    path="extensions"
+                    element={
+                      <ChatProvider chat={chat} setChat={setChat} contextKey="extensions">
+                        <ExtensionsRoute />
+                      </ChatProvider>
+                    }
                   />
-                }
-              />
-              <Route path="permission" element={<PermissionRoute />} />
-            </Route>
-            </Routes>
-          </KnowledgeProvider>
-        </DashboardProvider>
+                  <Route path="apps" element={<AppsView />} />
+                  <Route path="applications" element={<ApplicationsView />} />
+                  <Route path="sessions" element={<SessionsRoute />} />
+                  <Route path="schedules" element={<SchedulesRoute />} />
+                  <Route path="workflows" element={<WorkflowsRoute />} />
+                  <Route path="skills" element={<SkillsRoute />} />
+                  <Route path="knowledge" element={<KnowledgeRoute />} />
+                  <Route path="dashboard" element={<DashboardRoute />} />
+                  <Route
+                    path="shared-session"
+                    element={
+                      <SharedSessionRouteWrapper
+                        isLoadingSharedSession={isLoadingSharedSession}
+                        setIsLoadingSharedSession={setIsLoadingSharedSession}
+                        sharedSessionError={sharedSessionError}
+                      />
+                    }
+                  />
+                  <Route path="permission" element={<PermissionRoute />} />
+                </Route>
+              </Routes>
+            </KnowledgeProvider>
+          </DashboardProvider>
+        </ChatStreamProvider>
       </div>
     </>
   );

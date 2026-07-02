@@ -721,9 +721,9 @@ pub fn create_request(
         }
     }
 
-    // o1 models use max_completion_tokens instead of max_tokens
+    // Reasoning/GPT-5 chat-completions models use max_completion_tokens instead of max_tokens.
     if let Some(tokens) = model_config.max_tokens {
-        let key = if is_ox_model {
+        let key = if is_ox_model || uses_responses_api {
             "max_completion_tokens"
         } else {
             "max_tokens"
@@ -1389,6 +1389,47 @@ mod tests {
         for (key, value) in expected.as_object().unwrap() {
             assert_eq!(obj.get(key).unwrap(), value);
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_request_gpt_5_5_chat_uses_completion_tokens() -> anyhow::Result<()> {
+        let model_config = ModelConfig {
+            model_name: "gpt-5.5-2026-04-24".to_string(),
+            context_limit: Some(4096),
+            temperature: None,
+            max_tokens: Some(1024),
+            toolshim: false,
+            toolshim_model: None,
+            fast_model: None,
+            request_params: None,
+        };
+        let request = create_request(
+            &model_config,
+            "system",
+            &[],
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        let obj = request.as_object().unwrap();
+        let expected = json!({
+            "model": "gpt-5.5-2026-04-24",
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "system"
+                }
+            ],
+            "max_completion_tokens": 1024
+        });
+
+        for (key, value) in expected.as_object().unwrap() {
+            assert_eq!(obj.get(key).unwrap(), value);
+        }
+        assert!(obj.get("max_tokens").is_none());
+        assert!(obj.get("reasoning_effort").is_none());
 
         Ok(())
     }

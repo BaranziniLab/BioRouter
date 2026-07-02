@@ -80,6 +80,7 @@ pub const DEFAULT_MODEL: &str = "gemini-3.5-flash";
 // claude-3-haiku (retired), gemini-2.0-flash(-lite) (discontinued Jun 1, 2026).
 pub const KNOWN_MODELS: &[&str] = &[
     "claude-fable-5",
+    "claude-sonnet-5",
     "claude-opus-4-8",
     "claude-opus-4-7",
     "claude-opus-4-6",
@@ -91,7 +92,7 @@ pub const KNOWN_MODELS: &[&str] = &[
     "gemini-3.1-pro",
     "gemini-3.1-flash-lite",
     "gemini-3-pro",
-    "gemini-3-flash",
+    "gemini-3-flash-preview",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",

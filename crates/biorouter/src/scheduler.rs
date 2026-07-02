@@ -197,10 +197,7 @@ async fn claim_run_slot(jobs: &Arc<Mutex<JobsMap>>, job_id: &str, now: DateTime<
             false
         }
         Some(_) if pause_on_active() && interactive_active() => {
-            tracing::info!(
-                "Deferring scheduled job '{}': user session active",
-                job_id
-            );
+            tracing::info!("Deferring scheduled job '{}': user session active", job_id);
             false
         }
         Some((_, job)) => {

@@ -475,9 +475,9 @@ mod tests {
             let last_response = responses.last().unwrap();
             let last_content = last_response.content.first().unwrap();
             if let MessageContent::Text(text_content) = last_content {
-                assert!(text_content.text.contains(
-                    "I've reached the maximum number of actions I can do without user input"
-                ));
+                assert!(text_content
+                    .text
+                    .contains("I've reached my action limit for this turn"));
             } else {
                 panic!("Expected text content in last message");
             }

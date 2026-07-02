@@ -88,13 +88,19 @@ impl ServerHandler for FilesServer {
 
 #[tool_router(router = tool_router)]
 impl FilesServer {
-    #[tool(name = "files_list", description = "List entries of a workspace directory (default: the workspace root).")]
+    #[tool(
+        name = "files_list",
+        description = "List entries of a workspace directory (default: the workspace root)."
+    )]
     pub async fn files_list(
         &self,
         params: Parameters<ListParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let dir = params.0.dir.unwrap_or_else(|| ".".to_string());
-        let path = self.jail.resolve(&dir, false).map_err(|e| invalid(e.to_string()))?;
+        let path = self
+            .jail
+            .resolve(&dir, false)
+            .map_err(|e| invalid(e.to_string()))?;
         let mut entries: Vec<serde_json::Value> = Vec::new();
         let mut rd = tokio::fs::read_dir(&path)
             .await
@@ -111,13 +117,19 @@ impl FilesServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    #[tool(name = "files_read", description = "Read a UTF-8 text file from the workspace.")]
+    #[tool(
+        name = "files_read",
+        description = "Read a UTF-8 text file from the workspace."
+    )]
     pub async fn files_read(
         &self,
         params: Parameters<ReadParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0.path;
-        let path = self.jail.resolve(&p, false).map_err(|e| invalid(e.to_string()))?;
+        let path = self
+            .jail
+            .resolve(&p, false)
+            .map_err(|e| invalid(e.to_string()))?;
         let meta = tokio::fs::metadata(&path)
             .await
             .map_err(|e| invalid(format!("cannot stat '{p}': {e}")))?;
@@ -133,14 +145,20 @@ impl FilesServer {
         Ok(CallToolResult::success(vec![Content::text(content)]))
     }
 
-    #[tool(name = "files_write", description = "Write a UTF-8 text file into the workspace (creates parent dirs). Requires a read-write workspace.")]
+    #[tool(
+        name = "files_write",
+        description = "Write a UTF-8 text file into the workspace (creates parent dirs). Requires a read-write workspace."
+    )]
     pub async fn files_write(
         &self,
         params: Parameters<WriteParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let WriteParams { path: p, content } = params.0;
         // need_write=true → the jail rejects this if the workspace is read-only.
-        let path = self.jail.resolve(&p, true).map_err(|e| invalid(e.to_string()))?;
+        let path = self
+            .jail
+            .resolve(&p, true)
+            .map_err(|e| invalid(e.to_string()))?;
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
@@ -213,7 +231,10 @@ mod tests {
                 content: "nope".to_string(),
             }))
             .await;
-        assert!(r.is_err(), "write to a read-only workspace must be rejected");
+        assert!(
+            r.is_err(),
+            "write to a read-only workspace must be rejected"
+        );
     }
 
     #[tokio::test]
@@ -225,7 +246,10 @@ mod tests {
         }))
         .await
         .unwrap();
-        let r = srv.files_list(Parameters(ListParams { dir: None })).await.unwrap();
+        let r = srv
+            .files_list(Parameters(ListParams { dir: None }))
+            .await
+            .unwrap();
         assert!(text(&r).contains("a.txt"));
         // The vault dir is denied even for listing.
         let v = srv

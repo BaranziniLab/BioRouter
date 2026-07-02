@@ -77,6 +77,7 @@ pub struct LanguageInfo {
 /// Get language configuration for a given language
 ///
 /// Returns `Some(LanguageInfo)` if the language is supported, `None` otherwise.
+#[allow(clippy::too_many_lines)]
 pub fn get_language_info(language: &str) -> Option<LanguageInfo> {
     match language {
         "python" => Some(LanguageInfo {

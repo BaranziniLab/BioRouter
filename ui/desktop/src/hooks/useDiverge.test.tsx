@@ -12,12 +12,16 @@ vi.mock('../api', () => ({
 vi.mock('../toasts', () => ({ toastError: vi.fn() }));
 
 const mockCreateChatWindow = vi.fn();
+const mockCreateDivergedChatWindow = vi.fn();
 const mockSpawnWindow = vi.fn(async () => {});
 
 beforeEach(() => {
   vi.clearAllMocks();
   // @ts-expect-error test shim
-  window.electron = { createChatWindow: mockCreateChatWindow };
+  window.electron = {
+    createChatWindow: mockCreateChatWindow,
+    createDivergedChatWindow: mockCreateDivergedChatWindow,
+  };
   mockDivergeSession.mockResolvedValue({ data: { sessionId: 'branch_1', workingDir: '/wd' } });
 });
 
@@ -53,13 +57,8 @@ describe('useDiverge isolation (chat vs dashboard canvas)', () => {
       await result.current.diverge('orig');
     });
 
-    expect(mockCreateChatWindow).toHaveBeenCalledWith(
-      undefined,
-      '/wd',
-      undefined,
-      'branch_1',
-      'pair'
-    );
+    expect(mockCreateDivergedChatWindow).toHaveBeenCalledWith('/wd', 'branch_1');
+    expect(mockCreateChatWindow).not.toHaveBeenCalled();
     // Critical: the chat-side diverge must NOT spawn into the dashboard.
     expect(mockSpawnWindow).not.toHaveBeenCalled();
   });
@@ -82,7 +81,8 @@ describe('useDiverge isolation (chat vs dashboard canvas)', () => {
     await act(async () => {
       await result.current.diverge('orig');
     });
-    expect(mockCreateChatWindow).toHaveBeenCalled();
+    expect(mockCreateDivergedChatWindow).toHaveBeenCalled();
+    expect(mockCreateChatWindow).not.toHaveBeenCalled();
     expect(mockSpawnWindow).not.toHaveBeenCalled();
   });
 });

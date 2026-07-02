@@ -36,6 +36,7 @@
   --br-coral: #cf6d47;
   --br-danger: #e85252;
   --br-green: #5bbe5e;
+  --br-visual-line: color-mix(in srgb, var(--br-n500) 45%, transparent);
 
   --br-radius: 12px;   /* cards */
   --br-radius-ctl: 6px; /* buttons, inputs */
@@ -59,6 +60,7 @@
     --br-text-muted: #b0a892;
     --br-border: #282217;
     --br-border-subtle: #282217;
+    --br-visual-line: color-mix(in srgb, var(--br-n400) 55%, transparent);
     --br-shadow: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
     --br-shadow-pop: 0px 8px 24px 0px rgba(0, 0, 0, 0.4), 0px 0px 1px 0px rgba(0, 0, 0, 0.5);
   }
@@ -94,14 +96,31 @@ code, kbd {
   padding: 1px 5px;
 }
 
-/* Card — white surface, 12px radius, flat shadow, no hard border */
+/* Card — filled surface, soft shadow, no hard drawn outline */
 .br-card {
   background: var(--br-surface);
-  border: 1px solid var(--br-border);
+  border: 1px solid color-mix(in srgb, var(--br-border) 62%, transparent);
   border-radius: var(--br-radius);
   box-shadow: var(--br-shadow);
   padding: 18px 20px;
   margin: 0 0 16px;
+}
+.br-panel {
+  background: var(--br-muted);
+  border-radius: var(--br-radius);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--br-border) 45%, transparent);
+  padding: 16px;
+}
+.br-slab {
+  background: linear-gradient(135deg, var(--br-muted), var(--br-medium));
+  border-radius: var(--br-radius);
+  padding: 14px 16px;
+}
+.br-swatch {
+  min-height: 72px;
+  border-radius: var(--br-radius);
+  background: var(--br-medium);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--br-border) 36%, transparent);
 }
 
 /* Buttons — near-black pill, quiet tactile press */
@@ -143,7 +162,7 @@ code, kbd {
   font: inherit;
   font-size: 0.9375rem;
   color: var(--br-text);
-  background: var(--br-bg);
+  background: var(--br-muted);
   border: none;
   border-radius: var(--br-radius-ctl);
   padding: 9px 12px;
@@ -173,7 +192,7 @@ code, kbd {
 /* Select / dropdown */
 .br-select {
   width: 100%; height: 36px; font: inherit; font-size: 0.9375rem;
-  color: var(--br-text); background: var(--br-bg);
+  color: var(--br-text); background-color: var(--br-muted);
   border: none; border-radius: var(--br-radius-ctl); padding: 0 32px 0 12px;
   box-shadow: inset 0 0 0 1px var(--br-border);
   appearance: none; cursor: pointer;
@@ -247,6 +266,17 @@ code, kbd {
 .br-spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--br-border); border-top-color: var(--br-accent); border-radius: 50%; animation: br-spin 0.7s linear infinite; vertical-align: -2px; }
 @keyframes br-spin { to { transform: rotate(360deg); } }
 
+/* Agent run timeline: compact, visible execution/debug state */
+.br-run-status { display: flex; flex-direction: column; gap: 6px; margin: 0 0 10px; }
+.br-run-status:empty { display: none; }
+.br-run-step { display: grid; grid-template-columns: minmax(108px, max-content) minmax(0, 1fr); gap: 8px; align-items: baseline; padding: 6px 8px; border: 1px solid color-mix(in srgb, var(--br-border) 55%, transparent); border-radius: var(--br-radius-ctl); background: var(--br-medium); color: var(--br-text-muted); font-size: 0.75rem; line-height: 1.35; }
+.br-run-step__label { color: var(--br-text); font-weight: 600; }
+.br-run-step__detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.br-run-step--active { border-color: color-mix(in srgb, var(--br-accent) 34%, var(--br-border)); background: color-mix(in srgb, var(--br-accent) 8%, var(--br-muted)); }
+.br-run-step--done { opacity: 0.86; }
+.br-run-step--error { border-color: color-mix(in srgb, var(--br-coral) 42%, var(--br-border)); background: color-mix(in srgb, var(--br-coral) 8%, var(--br-muted)); }
+.br-run-answer:empty { display: none; }
+
 /* Badge — subtle pill */
 .br-badge {
   display: inline-flex;
@@ -275,14 +305,14 @@ code, kbd {
 }
 /* User text keeps newlines; agent content is rendered HTML, so normal flow. */
 .br-msg--user { align-self: flex-end; background: var(--br-accent); color: var(--br-on-accent); border-bottom-right-radius: 4px; white-space: pre-wrap; }
-.br-msg--agent { align-self: flex-start; background: var(--br-muted); color: var(--br-text); border: 1px solid var(--br-border); border-bottom-left-radius: 4px; max-width: 94%; min-width: 0; }
+.br-msg--agent { align-self: flex-start; background: var(--br-muted); color: var(--br-text); border: 1px solid color-mix(in srgb, var(--br-border) 46%, transparent); border-bottom-left-radius: 4px; max-width: 94%; min-width: 0; }
 /* Rich content inside agent bubbles must not overflow the bubble/card. */
 .br-msg--agent > :first-child { margin-top: 0; }
 .br-msg--agent > :last-child { margin-bottom: 0; }
 .br-msg--agent pre { max-width: 100%; overflow-x: auto; background: var(--br-medium); padding: 8px 10px; border-radius: 6px; }
 .br-msg--agent table { display: block; width: max-content; max-width: 100%; overflow-x: auto; }
-.br-msg--agent .br-chart { max-width: 100%; }
-.br-msg--agent .br-chart svg { max-width: 100%; height: auto; display: block; }
+.br-msg--agent .br-chart, .br-msg--agent .br-visual { max-width: 100%; }
+.br-msg--agent .br-chart svg, .br-msg--agent .br-visual svg { max-width: 100%; height: auto; display: block; }
 .br-msg--agent img { max-width: 100%; height: auto; }
 .br-msg--thought { align-self: flex-start; background: transparent; color: var(--br-text-muted); font-style: italic; font-size: 0.8125rem; padding: 2px 4px; }
 .br-msg--tool { align-self: flex-start; background: transparent; color: var(--br-text-muted); font-family: var(--br-mono); font-size: 0.75rem; padding: 2px 4px; }
@@ -304,6 +334,14 @@ th, td { border: 1px solid var(--br-border); padding: 6px 10px; text-align: left
 thead th { background: var(--br-muted); font-weight: 600; }
 tbody tr:nth-child(even) { background: var(--br-muted); }
 
-/* AI-generated charts rendered by the App SDK (```chart blocks) */
-.br-chart { margin: 12px 0; padding: 8px; background: var(--br-surface); border: 1px solid var(--br-border); border-radius: var(--br-radius); }
-.br-chart--pending { min-height: 40px; border-style: dashed; }
+/* AI-generated visuals rendered by the App SDK (```chart / ```graph blocks) */
+.br-chart, .br-visual {
+  margin: 12px 0;
+  padding: 12px;
+  background: linear-gradient(180deg, var(--br-surface), var(--br-muted));
+  border: 1px solid color-mix(in srgb, var(--br-border) 52%, transparent);
+  border-radius: var(--br-radius);
+  box-shadow: var(--br-shadow);
+}
+.br-chart svg, .br-visual svg { display: block; max-width: 100%; height: auto; }
+.br-chart--pending, .br-visual--pending { min-height: 44px; background: var(--br-muted); }

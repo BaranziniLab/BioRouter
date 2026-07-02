@@ -87,14 +87,16 @@ impl VaultRefs {
         let mut rest = s;
         let mut changed = false;
         while let Some(start) = rest.find(OPEN) {
-            let after_open = &rest[start + OPEN.len()..];
+            let (prefix, open_and_tail) = rest.split_at(start);
+            let after_open = open_and_tail.strip_prefix(OPEN).unwrap_or(open_and_tail);
             if let Some(end_rel) = after_open.find(CLOSE) {
-                let raw_name = &after_open[..end_rel];
+                let (raw_name, close_and_tail) = after_open.split_at(end_rel);
+                let after_close = close_and_tail.strip_prefix(CLOSE).unwrap_or(close_and_tail);
                 let name = raw_name.trim();
                 // A valid name has no nested braces (defends against
                 // "{{vault:{{vault:X}}}}" style nesting probes).
                 if !name.is_empty() && !raw_name.contains('{') {
-                    out.push_str(&rest[..start]);
+                    out.push_str(prefix);
                     match self.secrets.get(name) {
                         Some(secret) => {
                             out.push_str(secret);
@@ -102,17 +104,20 @@ impl VaultRefs {
                         }
                         None => {
                             // Leave the original placeholder verbatim.
-                            out.push_str(&rest[start..start + OPEN.len() + end_rel + CLOSE.len()]);
+                            out.push_str(OPEN);
+                            out.push_str(raw_name);
+                            out.push_str(CLOSE);
                         }
                     }
-                    rest = &after_open[end_rel + CLOSE.len()..];
+                    rest = after_close;
                     continue;
                 }
             }
             // Malformed (no close, or invalid name): emit through the OPEN token
             // and keep scanning after it. Guarantees forward progress.
-            out.push_str(&rest[..start + OPEN.len()]);
-            rest = &rest[start + OPEN.len()..];
+            out.push_str(prefix);
+            out.push_str(OPEN);
+            rest = after_open;
         }
         out.push_str(rest);
         if changed {
@@ -129,7 +134,12 @@ mod tests {
     use serde_json::json;
 
     fn vault(pairs: &[(&str, &str)]) -> VaultRefs {
-        VaultRefs::new(pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect())
+        VaultRefs::new(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
     }
 
     fn args(v: Value) -> serde_json::Map<String, Value> {

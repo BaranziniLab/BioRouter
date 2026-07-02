@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,7 +8,8 @@ use axum::routing::get;
 use axum::{extract::State, http::StatusCode, routing::post, Json, Router};
 use biorouter::workflow::local_workflows;
 use biorouter::workflow::validate_workflow::validate_workflow_template_from_content;
-use biorouter::workflow::Workflow;
+use biorouter::workflow::{Workflow, WorkflowKnowledgeBases};
+use biorouter::{agents::extension::PLATFORM_EXTENSIONS, agents::ExtensionConfig};
 use biorouter::{slash_commands, workflow_deeplink};
 
 use serde::{Deserialize, Serialize};
@@ -62,6 +63,117 @@ pub struct AuthorRequest {
 pub struct CreateWorkflowResponse {
     workflow: Option<Workflow>,
     error: Option<String>,
+}
+
+fn extension_description(config: &ExtensionConfig) -> &str {
+    match config {
+        ExtensionConfig::Sse { description, .. }
+        | ExtensionConfig::Stdio { description, .. }
+        | ExtensionConfig::Builtin { description, .. }
+        | ExtensionConfig::Platform { description, .. }
+        | ExtensionConfig::StreamableHttp { description, .. }
+        | ExtensionConfig::Frontend { description, .. }
+        | ExtensionConfig::InlinePython { description, .. } => description,
+    }
+}
+
+fn set_extension_description(config: &mut ExtensionConfig, value: String) {
+    match config {
+        ExtensionConfig::Sse { description, .. }
+        | ExtensionConfig::Stdio { description, .. }
+        | ExtensionConfig::Builtin { description, .. }
+        | ExtensionConfig::Platform { description, .. }
+        | ExtensionConfig::StreamableHttp { description, .. }
+        | ExtensionConfig::Frontend { description, .. }
+        | ExtensionConfig::InlinePython { description, .. } => *description = value,
+    }
+}
+
+fn needs_extension_description_enrichment(config: &ExtensionConfig) -> bool {
+    let description = extension_description(config).trim();
+    description.is_empty() || description == config.name()
+}
+
+fn enrich_extension_description(mut config: ExtensionConfig) -> ExtensionConfig {
+    if !needs_extension_description_enrichment(&config) {
+        return config;
+    }
+
+    let name = config.name();
+    if let Some(canonical) = biorouter::config::get_extension_by_name(&name) {
+        let description = extension_description(&canonical).trim();
+        if !description.is_empty() && description != name {
+            set_extension_description(&mut config, description.to_string());
+            return config;
+        }
+    }
+
+    if let Some(def) =
+        PLATFORM_EXTENSIONS.get(biorouter::config::extensions::name_to_key(&name).as_str())
+    {
+        set_extension_description(&mut config, def.description.to_string());
+    }
+
+    config
+}
+
+fn workflow_knowledge_bases_for_session(
+    state: &AppState,
+    session_id: &str,
+) -> Result<Option<WorkflowKnowledgeBases>, StatusCode> {
+    let bases = state.knowledge_service.list_bases().map_err(|err| {
+        tracing::error!(
+            "Failed to list knowledge bases for workflow creation: {}",
+            err
+        );
+        StatusCode::INTERNAL_SERVER_ERROR
+    })?;
+    if bases.is_empty() {
+        return Ok(None);
+    }
+
+    let hidden: HashSet<String> = state
+        .knowledge_service
+        .get_hidden_for_session_or_persisted(session_id)
+        .map_err(|err| {
+            tracing::error!(
+                "Failed to get session knowledge bases for workflow creation: {}",
+                err
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .into_iter()
+        .collect();
+    let visible = bases
+        .into_iter()
+        .map(|base| base.id)
+        .filter(|id| !hidden.contains(id))
+        .collect::<Vec<_>>();
+
+    if visible.is_empty() {
+        return Ok(None);
+    }
+
+    let default = state
+        .knowledge_service
+        .get_active_for_session(session_id)
+        .map_err(|err| {
+            tracing::error!(
+                "Failed to get active knowledge base for workflow creation: {}",
+                err
+            );
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .or_else(|| {
+            state
+                .knowledge_service
+                .get_active_persisted()
+                .ok()
+                .flatten()
+        })
+        .filter(|active| visible.contains(active));
+
+    Ok(Some(WorkflowKnowledgeBases { default, visible }))
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -191,12 +303,29 @@ async fn create_workflow(
         }
     };
 
-    let agent = state.get_agent_for_route(request.session_id).await?;
+    let agent = state
+        .get_agent_for_route(request.session_id.clone())
+        .await?;
 
     let workflow_result = agent.create_workflow(conversation).await;
 
     match workflow_result {
         Ok(mut workflow) => {
+            let extension_configs = agent
+                .get_extension_configs()
+                .await
+                .into_iter()
+                .map(enrich_extension_description)
+                .collect::<Vec<_>>();
+            if !extension_configs.is_empty() {
+                workflow.extensions = Some(extension_configs);
+            }
+
+            if workflow.knowledge_bases.is_none() {
+                workflow.knowledge_bases =
+                    workflow_knowledge_bases_for_session(state.as_ref(), &request.session_id)?;
+            }
+
             if let Some(author_req) = request.author {
                 workflow.author = Some(biorouter::workflow::Author {
                     contact: author_req.contact,

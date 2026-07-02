@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useDashboard } from '../../contexts/DashboardContext';
 import { ChatWindow } from './ChatWindow';
+import { snapToDevicePixel } from './pixelSnap';
 
 // Kept in sync with DashboardProvider — minimum + default spawn size.
 const MIN_WINDOW_W = 520;
@@ -13,9 +14,16 @@ export const DashboardBoard: React.FC = () => {
   const dashboard = useDashboard();
   const viewportRef = useRef<HTMLDivElement>(null);
   const worldRef = useRef<HTMLDivElement>(null);
-  const [viewport, setViewport] = useState<{ width: number; height: number }>({
+  const [viewport, setViewport] = useState<{
+    width: number;
+    height: number;
+    left: number;
+    top: number;
+  }>({
     width: 0,
     height: 0,
+    left: 0,
+    top: 0,
   });
 
   // Tracking ref for the camera re-centering effect below. Declared up here
@@ -45,7 +53,7 @@ export const DashboardBoard: React.FC = () => {
     if (!el) return;
     const r = el.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) return;
-    setViewport({ width: r.width, height: r.height });
+    setViewport({ width: r.width, height: r.height, left: r.left, top: r.top });
     const id = dashboard.state.focusedWindowId;
     if (id) {
       dashboard.centerOn(id, { width: r.width, height: r.height });
@@ -66,7 +74,7 @@ export const DashboardBoard: React.FC = () => {
     if (!el) return;
     const ro = new ResizeObserver(() => {
       const r = el.getBoundingClientRect();
-      setViewport({ width: r.width, height: r.height });
+      setViewport({ width: r.width, height: r.height, left: r.left, top: r.top });
     });
     ro.observe(el);
     return () => ro.disconnect();
@@ -104,12 +112,7 @@ export const DashboardBoard: React.FC = () => {
         vh: viewport.height,
       };
     }
-  }, [
-    dashboard.state.focusedWindowId,
-    dashboard.state.organizeTick,
-    dashboard,
-    viewport,
-  ]);
+  }, [dashboard.state.focusedWindowId, dashboard.state.organizeTick, dashboard, viewport]);
 
   // Pan via pointer drag on the viewport background.
   const panStateRef = useRef<{
@@ -193,7 +196,7 @@ export const DashboardBoard: React.FC = () => {
   useEffect(() => {
     const el = viewportRef.current;
     if (!el) return;
-    const handler = (ev: WheelEvent) => {
+    const handler = (ev: globalThis.WheelEvent) => {
       const target = ev.target as HTMLElement | null;
       // Skip wheels that originate inside a window so chat content can scroll normally.
       if (target && target !== el && target.closest('[data-dashboard-window]')) return;
@@ -207,11 +210,9 @@ export const DashboardBoard: React.FC = () => {
   const minSize = { w: MIN_WINDOW_W, h: MIN_WINDOW_H };
   const { cameraOffset, windows, focusedWindowId } = dashboard.state;
   // State holds sub-pixel cameraOffset so trackpad wheel deltas accumulate
-  // smoothly, but rendering uses integer device pixels — fractional
-  // translate3d values on the GPU-promoted world layer composite text at
-  // sub-pixel offsets and read as blur on Retina displays.
-  const camX = Math.round(cameraOffset.x);
-  const camY = Math.round(cameraOffset.y);
+  // smoothly, but rendering snaps against the viewport's physical pixel grid.
+  const camX = snapToDevicePixel(cameraOffset.x, viewport.left);
+  const camY = snapToDevicePixel(cameraOffset.y, viewport.top);
 
   return (
     <div className="flex flex-1 min-h-0">

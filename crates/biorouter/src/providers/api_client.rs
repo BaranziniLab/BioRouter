@@ -38,8 +38,8 @@ fn default_overall_timeout_secs() -> u64 {
 ///   that keeps emitting deltas is unaffected (FW3 SSE idle timeout).
 /// - `tcp_keepalive` + `pool_idle_timeout`: keep warm HTTP/1.1 keep-alive
 ///   connections in the pool so successive turns reuse them (SW3).
-/// All four are env-overridable; defaults chosen to be safe for slow local
-/// models (a 300s read timeout tolerates a long first-token on weak hardware).
+///
+/// All four are env-overridable; defaults are safe for slow local models.
 fn tune_client_builder(
     builder: reqwest::ClientBuilder,
     timeout: Duration,
@@ -242,7 +242,11 @@ pub struct ApiRequestBuilder<'a> {
 
 impl ApiClient {
     pub fn new(host: String, auth: AuthMethod) -> Result<Self> {
-        Self::with_timeout(host, auth, Duration::from_secs(default_overall_timeout_secs()))
+        Self::with_timeout(
+            host,
+            auth,
+            Duration::from_secs(default_overall_timeout_secs()),
+        )
     }
 
     pub fn with_timeout(host: String, auth: AuthMethod, timeout: Duration) -> Result<Self> {

@@ -19,10 +19,7 @@ pub fn strip_json_fence(text: &str) -> &str {
     let t = text.trim();
     if let Some(rest) = t.strip_prefix("```") {
         // Drop an optional language tag on the opening fence line.
-        let after_lang = match rest.find('\n') {
-            Some(nl) => &rest[nl + 1..],
-            None => rest,
-        };
+        let after_lang = rest.split_once('\n').map_or(rest, |(_, body)| body);
         if let Some(body) = after_lang.strip_suffix("```") {
             return body.trim();
         }
@@ -79,8 +76,7 @@ pub fn parse_and_validate(text: &str, schema: &Value) -> Result<Value, Vec<Strin
 /// output doesn't satisfy the contract. Lists the errors and the schema, and
 /// instructs JSON-only output. Bounded re-prompting is the caller's concern.
 pub fn reprompt_message(errors: &[String], schema: &Value) -> String {
-    let schema_pretty =
-        serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());
+    let schema_pretty = serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());
     format!(
         "Your response did not match the required output schema.\n\nErrors:\n{}\n\n\
          Return ONLY a single JSON object conforming to this schema — no prose, no \
@@ -130,20 +126,27 @@ mod tests {
         let v = json!({ "gene": "CFTR" }); // missing "pathways"
         let errs = validate(&v, &schema());
         assert!(!errs.is_empty());
-        assert!(errs.iter().any(|e| e.contains("pathways")), "errors: {errs:?}");
+        assert!(
+            errs.iter().any(|e| e.contains("pathways")),
+            "errors: {errs:?}"
+        );
     }
 
     #[test]
     fn wrong_type_reports_error_with_path() {
         let v = json!({ "gene": "CFTR", "pathways": "not-an-array" });
         let errs = validate(&v, &schema());
-        assert!(errs.iter().any(|e| e.contains("/pathways")), "errors: {errs:?}");
+        assert!(
+            errs.iter().any(|e| e.contains("/pathways")),
+            "errors: {errs:?}"
+        );
     }
 
     #[test]
     fn parse_and_validate_handles_fenced_model_output() {
         // The realistic case: a model returns fenced JSON.
-        let model_text = "```json\n{\"gene\":\"TP53\",\"pathways\":[\"apoptosis\",\"cell cycle\"]}\n```";
+        let model_text =
+            "```json\n{\"gene\":\"TP53\",\"pathways\":[\"apoptosis\",\"cell cycle\"]}\n```";
         let v = parse_and_validate(model_text, &schema()).expect("should validate");
         assert_eq!(v["gene"], "TP53");
         assert_eq!(v["pathways"].as_array().unwrap().len(), 2);

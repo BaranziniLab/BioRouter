@@ -18,7 +18,7 @@ import { useModelAndProvider } from '../../../ModelAndProviderContext';
 import type { View } from '../../../../utils/navigationUtils';
 import Model, { getProviderMetadata, fetchModelsForProviders } from '../modelInterface';
 import { getPredefinedModelsFromEnv, shouldShowPredefinedModels } from '../predefinedModelsUtils';
-import { ProviderType } from '../../../../api';
+import { ProviderType, type ProviderDetails } from '../../../../api';
 
 // Return the first concrete model from the provider's list. The list is
 // authored in priority order in the Rust provider definition (typically newest
@@ -53,8 +53,17 @@ export const SwitchModelModal = ({
   const { getProviders, getProviderModels, read } = useConfig();
   const { changeModel, currentModel, currentProvider } = useModelAndProvider();
   const [providerOptions, setProviderOptions] = useState<{ value: string; label: string }[]>([]);
-  type ModelOption = { value: string; label: string; provider: string; isDisabled?: boolean };
-  const [modelOptions, setModelOptions] = useState<{ options: ModelOption[] }[]>([]);
+  const [activeProviders, setActiveProviders] = useState<ProviderDetails[]>([]);
+  type ModelOption = {
+    value: string;
+    label: string;
+    provider: string;
+    providerType?: ProviderType;
+    isDisabled?: boolean;
+  };
+  const [modelOptionsByProvider, setModelOptionsByProvider] = useState<
+    Record<string, ModelOption[]>
+  >({});
   const [provider, setProvider] = useState<string | null>(
     initialProvider || currentProvider || null
   );
@@ -79,6 +88,7 @@ export const SwitchModelModal = ({
   const [predefinedModels, setPredefinedModels] = useState<Model[]>([]);
   const [loadingModels, setLoadingModels] = useState<boolean>(false);
   const [userClearedModel, setUserClearedModel] = useState(false);
+  const [modelInputValue, setModelInputValue] = useState('');
 
   // Validate form data
   const validateForm = useCallback(() => {
@@ -181,6 +191,7 @@ export const SwitchModelModal = ({
       try {
         const providersResponse = await getProviders(false);
         const activeProviders = providersResponse.filter((provider) => provider.is_configured);
+        setActiveProviders(activeProviders);
         // Create provider options and add "Use other provider" option
         setProviderOptions([
           ...activeProviders.map(({ metadata, name }) => ({
@@ -192,77 +203,107 @@ export const SwitchModelModal = ({
             label: 'Use other provider',
           },
         ]);
-
-        setLoadingModels(true);
-
-        // Fetching models for all providers (always recommended)
-        const results = await fetchModelsForProviders(activeProviders, getProviderModels);
-
-        // Process results and build grouped options
-        const groupedOptions: {
-          options: { value: string; label: string; provider: string; providerType: ProviderType }[];
-        }[] = [];
-        const errors: string[] = [];
-
-        results.forEach(({ provider: p, models, error }) => {
-          const modelList = error
-            ? p.metadata.known_models?.map(({ name }) => name) || []
-            : models || [];
-
-          if (error) {
-            errors.push(error);
-          }
-
-          const options: {
-            value: string;
-            label: string;
-            provider: string;
-            providerType: ProviderType;
-          }[] = modelList.map((m) => ({
-            value: m,
-            label: m,
-            provider: p.name,
-            providerType: p.provider_type,
-          }));
-
-          if (p.metadata.allows_unlisted_models) {
-            options.push({
-              value: 'custom',
-              label: 'Enter a model not listed...',
-              provider: p.name,
-              providerType: p.provider_type,
-            });
-          }
-
-          if (options.length > 0) {
-            groupedOptions.push({ options });
-          }
-        });
-
-        // Log errors if any providers failed (don't show to user)
-        if (errors.length > 0) {
-          console.error('Provider model fetch errors:', errors);
-        }
-
-        setModelOptions(groupedOptions);
-        setOriginalModelOptions(groupedOptions);
       } catch (error: unknown) {
         console.error('Failed to query providers:', error);
-      } finally {
-        setLoadingModels(false);
       }
     })();
-  }, [getProviders, getProviderModels, usePredefinedModels, read]);
+  }, [getProviders, usePredefinedModels, read]);
+
+  useEffect(() => {
+    if (usePredefinedModels || !provider || modelOptionsByProvider[provider]) return;
+
+    const selectedProvider = activeProviders.find((p) => p.name === provider);
+    if (!selectedProvider) return;
+
+    let cancelled = false;
+    setLoadingModels(true);
+
+    (async () => {
+      try {
+        const [result] = await fetchModelsForProviders([selectedProvider], getProviderModels);
+        if (cancelled || !result) return;
+
+        const modelList = result.error
+          ? selectedProvider.metadata.known_models?.map(({ name }) => name) || []
+          : result.models || [];
+
+        if (result.error) {
+          console.error('Provider model fetch errors:', [result.error]);
+        }
+
+        const options: ModelOption[] = modelList.map((m) => ({
+          value: m,
+          label: m,
+          provider: selectedProvider.name,
+          providerType: selectedProvider.provider_type,
+        }));
+
+        if (selectedProvider.metadata.allows_unlisted_models) {
+          options.push({
+            value: 'custom',
+            label: 'Enter a model not listed...',
+            provider: selectedProvider.name,
+            providerType: selectedProvider.provider_type,
+          });
+        }
+
+        setModelOptionsByProvider((current) => ({
+          ...current,
+          [selectedProvider.name]: options,
+        }));
+      } catch (error) {
+        console.error('Failed to query provider models:', error);
+      } finally {
+        if (!cancelled) setLoadingModels(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProviders, getProviderModels, modelOptionsByProvider, provider, usePredefinedModels]);
 
   // Memoize so passing the same selection through to react-select doesn't
   // create a new array reference on every render — fresh references make
   // react-select treat its options list as "changed" and re-render the
   // ClearIndicator (the X button), which the user sees as a flicker while
   // interacting with the model dropdown.
-  const filteredModelOptions = useMemo(
-    () => (provider ? modelOptions.filter((group) => group.options[0]?.provider === provider) : []),
-    [provider, modelOptions]
-  );
+  const filteredModelOptions = useMemo(() => {
+    if (!provider) return [];
+
+    const providerOptions = modelOptionsByProvider[provider] ?? [];
+    const providerGroups = providerOptions.length > 0 ? [{ options: providerOptions }] : [];
+    const trimmedInput = modelInputValue.trim();
+    if (!trimmedInput) return providerGroups;
+
+    const loweredInput = trimmedInput.toLowerCase();
+    const matchingOptions = providerGroups
+      .map((group) => ({
+        options: group.options.filter(
+          (option) => option.value.toLowerCase().includes(loweredInput) && option.value !== 'custom'
+        ),
+      }))
+      .filter((group) => group.options.length > 0);
+
+    if (matchingOptions.length > 0) return matchingOptions;
+
+    const allowsCustomModel = providerGroups.some((group) =>
+      group.options.some((option) => option.value === 'custom')
+    );
+    if (!allowsCustomModel) return [];
+
+    return [
+      {
+        options: [
+          {
+            value: trimmedInput,
+            label: `Use: "${trimmedInput}"`,
+            provider,
+          },
+        ],
+      },
+    ];
+  }, [provider, modelOptionsByProvider, modelInputValue]);
 
   // Same reason — a stable value object keeps the ClearIndicator stable.
   const modelSelectValue = useMemo(() => (model ? { value: model, label: model } : null), [model]);
@@ -275,9 +316,7 @@ export const SwitchModelModal = ({
     // Don't auto-select if user explicitly cleared the model
     if (!provider || loadingModels || model || isCustomModel || userClearedModel) return;
 
-    const providerModels = modelOptions
-      .filter((group) => group.options[0]?.provider === provider)
-      .flatMap((group) => group.options);
+    const providerModels = modelOptionsByProvider[provider] ?? [];
 
     if (providerModels.length > 0) {
       const firstModel = findFirstAvailableModel(providerModels);
@@ -285,7 +324,7 @@ export const SwitchModelModal = ({
         setModel(firstModel);
       }
     }
-  }, [provider, modelOptions, loadingModels, model, isCustomModel, userClearedModel]);
+  }, [provider, modelOptionsByProvider, loadingModels, model, isCustomModel, userClearedModel]);
 
   // Handle model selection change
   const handleModelChange = (newValue: unknown) => {
@@ -295,69 +334,32 @@ export const SwitchModelModal = ({
       setModel('');
       setProvider(selectedOption.provider);
       setUserClearedModel(false);
+      setModelInputValue('');
     } else if (selectedOption === null) {
       // User cleared the selection
       setIsCustomModel(false);
       setModel('');
       setUserClearedModel(true);
+      setModelInputValue('');
     } else {
       setIsCustomModel(false);
       setModel(selectedOption?.value || '');
       setProvider(selectedOption?.provider || '');
       setUserClearedModel(false);
+      setModelInputValue('');
     }
   };
 
-  // Store the original model options in state, initialized from modelOptions
-  const [originalModelOptions, setOriginalModelOptions] =
-    useState<{ options: { value: string; label: string; provider: string }[] }[]>(modelOptions);
+  const handleInputChange = (inputValue: string, actionMeta?: { action?: string }): string => {
+    if (!provider) return inputValue;
 
-  const handleInputChange = (inputValue: string) => {
-    if (!provider) return;
-
-    const trimmedInput = inputValue.trim();
-
-    if (trimmedInput === '') {
-      // Only reset if the list is actually filtered. react-select fires
-      // onInputChange('') when the menu opens, when a value is selected, and on
-      // every blur — repeatedly calling setModelOptions with a fresh array
-      // there causes the parent to re-render and react-select to flicker its
-      // ClearIndicator (X button).
-      if (modelOptions !== originalModelOptions) {
-        setModelOptions(originalModelOptions);
-      }
-      return;
+    if (!actionMeta || actionMeta.action === 'input-change') {
+      setModelInputValue(inputValue);
+    } else if (actionMeta.action === 'menu-close') {
+      setModelInputValue('');
     }
 
-    // Filter through the original model options to find matches
-    const matchingOptions = originalModelOptions
-      .map((group) => ({
-        options: group.options.filter(
-          (option) =>
-            option.value.toLowerCase().includes(trimmedInput.toLowerCase()) &&
-            option.value !== 'custom' // Exclude the "Use custom model" option from search
-        ),
-      }))
-      .filter((group) => group.options.length > 0);
-
-    if (matchingOptions.length > 0) {
-      // If we found matches in the existing options, show those
-      setModelOptions(matchingOptions);
-    } else {
-      // If no matches, show the "Use: " option
-      const customOption = [
-        {
-          options: [
-            {
-              value: trimmedInput,
-              label: `Use: "${trimmedInput}"`,
-              provider: provider,
-            },
-          ],
-        },
-      ];
-      setModelOptions(customOption);
-    }
+    return inputValue;
   };
 
   return (
@@ -460,6 +462,7 @@ export const SwitchModelModal = ({
                       setModel('');
                       setIsCustomModel(false);
                       setUserClearedModel(false);
+                      setModelInputValue('');
                     }
                   }}
                   placeholder="Provider, type to search"
@@ -478,6 +481,7 @@ export const SwitchModelModal = ({
                         options={loadingModels ? [] : filteredModelOptions}
                         onChange={handleModelChange}
                         onInputChange={handleInputChange}
+                        inputValue={modelInputValue}
                         value={modelSelectValue}
                         placeholder={
                           loadingModels ? 'Loading models…' : 'Select a model, type to search'

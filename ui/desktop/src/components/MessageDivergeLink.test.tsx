@@ -16,10 +16,14 @@ vi.mock('../toasts', () => ({
 
 // Stub the Electron bridge used to open a new window.
 const mockCreateChatWindow = vi.fn();
+const mockCreateDivergedChatWindow = vi.fn();
 beforeEach(() => {
   vi.clearAllMocks();
   // @ts-expect-error test shim
-  window.electron = { createChatWindow: mockCreateChatWindow };
+  window.electron = {
+    createChatWindow: mockCreateChatWindow,
+    createDivergedChatWindow: mockCreateDivergedChatWindow,
+  };
 });
 
 /** Minimal DashboardApi with a spy spawnWindow; the rest are no-ops. */
@@ -49,13 +53,8 @@ describe('MessageDivergeLink', () => {
       });
     });
     // New window opened with the diverged session id, in pair view.
-    expect(mockCreateChatWindow).toHaveBeenCalledWith(
-      undefined,
-      '/home/u/proj',
-      undefined,
-      '20260622_9',
-      'pair'
-    );
+    expect(mockCreateDivergedChatWindow).toHaveBeenCalledWith('/home/u/proj', '20260622_9');
+    expect(mockCreateChatWindow).not.toHaveBeenCalled();
   });
 
   it('passes the message timestamp as truncateAfter so the branch ends at this answer', async () => {
@@ -100,6 +99,7 @@ describe('MessageDivergeLink', () => {
     });
     // No new desktop window in dashboard mode.
     expect(mockCreateChatWindow).not.toHaveBeenCalled();
+    expect(mockCreateDivergedChatWindow).not.toHaveBeenCalled();
   });
 
   it('inside the dashboard PROVIDER but NOT on the canvas opens a new window (isolation)', async () => {
@@ -116,7 +116,8 @@ describe('MessageDivergeLink', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: /diverge/i }));
 
-    await waitFor(() => expect(mockCreateChatWindow).toHaveBeenCalled());
+    await waitFor(() => expect(mockCreateDivergedChatWindow).toHaveBeenCalled());
+    expect(mockCreateChatWindow).not.toHaveBeenCalled();
     expect(spawnWindow).not.toHaveBeenCalled();
   });
 
@@ -128,6 +129,7 @@ describe('MessageDivergeLink', () => {
 
     await waitFor(() => expect(mockToastError).toHaveBeenCalled());
     expect(mockCreateChatWindow).not.toHaveBeenCalled();
+    expect(mockCreateDivergedChatWindow).not.toHaveBeenCalled();
   });
 
   it('errors (and opens nothing) if the response lacks a session id', async () => {
@@ -138,6 +140,7 @@ describe('MessageDivergeLink', () => {
 
     await waitFor(() => expect(mockToastError).toHaveBeenCalled());
     expect(mockCreateChatWindow).not.toHaveBeenCalled();
+    expect(mockCreateDivergedChatWindow).not.toHaveBeenCalled();
   });
 
   it('ignores rapid double-clicks (only one diverge in flight)', async () => {
@@ -156,6 +159,7 @@ describe('MessageDivergeLink', () => {
 
     expect(mockDivergeSession).toHaveBeenCalledTimes(1);
     resolve({ data: { sessionId: '20260622_9', workingDir: '/x' } });
-    await waitFor(() => expect(mockCreateChatWindow).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(mockCreateDivergedChatWindow).toHaveBeenCalledTimes(1));
+    expect(mockCreateChatWindow).not.toHaveBeenCalled();
   });
 });

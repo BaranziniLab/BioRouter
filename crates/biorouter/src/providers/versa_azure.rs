@@ -16,16 +16,19 @@ use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
 pub const VERSA_AZURE_ENDPOINT: &str = "https://unified-api.ucsf.edu/general";
-pub const VERSA_AZURE_DEPLOYMENT: &str = "gpt-5.2-2025-12-11";
+pub const VERSA_AZURE_DEPLOYMENT: &str = "gpt-5.5-2026-04-24";
 pub const VERSA_AZURE_API_VERSION: &str = "2025-01-01-preview";
 pub const VERSA_AZURE_DOC_URL: &str = "http://biorouter.ucsf.edu/docs";
 
 // Versa proxies Azure OpenAI deployments; the authoritative list lives on the
 // (login-gated) UCSF wiki "Models, deployments, and API endpoints in UCSF
-// Versa". gpt-5.2 and gpt-4.1-mini are independently confirmed working
-// through Versa as of May 2026. Removed: o1-2024-12-17 and
+// Versa". Public UCSF Versa docs are MyAccess-gated, so keep this list to
+// deployments verified against the UCSF endpoint. Removed: o1-2024-12-17 and
 // o3-mini-2025-01-31 (deprecated on Azure, retiring Jul/Aug 2026).
 pub const VERSA_AZURE_KNOWN_MODELS: &[&str] = &[
+    "gpt-5.5-2026-04-24",
+    "gpt-5.4-mini-2026-03-17",
+    "gpt-5.4-nano-2026-03-17",
     "gpt-5.2-2025-12-11",
     "gpt-5-2025-08-07",
     "gpt-4.1-2025-04-14",
@@ -143,6 +146,7 @@ impl Provider for VersaAzureProvider {
                 ConfigKey::new("AZURE_OPENAI_API_VERSION", false, false, Some(VERSA_AZURE_API_VERSION)),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

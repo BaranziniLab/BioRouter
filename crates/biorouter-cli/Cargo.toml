@@ -61,6 +61,7 @@ anstream = "0.6.18"
 open = "5.3.2"
 urlencoding = "2.1"
 clap_complete = "4.5.62"
+arboard = "3.6.1"
 
 # jemalloc only builds on Unix; the mingw windows-gnu cross target can't link it,
 # so depend on it only off Windows. Windows uses the system allocator.

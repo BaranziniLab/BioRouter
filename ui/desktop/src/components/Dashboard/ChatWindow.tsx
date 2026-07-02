@@ -13,6 +13,7 @@ import { toastError } from '../../toasts';
 import { errorMessage } from '../../utils/conversionUtils';
 import { FoldedCard } from './FoldedCard';
 import { CARD_W, CARD_H } from './DashboardProvider';
+import { snapSizeToDevicePixel, snapToDevicePixel } from './pixelSnap';
 
 // Default "comfort" size used by the Enlarge button — matches the standalone
 // chat window dimensions in main.ts.
@@ -108,23 +109,27 @@ export const ChatWindow: React.FC<Props> = ({
     !isManipulating && dashboard.state.isAnimating
       ? 'transform 200ms cubic-bezier(0.2, 0.8, 0.2, 1), width 200ms cubic-bezier(0.2, 0.8, 0.2, 1), height 200ms cubic-bezier(0.2, 0.8, 0.2, 1)'
       : 'none';
-  // Snap translate values to integer device pixels. Non-integer translate on a
-  // GPU-promoted layer (the world layer uses translate3d + will-change) makes
-  // Chromium composite text at sub-pixel offsets, which strips subpixel
-  // antialiasing and reads as blur on Retina displays.
-  const tx = Math.round(rect.x + dragOffset.dx);
-  const ty = Math.round(rect.y + dragOffset.dy);
+  // Snap translations and live resize dimensions to physical pixels so nested
+  // dashboard transforms do not composite chat text between device pixels.
+  const tx = snapToDevicePixel(rect.x + dragOffset.dx);
+  const ty = snapToDevicePixel(rect.y + dragOffset.dy);
   const effectiveW = win.folded ? CARD_W : rect.w;
   const effectiveH = win.folded ? CARD_H : rect.h;
+  const width = snapSizeToDevicePixel(
+    win.folded ? effectiveW : Math.max(minSize.w, effectiveW + resizeDelta.dw)
+  );
+  const height = snapSizeToDevicePixel(
+    win.folded ? effectiveH : Math.max(minSize.h, effectiveH + resizeDelta.dh)
+  );
   const stylePos = useMemo(
     () => ({
       transform: `translate(${tx}px, ${ty}px)`,
-      width: effectiveW + (win.folded ? 0 : resizeDelta.dw),
-      height: effectiveH + (win.folded ? 0 : resizeDelta.dh),
+      width,
+      height,
       zIndex: rect.zIndex,
       transition,
     }),
-    [tx, ty, effectiveW, effectiveH, rect.zIndex, resizeDelta, transition, win.folded]
+    [tx, ty, width, height, rect.zIndex, transition]
   );
 
   // Focus indication is via shadow only — no scale/translate so the focused
@@ -189,7 +194,7 @@ export const ChatWindow: React.FC<Props> = ({
               <BaseChat
                 setChat={setChat}
                 sessionId={win.sessionId}
-                suppressEmptyState={false}
+                suppressEmptyState
                 coherent
                 hideSessionNamePill
                 compactPicker

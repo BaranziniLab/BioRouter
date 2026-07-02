@@ -1127,6 +1127,16 @@ export default function ChatInput({
         mentionPopoverRef.current.selectFile(mentionPopover.selectedIndex);
         return;
       }
+      if (evt.key === 'Tab') {
+        const displayFiles = mentionPopoverRef.current.getDisplayFiles();
+        if (displayFiles.length > 0) {
+          evt.preventDefault();
+          mentionPopoverRef.current.selectFile(
+            displayFiles.length === 1 ? 0 : mentionPopover.selectedIndex
+          );
+          return;
+        }
+      }
       if (evt.key === 'Escape') {
         evt.preventDefault();
         setMentionPopover((prev) => ({ ...prev, isOpen: false }));

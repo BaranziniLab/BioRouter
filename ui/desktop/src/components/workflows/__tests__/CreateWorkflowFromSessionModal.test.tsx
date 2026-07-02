@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import CreateWorkflowFromSessionModal from '../CreateWorkflowFromSessionModal';
 import { createWorkflow } from '../../../api/sdk.gen';
 import type { CreateWorkflowResponse } from '../../../api/types.gen';
+import { saveWorkflow } from '../../../workflow/workflow_management';
 
 vi.mock('../../../api/sdk.gen', () => ({
   createWorkflow: vi.fn(),
@@ -33,10 +34,11 @@ vi.mock('../../../toasts', () => ({
 }));
 
 vi.mock('../../../workflow/workflow_management', () => ({
-  saveWorkflow: vi.fn(),
+  saveWorkflow: vi.fn().mockResolvedValue('saved-workflow-id'),
 }));
 
 const mockCreateWorkflow = vi.mocked(createWorkflow);
+const mockSaveWorkflow = vi.mocked(saveWorkflow);
 
 describe('CreateWorkflowFromSessionModal', () => {
   const defaultProps = {
@@ -66,6 +68,20 @@ describe('CreateWorkflowFromSessionModal', () => {
         response: {
           json_schema: { type: 'object' },
         },
+        extensions: [
+          {
+            type: 'platform',
+            name: 'skills',
+            description: 'Load and use skills from relevant directories',
+            bundled: true,
+            available_tools: [],
+          },
+        ],
+        knowledge_bases: {
+          default: 'research-kb',
+          visible: ['research-kb'],
+        },
+        skills: ['literature-review'],
       },
       error: undefined,
     };
@@ -252,6 +268,42 @@ describe('CreateWorkflowFromSessionModal', () => {
         expect(defaultProps.onWorkflowCreated).toHaveBeenCalled();
         expect(defaultProps.onClose).toHaveBeenCalled();
       });
+    });
+
+    it('saves generated extensions, knowledge bases, and skills from the analysis response', async () => {
+      const user = userEvent.setup();
+      render(<CreateWorkflowFromSessionModal {...defaultProps} />);
+
+      await waitFor(
+        () => {
+          expect(screen.getByTestId('create-workflow-button')).toBeEnabled();
+        },
+        { timeout: 2000 }
+      );
+
+      await user.click(screen.getByTestId('create-workflow-button'));
+
+      await waitFor(() => {
+        expect(mockSaveWorkflow).toHaveBeenCalled();
+      });
+
+      expect(mockSaveWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({
+          description: 'Analyzed description',
+          extensions: [
+            expect.objectContaining({
+              name: 'skills',
+              description: 'Load and use skills from relevant directories',
+            }),
+          ],
+          knowledge_bases: {
+            default: 'research-kb',
+            visible: ['research-kb'],
+          },
+          skills: ['literature-review'],
+        }),
+        null
+      );
     });
   });
 

@@ -26,6 +26,7 @@ pub const SNOWFLAKE_KNOWN_MODELS: &[&str] = &[
     "claude-opus-4-7",
     "claude-opus-4-6",
     // Claude 4.5 series (200K context)
+    "claude-opus-4-5",
     "claude-sonnet-4-5",
     "claude-haiku-4-5",
     // Claude 4 series (legacy, select regions only)
@@ -308,6 +309,7 @@ impl Provider for SnowflakeProvider {
                 ConfigKey::new("SNOWFLAKE_TOKEN", true, true, None),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

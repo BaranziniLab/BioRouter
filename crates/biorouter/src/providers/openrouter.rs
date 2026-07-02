@@ -26,16 +26,20 @@ pub const OPENROUTER_MODEL_PREFIX_ANTHROPIC: &str = "anthropic";
 // (June 2026). x-ai/grok-code-fast-1 was removed from OpenRouter.
 pub const OPENROUTER_KNOWN_MODELS: &[&str] = &[
     "anthropic/claude-opus-4.8",
+    "anthropic/claude-sonnet-5",
     "anthropic/claude-sonnet-4.6",
     "anthropic/claude-haiku-4.5",
     "google/gemini-3.1-pro-preview",
     "google/gemini-3.5-flash",
     "x-ai/grok-4.3",
+    "x-ai/grok-4.20",
     "x-ai/grok-build-0.1",
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4-flash",
     "qwen/qwen3-coder-next",
+    "moonshotai/kimi-k2.7-code",
     "moonshotai/kimi-k2.6",
+    "z-ai/glm-5.2",
     "z-ai/glm-5.1",
     "minimax/minimax-m3",
 ];
@@ -242,6 +246,7 @@ impl Provider for OpenRouterProvider {
                 ),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

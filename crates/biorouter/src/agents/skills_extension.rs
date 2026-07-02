@@ -39,6 +39,19 @@ struct LoadSkillParams {
     name: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct ListSkillsParams {
+    offset: Option<usize>,
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct SearchSkillsParams {
+    query: String,
+    offset: Option<usize>,
+    limit: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct SkillMetadata {
     name: String,
@@ -54,10 +67,20 @@ struct Skill {
     bundle_name: Option<String>,
 }
 
+#[derive(Debug, Serialize)]
+struct SkillCatalogItem {
+    name: String,
+    description: String,
+    bundle: Option<String>,
+}
+
 pub struct SkillsClient {
     info: InitializeResult,
     skills: HashMap<String, Skill>,
 }
+
+const DEFAULT_SKILL_PAGE_LIMIT: usize = 20;
+const MAX_SKILL_PAGE_LIMIT: usize = 50;
 
 impl SkillsClient {
     pub fn new(_context: PlatformExtensionContext) -> Result<Self> {
@@ -221,11 +244,33 @@ impl SkillsClient {
         }
 
         let yaml_content = parts[1].trim();
-        let metadata: SkillMetadata = serde_yaml::from_str(yaml_content)?;
+        let metadata: SkillMetadata = serde_yaml::from_str(yaml_content)
+            .or_else(|_| Self::parse_frontmatter_metadata_fallback(yaml_content))?;
 
         let body = parts[2..].join("---").trim().to_string();
 
         Ok((metadata, body))
+    }
+
+    fn parse_frontmatter_metadata_fallback(yaml_content: &str) -> Result<SkillMetadata> {
+        let mut name = None;
+        let mut description = None;
+
+        for line in yaml_content.lines() {
+            let trimmed = line.trim();
+            if let Some(value) = trimmed.strip_prefix("name:") {
+                name = Some(value.trim().trim_matches(['"', '\'']).to_string());
+            } else if let Some(value) = trimmed.strip_prefix("description:") {
+                description = Some(value.trim().trim_matches(['"', '\'']).to_string());
+            }
+        }
+
+        match (name, description) {
+            (Some(name), Some(description)) if !name.is_empty() => {
+                Ok(SkillMetadata { name, description })
+            }
+            _ => Err(anyhow::anyhow!("Invalid frontmatter format")),
+        }
     }
 
     fn find_supporting_files(directory: &Path, skill_file: &Path) -> Result<Vec<PathBuf>> {
@@ -308,31 +353,192 @@ impl SkillsClient {
             return String::new();
         }
 
+        let skill_count = self.enabled_skill_entries().len();
+
+        if skill_count == 0 {
+            return String::new();
+        }
+
+        format!(
+            "You have {skill_count} skills available through the skills extension. Use searchSkills to find relevant skills, listSkills to page through the catalog, and loadSkill to load an exact skill by name before relying on it. For Biorouter questions, load about-biorouter directly."
+        )
+    }
+
+    fn is_skill_enabled(
+        name: &str,
+        skill: &Skill,
+        disabled: &std::collections::HashSet<String>,
+    ) -> bool {
+        !disabled.contains(name)
+            && !skill
+                .bundle_name
+                .as_deref()
+                .is_some_and(|bundle| disabled.contains(bundle))
+    }
+
+    fn enabled_skill_entries(&self) -> Vec<(&String, &Skill)> {
         let disabled = Self::get_disabled_skills();
         let mut skill_list: Vec<_> = self
             .skills
             .iter()
-            .filter(|(name, skill)| {
-                !disabled.contains(*name)
-                    && !skill
-                        .bundle_name
-                        .as_deref()
-                        .is_some_and(|b| disabled.contains(b))
+            .filter(|(name, skill)| Self::is_skill_enabled(name, skill, &disabled))
+            .collect();
+        skill_list.sort_by_key(|(name, _)| *name);
+        skill_list
+    }
+
+    fn parse_pagination(offset: Option<usize>, limit: Option<usize>) -> (usize, usize) {
+        let offset = offset.unwrap_or(0);
+        let limit = limit
+            .unwrap_or(DEFAULT_SKILL_PAGE_LIMIT)
+            .clamp(1, MAX_SKILL_PAGE_LIMIT);
+        (offset, limit)
+    }
+
+    fn normalize_search_text(value: &str) -> String {
+        value
+            .chars()
+            .map(|c| {
+                if c.is_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    ' '
+                }
+            })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn search_score(skill: &Skill, query: &str, terms: &[&str]) -> usize {
+        let name = Self::normalize_search_text(&skill.metadata.name);
+        let description = Self::normalize_search_text(&skill.metadata.description);
+        let bundle = Self::normalize_search_text(skill.bundle_name.as_deref().unwrap_or_default());
+
+        if name == query {
+            100
+        } else if name.contains(query) {
+            90
+        } else if terms.iter().all(|term| name.contains(term)) {
+            80
+        } else if description.contains(query) {
+            70
+        } else if terms.iter().all(|term| description.contains(term)) {
+            60
+        } else if bundle.contains(query) {
+            50
+        } else if terms.iter().all(|term| bundle.contains(term)) {
+            40
+        } else {
+            0
+        }
+    }
+
+    fn catalog_item(skill: &Skill) -> SkillCatalogItem {
+        SkillCatalogItem {
+            name: skill.metadata.name.clone(),
+            description: skill.metadata.description.clone(),
+            bundle: skill.bundle_name.clone(),
+        }
+    }
+
+    fn catalog_response(
+        total: usize,
+        offset: usize,
+        limit: usize,
+        skills: Vec<SkillCatalogItem>,
+    ) -> Result<Vec<Content>, String> {
+        let returned = skills.len();
+        let next_offset = if offset + returned < total {
+            Some(offset + returned)
+        } else {
+            None
+        };
+
+        let response = serde_json::json!({
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+            "returned": returned,
+            "next_offset": next_offset,
+            "skills": skills,
+        });
+        serde_json::to_string_pretty(&response)
+            .map(|text| vec![Content::text(text)])
+            .map_err(|error| error.to_string())
+    }
+
+    fn parse_tool_args<T>(arguments: Option<JsonObject>) -> Result<T, String>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        let value = serde_json::Value::Object(arguments.unwrap_or_default());
+        serde_json::from_value(value).map_err(|error| error.to_string())
+    }
+
+    async fn handle_list_skills(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let params: ListSkillsParams = Self::parse_tool_args(arguments)?;
+        let (offset, limit) = Self::parse_pagination(params.offset, params.limit);
+        let skill_list = self.enabled_skill_entries();
+        let total = skill_list.len();
+        let skills = skill_list
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .map(|(_, skill)| Self::catalog_item(skill))
+            .collect();
+
+        Self::catalog_response(total, offset, limit, skills)
+    }
+
+    async fn handle_search_skills(
+        &self,
+        arguments: Option<JsonObject>,
+    ) -> Result<Vec<Content>, String> {
+        let params: SearchSkillsParams = Self::parse_tool_args(arguments)?;
+        let query = Self::normalize_search_text(params.query.trim());
+        if query.is_empty() {
+            return Err("Missing required parameter: query".to_string());
+        }
+
+        let terms: Vec<&str> = query.split_whitespace().collect();
+        let (offset, limit) = Self::parse_pagination(params.offset, params.limit);
+        let mut matches: Vec<_> = self
+            .enabled_skill_entries()
+            .into_iter()
+            .filter(|(_, skill)| {
+                let haystack = format!(
+                    "{} {} {}",
+                    Self::normalize_search_text(&skill.metadata.name),
+                    Self::normalize_search_text(&skill.metadata.description),
+                    Self::normalize_search_text(skill.bundle_name.as_deref().unwrap_or_default())
+                );
+                terms.iter().all(|term| haystack.contains(term))
             })
             .collect();
 
-        if skill_list.is_empty() {
-            return String::new();
-        }
+        matches.sort_by(|(left_name, left_skill), (right_name, right_skill)| {
+            let left_score = Self::search_score(left_skill, &query, &terms);
+            let right_score = Self::search_score(right_skill, &query, &terms);
+            right_score
+                .cmp(&left_score)
+                .then_with(|| left_skill.metadata.name.cmp(&right_skill.metadata.name))
+                .then_with(|| left_name.cmp(right_name))
+        });
 
-        let mut instructions = String::from(
-            "You have these skills at your disposal. When a skill's description matches the user's request, load it with the loadSkill tool before answering rather than guessing — for example, load about-biorouter for questions about Biorouter itself:\n\n"
-        );
-        skill_list.sort_by_key(|(name, _)| *name);
-        for (name, skill) in skill_list {
-            instructions.push_str(&format!("- {}: {}\n", name, skill.metadata.description));
-        }
-        instructions
+        let total = matches.len();
+        let skills = matches
+            .into_iter()
+            .skip(offset)
+            .take(limit)
+            .map(|(_, skill)| Self::catalog_item(skill))
+            .collect();
+
+        Self::catalog_response(total, offset, limit, skills)
     }
 
     async fn handle_load_skill(
@@ -387,33 +593,72 @@ impl SkillsClient {
     }
 
     fn get_tools() -> Vec<Tool> {
-        let schema = schema_for!(LoadSkillParams);
-        let schema_value =
-            serde_json::to_value(schema).expect("Failed to serialize LoadSkillParams schema");
+        fn input_schema<T: JsonSchema>() -> JsonObject {
+            let schema = schema_for!(T);
+            let schema_value =
+                serde_json::to_value(schema).expect("Failed to serialize tool schema");
 
-        let input_schema = schema_value
-            .as_object()
-            .expect("Schema should be an object")
-            .clone();
+            schema_value
+                .as_object()
+                .expect("Schema should be an object")
+                .clone()
+        }
 
-        vec![Tool::new(
-            "loadSkill".to_string(),
-            indoc! {r#"
-                Load a skill by name and return its content.
+        vec![
+            Tool::new(
+                "searchSkills".to_string(),
+                indoc! {r#"
+                    Search installed skills by name, description, or bundle.
 
-                This tool loads the specified skill and returns its body content along with
-                information about any supporting files in the skill directory.
-            "#}
-            .to_string(),
-            input_schema,
-        )
-        .annotate(ToolAnnotations {
-            title: Some("Load skill".to_string()),
-            read_only_hint: Some(true),
-            destructive_hint: Some(false),
-            idempotent_hint: Some(true),
-            open_world_hint: Some(false),
-        })]
+                    Use this before loadSkill when you need to find the exact skill name.
+                    Results are paginated and include skill names and descriptions only.
+                "#}
+                .to_string(),
+                input_schema::<SearchSkillsParams>(),
+            )
+            .annotate(ToolAnnotations {
+                title: Some("Search skills".to_string()),
+                read_only_hint: Some(true),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(true),
+                open_world_hint: Some(false),
+            }),
+            Tool::new(
+                "listSkills".to_string(),
+                indoc! {r#"
+                    List installed skills in alphabetical pages.
+
+                    Use this for browsing the skill catalog when a search query is not obvious.
+                "#}
+                .to_string(),
+                input_schema::<ListSkillsParams>(),
+            )
+            .annotate(ToolAnnotations {
+                title: Some("List skills".to_string()),
+                read_only_hint: Some(true),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(true),
+                open_world_hint: Some(false),
+            }),
+            Tool::new(
+                "loadSkill".to_string(),
+                indoc! {r#"
+                    Load a skill by exact name and return its content.
+
+                    This tool loads the specified skill and returns its body content along with
+                    information about any supporting files in the skill directory.
+                "#}
+                .to_string(),
+                input_schema::<LoadSkillParams>(),
+            )
+            .annotate(ToolAnnotations {
+                title: Some("Load skill".to_string()),
+                read_only_hint: Some(true),
+                destructive_hint: Some(false),
+                idempotent_hint: Some(true),
+                open_world_hint: Some(false),
+            }),
+        ]
     }
 }
 
@@ -452,6 +697,8 @@ impl McpClientTrait for SkillsClient {
         _cancellation_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
         let content = match name {
+            "searchSkills" => self.handle_search_skills(arguments).await,
+            "listSkills" => self.handle_list_skills(arguments).await,
             "loadSkill" => self.handle_load_skill(arguments).await,
             _ => Err(format!("Unknown tool: {}", name)),
         };
@@ -533,6 +780,25 @@ This is the body of the skill.
         assert_eq!(metadata.description, "A test skill");
         assert!(body.contains("# Test Skill"));
         assert!(body.contains("This is the body of the skill."));
+    }
+
+    #[test]
+    fn test_parse_frontmatter_falls_back_for_unquoted_colon_description() {
+        let content = r#"---
+name: systematic-review-prisma
+description: Run systematic-review workflows: protocol/PICO framing, search strings, screening logs, PRISMA flow, extraction tables, risk-of-bias checks, and evidence synthesis with citation verification.
+user-invocable: true
+---
+
+# Systematic Review and PRISMA
+"#;
+
+        let (metadata, body) = SkillsClient::parse_frontmatter(content).unwrap();
+        assert_eq!(metadata.name, "systematic-review-prisma");
+        assert!(metadata
+            .description
+            .starts_with("Run systematic-review workflows: protocol/PICO framing"));
+        assert!(body.contains("# Systematic Review and PRISMA"));
     }
 
     #[test]
@@ -825,8 +1091,191 @@ Content
             .list_tools(None, CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(result.tools.len(), 1);
-        assert_eq!(result.tools[0].name, "loadSkill");
+        let tool_names: Vec<_> = result.tools.iter().map(|tool| tool.name.as_ref()).collect();
+        assert_eq!(tool_names, vec!["searchSkills", "listSkills", "loadSkill"]);
+    }
+
+    #[tokio::test]
+    async fn test_list_skills_is_paginated() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        fs::create_dir(&skills_dir).unwrap();
+
+        for (name, description) in [
+            ("alpha-skill", "Alpha skill"),
+            ("beta-skill", "Beta skill"),
+            ("gamma-skill", "Gamma skill"),
+        ] {
+            let skill_dir = skills_dir.join(name);
+            fs::create_dir(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {description}\n---\nBody"),
+            )
+            .unwrap();
+        }
+
+        let skills = SkillsClient::discover_skills_in_directories(&[skills_dir]);
+        let client = SkillsClient {
+            info: InitializeResult {
+                protocol_version: ProtocolVersion::V_2025_03_26,
+                capabilities: ServerCapabilities {
+                    tasks: None,
+                    tools: Some(ToolsCapability {
+                        list_changed: Some(false),
+                    }),
+                    resources: None,
+                    prompts: None,
+                    completions: None,
+                    experimental: None,
+                    logging: None,
+                },
+                server_info: Implementation {
+                    name: EXTENSION_NAME.to_string(),
+                    title: Some("Skills".to_string()),
+                    version: "1.0.0".to_string(),
+                    icons: None,
+                    website_url: None,
+                },
+                instructions: Some(String::new()),
+            },
+            skills,
+        };
+
+        let args = serde_json::json!({ "offset": 1, "limit": 1 })
+            .as_object()
+            .unwrap()
+            .clone();
+        let result = client
+            .call_tool(
+                "listSkills",
+                Some(args),
+                McpMeta::new("test-session"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = &result.content[0].as_text().unwrap().text;
+        let payload: serde_json::Value = serde_json::from_str(text).unwrap();
+
+        assert_eq!(payload["total"], 3);
+        assert_eq!(payload["returned"], 1);
+        assert_eq!(payload["next_offset"], 2);
+        assert_eq!(payload["skills"][0]["name"], "beta-skill");
+    }
+
+    #[tokio::test]
+    async fn test_search_skills_filters_by_name_description_and_bundle() {
+        let temp_dir = TempDir::new().unwrap();
+        let bundle_dir = temp_dir.path().join("bio-bundle");
+        fs::create_dir(&bundle_dir).unwrap();
+
+        for (name, description) in [
+            ("variant-calling", "Call variants from sequencing reads"),
+            ("rna-qc", "Quality control for transcriptomics"),
+            (
+                "open-science-review",
+                "Review systematic evidence using PRISMA style checklists",
+            ),
+            (
+                "systematic-review-prisma",
+                "Run systematic-review workflows and PRISMA flow diagrams",
+            ),
+            ("other", "Unrelated helper"),
+        ] {
+            let skill_dir = bundle_dir.join(name);
+            fs::create_dir(&skill_dir).unwrap();
+            fs::write(
+                skill_dir.join("SKILL.md"),
+                format!("---\nname: {name}\ndescription: {description}\n---\nBody"),
+            )
+            .unwrap();
+        }
+
+        let skills = SkillsClient::discover_skills_in_directories(&[temp_dir.path().to_path_buf()]);
+        let client = SkillsClient {
+            info: InitializeResult {
+                protocol_version: ProtocolVersion::V_2025_03_26,
+                capabilities: ServerCapabilities {
+                    tasks: None,
+                    tools: Some(ToolsCapability {
+                        list_changed: Some(false),
+                    }),
+                    resources: None,
+                    prompts: None,
+                    completions: None,
+                    experimental: None,
+                    logging: None,
+                },
+                server_info: Implementation {
+                    name: EXTENSION_NAME.to_string(),
+                    title: Some("Skills".to_string()),
+                    version: "1.0.0".to_string(),
+                    icons: None,
+                    website_url: None,
+                },
+                instructions: Some(String::new()),
+            },
+            skills,
+        };
+
+        let args = serde_json::json!({ "query": "sequencing reads", "limit": 10 })
+            .as_object()
+            .unwrap()
+            .clone();
+        let result = client
+            .call_tool(
+                "searchSkills",
+                Some(args),
+                McpMeta::new("test-session"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = &result.content[0].as_text().unwrap().text;
+        let payload: serde_json::Value = serde_json::from_str(text).unwrap();
+
+        assert_eq!(payload["total"], 1);
+        assert_eq!(payload["skills"][0]["name"], "variant-calling");
+        assert_eq!(payload["skills"][0]["bundle"], "bio-bundle");
+
+        let args = serde_json::json!({ "query": "bio-bundle rna", "limit": 10 })
+            .as_object()
+            .unwrap()
+            .clone();
+        let result = client
+            .call_tool(
+                "searchSkills",
+                Some(args),
+                McpMeta::new("test-session"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = &result.content[0].as_text().unwrap().text;
+        let payload: serde_json::Value = serde_json::from_str(text).unwrap();
+
+        assert_eq!(payload["total"], 1);
+        assert_eq!(payload["skills"][0]["name"], "rna-qc");
+
+        let args = serde_json::json!({ "query": "systematic review PRISMA", "limit": 10 })
+            .as_object()
+            .unwrap()
+            .clone();
+        let result = client
+            .call_tool(
+                "searchSkills",
+                Some(args),
+                McpMeta::new("test-session"),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let text = &result.content[0].as_text().unwrap().text;
+        let payload: serde_json::Value = serde_json::from_str(text).unwrap();
+
+        assert_eq!(payload["total"], 2);
+        assert_eq!(payload["skills"][0]["name"], "systematic-review-prisma");
     }
 
     #[test]
@@ -892,7 +1341,9 @@ Content
 
         let instructions = client.generate_instructions();
         assert!(!instructions.is_empty());
-        assert!(instructions.contains("You have these skills at your disposal"));
+        assert!(instructions.contains("You have 2 skills available"));
+        assert!(instructions.contains("searchSkills"));
+        assert!(instructions.contains("listSkills"));
         // The instruction must actively nudge proactive loading via loadSkill
         // and name about-biorouter as the example, so the agent loads
         // self-knowledge instead of guessing about Biorouter.
@@ -904,16 +1355,8 @@ Content
             instructions.contains("about-biorouter"),
             "skills instructions must point at the about-biorouter skill"
         );
-        assert!(instructions.contains("alpha-skill: First skill alphabetically"));
-        assert!(instructions.contains("beta-skill: Second skill alphabetically"));
-
-        let lines: Vec<&str> = instructions.lines().collect();
-        let alpha_line = lines
-            .iter()
-            .position(|l| l.contains("alpha-skill"))
-            .unwrap();
-        let beta_line = lines.iter().position(|l| l.contains("beta-skill")).unwrap();
-        assert!(alpha_line < beta_line);
+        assert!(!instructions.contains("First skill alphabetically"));
+        assert!(!instructions.contains("Second skill alphabetically"));
 
         client.info.instructions = Some(instructions);
         assert!(!client.info.instructions.as_ref().unwrap().is_empty());

@@ -273,6 +273,7 @@ impl Provider for SageMakerTgiProvider {
                 ConfigKey::new("AWS_PROFILE", true, false, Some("default")),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {

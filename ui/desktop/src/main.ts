@@ -2,6 +2,7 @@ import type {
   MenuItemConstructorOptions,
   OpenDialogOptions,
   OpenDialogReturnValue,
+  Rectangle,
 } from 'electron';
 import {
   app,
@@ -75,6 +76,28 @@ function shouldSetupUpdater(): boolean {
 
 // Define temp directory for pasted images
 const biorouterTempDir = path.join(app.getPath('temp'), 'biorouter-pasted-images');
+
+function expandBiorouterPath(filePath: string): string {
+  const expandedPath = expandTilde(filePath);
+  const pathRoot = process.env.BIOROUTER_PATH_ROOT;
+  if (!pathRoot) return expandedPath;
+
+  const defaultConfigDir = path.join(os.homedir(), '.config', 'biorouter');
+  if (expandedPath === defaultConfigDir || expandedPath.startsWith(defaultConfigDir + path.sep)) {
+    return path.join(pathRoot, 'config', path.relative(defaultConfigDir, expandedPath));
+  }
+  return expandedPath;
+}
+
+function allowedFileRoots(): string[] {
+  return [
+    os.homedir(),
+    app.getPath('userData'),
+    app.getPath('temp'),
+    ...(process.env.BIOROUTER_PATH_ROOT ? [process.env.BIOROUTER_PATH_ROOT] : []),
+  ];
+}
+
 // Function to ensure the temporary directory exists
 async function ensureTempDirExists(): Promise<string> {
   try {
@@ -593,6 +616,12 @@ const windowPowerSaveBlockers = new Map<number, number>(); // windowId -> blocke
 // Track pending initial messages per window
 const pendingInitialMessages = new Map<number, string>(); // windowId -> initialMessage
 
+interface ChatWindowOptions {
+  initialBounds?: Rectangle;
+  show?: boolean;
+  manageWindowState?: boolean;
+}
+
 const createChat = async (
   app: App,
   initialMessage?: string,
@@ -603,7 +632,8 @@ const createChat = async (
   workflowDeeplink?: string, // Raw deeplink decoded on server
   scheduledJobId?: string, // Scheduled job ID if applicable
   workflowId?: string,
-  workflowParameters?: Record<string, string> // Workflow parameter values from deeplink URL
+  workflowParameters?: Record<string, string>, // Workflow parameter values from deeplink URL
+  windowOptions?: ChatWindowOptions
 ) => {
   updateEnvironmentVariables(envToggles);
 
@@ -624,19 +654,21 @@ const createChat = async (
     defaultWidth: 940,
     defaultHeight: 800,
   });
+  const initialBounds = windowOptions?.initialBounds;
 
   const mainWindow = new BrowserWindow({
     titleBarStyle: process.platform === 'darwin' ? 'hidden' : 'default',
     trafficLightPosition: process.platform === 'darwin' ? { x: 20, y: 16 } : undefined,
     vibrancy: process.platform === 'darwin' ? 'window' : undefined,
     frame: process.platform !== 'darwin',
-    x: mainWindowState.x,
-    y: mainWindowState.y,
-    width: mainWindowState.width,
-    height: mainWindowState.height,
+    x: initialBounds?.x ?? mainWindowState.x,
+    y: initialBounds?.y ?? mainWindowState.y,
+    width: initialBounds?.width ?? mainWindowState.width,
+    height: initialBounds?.height ?? mainWindowState.height,
     minWidth: 450,
     resizable: true,
     useContentSize: true,
+    show: windowOptions?.show ?? true,
     icon: path.join(__dirname, '../images/icon.icns'),
     webPreferences: {
       spellcheck: settings.spellcheckEnabled ?? true,
@@ -727,8 +759,9 @@ const createChat = async (
     app.quit();
   }
 
-  // Let windowStateKeeper manage the window
-  mainWindowState.manage(mainWindow);
+  if (windowOptions?.manageWindowState !== false) {
+    mainWindowState.manage(mainWindow);
+  }
 
   mainWindow.webContents.session.setSpellCheckerLanguages(['en-US', 'en-GB']);
   mainWindow.webContents.on('context-menu', (_event, params) => {
@@ -947,13 +980,51 @@ async function openDivergedWindow(parsedUrl: URL): Promise<void> {
     (recentDirs.length > 0 ? recentDirs[0] : undefined) ||
     undefined;
 
+  await openDivergedChatWindow(sessionId, dir);
+}
+
+function branchWindowBounds(anchor?: BrowserWindow | null): Rectangle | undefined {
+  if (!anchor || anchor.isDestroyed()) return undefined;
+
+  const anchorBounds = anchor.getBounds();
+  const display = screen.getDisplayMatching(anchorBounds);
+  const workArea = display.workArea;
+  const width = Math.min(anchorBounds.width, workArea.width);
+  const height = Math.min(anchorBounds.height, workArea.height);
+  let x = anchorBounds.x + 40;
+  let y = anchorBounds.y + 40;
+
+  if (x + width > workArea.x + workArea.width) {
+    x = Math.max(workArea.x, anchorBounds.x - 40);
+  }
+  if (y + height > workArea.y + workArea.height) {
+    y = Math.max(workArea.y, anchorBounds.y - 40);
+  }
+
+  return { x, y, width, height };
+}
+
+async function openDivergedChatWindow(
+  sessionId: string,
+  dir?: string,
+  sourceWindow?: BrowserWindow | null
+): Promise<void> {
   const anchor = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
-  const win = await createChat(app, undefined, dir, undefined, sessionId, 'pair');
+  const bounds = branchWindowBounds(sourceWindow ?? anchor);
+  const win = await createChat(
+    app,
+    undefined,
+    dir,
+    undefined,
+    sessionId,
+    'pair',
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    bounds ? { initialBounds: bounds, show: false, manageWindowState: false } : undefined
+  );
   if (win) {
-    if (anchor && anchor !== win && !anchor.isDestroyed()) {
-      const b = anchor.getBounds();
-      win.setBounds({ x: b.x + 40, y: b.y + 40, width: b.width, height: b.height });
-    }
     win.show();
     win.focus();
     win.moveTop();
@@ -2018,10 +2089,10 @@ ipcMain.handle('check-ollama', async () => {
 });
 
 ipcMain.handle('read-file', async (_event, filePath) => {
-  const expandedPath = expandTilde(filePath);
+  const expandedPath = expandBiorouterPath(filePath);
   try {
     const resolvedPath = path.resolve(expandedPath);
-    const allowedRoots = [os.homedir(), app.getPath('userData'), app.getPath('temp')];
+    const allowedRoots = allowedFileRoots();
     const isAllowed = allowedRoots.some(
       (root) => resolvedPath.startsWith(root + path.sep) || resolvedPath === root
     );
@@ -2042,7 +2113,7 @@ ipcMain.handle('read-file', async (_event, filePath) => {
 
 ipcMain.handle('write-file', async (_event, filePath, content) => {
   try {
-    const expandedPath = expandTilde(filePath);
+    const expandedPath = expandBiorouterPath(filePath);
     await fs.mkdir(path.dirname(expandedPath), { recursive: true });
     await fs.writeFile(expandedPath, content, { encoding: 'utf8' });
     return true;
@@ -2055,8 +2126,7 @@ ipcMain.handle('write-file', async (_event, filePath, content) => {
 // Enhanced file operations
 ipcMain.handle('ensure-directory', async (_event, dirPath) => {
   try {
-    // Expand tilde to home directory
-    const expandedPath = expandTilde(dirPath);
+    const expandedPath = expandBiorouterPath(dirPath);
 
     await fs.mkdir(expandedPath, { recursive: true });
     return true;
@@ -2068,8 +2138,7 @@ ipcMain.handle('ensure-directory', async (_event, dirPath) => {
 
 ipcMain.handle('list-files', async (_event, dirPath, extension) => {
   try {
-    // Expand tilde to home directory
-    const expandedPath = expandTilde(dirPath);
+    const expandedPath = expandBiorouterPath(dirPath);
 
     const files = await fs.readdir(expandedPath);
     if (extension) {
@@ -2084,9 +2153,9 @@ ipcMain.handle('list-files', async (_event, dirPath, extension) => {
 
 ipcMain.handle('delete-file', async (_event, filePath: string) => {
   try {
-    const expandedPath = expandTilde(filePath);
+    const expandedPath = expandBiorouterPath(filePath);
     const resolvedPath = path.resolve(expandedPath);
-    const allowedRoots = [os.homedir(), app.getPath('userData'), app.getPath('temp')];
+    const allowedRoots = allowedFileRoots();
     const isAllowed = allowedRoots.some(
       (root) => resolvedPath.startsWith(root + path.sep) || resolvedPath === root
     );
@@ -2103,7 +2172,7 @@ ipcMain.handle('delete-file', async (_event, filePath: string) => {
 
 ipcMain.handle('list-skill-dirs', async (_event, dirPath: string) => {
   try {
-    const expandedPath = expandTilde(dirPath);
+    const expandedPath = expandBiorouterPath(dirPath);
     const entries = await fs.readdir(expandedPath, { withFileTypes: true });
     return entries.filter((e) => e.isDirectory()).map((e) => e.name);
   } catch {
@@ -2113,9 +2182,9 @@ ipcMain.handle('list-skill-dirs', async (_event, dirPath: string) => {
 
 ipcMain.handle('delete-directory', async (_event, dirPath: string) => {
   try {
-    const expandedPath = expandTilde(dirPath);
+    const expandedPath = expandBiorouterPath(dirPath);
     const resolvedPath = path.resolve(expandedPath);
-    const allowedRoots = [os.homedir(), app.getPath('userData'), app.getPath('temp')];
+    const allowedRoots = allowedFileRoots();
     const isAllowed = allowedRoots.some(
       (root) => resolvedPath.startsWith(root + path.sep) || resolvedPath === root
     );
@@ -3362,6 +3431,19 @@ async function appMain() {
     }
   );
 
+  ipcMain.on('create-diverged-chat-window', async (event, dir, resumeSessionId) => {
+    if (!resumeSessionId) {
+      log.error('[Main] create-diverged-chat-window missing session id');
+      return;
+    }
+    if (!dir?.trim()) {
+      const recentDirs = loadRecentDirs();
+      dir = recentDirs.length > 0 ? recentDirs[0] : undefined;
+    }
+    const senderWindow = BrowserWindow.fromWebContents(event.sender);
+    await openDivergedChatWindow(resumeSessionId, dir, senderWindow);
+  });
+
   ipcMain.on('close-window', (event) => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (window && !window.isDestroyed()) {
@@ -3540,7 +3622,7 @@ async function appMain() {
 
   ipcMain.handle('open-directory-in-explorer', async (_event, dirPath: string) => {
     try {
-      const expanded = path.resolve(expandTilde(dirPath));
+      const expanded = path.resolve(expandBiorouterPath(dirPath));
       const err = await shell.openPath(expanded);
       // shell.openPath returns an empty string on success, error message on failure
       if (err) console.error('Error opening directory in explorer:', err);

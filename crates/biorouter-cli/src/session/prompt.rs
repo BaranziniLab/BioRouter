@@ -15,6 +15,7 @@ The following slash commands are available
 Additional keyboard shortcuts:
 - Ctrl+C - Interrupt the current interaction (resets to before the interrupted request)
 - Ctrl+{newline_key} - Add a newline
+- Tab - Complete slash commands and /skill: or /ext: references
 - Up/Down arrows - Navigate command history"
     )
 }

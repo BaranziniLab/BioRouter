@@ -103,6 +103,7 @@ function BaseChatContent({
   sessionId,
   initialMessage,
   initialAttachments,
+  suppressEmptyState,
   coherent = true,
   onRenameSession,
   onSessionUpdate,
@@ -525,6 +526,7 @@ function BaseChatContent({
 
   const initialPrompt = workflowPrompt;
   const isCleanConversation =
+    !suppressEmptyState &&
     messages.length === 0 &&
     !workflow &&
     !initialPrompt &&
@@ -577,7 +579,7 @@ function BaseChatContent({
       ref={composerMotionRef}
       data-composer-shell="true"
       className={cn(
-        'w-full max-w-[760px] mx-auto biorouter-composer-motion',
+        'w-full max-w-[760px] mx-auto biorouter-chat-composer biorouter-composer-motion',
         !compactPicker && 'biorouter-composer-view-transition'
       )}
     >
@@ -729,42 +731,44 @@ function BaseChatContent({
               paddingX={6}
               paddingY={0}
             >
-              {workflow?.title && (
-                <div className="sticky top-0 z-10 bg-background-default px-0 -mx-6 mb-4 pt-2">
-                  <WorkflowHeader title={workflow.title} />
-                </div>
-              )}
+              <div className="biorouter-chat-column mx-auto w-full max-w-[920px]">
+                {workflow?.title && (
+                  <div className="sticky top-0 z-10 bg-background-default mb-4 pt-2">
+                    <WorkflowHeader title={workflow.title} />
+                  </div>
+                )}
 
-              {workflow && (
-                <div className={hasStartedUsingWorkflow ? 'mb-6' : ''}>
-                  <WorkflowActivities
-                    append={(text: string) => handleSubmit(text)}
-                    activities={Array.isArray(workflow.activities) ? workflow.activities : null}
-                    title={workflow.title}
-                    parameterValues={session?.user_workflow_values || {}}
-                  />
-                </div>
-              )}
-
-              {messages.length > 0 || workflow ? (
-                <>
-                  <SearchView>
-                    <ProgressiveMessageList
-                      messages={messages}
-                      chat={{ sessionId }}
-                      toolCallNotifications={toolCallNotifications}
+                {workflow && (
+                  <div className={hasStartedUsingWorkflow ? 'mb-6' : ''}>
+                    <WorkflowActivities
                       append={(text: string) => handleSubmit(text)}
-                      isUserMessage={(m: Message) => m.role === 'user'}
-                      isStreamingMessage={chatState !== ChatState.Idle}
-                      onRenderingComplete={handleRenderingComplete}
-                      onMessageUpdate={onMessageUpdate}
-                      submitElicitationResponse={submitElicitationResponse}
+                      activities={Array.isArray(workflow.activities) ? workflow.activities : null}
+                      title={workflow.title}
+                      parameterValues={session?.user_workflow_values || {}}
                     />
-                  </SearchView>
+                  </div>
+                )}
 
-                  <div className="block h-8" />
-                </>
-              ) : null}
+                {messages.length > 0 || workflow ? (
+                  <>
+                    <SearchView>
+                      <ProgressiveMessageList
+                        messages={messages}
+                        chat={{ sessionId }}
+                        toolCallNotifications={toolCallNotifications}
+                        append={(text: string) => handleSubmit(text)}
+                        isUserMessage={(m: Message) => m.role === 'user'}
+                        isStreamingMessage={chatState !== ChatState.Idle}
+                        onRenderingComplete={handleRenderingComplete}
+                        onMessageUpdate={onMessageUpdate}
+                        submitElicitationResponse={submitElicitationResponse}
+                      />
+                    </SearchView>
+
+                    <div className="block h-8" />
+                  </>
+                ) : null}
+              </div>
             </ScrollArea>
           )}
         </div>
@@ -773,7 +777,7 @@ function BaseChatContent({
           <div
             className={
               coherent
-                ? 'flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-default'
+                ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-default'
                 : `px-4 sm:px-6 pb-6 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`
             }
           >

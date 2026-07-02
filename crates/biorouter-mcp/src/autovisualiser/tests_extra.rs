@@ -58,7 +58,13 @@ async fn test_flowchart_sanitizes_ids_and_escapes() {
     });
     let html = decode_html(&r);
     let start = html.find("const mermaidCode =").unwrap();
-    assert!(!html[start..start + 200].contains("</script>"));
+    let snippet: String = html
+        .get(start..)
+        .unwrap_or_default()
+        .chars()
+        .take(200)
+        .collect();
+    assert!(!snippet.contains("</script>"));
 }
 
 #[tokio::test]
@@ -299,7 +305,13 @@ async fn test_chart_blob_escapes_malicious_title() {
     let result = router.show_chart(Parameters(params)).await.unwrap();
     let html = decode_html(&result);
     let start = html.find("const chartData =").unwrap();
-    assert!(!html[start..start + 300].contains("</script>"));
+    let snippet: String = html
+        .get(start..)
+        .unwrap_or_default()
+        .chars()
+        .take(300)
+        .collect();
+    assert!(!snippet.contains("</script>"));
 }
 
 #[tokio::test]

@@ -95,7 +95,10 @@ impl ServerHandler for DataSqlServer {
 
 #[tool_router(router = tool_router)]
 impl DataSqlServer {
-    #[tool(name = "data_sources", description = "List the read-only data sources this app may query.")]
+    #[tool(
+        name = "data_sources",
+        description = "List the read-only data sources this app may query."
+    )]
     pub async fn data_sources(&self) -> Result<CallToolResult, ErrorData> {
         let mut names: Vec<&String> = self.sources.keys().collect();
         names.sort();
@@ -117,7 +120,10 @@ impl DataSqlServer {
             .await
             .map_err(|e| invalid(e.to_string()))?;
         let max = p.max_rows.unwrap_or(DEFAULT_MAX_ROWS).min(DEFAULT_MAX_ROWS);
-        let result = db.query(&p.sql, max).await.map_err(|e| invalid(e.to_string()))?;
+        let result = db
+            .query(&p.sql, max)
+            .await
+            .map_err(|e| invalid(e.to_string()))?;
         let json = serde_json::to_string(&result).map_err(|e| invalid(e.to_string()))?;
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
@@ -152,7 +158,9 @@ mod tests {
     async fn seeded_server() -> (tempfile::TempDir, DataSqlServer) {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cohort.db");
-        let opts = SqliteConnectOptions::new().filename(&path).create_if_missing(true);
+        let opts = SqliteConnectOptions::new()
+            .filename(&path)
+            .create_if_missing(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(opts)

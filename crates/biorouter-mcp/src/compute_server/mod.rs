@@ -77,7 +77,10 @@ impl ServerHandler for ComputeServer {
 
 #[tool_router(router = tool_router)]
 impl ComputeServer {
-    #[tool(name = "compute_run", description = "Run a shell command inside the app sandbox. Returns {stdout, stderr, code, timed_out}.")]
+    #[tool(
+        name = "compute_run",
+        description = "Run a shell command inside the app sandbox. Returns {stdout, stderr, code, timed_out}."
+    )]
     pub async fn compute_run(
         &self,
         params: Parameters<RunParams>,
@@ -92,7 +95,10 @@ impl ComputeServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    #[tool(name = "compute_python", description = "Run Python (python3 -c <code>) inside the app sandbox. Returns {stdout, stderr, code, timed_out}.")]
+    #[tool(
+        name = "compute_python",
+        description = "Run Python (python3 -c <code>) inside the app sandbox. Returns {stdout, stderr, code, timed_out}."
+    )]
     pub async fn compute_python(
         &self,
         params: Parameters<PythonParams>,
@@ -112,7 +118,10 @@ impl ComputeServer {
 /// Returns `None` when `sandbox == "none"` (compute not granted). On a hard-fail
 /// to construct the requested backend, returns `None` (caller logs + skips) — a
 /// granted-but-unbuildable sandbox must NOT silently fall through to host exec.
-pub fn for_capability(workspace: std::path::PathBuf, cap: &ComputeCapability) -> Option<ComputeServer> {
+pub fn for_capability(
+    workspace: std::path::PathBuf,
+    cap: &ComputeCapability,
+) -> Option<ComputeServer> {
     if cap.sandbox == "none" {
         return None;
     }
@@ -180,7 +189,10 @@ mod tests {
         // CallToolResult, so assert on stable substrings rather than exact JSON.)
         assert!(t.contains("brsdk-compute-ok"), "stdout missing: {t}");
         assert!(t.contains("timed_out"), "expected ExecOutput shape: {t}");
-        assert!(!t.contains("timed_out\\\":true"), "should not have timed out: {t}");
+        assert!(
+            !t.contains("timed_out\\\":true"),
+            "should not have timed out: {t}"
+        );
     }
 
     #[tokio::test]
@@ -192,6 +204,9 @@ mod tests {
         }))
         .await
         .unwrap();
-        assert!(dir.path().join("out.txt").exists(), "command ran in the workspace cwd");
+        assert!(
+            dir.path().join("out.txt").exists(),
+            "command ran in the workspace cwd"
+        );
     }
 }

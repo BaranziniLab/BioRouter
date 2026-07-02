@@ -183,7 +183,14 @@ mod tests {
     }
 
     fn state() -> RunState {
-        RunState::awaiting_approval("run_1", "20240101_7", "spoke-app", pending(), "send_email requires approval", 12)
+        RunState::awaiting_approval(
+            "run_1",
+            "20240101_7",
+            "spoke-app",
+            pending(),
+            "send_email requires approval",
+            12,
+        )
     }
 
     #[test]

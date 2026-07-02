@@ -741,6 +741,61 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+body.biorouter-headless-browser {
+  background:
+    linear-gradient(
+      to right,
+      color-mix(in srgb, var(--background-muted) 70%, var(--background-default)),
+      var(--background-default) 28%,
+      var(--background-default) 72%,
+      color-mix(in srgb, var(--background-muted) 70%, var(--background-default))
+    );
+}
+
+body.biorouter-headless-browser .biorouter-readable-content {
+  padding-left: clamp(18px, 2vw, 32px) !important;
+  padding-right: clamp(18px, 2vw, 32px) !important;
+}
+
+body.biorouter-headless-browser .biorouter-readable-content[data-size='text'] {
+  max-width: min(880px, calc(100vw - 32px)) !important;
+}
+
+body.biorouter-headless-browser .biorouter-readable-content[data-size='wide'] {
+  max-width: min(1040px, calc(100vw - 32px)) !important;
+}
+
+body.biorouter-headless-browser .biorouter-readable-content[data-size='graph'] {
+  max-width: min(1180px, calc(100vw - 32px)) !important;
+}
+
+body.biorouter-headless-browser .biorouter-chat-column,
+body.biorouter-headless-browser .biorouter-chat-composer {
+  max-width: min(760px, calc(100vw - 32px)) !important;
+}
+
+body.biorouter-headless-browser .biorouter-chat-composer-bar {
+  padding-left: clamp(16px, 2vw, 32px) !important;
+  padding-right: clamp(16px, 2vw, 32px) !important;
+}
+
+body.biorouter-headless-browser .biorouter-route-surface[data-route-path='/pair'],
+body.biorouter-headless-browser .biorouter-route-surface[data-route-path='/'] {
+  background: var(--background-default);
+}
+
+@media (max-width: 767px) {
+  body.biorouter-headless-browser .biorouter-readable-content {
+    padding-left: 16px !important;
+    padding-right: 16px !important;
+  }
+
+  body.biorouter-headless-browser .biorouter-chat-column,
+  body.biorouter-headless-browser .biorouter-chat-composer {
+    max-width: calc(100vw - 24px) !important;
+  }
+}
+
 .word-break {
   overflow-wrap: break-word;
   word-wrap: break-word;

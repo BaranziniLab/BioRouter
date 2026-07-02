@@ -147,30 +147,31 @@ impl Vault {
     /// server-side at tool-call time so plaintext never crosses a wire.
     pub fn resolve_refs(&self, text: &str, allowed: &[String]) -> String {
         let mut out = String::with_capacity(text.len());
-        let bytes = text.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            if text[i..].starts_with("{{vault:") {
-                if let Some(end_rel) = text[i..].find("}}") {
-                    let name = &text[i + 8..i + end_rel];
-                    if allowed.iter().any(|a| a == name) {
-                        if let Ok(val) = self.get(name) {
-                            out.push_str(&val);
-                            i += end_rel + 2;
-                            continue;
-                        }
-                    }
-                    // Not allow-listed or missing → leave the reference literal.
-                    out.push_str(&text[i..i + end_rel + 2]);
-                    i += end_rel + 2;
+        let mut rest = text;
+        let marker = "{{vault:";
+        while let Some(start) = rest.find(marker) {
+            let (prefix, candidate) = rest.split_at(start);
+            out.push_str(prefix);
+            let Some(end_rel) = candidate.find("}}") else {
+                out.push_str(candidate);
+                return out;
+            };
+            let (_, after_marker) = candidate.split_at(marker.len());
+            let (name, _) = after_marker.split_at(end_rel - marker.len());
+            if allowed.iter().any(|a| a == name) {
+                if let Ok(val) = self.get(name) {
+                    out.push_str(&val);
+                    let (_, after_ref) = candidate.split_at(end_rel + 2);
+                    rest = after_ref;
                     continue;
                 }
             }
-            // Push one UTF-8 char to stay on a char boundary.
-            let ch = text[i..].chars().next().unwrap();
-            out.push(ch);
-            i += ch.len_utf8();
+            // Not allow-listed or missing → leave the reference literal.
+            let (literal, after_ref) = candidate.split_at(end_rel + 2);
+            out.push_str(literal);
+            rest = after_ref;
         }
+        out.push_str(rest);
         out
     }
 }

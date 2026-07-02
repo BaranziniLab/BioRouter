@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { useForm } from '@tanstack/react-form';
 import { Workflow, WorkflowKnowledgeBases } from '../../workflow';
@@ -37,6 +37,16 @@ export default function CreateWorkflowFromSessionModal({
   const [defaultKnowledgeBaseId, setDefaultKnowledgeBaseId] = useState<string | null>(null);
   const [skillItems, setSkillItems] = useState<WorkflowResourceItem[]>([]);
   const [workflowSkillIds, setWorkflowSkillIds] = useState<string[]>([]);
+  const generatedResourcesRef = useRef<{
+    extensions?: ExtensionConfig[];
+    knowledgeBases?: WorkflowKnowledgeBases;
+    skills?: string[];
+  }>({});
+  const resourceEditsRef = useRef({
+    extensions: false,
+    knowledgeBases: false,
+    skills: false,
+  });
 
   // Initialize form with empty values for new workflow
   const form = useForm({
@@ -157,6 +167,35 @@ export default function CreateWorkflowFromSessionModal({
                 JSON.stringify(workflow.response.json_schema, null, 2)
               );
             }
+
+            if (workflow.extensions && workflow.extensions.length > 0) {
+              generatedResourcesRef.current.extensions = workflow.extensions;
+              setWorkflowExtensions(workflow.extensions);
+            }
+
+            if (workflow.knowledge_bases) {
+              const visible = workflow.knowledge_bases.visible ?? [];
+              generatedResourcesRef.current.knowledgeBases = {
+                default:
+                  workflow.knowledge_bases.default &&
+                  visible.includes(workflow.knowledge_bases.default)
+                    ? workflow.knowledge_bases.default
+                    : (visible[0] ?? null),
+                visible,
+              };
+              setWorkflowKnowledgeBaseIds(visible);
+              setDefaultKnowledgeBaseId(
+                workflow.knowledge_bases.default &&
+                  visible.includes(workflow.knowledge_bases.default)
+                  ? workflow.knowledge_bases.default
+                  : (visible[0] ?? null)
+              );
+            }
+
+            if (workflow.skills && workflow.skills.length > 0) {
+              generatedResourcesRef.current.skills = workflow.skills;
+              setWorkflowSkillIds(workflow.skills);
+            }
           } else {
             console.error('No workflow in response:', response);
           }
@@ -189,6 +228,12 @@ export default function CreateWorkflowFromSessionModal({
       setDefaultKnowledgeBaseId(null);
       setSkillItems([]);
       setWorkflowSkillIds([]);
+      generatedResourcesRef.current = {};
+      resourceEditsRef.current = {
+        extensions: false,
+        knowledgeBases: false,
+        skills: false,
+      };
     }
   }, [isOpen]);
 
@@ -233,11 +278,29 @@ export default function CreateWorkflowFromSessionModal({
           : undefined;
 
       // Create the workflow object from form data
+      const generatedResources = generatedResourcesRef.current;
+      const selectedExtensions =
+        workflowExtensions.length > 0 || resourceEditsRef.current.extensions
+          ? workflowExtensions
+          : (generatedResources.extensions ?? []);
+      const selectedKnowledgeBaseIds =
+        workflowKnowledgeBaseIds.length > 0 || resourceEditsRef.current.knowledgeBases
+          ? workflowKnowledgeBaseIds
+          : (generatedResources.knowledgeBases?.visible ?? []);
+      const selectedDefaultKnowledgeBaseId =
+        defaultKnowledgeBaseId ??
+        (resourceEditsRef.current.knowledgeBases
+          ? null
+          : (generatedResources.knowledgeBases?.default ?? null));
+      const selectedSkillIds =
+        workflowSkillIds.length > 0 || resourceEditsRef.current.skills
+          ? workflowSkillIds
+          : (generatedResources.skills ?? []);
       const knowledgeBases: WorkflowKnowledgeBases | undefined =
-        knowledgeBaseItems.length > 0
+        selectedKnowledgeBaseIds.length > 0 || selectedDefaultKnowledgeBaseId
           ? {
-              default: defaultKnowledgeBaseId,
-              visible: workflowKnowledgeBaseIds,
+              default: selectedDefaultKnowledgeBaseId,
+              visible: selectedKnowledgeBaseIds,
             }
           : undefined;
 
@@ -267,13 +330,13 @@ export default function CreateWorkflowFromSessionModal({
             : undefined,
         settings: settingsConfig,
         extensions:
-          workflowExtensions.length > 0
-            ? (workflowExtensions.map((ext) =>
+          selectedExtensions.length > 0
+            ? (selectedExtensions.map((ext) =>
                 'envs' in ext ? { ...ext, envs: undefined } : ext
               ) as ExtensionConfig[])
             : undefined,
         knowledge_bases: knowledgeBases,
-        skills: workflowSkillIds.length > 0 ? workflowSkillIds : undefined,
+        skills: selectedSkillIds.length > 0 ? selectedSkillIds : undefined,
       };
 
       let workflowId = await saveWorkflow(workflow, null);
@@ -379,10 +442,14 @@ export default function CreateWorkflowFromSessionModal({
               <WorkflowFormFields
                 form={form}
                 extensions={workflowExtensions}
-                onExtensionsChange={setWorkflowExtensions}
+                onExtensionsChange={(extensions) => {
+                  resourceEditsRef.current.extensions = true;
+                  setWorkflowExtensions(extensions);
+                }}
                 knowledgeBaseItems={knowledgeBaseItems}
                 selectedKnowledgeBaseIds={workflowKnowledgeBaseIds}
                 onKnowledgeBaseIdsChange={(ids) => {
+                  resourceEditsRef.current.knowledgeBases = true;
                   setWorkflowKnowledgeBaseIds(ids);
                   if (defaultKnowledgeBaseId && !ids.includes(defaultKnowledgeBaseId)) {
                     setDefaultKnowledgeBaseId(ids[0] ?? null);
@@ -391,10 +458,16 @@ export default function CreateWorkflowFromSessionModal({
                   }
                 }}
                 defaultKnowledgeBaseId={defaultKnowledgeBaseId}
-                onDefaultKnowledgeBaseIdChange={setDefaultKnowledgeBaseId}
+                onDefaultKnowledgeBaseIdChange={(id) => {
+                  resourceEditsRef.current.knowledgeBases = true;
+                  setDefaultKnowledgeBaseId(id);
+                }}
                 skillItems={skillItems}
                 selectedSkillIds={workflowSkillIds}
-                onSkillIdsChange={setWorkflowSkillIds}
+                onSkillIdsChange={(ids) => {
+                  resourceEditsRef.current.skills = true;
+                  setWorkflowSkillIds(ids);
+                }}
               />
             </div>
           )}

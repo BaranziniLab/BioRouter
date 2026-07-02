@@ -599,10 +599,11 @@ pub(crate) fn is_default_session_name(name: &str) -> bool {
 pub(crate) fn strip_branch_suffix(name: &str) -> &str {
     let trimmed = name.trim_end();
     if let Some(idx) = trimmed.rfind(" (branch ") {
-        let inner = &trimmed[idx + " (branch ".len()..];
+        let (base, suffix) = trimmed.split_at(idx);
+        let inner = suffix.strip_prefix(" (branch ").unwrap_or(suffix);
         if let Some(digits) = inner.strip_suffix(')') {
             if !digits.is_empty() && digits.chars().all(|c| c.is_ascii_digit()) {
-                return trimmed[..idx].trim_end();
+                return base.trim_end();
             }
         }
     }
@@ -1215,12 +1216,11 @@ impl SessionStorage {
         session_type: SessionType,
     ) -> Result<(Session, bool)> {
         let pool = self.pool().await?;
-        if let Some(id) = sqlx::query_scalar::<_, String>(
-            "SELECT id FROM sessions WHERE external_key = ?",
-        )
-        .bind(external_key)
-        .fetch_optional(pool)
-        .await?
+        if let Some(id) =
+            sqlx::query_scalar::<_, String>("SELECT id FROM sessions WHERE external_key = ?")
+                .bind(external_key)
+                .fetch_optional(pool)
+                .await?
         {
             return Ok((self.get_session(&id, true).await?, true));
         }
@@ -2052,7 +2052,9 @@ mod tests {
         assert!(resumed2, "same key must resume");
         assert_eq!(s2.id, s1.id, "resumed session keeps its id");
         assert_eq!(s2.message_count, 1, "prior conversation is recovered");
-        let convo = s2.conversation.expect("resumed session carries conversation");
+        let convo = s2
+            .conversation
+            .expect("resumed session carries conversation");
         assert_eq!(convo.messages().len(), 1);
         assert_eq!(convo.messages()[0].role, Role::User);
 
@@ -2128,10 +2130,7 @@ mod tests {
         use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
         let temp_dir = TempDir::new().unwrap();
-        let db_path = temp_dir
-            .path()
-            .join(SESSIONS_FOLDER)
-            .join(DB_NAME);
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
         std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
 
         {
@@ -2148,7 +2147,10 @@ mod tests {
                 .execute(&pool).await.unwrap();
             for v in 1..=7 {
                 sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
-                    .bind(v).execute(&pool).await.unwrap();
+                    .bind(v)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
             }
             // The v7 sessions table = current schema MINUS external_key.
             sqlx::query(
@@ -2196,7 +2198,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            sm.get_session("20240101_1", true).await.unwrap().message_count,
+            sm.get_session("20240101_1", true)
+                .await
+                .unwrap()
+                .message_count,
             1
         );
 
@@ -2227,7 +2232,11 @@ mod tests {
         // Two NULL external_keys are allowed (partial unique index) — the legacy
         // row + a fresh plain session both have NULL and coexist.
         let plain = sm
-            .create_session(PathBuf::from("/tmp"), "plain".to_string(), SessionType::User)
+            .create_session(
+                PathBuf::from("/tmp"),
+                "plain".to_string(),
+                SessionType::User,
+            )
             .await
             .unwrap();
         assert_ne!(plain.id, "20240101_1");

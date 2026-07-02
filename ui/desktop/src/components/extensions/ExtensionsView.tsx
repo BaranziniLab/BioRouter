@@ -19,6 +19,7 @@ import { SearchView } from '../conversation/SearchView';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { BrxtInstallModal } from '../BrxtInstallModal';
 import BrowseExtensionsModal from '../baam/BrowseExtensionsModal';
+import { ReadableContent } from '../Layout/ReadableContent';
 
 export type ExtensionsViewOptions = {
   deepLinkConfig?: ExtensionConfig;
@@ -125,43 +126,45 @@ export default function ExtensionsView({
         data-search-scroll-area
       >
         {/* Flat page header */}
-        <div className="px-8 pt-12 pb-6 flex-shrink-0 border-b border-border-subtle">
-          <div className="flex flex-col page-transition">
-            <h1 className="text-2xl font-semibold tracking-tight mb-1">Extensions</h1>
-            <p className="text-sm text-text-muted mb-0">
-              MCP extensions expand BioRouter's capabilities with Prompts, Resources, and Tools.
-              Enabled extensions apply to all new chats. {getSearchShortcutText()} to search.
-            </p>
-          </div>
-          <div className="flex gap-3 mt-5">
-            <Button
-              className="flex items-center gap-2"
-              variant="default"
-              onClick={() => setIsBrxtModalOpen(true)}
-            >
-              <Plus className="h-4 w-4" />
-              Add Extension
-            </Button>
-            <Button
-              className="flex items-center gap-2"
-              variant="outline"
-              onClick={() => setIsBrowseModalOpen(true)}
-            >
-              <GPSIcon size={12} />
-              Browse Extensions
-            </Button>
-            <Button
-              className="flex items-center gap-2"
-              variant="outline"
-              onClick={() => setIsAddModalOpen(true)}
-            >
-              <Plus className="h-4 w-4" />
-              Add Custom Extension
-            </Button>
-          </div>
+        <div className="flex-shrink-0 border-b border-border-subtle">
+          <ReadableContent className="px-8 pt-12 pb-6">
+            <div className="flex flex-col page-transition">
+              <h1 className="text-2xl font-semibold tracking-tight mb-1">Extensions</h1>
+              <p className="text-sm text-text-muted mb-0">
+                MCP extensions expand BioRouter's capabilities with Prompts, Resources, and Tools.
+                Enabled extensions apply to all new chats. {getSearchShortcutText()} to search.
+              </p>
+            </div>
+            <div className="flex gap-3 mt-5">
+              <Button
+                className="flex items-center gap-2"
+                variant="default"
+                onClick={() => setIsBrxtModalOpen(true)}
+              >
+                <Plus className="h-4 w-4" />
+                Add Extension
+              </Button>
+              <Button
+                className="flex items-center gap-2"
+                variant="outline"
+                onClick={() => setIsBrowseModalOpen(true)}
+              >
+                <GPSIcon size={12} />
+                Browse Extensions
+              </Button>
+              <Button
+                className="flex items-center gap-2"
+                variant="outline"
+                onClick={() => setIsAddModalOpen(true)}
+              >
+                <Plus className="h-4 w-4" />
+                Add Custom Extension
+              </Button>
+            </div>
+          </ReadableContent>
         </div>
 
-        <div className="px-8 pt-6 pb-8">
+        <ReadableContent className="px-8 pt-6 pb-8">
           <SearchView onSearch={(term) => setSearchTerm(term)} placeholder="Search extensions...">
             <ExtensionsSection
               key={refreshKey}
@@ -174,7 +177,7 @@ export default function ExtensionsView({
               }}
             />
           </SearchView>
-        </div>
+        </ReadableContent>
       </div>
 
       {/* Modal for adding a new extension */}

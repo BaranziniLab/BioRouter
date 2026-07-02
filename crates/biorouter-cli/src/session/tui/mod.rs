@@ -18,7 +18,12 @@ use biorouter::permission::{Permission, PermissionConfirmation};
 use crossterm::cursor::SetCursorStyle;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEventKind,
+    EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
+};
+#[cfg(unix)]
+use crossterm::event::{
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -74,6 +79,8 @@ impl Tui {
                 LeaveAlternateScreen,
                 DisableMouseCapture
             );
+            #[cfg(unix)]
+            let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
             prev(info);
         }));
 
@@ -86,17 +93,20 @@ impl Tui {
         // Mouse capture is ON so the scroll wheel scrolls the *conversation*
         // (the app scrollback) rather than the terminal's own buffer — without it,
         // in the alternate screen a wheel-scroll just exposed the pre-launch banner
-        // and the conversation looked lost. The trade-off is that click-drag
-        // selection is routed to the app; native text selection still works by
-        // holding the terminal's bypass modifier while dragging (Option on
-        // macOS Terminal/iTerm2, Shift on most others) — and PageUp/PageDown also
-        // scroll. See the `MouseEventKind::ScrollUp/Down` handlers in the event loop.
+        // and the conversation looked lost. Click-drag inside the input now
+        // drives the app's own text selection; native terminal selection still
+        // works through the terminal's bypass modifier.
         execute!(
             out,
             EnterAlternateScreen,
             EnableBracketedPaste,
             EnableMouseCapture,
             SetCursorStyle::BlinkingBar
+        )?;
+        #[cfg(unix)]
+        execute!(
+            out,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
         )?;
         let terminal = Terminal::new(CrosstermBackend::new(out))?;
         Ok(Self { terminal })
@@ -118,6 +128,8 @@ impl Drop for Tui {
             LeaveAlternateScreen,
             DisableMouseCapture
         );
+        #[cfg(unix)]
+        let _ = execute!(std::io::stdout(), PopKeyboardEnhancementFlags);
         let _ = self.terminal.show_cursor();
     }
 }
@@ -162,11 +174,7 @@ pub async fn run(session: &mut CliSession, initial_prompt: Option<String>) -> Re
                 }
             }
             Event::Paste(s) => app.paste(&s),
-            Event::Mouse(m) => match m.kind {
-                MouseEventKind::ScrollUp => app.scroll_up(3),
-                MouseEventKind::ScrollDown => app.scroll_down(3),
-                _ => {}
-            },
+            Event::Mouse(m) => on_mouse(&mut app, m),
             _ => {}
         }
     }
@@ -177,6 +185,7 @@ pub async fn run(session: &mut CliSession, initial_prompt: Option<String>) -> Re
 /// when the user presses Enter on a non-empty buffer.
 fn on_key(app: &mut App, key: KeyEvent) -> Option<String> {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
     // The completion popup captures navigation keys first.
     if app.completion_active() {
@@ -202,6 +211,11 @@ fn on_key(app: &mut App, key: KeyEvent) -> Option<String> {
             }
             _ => {}
         }
+    }
+
+    if handle_clipboard_shortcut(app, key) {
+        app.refresh_completion();
+        return None;
     }
 
     let mut submit = None;
@@ -231,13 +245,15 @@ fn on_key(app: &mut App, key: KeyEvent) -> Option<String> {
         }
         KeyCode::Tab => app.accept_ghost(),
         KeyCode::Backspace => app.backspace(),
-        KeyCode::Left => app.move_left(),
-        KeyCode::Right => app.move_right(),
-        KeyCode::Home => app.move_home(),
-        KeyCode::End => app.move_end(),
-        KeyCode::Up if !app.input.contains('\n') => app.history_prev(),
-        KeyCode::Down if !app.input.contains('\n') => app.history_next(),
-        KeyCode::Up => app.move_left(),
+        KeyCode::Delete => app.delete_forward(),
+        KeyCode::Left => app.move_left_extending(shift),
+        KeyCode::Right => app.move_right_extending(shift),
+        KeyCode::Home => app.move_home_extending(shift),
+        KeyCode::End => app.move_end_extending(shift),
+        KeyCode::Up if should_recall_history(app, shift) => app.history_prev(),
+        KeyCode::Down if should_recall_history(app, shift) => app.history_next(),
+        KeyCode::Up => move_cursor_vertical(app, -1, shift),
+        KeyCode::Down => move_cursor_vertical(app, 1, shift),
         KeyCode::PageUp => app.scroll_up(10),
         KeyCode::PageDown => app.scroll_down(10),
         KeyCode::Char(c) => app.insert_char(c),
@@ -263,6 +279,7 @@ enum StreamAction {
 /// out. Enter queues; Ctrl-C cancels the in-flight turn.
 fn on_key_streaming(app: &mut App, key: KeyEvent) -> StreamAction {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
     if app.completion_active() {
         match key.code {
@@ -287,6 +304,11 @@ fn on_key_streaming(app: &mut App, key: KeyEvent) -> StreamAction {
         }
     }
 
+    if handle_clipboard_shortcut(app, key) {
+        app.refresh_completion();
+        return StreamAction::None;
+    }
+
     match key.code {
         KeyCode::Char('c') if ctrl => return StreamAction::Cancel,
         KeyCode::Char('j') if ctrl => app.insert_newline(),
@@ -306,10 +328,13 @@ fn on_key_streaming(app: &mut App, key: KeyEvent) -> StreamAction {
         }
         KeyCode::Tab => app.accept_ghost(),
         KeyCode::Backspace => app.backspace(),
-        KeyCode::Left => app.move_left(),
-        KeyCode::Right => app.move_right(),
-        KeyCode::Home => app.move_home(),
-        KeyCode::End => app.move_end(),
+        KeyCode::Delete => app.delete_forward(),
+        KeyCode::Left => app.move_left_extending(shift),
+        KeyCode::Right => app.move_right_extending(shift),
+        KeyCode::Home => app.move_home_extending(shift),
+        KeyCode::End => app.move_end_extending(shift),
+        KeyCode::Up => move_cursor_vertical(app, -1, shift),
+        KeyCode::Down => move_cursor_vertical(app, 1, shift),
         KeyCode::PageUp => app.scroll_up(10),
         KeyCode::PageDown => app.scroll_down(10),
         KeyCode::Char(c) => app.insert_char(c),
@@ -317,6 +342,119 @@ fn on_key_streaming(app: &mut App, key: KeyEvent) -> StreamAction {
     }
     app.refresh_completion();
     StreamAction::None
+}
+
+fn shortcut_modifier(key: KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::SUPER)
+        || key.modifiers.contains(KeyModifiers::META)
+        || key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+fn handle_clipboard_shortcut(app: &mut App, key: KeyEvent) -> bool {
+    if !shortcut_modifier(key) {
+        return false;
+    }
+    match key.code {
+        KeyCode::Char('a') => {
+            app.select_all();
+            true
+        }
+        KeyCode::Char('c')
+            if key.modifiers.contains(KeyModifiers::SUPER)
+                || key.modifiers.contains(KeyModifiers::META) =>
+        {
+            if let Some(text) = app.selected_text() {
+                write_clipboard(&text);
+            }
+            true
+        }
+        KeyCode::Char('x') => {
+            if let Some(text) = app.cut_selection() {
+                write_clipboard(&text);
+            }
+            true
+        }
+        KeyCode::Char('v') => {
+            if let Some(text) = read_clipboard() {
+                app.paste(&text);
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn read_clipboard() -> Option<String> {
+    let mut clipboard = arboard::Clipboard::new().ok()?;
+    clipboard.get_text().ok()
+}
+
+fn write_clipboard(text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Ok(mut clipboard) = arboard::Clipboard::new() {
+        let _ = clipboard.set_text(text.to_string());
+    }
+}
+
+fn should_recall_history(app: &App, shift: bool) -> bool {
+    !shift && input_visual_rows(&app.input, app.last_input_text_width).len() <= 1
+}
+
+fn move_cursor_vertical(app: &mut App, delta: i16, extend: bool) {
+    let width = app.last_input_text_width.max(1);
+    let rows = input_visual_rows(&app.input, width);
+    let (row, col) = visual_position(&rows, &app.input, app.cursor);
+    let next_row = if delta < 0 {
+        row.saturating_sub(delta.unsigned_abs() as usize)
+    } else {
+        (row + delta as usize).min(rows.len().saturating_sub(1))
+    };
+    let cursor = byte_at_visual_cell(&rows, &app.input, next_row, col);
+    app.set_cursor(cursor, extend);
+}
+
+fn on_mouse(app: &mut App, m: MouseEvent) {
+    match m.kind {
+        MouseEventKind::ScrollUp => app.scroll_up(3),
+        MouseEventKind::ScrollDown => app.scroll_down(3),
+        MouseEventKind::Down(MouseButton::Left) => {
+            if let Some(cursor) = input_cursor_at_mouse(app, m.column, m.row) {
+                if m.modifiers.contains(KeyModifiers::SHIFT) {
+                    app.set_cursor(cursor, true);
+                } else {
+                    app.start_mouse_selection(cursor);
+                }
+                app.refresh_completion();
+            }
+        }
+        MouseEventKind::Drag(MouseButton::Left) => {
+            if let Some(cursor) = input_cursor_at_mouse(app, m.column, m.row) {
+                app.drag_mouse_selection(cursor);
+                app.refresh_completion();
+            }
+        }
+        MouseEventKind::Up(MouseButton::Left) => app.finish_mouse_selection(),
+        _ => {}
+    }
+}
+
+fn input_cursor_at_mouse(app: &App, column: u16, row: u16) -> Option<usize> {
+    let inner = app.last_input_inner?;
+    if column < inner.x
+        || column >= inner.x.saturating_add(inner.width)
+        || row < inner.y
+        || row >= inner.y.saturating_add(inner.height)
+    {
+        return None;
+    }
+    let target_row = row.saturating_sub(inner.y) as usize;
+    let target_col = column.saturating_sub(inner.x).saturating_sub(2) as usize;
+    let rows = input_visual_rows(&app.input, app.last_input_text_width);
+    Some(byte_at_visual_cell(
+        &rows, &app.input, target_row, target_col,
+    ))
 }
 
 /// Submit a line: handle TUI-local slash commands, else send to the agent.
@@ -407,11 +545,7 @@ async fn drive_response(
                         }
                     }
                     Some(Event::Paste(s)) => app.paste(&s),
-                    Some(Event::Mouse(m)) => match m.kind {
-                        MouseEventKind::ScrollUp => app.scroll_up(3),
-                        MouseEventKind::ScrollDown => app.scroll_down(3),
-                        _ => {}
-                    },
+                    Some(Event::Mouse(m)) => on_mouse(app, m),
                     _ => {}
                 }
             }
@@ -917,7 +1051,7 @@ fn clip_cells(s: &str, max: usize) -> String {
     out
 }
 
-fn draw_input(f: &mut Frame, app: &App, area: Rect) {
+fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     let (border_color, mut title) = if let Some(t) = &app.thinking {
         (
             ACCENT,
@@ -935,11 +1069,13 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::new().fg(border_color))
         .title(Span::styled(title, Style::new().fg(ACCENT)));
     let inner = block.inner(area);
+    app.last_input_inner = Some(inner);
     f.render_widget(block, area);
 
     // Soft-wrap each logical line to the inner text width (prompt = 2 cells) so
     // overflowing text flows onto the next row instead of being clipped.
     let text_w = inner.width.saturating_sub(2).max(1) as usize;
+    app.last_input_text_width = text_w;
     let ghost = if app.completion.is_some() {
         None
     } else {
@@ -958,15 +1094,18 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
             ),
         ]));
     } else {
-        for (li, logical) in app.input.split('\n').enumerate() {
-            for (ri, row) in wrap_cells(logical, text_w).into_iter().enumerate() {
-                let prefix = if li == 0 && ri == 0 {
-                    Span::styled("❯ ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD))
-                } else {
-                    Span::raw("  ")
-                };
-                lines.push(Line::from(vec![prefix, Span::raw(row)]));
-            }
+        for (idx, row) in input_visual_rows(&app.input, text_w)
+            .into_iter()
+            .enumerate()
+        {
+            let prefix = if idx == 0 {
+                Span::styled("❯ ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD))
+            } else {
+                Span::raw("  ")
+            };
+            let mut spans = vec![prefix];
+            spans.extend(input_row_spans(app, row.start, row.end));
+            lines.push(Line::from(spans));
         }
         if let (Some(g), Some(last)) = (ghost, lines.last_mut()) {
             last.spans.push(Span::styled(
@@ -977,32 +1116,133 @@ fn draw_input(f: &mut Frame, app: &App, area: Rect) {
     }
     f.render_widget(Paragraph::new(lines), inner);
 
-    // Place the hardware cursor at its wrapped (row, col), walking the text the
-    // same way `wrap_cells` does so wide glyphs (CJK = 2 cells) don't drift it.
     if app.modal.is_none() {
-        let before = app.input.get(..app.cursor).unwrap_or(&app.input);
-        let logical_idx = before.matches('\n').count();
-        let mut row: u16 = 0;
-        for l in app.input.split('\n').take(logical_idx) {
-            row = row.saturating_add(wrap_cells(l, text_w).len() as u16);
-        }
-        let cur_logical = before.rsplit('\n').next().unwrap_or("");
-        let mut col = 0usize;
-        for ch in cur_logical.chars() {
-            let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if col + cw > text_w && col != 0 {
-                row = row.saturating_add(1);
-                col = 0;
-            }
-            col += cw;
-        }
-        let x = inner.x + 2 + col as u16; // 2 = "❯ " prompt width
-        let y = inner.y + row;
+        let rows = input_visual_rows(&app.input, text_w);
+        let (row, col) = visual_position(&rows, &app.input, app.cursor);
+        let x = inner.x + 2 + col as u16; // 2 = prompt width
+        let y = inner.y + row as u16;
         f.set_cursor_position((
             x.min(inner.x + inner.width.saturating_sub(1)),
             y.min(inner.y + inner.height.saturating_sub(1)),
         ));
     }
+}
+
+fn input_row_spans(app: &App, start: usize, end: usize) -> Vec<Span<'static>> {
+    let Some((sel_start, sel_end)) = app.selection_range() else {
+        return vec![Span::raw(input_slice(&app.input, start, end).to_string())];
+    };
+    let hi_start = sel_start.max(start);
+    let hi_end = sel_end.min(end);
+    if hi_start >= hi_end {
+        return vec![Span::raw(input_slice(&app.input, start, end).to_string())];
+    }
+    let mut spans = Vec::new();
+    if start < hi_start {
+        spans.push(Span::raw(
+            input_slice(&app.input, start, hi_start).to_string(),
+        ));
+    }
+    spans.push(Span::styled(
+        input_slice(&app.input, hi_start, hi_end).to_string(),
+        Style::new().fg(Color::Black).bg(ACCENT),
+    ));
+    if hi_end < end {
+        spans.push(Span::raw(input_slice(&app.input, hi_end, end).to_string()));
+    }
+    spans
+}
+
+fn input_slice(input: &str, start: usize, end: usize) -> &str {
+    input.get(start..end).unwrap_or_default()
+}
+
+#[derive(Clone, Copy)]
+struct InputRow {
+    start: usize,
+    end: usize,
+}
+
+fn input_visual_rows(input: &str, width: usize) -> Vec<InputRow> {
+    let w = width.max(1);
+    let mut rows = Vec::new();
+    let mut line_start = 0usize;
+    for logical in input.split('\n') {
+        let line_end = line_start + logical.len();
+        let mut row_start = line_start;
+        let mut row_width = 0usize;
+        if logical.is_empty() {
+            rows.push(InputRow {
+                start: line_start,
+                end: line_start,
+            });
+        } else {
+            for (rel, ch) in logical.char_indices() {
+                let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if row_width + cw > w && row_start < line_start + rel {
+                    rows.push(InputRow {
+                        start: row_start,
+                        end: line_start + rel,
+                    });
+                    row_start = line_start + rel;
+                    row_width = 0;
+                }
+                row_width += cw;
+            }
+            rows.push(InputRow {
+                start: row_start,
+                end: line_end,
+            });
+        }
+        line_start = line_end.saturating_add(1);
+    }
+    if rows.is_empty() {
+        rows.push(InputRow { start: 0, end: 0 });
+    }
+    rows
+}
+
+fn visual_position(rows: &[InputRow], input: &str, cursor: usize) -> (usize, usize) {
+    for (idx, row) in rows.iter().enumerate() {
+        if cursor >= row.start && cursor <= row.end {
+            let col = UnicodeWidthStr::width(input_slice(input, row.start, cursor));
+            return (idx, col);
+        }
+    }
+    let last_idx = rows.len().saturating_sub(1);
+    let last = rows
+        .last()
+        .copied()
+        .unwrap_or(InputRow { start: 0, end: 0 });
+    (
+        last_idx,
+        UnicodeWidthStr::width(input_slice(input, last.start, last.end)),
+    )
+}
+
+fn byte_at_visual_cell(rows: &[InputRow], input: &str, row: usize, col: usize) -> usize {
+    let row = rows
+        .get(row)
+        .or_else(|| rows.last())
+        .copied()
+        .unwrap_or(InputRow { start: 0, end: 0 });
+    let text = input_slice(input, row.start, row.end);
+    let mut current_col = 0usize;
+    for (rel, ch) in text.char_indices() {
+        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if col <= current_col {
+            return row.start + rel;
+        }
+        if col < current_col + cw {
+            return if col.saturating_sub(current_col) <= cw / 2 {
+                row.start + rel
+            } else {
+                row.start + rel + ch.len_utf8()
+            };
+        }
+        current_col += cw;
+    }
+    row.end
 }
 
 /// Break a logical line into display rows at `width` cells, like a textarea
@@ -1127,32 +1367,9 @@ fn greeting_into(app: &mut App) {
     );
 }
 
-/// List installed skill slugs (top-level skills and one-level bundles) under the
-/// config skills directory, matching how `biorouter skill list` discovers them.
+/// List skill references using the same directories as the desktop slash popup.
 fn list_skills() -> Vec<String> {
-    let root = biorouter::config::paths::Paths::config_dir().join("skills");
-    fn walk(root: &std::path::Path, dir: &std::path::Path, depth: usize, out: &mut Vec<String>) {
-        if depth > 2 {
-            return;
-        }
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                walk(root, &p, depth + 1, out);
-            } else if p.file_name().and_then(|f| f.to_str()) == Some("SKILL.md") {
-                if let Some(rel) = p.parent().and_then(|d| d.strip_prefix(root).ok()) {
-                    out.push(rel.display().to_string());
-                }
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(&root, &root, 0, &mut out);
-    out.sort();
-    out
+    crate::session::completion::list_skill_reference_names()
 }
 
 fn count_skills() -> usize {
@@ -1174,7 +1391,10 @@ const CAPABILITY_KEYS: [&str; 6] = [
 ];
 
 fn name_to_key(name: &str) -> String {
-    name.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_lowercase()
+    name.chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_lowercase()
 }
 
 /// Enabled extensions, excluding the foundational capabilities — matches the
@@ -1219,13 +1439,12 @@ fn build_catalog(session: &CliSession) -> Vec<app::CompletionItem> {
     items.push(cmd("/exit", "Leave the session"));
 
     // Skills — "Use the \"x\" skill for this request, "
-    for slug in list_skills() {
-        let name = slug.rsplit('/').next().unwrap_or(&slug).to_string();
+    for name in list_skills() {
         items.push(CompletionItem {
-            label: slug.clone(),
+            label: name.clone(),
             description: "Ask the agent to use this skill".to_string(),
             insert: format!("Use the \"{}\" skill for this request, ", name),
-            filter: format!("skill {}", slug.to_lowercase()),
+            filter: format!("skill {}", name.to_lowercase()),
             kind: CompletionKind::Skill,
         });
     }
@@ -1498,6 +1717,25 @@ mod tests {
     }
 
     #[test]
+    fn paste_file_uri_list_inserts_local_paths() {
+        let mut app = App::new(StatusInfo::default());
+        app.paste("file:///Users/wgu/Desktop/BioRouter/README.md\n");
+        assert_eq!(app.input, "/Users/wgu/Desktop/BioRouter/README.md");
+    }
+
+    #[test]
+    fn paste_file_uri_list_quotes_paths_with_spaces() {
+        let mut app = App::new(StatusInfo::default());
+        app.paste(
+            "# dragged files\nfile:///Users/wgu/Desktop/first%20file.pdf\nfile://localhost/Users/wgu/Desktop/second.txt\n",
+        );
+        assert_eq!(
+            app.input,
+            "'/Users/wgu/Desktop/first file.pdf' /Users/wgu/Desktop/second.txt"
+        );
+    }
+
+    #[test]
     fn completion_popup_filters_and_accepts() {
         use app::{CompletionItem, CompletionKind};
         let mut app = App::new(StatusInfo::default());
@@ -1600,6 +1838,41 @@ mod tests {
         assert_eq!(app.input, "/help ");
         app.backspace();
         assert_eq!(app.input, "/help");
+    }
+
+    #[test]
+    fn selection_deletes_and_replaces_text() {
+        let mut app = App::new(StatusInfo::default());
+        app.paste("alpha beta gamma");
+        app.set_cursor(6, false);
+        app.set_cursor(10, true);
+        assert_eq!(app.selected_text().as_deref(), Some("beta"));
+        app.backspace();
+        assert_eq!(app.input, "alpha  gamma");
+        assert_eq!(app.cursor, 6);
+
+        app.set_cursor(6, false);
+        app.set_cursor(7, true);
+        app.insert_char('X');
+        assert_eq!(app.input, "alpha Xgamma");
+    }
+
+    #[test]
+    fn mouse_position_maps_to_wrapped_input_cursor() {
+        let mut app = App::new(StatusInfo::default());
+        app.paste("abcdef");
+        app.last_input_inner = Some(Rect {
+            x: 10,
+            y: 5,
+            width: 8,
+            height: 3,
+        });
+        app.last_input_text_width = 3;
+
+        assert_eq!(input_cursor_at_mouse(&app, 12, 5), Some(0));
+        assert_eq!(input_cursor_at_mouse(&app, 14, 5), Some(2));
+        assert_eq!(input_cursor_at_mouse(&app, 12, 6), Some(3));
+        assert_eq!(input_cursor_at_mouse(&app, 15, 6), Some(6));
     }
 
     // B3: queued messages are rendered in full (not just a count).

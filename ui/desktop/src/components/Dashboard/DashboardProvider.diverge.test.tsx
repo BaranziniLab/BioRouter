@@ -9,8 +9,8 @@ import { useDashboard } from '../../contexts/DashboardContext';
  * "diverge in dashboard / data-loss" bug fixes:
  *  - Closing a resumed/diverged window must NEVER delete the conversation
  *    (it only stops the in-memory agent).
- *  - Closing a created-here window deletes the session ONLY if it's empty.
- *  - clearAll follows the same rules.
+ *  - Closing a created-here window also preserves history.
+ *  - clearAll follows the same remove-from-dashboard-only rule.
  *  - Stale windows (deleted session → 404) are dropped on hydrate.
  */
 
@@ -100,7 +100,7 @@ describe('dashboard session lifecycle (diverge hardening)', () => {
     expect(mockGetSession).not.toHaveBeenCalled();
   });
 
-  it('closing a created-here EMPTY window deletes that throwaway session', async () => {
+  it('closing a created-here EMPTY window preserves history', async () => {
     mockGetSession.mockResolvedValue({
       data: { message_count: 0 },
       error: undefined,
@@ -115,10 +115,12 @@ describe('dashboard session lifecycle (diverge hardening)', () => {
       result.current.closeWindow(windowId);
       await flush();
     });
-    expect(mockDeleteSession).toHaveBeenCalledWith({
-      path: { session_id: sessionId },
+    expect(mockDeleteSession).not.toHaveBeenCalled();
+    expect(mockStopAgent).toHaveBeenCalledWith({
+      body: { session_id: sessionId },
       throwOnError: false,
     });
+    expect(mockGetSession).not.toHaveBeenCalled();
   });
 
   it('closing a created-here USED window keeps history (stopAgent, no delete)', async () => {

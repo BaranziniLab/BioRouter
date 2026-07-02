@@ -6,6 +6,7 @@
     <title>Interactive Map Visualization</title>
     
     {{ASSETS}}
+    <!-- prettier-ignore -->
     <script>{{COMMON}}</script>
     <style>
         
@@ -49,6 +50,10 @@
             width: 100%;
             height: 600px;
             border-radius: 0 0 12px 12px;
+        }
+        
+        .leaflet-control-layers-toggle {
+            background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='26' height='26' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linejoin='round'%3E%3Cpath d='M12 2 2 7l10 5 10-5-10-5Z'/%3E%3Cpath d='m2 12 10 5 10-5'/%3E%3Cpath d='m2 17 10 5 10-5'/%3E%3C/svg%3E") !important;
         }
         
         .custom-popup {
@@ -125,6 +130,17 @@
         let markerClusterGroup;
         
         function initMap() {
+            const defaultMarkerSvg = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent(
+                '<svg xmlns="http://www.w3.org/2000/svg" width="25" height="41" viewBox="0 0 25 41">' +
+                '<path fill="#4f7cff" stroke="#fff" stroke-width="2" d="M12.5 1C6.1 1 1 6.1 1 12.5 1 22 12.5 40 12.5 40S24 22 24 12.5C24 6.1 18.9 1 12.5 1Z"/>' +
+                '<circle cx="12.5" cy="12.5" r="4.5" fill="#fff"/></svg>'
+            );
+            L.Icon.Default.mergeOptions({
+                iconUrl: defaultMarkerSvg,
+                iconRetinaUrl: defaultMarkerSvg,
+                shadowUrl: ''
+            });
+
             // Determine initial center and zoom
             let initialLat = mapData.center ? mapData.center.lat : 39.8283;
             let initialLng = mapData.center ? mapData.center.lng : -98.5795;

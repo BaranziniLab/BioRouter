@@ -257,7 +257,7 @@ mod tests {
             effective_max_retries(&rate_limit, &config),
             RATE_LIMIT_MAX_RETRIES
         );
-        assert!(RATE_LIMIT_MAX_RETRIES > DEFAULT_MAX_RETRIES);
+        const { assert!(RATE_LIMIT_MAX_RETRIES > DEFAULT_MAX_RETRIES) };
 
         // Non-rate-limit retryable errors keep the generic ceiling.
         let server = ProviderError::ServerError("boom".to_string());

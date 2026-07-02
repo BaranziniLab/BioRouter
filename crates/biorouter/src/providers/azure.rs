@@ -144,7 +144,7 @@ impl Provider for AzureProvider {
             "azure_openai",
             "Azure OpenAI",
             "Models through Azure OpenAI Service (uses Azure credential chain by default).",
-            "gpt-4o",
+            AZURE_DEFAULT_MODEL,
             AZURE_OPENAI_KNOWN_MODELS.to_vec(),
             AZURE_DOC_URL,
             vec![
@@ -155,10 +155,16 @@ impl Provider for AzureProvider {
                     Some("https://unified-api.ucsf.edu/general"),
                 ),
                 ConfigKey::new("AZURE_OPENAI_DEPLOYMENT_NAME", true, false, None),
-                ConfigKey::new("AZURE_OPENAI_API_VERSION", true, false, Some("2024-10-21")),
+                ConfigKey::new(
+                    "AZURE_OPENAI_API_VERSION",
+                    true,
+                    false,
+                    Some(AZURE_DEFAULT_API_VERSION),
+                ),
                 ConfigKey::new("AZURE_OPENAI_API_KEY", false, true, Some("")),
             ],
         )
+        .with_unlisted_models()
     }
 
     fn get_name(&self) -> &str {
