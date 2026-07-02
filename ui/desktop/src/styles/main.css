@@ -543,10 +543,8 @@
 }
 
 .biorouter-settings-tabs {
-  background: color-mix(in srgb, var(--background-default) 68%, transparent);
-  box-shadow:
-    0 10px 24px -24px rgba(32, 25, 15, 0.38),
-    inset 0 1px 0 rgba(255, 255, 255, 0.4);
+  background: transparent;
+  box-shadow: none;
 }
 
 .biorouter-settings-section {
@@ -564,9 +562,9 @@
 .biorouter-settings-list {
   display: flex;
   flex-direction: column;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--background-default) 46%, transparent);
-  box-shadow: 0 10px 24px -26px rgba(32, 25, 15, 0.28);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .biorouter-settings-control-strip {
@@ -574,10 +572,10 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--background-default) 46%, transparent);
-  padding: 12px;
-  box-shadow: 0 10px 24px -26px rgba(32, 25, 15, 0.28);
+  border-radius: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
 }
 
 .biorouter-settings-row {
