@@ -23,7 +23,7 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
       <button
         data-testid="knowledge-kb-selector-trigger"
         onClick={() => setOpen(true)}
-        className="group inline-flex w-full items-center gap-3 rounded-xl bg-background-default/76 px-3 py-3 shadow-[0_8px_20px_-18px_rgba(32,25,15,0.36)] transition-[background-color,box-shadow] duration-150 hover:bg-background-medium/82 hover:shadow-[0_12px_26px_-22px_rgba(32,25,15,0.42)] focus:outline-none focus:ring-1 focus:ring-ring"
+        className="group inline-flex w-full items-center gap-3 rounded-xl bg-background-default px-3 py-3 shadow-[0_10px_24px_-24px_rgba(32,25,15,0.38)] transition-[background-color,box-shadow] duration-150 hover:bg-background-medium/82 hover:shadow-[0_12px_26px_-22px_rgba(32,25,15,0.42)] focus:outline-none focus:ring-1 focus:ring-ring"
       >
         <span
           className="w-2 h-2 rounded-full flex-shrink-0"

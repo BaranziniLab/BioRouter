@@ -79,19 +79,23 @@ export function ForceGraphCanvas({
   }, [graph]);
 
   // Degree centrality for hub treatment.
-  const hubIds = useMemo(() => {
+  const hubIdList = useMemo(() => {
     const deg = new Map<string, number>();
     for (const e of graph.edges) {
       deg.set(e.from, (deg.get(e.from) ?? 0) + 1);
       deg.set(e.to, (deg.get(e.to) ?? 0) + 1);
     }
-    return new Set(
-      [...deg.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, HUB_TOP_N)
-        .map(([id]) => id)
-    );
+    return [...deg.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, HUB_TOP_N)
+      .map(([id]) => id);
   }, [graph]);
+  const hubIds = useMemo(() => new Set(hubIdList), [hubIdList]);
+  const compactCanvas = size.width < 560 || size.height < 430;
+  const labeledHubIds = useMemo(
+    () => new Set(hubIdList.slice(0, compactCanvas ? 3 : HUB_TOP_N)),
+    [compactCanvas, hubIdList]
+  );
 
   // Neighbour map for hover dimming.
   const neighbours = useMemo(() => {
@@ -146,7 +150,7 @@ export function ForceGraphCanvas({
     fgWithForce.d3Force('y', forceY(0).strength(0.07));
 
     const timeout = window.setTimeout(() => {
-      const fitPadding = Math.max(112, Math.min(size.width, size.height) * 0.16);
+      const fitPadding = compactCanvas ? 72 : Math.max(112, Math.min(size.width, size.height) * 0.16);
       fg.zoomToFit?.(500, fitPadding);
     }, 900);
 
@@ -208,7 +212,11 @@ export function ForceGraphCanvas({
           // Label — prettified (machine ids → readable) and folded across up to
           // three lines so a long title never paints one very long horizontal
           // string off the side of its node.
-          const shouldShowLabel = isFocused || isNeighbour || isHub || globalScale >= 1.75;
+          const shouldShowLabel =
+            isFocused ||
+            isNeighbour ||
+            labeledHubIds.has(n.id) ||
+            (!compactCanvas && globalScale >= 1.75);
           if (shouldShowLabel) {
             const fs = (isHub ? LABEL_FONT_PX_HUB : LABEL_FONT_PX) / globalScale;
             ctx.font = `${isHub || isFocused ? '600' : '400'} ${fs}px ui-sans-serif, system-ui, -apple-system`;
@@ -216,8 +224,8 @@ export function ForceGraphCanvas({
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
             const text = prettyLabel(n.label, n.kind);
-            const maxWidth = 132 / globalScale;
-            const lines = wrapLabel(text, maxWidth, 3, (s) => ctx.measureText(s).width);
+            const maxWidth = (compactCanvas ? 108 : 132) / globalScale;
+            const lines = wrapLabel(text, maxWidth, compactCanvas ? 2 : 3, (s) => ctx.measureText(s).width);
             const lineHeight = fs * 1.18;
             const startY = n.y - (lineHeight * (lines.length - 1)) / 2;
             for (let i = 0; i < lines.length; i++) {

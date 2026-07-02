@@ -150,7 +150,7 @@ export function IngestModelPicker({ value, onChange, disabled = false, saving = 
           if (!disabled) setOpen(true);
         }}
         disabled={disabled}
-        className="group inline-flex min-h-10 w-full items-center justify-between gap-2 rounded-xl bg-background-default/76 px-3 py-2 text-left shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_34%,transparent),0_10px_24px_-24px_rgba(32,25,15,0.38)] transition-[background-color,box-shadow] duration-150 hover:bg-background-medium/82 hover:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_46%,transparent),0_12px_26px_-22px_rgba(32,25,15,0.42)] focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+        className="group inline-flex min-h-10 w-full items-center justify-between gap-2 rounded-xl bg-background-default/52 px-3 py-2 text-left transition-[background-color,box-shadow] duration-150 hover:bg-background-medium/82 hover:shadow-[0_12px_26px_-22px_rgba(32,25,15,0.42)] focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
       >
         <span className="flex min-w-0 flex-1 items-center gap-2">
           <Brain className="h-4 w-4 shrink-0 text-text-muted" />

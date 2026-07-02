@@ -110,8 +110,8 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
         onDrop={onDrop}
         className={`relative cursor-pointer rounded-xl px-4 py-5 text-center transition-all focus:outline-none focus:ring-1 focus:ring-ring ${
           dragging
-            ? 'bg-block-teal/10 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--block-teal)_38%,transparent),0_12px_24px_-24px_rgba(32,25,15,0.38)]'
-            : 'bg-[color-mix(in_srgb,var(--background-default)_78%,var(--background-medium))] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_42%,transparent),0_12px_26px_-28px_rgba(32,25,15,0.3)] hover:bg-background-default hover:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--block-teal)_22%,transparent),0_12px_26px_-24px_rgba(32,25,15,0.34)]'
+            ? 'bg-block-teal/10 shadow-[0_12px_24px_-24px_rgba(32,25,15,0.38)]'
+            : 'bg-[color-mix(in_srgb,var(--background-default)_60%,var(--background-medium))] shadow-[0_12px_26px_-28px_rgba(32,25,15,0.3)] hover:bg-background-default/72 hover:shadow-[0_12px_26px_-24px_rgba(32,25,15,0.34)]'
         }`}
       >
         <input

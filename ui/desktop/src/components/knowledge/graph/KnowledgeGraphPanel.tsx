@@ -47,7 +47,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
   }, [refresh, registerGraphRefresh]);
 
   return (
-    <div className="relative flex h-full min-w-0 flex-col overflow-hidden">
+    <div className="relative flex h-full w-full min-w-0 flex-1 flex-col overflow-hidden">
       <div className="mb-0 flex flex-wrap items-center justify-between gap-3 px-4 py-3">
         <div className="flex min-w-[220px] flex-1 items-baseline gap-2 text-xs text-text-muted">
           <span className="truncate text-sm font-semibold text-text-default">
