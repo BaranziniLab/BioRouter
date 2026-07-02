@@ -179,7 +179,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
               onChange={(e) => setSelectedModel(e.target.value)}
               disabled={isStarting || isConnecting}
               data-testid="llamacpp-model-select"
-              className="h-9 px-2 rounded-md border border-border-default bg-background-default text-sm text-text-default"
+              className="h-9 px-2 rounded-md border border-border-subtle bg-background-default text-sm text-text-default focus:outline-none focus:border-border-strong transition-colors duration-150"
             >
               {catalog.map((m) => (
                 <option key={m.name} value={m.name}>
@@ -193,7 +193,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
           )}
 
           {isStarting && (
-            <div className="rounded-md border border-border-default bg-background-default p-3">
+            <div className="rounded-md border border-border-subtle bg-background-default p-3">
               <div className="flex items-center gap-2 text-xs text-text-default">
                 <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
                 <span>
