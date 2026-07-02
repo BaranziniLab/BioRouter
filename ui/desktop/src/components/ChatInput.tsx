@@ -1322,8 +1322,8 @@ export default function ChatInput({
         disableAnimation ? '' : 'page-transition'
       } ${
         isFocused
-          ? 'border-transparent hover:border-transparent shadow-[var(--shadow-default)]'
-          : 'border-transparent hover:border-transparent shadow-[var(--shadow-default)]'
+          ? 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)]'
+          : 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)]'
       } bg-background-default z-10 rounded-2xl border`}
       data-drop-zone="true"
       onDrop={handleLocalDrop}
