@@ -756,14 +756,13 @@ body {
 }
 
 body.biorouter-headless-browser {
-  background:
-    linear-gradient(
-      to right,
-      color-mix(in srgb, var(--background-muted) 70%, var(--background-default)),
-      var(--background-default) 28%,
-      var(--background-default) 72%,
-      color-mix(in srgb, var(--background-muted) 70%, var(--background-default))
-    );
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--background-muted) 70%, var(--background-default)),
+    var(--background-default) 28%,
+    var(--background-default) 72%,
+    color-mix(in srgb, var(--background-muted) 70%, var(--background-default))
+  );
 }
 
 body.biorouter-headless-browser .biorouter-readable-content {
