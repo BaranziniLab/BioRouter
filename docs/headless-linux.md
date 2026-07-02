@@ -4,9 +4,29 @@ This flow builds BioRouter on the Mac, deploys the Linux artifact to an
 Ubuntu 22.04/24.04 host, and serves the browser UI from that host while
 `biorouterd` does the compute locally on the server.
 
+## Agent quickstart
+
+For a future coding agent that is asked to "build the app" or "compile the
+headless Debian binary", run this from the repository root:
+
+```bash
+source bin/activate-hermit
+scripts/package-headless-linux.sh
+```
+
+That command builds the Linux x64 binaries and browser UI, verifies the artifact
+does not contain local profiles or credential material, and writes:
+
+- `dist/headless-linux-x64/`
+- `dist/biorouter-headless-linux-x64.tar.gz`
+
+Use the tarball as the portable Debian/Ubuntu release artifact. Use the
+directory for deployment and inspection.
+
 ## Build locally
 
 ```bash
+source bin/activate-hermit
 scripts/build-headless-linux.sh
 ```
 
@@ -17,6 +37,41 @@ The artifact is written to `dist/headless-linux-x64/`:
 - `bin/biorouter-headless`
 - `web/`
 - `manifest.txt`
+
+The build intentionally packages app deliverables only. It copies the three
+Linux binaries from the Docker build output and the static browser bundle from
+Vite. It must not copy any of the following into `dist/headless-linux-x64/`:
+
+- `~/.config/biorouter/`
+- `~/.aws/`
+- `~/.ssh/`
+- `~/Library/Application Support/`
+- `secrets.yaml`, `config.yaml`, or `sessions.db`
+- local `.env` files, OpenRouter keys, AWS keys, SSH keys, or downloaded access
+  key CSV files
+
+Keep credential setup as a runtime concern. A deployment can point BioRouter at
+a server-side config directory, but release artifacts must stay profile-free.
+
+## Verify and package
+
+Run the artifact verifier before sharing or deploying a release build:
+
+```bash
+scripts/verify-headless-artifact.sh --tar
+```
+
+The verifier checks:
+
+- the expected artifact shape: `bin/`, `web/`, and `manifest.txt`
+- Linux x86_64 ELF binaries for `biorouter`, `biorouterd`, and
+  `biorouter-headless`
+- no packaged profile or credential-store file names
+- no obvious local paths or key-like material in artifact contents
+
+It intentionally prints only file names for failures, not matched secret text.
+If it fails, inspect the named files locally, remove the leak, rebuild, and rerun
+the verifier.
 
 ## Deploy to Ubuntu
 
@@ -45,10 +100,14 @@ The Ubuntu setup script:
 scripts/sync-headless-secrets-macos.sh ubuntu@HOST /path/to/key.pem
 ```
 
-This reads the BioRouter macOS Keychain item and sends it over SSH into the
-Ubuntu file-backed secret store at `~/.config/biorouter/secrets.yaml`. Secret
-values are not printed. The service uses `BIOROUTER_DISABLE_KEYRING=true` on
-headless Linux.
+This is a separate runtime migration helper, not a packaging step. It reads the
+BioRouter macOS Keychain item and sends it over SSH into the Ubuntu file-backed
+secret store at `~/.config/biorouter/secrets.yaml`. Secret values are not
+printed. The service uses `BIOROUTER_DISABLE_KEYRING=true` on headless Linux.
+
+Do not run this script when creating a release artifact for users. A user who
+starts headless BioRouter without credentials should be prompted by the app to
+configure providers in the browser UI.
 
 ## Get the browser URL
 
@@ -83,3 +142,16 @@ low-cost providers.
 Provider-specific failures can still be external to BioRouter. For example,
 an institutional provider may reject a new EC2 public IP until it is allowlisted,
 and a provider account can reject requests for billing reasons.
+
+## UI synchronization notes
+
+The headless app uses the same `ui/desktop` renderer as the desktop shell, built
+with `vite.renderer.config.mts`. UI changes for browser readability should be
+made in shared renderer components, then rebuilt with the headless scripts above.
+
+For wide-browser layouts, current shared surfaces use the `ReadableContent`
+wrapper and `.biorouter-readable-content` class to constrain reading width. When
+checking for drift between desktop and headless, inspect the shared source first
+and then validate the deployed browser DOM rather than relying on an unauthenticated
+local Vite renderer, which may fall into onboarding without the daemon/config
+state needed for data-backed routes.
