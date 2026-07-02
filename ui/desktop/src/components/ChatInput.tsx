@@ -1322,8 +1322,8 @@ export default function ChatInput({
         disableAnimation ? '' : 'page-transition'
       } ${
         isFocused
-          ? 'border-transparent hover:border-transparent shadow-[0_12px_32px_rgba(32,25,15,0.11),0_2px_10px_rgba(32,25,15,0.06)]'
-          : 'border-transparent hover:border-transparent shadow-[0_8px_24px_rgba(32,25,15,0.08),0_1px_6px_rgba(32,25,15,0.04)]'
+          ? 'border-transparent hover:border-transparent shadow-[var(--shadow-default)]'
+          : 'border-transparent hover:border-transparent shadow-[var(--shadow-default)]'
       } bg-background-default z-10 rounded-2xl border`}
       data-drop-zone="true"
       onDrop={handleLocalDrop}
