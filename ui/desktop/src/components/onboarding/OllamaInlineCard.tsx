@@ -150,7 +150,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
           )}
 
           {modelStatus === 'downloading' && downloadProgress && (
-            <div className="rounded-md border border-border-default bg-background-default p-3">
+            <div className="rounded-md border border-border-subtle bg-background-default p-3">
               <p className="text-xs text-text-default">Downloading {getPreferredModel()}…</p>
               <p className="text-[11px] text-text-muted mt-1">{downloadProgress.status}</p>
               {downloadProgress.total && downloadProgress.completed && (

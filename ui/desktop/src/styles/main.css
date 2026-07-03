@@ -82,6 +82,7 @@
 
   --text-default: #2a2520;
   --text-muted: #7a736c;
+  --text-subtle: #948d83;
   --text-inverse: var(--color-white);
   --text-danger: var(--color-red-200);
   --text-success: var(--color-green-200);
@@ -90,17 +91,26 @@
 
   --ring: var(--border-strong);
 
-  --sidebar: var(--background-muted);
+  /* Two-tone canvas: the sidebar is a distinct, slightly deeper warm-beige
+     surface sitting against the lighter main canvas (Codex-style layering,
+     kept warm and low-contrast so it never reads as glaring). */
+  --sidebar: #f3ede1;
   --sidebar-foreground: var(--text-default);
   --sidebar-primary: var(--background-accent);
   --sidebar-primary-foreground: var(--text-inverse);
-  --sidebar-accent: var(--background-muted);
+  --sidebar-hover: #ece4d4;
+  --sidebar-active: #e4d9c3;
+  --sidebar-accent: var(--sidebar-hover);
   --sidebar-accent-foreground: var(--text-default);
-  --sidebar-border: var(--border-default);
+  --sidebar-border: #e9e1d0;
   --sidebar-ring: var(--border-default);
 
   /* custom shadow — flat by default; popover for elevated menus/modals */
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.06), 0px 0px 1px 0px rgba(0, 0, 0, 0.12);
+  /* composer: a hair more lift than --shadow-default so the chat box reads as a
+     distinct, gently raised surface — deliberately very subtle */
+  --shadow-composer:
+    0px 2px 6px -1px rgba(32, 25, 15, 0.08), 0px 1px 2px 0px rgba(32, 25, 15, 0.05);
   --shadow-popover: 0px 8px 24px 0px rgba(32, 25, 15, 0.1), 0px 0px 1px 0px rgba(0, 0, 0, 0.15);
   --shadow-modal:
     0px 22px 60px -18px rgba(32, 25, 15, 0.22), 0px 8px 24px -18px rgba(32, 25, 15, 0.16),
@@ -140,6 +150,7 @@
 
   --text-default: var(--color-white);
   --text-muted: var(--color-neutral-400);
+  --text-subtle: var(--color-neutral-500);
   --text-inverse: var(--color-black);
   --text-danger: var(--color-red-100);
   --text-success: var(--color-green-100);
@@ -148,16 +159,21 @@
 
   --ring: var(--border-strong);
 
+  /* Dark mode mirrors the two-tone: sidebar sits one warm step above the
+     near-black main canvas, with its own hover/active steps. */
   --sidebar: var(--background-muted);
   --sidebar-foreground: var(--text-default);
   --sidebar-primary: var(--background-accent);
   --sidebar-primary-foreground: var(--text-inverse);
-  --sidebar-accent: var(--background-muted);
+  --sidebar-hover: #322b1d;
+  --sidebar-active: #3d3524;
+  --sidebar-accent: var(--sidebar-hover);
   --sidebar-accent-foreground: var(--text-default);
   --sidebar-border: var(--border-default);
   --sidebar-ring: var(--border-default);
 
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
+  --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
   --shadow-popover: 0px 8px 24px 0px rgba(0, 0, 0, 0.4), 0px 0px 1px 0px rgba(0, 0, 0, 0.5);
   --shadow-modal:
     0px 22px 64px -16px rgba(0, 0, 0, 0.62), 0px 8px 26px -18px rgba(0, 0, 0, 0.5),
@@ -197,6 +213,7 @@
 
   --color-text-default: var(--text-default);
   --color-text-muted: var(--text-muted);
+  --color-text-subtle: var(--text-subtle);
   --color-text-inverse: var(--text-inverse);
   --color-text-danger: var(--text-danger);
   --color-text-success: var(--text-success);
@@ -211,6 +228,8 @@
 
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-hover: var(--sidebar-hover);
+  --color-sidebar-active: var(--sidebar-active);
   --color-sidebar-primary: var(--sidebar-primary);
   --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
   --color-sidebar-accent: var(--sidebar-accent);
@@ -539,7 +558,6 @@
 .biorouter-list-row:hover,
 .biorouter-list-row:focus-within {
   background: color-mix(in srgb, var(--background-medium) 42%, transparent);
-  box-shadow: 0 8px 22px -22px rgba(32, 25, 15, 0.38);
 }
 
 .biorouter-settings-tabs {
@@ -594,7 +612,6 @@
 .biorouter-settings-row:hover,
 .biorouter-settings-row:focus-within {
   background: color-mix(in srgb, var(--background-medium) 38%, transparent);
-  box-shadow: 0 8px 22px -22px rgba(32, 25, 15, 0.34);
 }
 
 .dark .biorouter-page-block {
@@ -604,7 +621,9 @@
 }
 
 .biorouter-sidebar-shell {
-  box-shadow: 8px 0 28px -26px rgba(32, 25, 15, 0.42);
+  /* flat two-tone: a hairline edge instead of an elevation shadow —
+     the sidebar's warm-beige surface already separates it from the canvas */
+  box-shadow: 1px 0 0 0 var(--sidebar-border);
 }
 
 .biorouter-sidebar-shell::after {
@@ -742,14 +761,13 @@ body {
 }
 
 body.biorouter-headless-browser {
-  background:
-    linear-gradient(
-      to right,
-      color-mix(in srgb, var(--background-muted) 70%, var(--background-default)),
-      var(--background-default) 28%,
-      var(--background-default) 72%,
-      color-mix(in srgb, var(--background-muted) 70%, var(--background-default))
-    );
+  background: linear-gradient(
+    to right,
+    color-mix(in srgb, var(--background-muted) 70%, var(--background-default)),
+    var(--background-default) 28%,
+    var(--background-default) 72%,
+    color-mix(in srgb, var(--background-muted) 70%, var(--background-default))
+  );
 }
 
 body.biorouter-headless-browser .biorouter-readable-content {

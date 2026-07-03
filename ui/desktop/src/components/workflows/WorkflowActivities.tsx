@@ -31,7 +31,7 @@ export default function WorkflowActivities({
     return (
       <div className="flex flex-col px-6">
         {messagePill && (
-          <div className="mb-4 p-3 rounded-lg border animate-[fadein_500ms_ease-in_forwards]">
+          <div className="mb-4 p-3 rounded-lg border border-border-subtle animate-[fadein_500ms_ease-in_forwards]">
             <MarkdownContent
               content={substituteParameters(
                 messagePill.replace(/^message:/i, '').trim(),
@@ -50,7 +50,7 @@ export default function WorkflowActivities({
                 key={index}
                 onClick={() => append(substitutedContent)}
                 title={substitutedContent.length > 60 ? substitutedContent : undefined}
-                className="cursor-pointer px-3 py-1.5 text-sm hover:bg-background-medium transition-colors"
+                className="cursor-pointer px-3 py-1.5 text-sm border border-border-subtle [box-shadow:none] hover:bg-background-medium transition-colors"
               >
                 {substitutedContent.length > 60
                   ? substitutedContent.slice(0, 60) + '...'

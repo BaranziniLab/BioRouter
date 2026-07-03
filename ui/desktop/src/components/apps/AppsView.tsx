@@ -119,12 +119,12 @@ export default function AppsView() {
   return (
     <MainPanelLayout>
       <div className="flex-1 flex flex-col min-h-0">
-        <div className="bg-background-default px-8 pb-8 pt-16">
+        <div className="bg-background-default px-8 pt-12 pb-6 border-b border-border-subtle">
           <div className="flex flex-col page-transition">
             <div className="flex justify-between items-center mb-1">
               <h1 className="text-2xl font-semibold tracking-tight">Apps</h1>
             </div>
-            <p className="text-sm text-text-muted mb-4">
+            <p className="text-sm text-text-muted mb-0">
               Applications from your MCP servers that can run in standalone windows.
             </p>
           </div>
@@ -149,7 +149,7 @@ export default function AppsView() {
               {apps.map((app) => (
                 <div
                   key={`${app.uri}-${app.mcpServer}`}
-                  className="flex flex-col p-4 border border-border-subtle rounded-xl bg-background-default transition-[background-color,box-shadow] duration-150 hover:bg-background-medium/40 hover:shadow-[0_8px_22px_-22px_rgba(32,25,15,0.38)]"
+                  className="flex flex-col p-4 border border-border-subtle rounded-xl bg-background-default transition-colors duration-150 hover:bg-background-medium/40 hover:border-border-strong"
                 >
                   <div className="flex-1 mb-4">
                     <h3 className="font-medium text-text-default mb-2">{app.name}</h3>

@@ -119,10 +119,8 @@ export function IngestModelPicker({ value, onChange, disabled = false, saving = 
                   onChange({ provider: provider.name, model });
                   setOpen(false);
                 }}
-                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-[background-color,box-shadow] duration-150 ${
-                  selected
-                    ? 'bg-background-medium/82 shadow-[0_8px_20px_-22px_rgba(32,25,15,0.38)]'
-                    : 'hover:bg-background-medium/62 hover:shadow-[0_8px_18px_-24px_rgba(32,25,15,0.3)]'
+                className={`flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left transition-colors duration-150 ${
+                  selected ? 'bg-background-medium/82' : 'hover:bg-background-medium/62'
                 }`}
               >
                 <Brain className="h-4 w-4 shrink-0 text-text-muted" />
@@ -150,7 +148,7 @@ export function IngestModelPicker({ value, onChange, disabled = false, saving = 
           if (!disabled) setOpen(true);
         }}
         disabled={disabled}
-        className="group inline-flex min-h-10 w-full items-center justify-between gap-2 rounded-xl bg-background-default/52 px-3 py-2 text-left transition-[background-color,box-shadow] duration-150 hover:bg-background-medium/82 hover:shadow-[0_12px_26px_-22px_rgba(32,25,15,0.42)] focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+        className="group inline-flex min-h-10 w-full items-center justify-between gap-2 rounded-xl border border-border-subtle bg-background-default/52 px-3 py-2 text-left transition-colors duration-150 hover:bg-background-medium/82 focus:outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
       >
         <span className="flex min-w-0 flex-1 items-center gap-2">
           <Brain className="h-4 w-4 shrink-0 text-text-muted" />
@@ -163,7 +161,7 @@ export function IngestModelPicker({ value, onChange, disabled = false, saving = 
               : `${value.provider} / ${value.model}`}
           </span>
         </span>
-        <span className="flex shrink-0 items-center gap-1.5 rounded-lg bg-background-medium/64 px-2 py-1 text-[11px] font-medium text-text-default shadow-[0_8px_18px_-18px_rgba(32,25,15,0.32)] transition-colors group-hover:bg-background-default/76">
+        <span className="flex shrink-0 items-center gap-1.5 rounded-lg border border-border-subtle bg-background-medium/64 px-2 py-1 text-[11px] font-medium text-text-default transition-colors group-hover:bg-background-default/76">
           {saving && <LoaderCircle className="h-3.5 w-3.5 animate-spin text-text-muted" />}
           {saving ? 'Saving' : 'Set default'}
           {!saving && <ChevronDown className="h-3.5 w-3.5 text-text-muted" />}

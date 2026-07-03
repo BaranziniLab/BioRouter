@@ -72,8 +72,11 @@ export default function SettingsView({
     <>
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
-          <ReadableContent className="px-8 pt-12 pb-0 flex-shrink-0">
-            <h1 className="text-2xl font-semibold tracking-tight page-transition">Settings</h1>
+          <ReadableContent className="px-8 pt-12 pb-6 border-b border-border-subtle flex-shrink-0">
+            <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">Settings</h1>
+            <p className="text-sm text-text-muted">
+              Manage models, chat behavior, and application preferences
+            </p>
           </ReadableContent>
 
           <div className="flex-1 min-h-0 flex flex-col">

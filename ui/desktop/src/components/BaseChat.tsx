@@ -136,6 +136,17 @@ function BaseChatContent({
 
   const isMobile = useIsMobile();
   const { state: sidebarState } = useSidebar();
+  const isMacOS = (window?.electron?.platform || 'darwin') === 'darwin';
+  // When the sidebar is collapsed the chat spans full width and the top-left
+  // strip holds the floating controls (sidebar toggle / new-window / dashboard)
+  // plus, on macOS, the window traffic lights. Shrink the pill wrapper to fit and
+  // offset it PAST the controls so it neither overlaps them nor lets its
+  // -webkit-app-region: drag surface swallow their clicks (app-region is resolved
+  // by the compositor, so a full-width drag wrapper eats clicks even under a
+  // higher-z no-drag button). Expanded keeps the full-width draggable header strip
+  // — there the controls sit over the sidebar, not over this wrapper.
+  const sessionPillWrapperCls =
+    sidebarState === 'collapsed' ? `w-fit ${isMacOS ? 'ml-[184px]' : 'ml-[104px]'}` : 'w-full pl-4';
   const setView = useNavigation();
 
   const contentClassName = cn('pr-1 pb-10', (isMobile || sidebarState === 'collapsed') && 'pt-11');
@@ -676,7 +687,7 @@ function BaseChatContent({
         <div
           className={
             coherent
-              ? 'flex flex-col flex-1 min-h-0 relative rounded-t-2xl overflow-hidden bg-background-default'
+              ? 'flex flex-col flex-1 min-h-0 relative rounded-t-2xl overflow-hidden bg-background-muted'
               : 'flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden'
           }
         >
@@ -688,7 +699,7 @@ function BaseChatContent({
             // window — only the pill's own (inline-flex) bounding box is
             // marked no-drag (done inside SessionNamePill).
             <div
-              className="flex-shrink-0 px-4 pt-3 relative z-[60]"
+              className={`flex-shrink-0 ${sessionPillWrapperCls} pr-4 pt-3 relative z-[60]`}
               style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
             >
               <SessionNamePill
@@ -733,7 +744,7 @@ function BaseChatContent({
             >
               <div className="biorouter-chat-column mx-auto w-full max-w-[920px]">
                 {workflow?.title && (
-                  <div className="sticky top-0 z-10 bg-background-default mb-4 pt-2">
+                  <div className="sticky top-0 z-10 bg-background-muted mb-4 pt-2">
                     <WorkflowHeader title={workflow.title} />
                   </div>
                 )}
@@ -777,7 +788,7 @@ function BaseChatContent({
           <div
             className={
               coherent
-                ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-default'
+                ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-muted'
                 : `px-4 sm:px-6 pb-6 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`
             }
           >

@@ -83,7 +83,7 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
     <section id="models" className="pb-8">
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
-          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider">
+          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider">
             Current Model
           </h2>
         </div>
@@ -107,7 +107,9 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
 
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
-          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider">Reset</h2>
+          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider">
+            Reset
+          </h2>
         </div>
         <div className="biorouter-settings-list">
           <ResetProviderSection setView={setView} />
