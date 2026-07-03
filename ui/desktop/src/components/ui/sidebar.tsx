@@ -295,8 +295,10 @@ function SidebarInset({ className, ...props }: React.ComponentProps<'main'>) {
       data-slot="sidebar-inset"
       className={cn(
         'biorouter-sidebar-inset-depth bg-background relative flex w-full flex-1 flex-col min-w-0',
-        // For inset variant (used in the app)
-        'md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow-sm',
+        // For inset variant (used in the app): flush against the straight,
+        // full-height sidebar — no rounded corners or floating shadow, which
+        // otherwise leave a notch where the rounded panel meets the square sidebar.
+        'md:peer-data-[variant=inset]:ml-0',
         // For offcanvas variant - ensure content doesn't go under sidebar
         'md:peer-data-[collapsible=offcanvas]:peer-data-[state=expanded]:ml-[var(--sidebar-width)]',
         'md:peer-data-[collapsible=offcanvas]:peer-data-[state=collapsed]:ml-0',

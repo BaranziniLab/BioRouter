@@ -26,7 +26,7 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
   }
 
   return (
-    <div className="overflow-hidden rounded-xl bg-[color-mix(in_srgb,var(--background-default)_82%,var(--background-medium))] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_46%,transparent),0_10px_22px_-24px_rgba(32,25,15,0.34)] transition-shadow focus-within:shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--block-teal)_30%,transparent),0_12px_26px_-24px_rgba(32,25,15,0.38)]">
+    <div className="overflow-hidden rounded-xl border border-border-subtle bg-[color-mix(in_srgb,var(--background-default)_82%,var(--background-medium))] transition-colors focus-within:border-border-default">
       <div className="overflow-hidden">
         <input
           type="text"

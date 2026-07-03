@@ -261,7 +261,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
     : '';
 
   return (
-    <div className="h-screen w-full flex flex-col bg-background-default text-text-default">
+    <div className="h-screen w-full flex flex-col bg-background-muted text-text-default">
       <div className="px-8 pt-6 pb-4 border-b border-border-subtle flex-shrink-0">
         <BackButton onClick={onNavigateBack} />
         <h1 className="text-2xl font-semibold tracking-tight mt-1 mb-1 pt-8">Schedule Details</h1>
@@ -285,7 +285,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
               </p>
             )}
             {scheduleDetails && (
-              <Card className="p-4 bg-background-card mb-6">
+              <Card className="p-4 bg-background-card border border-border-subtle [box-shadow:none] mb-6">
                 <div className="space-y-2">
                   <div className="flex flex-col md:flex-row md:items-center justify-between">
                     <h3 className="text-base font-semibold text-text-default">
@@ -444,7 +444,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                 {sessions.map((session) => (
                   <Card
                     key={session.id}
-                    className="p-4 bg-background-card border border-border-subtle cursor-pointer hover:bg-background-muted transition-colors duration-200"
+                    className="p-4 bg-background-card border border-border-subtle [box-shadow:none] cursor-pointer hover:bg-background-muted transition-colors duration-200"
                     onClick={() => loadSession(session.id)}
                   >
                     <h3
