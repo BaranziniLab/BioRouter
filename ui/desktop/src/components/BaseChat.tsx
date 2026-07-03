@@ -136,6 +136,12 @@ function BaseChatContent({
 
   const isMobile = useIsMobile();
   const { state: sidebarState } = useSidebar();
+  const isMacOS = (window?.electron?.platform || 'darwin') === 'darwin';
+  // When the sidebar is collapsed, the floating top controls (and, on macOS, the
+  // window traffic lights) occupy the top-left strip; offset the session-name
+  // pill so it starts after them instead of overlapping.
+  const sessionPillPadLeft =
+    sidebarState === 'collapsed' ? (isMacOS ? 'pl-[184px]' : 'pl-[104px]') : 'pl-4';
   const setView = useNavigation();
 
   const contentClassName = cn('pr-1 pb-10', (isMobile || sidebarState === 'collapsed') && 'pt-11');
@@ -688,7 +694,7 @@ function BaseChatContent({
             // window — only the pill's own (inline-flex) bounding box is
             // marked no-drag (done inside SessionNamePill).
             <div
-              className="flex-shrink-0 px-4 pt-3 relative z-[60]"
+              className={`flex-shrink-0 ${sessionPillPadLeft} pr-4 pt-3 relative z-[60]`}
               style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
             >
               <SessionNamePill
