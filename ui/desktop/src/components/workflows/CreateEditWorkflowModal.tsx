@@ -86,7 +86,7 @@ export default function CreateEditWorkflowModal({
       setJsonSchema(form.state.values.jsonSchema);
       setSettings(form.state.values.settings);
     });
-    return () => subscription.unsubscribe();
+    return subscription;
   }, [form]);
   const [copied, setCopied] = useState(false);
   const [isSaving, setIsSaving] = useState(false);

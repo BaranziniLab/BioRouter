@@ -106,7 +106,7 @@ export function WorkflowFormFields({
       // Force re-render when any form field changes to update parameter usage indicators
       setForceRender((prev) => prev + 1);
     });
-    return () => subscription.unsubscribe();
+    return subscription;
   }, [form.store]);
 
   const parseParametersFromInstructions = React.useCallback(
