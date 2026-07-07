@@ -228,17 +228,17 @@ impl App {
         if self.completion_dismissed {
             return;
         }
-        let before_cursor = &self.input[..self.cursor];
+        let before_cursor = self.input.get(..self.cursor).unwrap_or(&self.input);
         let Some(start) = before_cursor.rfind('/') else {
             return;
         };
         if start > 0 {
-            let prev = before_cursor[..start].chars().next_back();
+            let prev = before_cursor.get(..start).unwrap_or("").chars().next_back();
             if !prev.is_some_and(|ch| ch.is_whitespace()) {
                 return;
             }
         }
-        let token = &before_cursor[start..];
+        let token = before_cursor.get(start..).unwrap_or("");
         if token.chars().any(|ch| ch.is_whitespace()) {
             return;
         }

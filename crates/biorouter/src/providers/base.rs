@@ -36,7 +36,7 @@ pub fn get_current_model() -> Option<String> {
 pub static MSG_COUNT_FOR_SESSION_NAME_GENERATION: usize = 3;
 
 /// Information about a model's capabilities
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, PartialEq)]
 pub struct ModelInfo {
     /// The name of the model
     pub name: String,
@@ -130,21 +130,6 @@ impl ModelInfo {
 
     pub fn with_png_jpeg_image_inputs(self) -> Self {
         self.with_supported_input_mime_types(["image/png", "image/jpeg", "image/jpg"])
-    }
-}
-
-impl Default for ModelInfo {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            context_limit: 0,
-            input_token_cost: None,
-            output_token_cost: None,
-            currency: None,
-            supports_cache_control: None,
-            supports_vision: None,
-            supported_input_mime_types: None,
-        }
     }
 }
 

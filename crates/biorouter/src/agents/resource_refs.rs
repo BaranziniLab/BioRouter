@@ -83,11 +83,12 @@ fn extract_tag_refs(text: &str, tag_type: &str, attr: &str, out: &mut Vec<String
     let mut rest = text;
     while let Some(start) = rest.find(&needle) {
         let value_start = start + needle.len();
-        let Some(end) = rest[value_start..].find('"') else {
+        let value_rest = slice_from(rest, value_start);
+        let Some(end) = value_rest.find('"') else {
             break;
         };
-        push_trimmed(out, &rest[value_start..value_start + end]);
-        rest = &rest[value_start + end..];
+        push_trimmed(out, slice_to(value_rest, end));
+        rest = slice_from(value_rest, end);
     }
 }
 
@@ -96,17 +97,18 @@ fn extract_kb_tag_refs(text: &str, out: &mut Vec<KnowledgeBaseRef>) {
     let mut rest = text;
     while let Some(start) = rest.find(needle) {
         let id_start = start + needle.len();
-        let Some(id_end) = rest[id_start..].find('"') else {
+        let id_rest = slice_from(rest, id_start);
+        let Some(id_end) = id_rest.find('"') else {
             break;
         };
-        let id = rest[id_start..id_start + id_end].trim();
+        let id = slice_to(id_rest, id_end).trim();
         if !id.is_empty() {
             out.push(KnowledgeBaseRef {
                 id: id.to_string(),
                 label: None,
             });
         }
-        rest = &rest[id_start + id_end..];
+        rest = slice_from(id_rest, id_end);
     }
 }
 
@@ -114,11 +116,12 @@ fn extract_function_refs(text: &str, prefix: &str, suffix: &str, out: &mut Vec<S
     let mut rest = text;
     while let Some(start) = rest.find(prefix) {
         let value_start = start + prefix.len();
-        let Some(end) = rest[value_start..].find(suffix) else {
+        let value_rest = slice_from(rest, value_start);
+        let Some(end) = value_rest.find(suffix) else {
             break;
         };
-        push_trimmed(out, &rest[value_start..value_start + end]);
-        rest = &rest[value_start + end + suffix.len()..];
+        push_trimmed(out, slice_to(value_rest, end));
+        rest = slice_from(value_rest, end + suffix.len());
     }
 }
 
@@ -134,13 +137,13 @@ fn extract_legacy_resource_phrases(text: &str, kind: &str, out: &mut Vec<String>
     let marker = format!("\" {kind}");
     let mut rest = text;
     while let Some(marker_start) = rest.find(&marker) {
-        let before_marker = &rest[..marker_start];
+        let before_marker = slice_to(rest, marker_start);
         let Some(open_quote) = before_marker.rfind('"') else {
-            rest = &rest[marker_start + marker.len()..];
+            rest = slice_from(rest, marker_start + marker.len());
             continue;
         };
-        push_trimmed(out, &before_marker[open_quote + 1..]);
-        rest = &rest[marker_start + marker.len()..];
+        push_trimmed(out, slice_from(before_marker, open_quote + 1));
+        rest = slice_from(rest, marker_start + marker.len());
     }
 }
 
@@ -173,37 +176,46 @@ fn extract_inline_kb_refs(text: &str, out: &mut Vec<KnowledgeBaseRef>) {
 fn extract_legacy_kb_refs(text: &str, out: &mut Vec<KnowledgeBaseRef>) {
     let mut rest = text;
     while let Some(kb_start) = rest.find("kb_id:") {
-        let after = rest[kb_start + "kb_id:".len()..].trim_start();
+        let after = slice_from(rest, kb_start + "kb_id:".len()).trim_start();
         let after = after.strip_prefix('"').unwrap_or(after);
         let after = after.strip_prefix('`').unwrap_or(after);
         let id_len = after
             .find(|c: char| c == ')' || c == '"' || c == '`' || c == ',' || c.is_whitespace())
             .unwrap_or(after.len());
-        let id = after[..id_len].trim();
+        let id = slice_to(after, id_len).trim();
         if !id.is_empty() {
             out.push(KnowledgeBaseRef {
                 id: id.to_string(),
                 label: None,
             });
         }
-        rest = &after[id_len..];
+        rest = slice_from(after, id_len);
     }
 
     let mut phrase_rest = text;
     while let Some(start) = phrase_rest.find("focus the \"") {
         let value_start = start + "focus the \"".len();
-        let Some(end) = phrase_rest[value_start..].find("\" knowledge base") else {
+        let value_rest = slice_from(phrase_rest, value_start);
+        let Some(end) = value_rest.find("\" knowledge base") else {
             break;
         };
-        let id = phrase_rest[value_start..value_start + end].trim();
+        let id = slice_to(value_rest, end).trim();
         if !id.is_empty() {
             out.push(KnowledgeBaseRef {
                 id: id.to_string(),
                 label: None,
             });
         }
-        phrase_rest = &phrase_rest[value_start + end..];
+        phrase_rest = slice_from(value_rest, end);
     }
+}
+
+fn slice_from(value: &str, start: usize) -> &str {
+    value.get(start..).unwrap_or("")
+}
+
+fn slice_to(value: &str, end: usize) -> &str {
+    value.get(..end).unwrap_or(value)
 }
 
 fn push_trimmed(out: &mut Vec<String>, value: &str) {
