@@ -73,9 +73,9 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         name: "gemma4",
         display_name: "Gemma 4 (Ollama library)",
         ollama_name: Some("gemma4:latest"),
-        hf_spec: "ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M",
+        hf_spec: "google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0",
         download_size: "9.6 GB",
-        description: "Laptop default from Ollama's Gemma 4 library model; good first choice for 16 GB Apple Silicon",
+        description: "Laptop default from Ollama's Gemma 4 library model; uses Google's official QAT GGUF fallback when stock llama-server cannot load the Ollama blob",
         min_gpu_memory_gib: 16,
         recommended_gpu_memory_gib: 16,
         context_limit: 131_072,
@@ -603,7 +603,7 @@ mod tests {
         );
         assert_eq!(
             resolve_hf_spec("gemma4").unwrap(),
-            "ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M"
+            "google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0"
         );
         assert_eq!(
             resolve_model_source("gemma4")

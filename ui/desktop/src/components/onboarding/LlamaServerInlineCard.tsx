@@ -42,12 +42,25 @@ const modelDownloadNote = (model: LlamaCppModel | undefined) => {
   switch (model?.download_status) {
     case 'downloaded':
       return model.download_source === 'ollama'
-        ? 'Already pulled by Ollama; Llama Server tries the local GGUF blob first and can fall back if the engine cannot load it.'
+        ? 'Already pulled by Ollama; Llama Server tries that local blob first and falls back to a compatible GGUF if needed.'
         : 'Already downloaded on this machine; startup should only need model load and warm-up.';
     case 'partial':
       return 'A previous download is incomplete; startup will resume or redownload before loading.';
     default:
       return 'Not downloaded yet; first startup may take a while before warm-up can run.';
+  }
+};
+
+const fallbackDownloadLabel = (model: LlamaCppModel | undefined) => {
+  switch (model?.fallback_download_status) {
+    case 'downloaded':
+      return 'Fallback ready';
+    case 'partial':
+      return 'Fallback partial';
+    case 'not_downloaded':
+      return model?.ollama_name ? 'Fallback may download' : null;
+    default:
+      return null;
   }
 };
 
@@ -243,6 +256,12 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
   const startButtonLabel = (() => {
     if (isStarting) return 'Setting up…';
     if (isRunningForSelected) return 'Warm up model';
+    if (
+      selectedEntry?.download_status === 'downloaded' &&
+      selectedEntry.fallback_download_status === 'not_downloaded'
+    ) {
+      return 'Run & warm up (fallback may download)';
+    }
     if (selectedEntry?.download_status === 'downloaded') return 'Run & warm up';
     if (selectedEntry?.download_status === 'partial') {
       return `Resume download & run (${selectedEntry.download_size})`;
@@ -324,6 +343,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                     m.display_name,
                     m.download_size,
                     modelDownloadLabel(m),
+                    fallbackDownloadLabel(m),
                     modelFitLabel(m),
                   ]
                     .filter(Boolean)
@@ -338,6 +358,12 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
               <p className="text-[11px] text-text-muted">
                 {modelDownloadLabel(selectedEntry)} · {modelDownloadNote(selectedEntry)}
               </p>
+              {fallbackDownloadLabel(selectedEntry) && (
+                <p className="text-[11px] text-text-muted">
+                  Llama Server fallback: {fallbackDownloadLabel(selectedEntry)} ·{' '}
+                  {selectedEntry.hf_spec}
+                </p>
+              )}
               <p className="text-[11px] text-text-muted">
                 {selectedEntry.ollama_name
                   ? `Ollama model: ${selectedEntry.ollama_name}`

@@ -93,6 +93,19 @@ const modelDownloadLabel = (model: LlamaCppModel | undefined) => {
   }
 };
 
+const fallbackDownloadLabel = (model: LlamaCppModel | undefined) => {
+  switch (model?.fallback_download_status) {
+    case 'downloaded':
+      return 'Fallback ready';
+    case 'partial':
+      return 'Fallback partial';
+    case 'not_downloaded':
+      return model?.ollama_name ? 'Fallback may download' : 'Not cached';
+    default:
+      return 'unknown';
+  }
+};
+
 const ModelAndProviderContext = createContext<ModelAndProviderContextType | undefined>(undefined);
 
 export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> = ({ children }) => {
@@ -477,6 +490,12 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
                     <span>Local copy</span>
                     <span className="text-text-default">
                       {modelDownloadLabel(llamaWarmupDialog.entry)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span>Llama Server fallback</span>
+                    <span className="text-text-default">
+                      {fallbackDownloadLabel(llamaWarmupDialog.entry)}
                     </span>
                   </div>
                   <div className="flex justify-between gap-3">

@@ -42,6 +42,10 @@ pub struct LlamaCppModel {
     pub download_status: ModelCacheStatus,
     /// `ollama`, `huggingface_cache`, or `none`.
     pub download_source: String,
+    /// Whether the llama.cpp-compatible Hugging Face fallback is already cached.
+    pub fallback_downloaded: bool,
+    /// Cache status for the llama.cpp-compatible Hugging Face fallback.
+    pub fallback_download_status: ModelCacheStatus,
     /// The local GGUF blob path used when Ollama has already pulled this model.
     pub model_path: Option<String>,
     /// True when detected GPU-addressable memory meets the recommended tier.
@@ -108,11 +112,10 @@ fn catalog() -> Vec<LlamaCppModel> {
             let source = resolve_model_source(e.name).expect("catalog entry resolves");
             let download_status = llamacpp_sidecar::model_source_cache_status(&source);
             let model_path = llamacpp_sidecar::model_source_path(&source);
+            let fallback_download_status = llamacpp_sidecar::model_cache_status(e.hf_spec);
             let download_source = if model_path.is_some() {
                 "ollama"
-            } else if llamacpp_sidecar::model_cache_status(e.hf_spec)
-                == ModelCacheStatus::Downloaded
-            {
+            } else if fallback_download_status == ModelCacheStatus::Downloaded {
                 "huggingface_cache"
             } else {
                 "none"
@@ -136,6 +139,8 @@ fn catalog() -> Vec<LlamaCppModel> {
                 downloaded: download_status == ModelCacheStatus::Downloaded,
                 download_status,
                 download_source: download_source.to_string(),
+                fallback_downloaded: fallback_download_status == ModelCacheStatus::Downloaded,
+                fallback_download_status,
                 model_path: model_path.map(|path| path.display().to_string()),
                 suitable,
                 suitability_status,

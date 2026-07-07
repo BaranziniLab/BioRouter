@@ -65,6 +65,19 @@ const llamaFitLabel = (model: LlamaCppModel | undefined) => {
   }
 };
 
+const llamaFallbackLabel = (model: LlamaCppModel | undefined) => {
+  switch (model?.fallback_download_status) {
+    case 'downloaded':
+      return 'Fallback ready';
+    case 'partial':
+      return 'Fallback partial';
+    case 'not_downloaded':
+      return model?.ollama_name ? 'Fallback may download' : null;
+    default:
+      return null;
+  }
+};
+
 const llamaModelLabel = (modelName: string, catalog: Map<string, LlamaCppModel>) => {
   const entry = catalog.get(modelName);
   if (!entry) return modelName;
@@ -73,6 +86,7 @@ const llamaModelLabel = (modelName: string, catalog: Map<string, LlamaCppModel>)
     entry.display_name,
     entry.download_size,
     llamaDownloadLabel(entry),
+    llamaFallbackLabel(entry),
     llamaFitLabel(entry),
     entry.ollama_name ? `Ollama ${entry.ollama_name}` : null,
   ]

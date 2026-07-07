@@ -76,6 +76,8 @@ const statusResponse = {
         downloaded: false,
         download_status: 'not_downloaded',
         download_source: 'none',
+        fallback_downloaded: false,
+        fallback_download_status: 'not_downloaded',
         model_path: null,
         suitable: false,
         suitability_status: 'above_recommendation',
