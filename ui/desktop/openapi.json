@@ -5602,6 +5602,8 @@
           "downloaded",
           "download_status",
           "download_source",
+          "fallback_downloaded",
+          "fallback_download_status",
           "suitable",
           "suitability_status",
           "suitability_message"
@@ -5630,6 +5632,13 @@
           "downloaded": {
             "type": "boolean",
             "description": "Whether the exact GGUF/quantization is already in Biorouter's llama.cpp cache."
+          },
+          "fallback_download_status": {
+            "$ref": "#/components/schemas/ModelCacheStatus"
+          },
+          "fallback_downloaded": {
+            "type": "boolean",
+            "description": "Whether the llama.cpp-compatible Hugging Face fallback is already cached."
           },
           "hf_spec": {
             "type": "string"

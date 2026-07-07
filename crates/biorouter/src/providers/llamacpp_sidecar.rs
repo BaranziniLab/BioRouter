@@ -720,6 +720,7 @@ fn build_args(source: &LaunchSource, alias: &str, port: u16, ctx_size: usize) ->
         ctx_size.to_string(),
         "--jinja".to_string(),
         "--no-webui".to_string(),
+        "--no-mmproj".to_string(),
         // Halve KV-cache memory so the (memory-tiered) default context stays
         // affordable. q8_0 is considered lossless in practice; it's q4 KV that
         // degrades tool calling. Overridable via LLAMACPP_EXTRA_ARGS.
@@ -1596,6 +1597,7 @@ mod tests {
         assert!(joined.contains("--jinja"));
         assert!(joined.contains("--host 127.0.0.1"));
         assert!(joined.contains("--no-webui"));
+        assert!(joined.contains("--no-mmproj"));
         // Thinking is disabled by default via the current --reasoning flag.
         assert!(joined.contains("--reasoning off"));
         assert!(!joined.contains("enable_thinking"));

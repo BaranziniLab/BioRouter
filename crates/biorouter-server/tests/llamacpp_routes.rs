@@ -100,6 +100,20 @@ async fn status_returns_catalog_with_default_first_class() {
     );
     assert!(
         catalog.iter().all(|m| m
+            .get("fallback_downloaded")
+            .and_then(|downloaded| downloaded.as_bool())
+            .is_some()),
+        "catalog entries should expose whether the llama.cpp fallback is cached"
+    );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("fallback_download_status")
+            .and_then(|status| status.as_str())
+            .is_some_and(|status| ["downloaded", "partial", "not_downloaded"].contains(&status))),
+        "catalog entries should expose fallback download status"
+    );
+    assert!(
+        catalog.iter().all(|m| m
             .get("suitability_status")
             .and_then(|status| status.as_str())
             .is_some_and(
@@ -127,7 +141,7 @@ async fn status_returns_catalog_with_default_first_class() {
     );
     assert_eq!(
         gemma4.get("hf_spec").and_then(|spec| spec.as_str()),
-        Some("ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M")
+        Some("google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0")
     );
 
     // Sidecar state is one of the documented values.

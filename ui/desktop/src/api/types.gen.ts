@@ -616,6 +616,11 @@ export type LlamaCppModel = {
      * Whether the exact GGUF/quantization is already in Biorouter's llama.cpp cache.
      */
     downloaded: boolean;
+    fallback_download_status: ModelCacheStatus;
+    /**
+     * Whether the llama.cpp-compatible Hugging Face fallback is already cached.
+     */
+    fallback_downloaded: boolean;
     hf_spec: string;
     /**
      * True for the model Biorouter preselects.
