@@ -62,13 +62,15 @@ const statusResponse = {
     catalog: [
       {
         name: 'qwen3.6-35b-a3b',
-        display_name: 'Qwen3.6 35B-A3B',
+        display_name: 'Qwen3.6 35B-A3B (community GGUF)',
         hf_spec: 'unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M',
         download_size: '22.1 GB',
         description: 'High-capability local model for Apple Silicon or GPUs with large VRAM.',
         min_gpu_memory_gib: 48,
         recommended_gpu_memory_gib: 64,
         context_limit: 131072,
+        downloaded: false,
+        download_status: 'not_downloaded',
         is_default: true,
       },
     ],
@@ -132,6 +134,7 @@ describe('ModelAndProviderProvider Llama Server warm-up', () => {
 
     expect(await screen.findByText('Warm up local model')).toBeInTheDocument();
     expect(screen.getAllByText(/8 GiB VRAM/).length).toBeGreaterThanOrEqual(1);
+    expect(screen.getByText('Needs download')).toBeInTheDocument();
     expect(screen.getByText(/32,768 tokens/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Keep previous model' }));

@@ -16,7 +16,7 @@ use biorouter::providers::base::Provider;
 use biorouter::providers::llamacpp::{
     default_model_name, resolve_hf_spec, LlamaCppProvider, MODEL_CATALOG,
 };
-use biorouter::providers::llamacpp_sidecar::{self, SidecarStatus};
+use biorouter::providers::llamacpp_sidecar::{self, ModelCacheStatus, SidecarStatus};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -35,6 +35,10 @@ pub struct LlamaCppModel {
     pub context_limit: usize,
     /// True for the model Biorouter preselects.
     pub is_default: bool,
+    /// Whether the exact GGUF/quantization is already in Biorouter's llama.cpp cache.
+    pub downloaded: bool,
+    /// `downloaded`, `partial`, or `not_downloaded`.
+    pub download_status: ModelCacheStatus,
 }
 
 #[derive(Serialize, Deserialize, ToSchema)]
@@ -77,16 +81,21 @@ fn catalog() -> Vec<LlamaCppModel> {
     let default_model = default_model_name();
     MODEL_CATALOG
         .iter()
-        .map(|e| LlamaCppModel {
-            name: e.name.to_string(),
-            display_name: e.display_name.to_string(),
-            hf_spec: e.hf_spec.to_string(),
-            download_size: e.download_size.to_string(),
-            description: e.description.to_string(),
-            min_gpu_memory_gib: e.min_gpu_memory_gib,
-            recommended_gpu_memory_gib: e.recommended_gpu_memory_gib,
-            context_limit: e.context_limit,
-            is_default: e.name == default_model,
+        .map(|e| {
+            let download_status = llamacpp_sidecar::model_cache_status(e.hf_spec);
+            LlamaCppModel {
+                name: e.name.to_string(),
+                display_name: e.display_name.to_string(),
+                hf_spec: e.hf_spec.to_string(),
+                download_size: e.download_size.to_string(),
+                description: e.description.to_string(),
+                min_gpu_memory_gib: e.min_gpu_memory_gib,
+                recommended_gpu_memory_gib: e.recommended_gpu_memory_gib,
+                context_limit: e.context_limit,
+                is_default: e.name == default_model,
+                downloaded: download_status == ModelCacheStatus::Downloaded,
+                download_status,
+            }
         })
         .collect()
 }

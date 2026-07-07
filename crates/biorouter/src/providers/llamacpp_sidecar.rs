@@ -75,6 +75,14 @@ pub struct SidecarStatus {
     pub warmed: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCacheStatus {
+    Downloaded,
+    Partial,
+    NotDownloaded,
+}
+
 struct Inner {
     child: Option<Child>,
     /// Port the current/last process was started on.
@@ -168,10 +176,81 @@ fn which_on_path(exe_name: &str) -> Option<PathBuf> {
     })
 }
 
-/// Directory used as `LLAMA_CACHE` so downloaded GGUFs live under a
-/// Biorouter-owned path rather than the shared `~/.cache/llama.cpp`.
+/// Directory used as `LLAMA_CACHE`. This follows Ollama's model-store
+/// convention (`OLLAMA_MODELS`, then `~/.ollama/models`) so local model data
+/// lives where Ollama users expect it.
 pub fn model_cache_dir() -> PathBuf {
-    crate::config::paths::Paths::in_data_dir("llamacpp/models")
+    std::env::var_os("OLLAMA_MODELS")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .expect("biorouter requires a home dir")
+                .join(".ollama")
+                .join("models")
+        })
+}
+
+pub fn model_cache_status(hf_spec: &str) -> ModelCacheStatus {
+    model_cache_status_in_dir(&model_cache_dir(), hf_spec)
+}
+
+fn model_cache_status_in_dir(cache_dir: &Path, hf_spec: &str) -> ModelCacheStatus {
+    let repo = hf_spec.split_once(':').map_or(hf_spec, |(repo, _)| repo);
+    let Some((owner, name)) = repo.split_once('/') else {
+        return ModelCacheStatus::NotDownloaded;
+    };
+
+    let repo_dir = cache_dir.join(format!("models--{owner}--{name}"));
+    if !repo_dir.is_dir() {
+        return ModelCacheStatus::NotDownloaded;
+    }
+
+    let quant = hf_spec
+        .split_once(':')
+        .map(|(_, quant)| quant.to_ascii_lowercase());
+    let mut has_partial = false;
+    let mut has_any_gguf = false;
+    let mut has_matching_gguf = false;
+    visit_cache_files(&repo_dir, &mut |path| {
+        let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+            return;
+        };
+        if file_name.ends_with(".downloadInProgress") {
+            has_partial = true;
+        }
+        if file_name.to_ascii_lowercase().ends_with(".gguf") {
+            has_any_gguf = true;
+            if quant
+                .as_ref()
+                .is_none_or(|q| file_name.to_ascii_lowercase().contains(q))
+            {
+                has_matching_gguf = true;
+            }
+        }
+    });
+
+    if has_matching_gguf || (quant.is_none() && has_any_gguf) {
+        ModelCacheStatus::Downloaded
+    } else if has_partial {
+        ModelCacheStatus::Partial
+    } else {
+        ModelCacheStatus::NotDownloaded
+    }
+}
+
+fn visit_cache_files(dir: &Path, f: &mut impl FnMut(&Path)) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            visit_cache_files(&path, f);
+        } else {
+            f(&path);
+        }
+    }
 }
 
 fn configured_port() -> u16 {
@@ -1041,6 +1120,64 @@ mod tests {
     use super::*;
 
     #[test]
+    fn model_cache_status_detects_missing_partial_and_downloaded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hf_spec = "unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M";
+
+        assert_eq!(
+            model_cache_status_in_dir(tmp.path(), hf_spec),
+            ModelCacheStatus::NotDownloaded
+        );
+
+        let repo_dir = tmp.path().join("models--unsloth--Qwen3.5-0.8B-GGUF");
+        std::fs::create_dir_all(repo_dir.join("blobs")).unwrap();
+        std::fs::write(
+            repo_dir.join("blobs").join("abc.downloadInProgress"),
+            b"partial",
+        )
+        .unwrap();
+        assert_eq!(
+            model_cache_status_in_dir(tmp.path(), hf_spec),
+            ModelCacheStatus::Partial
+        );
+
+        let snapshot_dir = repo_dir.join("snapshots").join("rev");
+        std::fs::create_dir_all(&snapshot_dir).unwrap();
+        std::fs::write(snapshot_dir.join("Qwen3.5-0.8B-Q4_K_M.gguf"), b"model").unwrap();
+        assert_eq!(
+            model_cache_status_in_dir(tmp.path(), hf_spec),
+            ModelCacheStatus::Downloaded
+        );
+    }
+
+    #[test]
+    fn model_cache_status_requires_matching_quant_when_specified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("models--unsloth--model-GGUF");
+        let snapshot_dir = repo_dir.join("snapshots").join("rev");
+        std::fs::create_dir_all(&snapshot_dir).unwrap();
+        std::fs::write(snapshot_dir.join("model-Q8_0.gguf"), b"model").unwrap();
+
+        assert_eq!(
+            model_cache_status_in_dir(tmp.path(), "unsloth/model-GGUF:Q4_K_M"),
+            ModelCacheStatus::NotDownloaded
+        );
+        assert_eq!(
+            model_cache_status_in_dir(tmp.path(), "unsloth/model-GGUF:Q8_0"),
+            ModelCacheStatus::Downloaded
+        );
+    }
+
+    #[test]
+    fn model_cache_dir_follows_ollama_models() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tmp_path = tmp.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([("OLLAMA_MODELS", Some(tmp_path.as_str()))]);
+
+        assert_eq!(model_cache_dir(), PathBuf::from(&tmp_path));
+    }
+
+    #[test]
     fn default_context_size_is_memory_tiered_and_capped() {
         // Whatever this machine reports, the default must be one of the tiers,
         // never exceed the 128k cap, and never be absurdly small.
@@ -1078,13 +1215,13 @@ mod tests {
     fn build_args_includes_model_port_and_jinja() {
         let _guard = env_lock::lock_env([("LLAMACPP_ENABLE_THINKING", None::<&str>)]);
         let args = build_args(
-            "unsloth/gemma-4-E4B-it-GGUF:Q4_K_M",
+            "google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0",
             "gemma-4-e4b",
             12345,
             32_768,
         );
         let joined = args.join(" ");
-        assert!(joined.contains("-hf unsloth/gemma-4-E4B-it-GGUF:Q4_K_M"));
+        assert!(joined.contains("-hf google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0"));
         assert!(joined.contains("--alias gemma-4-e4b"));
         assert!(joined.contains("--port 12345"));
         assert!(joined.contains("--ctx-size 32768"));
