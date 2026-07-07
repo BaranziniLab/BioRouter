@@ -17,6 +17,21 @@ interface CostTrackerProps {
   };
 }
 
+export function formatTooltipMoney(amount: number, currency = '$'): string {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return `${currency}0.00`;
+  }
+
+  if (amount < 0.01) {
+    return `<${currency}0.01`;
+  }
+
+  return `${currency}${amount.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }: CostTrackerProps) {
   const { currentModel, currentProvider } = useModelAndProvider();
   const [costInfo, setCostInfo] = useState<PricingData | null>(null);
@@ -184,7 +199,7 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
       let tooltip = 'Session cost breakdown:\n';
 
       Object.entries(sessionCosts).forEach(([modelKey, cost]) => {
-        const costStr = `${costInfo?.currency || '$'}${cost.totalCost.toFixed(6)}`;
+        const costStr = formatTooltipMoney(cost.totalCost, costInfo?.currency || '$');
         tooltip += `${modelKey}: ${costStr} (${cost.inputTokens.toLocaleString()} in, ${cost.outputTokens.toLocaleString()} out)\n`;
       });
 
@@ -194,16 +209,16 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
           inputTokens * (costInfo.input_token_cost || 0) +
           outputTokens * (costInfo.output_token_cost || 0);
         if (currentCost > 0) {
-          tooltip += `${currentProvider}/${currentModel} (current): ${costInfo.currency || '$'}${currentCost.toFixed(6)} (${inputTokens.toLocaleString()} in, ${outputTokens.toLocaleString()} out)\n`;
+          tooltip += `${currentProvider}/${currentModel} (current): ${formatTooltipMoney(currentCost, costInfo.currency || '$')} (${inputTokens.toLocaleString()} in, ${outputTokens.toLocaleString()} out)\n`;
         }
       }
 
-      tooltip += `\nTotal session cost: ${costInfo?.currency || '$'}${totalCost.toFixed(6)}`;
+      tooltip += `\nTotal session cost: ${formatTooltipMoney(totalCost, costInfo?.currency || '$')}`;
       return tooltip;
     }
 
     // Default tooltip for single model
-    return `Input: ${inputTokens.toLocaleString()} tokens (${costInfo?.currency || '$'}${(inputTokens * (costInfo?.input_token_cost || 0)).toFixed(6)}) | Output: ${outputTokens.toLocaleString()} tokens (${costInfo?.currency || '$'}${(outputTokens * (costInfo?.output_token_cost || 0)).toFixed(6)})`;
+    return `Input: ${inputTokens.toLocaleString()} tokens (${formatTooltipMoney(inputTokens * (costInfo?.input_token_cost || 0), costInfo?.currency || '$')}) | Output: ${outputTokens.toLocaleString()} tokens (${formatTooltipMoney(outputTokens * (costInfo?.output_token_cost || 0), costInfo?.currency || '$')})`;
   };
 
   return (

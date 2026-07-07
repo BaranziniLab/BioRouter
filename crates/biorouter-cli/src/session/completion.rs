@@ -370,8 +370,11 @@ impl Completer for BioRouterCompleter {
             .find(|(_, ch)| ch.is_whitespace())
             .map(|(index, ch)| index + ch.len_utf8())
             .unwrap_or(0);
-        let token = &line[token_start..];
-        if token.starts_with('/') && !token[1..].contains('/') {
+        let token = line.get(token_start..).unwrap_or("");
+        if let Some(token_body) = token.strip_prefix('/') {
+            if token_body.contains('/') {
+                return self.complete_file_path(line, ctx);
+            }
             let (_, candidates) = self.complete_slash_commands(token)?;
             return Ok((token_start, candidates));
         }
