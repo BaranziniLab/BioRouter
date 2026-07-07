@@ -15,7 +15,9 @@ use url::Url;
 
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
-use crate::providers::base::{ConfigKey, MessageStream, Provider, ProviderMetadata, ProviderUsage};
+use crate::providers::base::{
+    ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage,
+};
 
 use crate::providers::errors::ProviderError;
 use crate::providers::formats::gcpvertexai::{
@@ -525,12 +527,19 @@ impl Provider for GcpVertexAIProvider {
     where
         Self: Sized,
     {
-        ProviderMetadata::new(
+        let models: Vec<ModelInfo> = KNOWN_MODELS
+            .iter()
+            .map(|&name| {
+                ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit()).with_vision()
+            })
+            .collect();
+
+        ProviderMetadata::with_models(
             "gcp_vertex_ai",
             "GCP Vertex AI",
             "Access variety of AI models such as Claude, Gemini through Vertex AI",
             DEFAULT_MODEL,
-            KNOWN_MODELS.to_vec(),
+            models,
             GCP_VERTEX_AI_DOC_URL,
             vec![
                 ConfigKey::new("GCP_PROJECT_ID", true, false, None),

@@ -3,7 +3,9 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use super::api_client::{ApiClient, AuthMethod};
-use super::base::{ConfigKey, MessageStream, Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::base::{
+    ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage,
+};
 use super::errors::ProviderError;
 use super::retry::ProviderRetry;
 use super::utils::{
@@ -44,6 +46,25 @@ pub const OPENROUTER_KNOWN_MODELS: &[&str] = &[
     "minimax/minimax-m3",
 ];
 pub const OPENROUTER_DOC_URL: &str = "https://openrouter.ai/models";
+
+fn openrouter_model_supports_vision(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    normalized.starts_with("anthropic/claude-")
+        || normalized.starts_with("google/gemini-")
+        || normalized.starts_with("x-ai/grok-4")
+}
+
+fn openrouter_model_info(name: &str) -> ModelInfo {
+    let info = ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit());
+    let normalized = name.to_ascii_lowercase();
+    if normalized.starts_with("x-ai/grok-4") {
+        info.with_png_jpeg_image_inputs()
+    } else if openrouter_model_supports_vision(name) {
+        info.with_vision()
+    } else {
+        info
+    }
+}
 
 #[derive(serde::Serialize)]
 pub struct OpenRouterProvider {
@@ -229,12 +250,17 @@ async fn create_request_based_on_model(
 #[async_trait]
 impl Provider for OpenRouterProvider {
     fn metadata() -> ProviderMetadata {
-        ProviderMetadata::new(
+        let models: Vec<ModelInfo> = OPENROUTER_KNOWN_MODELS
+            .iter()
+            .map(|&name| openrouter_model_info(name))
+            .collect();
+
+        ProviderMetadata::with_models(
             "openrouter",
             "OpenRouter",
             "Router for many model providers",
             OPENROUTER_DEFAULT_MODEL,
-            OPENROUTER_KNOWN_MODELS.to_vec(),
+            models,
             OPENROUTER_DOC_URL,
             vec![
                 ConfigKey::new("OPENROUTER_API_KEY", true, true, None),

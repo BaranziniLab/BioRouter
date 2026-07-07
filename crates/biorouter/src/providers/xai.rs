@@ -8,7 +8,7 @@ use super::utils::{
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
 use crate::providers::base::{
-    ConfigKey, MessageStream, Provider, ProviderMetadata, ProviderUsage, Usage,
+    ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage,
 };
 use crate::providers::formats::openai::{create_request, get_usage, response_to_message};
 use anyhow::Result;
@@ -37,6 +37,13 @@ pub const XAI_KNOWN_MODELS: &[&str] = &[
 ];
 
 pub const XAI_DOC_URL: &str = "https://docs.x.ai/docs/overview";
+
+fn xai_model_supports_vision(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    normalized == "grok-latest"
+        || normalized.starts_with("grok-4.3")
+        || normalized.starts_with("grok-4.20")
+}
 
 #[derive(serde::Serialize)]
 pub struct XaiProvider {
@@ -80,12 +87,24 @@ impl XaiProvider {
 #[async_trait]
 impl Provider for XaiProvider {
     fn metadata() -> ProviderMetadata {
-        ProviderMetadata::new(
+        let models: Vec<ModelInfo> = XAI_KNOWN_MODELS
+            .iter()
+            .map(|&name| {
+                let info = ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit());
+                if xai_model_supports_vision(name) {
+                    info.with_png_jpeg_image_inputs()
+                } else {
+                    info
+                }
+            })
+            .collect();
+
+        ProviderMetadata::with_models(
             "xai",
             "xAI",
             "Grok models from xAI, including reasoning and multimodal capabilities",
             XAI_DEFAULT_MODEL,
-            XAI_KNOWN_MODELS.to_vec(),
+            models,
             XAI_DOC_URL,
             vec![
                 ConfigKey::new("XAI_API_KEY", true, true, None),

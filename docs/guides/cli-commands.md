@@ -575,8 +575,6 @@ Once you're in an interactive session (via `biorouter session` or `biorouter run
 - **`/extension <command>`** - Add a stdio extension (format: ENV1=val1 command args...)
 - **`/mode <name>`** - Set the biorouter mode to use ('auto', 'approve', 'chat', 'smart_approve')
 - **`/plan <message_text>`** - Enter 'plan' mode with optional message. Create a plan based on the current messages and ask user if they want to act on it
-- **`/prompt <n> [--info] [key=value...]`** - Get prompt info or execute a prompt
-- **`/prompts [--extension <name>]`** - List all available prompts, optionally filtered by extension
 - **`/workflow [filepath]`** - Generate a workflow from the current conversation and save it to the specified filepath (must end with .yaml). If no filepath is provided, it will be saved to ./workflow.yaml
 - **`/compact`** - Compact and summarize the current conversation to reduce context length while preserving key information
 - **`/t`** - Toggle between `light`, `dark`, and `ansi` themes. [More info](#themes).
@@ -586,9 +584,6 @@ Once you're in an interactive session (via `biorouter session` or `biorouter run
 ```bash
 # Create a plan for triaging test failures
 /plan let's create a plan for triaging test failures
-
-# List all prompts from the developer extension
-/prompts --extension developer
 
 # Switch to chat mode
 /mode chat
