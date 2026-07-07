@@ -98,6 +98,58 @@ function allowedFileRoots(): string[] {
   ];
 }
 
+function isAllowedFilePath(resolvedPath: string): boolean {
+  const allowedRoots = allowedFileRoots();
+  return allowedRoots.some(
+    (root) => resolvedPath.startsWith(root + path.sep) || resolvedPath === root
+  );
+}
+
+function mimeTypeForArtifactPath(filePath: string): string {
+  const ext = path.extname(filePath).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.css': 'text/css',
+    '.csv': 'text/csv',
+    '.gif': 'image/gif',
+    '.htm': 'text/html',
+    '.html': 'text/html',
+    '.jpeg': 'image/jpeg',
+    '.jpg': 'image/jpeg',
+    '.js': 'text/javascript',
+    '.json': 'application/json',
+    '.md': 'text/markdown',
+    '.png': 'image/png',
+    '.py': 'text/x-python',
+    '.r': 'text/x-r',
+    '.rs': 'text/rust',
+    '.sh': 'text/x-shellscript',
+    '.sql': 'application/sql',
+    '.svg': 'image/svg+xml',
+    '.toml': 'text/toml',
+    '.ts': 'text/typescript',
+    '.tsx': 'text/typescript',
+    '.txt': 'text/plain',
+    '.webp': 'image/webp',
+    '.xml': 'application/xml',
+    '.yaml': 'application/yaml',
+    '.yml': 'application/yaml',
+  };
+  return mimeTypes[ext] || 'application/octet-stream';
+}
+
+function isTextArtifact(mimeType: string, buffer: Buffer): boolean {
+  if (
+    mimeType.startsWith('text/') ||
+    mimeType.includes('json') ||
+    mimeType.includes('xml') ||
+    mimeType.includes('yaml') ||
+    mimeType.includes('sql')
+  ) {
+    return true;
+  }
+  return !buffer.subarray(0, Math.min(buffer.length, 512)).includes(0);
+}
+
 // Function to ensure the temporary directory exists
 async function ensureTempDirExists(): Promise<string> {
   try {
@@ -2092,11 +2144,7 @@ ipcMain.handle('read-file', async (_event, filePath) => {
   const expandedPath = expandBiorouterPath(filePath);
   try {
     const resolvedPath = path.resolve(expandedPath);
-    const allowedRoots = allowedFileRoots();
-    const isAllowed = allowedRoots.some(
-      (root) => resolvedPath.startsWith(root + path.sep) || resolvedPath === root
-    );
-    if (!isAllowed) {
+    if (!isAllowedFilePath(resolvedPath)) {
       throw new Error(`Access denied: path '${resolvedPath}' is outside allowed directories`);
     }
     // Single fs.readFile path for all platforms. The previous `spawn('cat')`
@@ -2108,6 +2156,101 @@ ipcMain.handle('read-file', async (_event, filePath) => {
   } catch (error) {
     console.error('Error reading file:', error);
     return { file: '', filePath: expandedPath, error, found: false };
+  }
+});
+
+ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
+  const expandedPath = expandBiorouterPath(filePath);
+  const resolvedPath = path.resolve(expandedPath);
+  const title = path.basename(resolvedPath) || resolvedPath;
+  try {
+    if (!isAllowedFilePath(resolvedPath)) {
+      throw new Error(`Access denied: path '${resolvedPath}' is outside allowed directories`);
+    }
+
+    const stats = await fs.stat(resolvedPath);
+    if (stats.isDirectory()) {
+      const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
+      return {
+        kind: 'directory',
+        title,
+        path: resolvedPath,
+        found: true,
+        entries: await Promise.all(
+          entries
+            .filter((entry) => !entry.name.startsWith('.'))
+            .sort((a, b) => {
+              if (a.isDirectory() !== b.isDirectory()) return a.isDirectory() ? -1 : 1;
+              return a.name.localeCompare(b.name);
+            })
+            .map(async (entry) => {
+              const entryPath = path.join(resolvedPath, entry.name);
+              let size: number | undefined;
+              if (entry.isFile()) {
+                try {
+                  size = (await fs.stat(entryPath)).size;
+                } catch {
+                  size = undefined;
+                }
+              }
+              return {
+                name: entry.name,
+                path: entryPath,
+                isDirectory: entry.isDirectory(),
+                size,
+              };
+            })
+        ),
+      };
+    }
+
+    if (!stats.isFile()) {
+      throw new Error('Path is not a regular file or directory');
+    }
+
+    const buffer = await fs.readFile(resolvedPath);
+    const mimeType = mimeTypeForArtifactPath(resolvedPath);
+    if (mimeType.startsWith('image/')) {
+      return {
+        kind: 'image',
+        title,
+        path: resolvedPath,
+        mimeType,
+        dataUrl: `data:${mimeType};base64,${buffer.toString('base64')}`,
+        size: stats.size,
+        found: true,
+      };
+    }
+
+    if (isTextArtifact(mimeType, buffer)) {
+      return {
+        kind: mimeType === 'text/html' ? 'html' : 'text',
+        title,
+        path: resolvedPath,
+        mimeType,
+        text: buffer.toString('utf8'),
+        size: stats.size,
+        found: true,
+      };
+    }
+
+    return {
+      kind: 'binary',
+      title,
+      path: resolvedPath,
+      mimeType,
+      size: stats.size,
+      found: true,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not read artifact file';
+    return {
+      kind: 'error',
+      title,
+      path: resolvedPath,
+      error: message,
+      found: false,
+    };
   }
 });
 
@@ -3663,6 +3806,23 @@ async function appMain() {
     }
   };
 
+  const prepareArtifactHtml = (rawHtml: string): string => {
+    let html = rawHtml;
+    const isAgentic = html.includes('"transport":"bridge"');
+    if (isAgentic) {
+      ensureAcpWsServer();
+      const endpoint = `ws://${ACP_WS_ADDR}/acp`;
+      html = html
+        .replace('"transport":"bridge"', '"transport":"acp-ws"')
+        .replace('"endpoint":null', `"endpoint":${JSON.stringify(endpoint)}`);
+    }
+    return html;
+  };
+
+  ipcMain.handle('prepare-artifact-html', async (_event, payload: { html: string }) => ({
+    html: prepareArtifactHtml(payload.html),
+  }));
+
   // Open an Agent Drafter artifact's HTML in a large standalone window so the
   // user can view/interact with it full-size without exporting. The HTML is
   // self-contained; it runs sandboxed (no node, isolated context). For agentic
@@ -3681,15 +3841,7 @@ async function appMain() {
       }
     ) => {
       try {
-        let html = payload.html;
-        const isAgentic = html.includes('"transport":"bridge"');
-        if (isAgentic) {
-          ensureAcpWsServer();
-          const endpoint = `ws://${ACP_WS_ADDR}/acp`;
-          html = html
-            .replace('"transport":"bridge"', '"transport":"acp-ws"')
-            .replace('"endpoint":null', `"endpoint":${JSON.stringify(endpoint)}`);
-        }
+        const html = prepareArtifactHtml(payload.html);
 
         const isDark = payload.theme === 'dark';
         const win = new BrowserWindow({

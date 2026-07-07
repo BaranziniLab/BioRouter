@@ -112,6 +112,20 @@ type HeadlessReadFileResponse = {
   found: boolean;
   error: string | null;
 };
+type HeadlessArtifactFileResponse =
+  | HeadlessReadFileResponse
+  | {
+      kind: string;
+      title: string;
+      path: string;
+      found: boolean;
+      text?: string;
+      mimeType?: string;
+      dataUrl?: string;
+      size?: number;
+      entries?: Array<{ name: string; path: string; isDirectory: boolean; size?: number }>;
+      error?: string;
+    };
 
 // Browser/headless mode: inject browser-safe preload bridges so the app renders without Electron.
 if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
@@ -256,6 +270,32 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
           found: window.localStorage.getItem(`biorouter-browser-file:${filePath}`) !== null,
         };
       },
+      readArtifactFile: async (filePath: string) => {
+        const result = await headlessJson<HeadlessArtifactFileResponse>(
+          headlessConfig.headlessBaseUrl,
+          `/fs/artifact?path=${encodeURIComponent(filePath)}`
+        );
+        if (result && 'kind' in result) return result;
+        const stored = window.localStorage.getItem(`biorouter-browser-file:${filePath}`);
+        if (stored !== null) {
+          return {
+            kind: filePath.endsWith('.html') ? 'html' : 'text',
+            title: filePath.split('/').filter(Boolean).pop() || filePath,
+            path: filePath,
+            mimeType: filePath.endsWith('.html') ? 'text/html' : 'text/plain',
+            text: stored,
+            size: stored.length,
+            found: true,
+          };
+        }
+        return {
+          kind: 'error',
+          title: filePath.split('/').filter(Boolean).pop() || filePath,
+          path: filePath,
+          error: 'Could not read artifact in browser mode',
+          found: false,
+        };
+      },
       writeFile: async (filePath: string, content: string) => {
         const result = await headlessPost<HeadlessOkResponse>(
           headlessConfig.headlessBaseUrl,
@@ -302,10 +342,12 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       launchCli: async () => ({ success: false }),
       addRecentDir: async () => {},
       openDirectoryInExplorer: async () => {},
-      openArtifactWindow: async (html: string) => {
+      openArtifactWindow: async (payload: { html: string } | string) => {
+        const html = typeof payload === 'string' ? payload : payload.html;
         const blob = new Blob([html], { type: 'text/html' });
         window.open(URL.createObjectURL(blob), '_blank', 'noopener,noreferrer');
       },
+      prepareArtifactHtml: async ({ html }: { html: string }) => ({ html }),
       recordWorkflowHash: async () => {},
       hasAcceptedWorkflowBefore: async () => false,
       openBrxtFilePicker: async () =>

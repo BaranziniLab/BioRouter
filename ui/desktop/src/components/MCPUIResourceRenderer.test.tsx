@@ -97,4 +97,48 @@ describe('MCPUIResourceRenderer', () => {
       );
     });
   });
+
+  it('opens MCP HTML artifacts in the side viewer when an artifact handler is provided', async () => {
+    const onOpenArtifact = vi.fn();
+    const html = '<!doctype html><html><body><h1>Chart</h1></body></html>';
+    const blob = btoa(html);
+
+    Object.defineProperty(window, 'electron', {
+      configurable: true,
+      value: {
+        getBiorouterdHostPort: vi.fn().mockResolvedValue('http://localhost:8765'),
+        getSecretKey: vi.fn().mockResolvedValue('secret'),
+        openArtifactWindow: vi.fn().mockResolvedValue(undefined),
+        on: vi.fn().mockReturnValue(() => undefined),
+      },
+    });
+
+    render(
+      <ThemeProvider>
+        <MCPUIResourceRenderer
+          content={
+            {
+              type: 'resource',
+              resource: {
+                uri: 'ui://chart/visualization',
+                mimeType: 'text/html',
+                blob,
+              },
+            } as EmbeddedResource & { type: 'resource' }
+          }
+          onOpenArtifact={onOpenArtifact}
+        />
+      </ThemeProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /open visualization/i }));
+
+    expect(onOpenArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'html',
+        title: 'visualization',
+        html,
+      })
+    );
+  });
 });
