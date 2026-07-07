@@ -18,7 +18,11 @@ import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
 import { useFileDrop } from '../hooks/useFileDrop';
 import { Message } from '../api';
 import type { UserAttachment } from '../types/message';
-import { getProviderMetadata } from './settings/models/modelInterface';
+import {
+  getProviderMetadata,
+  modelSupportedInputMimeTypes,
+  modelSupportsVision,
+} from './settings/models/modelInterface';
 import { ChatState } from '../types/chatState';
 import { ChatType } from '../types/chat';
 import { useIsMobile } from '../hooks/use-mobile';
@@ -125,6 +129,9 @@ function BaseChatContent({
   // against the session's own provider/model so attach gating reflects what
   // the session will actually use.
   const [sessionSupportsVision, setSessionSupportsVision] = React.useState<boolean | null>(null);
+  const [sessionSupportedInputMimeTypes, setSessionSupportedInputMimeTypes] = React.useState<
+    string[] | null | undefined
+  >(undefined);
 
   const disableAnimation = location.state?.disableAnimation || false;
   const [hasStartedUsingWorkflow, setHasStartedUsingWorkflow] = React.useState(false);
@@ -264,16 +271,22 @@ function BaseChatContent({
     const sessionModel = session?.model_config?.model_name;
     if (!sessionProvider || !sessionModel) {
       setSessionSupportsVision(null);
+      setSessionSupportedInputMimeTypes(undefined);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
         const metadata = await getProviderMetadata(sessionProvider, getProviders);
-        const info = metadata.known_models.find((m) => m.name === sessionModel);
-        if (!cancelled) setSessionSupportsVision(info?.supports_vision === true);
+        if (!cancelled) {
+          setSessionSupportsVision(modelSupportsVision(metadata, sessionModel));
+          setSessionSupportedInputMimeTypes(modelSupportedInputMimeTypes(metadata, sessionModel));
+        }
       } catch {
-        if (!cancelled) setSessionSupportsVision(false);
+        if (!cancelled) {
+          setSessionSupportsVision(false);
+          setSessionSupportedInputMimeTypes(null);
+        }
       }
     })();
     return () => {
@@ -290,7 +303,8 @@ function BaseChatContent({
     }
 
     // If no session exists, create one and navigate with the initial message
-    if (!session && !sessionId && textValue.trim() && !isCreatingSession) {
+    const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+    if (!session && !sessionId && (textValue.trim() || hasAttachments) && !isCreatingSession) {
       setIsCreatingSession(true);
       try {
         const newSession = await createSession(getInitialWorkingDir(), {
@@ -621,6 +635,7 @@ function BaseChatContent({
         toolCount={toolCount || 0}
         compactPicker={compactPicker}
         supportsVisionOverride={sessionSupportsVision ?? undefined}
+        supportedInputMimeTypesOverride={sessionSupportedInputMimeTypes}
         {...customChatInputProps}
       />
     </div>

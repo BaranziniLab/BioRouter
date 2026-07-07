@@ -1,4 +1,4 @@
-import { ProviderDetails } from '../../../api';
+import type { ModelInfo, ProviderDetails, ProviderMetadata } from '../../../api';
 
 export default interface Model {
   id?: number; // Make `id` optional to allow user-defined models
@@ -40,6 +40,89 @@ export async function getProviderMetadata(
     throw Error(`No match for provider: ${providerName}`);
   }
   return matches.metadata;
+}
+
+function normalizedModelCandidates(modelName: string): Set<string> {
+  const base = modelName
+    .toLowerCase()
+    .trim()
+    .replace(/^([^/\s]+\/)/, '')
+    .replace(/^(?:us|eu|apac)\.anthropic\./, '')
+    .replace(/^anthropic\./, '')
+    .replace(/^databricks-/, '')
+    .replace(/@(\d{8})$/, '-$1')
+    .replace(/-v\d+(?::\d+)?$/, '');
+
+  const candidates = new Set<string>([base]);
+  candidates.add(base.replace(/\./g, '-'));
+
+  const numericDot = base.replace(/-(\d+)-(\d+)(?=-|$)/g, '-$1.$2');
+  candidates.add(numericDot);
+
+  const numericHyphen = base.replace(/-(\d+)\.(\d+)(?=-|$)/g, '-$1-$2');
+  candidates.add(numericHyphen);
+
+  for (const candidate of [...candidates]) {
+    candidates.add(candidate.replace(/-v\d+(?::\d+)?$/, ''));
+  }
+
+  return candidates;
+}
+
+const DEFAULT_IMAGE_INPUT_MIME_TYPES = [
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/gif',
+  'image/webp',
+];
+
+export function resolveKnownModelInfo(
+  metadata: ProviderMetadata,
+  modelName: string
+): ModelInfo | undefined {
+  const normalizedName = modelName.toLowerCase().trim();
+  const exact = metadata.known_models.find((model) => model.name.toLowerCase().trim() === normalizedName);
+  if (exact) return exact;
+
+  if (normalizedName.includes('codex')) return undefined;
+
+  const activeCandidates = normalizedModelCandidates(normalizedName);
+
+  return [...metadata.known_models]
+    .sort((a, b) => b.name.length - a.name.length)
+    .find((model) => {
+      const knownCandidates = normalizedModelCandidates(model.name);
+      for (const active of activeCandidates) {
+        for (const known of knownCandidates) {
+          if (
+            active === known ||
+            active.startsWith(`${known}-`) ||
+            active.startsWith(`${known}.`) ||
+            active.startsWith(`${known}@`)
+          ) {
+            return true;
+          }
+        }
+      }
+      return false;
+    });
+}
+
+export function modelSupportsVision(metadata: ProviderMetadata, modelName: string): boolean {
+  return resolveKnownModelInfo(metadata, modelName)?.supports_vision === true;
+}
+
+export function modelSupportedInputMimeTypes(
+  metadata: ProviderMetadata,
+  modelName: string
+): string[] | null {
+  const modelInfo = resolveKnownModelInfo(metadata, modelName);
+  if (!modelInfo) return null;
+  if (Array.isArray(modelInfo.supported_input_mime_types)) {
+    return modelInfo.supported_input_mime_types;
+  }
+  return modelInfo.supports_vision === true ? DEFAULT_IMAGE_INPUT_MIME_TYPES : null;
 }
 
 export interface ProviderModelsResult {

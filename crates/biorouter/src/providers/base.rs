@@ -53,6 +53,9 @@ pub struct ModelInfo {
     /// Whether this model accepts image inputs (multimodal vision)
     #[serde(default)]
     pub supports_vision: Option<bool>,
+    /// MIME types that can be sent as structured model input blocks.
+    #[serde(default)]
+    pub supported_input_mime_types: Option<Vec<String>>,
 }
 
 impl ModelInfo {
@@ -66,6 +69,7 @@ impl ModelInfo {
             currency: None,
             supports_cache_control: None,
             supports_vision: None,
+            supported_input_mime_types: None,
         }
     }
 
@@ -84,13 +88,63 @@ impl ModelInfo {
             currency: Some("$".to_string()),
             supports_cache_control: None,
             supports_vision: None,
+            supported_input_mime_types: None,
         }
     }
 
     /// Mark this model as supporting image inputs (multimodal vision).
     pub fn with_vision(mut self) -> Self {
         self.supports_vision = Some(true);
+        if self.supported_input_mime_types.is_none() {
+            self.supported_input_mime_types = Some(
+                [
+                    "image/png",
+                    "image/jpeg",
+                    "image/jpg",
+                    "image/gif",
+                    "image/webp",
+                ]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            );
+        }
         self
+    }
+
+    pub fn with_supported_input_mime_types<I, S>(mut self, mime_types: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        let mime_types: Vec<String> = mime_types.into_iter().map(Into::into).collect();
+        if mime_types
+            .iter()
+            .any(|mime_type| mime_type.starts_with("image/"))
+        {
+            self.supports_vision = Some(true);
+        }
+        self.supported_input_mime_types = Some(mime_types);
+        self
+    }
+
+    pub fn with_png_jpeg_image_inputs(self) -> Self {
+        self.with_supported_input_mime_types(["image/png", "image/jpeg", "image/jpg"])
+    }
+}
+
+impl Default for ModelInfo {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            context_limit: 0,
+            input_token_cost: None,
+            output_token_cost: None,
+            currency: None,
+            supports_cache_control: None,
+            supports_vision: None,
+            supported_input_mime_types: None,
+        }
     }
 }
 
@@ -149,6 +203,7 @@ impl ProviderMetadata {
                     currency: None,
                     supports_cache_control: None,
                     supports_vision: None,
+                    supported_input_mime_types: None,
                 })
                 .collect(),
             model_doc_link: model_doc_link.to_string(),
@@ -728,6 +783,7 @@ mod tests {
             currency: None,
             supports_cache_control: None,
             supports_vision: None,
+            supported_input_mime_types: None,
         };
         assert_eq!(info.context_limit, 1000);
 
@@ -740,6 +796,7 @@ mod tests {
             currency: None,
             supports_cache_control: None,
             supports_vision: None,
+            supported_input_mime_types: None,
         };
         assert_eq!(info, info2);
 
@@ -752,6 +809,7 @@ mod tests {
             currency: None,
             supports_cache_control: None,
             supports_vision: None,
+            supported_input_mime_types: None,
         };
         assert_ne!(info, info3);
     }
@@ -770,19 +828,40 @@ mod tests {
     fn test_with_vision_sets_flag() {
         let info = ModelInfo::new("claude-3-5-sonnet", 200_000).with_vision();
         assert_eq!(info.supports_vision, Some(true));
+        assert_eq!(
+            info.supported_input_mime_types,
+            Some(vec![
+                "image/png".to_string(),
+                "image/jpeg".to_string(),
+                "image/jpg".to_string(),
+                "image/gif".to_string(),
+                "image/webp".to_string()
+            ])
+        );
     }
 
     #[test]
     fn test_default_vision_is_none() {
         let info = ModelInfo::new("text-only-model", 8_000);
         assert_eq!(info.supports_vision, None);
+        assert_eq!(info.supported_input_mime_types, None);
     }
 
     #[test]
     fn known_vision_models_have_supports_vision_true() {
         use crate::providers::anthropic::AnthropicProvider;
+        use crate::providers::azure::AzureProvider;
+        use crate::providers::bedrock::BedrockProvider;
+        use crate::providers::databricks::DatabricksProvider;
+        use crate::providers::gcpvertexai::GcpVertexAIProvider;
+        use crate::providers::githubcopilot::GithubCopilotProvider;
         use crate::providers::google::GoogleProvider;
         use crate::providers::openai::OpenAiProvider;
+        use crate::providers::openrouter::OpenRouterProvider;
+        use crate::providers::tetrate::TetrateProvider;
+        use crate::providers::versa_azure::VersaAzureProvider;
+        use crate::providers::versa_bedrock::VersaBedrockProvider;
+        use crate::providers::xai::XaiProvider;
 
         // Note: Xiaomi MiMo is intentionally NOT covered here — its catalog has no
         // vision-capable model. Only "omni" MiMo models accept image input; the
@@ -797,10 +876,71 @@ mod tests {
             ),
             (OpenAiProvider::metadata(), "gpt-5.5", "OpenAI GPT-5.5"),
             (
+                AzureProvider::metadata(),
+                "gpt-5.5-2026-04-24",
+                "Azure OpenAI GPT-5.5 deployment",
+            ),
+            (
+                VersaAzureProvider::metadata(),
+                "gpt-5.5-2026-04-24",
+                "Versa Azure GPT-5.5 deployment",
+            ),
+            (
                 GoogleProvider::metadata(),
                 "gemini-2.5-pro",
                 "Google Gemini 2.5 Pro",
             ),
+            (
+                BedrockProvider::metadata(),
+                "us.anthropic.claude-opus-4-6-v1",
+                "Amazon Bedrock Claude Opus 4.6",
+            ),
+            (
+                VersaBedrockProvider::metadata(),
+                "us.anthropic.claude-opus-4-6-v1",
+                "Versa Bedrock Claude Opus 4.6",
+            ),
+            (
+                GcpVertexAIProvider::metadata(),
+                "claude-sonnet-4-6",
+                "GCP Vertex AI Claude Sonnet 4.6",
+            ),
+            (
+                GcpVertexAIProvider::metadata(),
+                "gemini-3.5-flash",
+                "GCP Vertex AI Gemini 3.5 Flash",
+            ),
+            (
+                DatabricksProvider::metadata(),
+                "databricks-claude-sonnet-4-6",
+                "Databricks Claude Sonnet 4.6",
+            ),
+            (
+                DatabricksProvider::metadata(),
+                "databricks-llama-4-maverick",
+                "Databricks Llama 4 Maverick",
+            ),
+            (
+                OpenRouterProvider::metadata(),
+                "anthropic/claude-sonnet-4.6",
+                "OpenRouter Claude Sonnet 4.6",
+            ),
+            (
+                OpenRouterProvider::metadata(),
+                "x-ai/grok-4.3",
+                "OpenRouter Grok 4.3",
+            ),
+            (
+                TetrateProvider::metadata(),
+                "claude-sonnet-4-6",
+                "Tetrate Claude Sonnet 4.6",
+            ),
+            (
+                GithubCopilotProvider::metadata(),
+                "claude-sonnet-4.6",
+                "GitHub Copilot Claude Sonnet 4.6",
+            ),
+            (XaiProvider::metadata(), "grok-4.3", "xAI Grok 4.3"),
         ];
 
         for (metadata, model_name, label) in cases {
@@ -814,11 +954,18 @@ mod tests {
                 Some(true),
                 "{label} should declare supports_vision: true"
             );
+            assert!(
+                info.supported_input_mime_types
+                    .as_ref()
+                    .is_some_and(|mime_types| mime_types.iter().any(|mime| mime == "image/png")),
+                "{label} should declare uploadable image MIME types"
+            );
         }
     }
 
     #[test]
     fn text_only_provider_does_not_claim_vision() {
+        use crate::providers::githubcopilot::GithubCopilotProvider;
         use crate::providers::ollama::OllamaProvider;
         let metadata = OllamaProvider::metadata();
         for info in &metadata.known_models {
@@ -829,5 +976,31 @@ mod tests {
                 info.name
             );
         }
+
+        let copilot_codex = GithubCopilotProvider::metadata()
+            .known_models
+            .into_iter()
+            .find(|m| m.name == "gpt-5.3-codex")
+            .expect("GitHub Copilot Codex model should be present");
+        assert_eq!(copilot_codex.supports_vision, None);
+    }
+
+    #[test]
+    fn xai_vision_models_are_limited_to_png_and_jpeg() {
+        use crate::providers::xai::XaiProvider;
+        let grok = XaiProvider::metadata()
+            .known_models
+            .into_iter()
+            .find(|m| m.name == "grok-4.3")
+            .expect("xAI Grok 4.3 should be present");
+        assert_eq!(grok.supports_vision, Some(true));
+        assert_eq!(
+            grok.supported_input_mime_types,
+            Some(vec![
+                "image/png".to_string(),
+                "image/jpeg".to_string(),
+                "image/jpg".to_string()
+            ])
+        );
     }
 }

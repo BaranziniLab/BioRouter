@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::api_client::{ApiClient, AuthMethod, AuthProvider};
 use super::azureauth::{AuthError, AzureAuth};
-use super::base::{ConfigKey, Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage};
 use super::errors::ProviderError;
 use super::formats::openai::{create_request, get_usage, response_to_message};
 use super::retry::ProviderRetry;
@@ -36,6 +36,15 @@ pub const VERSA_AZURE_KNOWN_MODELS: &[&str] = &[
     "gpt-4o-2024-11-20",
     "o4-mini-2025-04-16",
 ];
+
+fn versa_azure_model_supports_vision(name: &str) -> bool {
+    !name.contains("codex")
+        && (name.starts_with("gpt-5")
+            || name.starts_with("gpt-4.1")
+            || name.starts_with("gpt-4o")
+            || name.starts_with("o3")
+            || name.starts_with("o4"))
+}
 
 #[derive(Debug)]
 pub struct VersaAzureProvider {
@@ -132,12 +141,24 @@ impl VersaAzureProvider {
 #[async_trait]
 impl Provider for VersaAzureProvider {
     fn metadata() -> ProviderMetadata {
-        ProviderMetadata::new(
+        let models = VERSA_AZURE_KNOWN_MODELS
+            .iter()
+            .map(|&name| {
+                let info = ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit());
+                if versa_azure_model_supports_vision(name) {
+                    info.with_vision()
+                } else {
+                    info
+                }
+            })
+            .collect();
+
+        ProviderMetadata::with_models(
             "versa_azure",
             "Versa API Azure",
             "UCSF ChatGPT via Azure OpenAI. API Key only — endpoint and deployment are pre-configured.",
             VERSA_AZURE_DEPLOYMENT,
-            VERSA_AZURE_KNOWN_MODELS.to_vec(),
+            models,
             VERSA_AZURE_DOC_URL,
             vec![
                 ConfigKey::new("VERSA_AZURE_API_KEY", true, true, None),

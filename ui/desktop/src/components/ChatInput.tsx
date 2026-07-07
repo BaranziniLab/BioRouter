@@ -39,6 +39,7 @@ import type { UserAttachment } from '../types/message';
 interface QueuedMessage {
   id: string;
   content: string;
+  attachments?: UserAttachment[];
   timestamp: number;
 }
 
@@ -52,7 +53,7 @@ interface PastedImage {
 
 // Constants for image handling
 const MAX_IMAGES_PER_MESSAGE = 5;
-const MAX_IMAGE_SIZE_MB = 5;
+const MAX_IMAGE_SIZE_MB = 3;
 
 // Constants for token and tool alerts
 const TOKEN_LIMIT_DEFAULT = 128000; // fallback for custom models that the backend doesn't know about
@@ -64,6 +65,31 @@ const MANUAL_COMPACT_TRIGGER = '/compact';
 // Client-side slash command: branch the conversation into a new chat. Handled
 // entirely in the renderer (never sent to the agent).
 const DIVERGE_TRIGGER = '/diverge';
+
+function canonicalMimeType(mimeType: string): string {
+  const normalized = mimeType.toLowerCase().trim();
+  return normalized === 'image/jpg' ? 'image/jpeg' : normalized;
+}
+
+function mimeTypeAllowed(mimeTypes: string[] | null, mimeType: string): boolean {
+  if (!mimeTypes) return true;
+  const canonical = canonicalMimeType(mimeType);
+  return mimeTypes.some((allowedMimeType) => canonicalMimeType(allowedMimeType) === canonical);
+}
+
+async function validateImageDataUrl(dataUrl: string): Promise<void> {
+  if (
+    typeof Image === 'undefined' ||
+    typeof HTMLImageElement === 'undefined' ||
+    typeof HTMLImageElement.prototype.decode !== 'function'
+  ) {
+    return;
+  }
+
+  const img = new Image();
+  img.src = dataUrl;
+  await img.decode();
+}
 
 interface ModelLimit {
   pattern: string;
@@ -122,6 +148,7 @@ interface ChatInputProps {
    * model. Falls back to the global ModelAndProviderContext flag when
    * undefined. */
   supportsVisionOverride?: boolean;
+  supportedInputMimeTypesOverride?: string[] | null;
 }
 
 export default function ChatInput({
@@ -150,6 +177,7 @@ export default function ChatInput({
   onWorkingDirChange,
   compactPicker = false,
   supportsVisionOverride,
+  supportedInputMimeTypesOverride,
 }: ChatInputProps) {
   const [_value, setValue] = useState(initialValue);
   const [displayValue, setDisplayValue] = useState(initialValue); // For immediate visual feedback
@@ -176,12 +204,17 @@ export default function ChatInput({
     currentModel,
     currentProvider,
     currentModelSupportsVision: globalSupportsVision,
+    currentModelSupportedInputMimeTypes: globalSupportedInputMimeTypes,
   } = useModelAndProvider();
   // Prefer the session-scoped flag when provided. This matters in dashboard
   // mode (where each window may be bound to a different model than the user's
   // global default) and after per-session model switches.
   const currentModelSupportsVision =
     supportsVisionOverride !== undefined ? supportsVisionOverride : globalSupportsVision;
+  const currentModelSupportedInputMimeTypes =
+    supportedInputMimeTypesOverride !== undefined
+      ? supportedInputMimeTypesOverride
+      : globalSupportedInputMimeTypes;
   const [tokenLimit, setTokenLimit] = useState<number>(TOKEN_LIMIT_DEFAULT);
   const [isTokenLimitLoaded, setIsTokenLimitLoaded] = useState(false);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
@@ -270,7 +303,7 @@ export default function ChatInput({
         LocalMessageStorage.addMessage(nextMessage.content);
         handleSubmit(
           new CustomEvent('submit', {
-            detail: { value: nextMessage.content },
+            detail: { value: nextMessage.content, attachments: nextMessage.attachments ?? [] },
           }) as unknown as React.FormEvent
         );
         setQueuedMessages((prev) => {
@@ -376,23 +409,55 @@ export default function ChatInput({
   const {
     droppedFiles: localDroppedFiles,
     setDroppedFiles: setLocalDroppedFiles,
+    isDraggingOver,
     handleDrop: handleLocalDrop,
+    handleDragEnter: handleLocalDragEnter,
     handleDragOver: handleLocalDragOver,
+    handleDragLeave: handleLocalDragLeave,
   } = useFileDrop();
 
-  // Merge local dropped files with parent dropped files.
-  // When the active model does not support vision, strip any image-typed
-  // entries from BOTH sources so they never reach the send path. The parent
-  // BaseChat installs its own useFileDrop on the message-scroll area, so we
-  // need to filter that channel too — it's not just our own ChatInput drop
-  // zone that needs gating.
+  // Merge local dropped files with parent dropped files. Keep every dropped
+  // item visible: model capability determines whether an image is uploaded as
+  // content or sent as a filesystem path, never whether the drop disappears.
   const allDroppedFiles = useMemo(() => {
-    if (currentModelSupportsVision) {
-      return [...droppedFiles, ...localDroppedFiles];
-    }
-    const stripImages = (arr: DroppedFile[]) => arr.filter((f) => !f.type?.startsWith('image/'));
-    return [...stripImages(droppedFiles), ...stripImages(localDroppedFiles)];
-  }, [droppedFiles, localDroppedFiles, currentModelSupportsVision]);
+    return [...droppedFiles, ...localDroppedFiles];
+  }, [droppedFiles, localDroppedFiles]);
+
+  const currentModelAcceptsMimeType = useCallback(
+    (mimeType: string) =>
+      currentModelSupportsVision &&
+      Boolean(mimeType) &&
+      mimeTypeAllowed(currentModelSupportedInputMimeTypes, mimeType),
+    [currentModelSupportedInputMimeTypes, currentModelSupportsVision]
+  );
+
+  const canUploadDroppedImage = useCallback(
+    (file: DroppedFile) =>
+      currentModelSupportsVision &&
+      file.isImage &&
+      currentModelAcceptsMimeType(file.type) &&
+      file.canUploadAsImage === true &&
+      !file.error &&
+      !file.isLoading &&
+      Boolean(file.stagedPath),
+    [currentModelAcceptsMimeType, currentModelSupportsVision]
+  );
+
+  const canSendDroppedFileAsPath = useCallback(
+    (file: DroppedFile) =>
+      Boolean(file.sourcePath || file.path) &&
+      !file.isLoading &&
+      (!file.isImage || !canUploadDroppedImage(file)),
+    [canUploadDroppedImage]
+  );
+
+  const canSendDroppedFile = useCallback(
+    (file: DroppedFile) => canUploadDroppedImage(file) || canSendDroppedFileAsPath(file),
+    [canSendDroppedFileAsPath, canUploadDroppedImage]
+  );
+
+  const droppedFilePath = (file: DroppedFile) => file.sourcePath || file.path;
+  const droppedImageAttachmentPath = (file: DroppedFile) => file.stagedPath || file.path;
 
   const handleRemoveDroppedFile = (idToRemove: string) => {
     // Remove from local dropped files
@@ -672,19 +737,25 @@ export default function ChatInput({
     cursorPosition: number,
     textArea: HTMLTextAreaElement
   ) => {
-    const isSlashCommand = text.startsWith('/');
     const beforeCursor = text.slice(0, cursorPosition);
-    const lastAtIndex = isSlashCommand ? 0 : beforeCursor.lastIndexOf('@');
+    const lastAtIndex = beforeCursor.lastIndexOf('@');
+    let lastSlashIndex = -1;
+    for (let index = beforeCursor.lastIndexOf('/'); index >= 0; index = beforeCursor.lastIndexOf('/', index - 1)) {
+      if (index === 0 || /\s/.test(beforeCursor[index - 1])) {
+        lastSlashIndex = index;
+        break;
+      }
+    }
+    const triggerIndex = Math.max(lastAtIndex, lastSlashIndex);
 
-    if (lastAtIndex === -1) {
-      // No @ found, close mention popover
+    if (triggerIndex === -1) {
       setMentionPopover((prev) => ({ ...prev, isOpen: false }));
       return;
     }
 
-    // Check if there's a space between @ and cursor (which would end the mention)
-    const afterAt = beforeCursor.slice(lastAtIndex + 1);
-    if (afterAt.includes(' ') || afterAt.includes('\n')) {
+    const trigger = beforeCursor[triggerIndex];
+    const query = beforeCursor.slice(triggerIndex + 1);
+    if (query.includes(' ') || query.includes('\n')) {
       setMentionPopover((prev) => ({ ...prev, isOpen: false }));
       return;
     }
@@ -699,23 +770,50 @@ export default function ChatInput({
         x: textAreaRect.left,
         y: textAreaRect.top, // Position at the top of the textarea
       },
-      query: afterAt,
-      mentionStart: lastAtIndex,
+      query,
+      mentionStart: triggerIndex,
       selectedIndex: 0, // Reset selection when query changes
-      isSlashCommand,
+      isSlashCommand: trigger === '/',
       // filteredFiles will be populated by the MentionPopover component
     }));
   };
 
   const handlePaste = async (evt: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const files = Array.from(evt.clipboardData.files || []);
-    const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+    const clipboardImages = files.filter((file) => file.type.startsWith('image/'));
+    const imageFiles = clipboardImages.filter((file) => currentModelAcceptsMimeType(file.type));
+    const unsupportedImages = clipboardImages.filter(
+      (file) => !currentModelAcceptsMimeType(file.type)
+    );
 
-    if (imageFiles.length === 0) return;
+    if (clipboardImages.length === 0) return;
 
     // If the active model does not support vision, ignore image pastes and
     // let the browser handle any plain-text content in the clipboard.
     if (!currentModelSupportsVision) return;
+
+    if (unsupportedImages.length > 0) {
+      evt.preventDefault();
+      setPastedImages((prev) => [
+        ...prev,
+        {
+          id: `error-${Date.now()}`,
+          dataUrl: '',
+          isLoading: false,
+          error: `This model cannot accept ${unsupportedImages
+            .map((file) => file.type || 'this image type')
+            .join(', ')} as image input.`,
+        },
+      ]);
+
+      const timeoutId = setTimeout(() => {
+        setPastedImages((prev) => prev.filter((img) => !img.id.startsWith('error-')));
+        timeoutRefsRef.current.delete(timeoutId);
+      }, 5000);
+      timeoutRefsRef.current.add(timeoutId);
+
+      if (imageFiles.length === 0) return;
+    }
 
     // Check if adding these images would exceed the limit
     if (pastedImages.length + imageFiles.length > MAX_IMAGES_PER_MESSAGE) {
@@ -780,7 +878,24 @@ export default function ChatInput({
       reader.onload = async (e) => {
         const dataUrl = e.target?.result as string;
         if (dataUrl) {
-          // Update the image with the data URL
+          try {
+            await validateImageDataUrl(dataUrl);
+          } catch {
+            setPastedImages((prev) =>
+              prev.map((img) =>
+                img.id === imageId
+                  ? {
+                      ...img,
+                      dataUrl: '',
+                      error: 'Image preview could not be decoded.',
+                      isLoading: false,
+                    }
+                  : img
+              )
+            );
+            return;
+          }
+
           setPastedImages((prev) =>
             prev.map((img) => (img.id === imageId ? { ...img, dataUrl, isLoading: true } : img))
           );
@@ -923,17 +1038,23 @@ export default function ChatInput({
       return false;
     }
 
-    const validPastedImageFilesPaths = pastedImages
-      .filter((img) => img.filePath && !img.error && !img.isLoading)
-      .map((img) => img.filePath as string);
+    const imageAttachments: UserAttachment[] = currentModelSupportsVision
+      ? [
+          ...pastedImages
+            .filter((img) => img.filePath && !img.error && !img.isLoading)
+            .map((img) => ({ path: img.filePath as string, kind: 'image' as const })),
+          ...allDroppedFiles
+            .filter(canUploadDroppedImage)
+            .map((file) => ({ path: droppedImageAttachmentPath(file), kind: 'image' as const })),
+        ]
+      : [];
     const droppedFilePaths = allDroppedFiles
-      .filter((file) => !file.error && !file.isLoading)
-      .map((file) => file.path);
+      .filter(canSendDroppedFileAsPath)
+      .map(droppedFilePath);
 
     let contentToQueue = displayValue.trim();
-    const allFilePaths = [...validPastedImageFilesPaths, ...droppedFilePaths];
-    if (allFilePaths.length > 0) {
-      const pathsString = allFilePaths.join(' ');
+    if (droppedFilePaths.length > 0) {
+      const pathsString = droppedFilePaths.join(' ');
       contentToQueue = contentToQueue ? `${contentToQueue} ${pathsString}` : pathsString;
     }
 
@@ -950,6 +1071,7 @@ export default function ChatInput({
       const interruptionMessage = {
         id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
         content: contentToQueue,
+        attachments: imageAttachments,
         timestamp: Date.now(),
       };
 
@@ -971,6 +1093,7 @@ export default function ChatInput({
     const newMessage = {
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       content: contentToQueue,
+      attachments: imageAttachments,
       timestamp: Date.now(),
     };
     setQueuedMessages((prev) => {
@@ -997,32 +1120,34 @@ export default function ChatInput({
   const canSubmit =
     !isLoading &&
     (displayValue.trim() ||
-      pastedImages.some((img) => img.filePath && !img.error && !img.isLoading) ||
-      allDroppedFiles.some((file) => !file.error && !file.isLoading));
+      (currentModelSupportsVision &&
+        pastedImages.some((img) => img.filePath && !img.error && !img.isLoading)) ||
+      allDroppedFiles.some(canSendDroppedFile));
 
   const performSubmit = useCallback(
     (text?: string) => {
       const validPastedImages = pastedImages.filter(
         (img) => img.filePath && !img.error && !img.isLoading
       );
-      const validDroppedImages = allDroppedFiles.filter(
-        (file) => file.isImage && !file.error && !file.isLoading
-      );
-      const validDroppedFiles = allDroppedFiles.filter(
-        (file) => !file.isImage && !file.error && !file.isLoading
-      );
+      const validDroppedImages = allDroppedFiles.filter(canUploadDroppedImage);
+      const validDroppedFiles = allDroppedFiles.filter(canSendDroppedFileAsPath);
 
       // Build structured image attachments (sent as content blocks, not path tokens)
       const imageAttachments: UserAttachment[] = [
-        ...validPastedImages.map((img) => ({
-          path: img.filePath as string,
+        ...(currentModelSupportsVision
+          ? validPastedImages.map((img) => ({
+              path: img.filePath as string,
+              kind: 'image' as const,
+            }))
+          : []),
+        ...validDroppedImages.map((file) => ({
+          path: droppedImageAttachmentPath(file),
           kind: 'image' as const,
         })),
-        ...validDroppedImages.map((file) => ({ path: file.path, kind: 'image' as const })),
       ];
 
-      // Non-image dropped files still go into the text as paths (file content is not base64-embedded)
-      const nonImageFilePaths = validDroppedFiles.map((file) => file.path);
+      // Files that cannot or should not be uploaded still go into the text as paths.
+      const nonImageFilePaths = validDroppedFiles.map(droppedFilePath);
 
       // Intercept the client-side /diverge command before it becomes a message.
       // It branches the current conversation instead of being sent to the agent.
@@ -1088,8 +1213,13 @@ export default function ChatInput({
     },
     [
       allDroppedFiles,
+      canSendDroppedFileAsPath,
+      canUploadDroppedImage,
+      currentModelSupportsVision,
       displayValue,
       diverge,
+      droppedFilePath,
+      droppedImageAttachmentPath,
       droppedFiles.length,
       handleSubmit,
       lastInterruption,
@@ -1183,8 +1313,9 @@ export default function ChatInput({
     const canSubmit =
       !isLoading &&
       (displayValue.trim() ||
-        pastedImages.some((img) => img.filePath && !img.error && !img.isLoading) ||
-        allDroppedFiles.some((file) => !file.error && !file.isLoading));
+        (currentModelSupportsVision &&
+          pastedImages.some((img) => img.filePath && !img.error && !img.isLoading)) ||
+        allDroppedFiles.some(canSendDroppedFile));
     if (canSubmit) {
       performSubmit();
     }
@@ -1207,7 +1338,6 @@ export default function ChatInput({
   };
 
   const handleMentionItemSelect = (itemText: string) => {
-    // Replace the @ mention with the file path
     const beforeMention = displayValue.slice(0, mentionPopover.mentionStart);
     const afterMention = displayValue.slice(
       mentionPopover.mentionStart + 1 + mentionPopover.query.length
@@ -1230,16 +1360,17 @@ export default function ChatInput({
 
   const hasSubmittableContent =
     displayValue.trim() ||
-    pastedImages.some((img) => img.filePath && !img.error && !img.isLoading) ||
-    allDroppedFiles.some((file) => !file.error && !file.isLoading);
+    (currentModelSupportsVision &&
+      pastedImages.some((img) => img.filePath && !img.error && !img.isLoading)) ||
+    allDroppedFiles.some(canSendDroppedFile);
   const isAnyImageLoading = pastedImages.some((img) => img.isLoading);
   const isAnyDroppedFileLoading = allDroppedFiles.some((file) => file.isLoading);
 
-  const hasImageAttachments =
-    pastedImages.some((img) => img.filePath && !img.error && !img.isLoading) ||
-    allDroppedFiles.some((file) => file.isImage && !file.error && !file.isLoading);
+  const hasPastedImageAttachments = pastedImages.some(
+    (img) => img.filePath && !img.error && !img.isLoading
+  );
 
-  const visionMismatch = !currentModelSupportsVision && hasImageAttachments;
+  const visionMismatch = !currentModelSupportsVision && hasPastedImageAttachments;
 
   const isSubmitButtonDisabled =
     !hasSubmittableContent ||
@@ -1283,7 +1414,7 @@ export default function ChatInput({
     LocalMessageStorage.addMessage(messageToSend.content);
     handleSubmit(
       new CustomEvent('submit', {
-        detail: { value: messageToSend.content },
+        detail: { value: messageToSend.content, attachments: messageToSend.attachments ?? [] },
       }) as unknown as React.FormEvent
     );
 
@@ -1301,7 +1432,7 @@ export default function ChatInput({
       LocalMessageStorage.addMessage(nextMessage.content);
       handleSubmit(
         new CustomEvent('submit', {
-          detail: { value: nextMessage.content },
+          detail: { value: nextMessage.content, attachments: nextMessage.attachments ?? [] },
         }) as unknown as React.FormEvent
       );
       setQueuedMessages((prev) => {
@@ -1321,13 +1452,18 @@ export default function ChatInput({
       className={`flex flex-col relative h-auto px-4 pt-3 pb-2 transition-colors ${
         disableAnimation ? '' : 'page-transition'
       } ${
-        isFocused
-          ? 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)]'
-          : 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)]'
-      } bg-background-default z-10 rounded-2xl border`}
+        isDraggingOver
+          ? 'border-border-strong bg-background-medium/80 shadow-[var(--shadow-composer)] ring-2 ring-border-strong/30'
+          : isFocused
+            ? 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)] bg-background-default'
+            : 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)] bg-background-default'
+      } z-10 rounded-2xl border`}
       data-drop-zone="true"
+      data-drag-active={isDraggingOver ? 'true' : 'false'}
       onDrop={handleLocalDrop}
+      onDragEnter={handleLocalDragEnter}
       onDragOver={handleLocalDragOver}
+      onDragLeave={handleLocalDragLeave}
     >
       {/* Message Queue Display */}
       {queuedMessages.length > 0 && (
@@ -1453,7 +1589,7 @@ export default function ChatInput({
           {/* Render dropped files after pasted images */}
           {allDroppedFiles.map((file) => (
             <div key={file.id} className="relative group">
-              {file.isImage ? (
+              {file.canUploadAsImage ? (
                 // Image preview
                 <div className="w-20 h-20">
                   {file.dataUrl && (
@@ -1527,23 +1663,21 @@ export default function ChatInput({
         <div className="w-px h-4 bg-border-default mx-2" />
 
         <div className="flex flex-row items-center gap-2">
-          {currentModelSupportsVision && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  onClick={handleFileSelect}
-                  disabled={isFilePickerOpen}
-                  variant="ghost"
-                  size="sm"
-                  className={`flex items-center justify-center text-text-default/70 hover:text-text-default text-xs transition-colors ${isFilePickerOpen ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-                >
-                  <Attach className="w-4 h-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Attach file or directory</TooltipContent>
-            </Tooltip>
-          )}
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                onClick={handleFileSelect}
+                disabled={isFilePickerOpen}
+                variant="ghost"
+                size="sm"
+                className={`flex items-center justify-center text-text-default/70 hover:text-text-default text-xs transition-colors ${isFilePickerOpen ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+              >
+                <Attach className="w-4 h-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Attach file or directory</TooltipContent>
+          </Tooltip>
           <BottomMenuExtensionSelection sessionId={sessionId} />
           <BottomMenuSkillSelection sessionId={sessionId} />
           <BottomMenuKnowledgeSelection />

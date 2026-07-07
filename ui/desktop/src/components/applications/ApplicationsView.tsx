@@ -12,11 +12,17 @@ import {
   Clock,
 } from '../icons/app-icons';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
-import { client } from '../../api/client.gen';
 import { SearchView } from '../conversation/SearchView';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { toastSuccess, toastError } from '../../toasts';
 import { ReadableContent } from '../Layout/ReadableContent';
+import {
+  appUrl,
+  configuredBaseUrl,
+  deleteAgentDrafterApp,
+  requireOk,
+  secretHeader,
+} from './appManagement';
 
 /** An Agent-Drafter-built app, as returned by biorouterd `GET /apps`. */
 interface AppManifest {
@@ -35,23 +41,6 @@ interface AppManifest {
     skills?: string[];
     knowledge_base?: string;
   } | null;
-}
-
-function baseUrl(): string {
-  // The generated client is configured with the biorouterd origin.
-  const cfg = client.getConfig();
-  return ((cfg.baseUrl as string) || '').replace(/\/+$/, '');
-}
-
-/** App URL on the local daemon, with the id safely encoded. */
-function appUrl(id: string): string {
-  return `${baseUrl()}/apps/${encodeURIComponent(id)}/`;
-}
-
-function secretHeader(): Record<string, string> {
-  const cfg = client.getConfig() as { headers?: Record<string, string> };
-  const key = cfg.headers?.['X-Secret-Key'];
-  return key ? { 'X-Secret-Key': key } : {};
 }
 
 /** Format a Unix-seconds timestamp as a short, readable date (e.g. "Jun 24, 2026"). */
@@ -76,8 +65,8 @@ export default function ApplicationsView() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch(`${baseUrl()}/apps`, { headers: secretHeader() });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await fetch(`${configuredBaseUrl()}/apps`, { headers: await secretHeader() });
+      await requireOk(res);
       const data: AppManifest[] = await res.json();
       // Most recently updated first.
       data.sort((a, b) => (b.updated_at ?? 0) - (a.updated_at ?? 0));
@@ -95,12 +84,13 @@ export default function ApplicationsView() {
   }, [load]);
 
   const launch = async (app: AppManifest) => {
-    if (!baseUrl()) {
+    const baseUrl = configuredBaseUrl();
+    if (!baseUrl) {
       setError('Backend URL unavailable. Is biorouterd running?');
       return;
     }
     try {
-      await window.electron.openExternal(appUrl(app.id));
+      await window.electron.openExternal(appUrl(app.id, baseUrl));
     } catch (err) {
       console.error('Failed to open app:', err);
       toastError({ title: app.title, msg: 'Could not open the app in your browser.' });
@@ -117,10 +107,10 @@ export default function ApplicationsView() {
 
   const exportApp = async (app: AppManifest) => {
     try {
-      const res = await fetch(`${baseUrl()}/apps/${encodeURIComponent(app.id)}/export`, {
-        headers: secretHeader(),
+      const res = await fetch(`${configuredBaseUrl()}/apps/${encodeURIComponent(app.id)}/export`, {
+        headers: await secretHeader(),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await requireOk(res);
       const payload: { files?: Record<string, string> } = await res.json();
       const files = payload.files ?? {};
       // A real directory picker (openDirectory) so Export works the same on
@@ -150,16 +140,18 @@ export default function ApplicationsView() {
     const app = appToDelete;
     setIsDeleting(true);
     try {
-      const res = await fetch(`${baseUrl()}/apps/${encodeURIComponent(app.id)}`, {
-        method: 'DELETE',
-        headers: secretHeader(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      await deleteAgentDrafterApp(app.id);
       setApps((prev) => prev.filter((a) => a.id !== app.id));
       toastSuccess({ title: app.title, msg: 'Application deleted' });
     } catch (err) {
       console.error('Failed to delete app:', err);
-      toastError({ title: app.title, msg: 'Could not delete the app.' });
+      toastError({
+        title: app.title,
+        msg:
+          err instanceof Error
+            ? `Could not delete the app: ${err.message}`
+            : 'Could not delete the app.',
+      });
     } finally {
       setIsDeleting(false);
       setAppToDelete(null);
@@ -184,8 +176,8 @@ export default function ApplicationsView() {
             <div className="flex flex-col page-transition">
               <h1 className="text-2xl font-semibold tracking-tight mb-1">Applications</h1>
               <p className="text-sm text-text-muted mb-0">
-                Apps you built with Agent Drafter. Each one runs a full BioRouter agent with its
-                own model, extensions, skills, and knowledge, and opens in your browser.{' '}
+                Apps you built with Agent Drafter. Each one runs a full BioRouter agent with its own
+                model, extensions, skills, and knowledge, and opens in your browser.{' '}
                 {getSearchShortcutText()} to search.
               </p>
             </div>

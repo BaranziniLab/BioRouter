@@ -71,7 +71,7 @@ Slash commands (TUI):
 
 ## 3. Classic REPL (`BIOROUTER_CLI_CLASSIC=1 biorouter session`)
 - [manual] `/help`, `/t [light|dark|ansi]`, `/r`, `/mode <m>`, `/plan` … `/endplan`,
-  `/compact`, `/clear`, `/prompts`, `/prompt <name>`, `/workflow`, `/extension`, `/builtin`.
+  `/compact`, `/clear`, `/workflow`, `/extension`, `/builtin`.
 - [audited] Interrupt handling no longer panics on an empty last message.
 
 ## 4. Models / provider config  (parity: GUI settings → models/providers)

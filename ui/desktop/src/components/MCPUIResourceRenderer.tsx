@@ -11,7 +11,9 @@ import { useState, useEffect } from 'react';
 import { toast } from 'react-toastify';
 import { EmbeddedResource } from '../api';
 import { useTheme } from '../contexts/ThemeContext';
-import { Maximize2 } from './icons/app-icons';
+import { Maximize2, Trash2 } from './icons/app-icons';
+import { deleteAgentDrafterApp } from './applications/appManagement';
+import { ConfirmationModal } from './ui/ConfirmationModal';
 
 interface MCPUIResourceRendererProps {
   content: EmbeddedResource & { type: 'resource' };
@@ -95,6 +97,9 @@ export default function MCPUIResourceRenderer({
 }: MCPUIResourceRendererProps) {
   const { resolvedTheme } = useTheme();
   const [proxyUrl, setProxyUrl] = useState<string | undefined>(undefined);
+  const [appIdToDelete, setAppIdToDelete] = useState<string | null>(null);
+  const [isDeletingApp, setIsDeletingApp] = useState(false);
+  const [deletedAppId, setDeletedAppId] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchProxyUrl = async () => {
@@ -339,9 +344,9 @@ export default function MCPUIResourceRenderer({
   const decodeArtifactHtml = (): string => {
     if (resource.blob) {
       try {
-        const bin = atob(resource.blob);
+        const bin = window.atob(resource.blob);
         const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
-        return new TextDecoder().decode(bytes);
+        return new globalThis.TextDecoder().decode(bytes);
       } catch {
         return '';
       }
@@ -350,6 +355,7 @@ export default function MCPUIResourceRenderer({
   };
 
   const artifactTitle = resource.uri?.split('/').pop() || 'Artifact';
+  const agentDrafterAppId = getAgentDrafterAppId(resource.uri);
 
   const handleExpand = async () => {
     const html = decodeArtifactHtml();
@@ -370,41 +376,99 @@ export default function MCPUIResourceRenderer({
     }
   };
 
+  const handleDeleteApp = async () => {
+    if (!appIdToDelete) return;
+    setIsDeletingApp(true);
+    try {
+      await deleteAgentDrafterApp(appIdToDelete);
+      setDeletedAppId(appIdToDelete);
+      toast.success('Application deleted');
+    } catch (err) {
+      console.error('Failed to delete app from chat:', err);
+      toast.error(
+        err instanceof Error
+          ? `Could not delete the app: ${err.message}`
+          : 'Could not delete the app.'
+      );
+    } finally {
+      setIsDeletingApp(false);
+      setAppIdToDelete(null);
+    }
+  };
+
+  if (deletedAppId) {
+    return (
+      <div className="mt-3 rounded-lg border border-border-subtle bg-background-default px-3 py-2 text-sm text-text-muted">
+        Application deleted: <span className="font-mono">{deletedAppId}</span>
+      </div>
+    );
+  }
+
   return (
-    <div className="group relative mt-3 overflow-hidden rounded-lg bg-transparent shadow-[0_10px_28px_rgba(15,23,42,0.08)]">
-      <div className="absolute right-2 top-2 z-10 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
-        <button
-          type="button"
-          onClick={handleExpand}
-          aria-label={`Open ${artifactTitle} in a larger standalone window`}
-          title="Open in a larger standalone window"
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle/70 bg-background-default/85 text-text-muted shadow-sm backdrop-blur transition-colors hover:text-text-default cursor-pointer"
-        >
-          <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
-        </button>
+    <>
+      <div className="group relative mt-3 overflow-hidden rounded-lg bg-transparent shadow-[0_10px_28px_rgba(15,23,42,0.08)]">
+        <div className="absolute right-2 top-2 z-10 flex gap-1 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
+          {agentDrafterAppId && (
+            <button
+              type="button"
+              onClick={() => setAppIdToDelete(agentDrafterAppId)}
+              aria-label={`Delete ${agentDrafterAppId}`}
+              title="Delete application"
+              className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-border-subtle/70 bg-background-default/85 text-text-danger shadow-sm backdrop-blur transition-colors hover:bg-background-danger/10"
+            >
+              <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={handleExpand}
+            aria-label={`Open ${artifactTitle} in a larger standalone window`}
+            title="Open in a larger standalone window"
+            className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-border-subtle/70 bg-background-default/85 text-text-muted shadow-sm backdrop-blur transition-colors hover:text-text-default"
+          >
+            <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </div>
+        <div className="overflow-hidden rounded-lg bg-transparent" style={{ minHeight: 320 }}>
+          <UIResourceRenderer
+            resource={content.resource}
+            onUIAction={handleUIAction}
+            supportedContentTypes={['rawHtml', 'externalUrl']} // BioRouter does not support remoteDom content
+            htmlProps={{
+              autoResizeIframe: {
+                height: true,
+                width: false, // width stays responsive (fills the panel); use Expand for full size
+              },
+              style: { width: '100%', minHeight: '320px', border: 'none' },
+              iframeRenderData: {
+                // iframeRenderData allows us to pass data down to MCP-UIs
+                // MCP-UIs might find stuff like host and theme for conditional rendering
+                // usage of this is experimental, leaving in place for demos
+                host: 'biorouter',
+                theme: resolvedTheme,
+              },
+              proxy: proxyUrl, // refer to https://mcpui.dev/guide/client/using-a-proxy
+            }}
+          />
+        </div>
       </div>
-      <div className="overflow-hidden rounded-lg bg-transparent" style={{ minHeight: 320 }}>
-        <UIResourceRenderer
-          resource={content.resource}
-          onUIAction={handleUIAction}
-          supportedContentTypes={['rawHtml', 'externalUrl']} // BioRouter does not support remoteDom content
-          htmlProps={{
-            autoResizeIframe: {
-              height: true,
-              width: false, // width stays responsive (fills the panel); use Expand for full size
-            },
-            style: { width: '100%', minHeight: '320px', border: 'none' },
-            iframeRenderData: {
-              // iframeRenderData allows us to pass data down to MCP-UIs
-              // MCP-UIs might find stuff like host and theme for conditional rendering
-              // usage of this is experimental, leaving in place for demos
-              host: 'biorouter',
-              theme: resolvedTheme,
-            },
-            proxy: proxyUrl, // refer to https://mcpui.dev/guide/client/using-a-proxy
-          }}
-        />
-      </div>
-    </div>
+      <ConfirmationModal
+        isOpen={appIdToDelete !== null}
+        title={`Delete "${appIdToDelete}"?`}
+        message="This permanently removes the application and its files from disk. This action cannot be undone."
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        confirmVariant="destructive"
+        isSubmitting={isDeletingApp}
+        onConfirm={handleDeleteApp}
+        onCancel={() => setAppIdToDelete(null)}
+      />
+    </>
   );
+}
+
+function getAgentDrafterAppId(uri?: string): string | null {
+  if (!uri?.startsWith('ui://agent-drafter/')) return null;
+  const id = uri.slice('ui://agent-drafter/'.length).split(/[?#]/)[0];
+  return id ? decodeURIComponent(id) : null;
 }

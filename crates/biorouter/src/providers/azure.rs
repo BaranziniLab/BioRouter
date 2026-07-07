@@ -5,7 +5,7 @@ use serde_json::Value;
 
 use super::api_client::{ApiClient, AuthMethod, AuthProvider};
 use super::azureauth::{AuthError, AzureAuth};
-use super::base::{ConfigKey, Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage};
 use super::errors::ProviderError;
 use super::formats::openai::{create_request, get_usage, response_to_message};
 use super::retry::ProviderRetry;
@@ -46,6 +46,15 @@ pub const AZURE_OPENAI_KNOWN_MODELS: &[&str] = &[
     "o4-mini-2025-04-16",
     "o3-2025-04-16",
 ];
+
+fn azure_model_supports_vision(name: &str) -> bool {
+    !name.contains("codex")
+        && (name.starts_with("gpt-5")
+            || name.starts_with("gpt-4.1")
+            || name.starts_with("gpt-4o")
+            || name.starts_with("o3")
+            || name.starts_with("o4"))
+}
 
 #[derive(Debug)]
 pub struct AzureProvider {
@@ -140,12 +149,24 @@ impl AzureProvider {
 #[async_trait]
 impl Provider for AzureProvider {
     fn metadata() -> ProviderMetadata {
-        ProviderMetadata::new(
+        let models = AZURE_OPENAI_KNOWN_MODELS
+            .iter()
+            .map(|&name| {
+                let info = ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit());
+                if azure_model_supports_vision(name) {
+                    info.with_vision()
+                } else {
+                    info
+                }
+            })
+            .collect();
+
+        ProviderMetadata::with_models(
             "azure_openai",
             "Azure OpenAI",
             "Models through Azure OpenAI Service (uses Azure credential chain by default).",
             AZURE_DEFAULT_MODEL,
-            AZURE_OPENAI_KNOWN_MODELS.to_vec(),
+            models,
             AZURE_DOC_URL,
             vec![
                 ConfigKey::new(
