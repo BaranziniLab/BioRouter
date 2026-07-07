@@ -128,8 +128,8 @@ async fn status_returns_catalog_with_default_first_class() {
         .iter()
         .filter_map(|m| m.get("name").and_then(|n| n.as_str()))
         .collect();
-    assert!(names.iter().any(|n| *n == "qwen3.6"));
-    assert!(names.iter().any(|n| *n == "gemma4"));
+    assert!(names.contains(&"qwen3.6"));
+    assert!(names.contains(&"gemma4"));
     assert!(!names.iter().any(|n| n.starts_with("qwen3.5")));
     let gemma4 = catalog
         .iter()
