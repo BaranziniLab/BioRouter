@@ -150,6 +150,12 @@ describe('ModelAndProviderProvider Llama Server warm-up', () => {
     expect(await screen.findByText('Warm up local model')).toBeInTheDocument();
     expect(screen.getAllByText(/8 GiB VRAM/).length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText('Needs download')).toBeInTheDocument();
+    expect(screen.getByText('Llama Server fallback')).toBeInTheDocument();
+    expect(screen.getByText('Fallback may download')).toBeInTheDocument();
+    expect(screen.getByText('Ollama model')).toBeInTheDocument();
+    expect(screen.getByText('qwen3.6:latest')).toBeInTheDocument();
+    expect(screen.getByText('Model store')).toBeInTheDocument();
+    expect(screen.getByText('/Users/test/.ollama/models')).toBeInTheDocument();
     expect(screen.getByText(/32,768 tokens/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Keep previous model' }));
