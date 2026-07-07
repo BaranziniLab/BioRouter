@@ -114,8 +114,8 @@ async fn run_battery(report: &mut ModelReport) {
         }
     };
 
-    // 1. Correctness + 2. thinking-off (content must be non-empty: Qwen3.5 with
-    //    thinking on returns empty `content` and burns the budget on reasoning).
+    // 1. Correctness + 2. thinking-off (content must be non-empty; reasoning
+    //    models can otherwise burn the budget on thinking tokens).
     let msgs = vec![Message::user().with_text("Reply with exactly the word: pong")];
     match provider
         .complete("You are a terse assistant.", &msgs, &[])

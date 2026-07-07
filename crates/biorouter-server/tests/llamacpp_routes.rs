@@ -3,7 +3,7 @@
 //! These avoid actually spawning a llama-server (that's covered by the
 //! `llamacpp_integration` tests in the `biorouter` crate); they verify the
 //! status/catalog contract the GUI onboarding card depends on, and input
-//! validation on /llamacpp/ensure.
+//! validation on /llamacpp/ensure and /llamacpp/warmup.
 
 use axum::{body::Body, http::Request};
 use tower::ServiceExt;
@@ -36,15 +36,44 @@ async fn status_returns_catalog_with_default_first_class() {
     let catalog = v.get("catalog").and_then(|c| c.as_array()).unwrap();
     assert!(!catalog.is_empty(), "catalog must not be empty");
 
-    // Exactly one default, and it is the small Qwen3.5.
+    // Exactly one default, chosen from the machine-tiered Gemma 4 / Qwen3.6 catalog.
     let defaults: Vec<_> = catalog
         .iter()
         .filter(|m| m.get("is_default").and_then(|d| d.as_bool()) == Some(true))
         .collect();
     assert_eq!(defaults.len(), 1);
+    let default_name = defaults[0].get("name").and_then(|n| n.as_str()).unwrap();
+    let allowed_defaults = [
+        "gemma-4-e2b",
+        "gemma-4-e4b",
+        "gemma-4-26b-a4b",
+        "qwen3.6-35b-a3b",
+    ];
+    assert!(allowed_defaults.contains(&default_name));
     assert_eq!(
-        defaults[0].get("name").and_then(|n| n.as_str()),
-        Some("qwen3.5-4b")
+        defaults[0].get("context_limit").and_then(|n| n.as_u64()),
+        Some(65_536)
+    );
+
+    let default_context_size = v
+        .get("system")
+        .and_then(|s| s.get("default_context_size"))
+        .and_then(|n| n.as_u64())
+        .unwrap();
+    assert!(default_context_size >= 32_768);
+    assert!(
+        v.get("system")
+            .and_then(|s| s.get("accelerator_memory_kind"))
+            .and_then(|k| k.as_str())
+            .is_some(),
+        "system info should expose whether recommendations use unified memory or VRAM"
+    );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("recommended_gpu_memory_gib")
+            .and_then(|n| n.as_u64())
+            .is_some()),
+        "catalog entries should expose GPU-addressable memory recommendations"
     );
 
     // Both requested families are present.
@@ -52,8 +81,9 @@ async fn status_returns_catalog_with_default_first_class() {
         .iter()
         .filter_map(|m| m.get("name").and_then(|n| n.as_str()))
         .collect();
-    assert!(names.iter().any(|n| n.starts_with("qwen3.5")));
+    assert!(names.iter().any(|n| n.starts_with("qwen3.6")));
     assert!(names.iter().any(|n| n.starts_with("gemma-4")));
+    assert!(!names.iter().any(|n| n.starts_with("qwen3.5")));
 
     // Sidecar state is one of the documented values.
     let state = v
@@ -65,6 +95,13 @@ async fn status_returns_catalog_with_default_first_class() {
         ["no_binary", "stopped", "starting", "ready", "error"].contains(&state),
         "unexpected sidecar state {state}"
     );
+    assert!(
+        v.get("sidecar")
+            .and_then(|s| s.get("warmed"))
+            .and_then(|w| w.as_bool())
+            .is_some(),
+        "sidecar status should expose warmed state"
+    );
 }
 
 #[tokio::test]
@@ -74,6 +111,22 @@ async fn ensure_rejects_unknown_model() {
             Request::builder()
                 .method("POST")
                 .uri("/llamacpp/ensure")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"gpt-4o"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+}
+
+#[tokio::test]
+async fn warmup_rejects_unknown_model_before_starting_sidecar() {
+    let res = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/llamacpp/warmup")
                 .header("content-type", "application/json")
                 .body(Body::from(r#"{"model":"gpt-4o"}"#))
                 .unwrap(),

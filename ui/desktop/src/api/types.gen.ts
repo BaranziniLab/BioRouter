@@ -594,7 +594,7 @@ export type ListWorkflowResponse = {
 
 export type LlamaCppEnsureRequest = {
     /**
-     * Catalog model name (e.g. `qwen3.5-4b`) or raw Hugging Face spec.
+     * Catalog model name (e.g. `gemma-4-e4b`) or raw Hugging Face spec.
      */
     model: string;
 };
@@ -603,6 +603,7 @@ export type LlamaCppEnsureRequest = {
  * One curated local model, as shown in the GUI/TUI pickers.
  */
 export type LlamaCppModel = {
+    context_limit: number;
     description: string;
     display_name: string;
     download_size: string;
@@ -611,11 +612,40 @@ export type LlamaCppModel = {
      * True for the model Biorouter preselects.
      */
     is_default: boolean;
+    min_gpu_memory_gib: number;
     name: string;
+    recommended_gpu_memory_gib: number;
 };
 
 export type LlamaCppStatusResponse = {
     catalog: Array<LlamaCppModel>;
+    sidecar: SidecarStatus;
+    system: LlamaCppSystemInfo;
+};
+
+export type LlamaCppSystemInfo = {
+    /**
+     * Apple Silicon unified memory, or detected discrete VRAM elsewhere.
+     */
+    accelerator_memory_gib?: number | null;
+    /**
+     * `apple_unified`, `vram`, or `unknown_vram`.
+     */
+    accelerator_memory_kind: string;
+    default_context_size: number;
+    os: string;
+    total_memory_gib: number;
+};
+
+export type LlamaCppWarmupRequest = {
+    /**
+     * Catalog model name (e.g. `gemma-4-e4b`) or raw Hugging Face spec.
+     */
+    model: string;
+};
+
+export type LlamaCppWarmupResponse = {
+    output: string;
     sidecar: SidecarStatus;
 };
 
@@ -1279,6 +1309,11 @@ export type SidecarStatus = {
     model?: string | null;
     port?: number | null;
     state: SidecarState;
+    /**
+     * True only after Biorouter has received a non-empty completion from this
+     * model in this process.
+     */
+    warmed?: boolean;
 };
 
 export type SlashCommand = {
@@ -3397,6 +3432,33 @@ export type LlamacppStopResponses = {
 };
 
 export type LlamacppStopResponse = LlamacppStopResponses[keyof LlamacppStopResponses];
+
+export type LlamacppWarmupData = {
+    body: LlamaCppWarmupRequest;
+    path?: never;
+    query?: never;
+    url: '/llamacpp/warmup';
+};
+
+export type LlamacppWarmupErrors = {
+    /**
+     * Unknown model name
+     */
+    400: unknown;
+    /**
+     * Model failed to produce a warm-up completion
+     */
+    502: unknown;
+};
+
+export type LlamacppWarmupResponses = {
+    /**
+     * Model loaded and produced a test completion
+     */
+    200: LlamaCppWarmupResponse;
+};
+
+export type LlamacppWarmupResponse = LlamacppWarmupResponses[keyof LlamacppWarmupResponses];
 
 export type McpUiProxyData = {
     body?: never;

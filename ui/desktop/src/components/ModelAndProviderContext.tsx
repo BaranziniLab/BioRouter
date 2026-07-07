@@ -5,12 +5,29 @@ import Model, {
   modelSupportedInputMimeTypes,
   modelSupportsVision,
 } from './settings/models/modelInterface';
-import { ProviderMetadata, setConfigProvider, updateAgentProvider } from '../api';
+import {
+  ProviderMetadata,
+  setConfigProvider,
+  updateAgentProvider,
+  llamacppStatus,
+  llamacppWarmup,
+  type LlamaCppModel,
+  type LlamaCppStatusResponse,
+} from '../api';
 import { useConfig } from './ConfigContext';
 import {
   getModelDisplayName,
   getProviderDisplayName,
 } from './settings/models/predefinedModelsUtils';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from './ui/dialog';
+import { Button } from './ui/button';
 
 // titles
 export const UNKNOWN_PROVIDER_TITLE = 'Provider name lookup';
@@ -27,7 +44,7 @@ interface ModelAndProviderContextType {
   currentProvider: string | null;
   currentModelSupportsVision: boolean;
   currentModelSupportedInputMimeTypes: string[] | null;
-  changeModel: (sessionId: string | null, model: Model) => Promise<void>;
+  changeModel: (sessionId: string | null, model: Model) => Promise<boolean>;
   getCurrentModelAndProvider: () => Promise<{ model: string; provider: string }>;
   getFallbackModelAndProvider: () => Promise<{ model: string; provider: string }>;
   getCurrentModelAndProviderForDisplay: () => Promise<{ model: string; provider: string }>;
@@ -40,6 +57,31 @@ interface ModelAndProviderProviderProps {
   children: React.ReactNode;
 }
 
+type LlamaWarmupDialogState = {
+  model: Model;
+  entry?: LlamaCppModel;
+  status: LlamaCppStatusResponse;
+  isWarming: boolean;
+  detail?: string;
+  resolve: (ok: boolean) => void;
+};
+
+const LOCAL_PROVIDER = 'llamacpp';
+const WARMUP_POLL_INTERVAL_MS = 1500;
+
+const formatContext = (tokens: number | undefined) =>
+  typeof tokens === 'number' && tokens > 0 ? tokens.toLocaleString() : 'unknown';
+
+const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const acceleratorMemoryLabel = (kind: string | undefined) =>
+  kind === 'apple_unified' ? 'unified memory' : 'VRAM';
+
+const acceleratorMemoryExplanation = (kind: string | undefined) =>
+  kind === 'apple_unified'
+    ? 'On Apple Silicon, unified memory is the relevant GPU memory budget.'
+    : 'On Intel Macs, Windows, and other discrete-GPU systems, this means VRAM, not regular system RAM.';
+
 const ModelAndProviderContext = createContext<ModelAndProviderContextType | undefined>(undefined);
 
 export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> = ({ children }) => {
@@ -49,7 +91,98 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
   const [currentModelSupportedInputMimeTypes, setCurrentModelSupportedInputMimeTypes] = useState<
     string[] | null
   >(null);
+  const [llamaWarmupDialog, setLlamaWarmupDialog] = useState<LlamaWarmupDialogState | null>(null);
   const { read, getProviders } = useConfig();
+
+  const resolveWarmupDialog = useCallback(
+    (ok: boolean) => {
+      llamaWarmupDialog?.resolve(ok);
+      setLlamaWarmupDialog(null);
+    },
+    [llamaWarmupDialog]
+  );
+
+  const prepareLlamaModel = useCallback(async (model: Model): Promise<boolean> => {
+    const status = await llamacppStatus({ throwOnError: true });
+    const sidecar = status.data.sidecar;
+    if (sidecar.state === 'ready' && sidecar.model === model.name && sidecar.warmed) {
+      return true;
+    }
+
+    return new Promise<boolean>((resolve) => {
+      setLlamaWarmupDialog({
+        model,
+        entry: status.data.catalog.find((entry) => entry.name === model.name),
+        status: status.data,
+        isWarming: false,
+        detail: sidecar.detail || undefined,
+        resolve,
+      });
+    });
+  }, []);
+
+  const handleWarmupConfirm = useCallback(async () => {
+    const dialog = llamaWarmupDialog;
+    if (!dialog || dialog.isWarming) return;
+
+    setLlamaWarmupDialog((current) =>
+      current
+        ? {
+            ...current,
+            isWarming: true,
+            detail: 'Starting Llama Server and waiting for a test response...',
+          }
+        : current
+    );
+
+    let poll: number | null = window.setInterval(async () => {
+      try {
+        const res = await llamacppStatus({ throwOnError: true });
+        setLlamaWarmupDialog((current) =>
+          current?.resolve === dialog.resolve
+            ? {
+                ...current,
+                status: res.data,
+                detail:
+                  res.data.sidecar.detail ||
+                  (res.data.sidecar.state === 'ready'
+                    ? 'Running a warm-up prompt...'
+                    : 'Loading model...'),
+              }
+            : current
+        );
+      } catch {
+        // Keep the primary warm-up request in charge of the final result.
+      }
+    }, WARMUP_POLL_INTERVAL_MS);
+
+    try {
+      const res = await llamacppWarmup({
+        body: { model: dialog.model.name },
+        throwOnError: true,
+      });
+      if (!res.data.output.trim()) {
+        throw new Error('Llama Server returned an empty warm-up response');
+      }
+      if (poll !== null) {
+        window.clearInterval(poll);
+        poll = null;
+      }
+      dialog.resolve(true);
+      setLlamaWarmupDialog(null);
+    } catch (error) {
+      if (poll !== null) {
+        window.clearInterval(poll);
+      }
+      toastError({
+        title: 'Llama Server warm-up failed',
+        msg: errorMessage(error),
+        traceback: errorMessage(error),
+      });
+      dialog.resolve(false);
+      setLlamaWarmupDialog(null);
+    }
+  }, [llamaWarmupDialog]);
 
   const changeModel = useCallback(async (sessionId: string | null, model: Model) => {
     const modelName = model.name;
@@ -57,6 +190,13 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     let phase = 'agent';
 
     try {
+      if (providerName === LOCAL_PROVIDER) {
+        const warmed = await prepareLlamaModel(model);
+        if (!warmed) {
+          return false;
+        }
+      }
+
       if (sessionId) {
         await updateAgentProvider({
           body: {
@@ -85,6 +225,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         title: CHANGE_MODEL_TOAST_TITLE,
         msg: `${SWITCH_MODEL_SUCCESS_MSG} -- using ${model.alias ?? modelName} from ${model.subtext ?? providerName}`,
       });
+      return true;
     } catch (error) {
       console.error(`Failed to change model at ${phase} step -- ${modelName} ${providerName}`);
       toastError({
@@ -92,8 +233,9 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         msg: `${error}`,
         traceback: error instanceof Error ? error.message : String(error),
       });
+      return false;
     }
-  }, []);
+  }, [prepareLlamaModel]);
 
   const getFallbackModelAndProvider = useCallback(async () => {
     const provider = window.appConfig.get('BIOROUTER_DEFAULT_PROVIDER') as string;
@@ -219,6 +361,44 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     refreshCurrentModelAndProvider();
   }, [refreshCurrentModelAndProvider]);
 
+  const llamaWarnings = useMemo(() => {
+    if (!llamaWarmupDialog) return [];
+
+    const warnings: string[] = [];
+    const entry = llamaWarmupDialog.entry;
+    const system = llamaWarmupDialog.status.system;
+    const memory = system.accelerator_memory_gib;
+    const memoryLabel = acceleratorMemoryLabel(system.accelerator_memory_kind);
+
+    if (entry && typeof memory === 'number' && memory < entry.recommended_gpu_memory_gib) {
+      warnings.push(
+        `This machine reports ${memory} GiB ${memoryLabel}; ${entry.display_name} recommends ${entry.recommended_gpu_memory_gib} GiB GPU-addressable memory. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`
+      );
+    } else if (!entry) {
+      warnings.push(
+        'Custom Hugging Face specs are not memory-rated here. Start with a small quantization or lower LLAMACPP_CONTEXT_SIZE on laptop hardware.'
+      );
+    } else if (entry && memory == null) {
+      warnings.push(
+        `BioRouter could not detect VRAM. ${entry.display_name} recommends ${entry.recommended_gpu_memory_gib} GiB GPU-addressable memory. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`
+      );
+    }
+
+    if (entry && entry.recommended_gpu_memory_gib > 16) {
+      warnings.push(
+        `${entry.display_name} is above the 16 GB laptop tier. On 16 GB machines, use Gemma 4 E2B or Gemma 4 E4B; larger Gemma 4 and Qwen3.6 models need more memory.`
+      );
+    }
+
+    if (system.os.toLowerCase().includes('windows')) {
+      warnings.push(
+        'On Windows, make sure free VRAM is high enough for the model and context window; regular system RAM does not satisfy the GPU memory recommendation.'
+      );
+    }
+
+    return warnings;
+  }, [llamaWarmupDialog]);
+
   const contextValue = useMemo(
     () => ({
       currentModel,
@@ -249,9 +429,108 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
   );
 
   return (
-    <ModelAndProviderContext.Provider value={contextValue}>
-      {children}
-    </ModelAndProviderContext.Provider>
+    <>
+      <ModelAndProviderContext.Provider value={contextValue}>
+        {children}
+      </ModelAndProviderContext.Provider>
+
+      <Dialog
+        open={!!llamaWarmupDialog}
+        onOpenChange={(open) => {
+          if (!open && !llamaWarmupDialog?.isWarming) {
+            resolveWarmupDialog(false);
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[520px]">
+          <DialogHeader>
+            <DialogTitle>Warm up local model</DialogTitle>
+            <DialogDescription>
+              {llamaWarmupDialog?.entry?.display_name ?? llamaWarmupDialog?.model.name} runs on
+              this computer. First use can take a while because the model may need to download,
+              load, and produce a test response.
+            </DialogDescription>
+          </DialogHeader>
+
+          {llamaWarmupDialog && (
+            <div className="space-y-4 text-sm">
+              <div className="rounded-md border border-border-subtle bg-background-medium p-3">
+                <div className="grid gap-1 text-xs text-text-muted">
+                  <div className="flex justify-between gap-3">
+                    <span>Download</span>
+                    <span className="text-text-default">
+                      {llamaWarmupDialog.entry?.download_size ?? 'custom'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span>Default context</span>
+                    <span className="text-text-default">
+                      {formatContext(llamaWarmupDialog.status.system.default_context_size)} tokens
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span>Detected GPU memory</span>
+                    <span className="text-text-default">
+                      {typeof llamaWarmupDialog.status.system.accelerator_memory_gib === 'number'
+                        ? `${llamaWarmupDialog.status.system.accelerator_memory_gib} GiB ${acceleratorMemoryLabel(llamaWarmupDialog.status.system.accelerator_memory_kind)}`
+                        : acceleratorMemoryLabel(
+                            llamaWarmupDialog.status.system.accelerator_memory_kind
+                          )}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span>Recommended GPU memory</span>
+                    <span className="text-text-default">
+                      {llamaWarmupDialog.entry
+                        ? `${llamaWarmupDialog.entry.recommended_gpu_memory_gib} GiB`
+                        : 'unknown'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {llamaWarnings.length > 0 && (
+                <div className="space-y-2 rounded-md border border-border-warning bg-background-warning/10 p-3 text-xs text-text-default">
+                  {llamaWarnings.map((warning) => (
+                    <p key={warning}>{warning}</p>
+                  ))}
+                </div>
+              )}
+
+              {llamaWarmupDialog.isWarming && (
+                <div className="flex items-start gap-2 rounded-md border border-border-subtle bg-background-default p-3 text-xs text-text-muted">
+                  <div className="mt-0.5 h-3 w-3 flex-shrink-0 rounded-full border-2 border-current border-t-transparent animate-spin" />
+                  <div className="min-w-0">
+                    <p className="text-text-default">Waiting for the model to generate...</p>
+                    {llamaWarmupDialog.detail && (
+                      <p className="mt-1 truncate font-mono">{llamaWarmupDialog.detail}</p>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          <DialogFooter className="pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => resolveWarmupDialog(false)}
+              disabled={llamaWarmupDialog?.isWarming}
+            >
+              Keep previous model
+            </Button>
+            <Button
+              type="button"
+              onClick={handleWarmupConfirm}
+              disabled={!llamaWarmupDialog || llamaWarmupDialog.isWarming}
+            >
+              {llamaWarmupDialog?.isWarming ? 'Warming up...' : 'Warm up model'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 };
 
