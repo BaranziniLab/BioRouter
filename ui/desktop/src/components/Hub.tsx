@@ -28,6 +28,7 @@ import {
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { createSession } from '../sessions';
 import LoadingBioRouter from './LoadingBioRouter';
+import type { UserAttachment } from '../types/message';
 
 export default function Hub({
   setView,
@@ -41,8 +42,10 @@ export default function Hub({
   const handleSubmit = async (e: React.FormEvent) => {
     const customEvent = e as unknown as CustomEvent;
     const combinedTextFromInput = customEvent.detail?.value || '';
+    const attachments = (customEvent.detail?.attachments ?? []) as UserAttachment[];
+    const hasAttachments = attachments.length > 0;
 
-    if (combinedTextFromInput.trim() && !isCreatingSession) {
+    if ((combinedTextFromInput.trim() || hasAttachments) && !isCreatingSession) {
       const extensionConfigs = getExtensionConfigsWithOverrides(extensionsList);
       clearExtensionOverrides();
       setIsCreatingSession(true);
@@ -56,6 +59,7 @@ export default function Hub({
         setView('pair', {
           resumeSessionId: session.id,
           initialMessage: combinedTextFromInput,
+          initialAttachments: attachments,
         });
       } catch (error) {
         console.error('Failed to create session:', error);

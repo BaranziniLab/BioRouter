@@ -2106,7 +2106,10 @@ ipcMain.handle('read-file', async (_event, filePath) => {
     const buffer = await fs.readFile(expandedPath);
     return { file: buffer.toString('utf8'), filePath: expandedPath, error: null, found: true };
   } catch (error) {
-    console.error('Error reading file:', error);
+    const fileError = error as { code?: string };
+    if (fileError.code !== 'ENOENT') {
+      console.error('Error reading file:', error);
+    }
     return { file: '', filePath: expandedPath, error, found: false };
   }
 });
@@ -2146,6 +2149,14 @@ ipcMain.handle('list-files', async (_event, dirPath, extension) => {
     }
     return files;
   } catch (error) {
+    if (
+      typeof error === 'object' &&
+      error !== null &&
+      'code' in error &&
+      (error.code === 'ENOTDIR' || error.code === 'ENOENT')
+    ) {
+      return [];
+    }
     console.error('Error listing files:', error);
     return [];
   }

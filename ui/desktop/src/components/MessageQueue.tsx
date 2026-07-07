@@ -1,10 +1,12 @@
 import React, { useState } from 'react';
 import { X, Send, GripVertical, ChevronDown, ChevronUp } from './icons/app-icons';
 import { Button } from './ui/button';
+import type { UserAttachment } from '../types/message';
 
 interface QueuedMessage {
   id: string;
   content: string;
+  attachments?: UserAttachment[];
   timestamp: number;
 }
 
@@ -97,6 +99,14 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
 
   const nextMessage = queuedMessages[0];
   const remainingCount = queuedMessages.length - 1;
+  const messageLabel = (message: QueuedMessage) => {
+    const attachmentCount = message.attachments?.length ?? 0;
+    const text = message.content.trim();
+    if (text && attachmentCount > 0) return `${text} (${attachmentCount} attachment${attachmentCount === 1 ? '' : 's'})`;
+    if (text) return text;
+    if (attachmentCount > 0) return `${attachmentCount} attachment${attachmentCount === 1 ? '' : 's'}`;
+    return 'Queued message';
+  };
 
   // Status dot: accent when active/next, muted when paused.
   const statusDot = (
@@ -127,9 +137,9 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
 
           <p
             className="flex-1 min-w-0 text-xs text-text-default truncate"
-            title={nextMessage.content}
+            title={messageLabel(nextMessage)}
           >
-            {nextMessage.content}
+            {messageLabel(nextMessage)}
           </p>
 
           {remainingCount > 0 && (
@@ -298,14 +308,14 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
               ) : (
                 <p
                   className="text-xs text-text-default truncate cursor-pointer hover:text-text-default"
-                  title={`${message.content} (Click to edit)`}
+                  title={`${messageLabel(message)} (Click to edit text)`}
                   onClick={() => {
                     setEditingMessage(message.id);
                     if (editingMessageIdRef) editingMessageIdRef.current = message.id;
                     setEditContent(message.content);
                   }}
                 >
-                  {message.content}
+                  {messageLabel(message)}
                 </p>
               )}
             </div>

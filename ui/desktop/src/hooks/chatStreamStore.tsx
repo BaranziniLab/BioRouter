@@ -524,14 +524,16 @@ class ChatStreamController {
     }
 
     const hasExistingMessages = this.messagesRef.length > 0;
-    const hasNewMessage = userMessage.trim().length > 0;
+    const hasNewMessage = userMessage.trim().length > 0 || attachments.length > 0;
     if (!hasNewMessage && !hasExistingMessages) {
       return;
     }
 
     this.lastInteractionTime = Date.now();
-    if (hasNewMessage) {
+    if (userMessage.trim().length > 0) {
       this.lastSubmittedTitle = userMessage.trim().slice(0, 80);
+    } else if (attachments.length > 0) {
+      this.lastSubmittedTitle = `${attachments.length} attachment${attachments.length === 1 ? '' : 's'}`;
     }
 
     if (!hasExistingMessages && hasNewMessage) {

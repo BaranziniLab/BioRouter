@@ -37,7 +37,6 @@ use biorouter::agents::{Agent, SessionConfig, COMPACT_TRIGGERS};
 use biorouter::config::{BioRouterMode, Config};
 use completion::BioRouterCompleter;
 use input::InputResult;
-use rmcp::model::PromptMessage;
 use rmcp::model::ServerNotification;
 use rmcp::model::{ErrorCode, ErrorData};
 
@@ -190,16 +189,12 @@ pub struct CliSession {
 
 // Cache structure for completion data
 struct CompletionCache {
-    prompts: HashMap<String, Vec<String>>,
-    prompt_info: HashMap<String, output::PromptInfo>,
     last_updated: Instant,
 }
 
 impl CompletionCache {
     fn new() -> Self {
         Self {
-            prompts: HashMap::new(),
-            prompt_info: HashMap::new(),
             last_updated: Instant::now(),
         }
     }
@@ -386,52 +381,6 @@ impl CliSession {
         self.add_and_persist_extensions(configs).await
     }
 
-    pub async fn list_prompts(
-        &mut self,
-        extension: Option<String>,
-    ) -> Result<HashMap<String, Vec<String>>> {
-        let prompts = self.agent.list_extension_prompts().await;
-
-        // Early validation if filtering by extension
-        if let Some(filter) = &extension {
-            if !prompts.contains_key(filter) {
-                return Err(anyhow::anyhow!("Extension '{}' not found", filter));
-            }
-        }
-
-        // Convert prompts into filtered map of extension names to prompt names
-        Ok(prompts
-            .into_iter()
-            .filter(|(ext, _)| extension.as_ref().is_none_or(|f| f == ext))
-            .map(|(extension, prompt_list)| {
-                let names = prompt_list.into_iter().map(|p| p.name).collect();
-                (extension, names)
-            })
-            .collect())
-    }
-
-    pub async fn get_prompt_info(&mut self, name: &str) -> Result<Option<output::PromptInfo>> {
-        let prompts = self.agent.list_extension_prompts().await;
-
-        // Find which extension has this prompt
-        for (extension, prompt_list) in prompts {
-            if let Some(prompt) = prompt_list.iter().find(|p| p.name == name) {
-                return Ok(Some(output::PromptInfo {
-                    name: prompt.name.clone(),
-                    description: prompt.description.clone(),
-                    arguments: prompt.arguments.clone(),
-                    extension: Some(extension),
-                }));
-            }
-        }
-
-        Ok(None)
-    }
-
-    pub async fn get_prompt(&mut self, name: &str, arguments: Value) -> Result<Vec<PromptMessage>> {
-        Ok(self.agent.get_prompt(name, arguments).await?.messages)
-    }
-
     /// Process a single message and get the response
     pub(crate) async fn process_message(
         &mut self,
@@ -571,13 +520,6 @@ impl CliSession {
                 self.handle_select_theme(&theme_name);
             }
             InputResult::Retry => {}
-            InputResult::ListPrompts(extension) => {
-                history.save(editor);
-                match self.list_prompts(extension).await {
-                    Ok(prompts) => output::render_prompts(&prompts),
-                    Err(e) => output::render_error(&e.to_string()),
-                }
-            }
             InputResult::BioRouterMode(mode) => {
                 history.save(editor);
                 self.handle_biorouter_mode(&mode)?;
@@ -592,10 +534,6 @@ impl CliSession {
             InputResult::Clear => {
                 history.save(editor);
                 self.handle_clear().await?;
-            }
-            InputResult::PromptCommand(opts) => {
-                history.save(editor);
-                self.handle_prompt_command(opts).await?;
             }
             InputResult::Workflow(filepath_opt) => {
                 history.save(editor);
@@ -1280,31 +1218,7 @@ impl CliSession {
     /// Update the completion cache with fresh data
     /// This should be called before the interactive session starts
     pub async fn update_completion_cache(&mut self) -> Result<()> {
-        // Get fresh data
-        let prompts = self.agent.list_extension_prompts().await;
-
-        // Update the cache with write lock
         let mut cache = self.completion_cache.write().unwrap();
-        cache.prompts.clear();
-        cache.prompt_info.clear();
-
-        for (extension, prompt_list) in prompts {
-            let names: Vec<String> = prompt_list.iter().map(|p| p.name.clone()).collect();
-            cache.prompts.insert(extension.clone(), names);
-
-            for prompt in prompt_list {
-                cache.prompt_info.insert(
-                    prompt.name.clone(),
-                    output::PromptInfo {
-                        name: prompt.name.clone(),
-                        description: prompt.description.clone(),
-                        arguments: prompt.arguments.clone(),
-                        extension: Some(extension.clone()),
-                    },
-                );
-            }
-        }
-
         cache.last_updated = Instant::now();
         Ok(())
     }
@@ -1313,8 +1227,6 @@ impl CliSession {
     /// This should be called when extensions are added or removed
     async fn invalidate_completion_cache(&self) {
         let mut cache = self.completion_cache.write().unwrap();
-        cache.prompts.clear();
-        cache.prompt_info.clear();
         cache.last_updated = Instant::now();
     }
 
@@ -1395,80 +1307,6 @@ impl CliSession {
             }
             Err(_) => {
                 output::display_context_usage(0, context_limit);
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Handle prompt command execution
-    async fn handle_prompt_command(&mut self, opts: input::PromptCommandOptions) -> Result<()> {
-        // name is required
-        if opts.name.is_empty() {
-            output::render_error("Prompt name argument is required");
-            return Ok(());
-        }
-
-        if opts.info {
-            match self.get_prompt_info(&opts.name).await? {
-                Some(info) => output::render_prompt_info(&info),
-                None => output::render_error(&format!("Prompt '{}' not found", opts.name)),
-            }
-        } else {
-            // Convert the arguments HashMap to a Value
-            let arguments = serde_json::to_value(opts.arguments)
-                .map_err(|e| anyhow::anyhow!("Failed to serialize arguments: {}", e))?;
-
-            match self.get_prompt(&opts.name, arguments).await {
-                Ok(messages) => {
-                    let start_len = self.messages.len();
-                    let mut valid = true;
-                    let num_messages = messages.len();
-                    for (i, prompt_message) in messages.into_iter().enumerate() {
-                        let msg = Message::from(prompt_message);
-                        // ensure we get a User - Assistant - User type pattern
-                        let expected_role = if i % 2 == 0 {
-                            rmcp::model::Role::User
-                        } else {
-                            rmcp::model::Role::Assistant
-                        };
-
-                        if msg.role != expected_role {
-                            output::render_error(&format!(
-                                "Expected {:?} message at position {}, but found {:?}",
-                                expected_role, i, msg.role
-                            ));
-                            valid = false;
-                            // get rid of everything we added to messages
-                            self.messages.truncate(start_len);
-                            break;
-                        }
-
-                        if msg.role == rmcp::model::Role::User {
-                            output::render_message(&msg, self.debug);
-                        }
-                        self.push_message(msg);
-                    }
-
-                    if valid {
-                        if num_messages > 1 {
-                            for i in 0..(num_messages - 1) {
-                                let msg = &self.messages.messages()[start_len + i];
-                                self.agent
-                                    .config
-                                    .session_manager
-                                    .add_message(&self.session_id, msg)
-                                    .await?;
-                            }
-                        }
-
-                        output::show_thinking();
-                        self.process_agent_response(true, CancellationToken::default())
-                            .await?;
-                        output::hide_thinking();
-                    }
-                }
-                Err(e) => output::render_error(&e.to_string()),
             }
         }
 

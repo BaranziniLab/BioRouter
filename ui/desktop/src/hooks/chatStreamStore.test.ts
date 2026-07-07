@@ -96,6 +96,7 @@ beforeEach(() => {
   Object.assign(window, {
     electron: {
       openExternal: vi.fn(async () => undefined),
+      readTempImageAsBase64: vi.fn(async () => ({ data: 'B64-image', mimeType: 'image/png' })),
       showNotification: vi.fn(),
       logInfo: vi.fn(),
     },
@@ -103,6 +104,25 @@ beforeEach(() => {
 });
 
 describe('ChatStreamRegistry', () => {
+  it('submits attachment-only messages as new user messages', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never);
+
+    await registry
+      .getController('s1')
+      .handleSubmit('', [{ path: '/tmp/biorouter-pasted-images/scan.png', kind: 'image' }]);
+
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(reply).mock.calls[0][0].body.user_message.content).toEqual([
+      { type: 'image', data: 'B64-image', mimeType: 'image/png' },
+    ]);
+  });
+
   it('keeps a submitted stream running after the last view unsubscribes', async () => {
     const registry = new ChatStreamRegistry();
     const controlled = createControlledStream();

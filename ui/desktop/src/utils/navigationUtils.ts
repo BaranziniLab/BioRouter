@@ -1,5 +1,6 @@
 import { NavigateFunction } from 'react-router-dom';
 import { Workflow } from '../api/types.gen';
+import type { UserAttachment } from '../types/message';
 
 export type View =
   | 'welcome'
@@ -31,6 +32,7 @@ export type ViewOptions = {
   parentViewOptions?: ViewOptions;
   disableAnimation?: boolean;
   initialMessage?: string;
+  initialAttachments?: UserAttachment[];
   shareToken?: string;
   resumeSessionId?: string;
   pendingScheduleDeepLink?: string;

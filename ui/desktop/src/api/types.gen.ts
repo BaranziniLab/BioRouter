@@ -794,6 +794,10 @@ export type ModelInfo = {
      */
     output_token_cost?: number | null;
     /**
+     * MIME types that can be sent as structured model input blocks.
+     */
+    supported_input_mime_types?: Array<string> | null;
+    /**
      * Whether this model supports cache control
      */
     supports_cache_control?: boolean | null;
