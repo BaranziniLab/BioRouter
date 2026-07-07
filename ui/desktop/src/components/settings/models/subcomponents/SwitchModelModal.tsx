@@ -42,11 +42,24 @@ function findFirstAvailableModel(
 const llamaDownloadLabel = (model: LlamaCppModel | undefined) => {
   switch (model?.download_status) {
     case 'downloaded':
-      return 'Downloaded';
+      return model.download_source === 'ollama' ? 'Downloaded in Ollama' : 'Downloaded';
     case 'partial':
       return 'Partial download';
     case 'not_downloaded':
       return 'Needs download';
+    default:
+      return null;
+  }
+};
+
+const llamaFitLabel = (model: LlamaCppModel | undefined) => {
+  switch (model?.suitability_status) {
+    case 'suitable':
+      return 'Recommended here';
+    case 'above_recommendation':
+      return `Needs ${model.recommended_gpu_memory_gib} GiB GPU memory`;
+    case 'unknown_resources':
+      return 'VRAM unknown';
     default:
       return null;
   }
@@ -60,7 +73,8 @@ const llamaModelLabel = (modelName: string, catalog: Map<string, LlamaCppModel>)
     entry.display_name,
     entry.download_size,
     llamaDownloadLabel(entry),
-    entry.description.toLowerCase().includes('community') ? 'Community GGUF' : null,
+    llamaFitLabel(entry),
+    entry.ollama_name ? `Ollama ${entry.ollama_name}` : null,
   ]
     .filter(Boolean)
     .join(' · ');

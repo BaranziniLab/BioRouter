@@ -85,7 +85,7 @@ const acceleratorMemoryExplanation = (kind: string | undefined) =>
 const modelDownloadLabel = (model: LlamaCppModel | undefined) => {
   switch (model?.download_status) {
     case 'downloaded':
-      return 'Downloaded';
+      return model.download_source === 'ollama' ? 'Downloaded in Ollama' : 'Downloaded';
     case 'partial':
       return 'Partial download';
     default:
@@ -397,7 +397,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
 
     if (entry && entry.recommended_gpu_memory_gib > 16) {
       warnings.push(
-        `${entry.display_name} is above the 16 GB laptop tier. On 16 GB machines, use Gemma 4 E2B or Gemma 4 E4B; larger Gemma 4 and Qwen3.6 models need more memory.`
+        `${entry.display_name} is above the 16 GB laptop tier. On 16 GB machines, use Gemma 4 unless the app reports enough GPU-addressable memory.`
       );
     }
 
@@ -458,8 +458,8 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             <DialogTitle>Warm up local model</DialogTitle>
             <DialogDescription>
               {llamaWarmupDialog?.entry?.display_name ?? llamaWarmupDialog?.model.name} runs on
-              this computer. First use can take a while because the model may need to download,
-              load, and produce a test response.
+              this computer. First use can take a while because the model may need to load,
+              download, and produce a test response.
             </DialogDescription>
           </DialogHeader>
 
@@ -479,6 +479,31 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
                       {modelDownloadLabel(llamaWarmupDialog.entry)}
                     </span>
                   </div>
+                  <div className="flex justify-between gap-3">
+                    <span>Ollama model</span>
+                    <span className="text-text-default">
+                      {llamaWarmupDialog.entry?.ollama_name ?? 'custom'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span>Model store</span>
+                    <span className="truncate font-mono text-text-default">
+                      {llamaWarmupDialog.status.system.model_cache_dir}
+                    </span>
+                  </div>
+                  {llamaWarmupDialog.entry?.model_path && (
+                    <div className="flex justify-between gap-3">
+                      <span>Model blob</span>
+                      <span className="truncate font-mono text-text-default">
+                        {llamaWarmupDialog.entry.model_path}
+                      </span>
+                    </div>
+                  )}
+                  {llamaWarmupDialog.entry?.suitability_message && (
+                    <div className="pt-1 text-text-default">
+                      {llamaWarmupDialog.entry.suitability_message}
+                    </div>
+                  )}
                   <div className="flex justify-between gap-3">
                     <span>Default context</span>
                     <span className="text-text-default">
