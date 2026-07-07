@@ -12,10 +12,13 @@ import { toast } from 'react-toastify';
 import { EmbeddedResource } from '../api';
 import { useTheme } from '../contexts/ThemeContext';
 import { Maximize2 } from './icons/app-icons';
+import type { ArtifactSource } from './artifacts/artifactTypes';
+import { artifactSourceFromResource } from './artifacts/artifactUtils';
 
 interface MCPUIResourceRendererProps {
   content: EmbeddedResource & { type: 'resource' };
   appendPromptToChat?: (value: string) => void;
+  onOpenArtifact?: (artifact: ArtifactSource) => void;
 }
 
 // More specific result types using discriminated unions
@@ -92,6 +95,7 @@ const ToastComponent = ({
 export default function MCPUIResourceRenderer({
   content,
   appendPromptToChat,
+  onOpenArtifact,
 }: MCPUIResourceRendererProps) {
   const { resolvedTheme } = useTheme();
   const [proxyUrl, setProxyUrl] = useState<string | undefined>(undefined);
@@ -350,11 +354,20 @@ export default function MCPUIResourceRenderer({
   };
 
   const artifactTitle = resource.uri?.split('/').pop() || 'Artifact';
+  const artifactSource = artifactSourceFromResource(content, artifactTitle);
 
-  const handleExpand = async () => {
+  const handleOpenArtifact = async () => {
     const html = decodeArtifactHtml();
+    if (artifactSource && onOpenArtifact && artifactSource.kind !== 'html') {
+      onOpenArtifact(artifactSource);
+      return;
+    }
     if (!html) {
       toast.error('Could not read the artifact contents.');
+      return;
+    }
+    if (artifactSource && onOpenArtifact) {
+      onOpenArtifact(artifactSource);
       return;
     }
     try {
@@ -370,14 +383,37 @@ export default function MCPUIResourceRenderer({
     }
   };
 
+  if (artifactSource && onOpenArtifact) {
+    return (
+      <button
+        type="button"
+        onClick={handleOpenArtifact}
+        aria-label={`Open ${artifactTitle} in the artifact viewer`}
+        className="group mt-3 flex w-full max-w-xl items-center gap-3 rounded-lg border border-border-subtle bg-background-default/75 px-3 py-2.5 text-left shadow-[0_10px_24px_rgba(15,23,42,0.06)] transition-colors hover:bg-background-medium"
+      >
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-background-medium text-text-muted">
+          <Maximize2 className="h-4 w-4" aria-hidden="true" />
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-text-default">
+            {artifactTitle}
+          </span>
+          <span className="block truncate text-xs text-text-muted">
+            {resource.mimeType || 'text/html'}
+          </span>
+        </span>
+      </button>
+    );
+  }
+
   return (
     <div className="group relative mt-3 overflow-hidden rounded-lg bg-transparent shadow-[0_10px_28px_rgba(15,23,42,0.08)]">
       <div className="absolute right-2 top-2 z-10 opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-within:opacity-100">
         <button
           type="button"
-          onClick={handleExpand}
-          aria-label={`Open ${artifactTitle} in a larger standalone window`}
-          title="Open in a larger standalone window"
+          onClick={handleOpenArtifact}
+          aria-label={`Open ${artifactTitle} in the artifact viewer`}
+          title="Open in artifact viewer"
           className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle/70 bg-background-default/85 text-text-muted shadow-sm backdrop-blur transition-colors hover:text-text-default cursor-pointer"
         >
           <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />

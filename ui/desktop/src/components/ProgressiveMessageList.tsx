@@ -23,6 +23,7 @@ import { NotificationEvent } from '../types/message';
 import LoadingBioRouter from './LoadingBioRouter';
 import { ChatType } from '../types/chat';
 import { identifyConsecutiveToolCalls, isInChain } from '../utils/toolCallChaining';
+import type { ArtifactSource } from './artifacts/artifactTypes';
 
 interface ProgressiveMessageListProps {
   messages: Message[];
@@ -42,6 +43,7 @@ interface ProgressiveMessageListProps {
     elicitationId: string,
     userData: Record<string, unknown>
   ) => Promise<void>;
+  onOpenArtifact?: (artifact: ArtifactSource) => void;
 }
 
 export default function ProgressiveMessageList({
@@ -58,6 +60,7 @@ export default function ProgressiveMessageList({
   onMessageUpdate,
   onRenderingComplete,
   submitElicitationResponse,
+  onOpenArtifact,
 }: ProgressiveMessageListProps) {
   const [renderedCount, setRenderedCount] = useState(() => {
     // Initialize with either all messages (if small) or first batch (if large)
@@ -230,6 +233,7 @@ export default function ProgressiveMessageList({
                   message.role === 'assistant'
                 }
                 submitElicitationResponse={submitElicitationResponse}
+                onOpenArtifact={onOpenArtifact}
               />
             )}
           </div>
@@ -248,6 +252,7 @@ export default function ProgressiveMessageList({
     onMessageUpdate,
     toolCallChains,
     submitElicitationResponse,
+    onOpenArtifact,
   ]);
 
   return (

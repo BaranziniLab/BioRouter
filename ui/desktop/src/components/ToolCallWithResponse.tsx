@@ -16,6 +16,7 @@ import MCPUIResourceRenderer from './MCPUIResourceRenderer';
 import { isUIResource } from '@mcp-ui/client';
 import { CallToolResponse, Content, EmbeddedResource } from '../api';
 import McpAppRenderer from './McpApps/McpAppRenderer';
+import type { ArtifactSource } from './artifacts/artifactTypes';
 
 interface ToolGraphNode {
   tool: string;
@@ -55,6 +56,7 @@ interface ToolCallWithResponseProps {
   notifications?: NotificationEvent[];
   isStreamingMessage?: boolean;
   append?: (value: string) => void;
+  onOpenArtifact?: (artifact: ArtifactSource) => void;
 }
 
 function getToolResultContent(toolResult: Record<string, unknown>): Content[] {
@@ -153,6 +155,7 @@ export default function ToolCallWithResponse({
   notifications,
   isStreamingMessage,
   append,
+  onOpenArtifact,
 }: ToolCallWithResponseProps) {
   // Handle both the wrapped ToolResult format and the unwrapped format
   // The server serializes ToolResult<T> as { status: "success", value: T } or { status: "error", error: string }
@@ -199,7 +202,11 @@ export default function ToolCallWithResponse({
           if (resourceContent && isUIResource(resourceContent)) {
             return (
               <div key={index} className="mt-3">
-                <MCPUIResourceRenderer content={resourceContent} appendPromptToChat={append} />
+                <MCPUIResourceRenderer
+                  content={resourceContent}
+                  appendPromptToChat={append}
+                  onOpenArtifact={onOpenArtifact}
+                />
               </div>
             );
           } else {
