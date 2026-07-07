@@ -255,7 +255,7 @@ export default function CreateWorkflowFromSessionModal({
     const valid = !!(hasTitle && hasDescription && hasInstructions);
     setIsFormValid(valid);
 
-    return unsubscribe;
+    return () => unsubscribe.unsubscribe();
   }, [form]);
 
   const handleCreateWorkflow = async (formData: WorkflowFormData, runAfterSave = false) => {

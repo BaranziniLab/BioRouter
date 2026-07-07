@@ -1,9 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useConfig } from '../ConfigContext';
 import { toastService } from '../../toasts';
 import { Button } from '../ui/button';
-import { llamacppEnsure, llamacppStatus, type LlamaCppModel, type SidecarStatus } from '../../api';
+import {
+  llamacppEnsure,
+  llamacppStatus,
+  llamacppWarmup,
+  type LlamaCppModel,
+  type LlamaCppSystemInfo,
+  type SidecarStatus,
+} from '../../api';
 import OnboardingSectionLabel from './OnboardingSectionLabel';
 
 interface LlamaServerInlineCardProps {
@@ -12,12 +19,21 @@ interface LlamaServerInlineCardProps {
 
 const POLL_INTERVAL_MS = 1500;
 
+const acceleratorMemoryLabel = (kind: string | undefined) =>
+  kind === 'apple_unified' ? 'unified memory' : 'VRAM';
+
+const acceleratorMemoryExplanation = (kind: string | undefined) =>
+  kind === 'apple_unified'
+    ? 'On Apple Silicon, unified memory is the relevant GPU memory budget.'
+    : 'On Intel Macs, Windows, and other discrete-GPU systems, this means VRAM, not regular system RAM.';
+
 export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCardProps) {
   const navigate = useNavigate();
   const { upsert } = useConfig();
   const [isChecking, setIsChecking] = useState(true);
   const [sidecar, setSidecar] = useState<SidecarStatus | null>(null);
   const [catalog, setCatalog] = useState<LlamaCppModel[]>([]);
+  const [system, setSystem] = useState<LlamaCppSystemInfo | null>(null);
   const [selectedModel, setSelectedModel] = useState<string>('');
   const [isStarting, setIsStarting] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
@@ -65,6 +81,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
         const res = await llamacppStatus({ throwOnError: true });
         setSidecar(res.data.sidecar);
         setCatalog(res.data.catalog);
+        setSystem(res.data.system);
         const defaultModel =
           res.data.catalog.find((m) => m.is_default)?.name ?? res.data.catalog[0]?.name ?? '';
         setSelectedModel((prev) => prev || res.data.sidecar.model || defaultModel);
@@ -79,10 +96,29 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
   }, [stopPolling]);
 
   const handleStart = async (model: string) => {
+    if (selectedEntry && system) {
+      const detected = system.accelerator_memory_gib;
+      const exceedsRecommendation =
+        typeof detected !== 'number' || detected < selectedEntry.recommended_gpu_memory_gib;
+      if (exceedsRecommendation) {
+        const detectedText =
+          typeof detected === 'number'
+            ? `${detected} GiB ${acceleratorMemoryLabel(system.accelerator_memory_kind)}`
+            : `unknown ${acceleratorMemoryLabel(system.accelerator_memory_kind)}`;
+        const proceed = window.confirm(
+          `${selectedEntry.display_name} recommends ${selectedEntry.recommended_gpu_memory_gib} GiB GPU-addressable memory.\n\nThis machine reports ${detectedText}.\n\n${acceleratorMemoryExplanation(system.accelerator_memory_kind)}\n\nLoad this model anyway?`
+        );
+        if (!proceed) {
+          return;
+        }
+      }
+    }
+
     setIsStarting(true);
     try {
       const res = await llamacppEnsure({ body: { model }, throwOnError: true });
       setSidecar(res.data.sidecar);
+      setSystem(res.data.system);
     } catch (error) {
       setIsStarting(false);
       toastService.error({
@@ -98,11 +134,8 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
       try {
         const res = await llamacppStatus({ throwOnError: true });
         setSidecar(res.data.sidecar);
-        if (res.data.sidecar.state === 'ready' && res.data.sidecar.model === model) {
-          stopPolling();
-          setIsStarting(false);
-          await connect(model);
-        } else if (res.data.sidecar.state === 'error') {
+        setSystem(res.data.system);
+        if (res.data.sidecar.state === 'error') {
           stopPolling();
           setIsStarting(false);
           toastService.error({
@@ -115,10 +148,60 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
         // Transient polling errors are fine; keep polling.
       }
     }, POLL_INTERVAL_MS);
+
+    try {
+      const warmed = await llamacppWarmup({ body: { model }, throwOnError: true });
+      if (!warmed.data.output.trim()) {
+        throw new Error('Llama Server returned an empty warm-up response');
+      }
+      stopPolling();
+      setSidecar(warmed.data.sidecar);
+      setIsStarting(false);
+      await connect(model);
+    } catch (error) {
+      stopPolling();
+      setIsStarting(false);
+      toastService.error({
+        title: 'Llama Server warm-up failed',
+        msg: error instanceof Error ? error.message : String(error),
+        traceback: error instanceof Error ? error.stack || '' : '',
+      });
+    }
   };
 
   const selectedEntry = catalog.find((m) => m.name === selectedModel);
-  const isReadyForSelected = sidecar?.state === 'ready' && sidecar.model === selectedModel;
+  const resourceWarnings = useMemo(() => {
+    if (!system || !selectedEntry) return [];
+
+    const warnings: string[] = [];
+    const detected = system.accelerator_memory_gib;
+    const memoryLabel = acceleratorMemoryLabel(system.accelerator_memory_kind);
+    if (
+      typeof detected === 'number' &&
+      detected < selectedEntry.recommended_gpu_memory_gib
+    ) {
+      warnings.push(
+        `This machine reports ${detected} GiB ${memoryLabel}; ${selectedEntry.display_name} recommends ${selectedEntry.recommended_gpu_memory_gib} GiB GPU-addressable memory.`
+      );
+    } else if (detected == null) {
+      warnings.push(
+        `BioRouter could not detect VRAM; ${selectedEntry.display_name} recommends ${selectedEntry.recommended_gpu_memory_gib} GiB GPU-addressable memory.`
+      );
+    }
+    if (selectedEntry.recommended_gpu_memory_gib > 16) {
+      warnings.push(
+        `This model is above the 16 GB laptop tier; Gemma 4 E2B/E4B are the laptop defaults. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`
+      );
+    }
+    if (system.os.toLowerCase().includes('windows')) {
+      warnings.push(
+        'Windows needs enough free VRAM for the selected model and context window; regular system RAM does not satisfy the GPU memory recommendation.'
+      );
+    }
+    return warnings;
+  }, [selectedEntry, system]);
+  const isRunningForSelected = sidecar?.state === 'ready' && sidecar.model === selectedModel;
+  const isReadyForSelected = isRunningForSelected && sidecar?.warmed;
   const binaryMissing = sidecar?.state === 'no_binary';
 
   const statusPill = (() => {
@@ -136,6 +219,14 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
         <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
           <span className="w-1.5 h-1.5 rounded-full bg-background-success" />
           Running · {sidecar.model} ready
+        </span>
+      );
+    }
+    if (isRunningForSelected) {
+      return (
+        <span className="inline-flex items-center gap-1.5 text-[11px] text-text-muted">
+          <span className="w-1.5 h-1.5 rounded-full bg-background-warning" />
+          Running · warm-up needed
         </span>
       );
     }
@@ -191,15 +282,24 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
           {selectedEntry && (
             <p className="text-[11px] text-text-muted">{selectedEntry.description}</p>
           )}
+          {resourceWarnings.length > 0 && (
+            <div className="space-y-1 rounded-md border border-border-warning bg-background-warning/10 p-2 text-[11px] text-text-default">
+              {resourceWarnings.map((warning) => (
+                <p key={warning}>{warning}</p>
+              ))}
+            </div>
+          )}
 
           {isStarting && (
             <div className="rounded-md border border-border-subtle bg-background-default p-3">
               <div className="flex items-center gap-2 text-xs text-text-default">
                 <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
                 <span>
-                  {sidecar?.state === 'starting'
-                    ? `Preparing ${selectedModel} — downloading on first use…`
-                    : `Starting llama-server…`}
+                  {sidecar?.state === 'ready' && sidecar.model === selectedModel
+                    ? `Running warm-up prompt for ${selectedModel}...`
+                    : sidecar?.state === 'starting'
+                      ? `Preparing ${selectedModel} — downloading on first use…`
+                      : `Starting llama-server…`}
                 </span>
               </div>
               {sidecar?.detail && (
@@ -229,7 +329,9 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
               >
                 {isStarting
                   ? 'Setting up…'
-                  : `Download & run${selectedEntry ? ` (${selectedEntry.download_size})` : ''}`}
+                  : isRunningForSelected
+                    ? 'Warm up model'
+                    : `Download & run${selectedEntry ? ` (${selectedEntry.download_size})` : ''}`}
               </Button>
             )}
             <button

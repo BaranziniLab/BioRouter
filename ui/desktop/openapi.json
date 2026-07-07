@@ -2401,6 +2401,42 @@
         }
       }
     },
+    "/llamacpp/warmup": {
+      "post": {
+        "tags": [
+          "super::routes::llamacpp"
+        ],
+        "operationId": "llamacpp_warmup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LlamaCppWarmupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Model loaded and produced a test completion",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlamaCppWarmupResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown model name"
+          },
+          "502": {
+            "description": "Model failed to produce a warm-up completion"
+          }
+        }
+      }
+    },
     "/mcp-ui-proxy": {
       "get": {
         "tags": [
@@ -5546,7 +5582,7 @@
         "properties": {
           "model": {
             "type": "string",
-            "description": "Catalog model name (e.g. `qwen3.5-4b`) or raw Hugging Face spec."
+            "description": "Catalog model name (e.g. `gemma-4-e4b`) or raw Hugging Face spec."
           }
         }
       },
@@ -5559,9 +5595,16 @@
           "hf_spec",
           "download_size",
           "description",
+          "min_gpu_memory_gib",
+          "recommended_gpu_memory_gib",
+          "context_limit",
           "is_default"
         ],
         "properties": {
+          "context_limit": {
+            "type": "integer",
+            "minimum": 0
+          },
           "description": {
             "type": "string"
           },
@@ -5578,8 +5621,18 @@
             "type": "boolean",
             "description": "True for the model Biorouter preselects."
           },
+          "min_gpu_memory_gib": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
           "name": {
             "type": "string"
+          },
+          "recommended_gpu_memory_gib": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           }
         }
       },
@@ -5587,7 +5640,8 @@
         "type": "object",
         "required": [
           "sidecar",
-          "catalog"
+          "catalog",
+          "system"
         ],
         "properties": {
           "catalog": {
@@ -5595,6 +5649,70 @@
             "items": {
               "$ref": "#/components/schemas/LlamaCppModel"
             }
+          },
+          "sidecar": {
+            "$ref": "#/components/schemas/SidecarStatus"
+          },
+          "system": {
+            "$ref": "#/components/schemas/LlamaCppSystemInfo"
+          }
+        }
+      },
+      "LlamaCppSystemInfo": {
+        "type": "object",
+        "required": [
+          "os",
+          "total_memory_gib",
+          "accelerator_memory_kind",
+          "default_context_size"
+        ],
+        "properties": {
+          "accelerator_memory_gib": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Apple Silicon unified memory, or detected discrete VRAM elsewhere.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "accelerator_memory_kind": {
+            "type": "string",
+            "description": "`apple_unified`, `vram`, or `unknown_vram`."
+          },
+          "default_context_size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "os": {
+            "type": "string"
+          },
+          "total_memory_gib": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "LlamaCppWarmupRequest": {
+        "type": "object",
+        "required": [
+          "model"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Catalog model name (e.g. `gemma-4-e4b`) or raw Hugging Face spec."
+          }
+        }
+      },
+      "LlamaCppWarmupResponse": {
+        "type": "object",
+        "required": [
+          "sidecar",
+          "output"
+        ],
+        "properties": {
+          "output": {
+            "type": "string"
           },
           "sidecar": {
             "$ref": "#/components/schemas/SidecarStatus"
@@ -7505,6 +7623,10 @@
           },
           "state": {
             "$ref": "#/components/schemas/SidecarState"
+          },
+          "warmed": {
+            "type": "boolean",
+            "description": "True only after Biorouter has received a non-empty completion from this\nmodel in this process."
           }
         }
       },

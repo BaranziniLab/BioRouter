@@ -139,7 +139,10 @@ export const SwitchModelModal = ({
         modelObj = { name: model, provider: provider, subtext: providerDisplayName } as Model;
       }
 
-      await changeModel(sessionId, modelObj);
+      const changed = await changeModel(sessionId, modelObj);
+      if (!changed) {
+        return;
+      }
 
       if (onModelSelected) {
         onModelSelected(modelObj.name);

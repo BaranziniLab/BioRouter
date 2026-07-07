@@ -8,8 +8,8 @@
 //!   cargo test -p biorouter --test llamacpp_integration -- --ignored --test-threads=1
 //! ```
 //!
-//! The first run downloads Qwen3.5 0.8B (~0.5 GB) from Hugging Face into the
-//! Biorouter llama.cpp model cache; later runs reuse it.
+//! The first run downloads a tiny GGUF test model (~0.5 GB) from Hugging Face
+//! into the Biorouter llama.cpp model cache; later runs reuse it.
 
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::model::ModelConfig;
@@ -18,7 +18,7 @@ use biorouter::providers::llamacpp::LlamaCppProvider;
 use futures::StreamExt;
 use rmcp::{model::Tool, object};
 
-const TEST_MODEL: &str = "qwen3.5-0.8b";
+const TEST_MODEL: &str = "unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M";
 
 fn weather_tool() -> Tool {
     Tool::new(

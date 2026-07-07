@@ -10,7 +10,12 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use biorouter::providers::llamacpp::{resolve_hf_spec, MODEL_CATALOG};
+use biorouter::conversation::message::Message;
+use biorouter::model::ModelConfig;
+use biorouter::providers::base::Provider;
+use biorouter::providers::llamacpp::{
+    default_model_name, resolve_hf_spec, LlamaCppProvider, MODEL_CATALOG,
+};
 use biorouter::providers::llamacpp_sidecar::{self, SidecarStatus};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -25,6 +30,9 @@ pub struct LlamaCppModel {
     pub hf_spec: String,
     pub download_size: String,
     pub description: String,
+    pub min_gpu_memory_gib: u64,
+    pub recommended_gpu_memory_gib: u64,
+    pub context_limit: usize,
     /// True for the model Biorouter preselects.
     pub is_default: bool,
 }
@@ -33,15 +41,40 @@ pub struct LlamaCppModel {
 pub struct LlamaCppStatusResponse {
     pub sidecar: SidecarStatus,
     pub catalog: Vec<LlamaCppModel>,
+    pub system: LlamaCppSystemInfo,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct LlamaCppSystemInfo {
+    pub os: String,
+    pub total_memory_gib: u64,
+    /// Apple Silicon unified memory, or detected discrete VRAM elsewhere.
+    pub accelerator_memory_gib: Option<u64>,
+    /// `apple_unified`, `vram`, or `unknown_vram`.
+    pub accelerator_memory_kind: String,
+    pub default_context_size: usize,
 }
 
 #[derive(Deserialize, ToSchema)]
 pub struct LlamaCppEnsureRequest {
-    /// Catalog model name (e.g. `qwen3.5-4b`) or raw Hugging Face spec.
+    /// Catalog model name (e.g. `gemma-4-e4b`) or raw Hugging Face spec.
     pub model: String,
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct LlamaCppWarmupRequest {
+    /// Catalog model name (e.g. `gemma-4-e4b`) or raw Hugging Face spec.
+    pub model: String,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct LlamaCppWarmupResponse {
+    pub sidecar: SidecarStatus,
+    pub output: String,
+}
+
 fn catalog() -> Vec<LlamaCppModel> {
+    let default_model = default_model_name();
     MODEL_CATALOG
         .iter()
         .map(|e| LlamaCppModel {
@@ -50,9 +83,30 @@ fn catalog() -> Vec<LlamaCppModel> {
             hf_spec: e.hf_spec.to_string(),
             download_size: e.download_size.to_string(),
             description: e.description.to_string(),
-            is_default: e.name == biorouter::providers::llamacpp::LLAMACPP_DEFAULT_MODEL,
+            min_gpu_memory_gib: e.min_gpu_memory_gib,
+            recommended_gpu_memory_gib: e.recommended_gpu_memory_gib,
+            context_limit: e.context_limit,
+            is_default: e.name == default_model,
         })
         .collect()
+}
+
+fn system_info() -> LlamaCppSystemInfo {
+    LlamaCppSystemInfo {
+        os: std::env::consts::OS.to_string(),
+        total_memory_gib: llamacpp_sidecar::total_memory_gib(),
+        accelerator_memory_gib: llamacpp_sidecar::accelerator_memory_gib(),
+        accelerator_memory_kind: llamacpp_sidecar::accelerator_memory_kind().to_string(),
+        default_context_size: llamacpp_sidecar::default_context_size(),
+    }
+}
+
+async fn status_response() -> LlamaCppStatusResponse {
+    LlamaCppStatusResponse {
+        sidecar: llamacpp_sidecar::global().status().await,
+        catalog: catalog(),
+        system: system_info(),
+    }
 }
 
 #[utoipa::path(
@@ -63,10 +117,7 @@ fn catalog() -> Vec<LlamaCppModel> {
     ),
 )]
 async fn llamacpp_status() -> Json<LlamaCppStatusResponse> {
-    Json(LlamaCppStatusResponse {
-        sidecar: llamacpp_sidecar::global().status().await,
-        catalog: catalog(),
-    })
+    Json(status_response().await)
 }
 
 #[utoipa::path(
@@ -102,9 +153,52 @@ async fn llamacpp_ensure(
         }
     });
 
-    Ok(Json(LlamaCppStatusResponse {
+    Ok(Json(status_response().await))
+}
+
+#[utoipa::path(
+    post,
+    path = "/llamacpp/warmup",
+    request_body = LlamaCppWarmupRequest,
+    responses(
+        (status = 200, description = "Model loaded and produced a test completion", body = LlamaCppWarmupResponse),
+        (status = 400, description = "Unknown model name"),
+        (status = 502, description = "Model failed to produce a warm-up completion"),
+    ),
+)]
+async fn llamacpp_warmup(
+    Json(req): Json<LlamaCppWarmupRequest>,
+) -> Result<Json<LlamaCppWarmupResponse>, (StatusCode, String)> {
+    resolve_hf_spec(&req.model).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let model = ModelConfig::new(&req.model)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?
+        .with_temperature(Some(0.0))
+        .with_max_tokens(Some(8));
+    let provider = LlamaCppProvider::from_env(model)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+    let (message, _) = provider
+        .complete(
+            "You are a local model warm-up check. Reply with OK.",
+            &[Message::user().with_text("Reply with exactly OK.")],
+            &[],
+        )
+        .await
+        .map_err(|e| (StatusCode::BAD_GATEWAY, e.to_string()))?;
+    let output = message.as_concat_text().trim().to_string();
+    if output.is_empty() {
+        return Err((
+            StatusCode::BAD_GATEWAY,
+            "Llama Server returned an empty warm-up completion".to_string(),
+        ));
+    }
+
+    let sidecar = llamacpp_sidecar::global();
+    sidecar.mark_warmed(&req.model).await;
+    Ok(Json(LlamaCppWarmupResponse {
         sidecar: sidecar.status().await,
-        catalog: catalog(),
+        output,
     }))
 }
 
@@ -118,10 +212,7 @@ async fn llamacpp_ensure(
 async fn llamacpp_stop() -> Json<LlamaCppStatusResponse> {
     let sidecar = llamacpp_sidecar::global();
     sidecar.stop().await;
-    Json(LlamaCppStatusResponse {
-        sidecar: sidecar.status().await,
-        catalog: catalog(),
-    })
+    Json(status_response().await)
 }
 
 /// Stateless router, exposed separately so tests can drive the routes
@@ -130,6 +221,7 @@ pub fn router() -> Router {
     Router::new()
         .route("/llamacpp/status", get(llamacpp_status))
         .route("/llamacpp/ensure", post(llamacpp_ensure))
+        .route("/llamacpp/warmup", post(llamacpp_warmup))
         .route("/llamacpp/stop", post(llamacpp_stop))
 }
 
