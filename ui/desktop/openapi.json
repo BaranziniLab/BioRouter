@@ -3005,7 +3005,7 @@
           "Session Management"
         ],
         "summary": "Diverge (branch) a session into a brand-new session that inherits the full",
-        "description": "conversation history and metadata of the original, while leaving the\noriginal completely untouched. Unlike `edit_message` with `Fork`, no\ntruncation is performed \u2014 the entire history is carried over so the user can\ncontinue a fresh conversation from exactly where they left off.",
+        "description": "conversation history and metadata of the original, while leaving the\noriginal completely untouched. Unlike `edit_message` with `Fork`, no\ntruncation is performed — the entire history is carried over so the user can\ncontinue a fresh conversation from exactly where they left off.",
         "operationId": "diverge_session",
         "parameters": [
           {
@@ -4648,7 +4648,7 @@
           "truncateAfter": {
             "type": "integer",
             "format": "int64",
-            "description": "Optional anchor: the `created` timestamp (ms) of the assistant message a\nper-message Diverge button was clicked on. The branch is trimmed to end\nat that answer. When omitted, the branch ends at the most recent\ncomplete assistant answer \u2014 an in-flight turn captured mid-generation is\nnever carried over.",
+            "description": "Optional anchor: the `created` timestamp (ms) of the assistant message a\nper-message Diverge button was clicked on. The branch is trimmed to end\nat that answer. When omitted, the branch ends at the most recent\ncomplete assistant answer — an in-flight turn captured mid-generation is\nnever carried over.",
             "nullable": true
           }
         }
@@ -5624,7 +5624,7 @@
         "properties": {
           "path": {
             "type": "string",
-            "description": "Absolute on-disk path to the knowledge base directory (the folder that\nholds `knowledge/`, `raw/`, `index.md`, \u2026). Clients use this to open the\nfolder in the OS file explorer so users can inspect raw markdown."
+            "description": "Absolute on-disk path to the knowledge base directory (the folder that\nholds `knowledge/`, `raw/`, `index.md`, …). Clients use this to open the\nfolder in the OS file explorer so users can inspect raw markdown."
           }
         }
       },
@@ -6205,6 +6205,14 @@
             "type": "number",
             "format": "double",
             "description": "Cost per token for output (optional)",
+            "nullable": true
+          },
+          "supported_input_mime_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "MIME types that can be sent as structured model input blocks.",
             "nullable": true
           },
           "supports_cache_control": {
@@ -7053,7 +7061,7 @@
           "max_runs": {
             "type": "integer",
             "format": "int32",
-            "description": "Optional cap on total firings. When `Some(n)`, the job auto-pauses once\n`run_count` reaches `n` \u2014 the bound that keeps `/loop` from running\nforever. `None` = unbounded (durable `/schedule` jobs).",
+            "description": "Optional cap on total firings. When `Some(n)`, the job auto-pauses once\n`run_count` reaches `n` — the bound that keeps `/loop` from running\nforever. `None` = unbounded (durable `/schedule` jobs).",
             "nullable": true,
             "minimum": 0
           },
@@ -7117,7 +7125,7 @@
           },
           "diverged_from": {
             "type": "string",
-            "description": "Id of the session this one was diverged (branched) from, if any. Set by\n`diverge_session`; `None` for normally-created sessions. Lets the UI show\na session's lineage (\"branched from \u2026\").",
+            "description": "Id of the session this one was diverged (branched) from, if any. Set by\n`diverge_session`; `None` for normally-created sessions. Lets the UI show\na session's lineage (\"branched from …\").",
             "nullable": true
           },
           "extension_data": {

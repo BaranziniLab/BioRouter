@@ -20,6 +20,9 @@ use crate::agents::platform_tools::{
     PLATFORM_INGEST_CONVERSATION_TOOL_NAME, PLATFORM_MANAGE_SCHEDULE_TOOL_NAME,
 };
 use crate::agents::prompt_manager::PromptManager;
+use crate::agents::resource_refs::{
+    canonical_builtin_extension_name, extract_resource_refs, ResourceRefs,
+};
 use crate::agents::retry::{RetryManager, RetryResult};
 use crate::agents::subagent_task_config::TaskConfig;
 use crate::agents::subagent_tool::{
@@ -57,6 +60,7 @@ use rmcp::model::{
     CallToolRequestParams, CallToolResult, Content, ErrorCode, ErrorData, GetPromptResult, Prompt,
     ServerNotification, Tool,
 };
+use rmcp::object;
 use serde_json::Value;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
@@ -430,6 +434,20 @@ impl Agent {
         }
         let initial_messages = conversation.messages().clone();
 
+        let mut conversation = conversation;
+        if let Some(context) = self
+            .explicit_resource_context(session_id, conversation.messages())
+            .await
+        {
+            conversation.push(
+                Message::user()
+                    .with_text(format!(
+                        "<explicit-resource-context>\n{context}\n</explicit-resource-context>"
+                    ))
+                    .with_visibility(false, true),
+            );
+        }
+
         let (tools, toolshim_tools, system_prompt) = self
             .prepare_tools_and_prompt(session_id, working_dir)
             .await?;
@@ -442,6 +460,225 @@ impl Agent {
             biorouter_mode: self.config.biorouter_mode,
             initial_messages,
         })
+    }
+
+    async fn explicit_resource_context(
+        &self,
+        session_id: &str,
+        messages: &[Message],
+    ) -> Option<String> {
+        let latest_user_text = messages
+            .iter()
+            .rev()
+            .find(|message| {
+                message.role == rmcp::model::Role::User && message.metadata.user_visible
+            })
+            .map(Message::as_concat_text)?;
+
+        let refs = extract_resource_refs(&latest_user_text);
+        if refs.is_empty() {
+            return None;
+        }
+
+        let mut sections = Vec::new();
+
+        if !refs.skills.is_empty() {
+            sections.push(self.skill_resource_context(session_id, &refs).await);
+        }
+
+        if !refs.extensions.is_empty() {
+            sections.push(
+                self.extension_resource_context(session_id, &refs.extensions)
+                    .await,
+            );
+        }
+
+        if !refs.knowledge_bases.is_empty() {
+            sections.push(
+                self.knowledge_resource_context(session_id, &latest_user_text, &refs)
+                    .await,
+            );
+        }
+
+        Some(sections.join("\n\n"))
+    }
+
+    async fn skill_resource_context(&self, session_id: &str, refs: &ResourceRefs) -> String {
+        let mut output = format!(
+            "The user explicitly selected these skills for this request: {}.\n\
+             Treat these selected skills as mandatory. Use the loaded skill instructions below before answering or taking action.",
+            refs.skills
+                .iter()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        for skill in &refs.skills {
+            output.push_str(&format!("\n\n## Loaded skill: {skill}\n"));
+            match self
+                .call_prefetch_tool(
+                    session_id,
+                    "skills__loadSkill",
+                    object!({ "name": skill.clone() }),
+                )
+                .await
+            {
+                Ok(text) => output.push_str(&text),
+                Err(error) => output.push_str(&format!(
+                    "Could not load this selected skill: {error}. Tell the user instead of silently substituting another skill."
+                )),
+            }
+        }
+
+        output
+    }
+
+    async fn extension_resource_context(&self, session_id: &str, extensions: &[String]) -> String {
+        let mut selected = Vec::new();
+        let mut notes = Vec::new();
+
+        for requested in extensions {
+            let requested = requested.trim();
+            if requested.is_empty() {
+                continue;
+            }
+
+            let canonical = canonical_builtin_extension_name(requested)
+                .unwrap_or_else(|| requested.to_string());
+            let normalized = normalize(&canonical);
+
+            if !self
+                .extension_manager
+                .is_extension_enabled(&normalized)
+                .await
+            {
+                let is_builtin = biorouter_mcp::BUILTIN_EXTENSIONS.contains_key(canonical.as_str())
+                    || crate::agents::extension::PLATFORM_EXTENSIONS
+                        .contains_key(normalized.as_str());
+                if is_builtin {
+                    let config = ExtensionConfig::Builtin {
+                        name: canonical.clone(),
+                        description: format!(
+                            "Selected via explicit resource marker /ext:{canonical}"
+                        ),
+                        display_name: None,
+                        timeout: Some(300),
+                        bundled: Some(true),
+                        available_tools: Vec::new(),
+                    };
+                    match self.add_extension(config).await {
+                        Ok(()) => {
+                            if let Err(error) = self.persist_extension_state(session_id).await {
+                                notes.push(format!(
+                                    "`{canonical}` was enabled for this turn but its session state could not be persisted: {error}"
+                                ));
+                            } else {
+                                notes.push(format!(
+                                    "`{canonical}` was enabled because the user selected it explicitly."
+                                ));
+                            }
+                        }
+                        Err(error) => notes.push(format!(
+                            "`{canonical}` could not be enabled: {error}. Tell the user instead of silently substituting another extension."
+                        )),
+                    }
+                } else {
+                    notes.push(format!(
+                        "`{canonical}` is not currently enabled and is not a known built-in extension. Tell the user instead of silently substituting another extension."
+                    ));
+                }
+            }
+
+            selected.push(canonical);
+        }
+
+        let mut output = format!(
+            "The user explicitly selected these extensions for this request: {}.\n\
+             Treat these selected extensions as mandatory. Use tools from these extensions when the request needs tool use. Tool names are prefixed with the extension name and `__`; if a selected extension is unavailable, say so plainly.",
+            selected
+                .iter()
+                .map(|name| format!("`{name}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+
+        if !notes.is_empty() {
+            output.push_str("\n\n");
+            output.push_str(&notes.join("\n"));
+        }
+
+        output
+    }
+
+    async fn knowledge_resource_context(
+        &self,
+        session_id: &str,
+        user_text: &str,
+        refs: &ResourceRefs,
+    ) -> String {
+        let mut output = String::from(
+            "The user explicitly selected the following knowledge base(s). Use these results as the primary knowledge context for this request. If more context is needed, call `knowledge__kb_search` with the same exact `kb_id`.",
+        );
+
+        for kb in &refs.knowledge_bases {
+            output.push_str(&format!("\n\n## Knowledge base: `{}`\n", kb.id));
+            match self
+                .call_prefetch_tool(
+                    session_id,
+                    "knowledge__kb_search",
+                    object!({
+                        "kb_id": kb.id.clone(),
+                        "query": user_text,
+                        "limit": 5
+                    }),
+                )
+                .await
+            {
+                Ok(text) => output.push_str(&text),
+                Err(error) => output.push_str(&format!(
+                    "Could not search this selected knowledge base: {error}. Tell the user instead of silently searching a different knowledge base."
+                )),
+            }
+        }
+
+        output
+    }
+
+    async fn call_prefetch_tool(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        arguments: serde_json::Map<String, Value>,
+    ) -> Result<String> {
+        let tool = self
+            .extension_manager
+            .dispatch_tool_call(
+                session_id,
+                CallToolRequestParams {
+                    name: tool_name.to_string().into(),
+                    arguments: Some(arguments),
+                    meta: None,
+                    task: None,
+                },
+                CancellationToken::default(),
+            )
+            .await
+            .map_err(|e| anyhow!(e.to_string()))?;
+
+        let result = tool.result.await.map_err(|e| anyhow!(e.message))?;
+        let text = result
+            .content
+            .iter()
+            .filter_map(|content| content.as_text().map(|text| text.text.as_ref()))
+            .collect::<Vec<_>>()
+            .join("\n\n");
+
+        if text.is_empty() {
+            Ok("(The selected resource returned no text.)".to_string())
+        } else {
+            Ok(text)
+        }
     }
 
     async fn categorize_tools(

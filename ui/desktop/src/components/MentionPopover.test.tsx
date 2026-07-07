@@ -10,7 +10,7 @@ const item = (overrides: Partial<DisplayItem>): DisplayItem => ({
 });
 
 describe('getMentionInsertText', () => {
-  it('inserts visible references for skills and extensions', () => {
+  it('inserts routed markers for skills and extensions', () => {
     expect(
       getMentionInsertText(
         item({
@@ -19,7 +19,7 @@ describe('getMentionInsertText', () => {
           relativePath: 'literature-review',
         })
       )
-    ).toBe('Use the "literature-review" skill for this request, ');
+    ).toBe('/skill:literature-review ');
 
     expect(
       getMentionInsertText(
@@ -29,7 +29,19 @@ describe('getMentionInsertText', () => {
           relativePath: 'pubmed',
         })
       )
-    ).toBe('Use the "pubmed" extension for this request, ');
+    ).toBe('/ext:pubmed ');
+  });
+
+  it('inserts routed markers for knowledge bases', () => {
+    expect(
+      getMentionInsertText(
+        item({
+          name: 'kb:Project notes',
+          itemType: 'KnowledgeBase',
+          relativePath: 'project-notes',
+        })
+      )
+    ).toBe('/kb:project-notes ');
   });
 
   it('keeps backend slash commands executable when selected by keyboard', () => {
@@ -44,7 +56,7 @@ describe('getMentionInsertText', () => {
     ).toBe('/compact');
   });
 
-  it('uses client insert templates for UI-only commands', () => {
+  it('uses routed markers for UI-only resource commands', () => {
     expect(
       getMentionInsertText(
         item({
@@ -53,6 +65,6 @@ describe('getMentionInsertText', () => {
           relativePath: 'knowledge',
         })
       )
-    ).toContain('Using the Knowledge extension');
+    ).toBe('/ext:knowledge ');
   });
 });

@@ -1,5 +1,5 @@
-import { describe, it, expect } from 'vitest';
-import { parseSkillFrontmatter, toSlug } from './skillUtils';
+import { describe, it, expect, vi } from 'vitest';
+import { loadSkillsFromDirs, parseSkillFrontmatter, toSlug } from './skillUtils';
 
 describe('parseSkillFrontmatter', () => {
   it('returns name and description from valid frontmatter', () => {
@@ -76,5 +76,50 @@ describe('toSlug', () => {
 
   it('collapses multiple hyphens', () => {
     expect(toSlug('a  b')).toBe('a-b');
+  });
+});
+
+describe('loadSkillsFromDirs', () => {
+  it('loads a bundle when the top-level folder has only subskill SKILL.md files', async () => {
+    const files = new Map([
+      [
+        '~/.config/biorouter/skills/tcr-bcr-analysis/mixcr-analysis/SKILL.md',
+        '---\nname: mixcr-analysis\ndescription: Analyze AIRR data with MiXCR\n---\nBody',
+      ],
+      [
+        '~/.config/biorouter/skills/tcr-bcr-analysis/scirpy-analysis/SKILL.md',
+        '---\nname: scirpy-analysis\ndescription: Analyze single-cell immune receptors\n---\nBody',
+      ],
+    ]);
+
+    Object.assign(window, {
+      electron: {
+        listSkillDirs: vi.fn(async (dir: string) => {
+          if (dir === '~/.config/biorouter/skills') return ['tcr-bcr-analysis'];
+          if (dir === '~/.config/biorouter/skills/tcr-bcr-analysis') {
+            return ['mixcr-analysis', 'scirpy-analysis'];
+          }
+          return [];
+        }),
+        readFile: vi.fn(async (filePath: string) => ({
+          file: files.get(filePath) ?? '',
+          filePath,
+          error: files.has(filePath) ? null : 'ENOENT',
+          found: files.has(filePath),
+        })),
+      },
+    });
+
+    const result = await loadSkillsFromDirs(['~/.config/biorouter/skills']);
+
+    expect(result.singles).toEqual([]);
+    expect(result.bundles).toHaveLength(1);
+    expect(result.bundles[0]).toMatchObject({
+      bundleName: 'tcr-bcr-analysis',
+      skills: [
+        { name: 'mixcr-analysis', bundleName: 'tcr-bcr-analysis' },
+        { name: 'scirpy-analysis', bundleName: 'tcr-bcr-analysis' },
+      ],
+    });
   });
 });

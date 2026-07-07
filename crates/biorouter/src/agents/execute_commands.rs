@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use anyhow::{anyhow, Result};
 
 use crate::agents::types::SessionConfig;
@@ -18,14 +16,6 @@ pub struct CommandDef {
 }
 
 static COMMANDS: &[CommandDef] = &[
-    CommandDef {
-        name: "prompts",
-        description: "List available prompts, optionally filtered by extension",
-    },
-    CommandDef {
-        name: "prompt",
-        description: "Execute a prompt or show its info with --info",
-    },
     CommandDef {
         name: "compact",
         description: "Compact the conversation history",
@@ -75,15 +65,14 @@ impl Agent {
             .map(|(cmd, p)| (cmd, p.trim()))
             .unwrap_or((command_str, ""));
 
-        let params: Vec<&str> = if params_str.is_empty() {
-            vec![]
-        } else {
-            params_str.split_whitespace().collect()
-        };
+        if command.starts_with("skill:")
+            || command.starts_with("ext:")
+            || command.starts_with("kb:")
+        {
+            return Ok(None);
+        }
 
         match command {
-            "prompts" => self.handle_prompts_command(&params, session_id).await,
-            "prompt" => self.handle_prompt_command(&params, session_id).await,
             "compact" => self.handle_compact_command(session_config).await,
             "clear" => self.handle_clear_command(session_id).await,
             "goal" => self.handle_goal_command(params_str, session_id).await,
@@ -166,152 +155,6 @@ impl Agent {
             SystemNotificationType::InlineMessage,
             "Conversation cleared",
         )))
-    }
-
-    async fn handle_prompts_command(
-        &self,
-        params: &[&str],
-        _session_id: &str,
-    ) -> Result<Option<Message>> {
-        let extension_filter = params.first().map(|s| s.to_string());
-
-        let prompts = self.list_extension_prompts().await;
-
-        if let Some(filter) = &extension_filter {
-            if !prompts.contains_key(filter) {
-                let error_msg = format!("Extension '{}' not found", filter);
-                return Ok(Some(Message::assistant().with_text(error_msg)));
-            }
-        }
-
-        let filtered_prompts: HashMap<String, Vec<String>> = prompts
-            .into_iter()
-            .filter(|(ext, _)| extension_filter.as_ref().is_none_or(|f| f == ext))
-            .map(|(extension, prompt_list)| {
-                let names = prompt_list.into_iter().map(|p| p.name).collect();
-                (extension, names)
-            })
-            .collect();
-
-        let mut output = String::new();
-        if filtered_prompts.is_empty() {
-            output.push_str("No prompts available.\n");
-        } else {
-            output.push_str("Available prompts:\n\n");
-            for (extension, prompt_names) in filtered_prompts {
-                output.push_str(&format!("**{}**:\n", extension));
-                for name in prompt_names {
-                    output.push_str(&format!("  - {}\n", name));
-                }
-                output.push('\n');
-            }
-        }
-
-        Ok(Some(Message::assistant().with_text(output)))
-    }
-
-    async fn handle_prompt_command(
-        &self,
-        params: &[&str],
-        session_id: &str,
-    ) -> Result<Option<Message>> {
-        if params.is_empty() {
-            return Ok(Some(
-                Message::assistant().with_text("Prompt name argument is required"),
-            ));
-        }
-
-        let prompt_name = params[0].to_string();
-        let is_info = params.get(1).map(|s| *s == "--info").unwrap_or(false);
-
-        if is_info {
-            let prompts = self.list_extension_prompts().await;
-            let mut prompt_info = None;
-
-            for (extension, prompt_list) in prompts {
-                if let Some(prompt) = prompt_list.iter().find(|p| p.name == prompt_name) {
-                    let mut output = format!("**Prompt: {}**\n\n", prompt.name);
-                    if let Some(desc) = &prompt.description {
-                        output.push_str(&format!("Description: {}\n\n", desc));
-                    }
-                    output.push_str(&format!("Extension: {}\n\n", extension));
-
-                    if let Some(args) = &prompt.arguments {
-                        output.push_str("Arguments:\n");
-                        for arg in args {
-                            output.push_str(&format!("  - {}", arg.name));
-                            if let Some(desc) = &arg.description {
-                                output.push_str(&format!(": {}", desc));
-                            }
-                            output.push('\n');
-                        }
-                    }
-
-                    prompt_info = Some(output);
-                    break;
-                }
-            }
-
-            return Ok(Some(Message::assistant().with_text(
-                prompt_info.unwrap_or_else(|| format!("Prompt '{}' not found", prompt_name)),
-            )));
-        }
-
-        let mut arguments = HashMap::new();
-        for param in params.iter().skip(1) {
-            if let Some((key, value)) = param.split_once('=') {
-                let value = value.trim_matches('"');
-                arguments.insert(key.to_string(), value.to_string());
-            }
-        }
-
-        let arguments_value = serde_json::to_value(arguments)
-            .map_err(|e| anyhow!("Failed to serialize arguments: {}", e))?;
-
-        match self.get_prompt(&prompt_name, arguments_value).await {
-            Ok(prompt_result) => {
-                for (i, prompt_message) in prompt_result.messages.into_iter().enumerate() {
-                    let msg = Message::from(prompt_message);
-
-                    let expected_role = if i % 2 == 0 {
-                        rmcp::model::Role::User
-                    } else {
-                        rmcp::model::Role::Assistant
-                    };
-
-                    if msg.role != expected_role {
-                        let error_msg = format!(
-                            "Expected {:?} message at position {}, but found {:?}",
-                            expected_role, i, msg.role
-                        );
-                        return Ok(Some(Message::assistant().with_text(error_msg)));
-                    }
-
-                    self.config
-                        .session_manager
-                        .clone()
-                        .add_message(session_id, &msg)
-                        .await?;
-                }
-
-                let last_message = self
-                    .config
-                    .session_manager
-                    .get_session(session_id, true)
-                    .await?
-                    .conversation
-                    .ok_or_else(|| anyhow!("No conversation found"))?
-                    .messages()
-                    .last()
-                    .cloned()
-                    .ok_or_else(|| anyhow!("No messages in conversation"))?;
-
-                Ok(Some(last_message))
-            }
-            Err(e) => Ok(Some(
-                Message::assistant().with_text(format!("Error getting prompt: {}", e)),
-            )),
-        }
     }
 
     async fn handle_workflow_command(

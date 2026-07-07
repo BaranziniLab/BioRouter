@@ -16,9 +16,9 @@ vi.mock('@mcp-ui/client', () => ({
   ),
 }));
 
-function renderSubject() {
+function renderSubject(uri = 'ui://chart/visualization') {
   const html = '<!doctype html><html><body><h1>Chart</h1></body></html>';
-  const blob = btoa(html);
+  const blob = window.btoa(html);
   const openArtifactWindow = vi.fn().mockResolvedValue(undefined);
 
   Object.defineProperty(window, 'electron', {
@@ -45,7 +45,7 @@ function renderSubject() {
   const content = {
     type: 'resource',
     resource: {
-      uri: 'ui://chart/visualization',
+      uri,
       mimeType: 'text/html',
       blob,
     },
@@ -96,5 +96,26 @@ describe('MCPUIResourceRenderer', () => {
         })
       );
     });
+  });
+
+  it('allows agent-drafter app resources to be deleted from chat after confirmation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    renderSubject('ui://agent-drafter/researcher-impact-dashboard');
+
+    fireEvent.click(screen.getByRole('button', { name: /delete researcher-impact-dashboard/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://localhost/apps/researcher-impact-dashboard',
+        expect.objectContaining({
+          method: 'DELETE',
+          headers: { 'X-Secret-Key': 'secret' },
+        })
+      );
+    });
+    expect(screen.getByText(/Application deleted:/)).toBeInTheDocument();
+    expect(screen.getByText('researcher-impact-dashboard')).toBeInTheDocument();
   });
 });

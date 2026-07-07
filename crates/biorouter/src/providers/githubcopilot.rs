@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use super::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::base::{ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage};
 use super::errors::ProviderError;
 use super::formats::openai::{create_request, get_usage, response_to_message};
 use super::retry::ProviderRetry;
@@ -61,6 +61,15 @@ const GITHUB_COPILOT_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
 const GITHUB_COPILOT_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const GITHUB_COPILOT_ACCESS_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const GITHUB_COPILOT_API_KEY_URL: &str = "https://api.github.com/copilot_internal/v2/token";
+
+fn github_copilot_model_supports_vision(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    (normalized.starts_with("claude-")
+        || normalized.starts_with("gemini-")
+        || normalized.starts_with("gpt-5")
+        || normalized.starts_with("gpt-4.1"))
+        && !normalized.contains("codex")
+}
 
 #[derive(Debug, Deserialize)]
 struct DeviceCodeInfo {
@@ -381,12 +390,24 @@ impl GithubCopilotProvider {
 #[async_trait]
 impl Provider for GithubCopilotProvider {
     fn metadata() -> ProviderMetadata {
-        ProviderMetadata::new(
+        let models: Vec<ModelInfo> = GITHUB_COPILOT_KNOWN_MODELS
+            .iter()
+            .map(|&name| {
+                let info = ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit());
+                if github_copilot_model_supports_vision(name) {
+                    info.with_vision()
+                } else {
+                    info
+                }
+            })
+            .collect();
+
+        ProviderMetadata::with_models(
             "github_copilot",
             "GitHub Copilot",
             "GitHub Copilot. Run `biorouter configure` and select copilot to set up.",
             GITHUB_COPILOT_DEFAULT_MODEL,
-            GITHUB_COPILOT_KNOWN_MODELS.to_vec(),
+            models,
             GITHUB_COPILOT_DOC_URL,
             vec![ConfigKey::new_oauth(
                 "GITHUB_COPILOT_TOKEN",

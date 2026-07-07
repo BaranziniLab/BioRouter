@@ -1,6 +1,10 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
 import { toastError, toastSuccess } from '../toasts';
-import Model, { getProviderMetadata } from './settings/models/modelInterface';
+import Model, {
+  getProviderMetadata,
+  modelSupportedInputMimeTypes,
+  modelSupportsVision,
+} from './settings/models/modelInterface';
 import { ProviderMetadata, setConfigProvider, updateAgentProvider } from '../api';
 import { useConfig } from './ConfigContext';
 import {
@@ -22,6 +26,7 @@ interface ModelAndProviderContextType {
   currentModel: string | null;
   currentProvider: string | null;
   currentModelSupportsVision: boolean;
+  currentModelSupportedInputMimeTypes: string[] | null;
   changeModel: (sessionId: string | null, model: Model) => Promise<void>;
   getCurrentModelAndProvider: () => Promise<{ model: string; provider: string }>;
   getFallbackModelAndProvider: () => Promise<{ model: string; provider: string }>;
@@ -41,6 +46,9 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
   const [currentModel, setCurrentModel] = useState<string | null>(null);
   const [currentProvider, setCurrentProvider] = useState<string | null>(null);
   const [currentModelSupportsVision, setCurrentModelSupportsVision] = useState<boolean>(false);
+  const [currentModelSupportedInputMimeTypes, setCurrentModelSupportedInputMimeTypes] = useState<
+    string[] | null
+  >(null);
   const { read, getProviders } = useConfig();
 
   const changeModel = useCallback(async (sessionId: string | null, model: Model) => {
@@ -182,18 +190,22 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     let cancelled = false;
     if (!currentModel || !currentProvider) {
       setCurrentModelSupportsVision(false);
+      setCurrentModelSupportedInputMimeTypes(null);
       return;
     }
     (async () => {
       try {
         const metadata = await getProviderMetadata(currentProvider, getProviders);
-        const info = metadata.known_models.find((m) => m.name === currentModel);
         if (!cancelled) {
-          setCurrentModelSupportsVision(info?.supports_vision === true);
+          setCurrentModelSupportsVision(modelSupportsVision(metadata, currentModel));
+          setCurrentModelSupportedInputMimeTypes(
+            modelSupportedInputMimeTypes(metadata, currentModel)
+          );
         }
       } catch {
         if (!cancelled) {
           setCurrentModelSupportsVision(false);
+          setCurrentModelSupportedInputMimeTypes(null);
         }
       }
     })();
@@ -212,6 +224,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
       currentModel,
       currentProvider,
       currentModelSupportsVision,
+      currentModelSupportedInputMimeTypes,
       changeModel,
       getCurrentModelAndProvider,
       getFallbackModelAndProvider,
@@ -224,6 +237,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
       currentModel,
       currentProvider,
       currentModelSupportsVision,
+      currentModelSupportedInputMimeTypes,
       changeModel,
       getCurrentModelAndProvider,
       getFallbackModelAndProvider,

@@ -3,17 +3,78 @@ import { useCallback, useState, useRef, useEffect } from 'react';
 export interface DroppedFile {
   id: string;
   path: string;
+  sourcePath?: string;
+  stagedPath?: string;
   name: string;
   type: string;
   isImage: boolean;
+  canUploadAsImage?: boolean;
   dataUrl?: string; // For image previews
   isLoading?: boolean;
   error?: string;
 }
 
+const UPLOADABLE_IMAGE_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+  'image/gif',
+  'image/webp',
+]);
+const MAX_STAGED_IMAGE_BYTES = 3 * 1024 * 1024;
+
+async function validateImageDataUrl(dataUrl: string): Promise<void> {
+  if (
+    typeof Image === 'undefined' ||
+    typeof HTMLImageElement === 'undefined' ||
+    typeof HTMLImageElement.prototype.decode !== 'function'
+  ) {
+    return;
+  }
+
+  const img = new Image();
+  img.src = dataUrl;
+  await img.decode();
+}
+
+function fileNameFromPath(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() || path;
+}
+
+function decodeFileUri(uri: string): string | null {
+  const trimmed = uri.trim();
+  if (!trimmed || trimmed.startsWith('#')) return null;
+  try {
+    const url = new URL(trimmed);
+    if (url.protocol !== 'file:') return null;
+    return decodeURIComponent(url.pathname);
+  } catch {
+    return null;
+  }
+}
+
+function getDroppedPathCandidates(dataTransfer: DataTransfer): string[] {
+  const candidates = new Set<string>();
+  const uriList = dataTransfer.getData('text/uri-list');
+  for (const line of uriList.split(/\r?\n/)) {
+    const path = decodeFileUri(line);
+    if (path) candidates.add(path);
+  }
+
+  const plainText = dataTransfer.getData('text/plain').trim();
+  if (plainText.startsWith('file://')) {
+    const path = decodeFileUri(plainText);
+    if (path) candidates.add(path);
+  }
+
+  return [...candidates];
+}
+
 export const useFileDrop = () => {
   const [droppedFiles, setDroppedFiles] = useState<DroppedFile[]>([]);
+  const [isDraggingOver, setIsDraggingOver] = useState(false);
   const activeReadersRef = useRef<Set<FileReader>>(new Set());
+  const dragDepthRef = useRef(0);
 
   // Cleanup effect to prevent memory leaks
   useEffect(() => {
@@ -34,27 +95,39 @@ export const useFileDrop = () => {
 
   const handleDrop = useCallback(async (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    e.stopPropagation();
+    dragDepthRef.current = 0;
+    setIsDraggingOver(false);
     const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      const droppedFileObjects: DroppedFile[] = [];
+    const seenPaths = new Set<string>();
+    const droppedFileObjects: DroppedFile[] = [];
 
+    if (files.length > 0) {
       for (let i = 0; i < files.length; i++) {
         const file = files[i];
 
         let droppedFile: DroppedFile;
 
         try {
-          const path = window.electron.getPathForFile(file);
-          const isImage = file.type.startsWith('image/');
+          const sourcePath = window.electron.getPathForFile(file);
+          const path = sourcePath || file.name;
+          const canUploadAsImage =
+            UPLOADABLE_IMAGE_TYPES.has(file.type.toLowerCase()) &&
+            file.size <= MAX_STAGED_IMAGE_BYTES;
 
           droppedFile = {
             id: `dropped-${Date.now()}-${i}`,
             path,
+            sourcePath: sourcePath || undefined,
             name: file.name,
             type: file.type,
-            isImage,
-            isLoading: isImage, // Only images need loading state for preview generation
+            isImage: file.type.startsWith('image/'),
+            canUploadAsImage,
+            isLoading: canUploadAsImage,
           };
+          if (sourcePath) {
+            seenPaths.add(sourcePath);
+          }
         } catch (error) {
           console.error('Error processing file:', file.name, error);
           // Create an error file object
@@ -64,6 +137,7 @@ export const useFileDrop = () => {
             name: file.name,
             type: file.type,
             isImage: false,
+            canUploadAsImage: false,
             isLoading: false,
             error: `Failed to get file path: ${error instanceof Error ? error.message : 'Unknown error'}`,
           };
@@ -76,12 +150,33 @@ export const useFileDrop = () => {
         // uses. The OS-supplied source path is rejected by the IPC's path
         // validation (and may be absent altogether for synthetic File objects),
         // so we cannot rely on it for the model-bound base64 read.
-        if (droppedFile.isImage && !droppedFile.error) {
+        if (droppedFile.canUploadAsImage && !droppedFile.error) {
           const reader = new FileReader();
           activeReadersRef.current.add(reader);
 
           reader.onload = async (event) => {
             const dataUrl = event.target?.result as string;
+            try {
+              await validateImageDataUrl(dataUrl);
+            } catch {
+              setDroppedFiles((prev) =>
+                prev.map((f) =>
+                  f.id === droppedFile.id
+                    ? {
+                        ...f,
+                        dataUrl: undefined,
+                        canUploadAsImage: false,
+                        stagedPath: undefined,
+                        isLoading: false,
+                        error: undefined,
+                      }
+                    : f
+                )
+              );
+              activeReadersRef.current.delete(reader);
+              return;
+            }
+
             try {
               const saved = await window.electron.saveDataUrlToTemp(dataUrl, droppedFile.id);
               if (saved.error || !saved.filePath) {
@@ -90,7 +185,12 @@ export const useFileDrop = () => {
               setDroppedFiles((prev) =>
                 prev.map((f) =>
                   f.id === droppedFile.id
-                    ? { ...f, dataUrl, path: saved.filePath as string, isLoading: false }
+                    ? {
+                        ...f,
+                        dataUrl,
+                        stagedPath: saved.filePath as string,
+                        isLoading: false,
+                      }
                     : f
                 )
               );
@@ -131,19 +231,56 @@ export const useFileDrop = () => {
           reader.readAsDataURL(file);
         }
       }
+    }
 
+    for (const path of getDroppedPathCandidates(e.dataTransfer)) {
+      if (seenPaths.has(path)) continue;
+      droppedFileObjects.push({
+        id: `dropped-path-${Date.now()}-${droppedFileObjects.length}`,
+        path,
+        sourcePath: path,
+        name: fileNameFromPath(path),
+        type: '',
+        isImage: false,
+        canUploadAsImage: false,
+        isLoading: false,
+      });
+    }
+
+    if (droppedFileObjects.length > 0) {
       setDroppedFiles((prev) => [...prev, ...droppedFileObjects]);
     }
   }, []);
 
+  const handleDragEnter = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepthRef.current += 1;
+    setIsDraggingOver(true);
+  }, []);
+
   const handleDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    e.stopPropagation();
+    e.dataTransfer.dropEffect = 'copy';
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) {
+      setIsDraggingOver(false);
+    }
   }, []);
 
   return {
     droppedFiles,
     setDroppedFiles,
+    isDraggingOver,
     handleDrop,
+    handleDragEnter,
     handleDragOver,
+    handleDragLeave,
   };
 };
