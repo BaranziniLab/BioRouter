@@ -61,6 +61,55 @@ interface SaveDataUrlResponse {
   error?: string;
 }
 
+type ArtifactFileEntry = {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  size?: number;
+};
+
+type ArtifactFilePreview =
+  | {
+      kind: 'text' | 'html';
+      title: string;
+      path: string;
+      mimeType: string;
+      text: string;
+      size: number;
+      found: true;
+    }
+  | {
+      kind: 'image';
+      title: string;
+      path: string;
+      mimeType: string;
+      dataUrl: string;
+      size: number;
+      found: true;
+    }
+  | {
+      kind: 'directory';
+      title: string;
+      path: string;
+      entries: ArtifactFileEntry[];
+      found: true;
+    }
+  | {
+      kind: 'binary';
+      title: string;
+      path: string;
+      mimeType: string;
+      size: number;
+      found: true;
+    }
+  | {
+      kind: 'error';
+      title: string;
+      path: string;
+      error: string;
+      found: false;
+    };
+
 const config = JSON.parse(process.argv.find((arg) => arg.startsWith('{')) || '{}');
 
 interface UpdaterEvent {
@@ -98,6 +147,7 @@ type ElectronAPI = {
   getBinaryPath: (binaryName: string) => Promise<string>;
   importSessionFile: () => Promise<string | null>;
   readFile: (directory: string) => Promise<FileResponse>;
+  readArtifactFile: (filePath: string) => Promise<ArtifactFilePreview>;
   writeFile: (directory: string, content: string) => Promise<boolean>;
   ensureDirectory: (dirPath: string) => Promise<boolean>;
   listFiles: (dirPath: string, extension?: string) => Promise<string[]>;
@@ -181,6 +231,7 @@ type ElectronAPI = {
     height?: number;
     theme?: 'light' | 'dark';
   }) => Promise<{ ok: boolean }>;
+  prepareArtifactHtml: (payload: { html: string }) => Promise<{ html: string }>;
   addRecentDir: (dir: string) => Promise<boolean>;
   openBrxtFilePicker: () => Promise<string | null>;
   validateBrxtBundle: (filePath: string) => Promise<
@@ -294,6 +345,7 @@ const electronAPI: ElectronAPI = {
   getBinaryPath: (binaryName: string) => ipcRenderer.invoke('get-binary-path', binaryName),
   importSessionFile: () => ipcRenderer.invoke('import-session-file'),
   readFile: (filePath: string) => ipcRenderer.invoke('read-file', filePath),
+  readArtifactFile: (filePath: string) => ipcRenderer.invoke('read-artifact-file', filePath),
   writeFile: (filePath: string, content: string) =>
     ipcRenderer.invoke('write-file', filePath, content),
   ensureDirectory: (dirPath: string) => ipcRenderer.invoke('ensure-directory', dirPath),
@@ -402,6 +454,8 @@ const electronAPI: ElectronAPI = {
     height?: number;
     theme?: 'light' | 'dark';
   }) => ipcRenderer.invoke('open-artifact-window', payload),
+  prepareArtifactHtml: (payload: { html: string }) =>
+    ipcRenderer.invoke('prepare-artifact-html', payload),
   addRecentDir: (dir: string) => ipcRenderer.invoke('add-recent-dir', dir),
   openBrxtFilePicker: () => ipcRenderer.invoke('brxt:open-file-dialog'),
   validateBrxtBundle: (filePath: string) =>

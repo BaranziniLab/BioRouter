@@ -51,6 +51,8 @@ import { toastError } from '../toasts';
 import { errorMessage } from '../utils/conversionUtils';
 import { Greeting } from './common/Greeting';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
+import ArtifactViewer from './artifacts/ArtifactViewer';
+import type { ArtifactSource } from './artifacts/artifactTypes';
 
 // Context for sharing current model info
 const CurrentModelContext = createContext<{ model: string; mode: string } | null>(null);
@@ -138,6 +140,7 @@ function BaseChatContent({
   const [hasNotAcceptedWorkflow, setHasNotAcceptedWorkflow] = useState<boolean>();
   const [hasWorkflowSecurityWarnings, setHasWorkflowSecurityWarnings] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [activeArtifact, setActiveArtifact] = useState<ArtifactSource | null>(null);
   const composerMotionRef = useRef<HTMLDivElement>(null);
   const pendingComposerRectRef = useRef<DOMRect | null>(null);
 
@@ -169,7 +172,12 @@ function BaseChatContent({
   // Reset auto-submit flag when session changes
   useEffect(() => {
     hasAutoSubmittedRef.current = false;
+    setActiveArtifact(null);
   }, [sessionId]);
+
+  const handleOpenArtifact = useCallback((artifact: ArtifactSource) => {
+    setActiveArtifact(artifact);
+  }, []);
 
   const {
     session,
@@ -698,119 +706,139 @@ function BaseChatContent({
         {/* Custom header */}
         {renderHeader && renderHeader()}
 
-        {/* Chat container with sticky workflow header */}
-        <div
-          className={
-            coherent
-              ? 'flex flex-col flex-1 min-h-0 relative rounded-t-2xl overflow-hidden bg-background-muted'
-              : 'flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden'
-          }
-        >
-          {!hideSessionNamePill && (
-            // Wrapper sits above the fixed `.titlebar-drag-region` (z-50,
-            // top 32px) so the pill can receive clicks despite overlapping
-            // the OS title-bar drag zone. It explicitly opts INTO drag, so
-            // the wrapper area outside the pill itself still drags the
-            // window — only the pill's own (inline-flex) bounding box is
-            // marked no-drag (done inside SessionNamePill).
+        <div className="relative flex flex-1 min-h-0 min-w-0">
+          <div className="flex min-w-0 flex-1 flex-col">
+            {/* Chat container with sticky workflow header */}
             <div
-              className={`flex-shrink-0 ${sessionPillWrapperCls} pr-4 pt-3 relative z-[60]`}
-              style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-            >
-              <SessionNamePill
-                name={session?.name || 'New Session'}
-                onRename={handleRename}
-                accentColor={accentColor}
-              />
-            </div>
-          )}
-          {isCleanConversation ? (
-            <div
-              className="flex-1 min-h-0 flex items-center justify-center px-4 py-10 sm:px-6 sm:py-16"
-              onDrop={handleDrop}
-              onDragOver={handleDragOver}
-              data-drop-zone="true"
-            >
-              <div className="w-full max-w-[760px] flex flex-col items-center gap-6 -translate-y-10 sm:-translate-y-12">
-                <Greeting
-                  key={sessionId}
-                  className={cn(
-                    'text-center font-semibold tracking-tight text-text-default animate-in fade-in duration-300',
-                    compactPicker ? 'text-xl' : 'text-2xl'
-                  )}
-                />
-                {renderChatInput()}
-              </div>
-            </div>
-          ) : (
-            <ScrollArea
-              ref={scrollRef}
               className={
                 coherent
-                  ? `flex-1 min-h-0 relative ${contentClassName}`
-                  : `flex-1 bg-background-default rounded-2xl min-h-0 relative ${contentClassName}`
+                  ? 'flex flex-col flex-1 min-h-0 relative rounded-t-2xl overflow-hidden bg-background-muted'
+                  : 'flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden'
               }
-              autoScroll
-              onDrop={handleDrop}
-              onDragOver={handleDragOver}
-              data-drop-zone="true"
-              paddingX={6}
-              paddingY={0}
             >
-              <div className="biorouter-chat-column mx-auto w-full max-w-[920px]">
-                {workflow?.title && (
-                  <div className="sticky top-0 z-10 bg-background-muted mb-4 pt-2">
-                    <WorkflowHeader title={workflow.title} />
-                  </div>
-                )}
-
-                {workflow && (
-                  <div className={hasStartedUsingWorkflow ? 'mb-6' : ''}>
-                    <WorkflowActivities
-                      append={(text: string) => handleSubmit(text)}
-                      activities={Array.isArray(workflow.activities) ? workflow.activities : null}
-                      title={workflow.title}
-                      parameterValues={session?.user_workflow_values || {}}
+              {!hideSessionNamePill && (
+                // Wrapper sits above the fixed `.titlebar-drag-region` (z-50,
+                // top 32px) so the pill can receive clicks despite overlapping
+                // the OS title-bar drag zone. It explicitly opts INTO drag, so
+                // the wrapper area outside the pill itself still drags the
+                // window — only the pill's own (inline-flex) bounding box is
+                // marked no-drag (done inside SessionNamePill).
+                <div
+                  className={`flex-shrink-0 ${sessionPillWrapperCls} pr-4 pt-3 relative z-[60]`}
+                  style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+                >
+                  <SessionNamePill
+                    name={session?.name || 'New Session'}
+                    onRename={handleRename}
+                    accentColor={accentColor}
+                  />
+                </div>
+              )}
+              {isCleanConversation ? (
+                <div
+                  className="flex-1 min-h-0 flex items-center justify-center px-4 py-10 sm:px-6 sm:py-16"
+                  onDrop={handleDrop}
+                  onDragOver={handleDragOver}
+                  data-drop-zone="true"
+                >
+                  <div className="w-full max-w-[760px] flex flex-col items-center gap-6 -translate-y-10 sm:-translate-y-12">
+                    <Greeting
+                      key={sessionId}
+                      className={cn(
+                        'text-center font-semibold tracking-tight text-text-default animate-in fade-in duration-300',
+                        compactPicker ? 'text-xl' : 'text-2xl'
+                      )}
                     />
+                    {renderChatInput()}
                   </div>
-                )}
+                </div>
+              ) : (
+                <ScrollArea
+                  ref={scrollRef}
+                  className={
+                    coherent
+                      ? `flex-1 min-h-0 relative ${contentClassName}`
+                      : `flex-1 bg-background-default rounded-2xl min-h-0 relative ${contentClassName}`
+                  }
+                  autoScroll
+                  onDrop={handleDrop}
+                  onDragOver={handleDragOver}
+                  data-drop-zone="true"
+                  paddingX={6}
+                  paddingY={0}
+                >
+                  <div className="biorouter-chat-column mx-auto w-full max-w-[920px]">
+                    {workflow?.title && (
+                      <div className="sticky top-0 z-10 bg-background-muted mb-4 pt-2">
+                        <WorkflowHeader title={workflow.title} />
+                      </div>
+                    )}
 
-                {messages.length > 0 || workflow ? (
-                  <>
-                    <SearchView>
-                      <ProgressiveMessageList
-                        messages={messages}
-                        chat={{ sessionId }}
-                        toolCallNotifications={toolCallNotifications}
-                        append={(text: string) => handleSubmit(text)}
-                        isUserMessage={(m: Message) => m.role === 'user'}
-                        isStreamingMessage={chatState !== ChatState.Idle}
-                        onRenderingComplete={handleRenderingComplete}
-                        onMessageUpdate={onMessageUpdate}
-                        submitElicitationResponse={submitElicitationResponse}
-                      />
-                    </SearchView>
+                    {workflow && (
+                      <div className={hasStartedUsingWorkflow ? 'mb-6' : ''}>
+                        <WorkflowActivities
+                          append={(text: string) => handleSubmit(text)}
+                          activities={
+                            Array.isArray(workflow.activities) ? workflow.activities : null
+                          }
+                          title={workflow.title}
+                          parameterValues={session?.user_workflow_values || {}}
+                        />
+                      </div>
+                    )}
 
-                    <div className="block h-8" />
-                  </>
-                ) : null}
+                    {messages.length > 0 || workflow ? (
+                      <>
+                        <SearchView>
+                          <ProgressiveMessageList
+                            messages={messages}
+                            chat={{ sessionId }}
+                            toolCallNotifications={toolCallNotifications}
+                            append={(text: string) => handleSubmit(text)}
+                            isUserMessage={(m: Message) => m.role === 'user'}
+                            isStreamingMessage={chatState !== ChatState.Idle}
+                            onRenderingComplete={handleRenderingComplete}
+                            onMessageUpdate={onMessageUpdate}
+                            submitElicitationResponse={submitElicitationResponse}
+                            onOpenArtifact={handleOpenArtifact}
+                          />
+                        </SearchView>
+
+                        <div className="block h-8" />
+                      </>
+                    ) : null}
+                  </div>
+                </ScrollArea>
+              )}
+            </div>
+
+            {!isCleanConversation && (
+              <div
+                className={
+                  coherent
+                    ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-muted'
+                    : `px-4 sm:px-6 pb-6 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`
+                }
+              >
+                {renderWorkingStatus()}
+                {renderChatInput()}
               </div>
-            </ScrollArea>
+            )}
+          </div>
+
+          {activeArtifact && (
+            <ArtifactViewer
+              artifact={activeArtifact}
+              onClose={() => setActiveArtifact(null)}
+              onOpenArtifact={handleOpenArtifact}
+              className={
+                isMobile
+                  ? 'absolute inset-x-2 bottom-2 top-16 z-[70] rounded-lg border border-border-subtle'
+                  : 'w-[min(42vw,620px)] min-w-[360px] max-w-[620px]'
+              }
+            />
           )}
         </div>
-
-        {!isCleanConversation && (
-          <div
-            className={
-              coherent
-                ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-muted'
-                : `px-4 sm:px-6 pb-6 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`
-            }
-          >
-            {renderWorkingStatus()}
-            {renderChatInput()}
-          </div>
-        )}
       </MainPanelLayout>
 
       {workflow && (

@@ -14,10 +14,13 @@ import { useTheme } from '../contexts/ThemeContext';
 import { Maximize2, Trash2 } from './icons/app-icons';
 import { deleteAgentDrafterApp } from './applications/appManagement';
 import { ConfirmationModal } from './ui/ConfirmationModal';
+import type { ArtifactSource } from './artifacts/artifactTypes';
+import { artifactSourceFromResource } from './artifacts/artifactUtils';
 
 interface MCPUIResourceRendererProps {
   content: EmbeddedResource & { type: 'resource' };
   appendPromptToChat?: (value: string) => void;
+  onOpenArtifact?: (artifact: ArtifactSource) => void;
 }
 
 // More specific result types using discriminated unions
@@ -94,6 +97,7 @@ const ToastComponent = ({
 export default function MCPUIResourceRenderer({
   content,
   appendPromptToChat,
+  onOpenArtifact,
 }: MCPUIResourceRendererProps) {
   const { resolvedTheme } = useTheme();
   const [proxyUrl, setProxyUrl] = useState<string | undefined>(undefined);
@@ -356,11 +360,20 @@ export default function MCPUIResourceRenderer({
 
   const artifactTitle = resource.uri?.split('/').pop() || 'Artifact';
   const agentDrafterAppId = getAgentDrafterAppId(resource.uri);
+  const artifactSource = artifactSourceFromResource(content, artifactTitle);
 
-  const handleExpand = async () => {
+  const handleOpenArtifact = async () => {
     const html = decodeArtifactHtml();
+    if (artifactSource && onOpenArtifact && artifactSource.kind !== 'html') {
+      onOpenArtifact(artifactSource);
+      return;
+    }
     if (!html) {
       toast.error('Could not read the artifact contents.');
+      return;
+    }
+    if (artifactSource && onOpenArtifact) {
+      onOpenArtifact(artifactSource);
       return;
     }
     try {
@@ -404,6 +417,55 @@ export default function MCPUIResourceRenderer({
     );
   }
 
+  if (artifactSource && onOpenArtifact) {
+    return (
+      <>
+        <div className="group mt-3 flex w-full max-w-xl items-center gap-2">
+          <button
+            type="button"
+            onClick={handleOpenArtifact}
+            aria-label={`Open ${artifactTitle} in the artifact viewer`}
+            className="flex min-w-0 flex-1 items-center gap-3 rounded-lg border border-border-subtle bg-background-default/75 px-3 py-2.5 text-left shadow-[0_10px_24px_rgba(15,23,42,0.06)] transition-colors hover:bg-background-medium"
+          >
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-background-medium text-text-muted">
+              <Maximize2 className="h-4 w-4" aria-hidden="true" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium text-text-default">
+                {artifactTitle}
+              </span>
+              <span className="block truncate text-xs text-text-muted">
+                {resource.mimeType || 'text/html'}
+              </span>
+            </span>
+          </button>
+          {agentDrafterAppId && (
+            <button
+              type="button"
+              onClick={() => setAppIdToDelete(agentDrafterAppId)}
+              aria-label={`Delete ${agentDrafterAppId}`}
+              title="Delete application"
+              className="inline-flex h-10 w-10 shrink-0 cursor-pointer items-center justify-center rounded-md border border-border-subtle/70 bg-background-default/85 text-text-danger shadow-sm transition-colors hover:bg-background-danger/10"
+            >
+              <Trash2 className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
+        </div>
+        <ConfirmationModal
+          isOpen={appIdToDelete !== null}
+          title={`Delete "${appIdToDelete}"?`}
+          message="This permanently removes the application and its files from disk. This action cannot be undone."
+          confirmLabel="Delete"
+          cancelLabel="Cancel"
+          confirmVariant="destructive"
+          isSubmitting={isDeletingApp}
+          onConfirm={handleDeleteApp}
+          onCancel={() => setAppIdToDelete(null)}
+        />
+      </>
+    );
+  }
+
   return (
     <>
       <div className="group relative mt-3 overflow-hidden rounded-lg bg-transparent shadow-[0_10px_28px_rgba(15,23,42,0.08)]">
@@ -421,9 +483,11 @@ export default function MCPUIResourceRenderer({
           )}
           <button
             type="button"
-            onClick={handleExpand}
-            aria-label={`Open ${artifactTitle} in a larger standalone window`}
-            title="Open in a larger standalone window"
+            onClick={handleOpenArtifact}
+            aria-label={`Open ${artifactTitle} ${
+              onOpenArtifact ? 'in the artifact viewer' : 'in a larger standalone window'
+            }`}
+            title={onOpenArtifact ? 'Open in artifact viewer' : 'Open in a larger standalone window'}
             className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-border-subtle/70 bg-background-default/85 text-text-muted shadow-sm backdrop-blur transition-colors hover:text-text-default"
           >
             <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
