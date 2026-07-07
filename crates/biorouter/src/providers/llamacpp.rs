@@ -63,58 +63,56 @@ pub struct CatalogEntry {
     pub context_limit: usize,
 }
 
-/// Curated catalog: current Qwen3.6 and Gemma 4 GGUFs from verified Hugging
-/// Face repos. Small Gemma 4 entries are the laptop tier; larger Gemma/Qwen
-/// entries are opt-in on capable machines.
+/// Curated catalog: current Gemma 4 first-party GGUFs plus Qwen3.6 community
+/// GGUFs. Small Gemma 4 entries are the laptop tier; larger Gemma/Qwen entries
+/// are opt-in on capable machines.
 pub const MODEL_CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
         name: "gemma-4-e2b",
-        display_name: "Gemma 4 E2B (small)",
-        hf_spec: "unsloth/gemma-4-E2B-it-GGUF:Q4_K_M",
-        download_size: "3.15 GB",
-        description: "Small Gemma 4 default for low-memory machines and quick local tests",
+        display_name: "Gemma 4 E2B (official Google GGUF)",
+        hf_spec: "google/gemma-4-E2B-it-qat-q4_0-gguf:Q4_0",
+        download_size: "3.3 GB",
+        description: "Small first-party Gemma 4 QAT GGUF for low-memory machines and quick local tests",
         min_gpu_memory_gib: 8,
         recommended_gpu_memory_gib: 16,
         context_limit: LLAMACPP_AGENT_CONTEXT_SIZE,
     },
     CatalogEntry {
         name: "gemma-4-e4b",
-        display_name: "Gemma 4 E4B (recommended)",
-        hf_spec: "unsloth/gemma-4-E4B-it-GGUF:Q4_K_M",
-        download_size: "5.07 GB",
-        description:
-            "Best 16 GB laptop default: stronger than E2B while staying practical at 64k context",
+        display_name: "Gemma 4 E4B (official Google GGUF)",
+        hf_spec: "google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0",
+        download_size: "5.2 GB",
+        description: "Best 16 GB laptop default: first-party Gemma 4 QAT GGUF with practical 64k context",
         min_gpu_memory_gib: 16,
         recommended_gpu_memory_gib: 16,
         context_limit: LLAMACPP_AGENT_CONTEXT_SIZE,
     },
     CatalogEntry {
         name: "gemma-4-26b-a4b",
-        display_name: "Gemma 4 26B-A4B",
-        hf_spec: "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_M",
-        download_size: "16.9 GB",
-        description: "Larger Gemma 4 MoE option; use on high-memory machines",
+        display_name: "Gemma 4 26B-A4B (official Google GGUF)",
+        hf_spec: "google/gemma-4-26B-A4B-it-qat-q4_0-gguf:Q4_0",
+        download_size: "14.4 GB",
+        description: "Larger first-party Gemma 4 MoE QAT GGUF; use on high-memory machines",
         min_gpu_memory_gib: 32,
         recommended_gpu_memory_gib: 48,
         context_limit: LLAMACPP_AGENT_CONTEXT_SIZE,
     },
     CatalogEntry {
         name: "qwen3.6-35b-a3b",
-        display_name: "Qwen3.6 35B-A3B",
+        display_name: "Qwen3.6 35B-A3B (community GGUF)",
         hf_spec: "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M",
         download_size: "22.1 GB",
-        description: "Qwen3.6 MoE for agentic coding and tool use; high-memory machines only",
+        description: "Qwen source model with community GGUF quantization; opt in on high-memory machines",
         min_gpu_memory_gib: 32,
         recommended_gpu_memory_gib: 64,
         context_limit: LLAMACPP_AGENT_CONTEXT_SIZE,
     },
     CatalogEntry {
         name: "qwen3.6-27b",
-        display_name: "Qwen3.6 27B",
+        display_name: "Qwen3.6 27B (community GGUF)",
         hf_spec: "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL",
         download_size: "17.6 GB",
-        description:
-            "Dense Qwen3.6 with strong coding/reasoning; use when memory headroom is ample",
+        description: "Dense Qwen source model with community GGUF quantization; use with ample memory headroom",
         min_gpu_memory_gib: 32,
         recommended_gpu_memory_gib: 64,
         context_limit: LLAMACPP_AGENT_CONTEXT_SIZE,
@@ -123,7 +121,6 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
 
 pub fn recommended_model_for_memory_gib(gib: u64) -> &'static str {
     match gib {
-        n if n >= 64 => "qwen3.6-35b-a3b",
         n if n >= 48 => "gemma-4-26b-a4b",
         n if n >= 16 => "gemma-4-e4b",
         _ => "gemma-4-e2b",
@@ -566,7 +563,7 @@ mod tests {
         assert_eq!(recommended_model_for_memory_gib(8), "gemma-4-e2b");
         assert_eq!(recommended_model_for_memory_gib(16), "gemma-4-e4b");
         assert_eq!(recommended_model_for_memory_gib(48), "gemma-4-26b-a4b");
-        assert_eq!(recommended_model_for_memory_gib(64), "qwen3.6-35b-a3b");
+        assert_eq!(recommended_model_for_memory_gib(64), "gemma-4-26b-a4b");
 
         let default = default_model_name();
         let entry = MODEL_CATALOG
@@ -626,7 +623,7 @@ mod tests {
         );
         assert_eq!(
             resolve_hf_spec("gemma-4-e4b").unwrap(),
-            "unsloth/gemma-4-E4B-it-GGUF:Q4_K_M"
+            "google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0"
         );
     }
 

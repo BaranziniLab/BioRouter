@@ -36,19 +36,14 @@ async fn status_returns_catalog_with_default_first_class() {
     let catalog = v.get("catalog").and_then(|c| c.as_array()).unwrap();
     assert!(!catalog.is_empty(), "catalog must not be empty");
 
-    // Exactly one default, chosen from the machine-tiered Gemma 4 / Qwen3.6 catalog.
+    // Exactly one default, chosen from the machine-tiered official Gemma 4 catalog.
     let defaults: Vec<_> = catalog
         .iter()
         .filter(|m| m.get("is_default").and_then(|d| d.as_bool()) == Some(true))
         .collect();
     assert_eq!(defaults.len(), 1);
     let default_name = defaults[0].get("name").and_then(|n| n.as_str()).unwrap();
-    let allowed_defaults = [
-        "gemma-4-e2b",
-        "gemma-4-e4b",
-        "gemma-4-26b-a4b",
-        "qwen3.6-35b-a3b",
-    ];
+    let allowed_defaults = ["gemma-4-e2b", "gemma-4-e4b", "gemma-4-26b-a4b"];
     assert!(allowed_defaults.contains(&default_name));
     assert_eq!(
         defaults[0].get("context_limit").and_then(|n| n.as_u64()),
@@ -75,6 +70,20 @@ async fn status_returns_catalog_with_default_first_class() {
             .is_some()),
         "catalog entries should expose GPU-addressable memory recommendations"
     );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("downloaded")
+            .and_then(|downloaded| downloaded.as_bool())
+            .is_some()),
+        "catalog entries should expose whether the model is already downloaded"
+    );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("download_status")
+            .and_then(|status| status.as_str())
+            .is_some_and(|status| ["downloaded", "partial", "not_downloaded"].contains(&status))),
+        "catalog entries should expose a documented download status"
+    );
 
     // Both requested families are present.
     let names: Vec<&str> = catalog
@@ -84,6 +93,14 @@ async fn status_returns_catalog_with_default_first_class() {
     assert!(names.iter().any(|n| n.starts_with("qwen3.6")));
     assert!(names.iter().any(|n| n.starts_with("gemma-4")));
     assert!(!names.iter().any(|n| n.starts_with("qwen3.5")));
+    let gemma_e4b = catalog
+        .iter()
+        .find(|m| m.get("name").and_then(|n| n.as_str()) == Some("gemma-4-e4b"))
+        .expect("Gemma 4 E4B should remain in the catalog");
+    assert_eq!(
+        gemma_e4b.get("hf_spec").and_then(|spec| spec.as_str()),
+        Some("google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0")
+    );
 
     // Sidecar state is one of the documented values.
     let state = v
@@ -138,6 +155,11 @@ async fn warmup_rejects_unknown_model_before_starting_sidecar() {
 
 #[tokio::test]
 async fn stop_is_idempotent() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+    drop(listener);
+    let _guard = env_lock::lock_env([("LLAMACPP_PORT", Some(port.as_str()))]);
+
     let res = app()
         .oneshot(
             Request::builder()

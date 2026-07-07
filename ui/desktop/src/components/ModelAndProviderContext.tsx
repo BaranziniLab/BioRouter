@@ -82,6 +82,17 @@ const acceleratorMemoryExplanation = (kind: string | undefined) =>
     ? 'On Apple Silicon, unified memory is the relevant GPU memory budget.'
     : 'On Intel Macs, Windows, and other discrete-GPU systems, this means VRAM, not regular system RAM.';
 
+const modelDownloadLabel = (model: LlamaCppModel | undefined) => {
+  switch (model?.download_status) {
+    case 'downloaded':
+      return 'Downloaded';
+    case 'partial':
+      return 'Partial download';
+    default:
+      return 'Needs download';
+  }
+};
+
 const ModelAndProviderContext = createContext<ModelAndProviderContextType | undefined>(undefined);
 
 export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> = ({ children }) => {
@@ -460,6 +471,12 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
                     <span>Download</span>
                     <span className="text-text-default">
                       {llamaWarmupDialog.entry?.download_size ?? 'custom'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-3">
+                    <span>Local copy</span>
+                    <span className="text-text-default">
+                      {modelDownloadLabel(llamaWarmupDialog.entry)}
                     </span>
                   </div>
                   <div className="flex justify-between gap-3">

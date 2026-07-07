@@ -607,6 +607,11 @@ export type LlamaCppModel = {
     description: string;
     display_name: string;
     download_size: string;
+    download_status: ModelCacheStatus;
+    /**
+     * Whether the exact GGUF/quantization is already in Biorouter's llama.cpp cache.
+     */
+    downloaded: boolean;
     hf_spec: string;
     /**
      * True for the model Biorouter preselects.
@@ -782,6 +787,8 @@ export type MessageMetadata = {
      */
     userVisible: boolean;
 };
+
+export type ModelCacheStatus = 'downloaded' | 'partial' | 'not_downloaded';
 
 export type ModelConfig = {
     context_limit?: number | null;

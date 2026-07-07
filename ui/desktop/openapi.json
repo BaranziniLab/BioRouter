@@ -5598,7 +5598,9 @@
           "min_gpu_memory_gib",
           "recommended_gpu_memory_gib",
           "context_limit",
-          "is_default"
+          "is_default",
+          "downloaded",
+          "download_status"
         ],
         "properties": {
           "context_limit": {
@@ -5613,6 +5615,13 @@
           },
           "download_size": {
             "type": "string"
+          },
+          "download_status": {
+            "$ref": "#/components/schemas/ModelCacheStatus"
+          },
+          "downloaded": {
+            "type": "boolean",
+            "description": "Whether the exact GGUF/quantization is already in Biorouter's llama.cpp cache."
           },
           "hf_spec": {
             "type": "string"
@@ -6246,6 +6255,14 @@
             "description": "Whether the message should be visible to the user in the UI"
           }
         }
+      },
+      "ModelCacheStatus": {
+        "type": "string",
+        "enum": [
+          "downloaded",
+          "partial",
+          "not_downloaded"
+        ]
       },
       "ModelConfig": {
         "type": "object",

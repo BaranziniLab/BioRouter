@@ -592,6 +592,7 @@ derive_utoipa!(Icon as IconSchema);
         super::routes::llamacpp::LlamaCppEnsureRequest,
         super::routes::llamacpp::LlamaCppWarmupRequest,
         super::routes::llamacpp::LlamaCppWarmupResponse,
+        biorouter::providers::llamacpp_sidecar::ModelCacheStatus,
         biorouter::providers::llamacpp_sidecar::SidecarStatus,
         biorouter::providers::llamacpp_sidecar::SidecarState,
         super::tunnel::TunnelInfo,

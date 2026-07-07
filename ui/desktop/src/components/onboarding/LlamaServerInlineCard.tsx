@@ -27,6 +27,28 @@ const acceleratorMemoryExplanation = (kind: string | undefined) =>
     ? 'On Apple Silicon, unified memory is the relevant GPU memory budget.'
     : 'On Intel Macs, Windows, and other discrete-GPU systems, this means VRAM, not regular system RAM.';
 
+const modelDownloadLabel = (model: LlamaCppModel | undefined) => {
+  switch (model?.download_status) {
+    case 'downloaded':
+      return 'Downloaded';
+    case 'partial':
+      return 'Partial download';
+    default:
+      return 'Needs download';
+  }
+};
+
+const modelDownloadNote = (model: LlamaCppModel | undefined) => {
+  switch (model?.download_status) {
+    case 'downloaded':
+      return 'Already downloaded on this machine; startup should only need model load and warm-up.';
+    case 'partial':
+      return 'A previous download is incomplete; startup will resume or redownload before loading.';
+    default:
+      return 'Not downloaded yet; first startup may take a while before warm-up can run.';
+  }
+};
+
 export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCardProps) {
   const navigate = useNavigate();
   const { upsert } = useConfig();
@@ -203,6 +225,15 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
   const isRunningForSelected = sidecar?.state === 'ready' && sidecar.model === selectedModel;
   const isReadyForSelected = isRunningForSelected && sidecar?.warmed;
   const binaryMissing = sidecar?.state === 'no_binary';
+  const startButtonLabel = (() => {
+    if (isStarting) return 'Setting up…';
+    if (isRunningForSelected) return 'Warm up model';
+    if (selectedEntry?.download_status === 'downloaded') return 'Run & warm up';
+    if (selectedEntry?.download_status === 'partial') {
+      return `Resume download & run (${selectedEntry.download_size})`;
+    }
+    return `Download & run${selectedEntry ? ` (${selectedEntry.download_size})` : ''}`;
+  })();
 
   const statusPill = (() => {
     if (isChecking || !sidecar) return null;
@@ -274,13 +305,18 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
             >
               {catalog.map((m) => (
                 <option key={m.name} value={m.name}>
-                  {m.display_name} · {m.download_size}
+                  {m.display_name} · {m.download_size} · {modelDownloadLabel(m)}
                 </option>
               ))}
             </select>
           </div>
           {selectedEntry && (
-            <p className="text-[11px] text-text-muted">{selectedEntry.description}</p>
+            <div className="space-y-1">
+              <p className="text-[11px] text-text-muted">{selectedEntry.description}</p>
+              <p className="text-[11px] text-text-muted">
+                {modelDownloadLabel(selectedEntry)} · {modelDownloadNote(selectedEntry)}
+              </p>
+            </div>
           )}
           {resourceWarnings.length > 0 && (
             <div className="space-y-1 rounded-md border border-border-warning bg-background-warning/10 p-2 text-[11px] text-text-default">
@@ -327,11 +363,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                 className="h-9 px-4"
                 data-testid="llamacpp-start"
               >
-                {isStarting
-                  ? 'Setting up…'
-                  : isRunningForSelected
-                    ? 'Warm up model'
-                    : `Download & run${selectedEntry ? ` (${selectedEntry.download_size})` : ''}`}
+                {startButtonLabel}
               </Button>
             )}
             <button
