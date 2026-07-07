@@ -36,19 +36,19 @@ async fn status_returns_catalog_with_default_first_class() {
     let catalog = v.get("catalog").and_then(|c| c.as_array()).unwrap();
     assert!(!catalog.is_empty(), "catalog must not be empty");
 
-    // Exactly one default, chosen from the machine-tiered official Gemma 4 catalog.
+    // Exactly one default, chosen from the machine-tiered Ollama-linked catalog.
     let defaults: Vec<_> = catalog
         .iter()
         .filter(|m| m.get("is_default").and_then(|d| d.as_bool()) == Some(true))
         .collect();
     assert_eq!(defaults.len(), 1);
     let default_name = defaults[0].get("name").and_then(|n| n.as_str()).unwrap();
-    let allowed_defaults = ["gemma-4-e2b", "gemma-4-e4b", "gemma-4-26b-a4b"];
+    let allowed_defaults = ["gemma4", "qwen3.6"];
     assert!(allowed_defaults.contains(&default_name));
-    assert_eq!(
-        defaults[0].get("context_limit").and_then(|n| n.as_u64()),
-        Some(65_536)
-    );
+    assert!(defaults[0]
+        .get("context_limit")
+        .and_then(|n| n.as_u64())
+        .is_some_and(|n| n >= 65_536));
 
     let default_context_size = v
         .get("system")
@@ -62,6 +62,13 @@ async fn status_returns_catalog_with_default_first_class() {
             .and_then(|k| k.as_str())
             .is_some(),
         "system info should expose whether recommendations use unified memory or VRAM"
+    );
+    assert!(
+        v.get("system")
+            .and_then(|s| s.get("model_cache_dir"))
+            .and_then(|p| p.as_str())
+            .is_some_and(|p| p.ends_with(".ollama/models") || !p.is_empty()),
+        "system info should expose the Ollama-compatible model store"
     );
     assert!(
         catalog.iter().all(|m| m
@@ -84,22 +91,43 @@ async fn status_returns_catalog_with_default_first_class() {
             .is_some_and(|status| ["downloaded", "partial", "not_downloaded"].contains(&status))),
         "catalog entries should expose a documented download status"
     );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("download_source")
+            .and_then(|status| status.as_str())
+            .is_some_and(|status| ["ollama", "huggingface_cache", "none"].contains(&status))),
+        "catalog entries should expose where any local copy was found"
+    );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("suitability_status")
+            .and_then(|status| status.as_str())
+            .is_some_and(
+                |status| ["suitable", "above_recommendation", "unknown_resources"]
+                    .contains(&status)
+            )),
+        "catalog entries should expose a documented suitability status"
+    );
 
     // Both requested families are present.
     let names: Vec<&str> = catalog
         .iter()
         .filter_map(|m| m.get("name").and_then(|n| n.as_str()))
         .collect();
-    assert!(names.iter().any(|n| n.starts_with("qwen3.6")));
-    assert!(names.iter().any(|n| n.starts_with("gemma-4")));
+    assert!(names.iter().any(|n| *n == "qwen3.6"));
+    assert!(names.iter().any(|n| *n == "gemma4"));
     assert!(!names.iter().any(|n| n.starts_with("qwen3.5")));
-    let gemma_e4b = catalog
+    let gemma4 = catalog
         .iter()
-        .find(|m| m.get("name").and_then(|n| n.as_str()) == Some("gemma-4-e4b"))
-        .expect("Gemma 4 E4B should remain in the catalog");
+        .find(|m| m.get("name").and_then(|n| n.as_str()) == Some("gemma4"))
+        .expect("Gemma 4 should remain in the catalog");
     assert_eq!(
-        gemma_e4b.get("hf_spec").and_then(|spec| spec.as_str()),
-        Some("google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0")
+        gemma4.get("ollama_name").and_then(|spec| spec.as_str()),
+        Some("gemma4:latest")
+    );
+    assert_eq!(
+        gemma4.get("hf_spec").and_then(|spec| spec.as_str()),
+        Some("ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M")
     );
 
     // Sidecar state is one of the documented values.

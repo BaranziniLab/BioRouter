@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::model::ModelConfig;
 use biorouter::providers::base::Provider;
-use biorouter::providers::llamacpp::{resolve_hf_spec, LlamaCppProvider, MODEL_CATALOG};
+use biorouter::providers::llamacpp::{resolve_model_source, LlamaCppProvider, MODEL_CATALOG};
 use biorouter::providers::llamacpp_sidecar::{global, SidecarState};
 use futures::StreamExt;
 use rmcp::{model::Tool, object};
@@ -373,16 +373,16 @@ async fn survey_all_models() {
         write_report(&reports, Some(entry.name));
 
         // 1. Availability: ensure + wait_ready, timing the download+load.
-        let spec = match resolve_hf_spec(entry.name) {
+        let source = match resolve_model_source(entry.name) {
             Ok(s) => s,
             Err(e) => {
-                reports[idx].availability = Check::fail(format!("resolve_hf_spec: {e}"));
+                reports[idx].availability = Check::fail(format!("resolve_model_source: {e}"));
                 write_report(&reports, None);
                 continue;
             }
         };
         let t0 = Instant::now();
-        match global().ensure(entry.name, &spec).await {
+        match global().ensure(entry.name, &source).await {
             Ok(_port) => match global().wait_ready(ready_timeout()).await {
                 Ok(_) => {
                     let load = t0.elapsed().as_secs_f64();

@@ -30,7 +30,7 @@ const acceleratorMemoryExplanation = (kind: string | undefined) =>
 const modelDownloadLabel = (model: LlamaCppModel | undefined) => {
   switch (model?.download_status) {
     case 'downloaded':
-      return 'Downloaded';
+      return model.download_source === 'ollama' ? 'Downloaded in Ollama' : 'Downloaded';
     case 'partial':
       return 'Partial download';
     default:
@@ -41,11 +41,26 @@ const modelDownloadLabel = (model: LlamaCppModel | undefined) => {
 const modelDownloadNote = (model: LlamaCppModel | undefined) => {
   switch (model?.download_status) {
     case 'downloaded':
-      return 'Already downloaded on this machine; startup should only need model load and warm-up.';
+      return model.download_source === 'ollama'
+        ? 'Already pulled by Ollama; Llama Server tries the local GGUF blob first and can fall back if the engine cannot load it.'
+        : 'Already downloaded on this machine; startup should only need model load and warm-up.';
     case 'partial':
       return 'A previous download is incomplete; startup will resume or redownload before loading.';
     default:
       return 'Not downloaded yet; first startup may take a while before warm-up can run.';
+  }
+};
+
+const modelFitLabel = (model: LlamaCppModel | undefined) => {
+  switch (model?.suitability_status) {
+    case 'suitable':
+      return 'Recommended here';
+    case 'above_recommendation':
+      return `Needs ${model.recommended_gpu_memory_gib} GiB GPU memory`;
+    case 'unknown_resources':
+      return 'VRAM unknown';
+    default:
+      return null;
   }
 };
 
@@ -212,7 +227,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
     }
     if (selectedEntry.recommended_gpu_memory_gib > 16) {
       warnings.push(
-        `This model is above the 16 GB laptop tier; Gemma 4 E2B/E4B are the laptop defaults. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`
+        `This model is above the 16 GB laptop tier; Gemma 4 is the laptop default. ${acceleratorMemoryExplanation(system.accelerator_memory_kind)}`
       );
     }
     if (system.os.toLowerCase().includes('windows')) {
@@ -305,7 +320,14 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
             >
               {catalog.map((m) => (
                 <option key={m.name} value={m.name}>
-                  {m.display_name} · {m.download_size} · {modelDownloadLabel(m)}
+                  {[
+                    m.display_name,
+                    m.download_size,
+                    modelDownloadLabel(m),
+                    modelFitLabel(m),
+                  ]
+                    .filter(Boolean)
+                    .join(' · ')}
                 </option>
               ))}
             </select>
@@ -316,6 +338,26 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
               <p className="text-[11px] text-text-muted">
                 {modelDownloadLabel(selectedEntry)} · {modelDownloadNote(selectedEntry)}
               </p>
+              <p className="text-[11px] text-text-muted">
+                {selectedEntry.ollama_name
+                  ? `Ollama model: ${selectedEntry.ollama_name}`
+                  : `Fallback model: ${selectedEntry.hf_spec}`}
+              </p>
+              {selectedEntry.model_path && (
+                <p className="truncate font-mono text-[11px] text-text-muted">
+                  {selectedEntry.model_path}
+                </p>
+              )}
+              {system?.model_cache_dir && (
+                <p className="truncate font-mono text-[11px] text-text-muted">
+                  Store: {system.model_cache_dir}
+                </p>
+              )}
+              {selectedEntry.suitability_message && (
+                <p className="text-[11px] text-text-muted">
+                  {selectedEntry.suitability_message}
+                </p>
+              )}
             </div>
           )}
           {resourceWarnings.length > 0 && (
@@ -334,7 +376,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                   {sidecar?.state === 'ready' && sidecar.model === selectedModel
                     ? `Running warm-up prompt for ${selectedModel}...`
                     : sidecar?.state === 'starting'
-                      ? `Preparing ${selectedModel} — downloading on first use…`
+                      ? `Preparing ${selectedModel} — loading or downloading on first use…`
                       : `Starting llama-server…`}
                 </span>
               </div>

@@ -594,7 +594,7 @@ export type ListWorkflowResponse = {
 
 export type LlamaCppEnsureRequest = {
     /**
-     * Catalog model name (e.g. `gemma-4-e4b`) or raw Hugging Face spec.
+     * Catalog model name (e.g. `gemma4`) or raw Hugging Face spec.
      */
     model: string;
 };
@@ -607,6 +607,10 @@ export type LlamaCppModel = {
     description: string;
     display_name: string;
     download_size: string;
+    /**
+     * `ollama`, `huggingface_cache`, or `none`.
+     */
+    download_source: string;
     download_status: ModelCacheStatus;
     /**
      * Whether the exact GGUF/quantization is already in Biorouter's llama.cpp cache.
@@ -618,8 +622,19 @@ export type LlamaCppModel = {
      */
     is_default: boolean;
     min_gpu_memory_gib: number;
+    /**
+     * The local GGUF blob path used when Ollama has already pulled this model.
+     */
+    model_path?: string | null;
     name: string;
+    ollama_name?: string | null;
     recommended_gpu_memory_gib: number;
+    suitability_message: string;
+    suitability_status: LlamaCppSuitability;
+    /**
+     * True when detected GPU-addressable memory meets the recommended tier.
+     */
+    suitable: boolean;
 };
 
 export type LlamaCppStatusResponse = {
@@ -627,6 +642,8 @@ export type LlamaCppStatusResponse = {
     sidecar: SidecarStatus;
     system: LlamaCppSystemInfo;
 };
+
+export type LlamaCppSuitability = 'suitable' | 'above_recommendation' | 'unknown_resources';
 
 export type LlamaCppSystemInfo = {
     /**
@@ -638,13 +655,18 @@ export type LlamaCppSystemInfo = {
      */
     accelerator_memory_kind: string;
     default_context_size: number;
+    /**
+     * Ollama-compatible model store root (`OLLAMA_MODELS` or `~/.ollama/models`).
+     */
+    model_cache_dir: string;
+    model_cache_layout: string;
     os: string;
     total_memory_gib: number;
 };
 
 export type LlamaCppWarmupRequest = {
     /**
-     * Catalog model name (e.g. `gemma-4-e4b`) or raw Hugging Face spec.
+     * Catalog model name (e.g. `gemma4`) or raw Hugging Face spec.
      */
     model: string;
 };
@@ -1314,6 +1336,20 @@ export type SidecarStatus = {
      * Friendly model name (catalog name or raw HF spec) currently requested.
      */
     model?: string | null;
+    /**
+     * Local model blob path used for the running process, if an Ollama model
+     * store hit was available.
+     */
+    model_path?: string | null;
+    /**
+     * `ollama` when launched from an Ollama model blob, otherwise
+     * `huggingface`.
+     */
+    model_source?: string | null;
+    /**
+     * Ollama model name checked first, when this is a catalog model.
+     */
+    ollama_name?: string | null;
     port?: number | null;
     state: SidecarState;
     /**

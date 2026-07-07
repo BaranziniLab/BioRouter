@@ -587,6 +587,7 @@ derive_utoipa!(Icon as IconSchema);
         biorouter::agents::ExtensionLoadResult,
         super::routes::setup::SetupResponse,
         super::routes::llamacpp::LlamaCppModel,
+        super::routes::llamacpp::LlamaCppSuitability,
         super::routes::llamacpp::LlamaCppStatusResponse,
         super::routes::llamacpp::LlamaCppSystemInfo,
         super::routes::llamacpp::LlamaCppEnsureRequest,

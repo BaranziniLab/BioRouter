@@ -37,9 +37,9 @@ vi.mock('./ConfigContext', () => ({
 }));
 
 const llamaModel: Model = {
-  name: 'qwen3.6-35b-a3b',
+  name: 'qwen3.6',
   provider: 'llamacpp',
-  alias: 'Qwen3.6 35B-A3B',
+  alias: 'Qwen3.6',
   subtext: 'Llama Server',
   context_limit: 131072,
 };
@@ -48,6 +48,9 @@ const sidecar = {
   state: 'stopped',
   model: null,
   hf_spec: null,
+  ollama_name: null,
+  model_path: null,
+  model_source: null,
   port: 11543,
   binary_path: '/opt/homebrew/bin/llama-server',
   build: 'test',
@@ -61,16 +64,23 @@ const statusResponse = {
     sidecar,
     catalog: [
       {
-        name: 'qwen3.6-35b-a3b',
-        display_name: 'Qwen3.6 35B-A3B (community GGUF)',
+        name: 'qwen3.6',
+        display_name: 'Qwen3.6 (Ollama library)',
+        ollama_name: 'qwen3.6:latest',
         hf_spec: 'unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M',
-        download_size: '22.1 GB',
-        description: 'High-capability local model for Apple Silicon or GPUs with large VRAM.',
+        download_size: '23 GB',
+        description: 'Large Qwen3.6 MoE model from Ollama library.',
         min_gpu_memory_gib: 48,
         recommended_gpu_memory_gib: 64,
-        context_limit: 131072,
+        context_limit: 262144,
         downloaded: false,
         download_status: 'not_downloaded',
+        download_source: 'none',
+        model_path: null,
+        suitable: false,
+        suitability_status: 'above_recommendation',
+        suitability_message:
+          'This model recommends 64 GiB of GPU-addressable memory; this machine reports 8 GiB vram.',
         is_default: true,
       },
     ],
@@ -80,6 +90,9 @@ const statusResponse = {
       accelerator_memory_gib: 8,
       accelerator_memory_kind: 'vram',
       default_context_size: 32768,
+      model_cache_dir: '/Users/test/.ollama/models',
+      model_cache_layout:
+        'Ollama manifests/blobs; Hugging Face fallback cache under the same root',
     },
   },
 };

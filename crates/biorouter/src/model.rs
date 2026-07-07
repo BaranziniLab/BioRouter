@@ -87,6 +87,8 @@ static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
         ("gemma-4-e2b", 128_000),
         ("gemma-4-e4b", 128_000),
         ("gemma-4", 256_000),
+        ("gemma4", 131_072),
+        ("qwen3.6", 262_144),
         ("gemma-3-27b", 128_000),
         ("gemma-3-12b", 128_000),
         ("gemma-3-4b", 128_000),

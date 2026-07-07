@@ -14,7 +14,7 @@ use biorouter::conversation::message::Message;
 use biorouter::model::ModelConfig;
 use biorouter::providers::base::Provider;
 use biorouter::providers::llamacpp::{
-    default_model_name, resolve_hf_spec, LlamaCppProvider, MODEL_CATALOG,
+    default_model_name, resolve_model_source, LlamaCppProvider, MODEL_CATALOG,
 };
 use biorouter::providers::llamacpp_sidecar::{self, ModelCacheStatus, SidecarStatus};
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,7 @@ use crate::state::AppState;
 pub struct LlamaCppModel {
     pub name: String,
     pub display_name: String,
+    pub ollama_name: Option<String>,
     pub hf_spec: String,
     pub download_size: String,
     pub description: String,
@@ -39,6 +40,23 @@ pub struct LlamaCppModel {
     pub downloaded: bool,
     /// `downloaded`, `partial`, or `not_downloaded`.
     pub download_status: ModelCacheStatus,
+    /// `ollama`, `huggingface_cache`, or `none`.
+    pub download_source: String,
+    /// The local GGUF blob path used when Ollama has already pulled this model.
+    pub model_path: Option<String>,
+    /// True when detected GPU-addressable memory meets the recommended tier.
+    pub suitable: bool,
+    /// `suitable`, `above_recommendation`, or `unknown_resources`.
+    pub suitability_status: LlamaCppSuitability,
+    pub suitability_message: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LlamaCppSuitability {
+    Suitable,
+    AboveRecommendation,
+    UnknownResources,
 }
 
 #[derive(Serialize, Deserialize, ToSchema)]
@@ -57,17 +75,20 @@ pub struct LlamaCppSystemInfo {
     /// `apple_unified`, `vram`, or `unknown_vram`.
     pub accelerator_memory_kind: String,
     pub default_context_size: usize,
+    /// Ollama-compatible model store root (`OLLAMA_MODELS` or `~/.ollama/models`).
+    pub model_cache_dir: String,
+    pub model_cache_layout: String,
 }
 
 #[derive(Deserialize, ToSchema)]
 pub struct LlamaCppEnsureRequest {
-    /// Catalog model name (e.g. `gemma-4-e4b`) or raw Hugging Face spec.
+    /// Catalog model name (e.g. `gemma4`) or raw Hugging Face spec.
     pub model: String,
 }
 
 #[derive(Deserialize, ToSchema)]
 pub struct LlamaCppWarmupRequest {
-    /// Catalog model name (e.g. `gemma-4-e4b`) or raw Hugging Face spec.
+    /// Catalog model name (e.g. `gemma4`) or raw Hugging Face spec.
     pub model: String,
 }
 
@@ -79,13 +100,32 @@ pub struct LlamaCppWarmupResponse {
 
 fn catalog() -> Vec<LlamaCppModel> {
     let default_model = default_model_name();
+    let accelerator_memory_gib = llamacpp_sidecar::accelerator_memory_gib();
+    let accelerator_memory_kind = llamacpp_sidecar::accelerator_memory_kind();
     MODEL_CATALOG
         .iter()
         .map(|e| {
-            let download_status = llamacpp_sidecar::model_cache_status(e.hf_spec);
+            let source = resolve_model_source(e.name).expect("catalog entry resolves");
+            let download_status = llamacpp_sidecar::model_source_cache_status(&source);
+            let model_path = llamacpp_sidecar::model_source_path(&source);
+            let download_source = if model_path.is_some() {
+                "ollama"
+            } else if llamacpp_sidecar::model_cache_status(e.hf_spec)
+                == ModelCacheStatus::Downloaded
+            {
+                "huggingface_cache"
+            } else {
+                "none"
+            };
+            let (suitable, suitability_status, suitability_message) = suitability_for_model(
+                e.recommended_gpu_memory_gib,
+                accelerator_memory_gib,
+                accelerator_memory_kind,
+            );
             LlamaCppModel {
                 name: e.name.to_string(),
                 display_name: e.display_name.to_string(),
+                ollama_name: e.ollama_name.map(str::to_string),
                 hf_spec: e.hf_spec.to_string(),
                 download_size: e.download_size.to_string(),
                 description: e.description.to_string(),
@@ -95,9 +135,44 @@ fn catalog() -> Vec<LlamaCppModel> {
                 is_default: e.name == default_model,
                 downloaded: download_status == ModelCacheStatus::Downloaded,
                 download_status,
+                download_source: download_source.to_string(),
+                model_path: model_path.map(|path| path.display().to_string()),
+                suitable,
+                suitability_status,
+                suitability_message,
             }
         })
         .collect()
+}
+
+fn suitability_for_model(
+    recommended_gpu_memory_gib: u64,
+    accelerator_memory_gib: Option<u64>,
+    accelerator_memory_kind: &str,
+) -> (bool, LlamaCppSuitability, String) {
+    match accelerator_memory_gib {
+        Some(gib) if gib >= recommended_gpu_memory_gib => (
+            true,
+            LlamaCppSuitability::Suitable,
+            format!(
+                "Recommended for this machine: {gib} GiB {accelerator_memory_kind} meets the {recommended_gpu_memory_gib} GiB recommendation."
+            ),
+        ),
+        Some(gib) => (
+            false,
+            LlamaCppSuitability::AboveRecommendation,
+            format!(
+                "This model recommends {recommended_gpu_memory_gib} GiB of GPU-addressable memory; this machine reports {gib} GiB {accelerator_memory_kind}."
+            ),
+        ),
+        None => (
+            false,
+            LlamaCppSuitability::UnknownResources,
+            format!(
+                "Could not detect GPU VRAM. This model recommends {recommended_gpu_memory_gib} GiB of GPU-addressable memory; system RAM alone is not enough on Intel Mac, Windows, or Linux machines with discrete GPUs."
+            ),
+        ),
+    }
 }
 
 fn system_info() -> LlamaCppSystemInfo {
@@ -107,6 +182,9 @@ fn system_info() -> LlamaCppSystemInfo {
         accelerator_memory_gib: llamacpp_sidecar::accelerator_memory_gib(),
         accelerator_memory_kind: llamacpp_sidecar::accelerator_memory_kind().to_string(),
         default_context_size: llamacpp_sidecar::default_context_size(),
+        model_cache_dir: llamacpp_sidecar::model_cache_dir().display().to_string(),
+        model_cache_layout:
+            "Ollama manifests/blobs; Hugging Face fallback cache under the same root".to_string(),
     }
 }
 
@@ -141,12 +219,12 @@ async fn llamacpp_status() -> Json<LlamaCppStatusResponse> {
 async fn llamacpp_ensure(
     Json(req): Json<LlamaCppEnsureRequest>,
 ) -> Result<Json<LlamaCppStatusResponse>, (StatusCode, String)> {
-    let hf_spec =
-        resolve_hf_spec(&req.model).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    let source =
+        resolve_model_source(&req.model).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let sidecar = llamacpp_sidecar::global();
     sidecar
-        .ensure(&req.model, &hf_spec)
+        .ensure(&req.model, &source)
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
@@ -178,7 +256,7 @@ async fn llamacpp_ensure(
 async fn llamacpp_warmup(
     Json(req): Json<LlamaCppWarmupRequest>,
 ) -> Result<Json<LlamaCppWarmupResponse>, (StatusCode, String)> {
-    resolve_hf_spec(&req.model).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+    resolve_model_source(&req.model).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
     let model = ModelConfig::new(&req.model)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?

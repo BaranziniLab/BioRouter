@@ -1,12 +1,12 @@
 //! Llama Server provider — local models served by a Biorouter-managed
 //! llama.cpp `llama-server` sidecar (see [`super::llamacpp_sidecar`]).
 //!
-//! Unlike the Ollama provider, this requires no third-party install: the
-//! desktop app bundles the pinned llama-server binary, models are downloaded
-//! from Hugging Face on first use (`-hf`), and the sidecar is started on
-//! demand. Setting `LLAMACPP_EXTERNAL_HOST` skips the sidecar entirely and
-//! talks to an already-running llama-server (or any OpenAI-compatible
-//! llama.cpp endpoint) instead.
+//! Unlike the Ollama provider, this requires no third-party server: the
+//! desktop app bundles the pinned llama-server binary, prefers models already
+//! pulled into Ollama's local model store, and falls back to llama.cpp's
+//! Hugging Face downloader on first use. Setting `LLAMACPP_EXTERNAL_HOST`
+//! skips the sidecar entirely and talks to an already-running llama-server
+//! (or any OpenAI-compatible llama.cpp endpoint) instead.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -22,7 +22,7 @@ use super::base::{
     ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage,
 };
 use super::errors::ProviderError;
-use super::llamacpp_sidecar::{self, LLAMACPP_AGENT_CONTEXT_SIZE, LLAMACPP_DEFAULT_PORT};
+use super::llamacpp_sidecar::{self, ModelSource, LLAMACPP_DEFAULT_PORT};
 use super::retry::ProviderRetry;
 use super::utils::{
     get_model, handle_response_openai_compat, handle_status_openai_compat, stream_openai_compat,
@@ -36,18 +36,20 @@ use crate::providers::formats::openai::{create_request, get_usage, response_to_m
 use crate::utils::safe_truncate;
 
 pub const LLAMACPP_TIMEOUT: u64 = 600;
-/// First run of a model includes a multi-GB Hugging Face download.
+/// First run can include a multi-GB fallback download.
 pub const LLAMACPP_STARTUP_TIMEOUT: u64 = 3600;
 pub const LLAMACPP_DOC_URL: &str =
     "https://github.com/ggml-org/llama.cpp/blob/master/tools/server/README.md";
 
-/// One curated local model. `hf_spec` is what llama-server's `-hf` flag
-/// downloads (`owner/repo:quant`); `name` is the friendly id Biorouter uses
-/// as the model name and the sidecar serves as `--alias`.
+/// One curated local model. `ollama_name` is checked first in Ollama's
+/// manifest/blob store; `hf_spec` is the llama.cpp `-hf` fallback
+/// (`owner/repo:quant`). `name` is the friendly id Biorouter serves as
+/// `--alias`.
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct CatalogEntry {
     pub name: &'static str,
     pub display_name: &'static str,
+    pub ollama_name: Option<&'static str>,
     pub hf_spec: &'static str,
     /// Approximate download size of the quantized GGUF.
     pub download_size: &'static str,
@@ -63,67 +65,39 @@ pub struct CatalogEntry {
     pub context_limit: usize,
 }
 
-/// Curated catalog: current Gemma 4 first-party GGUFs plus Qwen3.6 community
-/// GGUFs. Small Gemma 4 entries are the laptop tier; larger Gemma/Qwen entries
-/// are opt-in on capable machines.
+/// Curated catalog: Ollama library Gemma 4 and Qwen3.6 models. Gemma 4 is the
+/// laptop-class default; Qwen3.6 remains opt-in unless the machine has ample
+/// GPU-addressable memory.
 pub const MODEL_CATALOG: &[CatalogEntry] = &[
     CatalogEntry {
-        name: "gemma-4-e2b",
-        display_name: "Gemma 4 E2B (official Google GGUF)",
-        hf_spec: "google/gemma-4-E2B-it-qat-q4_0-gguf:Q4_0",
-        download_size: "3.3 GB",
-        description: "Small first-party Gemma 4 QAT GGUF for low-memory machines and quick local tests",
-        min_gpu_memory_gib: 8,
-        recommended_gpu_memory_gib: 16,
-        context_limit: LLAMACPP_AGENT_CONTEXT_SIZE,
-    },
-    CatalogEntry {
-        name: "gemma-4-e4b",
-        display_name: "Gemma 4 E4B (official Google GGUF)",
-        hf_spec: "google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0",
-        download_size: "5.2 GB",
-        description: "Best 16 GB laptop default: first-party Gemma 4 QAT GGUF with practical 64k context",
+        name: "gemma4",
+        display_name: "Gemma 4 (Ollama library)",
+        ollama_name: Some("gemma4:latest"),
+        hf_spec: "ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M",
+        download_size: "9.6 GB",
+        description: "Laptop default from Ollama's Gemma 4 library model; good first choice for 16 GB Apple Silicon",
         min_gpu_memory_gib: 16,
         recommended_gpu_memory_gib: 16,
-        context_limit: LLAMACPP_AGENT_CONTEXT_SIZE,
+        context_limit: 131_072,
     },
     CatalogEntry {
-        name: "gemma-4-26b-a4b",
-        display_name: "Gemma 4 26B-A4B (official Google GGUF)",
-        hf_spec: "google/gemma-4-26B-A4B-it-qat-q4_0-gguf:Q4_0",
-        download_size: "14.4 GB",
-        description: "Larger first-party Gemma 4 MoE QAT GGUF; use on high-memory machines",
-        min_gpu_memory_gib: 32,
-        recommended_gpu_memory_gib: 48,
-        context_limit: LLAMACPP_AGENT_CONTEXT_SIZE,
-    },
-    CatalogEntry {
-        name: "qwen3.6-35b-a3b",
-        display_name: "Qwen3.6 35B-A3B (community GGUF)",
+        name: "qwen3.6",
+        display_name: "Qwen3.6 (Ollama library)",
+        ollama_name: Some("qwen3.6:latest"),
         hf_spec: "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M",
-        download_size: "22.1 GB",
-        description: "Qwen source model with community GGUF quantization; opt in on high-memory machines",
-        min_gpu_memory_gib: 32,
+        download_size: "23 GB",
+        description: "Large Qwen3.6 MoE model from Ollama's library; best for high-memory machines",
+        min_gpu_memory_gib: 48,
         recommended_gpu_memory_gib: 64,
-        context_limit: LLAMACPP_AGENT_CONTEXT_SIZE,
-    },
-    CatalogEntry {
-        name: "qwen3.6-27b",
-        display_name: "Qwen3.6 27B (community GGUF)",
-        hf_spec: "unsloth/Qwen3.6-27B-GGUF:UD-Q4_K_XL",
-        download_size: "17.6 GB",
-        description: "Dense Qwen source model with community GGUF quantization; use with ample memory headroom",
-        min_gpu_memory_gib: 32,
-        recommended_gpu_memory_gib: 64,
-        context_limit: LLAMACPP_AGENT_CONTEXT_SIZE,
+        context_limit: 262_144,
     },
 ];
 
 pub fn recommended_model_for_memory_gib(gib: u64) -> &'static str {
-    match gib {
-        n if n >= 48 => "gemma-4-26b-a4b",
-        n if n >= 16 => "gemma-4-e4b",
-        _ => "gemma-4-e2b",
+    if gib >= 64 {
+        "qwen3.6"
+    } else {
+        "gemma4"
     }
 }
 
@@ -134,9 +108,12 @@ pub fn default_model_name() -> &'static str {
 /// Resolve a Biorouter model name to the Hugging Face spec llama-server
 /// downloads. Catalog names map to pinned specs; anything containing a `/`
 /// is treated as a raw `owner/repo[:quant]` spec and passed through.
-pub fn resolve_hf_spec(model_name: &str) -> Result<String, ProviderError> {
+pub fn resolve_model_source(model_name: &str) -> Result<ModelSource, ProviderError> {
     if let Some(entry) = MODEL_CATALOG.iter().find(|e| e.name == model_name) {
-        return Ok(entry.hf_spec.to_string());
+        return Ok(match entry.ollama_name {
+            Some(ollama_name) => ModelSource::ollama(ollama_name, entry.hf_spec),
+            None => ModelSource::huggingface(entry.hf_spec),
+        });
     }
     if model_name.contains('/') {
         // A raw `owner/repo[:quant]` Hugging Face spec. This value is passed
@@ -145,7 +122,7 @@ pub fn resolve_hf_spec(model_name: &str) -> Result<String, ProviderError> {
         // validate it strictly: reject whitespace/flag-shaped/path-traversal
         // inputs before they hit argv or the on-disk cache layout.
         validate_raw_hf_spec(model_name)?;
-        return Ok(model_name.to_string());
+        return Ok(ModelSource::huggingface(model_name));
     }
     Err(ProviderError::RequestFailed(format!(
         "Unknown Llama Server model '{model_name}'. Use one of the built-in models ({}) or a \
@@ -156,6 +133,10 @@ pub fn resolve_hf_spec(model_name: &str) -> Result<String, ProviderError> {
             .collect::<Vec<_>>()
             .join(", ")
     )))
+}
+
+pub fn resolve_hf_spec(model_name: &str) -> Result<String, ProviderError> {
+    resolve_model_source(model_name).map(|source| source.hf_spec)
 }
 
 /// Validate a raw `owner/repo[:quant]` Hugging Face spec. Each path component
@@ -318,15 +299,15 @@ impl LlamaCppProvider {
     }
 
     /// Make sure a server is reachable for `model_name` and return a client
-    /// pointed at it. Managed mode starts (and waits on) the sidecar; first
-    /// use of a model includes its Hugging Face download.
+    /// pointed at it. Managed mode starts (and waits on) the sidecar; catalog
+    /// models use Ollama's local store first and fall back to `-hf`.
     async fn ensure_client(&self, model_name: &str) -> Result<Arc<ApiClient>, ProviderError> {
         let base_url = if let Some(base) = &self.external_base {
             base.clone()
         } else {
-            let hf_spec = resolve_hf_spec(model_name)?;
+            let source = resolve_model_source(model_name)?;
             let sidecar = llamacpp_sidecar::global();
-            sidecar.ensure(model_name, &hf_spec).await.map_err(|e| {
+            sidecar.ensure(model_name, &source).await.map_err(|e| {
                 ProviderError::ExecutionError(format!("Failed to start llama-server: {e}"))
             })?;
             let port = sidecar
@@ -544,9 +525,8 @@ impl Provider for LlamaCppProvider {
         stream_openai_compat(response, log)
     }
 
-    /// The curated catalog. Unlike Ollama there is no local registry to
-    /// enumerate — models download on first use — so the catalog IS the list;
-    /// unlisted Hugging Face specs are still accepted.
+    /// The curated catalog. Built-ins are tied to Ollama library model names
+    /// when available; unlisted Hugging Face specs are still accepted.
     async fn fetch_supported_models(&self) -> Result<Option<Vec<String>>, ProviderError> {
         Ok(Some(
             MODEL_CATALOG.iter().map(|e| e.name.to_string()).collect(),
@@ -560,17 +540,17 @@ mod tests {
 
     #[test]
     fn default_model_is_memory_tiered_and_in_catalog() {
-        assert_eq!(recommended_model_for_memory_gib(8), "gemma-4-e2b");
-        assert_eq!(recommended_model_for_memory_gib(16), "gemma-4-e4b");
-        assert_eq!(recommended_model_for_memory_gib(48), "gemma-4-26b-a4b");
-        assert_eq!(recommended_model_for_memory_gib(64), "gemma-4-26b-a4b");
+        assert_eq!(recommended_model_for_memory_gib(8), "gemma4");
+        assert_eq!(recommended_model_for_memory_gib(16), "gemma4");
+        assert_eq!(recommended_model_for_memory_gib(48), "gemma4");
+        assert_eq!(recommended_model_for_memory_gib(64), "qwen3.6");
 
         let default = default_model_name();
         let entry = MODEL_CATALOG
             .iter()
             .find(|e| e.name == default)
             .expect("default model must be in the catalog");
-        assert_eq!(entry.context_limit, LLAMACPP_AGENT_CONTEXT_SIZE);
+        assert!(entry.context_limit >= llamacpp_sidecar::LLAMACPP_AGENT_CONTEXT_SIZE);
     }
 
     #[test]
@@ -581,15 +561,15 @@ mod tests {
             .map(|e| e.name)
             .collect();
         assert!(
-            sixteen_gb_defaults.contains(&"gemma-4-e4b"),
-            "the 16 GB tier should include a strong Gemma 4 default"
+            sixteen_gb_defaults.contains(&"gemma4"),
+            "the 16 GB tier should include the Gemma 4 default"
         );
         assert!(
             sixteen_gb_defaults.iter().all(|name| {
                 MODEL_CATALOG
                     .iter()
                     .find(|e| e.name == *name)
-                    .map(|e| e.context_limit >= LLAMACPP_AGENT_CONTEXT_SIZE)
+                    .map(|e| e.context_limit >= llamacpp_sidecar::LLAMACPP_AGENT_CONTEXT_SIZE)
                     .unwrap_or(false)
             }),
             "16 GB recommended models should leave room for BioRouter's agent bootstrap"
@@ -605,25 +585,32 @@ mod tests {
             .iter()
             .find(|m| m.name == default)
             .expect("default metadata must be present");
-        assert_eq!(default_info.context_limit, LLAMACPP_AGENT_CONTEXT_SIZE);
+        assert!(default_info.context_limit >= llamacpp_sidecar::LLAMACPP_AGENT_CONTEXT_SIZE);
     }
 
     #[test]
     fn catalog_includes_qwen36_and_gemma4_families_only() {
-        assert!(MODEL_CATALOG.iter().any(|e| e.name.starts_with("qwen3.6")));
-        assert!(MODEL_CATALOG.iter().any(|e| e.name.starts_with("gemma-4")));
+        assert!(MODEL_CATALOG.iter().any(|e| e.name == "qwen3.6"));
+        assert!(MODEL_CATALOG.iter().any(|e| e.name == "gemma4"));
         assert!(!MODEL_CATALOG.iter().any(|e| e.name.starts_with("qwen3.5")));
     }
 
     #[test]
     fn resolve_catalog_name() {
         assert_eq!(
-            resolve_hf_spec("qwen3.6-35b-a3b").unwrap(),
+            resolve_hf_spec("qwen3.6").unwrap(),
             "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M"
         );
         assert_eq!(
-            resolve_hf_spec("gemma-4-e4b").unwrap(),
-            "google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0"
+            resolve_hf_spec("gemma4").unwrap(),
+            "ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M"
+        );
+        assert_eq!(
+            resolve_model_source("gemma4")
+                .unwrap()
+                .ollama_name
+                .as_deref(),
+            Some("gemma4:latest")
         );
     }
 
@@ -638,8 +625,8 @@ mod tests {
     #[test]
     fn resolve_unknown_name_errors_with_catalog_hint() {
         let err = resolve_hf_spec("gpt-4o").unwrap_err().to_string();
-        assert!(err.contains("gemma-4-e4b"));
-        assert!(err.contains("qwen3.6-35b-a3b"));
+        assert!(err.contains("gemma4"));
+        assert!(err.contains("qwen3.6"));
     }
 
     #[test]

@@ -121,7 +121,13 @@ async fn handle_local_llamacpp_setup(config: &Config) -> anyhow::Result<()> {
     let default_model = default_model_name();
     let labels: Vec<String> = MODEL_CATALOG
         .iter()
-        .map(|e| format!("{} · {} download", e.display_name, e.download_size))
+        .map(|e| {
+            let source = e
+                .ollama_name
+                .map(|name| format!("Ollama {name}"))
+                .unwrap_or_else(|| "Hugging Face fallback".to_string());
+            format!("{} · {} · {}", e.display_name, e.download_size, source)
+        })
         .collect();
     let mut select = cliclack::select("Choose a local model (downloaded on first use)")
         .initial_value(default_model);
@@ -134,7 +140,7 @@ async fn handle_local_llamacpp_setup(config: &Config) -> anyhow::Result<()> {
     config.set_param("LLAMACPP_PORT", LLAMACPP_DEFAULT_PORT.to_string())?;
 
     let _ = cliclack::log::info(
-        "The first run downloads the model from Hugging Face — this can take several minutes.",
+        "The first run uses Ollama's local model store when available; otherwise a fallback GGUF download can take several minutes.",
     );
     let spin = spinner();
     spin.start("Starting Llama Server and testing the model...");
