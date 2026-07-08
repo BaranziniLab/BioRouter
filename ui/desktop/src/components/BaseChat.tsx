@@ -387,8 +387,8 @@ function BaseChatContent({
   const artifactPanelCloseTimerRef = useRef<number | null>(null);
   const artifactPanelOpenFrameRef = useRef<number | null>(null);
   const artifactPanelResizeFrameRef = useRef<number | null>(null);
+  const artifactPanelEnsureFrameRef = useRef<number | null>(null);
   const pendingArtifactPanelWidthRef = useRef<number | null>(null);
-  const autoTuckedArtifactRef = useRef<ArtifactSource | null>(null);
   const artifactPanelWidthUserSetRef = useRef(false);
   const reportedArtifactRenderErrorsRef = useRef<Set<string>>(new Set());
   const pendingArtifactRenderFeedbackRef = useRef<Message | null>(null);
@@ -464,8 +464,21 @@ function BaseChatContent({
       if (artifactPanelResizeFrameRef.current) {
         window.cancelAnimationFrame(artifactPanelResizeFrameRef.current);
       }
+      if (artifactPanelEnsureFrameRef.current) {
+        window.cancelAnimationFrame(artifactPanelEnsureFrameRef.current);
+      }
     };
   }, []);
+
+  const ensureArtifactPanelFits = useCallback(async () => {
+    if (isMobile) return;
+
+    const splitPaneWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
+    const targetWidth = getArtifactPanelExpansionContentWidth(window.innerWidth, splitPaneWidth);
+    if (!targetWidth || !window.electron.ensureWindowContentWidth) return;
+
+    await window.electron.ensureWindowContentWidth(targetWidth).catch(() => undefined);
+  }, [isMobile]);
 
   const handleOpenArtifact = useCallback(
     async (artifact: ArtifactSource) => {
@@ -478,19 +491,9 @@ function BaseChatContent({
         artifactPanelOpenFrameRef.current = null;
       }
 
-      autoTuckedArtifactRef.current = null;
       artifactPanelWidthUserSetRef.current = false;
 
-      if (!isMobile) {
-        const splitPaneWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
-        const targetWidth = getArtifactPanelExpansionContentWidth(
-          window.innerWidth,
-          splitPaneWidth
-        );
-        if (targetWidth && window.electron.ensureWindowContentWidth) {
-          await window.electron.ensureWindowContentWidth(targetWidth).catch(() => undefined);
-        }
-      }
+      await ensureArtifactPanelFits();
 
       setPresentedArtifact(artifact);
 
@@ -505,7 +508,7 @@ function BaseChatContent({
         setIsArtifactPanelOpen(true);
       });
     },
-    [isMobile, presentedArtifact]
+    [ensureArtifactPanelFits, presentedArtifact]
   );
 
   const handleCloseArtifactPanel = useCallback(() => {
@@ -526,42 +529,26 @@ function BaseChatContent({
     const splitPane = splitPaneRef.current;
     if (!splitPane) return;
 
-    const updateArtifactTuckState = () => {
-      const width = splitPane.clientWidth;
-      if (
-        !isMobile &&
-        presentedArtifact &&
-        width < ARTIFACT_PANEL_AUTO_TUCK_WIDTH &&
-        artifactPanelCloseTimerRef.current === null
-      ) {
-        autoTuckedArtifactRef.current = presentedArtifact;
-        handleCloseArtifactPanel();
-        return;
-      }
-
-      if (
-        !isMobile &&
-        !presentedArtifact &&
-        autoTuckedArtifactRef.current &&
-        width >= ARTIFACT_PANEL_AUTO_TUCK_WIDTH + 80
-      ) {
-        const artifact = autoTuckedArtifactRef.current;
-        autoTuckedArtifactRef.current = null;
-        handleOpenArtifact(artifact);
-      }
+    const updateArtifactFitState = () => {
+      if (!presentedArtifact || isMobile) return;
+      if (artifactPanelEnsureFrameRef.current !== null) return;
+      artifactPanelEnsureFrameRef.current = window.requestAnimationFrame(() => {
+        artifactPanelEnsureFrameRef.current = null;
+        void ensureArtifactPanelFits();
+      });
     };
 
-    updateArtifactTuckState();
+    updateArtifactFitState();
 
     if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateArtifactTuckState);
-      return () => window.removeEventListener('resize', updateArtifactTuckState);
+      window.addEventListener('resize', updateArtifactFitState);
+      return () => window.removeEventListener('resize', updateArtifactFitState);
     }
 
-    const resizeObserver = new ResizeObserver(updateArtifactTuckState);
+    const resizeObserver = new ResizeObserver(updateArtifactFitState);
     resizeObserver.observe(splitPane);
     return () => resizeObserver.disconnect();
-  }, [handleCloseArtifactPanel, handleOpenArtifact, isMobile, presentedArtifact]);
+  }, [ensureArtifactPanelFits, isMobile, presentedArtifact]);
 
   const getMaxArtifactPanelWidth = useCallback(() => {
     const containerWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
