@@ -2328,6 +2328,39 @@
         }
       }
     },
+    "/llamacpp/delete": {
+      "post": {
+        "tags": [
+          "super::routes::llamacpp"
+        ],
+        "operationId": "llamacpp_delete",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LlamaCppDeleteRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Cached Llama Server fallback model removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlamaCppDeleteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown model name"
+          }
+        }
+      }
+    },
     "/llamacpp/ensure": {
       "post": {
         "tags": [
@@ -5574,6 +5607,34 @@
           }
         }
       },
+      "LlamaCppDeleteRequest": {
+        "type": "object",
+        "required": [
+          "model"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Catalog model name (e.g. `gemma4`) or raw Hugging Face spec."
+          }
+        }
+      },
+      "LlamaCppDeleteResponse": {
+        "type": "object",
+        "required": [
+          "deleted_fallback_cache",
+          "status"
+        ],
+        "properties": {
+          "deleted_fallback_cache": {
+            "type": "boolean",
+            "description": "Whether a Biorouter/llama.cpp Hugging Face fallback cache directory was removed."
+          },
+          "status": {
+            "$ref": "#/components/schemas/LlamaCppStatusResponse"
+          }
+        }
+      },
       "LlamaCppEnsureRequest": {
         "type": "object",
         "required": [
@@ -5592,6 +5653,8 @@
         "required": [
           "name",
           "display_name",
+          "family",
+          "official_url",
           "hf_spec",
           "download_size",
           "description",
@@ -5640,6 +5703,9 @@
             "type": "boolean",
             "description": "Whether the llama.cpp-compatible Hugging Face fallback is already cached."
           },
+          "family": {
+            "type": "string"
+          },
           "hf_spec": {
             "type": "string"
           },
@@ -5658,6 +5724,9 @@
             "nullable": true
           },
           "name": {
+            "type": "string"
+          },
+          "official_url": {
             "type": "string"
           },
           "ollama_name": {
