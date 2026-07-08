@@ -1,5 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { More } from '../icons';
 import { X, Minimize2, Maximize2, Minus } from '../icons/app-icons';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 
 interface Props {
   name: string;
@@ -25,34 +32,12 @@ export const WindowTitleBar: React.FC<Props> = ({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(name);
   const inputRef = useRef<HTMLInputElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     setDraft(name);
   }, [name]);
   useEffect(() => {
     if (editing) inputRef.current?.select();
-  }, [editing]);
-  useEffect(() => {
-    const button = buttonRef.current;
-    if (!button || editing) return;
-
-    const startEditingFromNativeEvent = (event: Event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      setEditing(true);
-    };
-
-    const eventNames = ['pointerdown', 'mousedown', 'click', 'dblclick'];
-    eventNames.forEach((eventName) => {
-      button.addEventListener(eventName, startEditingFromNativeEvent, { capture: true });
-    });
-
-    return () => {
-      eventNames.forEach((eventName) => {
-        button.removeEventListener(eventName, startEditingFromNativeEvent, { capture: true });
-      });
-    };
   }, [editing]);
 
   const commit = () => {
@@ -63,8 +48,8 @@ export const WindowTitleBar: React.FC<Props> = ({
 
   const iconBtnClass = 'flex-shrink-0 p-1 rounded hover:bg-background-medium transition-colors';
   const noDragStyle = { WebkitAppRegion: 'no-drag' } as React.CSSProperties;
-  const startEditing = (event: React.SyntheticEvent) => {
-    event.stopPropagation();
+  const startEditing = (event?: React.SyntheticEvent | Event) => {
+    event?.stopPropagation();
     setEditing(true);
   };
 
@@ -98,17 +83,30 @@ export const WindowTitleBar: React.FC<Props> = ({
           className="h-8 w-[min(360px,calc(100vw-180px))] min-w-[120px] bg-transparent px-1 text-sm font-medium outline-none border-b border-border-subtle"
         />
       ) : (
-        <button
-          ref={buttonRef}
-          type="button"
-          className="inline-flex h-8 min-w-0 max-w-[min(420px,calc(100vw-180px))] cursor-text items-center rounded px-1 text-left text-sm font-medium leading-none text-text-default transition-colors hover:bg-background-medium/40"
-          onPointerDown={startEditing}
-          onClick={startEditing}
-          style={noDragStyle}
-          title="Click to rename"
-        >
-          <span className="pointer-events-none truncate no-drag">{name}</span>
-        </button>
+        <span className="inline-flex h-8 min-w-0 max-w-[min(420px,calc(100vw-220px))] items-center rounded px-1 text-sm font-medium leading-none text-text-default">
+          <span className="truncate" title={name}>
+            {name}
+          </span>
+        </span>
+      )}
+      {!editing && (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label="Conversation title actions"
+              title="Conversation title actions"
+              className={iconBtnClass}
+              style={noDragStyle}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <More className="h-3.5 w-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" side="bottom" className="w-36">
+            <DropdownMenuItem onSelect={startEditing}>Rename</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       )}
       <span className="min-w-0 flex-1" />
       {/* Order: Fold | Shrink | Enlarge | Close — right-aligned. */}

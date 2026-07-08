@@ -1,4 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { More } from '../icons';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 
 interface Props {
   name: string;
@@ -12,7 +19,6 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(name);
   const inputRef = useRef<HTMLInputElement>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
   const noDragStyle = { WebkitAppRegion: 'no-drag' } as React.CSSProperties;
 
   useEffect(() => {
@@ -21,27 +27,6 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
   useEffect(() => {
     if (editing) inputRef.current?.select();
   }, [editing]);
-  useEffect(() => {
-    const button = buttonRef.current;
-    if (!button || editing) return;
-
-    const startEditingFromNativeEvent = (event: Event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      setEditing(true);
-    };
-
-    const eventNames = ['pointerdown', 'mousedown', 'click', 'dblclick'];
-    eventNames.forEach((eventName) => {
-      button.addEventListener(eventName, startEditingFromNativeEvent, { capture: true });
-    });
-
-    return () => {
-      eventNames.forEach((eventName) => {
-        button.removeEventListener(eventName, startEditingFromNativeEvent, { capture: true });
-      });
-    };
-  }, [editing]);
 
   const commit = () => {
     const trimmed = draft.trim();
@@ -49,8 +34,8 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
     setEditing(false);
   };
 
-  const startEditing = (event: React.SyntheticEvent) => {
-    event.stopPropagation();
+  const startEditing = (event?: React.SyntheticEvent | Event) => {
+    event?.stopPropagation();
     setEditing(true);
   };
 
@@ -58,9 +43,6 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
     <div
       className={`inline-flex h-10 min-w-0 items-center gap-2 rounded-md no-drag ${className ?? ''}`}
       style={noDragStyle}
-      onPointerDown={(event) => {
-        if (!editing) startEditing(event);
-      }}
     >
       {accentColor && (
         <span
@@ -86,17 +68,31 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
           className="h-8 w-[min(360px,70vw)] min-w-[120px] bg-transparent px-1 text-sm font-medium outline-none border-b border-border-subtle"
         />
       ) : (
-        <button
-          ref={buttonRef}
-          type="button"
-          className="inline-flex h-8 max-w-full min-w-0 cursor-text items-center rounded px-1 text-left text-sm font-medium leading-none text-text-default transition-colors hover:bg-background-medium/40"
-          onPointerDown={startEditing}
-          onClick={startEditing}
-          style={noDragStyle}
-          title="Click to rename"
-        >
-          <span className="pointer-events-none truncate no-drag">{name}</span>
-        </button>
+        <>
+          <span
+            className="inline-flex h-8 max-w-full min-w-0 items-center rounded px-1 text-sm font-medium leading-none text-text-default"
+            title={name}
+          >
+            <span className="truncate no-drag">{name}</span>
+          </span>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Conversation title actions"
+                title="Conversation title actions"
+                className="inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+                style={noDragStyle}
+                onPointerDown={(event) => event.stopPropagation()}
+              >
+                <More className="h-4 w-4" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" side="bottom" className="w-36">
+              <DropdownMenuItem onSelect={startEditing}>Rename</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </>
       )}
     </div>
   );
