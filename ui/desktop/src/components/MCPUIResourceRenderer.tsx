@@ -15,7 +15,7 @@ import { Maximize2, Trash2 } from './icons/app-icons';
 import { deleteAgentDrafterApp } from './applications/appManagement';
 import { ConfirmationModal } from './ui/ConfirmationModal';
 import type { ArtifactSource } from './artifacts/artifactTypes';
-import { artifactSourceFromResource } from './artifacts/artifactUtils';
+import { artifactSourceFromResource, titleFromResourceUri } from './artifacts/artifactUtils';
 
 interface MCPUIResourceRendererProps {
   content: EmbeddedResource & { type: 'resource' };
@@ -358,9 +358,11 @@ export default function MCPUIResourceRenderer({
     return resource.text || '';
   };
 
-  const artifactTitle = resource.uri?.split('/').pop() || 'Artifact';
+  const fallbackArtifactTitle =
+    titleFromResourceUri(resource.uri) || resource.uri?.split('/').pop() || 'Artifact';
   const agentDrafterAppId = getAgentDrafterAppId(resource.uri);
-  const artifactSource = artifactSourceFromResource(content, artifactTitle);
+  const artifactSource = artifactSourceFromResource(content, fallbackArtifactTitle);
+  const artifactTitle = artifactSource?.title ?? fallbackArtifactTitle;
 
   const handleOpenArtifact = async () => {
     const html = decodeArtifactHtml();
@@ -487,7 +489,9 @@ export default function MCPUIResourceRenderer({
             aria-label={`Open ${artifactTitle} ${
               onOpenArtifact ? 'in the artifact viewer' : 'in a larger standalone window'
             }`}
-            title={onOpenArtifact ? 'Open in artifact viewer' : 'Open in a larger standalone window'}
+            title={
+              onOpenArtifact ? 'Open in artifact viewer' : 'Open in a larger standalone window'
+            }
             className="inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-md border border-border-subtle/70 bg-background-default/85 text-text-muted shadow-sm backdrop-blur transition-colors hover:text-text-default"
           >
             <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />

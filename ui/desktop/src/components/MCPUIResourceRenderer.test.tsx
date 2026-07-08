@@ -68,7 +68,7 @@ describe('MCPUIResourceRenderer', () => {
     expect(wrapper).toHaveClass('bg-transparent');
     expect(wrapper.className).not.toContain('border ');
     expect(wrapper.className).not.toContain('p-3');
-    expect(screen.queryByText('visualization')).not.toBeInTheDocument();
+    expect(screen.queryByText('Chart Visualization')).not.toBeInTheDocument();
     expect(screen.queryByText('Expand')).not.toBeInTheDocument();
     expect(UIResourceRenderer).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -83,13 +83,13 @@ describe('MCPUIResourceRenderer', () => {
   it('keeps an icon-only expand affordance that opens the artifact window', async () => {
     const { html, openArtifactWindow } = renderSubject();
 
-    fireEvent.click(screen.getByRole('button', { name: /open visualization/i }));
+    fireEvent.click(screen.getByRole('button', { name: /open chart visualization/i }));
 
     await waitFor(() => {
       expect(openArtifactWindow).toHaveBeenCalledWith(
         expect.objectContaining({
           html,
-          title: 'visualization',
+          title: 'Chart Visualization',
           width: 1100,
           height: 820,
           theme: 'light',
@@ -152,12 +152,12 @@ describe('MCPUIResourceRenderer', () => {
       </ThemeProvider>
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /open visualization/i }));
+    fireEvent.click(screen.getByRole('button', { name: /open chart visualization/i }));
 
     expect(onOpenArtifact).toHaveBeenCalledWith(
       expect.objectContaining({
         kind: 'html',
-        title: 'visualization',
+        title: 'Chart Visualization',
         html,
       })
     );

@@ -36,6 +36,14 @@ const TEXT_EXTENSIONS = new Set([
 
 const IMAGE_EXTENSIONS = new Set(['gif', 'jpeg', 'jpg', 'png', 'svg', 'webp']);
 const HTML_EXTENSIONS = new Set(['htm', 'html']);
+const GENERIC_UI_TITLE_PARTS = new Set([
+  'chart',
+  'diagram',
+  'graph',
+  'interactive',
+  'preview',
+  'visualization',
+]);
 
 export function basenameFromPath(value: string): string {
   const clean = value.split(/[?#]/)[0];
@@ -64,6 +72,47 @@ export function languageFromPath(value: string, mimeType?: string): string {
   if (mimeType?.includes('html')) return 'html';
   if (mimeType?.includes('xml')) return 'xml';
   return ext || 'text';
+}
+
+function titleCaseWords(value: string): string {
+  return value
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/[-_]+/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+}
+
+export function titleFromResourceUri(uri?: string): string | null {
+  if (!uri || !uri.startsWith('ui://')) return null;
+  let parts: string[];
+  try {
+    const parsed = new URL(uri);
+    parts = [parsed.hostname, ...parsed.pathname.split('/')]
+      .map((part) => part.trim())
+      .filter(Boolean);
+  } catch {
+    parts = uri
+      .replace(/^ui:\/\//, '')
+      .split(/[/?#]/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+  if (parts.length === 0) return null;
+
+  const specific = parts.filter((part) => !GENERIC_UI_TITLE_PARTS.has(part.toLowerCase()));
+  if (specific.length > 0) {
+    const suffix = [...parts]
+      .reverse()
+      .find((part) => GENERIC_UI_TITLE_PARTS.has(part.toLowerCase()));
+    return [...specific, ...(suffix ? [suffix] : [])].map(titleCaseWords).join(' ');
+  }
+
+  const lowerParts = parts.map((part) => part.toLowerCase());
+  if (lowerParts.includes('interactive') && lowerParts.includes('chart'))
+    return 'Interactive Chart';
+  return parts.map(titleCaseWords).join(' ');
 }
 
 export function looksLikePreviewableFile(value: string): boolean {
@@ -117,9 +166,12 @@ export function artifactSourceFromResource(
     text?: string;
     _meta?: Record<string, unknown>;
   };
-  const title = resource.uri ? basenameFromPath(resource.uri) : fallbackTitle;
+  const title =
+    titleFromResourceUri(resource.uri) ??
+    (resource.uri ? basenameFromPath(resource.uri) : fallbackTitle);
   const prefSize = resource._meta?.['mcpui.dev/ui-preferred-frame-size'] as
-    [string, string] | undefined;
+    | [string, string]
+    | undefined;
   const pxOf = (v?: string): number | undefined => {
     if (!v) return undefined;
     const n = parseInt(v, 10);
