@@ -66,6 +66,8 @@ describe('InAppTerminalDock', () => {
     const tabList = screen.getByRole('tablist', { name: /terminal sessions/i });
     expect(tabList).toBeInTheDocument();
     expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('BioRouter');
+    expect(document.querySelector('[data-terminal-pane]')).not.toHaveClass('hidden');
+    expect(document.querySelector('[data-terminal-pane]')).not.toHaveClass('invisible');
 
     await user.click(screen.getByRole('button', { name: /new terminal session/i }));
 
@@ -73,5 +75,21 @@ describe('InAppTerminalDock', () => {
       expect(screen.getAllByRole('tab')).toHaveLength(2);
     });
     expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('BioRouter 2');
+  });
+
+  it('forwards plain keystrokes to the active terminal when focus stays on the window chrome', async () => {
+    render(
+      <InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={vi.fn()} />
+    );
+
+    await waitFor(() => {
+      expect(window.electron.createTerminalSession).toHaveBeenCalled();
+    });
+
+    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', bubbles: true }));
+
+    await waitFor(() => {
+      expect(window.electron.writeTerminalSession).toHaveBeenCalledWith(expect.any(String), 'p');
+    });
   });
 });

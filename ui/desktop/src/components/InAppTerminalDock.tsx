@@ -49,8 +49,50 @@ function makePaneTitle(workingDir: string | undefined, index: number) {
   return index === 1 ? name : `${name} ${index}`;
 }
 
+function isEditableTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
+}
+
+function keyEventToTerminalData(event: KeyboardEvent): string | null {
+  if (event.metaKey) return null;
+  if (event.ctrlKey && event.key.length === 1) {
+    const code = event.key.toUpperCase().charCodeAt(0);
+    if (code >= 64 && code <= 95) return String.fromCharCode(code - 64);
+  }
+  if (event.altKey || event.ctrlKey) return null;
+
+  switch (event.key) {
+    case 'Enter':
+      return '\r';
+    case 'Backspace':
+      return '\x7f';
+    case 'Tab':
+      return '\t';
+    case 'Escape':
+      return '\x1b';
+    case 'ArrowUp':
+      return '\x1b[A';
+    case 'ArrowDown':
+      return '\x1b[B';
+    case 'ArrowRight':
+      return '\x1b[C';
+    case 'ArrowLeft':
+      return '\x1b[D';
+    case 'Delete':
+      return '\x1b[3~';
+    case 'Home':
+      return '\x1b[H';
+    case 'End':
+      return '\x1b[F';
+    default:
+      return event.key.length === 1 ? event.key : null;
+  }
+}
+
 const terminalTheme = {
-  background: '#fff9ed',
+  background: '#fffdf7',
   black: '#2d2a26',
   blue: '#2f75d6',
   brightBlack: '#81776b',
@@ -61,13 +103,14 @@ const terminalTheme = {
   brightRed: '#d45252',
   brightWhite: '#2d2a26',
   brightYellow: '#b57919',
-  cursor: '#2d2a26',
+  cursor: '#1f1a14',
+  cursorAccent: '#fffdf7',
   cyan: '#16818c',
   foreground: '#2d2a26',
   green: '#22784f',
   magenta: '#7847b8',
   red: '#b63f3f',
-  selectionBackground: '#ead7b8',
+  selectionBackground: '#eadfcf',
   white: '#574f46',
   yellow: '#9b6818',
 };
@@ -84,6 +127,19 @@ const TerminalPaneView: React.FC<{
   const backendSessionIdRef = useRef<string | null>(null);
   const pendingInputRef = useRef<string[]>([]);
 
+  const focusTerminal = useCallback(() => {
+    terminalRef.current?.focus();
+  }, []);
+
+  const writeToBackend = useCallback((data: string) => {
+    const sessionId = backendSessionIdRef.current;
+    if (!sessionId) {
+      pendingInputRef.current.push(data);
+      return;
+    }
+    window.electron.writeTerminalSession(sessionId, data).catch(() => {});
+  }, []);
+
   const fitAndFocus = useCallback(() => {
     const term = terminalRef.current;
     const fitAddon = fitAddonRef.current;
@@ -97,6 +153,7 @@ const TerminalPaneView: React.FC<{
           window.electron.resizeTerminalSession(sessionId, cols, rows).catch(() => {});
         }
         term.focus();
+        window.setTimeout(() => term.focus(), 30);
       } catch {
         /* xterm can throw while the hidden dock has no measurable dimensions */
       }
@@ -115,7 +172,7 @@ const TerminalPaneView: React.FC<{
       allowTransparency: true,
       convertEol: true,
       cursorBlink: true,
-      cursorStyle: 'bar',
+      cursorStyle: 'block',
       fontFamily: 'Menlo, Monaco, Consolas, "Liberation Mono", monospace',
       fontSize: 12.5,
       lineHeight: 1.25,
@@ -152,12 +209,7 @@ const TerminalPaneView: React.FC<{
       term.writeln(`\r\n\x1b[90m[terminal exited with code ${event.exitCode ?? 0}${suffix}]\x1b[0m`);
     });
     const inputDisposer = term.onData((data) => {
-      const sessionId = backendSessionIdRef.current;
-      if (!sessionId) {
-        pendingInputRef.current.push(data);
-        return;
-      }
-      window.electron.writeTerminalSession(sessionId, data).catch(() => {});
+      writeToBackend(data);
     });
 
     const resizeObserver = new ResizeObserver(() => {
@@ -184,7 +236,6 @@ const TerminalPaneView: React.FC<{
         window.electron.writeTerminalSession(result.sessionId, data).catch(() => {});
       });
       flushResize();
-      if (open && active) term.focus();
     };
 
     start().catch((error) => {
@@ -208,20 +259,47 @@ const TerminalPaneView: React.FC<{
       fitAddonRef.current = null;
       backendSessionIdRef.current = null;
     };
-  }, [active, open, paneId, workingDir]);
+  }, [paneId, workingDir, writeToBackend]);
 
   useEffect(() => {
     fitAndFocus();
   }, [fitAndFocus]);
 
+  useEffect(() => {
+    if (!open || !active) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const host = terminalHostRef.current;
+      if (isEditableTarget(event.target) && (!host || !host.contains(event.target as Node))) {
+        return;
+      }
+      const data = keyEventToTerminalData(event);
+      if (!data) return;
+      event.preventDefault();
+      event.stopPropagation();
+      writeToBackend(data);
+      focusTerminal();
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [active, focusTerminal, open, writeToBackend]);
+
   return (
     <div
-      className={cn('h-full min-h-0 w-full overflow-hidden', !active && 'hidden')}
+      className={cn(
+        'col-start-1 row-start-1 flex min-h-0 overflow-hidden',
+        !active && 'pointer-events-none invisible'
+      )}
       data-terminal-pane={paneId}
     >
       <div
         ref={terminalHostRef}
-        className="h-full min-h-0 w-full overflow-hidden rounded-md border border-[#d8c7aa] bg-[#fbf7ed] px-2 py-2 shadow-inner"
+        onMouseDown={(event) => {
+          event.preventDefault();
+          focusTerminal();
+        }}
+        className="h-full min-h-0 w-full flex-1 overflow-hidden rounded-md border border-[#e3d7c6] bg-[#fffdf7] px-2 py-2 shadow-inner shadow-black/[0.025] outline-none focus-visible:ring-1 focus-visible:ring-[#b98b52]/35 [&_.xterm]:h-full [&_.xterm-viewport]:!bg-[#fffdf7] [&_.xterm-screen]:!bg-[#fffdf7]"
       />
     </div>
   );
@@ -234,6 +312,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
 }) => {
   const [panes, setPanes] = useState<TerminalPane[]>([]);
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
+  const dockRef = useRef<HTMLElement | null>(null);
 
   const addPane = useCallback(() => {
     setPanes((current) => {
@@ -253,20 +332,36 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
     }
   }, [addPane, open, panes.length]);
 
+  useEffect(() => {
+    if (!open || panes.length === 0) return;
+    if (activePaneId && panes.some((pane) => pane.id === activePaneId)) return;
+    setActivePaneId(panes[0].id);
+  }, [activePaneId, open, panes]);
+
+  useEffect(() => {
+    if (!open) return;
+    const animationFrame = window.requestAnimationFrame(() => {
+      dockRef.current?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [open, activePaneId]);
+
   if (!open && panes.length === 0) return null;
 
   return (
     <section
+      ref={dockRef}
       data-testid="in-app-terminal-dock"
+      tabIndex={-1}
       className={cn(
-        'no-drag flex min-h-[220px] flex-shrink-0 flex-col overflow-hidden border-t border-[#b98948] bg-[#e7d4b4] text-text-default shadow-[0_-14px_36px_rgba(62,42,15,0.16)]',
+        'no-drag flex min-h-[220px] flex-shrink-0 flex-col overflow-hidden border-t border-border-subtle bg-[#f7f1e8] text-text-default shadow-[0_-14px_36px_rgba(62,42,15,0.10)] outline-none',
         open ? 'animate-in slide-in-from-bottom-2 fade-in duration-200' : 'hidden'
       )}
       style={{ height: 'min(42vh, 380px)' }}
     >
-      <div className="flex h-11 flex-shrink-0 items-end gap-2 border-b border-[#bd9154] bg-[#ddc49d] px-2 pt-1.5">
+      <div className="flex h-11 flex-shrink-0 items-center gap-2 border-b border-[#e0d3c1] bg-[#f2e7d8] px-2">
         <div
-          className="flex min-w-0 flex-1 items-end gap-1"
+          className="flex min-w-0 flex-1 items-center gap-1"
           role="tablist"
           aria-label="Terminal sessions"
         >
@@ -280,10 +375,10 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
                 aria-selected={active}
                 onClick={() => setActivePaneId(pane.id)}
                 className={cn(
-                  'relative flex h-8 min-w-0 max-w-[180px] items-center gap-1.5 rounded-t-md border border-b-0 px-2 text-xs shadow-sm transition-colors',
+                  'relative flex h-7 min-w-0 max-w-[180px] items-center gap-1.5 rounded-md px-2 text-xs transition-colors',
                   active
-                    ? 'border-[#9f7130] bg-[#fff9ed] text-text-default after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-[#fff9ed] before:absolute before:inset-x-2 before:top-0 before:h-0.5 before:rounded-full before:bg-[#9f7130]'
-                    : 'border-[#caa46e] bg-[#ccb083] text-[#665033] hover:border-[#aa7d41] hover:bg-[#f1dfc1] hover:text-text-default'
+                    ? 'bg-background-default text-text-default shadow-sm shadow-black/[0.04] before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-[#b98b52]'
+                    : 'text-[#6f6255] hover:bg-background-default/70 hover:text-text-default'
                 )}
               >
                 <TerminalIcon className="h-3.5 w-3.5 flex-shrink-0" />
@@ -297,7 +392,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
             size="sm"
             shape="round"
             onClick={addPane}
-            className="mb-0.5 h-7 w-7 flex-shrink-0 border border-[#caa46e] bg-[#d4bc95] p-0 text-[#665033] hover:bg-[#fff9ed] hover:text-text-default"
+            className="h-7 w-7 flex-shrink-0 p-0 text-[#6f6255] hover:bg-background-default/70 hover:text-text-default"
             aria-label="New terminal session"
             title="New terminal session"
           >
@@ -313,14 +408,14 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
           size="sm"
           shape="round"
           onClick={onClose}
-          className="mb-0.5 h-7 w-7 flex-shrink-0 p-0 text-[#665033] hover:bg-[#fff9ed] hover:text-text-default"
+          className="h-7 w-7 flex-shrink-0 p-0 text-[#6f6255] hover:bg-background-default/70 hover:text-text-default"
           aria-label="Hide terminal"
           title="Hide terminal"
         >
           <X className="h-3.5 w-3.5" />
         </Button>
       </div>
-      <div className="min-h-0 flex-1 border-t border-[#ead6b6] bg-[#f3e4cc] p-2">
+      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-1 bg-[#fbf6ed] p-2">
         {panes.map((pane) => (
           <TerminalPaneView
             key={pane.id}
