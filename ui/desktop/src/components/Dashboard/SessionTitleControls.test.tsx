@@ -5,25 +5,28 @@ import { SessionNamePill } from './SessionNamePill';
 import { WindowTitleBar } from './WindowTitleBar';
 
 describe('session title controls', () => {
-  it('turns the main chat title into an input when the displayed title is clicked', async () => {
+  it('keeps the main chat title read-only until Rename is selected from the title menu', async () => {
     const user = userEvent.setup();
 
     render(<SessionNamePill name="Weather summary website" onRename={vi.fn()} />);
 
-    await user.click(screen.getByRole('button', { name: 'Weather summary website' }));
+    await user.click(screen.getByText('Weather summary website'));
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
 
+    await user.click(screen.getByRole('button', { name: /conversation title actions/i }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Rename' }));
     expect(screen.getByRole('textbox')).toHaveValue('Weather summary website');
   });
 
-  it('turns the main chat title into an input on pointer down', () => {
+  it('does not rename the main chat title from pointer down on the title text', () => {
     render(<SessionNamePill name="Weather summary website" onRename={vi.fn()} />);
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Weather summary website' }));
+    fireEvent.pointerDown(screen.getByText('Weather summary website'));
 
-    expect(screen.getByRole('textbox')).toHaveValue('Weather summary website');
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   });
 
-  it('turns the dashboard window title into an input on a single click', async () => {
+  it('turns the dashboard window title into an input from the title menu', async () => {
     const user = userEvent.setup();
 
     render(
@@ -39,12 +42,15 @@ describe('session title controls', () => {
       />
     );
 
-    await user.click(screen.getByRole('button', { name: 'Weather summary website' }));
+    await user.click(screen.getByText('Weather summary website'));
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
 
+    await user.click(screen.getByRole('button', { name: /conversation title actions/i }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Rename' }));
     expect(screen.getByRole('textbox')).toHaveValue('Weather summary website');
   });
 
-  it('keeps dashboard title presses out of the drag handler', () => {
+  it('keeps dashboard title menu presses out of the drag handler', () => {
     const onPointerDownDrag = vi.fn();
 
     render(
@@ -60,9 +66,9 @@ describe('session title controls', () => {
       />
     );
 
-    fireEvent.pointerDown(screen.getByRole('button', { name: 'Weather summary website' }));
+    fireEvent.pointerDown(screen.getByRole('button', { name: /conversation title actions/i }));
 
-    expect(screen.getByRole('textbox')).toHaveValue('Weather summary website');
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(onPointerDownDrag).not.toHaveBeenCalled();
   });
 });
