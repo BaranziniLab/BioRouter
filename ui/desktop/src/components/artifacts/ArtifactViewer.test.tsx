@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import ArtifactViewer from './ArtifactViewer';
+import { artifactSourceFromResource, titleFromResourceUri } from './artifactUtils';
 
 function installElectronMock() {
   Object.defineProperty(window, 'electron', {
@@ -35,8 +36,33 @@ function installElectronMock() {
   });
 }
 
+describe('artifact title helpers', () => {
+  it('derives descriptive titles from Auto Visualiser UI resource URIs', () => {
+    expect(titleFromResourceUri('ui://scatter/chart')).toBe('Scatter Chart');
+    expect(titleFromResourceUri('ui://histogram/chart')).toBe('Histogram Chart');
+    expect(titleFromResourceUri('ui://chart/interactive')).toBe('Interactive Chart');
+    expect(titleFromResourceUri('ui://map/visualization')).toBe('Map Visualization');
+  });
+
+  it('uses descriptive UI resource titles for embedded artifacts', () => {
+    expect(
+      artifactSourceFromResource(
+        {
+          type: 'resource',
+          resource: {
+            uri: 'ui://network/graph',
+            mimeType: 'text/html',
+            text: '<!doctype html><html></html>',
+          },
+        },
+        'Artifact'
+      )?.title
+    ).toBe('Network Graph');
+  });
+});
+
 describe('ArtifactViewer', () => {
-  it('renders HTML artifacts in a read-only side viewer frame', async () => {
+  it('renders HTML artifacts in a side viewer frame with title-only header', async () => {
     installElectronMock();
 
     render(
@@ -55,8 +81,11 @@ describe('ArtifactViewer', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('artifact-viewer')).toBeInTheDocument();
-      expect(screen.getByTitle('visualization.html')).toHaveAttribute('sandbox');
+      expect(
+        screen.getByTestId('artifact-viewer').querySelector('iframe[title="visualization.html"]')
+      ).toHaveAttribute('sandbox');
     });
+    expect(screen.queryByText(/read-only artifact preview/i)).not.toBeInTheDocument();
   });
 
   it('loads generated text files with syntax-highlighted preview', async () => {
@@ -141,7 +170,9 @@ describe('ArtifactViewer', () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /open artifact outside side viewer/i })).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: /open artifact outside side viewer/i })
+      ).toBeInTheDocument();
     });
 
     await user.click(screen.getByRole('button', { name: /open artifact outside side viewer/i }));

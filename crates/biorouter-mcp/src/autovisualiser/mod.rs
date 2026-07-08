@@ -47,6 +47,16 @@ impl<'de> Deserialize<'de> for ChartType {
     }
 }
 
+impl ChartType {
+    fn uri_slug(&self) -> &'static str {
+        match self {
+            ChartType::Line => "line",
+            ChartType::Scatter => "scatter",
+            ChartType::Bar => "bar",
+        }
+    }
+}
+
 /// Chart type for `render_donut`.
 #[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
@@ -878,8 +888,9 @@ Example:
             return Err(invalid("Chart requires at least one dataset."));
         }
         let data_json = js_value(data)?;
+        let uri = format!("ui://{}/chart", data.chart_type.uri_slug());
         render(
-            "ui://chart/interactive",
+            &uri,
             "chart",
             "Chart rendered inline for the user.",
             include_str!("templates/chart_template.html"),

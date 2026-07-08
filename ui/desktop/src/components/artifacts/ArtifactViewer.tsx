@@ -1,5 +1,5 @@
 import { UIResourceRenderer } from '@mcp-ui/client';
-import { type CSSProperties, type PointerEvent, useEffect, useMemo, useRef, useState } from 'react';
+import { type CSSProperties, type PointerEvent, useEffect, useRef, useState } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -202,12 +202,6 @@ export default function ArtifactViewer({
   }, [artifact, onRenderError]);
 
   const Icon = iconForArtifact(artifact);
-  const subtitle = useMemo(() => {
-    if (!artifact) return '';
-    if (artifact.kind === 'file') return artifact.path;
-    if (artifact.kind === 'externalUrl') return artifact.url;
-    return 'Read-only artifact preview';
-  }, [artifact]);
 
   if (!artifact) return null;
 
@@ -256,14 +250,18 @@ export default function ArtifactViewer({
         </div>
       )}
 
-      <div className="relative z-20 flex h-14 flex-shrink-0 items-center gap-2 border-b border-border-subtle/35 bg-background-muted/95 px-4">
+      <div className="relative z-20 flex h-12 flex-shrink-0 items-center gap-2 border-b border-border-subtle/35 bg-background-muted/95 px-4">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-background-medium/80 text-text-muted">
             <Icon className="h-4 w-4" aria-hidden="true" />
           </div>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-sm font-medium text-text-default">{artifact.title}</div>
-            <div className="truncate text-xs text-text-muted">{subtitle}</div>
+            <div
+              className="truncate text-sm font-medium leading-5 text-text-default"
+              title={artifact.title}
+            >
+              {artifact.title}
+            </div>
           </div>
         </div>
         {(preview.kind === 'html' || preview.kind === 'externalUrl') && (

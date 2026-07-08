@@ -409,7 +409,7 @@ async fn test_show_chart() {
         },
     });
     let result = router.show_chart(params).await.unwrap();
-    assert_resource_result(&result, "ui://chart/interactive");
+    assert_resource_result(&result, "ui://scatter/chart");
 }
 
 #[tokio::test]
