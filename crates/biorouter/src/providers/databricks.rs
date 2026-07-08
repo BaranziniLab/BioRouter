@@ -283,6 +283,7 @@ impl Provider for DatabricksProvider {
             "databricks-gemini-3-flash",
             "databricks-gemini-2-5-pro",
             "databricks-gemini-2-5-flash",
+            "databricks-llama-4-maverick",
         ];
         let models: Vec<ModelInfo> = DATABRICKS_KNOWN_MODELS
             .iter()

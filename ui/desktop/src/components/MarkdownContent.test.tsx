@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render } from '@testing-library/react';
+import { fireEvent, render } from '@testing-library/react';
 import { screen, waitFor } from '@testing-library/dom';
 import MarkdownContent from './MarkdownContent';
 
@@ -216,6 +216,24 @@ console.log('Hello, World!');
         expect(link).toHaveAttribute('target', '_blank');
         expect(link).toHaveAttribute('rel', 'noopener noreferrer');
       });
+    });
+
+    it('opens previewable file links as read-only artifacts', async () => {
+      const onOpenArtifact = vi.fn();
+      const content = '[analysis.sql](/Users/wgu/project/analysis.sql)';
+
+      render(<MarkdownContent content={content} onOpenArtifact={onOpenArtifact} />);
+
+      await waitFor(() => {
+        fireEvent.click(screen.getByRole('button', { name: 'analysis.sql' }));
+      });
+
+      expect(onOpenArtifact).toHaveBeenCalledWith({
+        kind: 'file',
+        title: 'analysis.sql',
+        path: '/Users/wgu/project/analysis.sql',
+      });
+      expect(screen.queryByRole('link', { name: 'analysis.sql' })).not.toBeInTheDocument();
     });
 
     it('renders tables correctly', async () => {

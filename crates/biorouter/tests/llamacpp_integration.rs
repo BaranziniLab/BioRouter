@@ -8,8 +8,8 @@
 //!   cargo test -p biorouter --test llamacpp_integration -- --ignored --test-threads=1
 //! ```
 //!
-//! The first run downloads Qwen3.5 0.8B (~0.5 GB) from Hugging Face into the
-//! Biorouter llama.cpp model cache; later runs reuse it.
+//! The first run downloads a tiny GGUF test model (~0.5 GB) from Hugging Face
+//! into the Biorouter llama.cpp model cache; later runs reuse it.
 
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::model::ModelConfig;
@@ -18,7 +18,7 @@ use biorouter::providers::llamacpp::LlamaCppProvider;
 use futures::StreamExt;
 use rmcp::{model::Tool, object};
 
-const TEST_MODEL: &str = "qwen3.5-0.8b";
+const TEST_MODEL: &str = "unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M";
 
 fn weather_tool() -> Tool {
     Tool::new(
@@ -119,19 +119,19 @@ async fn tool_calling_emits_tool_request() {
 #[tokio::test]
 #[ignore = "spawns a real llama-server and downloads a model"]
 async fn switching_models_restarts_sidecar() {
-    use biorouter::providers::llamacpp::resolve_hf_spec;
+    use biorouter::providers::llamacpp::resolve_model_source;
     use biorouter::providers::llamacpp_sidecar::{global, SidecarState};
     use std::time::Duration;
 
-    let spec = resolve_hf_spec(TEST_MODEL).unwrap();
-    let port_a = global().ensure(TEST_MODEL, &spec).await.unwrap();
+    let source = resolve_model_source(TEST_MODEL).unwrap();
+    let port_a = global().ensure(TEST_MODEL, &source).await.unwrap();
     global()
         .wait_ready(Duration::from_secs(1800))
         .await
         .unwrap();
 
     // Re-ensuring the same model must keep the same process/port.
-    let port_b = global().ensure(TEST_MODEL, &spec).await.unwrap();
+    let port_b = global().ensure(TEST_MODEL, &source).await.unwrap();
     assert_eq!(port_a, port_b);
 
     let status = global().status().await;

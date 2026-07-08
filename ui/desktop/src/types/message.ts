@@ -61,6 +61,38 @@ export function createElicitationResponseMessage(
   };
 }
 
+export function createArtifactRenderRepairMessage({
+  artifactTitle,
+  message,
+  detail,
+  href,
+}: {
+  artifactTitle: string;
+  message: string;
+  detail?: string;
+  href?: string;
+}): Message {
+  const text = [
+    '[BioRouter artifact render guardrail]',
+    'A system-generated artifact failed to render in the BioRouter preview.',
+    `Artifact: ${artifactTitle}`,
+    `Runtime error: ${message}`,
+    detail ? `Details:\n${detail}` : null,
+    href ? `Artifact URL: ${href}` : null,
+    'Repair policy: inspect the generated artifact code, fix the runtime error, and render a corrected artifact. Only stop if there is a specific reason the artifact cannot be repaired.',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+
+  return {
+    id: generateMessageId(),
+    role: 'user',
+    created: Math.floor(Date.now() / 1000),
+    content: [{ type: 'text', text }],
+    metadata: { userVisible: false, agentVisible: true },
+  };
+}
+
 export function generateMessageId(): string {
   return Math.random().toString(36).substring(2, 10);
 }

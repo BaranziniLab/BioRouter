@@ -69,6 +69,7 @@ static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
         // anthropic — Fable 5 / Opus 4.6+ / Sonnet 4.6 are 1M; older Claude 200k.
         // Dotted variants cover OpenRouter/Copilot-style IDs.
         ("claude-fable-5", 1_000_000),
+        ("claude-sonnet-5", 1_000_000),
         ("claude-opus-4-8", 1_000_000),
         ("claude-opus-4.8", 1_000_000),
         ("claude-opus-4-7", 1_000_000),
@@ -86,6 +87,8 @@ static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
         ("gemma-4-e2b", 128_000),
         ("gemma-4-e4b", 128_000),
         ("gemma-4", 256_000),
+        ("gemma4", 131_072),
+        ("qwen3.6", 262_144),
         ("gemma-3-27b", 128_000),
         ("gemma-3-12b", 128_000),
         ("gemma-3-4b", 128_000),
@@ -120,6 +123,8 @@ static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
         ("grok-4", 1_000_000),
         ("grok", 131_072),
         // zai (Zhipu GLM) — GLM-4.6/4.5 are 128k–200k; default to 128k
+        ("glm-5.2", 1_048_576),
+        ("glm-5.1", 202_752),
         ("glm-4.7", 200_000),
         ("glm-4.6", 200_000),
         ("glm-5", 200_000),
@@ -127,9 +132,15 @@ static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
         // deepseek — V4 family is 1M
         ("deepseek-v4", 1_000_000),
         // moonshot — k2.5/k2.6 are 256k, original k2 is 128k
+        ("kimi-k2.7", 262_144),
         ("kimi-k2.5", 262_144),
         ("kimi-k2.6", 262_144),
         ("kimi-k2", 131_072),
+        // MiniMax and Inception coding models
+        ("minimax-m3", 1_048_576),
+        ("mercury-2", 128_000),
+        ("mercury-edit-2", 32_000),
+        ("mercury-coder", 32_000),
         // xiaomi mimo — MiMo v2.5 family advertises ~1M; MiMo v2 family ~256k
         ("mimo-v2.5", 1_000_000), // covers mimo-v2.5 and mimo-v2.5-pro
         ("mimo-v2", 262_144),     // covers mimo-v2-pro and mimo-v2-omni

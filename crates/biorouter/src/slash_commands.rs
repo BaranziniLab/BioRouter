@@ -8,6 +8,7 @@ use crate::config::Config;
 use crate::workflow::Workflow;
 
 const SLASH_COMMANDS_CONFIG_KEY: &str = "slash_commands";
+const REMOVED_SLASH_COMMANDS: &[&str] = &["prompt", "prompts"];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SlashCommandMapping {
@@ -25,6 +26,14 @@ pub fn list_commands() -> Vec<SlashCommandMapping> {
             );
             Vec::new()
         })
+        .into_iter()
+        .filter(|mapping: &SlashCommandMapping| !is_removed_slash_command(&mapping.command))
+        .collect()
+}
+
+pub fn is_removed_slash_command(command: &str) -> bool {
+    let normalized = command.trim_start_matches('/').to_lowercase();
+    REMOVED_SLASH_COMMANDS.contains(&normalized.as_str())
 }
 
 fn save_slash_commands(commands: Vec<SlashCommandMapping>) -> Result<()> {
@@ -41,7 +50,7 @@ pub fn set_workflow_slash_command(workflow_path: PathBuf, command: Option<String
 
     if let Some(cmd) = command {
         let normalized_cmd = cmd.trim_start_matches('/').to_lowercase();
-        if !normalized_cmd.is_empty() {
+        if !normalized_cmd.is_empty() && !is_removed_slash_command(&normalized_cmd) {
             commands.push(SlashCommandMapping {
                 command: normalized_cmd,
                 workflow_path: workflow_path_str,
@@ -54,6 +63,9 @@ pub fn set_workflow_slash_command(workflow_path: PathBuf, command: Option<String
 
 pub fn get_workflow_for_command(command: &str) -> Option<PathBuf> {
     let normalized = command.trim_start_matches('/').to_lowercase();
+    if is_removed_slash_command(&normalized) {
+        return None;
+    }
     let commands = list_commands();
     commands
         .into_iter()

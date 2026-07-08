@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Activity, ScrollText } from './icons/app-icons';
+import { ScrollText } from './icons/app-icons';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { readConfig, upsertConfig } from '../api';
@@ -186,8 +186,8 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
         : 'bg-background-warning';
   return (
     <div className="flex items-center gap-2 px-2 py-1.5 rounded">
-      <span className="flex items-center justify-center w-4 h-4 flex-shrink-0 text-text-default/70">
-        <Activity className="w-4 h-4" />
+      <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-text-default/70">
+        <span className="h-3.5 w-3.5 rounded-full border-2 border-current" />
       </span>
       <span className="text-[11px] text-text-default/60 w-12 flex-shrink-0">Context</span>
       <div className="flex-1 min-w-0 flex flex-col gap-1">
@@ -297,11 +297,11 @@ interface ContextWindowIndicatorProps extends ContextWindowGaugeProps {
   triggerTitle?: string;
 }
 
-/** Compact-row variant: a single black vital-sign button which, on click,
+/** Compact-row variant: a single remaining-context ring button which, on click,
  * opens a popover that renders the same bar-style gauge used in the
- * dashboard picker. For the chat tab the user sees one neutral icon and,
+ * dashboard picker. For the chat tab the user sees one compact ring and,
  * on click, gets the full real-time gauge with a Compact button — the
- * same UI the dashboard exposes. Bar color reflects usage. */
+ * same UI the dashboard exposes. Ring color reflects remaining headroom. */
 export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   totalTokens,
   tokenLimit,
@@ -312,17 +312,57 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   const [open, setOpen] = useState(false);
   const current = totalTokens ?? 0;
   if (!isTokenLimitLoaded && !current) return null;
+  const total = tokenLimit || 0;
+  const ratio = total > 0 ? Math.min(1, current / total) : 0;
+  const pct = Math.round(ratio * 100);
+  const remainingTokens = total > 0 ? Math.max(total - current, 0) : 0;
+  const remainingRatio = total > 0 ? Math.max(0, Math.min(1, remainingTokens / total)) : 0;
+  const remainingPct = Math.round(remainingRatio * 100);
+  const radius = 8;
+  const circumference = 2 * Math.PI * radius;
+  const strokeOffset = circumference * (1 - remainingRatio);
+  const tooltip = `${triggerTitle}: ${fmt(remainingTokens)} remaining of ${fmt(total)} tokens (${remainingPct}% remaining, ${pct}% used)`;
   return (
     <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <button
-          type="button"
-          title={triggerTitle}
-          className="flex items-center justify-center w-7 h-7 rounded text-text-default/70 hover:text-text-default hover:bg-background-medium cursor-pointer transition-colors"
-        >
-          <Activity className="w-4 h-4" />
-        </button>
-      </PopoverTrigger>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              title={tooltip}
+              aria-label={tooltip}
+              className="relative flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-text-default/70 hover:text-text-default hover:bg-background-medium cursor-pointer transition-colors"
+            >
+              <svg className="absolute inset-1" viewBox="0 0 24 24" aria-hidden="true">
+                <circle
+                  cx="12"
+                  cy="12"
+                  r={radius}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  className="text-border-subtle"
+                />
+                <circle
+                  cx="12"
+                  cy="12"
+                  r={radius}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeDasharray={circumference}
+                  strokeDashoffset={strokeOffset}
+                  className="text-text-default/70 transition-[stroke-dashoffset] duration-200"
+                  transform="rotate(-90 12 12)"
+                />
+              </svg>
+              <span className="sr-only">{tooltip}</span>
+            </button>
+          </PopoverTrigger>
+        </TooltipTrigger>
+        <TooltipContent>{tooltip}</TooltipContent>
+      </Tooltip>
       <PopoverContent side="top" align="start" className="w-72 p-1.5">
         <ContextWindowGauge
           totalTokens={totalTokens}

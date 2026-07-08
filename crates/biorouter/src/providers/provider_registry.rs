@@ -93,7 +93,8 @@ impl ProviderRegistry {
                 output_token_cost: m.output_token_cost,
                 currency: m.currency.clone(),
                 supports_cache_control: Some(m.supports_cache_control.unwrap_or(false)),
-                supports_vision: None,
+                supports_vision: m.supports_vision,
+                supported_input_mime_types: m.supported_input_mime_types.clone(),
             })
             .collect();
 

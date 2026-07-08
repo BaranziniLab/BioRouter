@@ -32,6 +32,7 @@ static CLAUDE_PATTERNS: Lazy<Vec<(Regex, Regex, &'static str)>> = Lazy::new(|| {
 
 /// Build canonical model name from provider and model identifiers
 pub fn canonical_name(provider: &str, model: &str) -> String {
+    let provider = canonical_provider(provider);
     let model_base = strip_version_suffix(model);
 
     // OpenRouter models are already in canonical format
@@ -58,6 +59,8 @@ pub fn map_to_canonical_model(
     model: &str,
     registry: &super::CanonicalModelRegistry,
 ) -> Option<String> {
+    let provider = canonical_provider(provider);
+
     // Try direct mapping first
     if let Some(candidate) = try_canonical(provider, model, registry) {
         return Some(candidate);
@@ -111,6 +114,20 @@ pub fn map_to_canonical_model(
     None
 }
 
+fn canonical_provider(provider: &str) -> &str {
+    match provider {
+        "azure_openai" | "versa_azure" => "azure",
+        "aws_bedrock" | "versa_bedrock" => "bedrock",
+        "gemini_cli" => "google",
+        "custom_deepseek" => "deepseek",
+        "mistral" => "mistralai",
+        "xai" => "x-ai",
+        "zai" => "z-ai",
+        "xiaomi_mimo" => "xiaomi",
+        other => other,
+    }
+}
+
 /// Swap word order for Claude models to handle both naming conventions
 fn swap_claude_word_order(model: &str) -> Option<String> {
     if !model.starts_with("claude-") {
@@ -133,7 +150,10 @@ fn swap_claude_word_order(model: &str) -> Option<String> {
 }
 
 fn is_hosting_provider(provider: &str) -> bool {
-    matches!(provider, "databricks" | "openrouter" | "azure" | "bedrock")
+    matches!(
+        canonical_provider(provider),
+        "databricks" | "openrouter" | "azure" | "bedrock" | "gcp_vertex_ai" | "tetrate"
+    )
 }
 
 /// Infer the real provider from model name patterns
@@ -184,6 +204,26 @@ fn infer_provider_from_model(model: &str) -> Option<&'static str> {
         return Some("x-ai");
     }
 
+    if model_lower.starts_with("glm-") {
+        return Some("z-ai");
+    }
+
+    if model_lower.starts_with("mimo-") {
+        return Some("xiaomi");
+    }
+
+    if model_lower.starts_with("mercury-") {
+        return Some("inception");
+    }
+
+    if model_lower.starts_with("kimi-") {
+        return Some("moonshotai");
+    }
+
+    if model_lower.starts_with("minimax-") {
+        return Some("minimax");
+    }
+
     if model_lower.contains("jamba") {
         return Some("ai21");
     }
@@ -215,6 +255,11 @@ fn strip_common_prefixes(model: &str) -> String {
         "deepseek-",
         "qwen-",
         "grok-",
+        "glm-",
+        "mimo-",
+        "mercury-",
+        "kimi-",
+        "minimax-",
         "jamba-",
         "command-",
         "codestral",
@@ -259,6 +304,11 @@ fn extract_provider_prefix(model: &str) -> Option<(&'static str, &str)> {
         "nvidia",
         "microsoft",
         "perplexity",
+        "z-ai",
+        "xiaomi",
+        "inception",
+        "moonshotai",
+        "minimax",
     ];
 
     for provider in &known_providers {
@@ -318,6 +368,14 @@ mod tests {
             map_to_canonical_model("openrouter", "anthropic/claude-sonnet-4", r),
             Some("anthropic/claude-sonnet-4".to_string())
         );
+        assert_eq!(
+            map_to_canonical_model("openrouter", "anthropic/claude-sonnet-5", r),
+            Some("anthropic/claude-sonnet-5".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("openrouter", "z-ai/glm-5.2", r),
+            Some("z-ai/glm-5.2".to_string())
+        );
 
         // === Anthropic Claude - basic ===
         assert_eq!(
@@ -364,6 +422,14 @@ mod tests {
             map_to_canonical_model("bedrock", "claude-sonnet-4-6", r),
             Some("anthropic/claude-sonnet-4.6".to_string())
         );
+        assert_eq!(
+            map_to_canonical_model("versa_bedrock", "us.anthropic.claude-opus-4-8-v1", r),
+            Some("anthropic/claude-opus-4.8".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("gcp_vertex_ai", "claude-sonnet-5", r),
+            Some("anthropic/claude-sonnet-5".to_string())
+        );
 
         // === OpenAI GPT ===
         assert_eq!(
@@ -386,6 +452,14 @@ mod tests {
             map_to_canonical_model("azure", "gpt-4o", r),
             Some("openai/gpt-4o".to_string())
         );
+        assert_eq!(
+            map_to_canonical_model("azure_openai", "gpt-5.5-2026-04-24", r),
+            Some("openai/gpt-5.5".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("versa_azure", "gpt-5.4-mini-2026-03-17", r),
+            Some("openai/gpt-5.4-mini".to_string())
+        );
 
         // === OpenAI O-series ===
         assert_eq!(
@@ -405,6 +479,10 @@ mod tests {
         assert_eq!(
             map_to_canonical_model("databricks", "gemini-2-5-flash", r),
             Some("google/gemini-2.5-flash".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("gemini_cli", "gemini-3.5-flash", r),
+            Some("google/gemini-3.5-flash".to_string())
         );
 
         // === Meta Llama ===
@@ -455,6 +533,24 @@ mod tests {
         assert_eq!(
             map_to_canonical_model("databricks", "kbiorouter-grok-4-fast", r),
             Some("x-ai/grok-4-fast".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("xai", "grok-4.3", r),
+            Some("x-ai/grok-4.3".to_string())
+        );
+
+        // === Provider aliases for newer standalone providers ===
+        assert_eq!(
+            map_to_canonical_model("zai", "glm-5.2", r),
+            Some("z-ai/glm-5.2".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("xiaomi_mimo", "mimo-v2.5-pro", r),
+            Some("xiaomi/mimo-v2.5-pro".to_string())
+        );
+        assert_eq!(
+            map_to_canonical_model("inception", "mercury-2", r),
+            Some("inception/mercury-2".to_string())
         );
 
         // === Jamba (AI21) ===

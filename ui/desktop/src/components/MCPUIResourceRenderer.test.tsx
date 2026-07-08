@@ -16,9 +16,9 @@ vi.mock('@mcp-ui/client', () => ({
   ),
 }));
 
-function renderSubject() {
+function renderSubject(uri = 'ui://chart/visualization') {
   const html = '<!doctype html><html><body><h1>Chart</h1></body></html>';
-  const blob = btoa(html);
+  const blob = window.btoa(html);
   const openArtifactWindow = vi.fn().mockResolvedValue(undefined);
 
   Object.defineProperty(window, 'electron', {
@@ -45,7 +45,7 @@ function renderSubject() {
   const content = {
     type: 'resource',
     resource: {
-      uri: 'ui://chart/visualization',
+      uri,
       mimeType: 'text/html',
       blob,
     },
@@ -68,7 +68,7 @@ describe('MCPUIResourceRenderer', () => {
     expect(wrapper).toHaveClass('bg-transparent');
     expect(wrapper.className).not.toContain('border ');
     expect(wrapper.className).not.toContain('p-3');
-    expect(screen.queryByText('visualization')).not.toBeInTheDocument();
+    expect(screen.queryByText('Chart Visualization')).not.toBeInTheDocument();
     expect(screen.queryByText('Expand')).not.toBeInTheDocument();
     expect(UIResourceRenderer).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -83,18 +83,83 @@ describe('MCPUIResourceRenderer', () => {
   it('keeps an icon-only expand affordance that opens the artifact window', async () => {
     const { html, openArtifactWindow } = renderSubject();
 
-    fireEvent.click(screen.getByRole('button', { name: /open visualization/i }));
+    fireEvent.click(screen.getByRole('button', { name: /open chart visualization/i }));
 
     await waitFor(() => {
       expect(openArtifactWindow).toHaveBeenCalledWith(
         expect.objectContaining({
           html,
-          title: 'visualization',
+          title: 'Chart Visualization',
           width: 1100,
           height: 820,
           theme: 'light',
         })
       );
     });
+  });
+
+  it('allows agent-drafter app resources to be deleted from chat after confirmation', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    renderSubject('ui://agent-drafter/researcher-impact-dashboard');
+
+    fireEvent.click(screen.getByRole('button', { name: /delete researcher-impact-dashboard/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        'http://localhost/apps/researcher-impact-dashboard',
+        expect.objectContaining({
+          method: 'DELETE',
+          headers: { 'X-Secret-Key': 'secret' },
+        })
+      );
+    });
+    expect(screen.getByText(/Application deleted:/)).toBeInTheDocument();
+    expect(screen.getByText('researcher-impact-dashboard')).toBeInTheDocument();
+  });
+
+  it('opens MCP HTML artifacts in the side viewer when an artifact handler is provided', async () => {
+    const onOpenArtifact = vi.fn();
+    const html = '<!doctype html><html><body><h1>Chart</h1></body></html>';
+    const blob = btoa(html);
+
+    Object.defineProperty(window, 'electron', {
+      configurable: true,
+      value: {
+        getBiorouterdHostPort: vi.fn().mockResolvedValue('http://localhost:8765'),
+        getSecretKey: vi.fn().mockResolvedValue('secret'),
+        openArtifactWindow: vi.fn().mockResolvedValue(undefined),
+        on: vi.fn().mockReturnValue(() => undefined),
+      },
+    });
+
+    render(
+      <ThemeProvider>
+        <MCPUIResourceRenderer
+          content={
+            {
+              type: 'resource',
+              resource: {
+                uri: 'ui://chart/visualization',
+                mimeType: 'text/html',
+                blob,
+              },
+            } as EmbeddedResource & { type: 'resource' }
+          }
+          onOpenArtifact={onOpenArtifact}
+        />
+      </ThemeProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /open chart visualization/i }));
+
+    expect(onOpenArtifact).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'html',
+        title: 'Chart Visualization',
+        html,
+      })
+    );
   });
 });

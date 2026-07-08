@@ -16,6 +16,7 @@ pub mod platform_tools;
 pub mod prompt_manager;
 mod recurring;
 mod reply_parts;
+mod resource_refs;
 pub mod retry;
 mod schedule_tool;
 pub(crate) mod skills_extension;

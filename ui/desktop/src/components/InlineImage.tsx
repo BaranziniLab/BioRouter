@@ -96,22 +96,22 @@ export function InlineImage(props: InlineImageProps) {
         </div>
       )}
       {imageData && (
-        <img
-          src={imageData}
-          alt={alt}
-          onError={handleError}
+        <button
+          type="button"
           onClick={toggleExpand}
-          className={`rounded border border-border-subtle cursor-pointer hover:border-border-subtle transition-all ${
-            isExpanded ? 'max-w-full max-h-96' : 'max-h-40 max-w-40'
+          className={`block rounded transition-opacity hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring ${
+            isExpanded ? 'max-w-full' : 'max-w-40 max-h-40'
           } ${isLoading ? 'hidden' : ''}`}
-          style={{ objectFit: 'contain' }}
-        />
-      )}
-      {isExpanded && !error && !isLoading && imageData && (
-        <div className="text-xs text-text-muted mt-1">Click to collapse</div>
-      )}
-      {!isExpanded && !error && !isLoading && imageData && (
-        <div className="text-xs text-text-muted mt-1">Click to expand</div>
+          title={isExpanded ? 'Collapse image' : 'Expand image'}
+          aria-label={isExpanded ? 'Collapse image' : 'Expand image'}
+        >
+          <img
+            src={imageData}
+            alt={alt}
+            onError={handleError}
+            className={isExpanded ? 'max-h-96 max-w-full object-contain' : 'max-h-40 max-w-40 object-contain'}
+          />
+        </button>
       )}
     </div>
   );

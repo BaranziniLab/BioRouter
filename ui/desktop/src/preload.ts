@@ -61,6 +61,80 @@ interface SaveDataUrlResponse {
   error?: string;
 }
 
+type ArtifactFileEntry = {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  size?: number;
+};
+
+type ArtifactFilePreview =
+  | {
+      kind: 'text' | 'html';
+      title: string;
+      path: string;
+      mimeType: string;
+      text: string;
+      size: number;
+      found: true;
+    }
+  | {
+      kind: 'image';
+      title: string;
+      path: string;
+      mimeType: string;
+      dataUrl: string;
+      size: number;
+      found: true;
+    }
+  | {
+      kind: 'directory';
+      title: string;
+      path: string;
+      entries: ArtifactFileEntry[];
+      found: true;
+    }
+  | {
+      kind: 'binary';
+      title: string;
+      path: string;
+      mimeType: string;
+      size: number;
+      found: true;
+    }
+  | {
+      kind: 'error';
+      title: string;
+      path: string;
+      error: string;
+      found: false;
+    };
+
+type TerminalCreateResult =
+  | {
+      success: true;
+      sessionId: string;
+      cwd: string;
+      backend: 'pty' | 'process';
+    }
+  | {
+      success: false;
+      error: string;
+    };
+
+type TerminalActionResult = { success: true } | { success: false; error: string };
+
+type TerminalDataEvent = {
+  sessionId: string;
+  data: string;
+};
+
+type TerminalExitEvent = {
+  sessionId: string;
+  exitCode: number | null;
+  signal: string | null;
+};
+
 const config = JSON.parse(process.argv.find((arg) => arg.startsWith('{')) || '{}');
 
 interface UpdaterEvent {
@@ -98,6 +172,7 @@ type ElectronAPI = {
   getBinaryPath: (binaryName: string) => Promise<string>;
   importSessionFile: () => Promise<string | null>;
   readFile: (directory: string) => Promise<FileResponse>;
+  readArtifactFile: (filePath: string) => Promise<ArtifactFilePreview>;
   writeFile: (directory: string, content: string) => Promise<boolean>;
   ensureDirectory: (dirPath: string) => Promise<boolean>;
   listFiles: (dirPath: string, extension?: string) => Promise<string[]>;
@@ -170,6 +245,11 @@ type ElectronAPI = {
   isUsingGitHubFallback: () => Promise<boolean>;
   // Workflow warning functions
   closeWindow: () => void;
+  ensureWindowContentWidth: (width: number) => Promise<{
+    expanded: boolean;
+    width: number;
+    height: number;
+  }>;
   hasAcceptedWorkflowBefore: (workflow: Workflow) => Promise<boolean>;
   recordWorkflowHash: (workflow: Workflow) => Promise<boolean>;
   openDirectoryInExplorer: (directoryPath: string) => Promise<boolean>;
@@ -181,6 +261,7 @@ type ElectronAPI = {
     height?: number;
     theme?: 'light' | 'dark';
   }) => Promise<{ ok: boolean }>;
+  prepareArtifactHtml: (payload: { html: string }) => Promise<{ html: string }>;
   addRecentDir: (dir: string) => Promise<boolean>;
   openBrxtFilePicker: () => Promise<string | null>;
   validateBrxtBundle: (filePath: string) => Promise<
@@ -236,6 +317,20 @@ type ElectronAPI = {
   launchCli: (
     workingDir?: string
   ) => Promise<{ success: true } | { success: false; error: string }>;
+  createTerminalSession: (options?: {
+    workingDir?: string;
+    cols?: number;
+    rows?: number;
+  }) => Promise<TerminalCreateResult>;
+  writeTerminalSession: (sessionId: string, data: string) => Promise<TerminalActionResult>;
+  resizeTerminalSession: (
+    sessionId: string,
+    cols: number,
+    rows: number
+  ) => Promise<TerminalActionResult>;
+  disposeTerminalSession: (sessionId: string) => Promise<TerminalActionResult>;
+  onTerminalData: (callback: (event: TerminalDataEvent) => void) => () => void;
+  onTerminalExit: (callback: (event: TerminalExitEvent) => void) => () => void;
   // Extension updater (events pushed via 'extension-update-event' channel)
   onExtensionUpdateEvent: (
     callback: (event: import('./utils/extensionUpdater').ExtensionUpdateEvent) => void
@@ -294,6 +389,7 @@ const electronAPI: ElectronAPI = {
   getBinaryPath: (binaryName: string) => ipcRenderer.invoke('get-binary-path', binaryName),
   importSessionFile: () => ipcRenderer.invoke('import-session-file'),
   readFile: (filePath: string) => ipcRenderer.invoke('read-file', filePath),
+  readArtifactFile: (filePath: string) => ipcRenderer.invoke('read-artifact-file', filePath),
   writeFile: (filePath: string, content: string) =>
     ipcRenderer.invoke('write-file', filePath, content),
   ensureDirectory: (dirPath: string) => ipcRenderer.invoke('ensure-directory', dirPath),
@@ -389,6 +485,8 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke('is-using-github-fallback');
   },
   closeWindow: () => ipcRenderer.send('close-window'),
+  ensureWindowContentWidth: (width: number) =>
+    ipcRenderer.invoke('window:ensure-content-width', width),
   hasAcceptedWorkflowBefore: (workflow: Workflow) =>
     ipcRenderer.invoke('has-accepted-workflow-before', workflow),
   recordWorkflowHash: (workflow: Workflow) => ipcRenderer.invoke('record-workflow-hash', workflow),
@@ -402,6 +500,8 @@ const electronAPI: ElectronAPI = {
     height?: number;
     theme?: 'light' | 'dark';
   }) => ipcRenderer.invoke('open-artifact-window', payload),
+  prepareArtifactHtml: (payload: { html: string }) =>
+    ipcRenderer.invoke('prepare-artifact-html', payload),
   addRecentDir: (dir: string) => ipcRenderer.invoke('add-recent-dir', dir),
   openBrxtFilePicker: () => ipcRenderer.invoke('brxt:open-file-dialog'),
   validateBrxtBundle: (filePath: string) =>
@@ -418,6 +518,23 @@ const electronAPI: ElectronAPI = {
   cliStatus: () => ipcRenderer.invoke('cli:status'),
   installCli: () => ipcRenderer.invoke('cli:install'),
   launchCli: (workingDir?: string) => ipcRenderer.invoke('cli:launch', workingDir),
+  createTerminalSession: (options?: { workingDir?: string; cols?: number; rows?: number }) =>
+    ipcRenderer.invoke('terminal:create', options),
+  writeTerminalSession: (sessionId: string, data: string) =>
+    ipcRenderer.invoke('terminal:write', sessionId, data),
+  resizeTerminalSession: (sessionId: string, cols: number, rows: number) =>
+    ipcRenderer.invoke('terminal:resize', sessionId, cols, rows),
+  disposeTerminalSession: (sessionId: string) => ipcRenderer.invoke('terminal:dispose', sessionId),
+  onTerminalData: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, data: TerminalDataEvent) => callback(data);
+    ipcRenderer.on('terminal:data', listener);
+    return () => ipcRenderer.removeListener('terminal:data', listener);
+  },
+  onTerminalExit: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, data: TerminalExitEvent) => callback(data);
+    ipcRenderer.on('terminal:exit', listener);
+    return () => ipcRenderer.removeListener('terminal:exit', listener);
+  },
   onExtensionUpdateEvent: (callback) => {
     ipcRenderer.on('extension-update-event', (_event, data) => callback(data));
   },

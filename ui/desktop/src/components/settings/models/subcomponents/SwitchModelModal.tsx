@@ -18,7 +18,12 @@ import { useModelAndProvider } from '../../../ModelAndProviderContext';
 import type { View } from '../../../../utils/navigationUtils';
 import Model, { getProviderMetadata, fetchModelsForProviders } from '../modelInterface';
 import { getPredefinedModelsFromEnv, shouldShowPredefinedModels } from '../predefinedModelsUtils';
-import { ProviderType, type ProviderDetails } from '../../../../api';
+import {
+  llamacppStatus,
+  ProviderType,
+  type LlamaCppModel,
+  type ProviderDetails,
+} from '../../../../api';
 
 // Return the first concrete model from the provider's list. The list is
 // authored in priority order in the Rust provider definition (typically newest
@@ -33,6 +38,61 @@ function findFirstAvailableModel(
   if (validModels.length === 0) return null;
   return validModels[0].value;
 }
+
+const llamaDownloadLabel = (model: LlamaCppModel | undefined) => {
+  switch (model?.download_status) {
+    case 'downloaded':
+      return model.download_source === 'ollama' ? 'Downloaded in Ollama' : 'Downloaded';
+    case 'partial':
+      return 'Partial download';
+    case 'not_downloaded':
+      return 'Needs download';
+    default:
+      return null;
+  }
+};
+
+const llamaFitLabel = (model: LlamaCppModel | undefined) => {
+  switch (model?.suitability_status) {
+    case 'suitable':
+      return 'Recommended here';
+    case 'above_recommendation':
+      return `Needs ${model.recommended_gpu_memory_gib} GiB GPU memory`;
+    case 'unknown_resources':
+      return 'VRAM unknown';
+    default:
+      return null;
+  }
+};
+
+const llamaFallbackLabel = (model: LlamaCppModel | undefined) => {
+  switch (model?.fallback_download_status) {
+    case 'downloaded':
+      return 'Fallback ready';
+    case 'partial':
+      return 'Fallback partial';
+    case 'not_downloaded':
+      return model?.ollama_name ? 'Fallback may download' : null;
+    default:
+      return null;
+  }
+};
+
+const llamaModelLabel = (modelName: string, catalog: Map<string, LlamaCppModel>) => {
+  const entry = catalog.get(modelName);
+  if (!entry) return modelName;
+
+  return [
+    entry.display_name,
+    entry.download_size,
+    llamaDownloadLabel(entry),
+    llamaFallbackLabel(entry),
+    llamaFitLabel(entry),
+    entry.ollama_name ? `Ollama ${entry.ollama_name}` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
+};
 
 type SwitchModelModalProps = {
   sessionId: string | null;
@@ -139,7 +199,10 @@ export const SwitchModelModal = ({
         modelObj = { name: model, provider: provider, subtext: providerDisplayName } as Model;
       }
 
-      await changeModel(sessionId, modelObj);
+      const changed = await changeModel(sessionId, modelObj);
+      if (!changed) {
+        return;
+      }
 
       if (onModelSelected) {
         onModelSelected(modelObj.name);
@@ -231,9 +294,21 @@ export const SwitchModelModal = ({
           console.error('Provider model fetch errors:', [result.error]);
         }
 
+        let llamaCatalog = new Map<string, LlamaCppModel>();
+        if (selectedProvider.name === 'llamacpp') {
+          try {
+            const status = await llamacppStatus({ throwOnError: true });
+            llamaCatalog = new Map(
+              (status.data?.catalog || []).map((entry) => [entry.name, entry])
+            );
+          } catch (error) {
+            console.error('Failed to query Llama Server catalog:', error);
+          }
+        }
+
         const options: ModelOption[] = modelList.map((m) => ({
           value: m,
-          label: m,
+          label: llamaModelLabel(m, llamaCatalog),
           provider: selectedProvider.name,
           providerType: selectedProvider.provider_type,
         }));
@@ -306,7 +381,14 @@ export const SwitchModelModal = ({
   }, [provider, modelOptionsByProvider, modelInputValue]);
 
   // Same reason — a stable value object keeps the ClearIndicator stable.
-  const modelSelectValue = useMemo(() => (model ? { value: model, label: model } : null), [model]);
+  const modelSelectValue = useMemo(() => {
+    if (!model) return null;
+
+    const selectedOption = provider
+      ? modelOptionsByProvider[provider]?.find((option) => option.value === model)
+      : null;
+    return { value: model, label: selectedOption?.label || model };
+  }, [model, modelOptionsByProvider, provider]);
   const providerSelectValue = useMemo(
     () => providerOptions.find((option) => option.value === provider) || null,
     [providerOptions, provider]

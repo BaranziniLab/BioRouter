@@ -14,28 +14,26 @@ import { CommandType, getActive, getSessionExtensions, getSlashCommands, listBas
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
 import { ALL_SKILL_DIRS, loadSkillsFromDirs } from './skills/skillUtils';
+import bundledExtensionsData from './settings/extensions/bundled-extensions.json';
 
 type DisplayItemType = CommandType | 'Directory' | 'File' | 'KnowledgeBase' | 'Skill' | 'Extension';
 
 const typeOrder: Record<DisplayItemType, number> = {
-  Directory: 0,
-  File: 1,
-  Builtin: 2,
-  Workflow: 3,
-  KnowledgeBase: 4,
-  Skill: 5,
-  Extension: 6,
+  Builtin: 0,
+  Workflow: 1,
+  KnowledgeBase: 2,
+  Skill: 3,
+  Extension: 4,
+  Directory: 5,
+  File: 6,
 };
 
-// Slash commands that are purely a UI convenience: selecting them inserts a
-// templated prompt into the chat input rather than triggering a backend
-// handler. Keyed by the command name (no leading '/').
+// Slash commands that are purely a UI convenience. Keyed by command name (no
+// leading '/') and inserted as visible routed resource markers.
 const CLIENT_INSERT_COMMANDS: Record<string, { description: string; insert: string }> = {
   knowledge: {
-    description:
-      'Use the visible knowledge bases, prioritizing the focused one - inserts a templated prompt',
-    insert:
-      'Using the Knowledge extension, search the visible knowledge bases and prioritize the focused knowledge base, ',
+    description: 'Use the Knowledge extension',
+    insert: '/ext:knowledge ',
   },
   diverge: {
     description: 'Branch this conversation into a new chat, keeping the full history — press Enter',
@@ -43,15 +41,48 @@ const CLIENT_INSERT_COMMANDS: Record<string, { description: string; insert: stri
   },
 };
 
+const REMOVED_SLASH_COMMANDS = new Set(['prompt', 'prompts']);
+const COMPACT_EXTENSION_ALIASES: Record<
+  string,
+  { canonical: string; name: string; label: string }
+> = {
+  agentdrafter: { canonical: 'agent_drafter', name: 'agentdrafter', label: 'Agent Drafter' },
+  autovisualiser: {
+    canonical: 'autovisualiser',
+    name: 'autovisualizer',
+    label: 'Auto Visualiser',
+  },
+  extensionmanager: {
+    canonical: 'Extension Manager',
+    name: 'extensionmanager',
+    label: 'Extension Manager',
+  },
+};
+
+const compactExtensionAliasFor = (name: string) =>
+  COMPACT_EXTENSION_ALIASES[name.replace(/[\s_-]+/g, '').toLowerCase()];
+
+const normalizedExtensionName = (name: string) => name.replace(/[\s_-]+/g, '').toLowerCase();
+
+const isKnownBuiltInExtension = (name: string) => {
+  const normalized = normalizedExtensionName(name);
+  return (
+    Boolean(COMPACT_EXTENSION_ALIASES[normalized]) ||
+    bundledExtensionsData.some(
+      (extension) => normalizedExtensionName(extension.name) === normalized
+    ) ||
+    ['todo', 'skills', 'extensionmanager', 'chatrecall', 'codeexecution'].includes(normalized)
+  );
+};
+
 const referenceInsert = (item: DisplayItem) => {
-  const label = item.name.replace(/^(kb|skill|ext):/, '');
   switch (item.itemType) {
     case 'KnowledgeBase':
-      return `Using the Knowledge extension, focus knowledge base "${label}" (kb_id: ${item.relativePath}) for this request, `;
+      return `/kb:${item.relativePath} `;
     case 'Skill':
-      return `Use the "${label}" skill for this request, `;
+      return `/skill:${item.relativePath} `;
     case 'Extension':
-      return `Use the "${label}" extension for this request, `;
+      return `/ext:${item.relativePath} `;
     default:
       return null;
   }
@@ -72,6 +103,7 @@ export interface DisplayItem {
   extra: string;
   itemType: DisplayItemType;
   relativePath: string;
+  builtIn?: boolean;
 }
 
 export interface DisplayItemWithMatch extends DisplayItem {
@@ -89,6 +121,9 @@ const uniqueDisplayItems = (displayItems: DisplayItem[]) => {
     return true;
   });
 };
+
+const MAX_FILE_SCAN_RESULTS = 300;
+const MAX_FILE_DISPLAY_RESULTS = 80;
 
 interface MentionPopoverProps {
   isOpen: boolean;
@@ -194,9 +229,13 @@ const MentionPopover = forwardRef<
     const { extensionsList } = useConfig();
 
     const scanDirectoryFromRoot = useCallback(
-      async (dirPath: string, relativePath = '', depth = 0): Promise<DisplayItem[]> => {
-        // Increase depth limit for better file discovery
-        if (depth > 5) return [];
+      async (
+        dirPath: string,
+        relativePath = '',
+        depth = 0,
+        limitRef = { count: 0 }
+      ): Promise<DisplayItem[]> => {
+        if (depth > 1 || limitRef.count >= MAX_FILE_SCAN_RESULTS) return [];
 
         try {
           const items = await window.electron.listFiles(dirPath);
@@ -243,9 +282,8 @@ const MentionPopover = forwardRef<
             '.jenkins',
           ];
 
-          // Don't skip as many directories at deeper levels to find more items
           const skipDirsAtDepth =
-            depth > 2 ? ['.git', '.svn', '.hg', 'node_modules', '__pycache__'] : skipDirs;
+            depth > 1 ? ['.git', '.svn', '.hg', 'node_modules', '__pycache__'] : skipDirs;
 
           // Sort items to prioritize certain directories
           const sortedItems = items.sort((a, b) => {
@@ -256,10 +294,11 @@ const MentionPopover = forwardRef<
             return a.localeCompare(b);
           });
 
-          // Increase item limit per directory for better coverage
-          const itemLimit = depth === 0 ? 50 : depth === 1 ? 40 : 30;
+          const itemLimit = depth === 0 ? 40 : 25;
+          const queryForRecursion = query.trim();
 
           for (const item of sortedItems.slice(0, itemLimit)) {
+            if (limitRef.count >= MAX_FILE_SCAN_RESULTS) break;
             const fullPath = `${dirPath}/${item}`;
             const itemRelativePath = relativePath ? `${relativePath}/${item}` : item;
 
@@ -363,6 +402,7 @@ const MentionPopover = forwardRef<
                 itemType: 'File',
                 relativePath: itemRelativePath,
               });
+              limitRef.count += 1;
               continue;
             }
 
@@ -382,6 +422,7 @@ const MentionPopover = forwardRef<
                 itemType: 'File',
                 relativePath: itemRelativePath,
               });
+              limitRef.count += 1;
               continue;
             }
 
@@ -395,10 +436,22 @@ const MentionPopover = forwardRef<
                 itemType: 'Directory',
                 relativePath: itemRelativePath,
               });
+              limitRef.count += 1;
 
-              // Recursively scan directories more aggressively
-              if (depth < 4 || priorityDirs.includes(item)) {
-                const subFiles = await scanDirectoryFromRoot(fullPath, itemRelativePath, depth + 1);
+              const shouldRecurse =
+                depth === 0 &&
+                (priorityDirs.includes(item) ||
+                  (queryForRecursion.length >= 2 &&
+                    fuzzyMatch(queryForRecursion, itemRelativePath).score >=
+                      Math.max(8, queryForRecursion.length * 4)));
+
+              if (shouldRecurse) {
+                const subFiles = await scanDirectoryFromRoot(
+                  fullPath,
+                  itemRelativePath,
+                  depth + 1,
+                  limitRef
+                );
                 results.push(...subFiles);
               }
             } catch {
@@ -413,7 +466,7 @@ const MentionPopover = forwardRef<
           return [];
         }
       },
-      []
+      [query]
     );
 
     const scanFilesFromRoot = useCallback(async () => {
@@ -441,6 +494,122 @@ const MentionPopover = forwardRef<
       }
     }, [scanDirectoryFromRoot, currentWorkingDir]);
 
+    const loadReferenceItems = useCallback(
+      async (includeCommands: boolean) => {
+        const [commandsResponse, basesResponse, activeResponse, skillsResult, sessionExtensions] =
+          await Promise.all([
+            includeCommands
+              ? getSlashCommands({ throwOnError: true })
+              : Promise.resolve({ data: { commands: [] } }),
+            listBases({ throwOnError: false }),
+            getActive({
+              query: sessionId ? { session_id: sessionId } : undefined,
+              throwOnError: false,
+            }),
+            loadSkillsFromDirs(ALL_SKILL_DIRS).catch(() => ({ singles: [], bundles: [] })),
+            sessionId
+              ? getSessionExtensions({ path: { session_id: sessionId } }).catch(() => null)
+              : Promise.resolve(null),
+          ]);
+        const commandItems: DisplayItem[] = (commandsResponse.data?.commands || [])
+          .filter(
+            (cmd) => !REMOVED_SLASH_COMMANDS.has(cmd.command.replace(/^\/+/, '').toLowerCase())
+          )
+          .map((cmd) => ({
+            name: cmd.command,
+            extra: cmd.help,
+            itemType: cmd.command_type,
+            relativePath: cmd.command,
+            builtIn: cmd.command_type === 'Builtin',
+          }));
+        if (includeCommands) {
+          const existingNames = new Set(commandItems.map((c) => c.name));
+          for (const [name, def] of Object.entries(CLIENT_INSERT_COMMANDS)) {
+            if (existingNames.has(name)) continue;
+            commandItems.push({
+              name,
+              extra: def.description,
+              itemType: 'Builtin',
+              relativePath: name,
+              builtIn: true,
+            });
+          }
+        }
+
+        const hiddenKbIds = new Set(activeResponse.data?.hidden_kbs ?? []);
+        const activeKbId = activeResponse.data?.active_kb ?? null;
+        for (const base of basesResponse.data ?? []) {
+          if (hiddenKbIds.has(base.id)) continue;
+          commandItems.push({
+            name: `kb:${base.name}`,
+            extra: `${activeKbId === base.id ? 'Focused knowledge base' : 'Visible knowledge base'} · ${base.id}`,
+            itemType: 'KnowledgeBase',
+            relativePath: base.id,
+          });
+        }
+        for (const bundle of skillsResult.bundles) {
+          commandItems.push({
+            name: `skill:${bundle.bundleName}`,
+            extra: `${bundle.skills.length} skill${bundle.skills.length === 1 ? '' : 's'} in bundle`,
+            itemType: 'Skill',
+            relativePath: bundle.bundleName,
+          });
+        }
+        for (const skill of skillsResult.singles) {
+          commandItems.push({
+            name: `skill:${skill.name}`,
+            extra: skill.description,
+            itemType: 'Skill',
+            relativePath: skill.name,
+          });
+        }
+
+        const enabledSessionExtensions = new Set(
+          sessionExtensions?.data?.extensions?.map((extension) => extension.name) ?? []
+        );
+        for (const extension of extensionsList) {
+          if (compactExtensionAliasFor(extension.name)) continue;
+          const enabled = sessionId
+            ? enabledSessionExtensions.has(extension.name)
+            : extension.enabled;
+          if (!enabled) continue;
+          commandItems.push({
+            name: `ext:${extension.name}`,
+            extra: extension.description || 'Enabled extension',
+            itemType: 'Extension',
+            relativePath: extension.name,
+            builtIn: isKnownBuiltInExtension(extension.name),
+          });
+        }
+
+        for (const extension of bundledExtensionsData) {
+          if (compactExtensionAliasFor(extension.name)) continue;
+          commandItems.push({
+            name: `ext:${extension.name}`,
+            extra: extension.description || extension.display_name || extension.name,
+            itemType: 'Extension',
+            relativePath: extension.name,
+            builtIn: true,
+          });
+        }
+        for (const alias of Object.values(COMPACT_EXTENSION_ALIASES)) {
+          const bundledExtension = bundledExtensionsData.find(
+            (extension) => extension.name === alias.canonical
+          );
+          commandItems.push({
+            name: `ext:${alias.name}`,
+            extra: bundledExtension?.description || alias.label,
+            itemType: 'Extension',
+            relativePath: alias.name,
+            builtIn: true,
+          });
+        }
+
+        return uniqueDisplayItems(commandItems);
+      },
+      [extensionsList, sessionId]
+    );
+
     const compareByType = (a: DisplayItemWithMatch, b: DisplayItemWithMatch) => {
       const orderA = typeOrder[a.itemType] ?? Number.MAX_SAFE_INTEGER;
       const orderB = typeOrder[b.itemType] ?? Number.MAX_SAFE_INTEGER;
@@ -466,13 +635,15 @@ const MentionPopover = forwardRef<
           });
       }
 
-      return items
+      const matchedItems = items
         .map((file) => {
           const matches = [
             { match: fuzzyMatch(query, file.name), text: file.name },
             { match: fuzzyMatch(query, file.relativePath), text: file.relativePath },
-            { match: fuzzyMatch(query, file.extra), text: file.extra },
           ];
+          if (isSlashCommand) {
+            matches.push({ match: fuzzyMatch(query, file.extra), text: file.extra });
+          }
 
           const { match: bestMatch, text: matchedText } = matches.reduce((best, current) =>
             current.match.score > best.match.score ? current : best
@@ -499,7 +670,9 @@ const MentionPopover = forwardRef<
           const typeComparison = compareByType(a, b);
           return typeComparison || a.name.localeCompare(b.name);
         });
-    }, [items, query, currentWorkingDir]);
+
+      return isSlashCommand ? matchedItems : matchedItems.slice(0, MAX_FILE_DISPLAY_RESULTS);
+    }, [items, query, currentWorkingDir, isSlashCommand]);
 
     // Expose methods to parent component
     useImperativeHandle(
@@ -517,107 +690,43 @@ const MentionPopover = forwardRef<
     );
 
     useEffect(() => {
+      let cancelled = false;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
       const loadData = async () => {
         if (isSlashCommand) {
           setIsLoading(true);
           try {
-            const [
-              commandsResponse,
-              basesResponse,
-              activeResponse,
-              skillsResult,
-              sessionExtensions,
-            ] = await Promise.all([
-              getSlashCommands({ throwOnError: true }),
-              listBases({ throwOnError: false }),
-              getActive({
-                query: sessionId ? { session_id: sessionId } : undefined,
-                throwOnError: false,
-              }),
-              loadSkillsFromDirs(ALL_SKILL_DIRS).catch(() => ({ singles: [], bundles: [] })),
-              sessionId
-                ? getSessionExtensions({ path: { session_id: sessionId } }).catch(() => null)
-                : Promise.resolve(null),
-            ]);
-            const commandItems: DisplayItem[] = (commandsResponse.data?.commands || []).map(
-              (cmd) => ({
-                name: cmd.command,
-                extra: cmd.help,
-                itemType: cmd.command_type,
-                relativePath: cmd.command,
-              })
-            );
-            // Inject client-side insert commands (e.g. /knowledge) that exist
-            // purely to drop a templated prompt into the chat input. Skip any
-            // that the backend already advertises so we don't duplicate.
-            const existingNames = new Set(commandItems.map((c) => c.name));
-            for (const [name, def] of Object.entries(CLIENT_INSERT_COMMANDS)) {
-              if (existingNames.has(name)) continue;
-              commandItems.push({
-                name,
-                extra: def.description,
-                itemType: 'Builtin',
-                relativePath: name,
-              });
-            }
-            const hiddenKbIds = new Set(activeResponse.data?.hidden_kbs ?? []);
-            const activeKbId = activeResponse.data?.active_kb ?? null;
-            for (const base of basesResponse.data ?? []) {
-              if (hiddenKbIds.has(base.id)) continue;
-              commandItems.push({
-                name: `kb:${base.name}`,
-                extra: `${activeKbId === base.id ? 'Focused knowledge base' : 'Visible knowledge base'} · ${base.id}`,
-                itemType: 'KnowledgeBase',
-                relativePath: base.id,
-              });
-            }
-            for (const bundle of skillsResult.bundles) {
-              commandItems.push({
-                name: `skill:${bundle.bundleName}`,
-                extra: `${bundle.skills.length} skill${bundle.skills.length === 1 ? '' : 's'} in bundle`,
-                itemType: 'Skill',
-                relativePath: bundle.bundleName,
-              });
-            }
-            for (const skill of skillsResult.singles) {
-              commandItems.push({
-                name: `skill:${skill.name}`,
-                extra: skill.description,
-                itemType: 'Skill',
-                relativePath: skill.name,
-              });
-            }
-            const enabledSessionExtensions = new Set(
-              sessionExtensions?.data?.extensions?.map((extension) => extension.name) ?? []
-            );
-            for (const extension of extensionsList) {
-              const enabled = sessionId
-                ? enabledSessionExtensions.has(extension.name)
-                : extension.enabled;
-              if (!enabled) continue;
-              commandItems.push({
-                name: `ext:${extension.name}`,
-                extra: extension.description || 'Enabled extension',
-                itemType: 'Extension',
-                relativePath: extension.name,
-              });
-            }
-            setItems(uniqueDisplayItems(commandItems));
+            const commandItems = await loadReferenceItems(true);
+            if (!cancelled) setItems(commandItems);
           } catch (error) {
             console.error('Error loading slash commands:', error);
-            setItems([]);
+            if (!cancelled) setItems([]);
           } finally {
-            setIsLoading(false);
+            if (!cancelled) setIsLoading(false);
           }
-        } else {
-          await scanFilesFromRoot();
+          return;
         }
+
+        if (query.trim().length < 2) {
+          setItems([]);
+          return;
+        }
+
+        timeoutId = setTimeout(() => {
+          if (!cancelled) void scanFilesFromRoot();
+        }, 120);
       };
 
       if (isOpen) {
         loadData();
       }
-    }, [extensionsList, isOpen, isSlashCommand, scanFilesFromRoot, sessionId]);
+
+      return () => {
+        cancelled = true;
+        if (timeoutId) clearTimeout(timeoutId);
+      };
+    }, [isOpen, isSlashCommand, loadReferenceItems, query, scanFilesFromRoot]);
 
     useEffect(() => {
       const handleClickOutside = (event: MouseEvent) => {
@@ -668,7 +777,7 @@ const MentionPopover = forwardRef<
     const menu = (
       <div
         ref={popoverRef}
-        className="biorouter-popover-surface fixed z-50 bg-background-default rounded-xl max-h-72 overflow-hidden"
+        className="biorouter-popover-surface fixed z-[1210] bg-background-default rounded-xl max-h-72 overflow-hidden"
         style={{
           left: menuLeft,
           top: position.y - 8,
@@ -712,9 +821,7 @@ const MentionPopover = forwardRef<
                         <div className="text-xs leading-4 truncate text-text-default">
                           {item.name}
                         </div>
-                        {item.itemType === 'Builtin' && (
-                          <BuiltInBadge title="Built-in command. Ships with Biorouter." />
-                        )}
+                        {item.builtIn && <BuiltInBadge title="Built in. Ships with Biorouter." />}
                       </div>
                       <div className="text-[11px] leading-3 truncate text-text-muted">
                         {item.extra}

@@ -1,4 +1,4 @@
-use super::base::{ConfigKey, Provider, ProviderMetadata, ProviderUsage};
+use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage};
 use super::errors::ProviderError;
 use super::retry::{ProviderRetry, RetryConfig};
 use crate::conversation::message::Message;
@@ -231,12 +231,19 @@ impl VersaBedrockProvider {
 #[async_trait]
 impl Provider for VersaBedrockProvider {
     fn metadata() -> ProviderMetadata {
-        ProviderMetadata::new(
+        let models: Vec<ModelInfo> = VERSA_BEDROCK_KNOWN_MODELS
+            .iter()
+            .map(|&name| {
+                ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit()).with_vision()
+            })
+            .collect();
+
+        ProviderMetadata::with_models(
             "versa_bedrock",
             "Versa API Bedrock",
             "UCSF Anthropic models via Amazon Bedrock. Access key + secret only — endpoint and region are pre-configured.",
             VERSA_BEDROCK_DEFAULT_MODEL,
-            VERSA_BEDROCK_KNOWN_MODELS.to_vec(),
+            models,
             VERSA_BEDROCK_DOC_LINK,
             vec![
                 ConfigKey::new("VERSA_BEDROCK_ACCESS_KEY_ID", true, true, None),

@@ -3,7 +3,7 @@
 //! These avoid actually spawning a llama-server (that's covered by the
 //! `llamacpp_integration` tests in the `biorouter` crate); they verify the
 //! status/catalog contract the GUI onboarding card depends on, and input
-//! validation on /llamacpp/ensure.
+//! validation on /llamacpp/ensure and /llamacpp/warmup.
 
 use axum::{body::Body, http::Request};
 use tower::ServiceExt;
@@ -36,15 +36,91 @@ async fn status_returns_catalog_with_default_first_class() {
     let catalog = v.get("catalog").and_then(|c| c.as_array()).unwrap();
     assert!(!catalog.is_empty(), "catalog must not be empty");
 
-    // Exactly one default, and it is the small Qwen3.5.
+    // Exactly one default, chosen from the machine-tiered Ollama-linked catalog.
     let defaults: Vec<_> = catalog
         .iter()
         .filter(|m| m.get("is_default").and_then(|d| d.as_bool()) == Some(true))
         .collect();
     assert_eq!(defaults.len(), 1);
-    assert_eq!(
-        defaults[0].get("name").and_then(|n| n.as_str()),
-        Some("qwen3.5-4b")
+    let default_name = defaults[0].get("name").and_then(|n| n.as_str()).unwrap();
+    let allowed_defaults = ["gemma4", "qwen3.6"];
+    assert!(allowed_defaults.contains(&default_name));
+    assert!(defaults[0]
+        .get("context_limit")
+        .and_then(|n| n.as_u64())
+        .is_some_and(|n| n >= 65_536));
+
+    let default_context_size = v
+        .get("system")
+        .and_then(|s| s.get("default_context_size"))
+        .and_then(|n| n.as_u64())
+        .unwrap();
+    assert!(default_context_size >= 32_768);
+    assert!(
+        v.get("system")
+            .and_then(|s| s.get("accelerator_memory_kind"))
+            .and_then(|k| k.as_str())
+            .is_some(),
+        "system info should expose whether recommendations use unified memory or VRAM"
+    );
+    assert!(
+        v.get("system")
+            .and_then(|s| s.get("model_cache_dir"))
+            .and_then(|p| p.as_str())
+            .is_some_and(|p| p.ends_with(".ollama/models") || !p.is_empty()),
+        "system info should expose the Ollama-compatible model store"
+    );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("recommended_gpu_memory_gib")
+            .and_then(|n| n.as_u64())
+            .is_some()),
+        "catalog entries should expose GPU-addressable memory recommendations"
+    );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("downloaded")
+            .and_then(|downloaded| downloaded.as_bool())
+            .is_some()),
+        "catalog entries should expose whether the model is already downloaded"
+    );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("download_status")
+            .and_then(|status| status.as_str())
+            .is_some_and(|status| ["downloaded", "partial", "not_downloaded"].contains(&status))),
+        "catalog entries should expose a documented download status"
+    );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("download_source")
+            .and_then(|status| status.as_str())
+            .is_some_and(|status| ["ollama", "huggingface_cache", "none"].contains(&status))),
+        "catalog entries should expose where any local copy was found"
+    );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("fallback_downloaded")
+            .and_then(|downloaded| downloaded.as_bool())
+            .is_some()),
+        "catalog entries should expose whether the llama.cpp fallback is cached"
+    );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("fallback_download_status")
+            .and_then(|status| status.as_str())
+            .is_some_and(|status| ["downloaded", "partial", "not_downloaded"].contains(&status))),
+        "catalog entries should expose fallback download status"
+    );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("suitability_status")
+            .and_then(|status| status.as_str())
+            .is_some_and(
+                |status| ["suitable", "above_recommendation", "unknown_resources"]
+                    .contains(&status)
+            )),
+        "catalog entries should expose a documented suitability status"
     );
 
     // Both requested families are present.
@@ -52,8 +128,21 @@ async fn status_returns_catalog_with_default_first_class() {
         .iter()
         .filter_map(|m| m.get("name").and_then(|n| n.as_str()))
         .collect();
-    assert!(names.iter().any(|n| n.starts_with("qwen3.5")));
-    assert!(names.iter().any(|n| n.starts_with("gemma-4")));
+    assert!(names.contains(&"qwen3.6"));
+    assert!(names.contains(&"gemma4"));
+    assert!(!names.iter().any(|n| n.starts_with("qwen3.5")));
+    let gemma4 = catalog
+        .iter()
+        .find(|m| m.get("name").and_then(|n| n.as_str()) == Some("gemma4"))
+        .expect("Gemma 4 should remain in the catalog");
+    assert_eq!(
+        gemma4.get("ollama_name").and_then(|spec| spec.as_str()),
+        Some("gemma4:latest")
+    );
+    assert_eq!(
+        gemma4.get("hf_spec").and_then(|spec| spec.as_str()),
+        Some("google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0")
+    );
 
     // Sidecar state is one of the documented values.
     let state = v
@@ -64,6 +153,13 @@ async fn status_returns_catalog_with_default_first_class() {
     assert!(
         ["no_binary", "stopped", "starting", "ready", "error"].contains(&state),
         "unexpected sidecar state {state}"
+    );
+    assert!(
+        v.get("sidecar")
+            .and_then(|s| s.get("warmed"))
+            .and_then(|w| w.as_bool())
+            .is_some(),
+        "sidecar status should expose warmed state"
     );
 }
 
@@ -84,7 +180,28 @@ async fn ensure_rejects_unknown_model() {
 }
 
 #[tokio::test]
+async fn warmup_rejects_unknown_model_before_starting_sidecar() {
+    let res = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/llamacpp/warmup")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"gpt-4o"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+}
+
+#[tokio::test]
 async fn stop_is_idempotent() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+    drop(listener);
+    let _guard = env_lock::lock_env([("LLAMACPP_PORT", Some(port.as_str()))]);
+
     let res = app()
         .oneshot(
             Request::builder()

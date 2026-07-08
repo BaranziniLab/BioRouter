@@ -242,10 +242,10 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
     >
       <DropdownMenuTrigger asChild>
         <button
-          className="flex items-center cursor-pointer [&_svg]:size-4 text-text-default/70 hover:text-text-default hover:scale-100 hover:bg-transparent text-xs"
+          className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-xs"
           title="manage skills"
         >
-          <Layers className="mr-1 h-4 w-4" />
+          <Layers className="mr-0.5 h-4 w-4" />
           <span>{activeCount}</span>
         </button>
       </DropdownMenuTrigger>

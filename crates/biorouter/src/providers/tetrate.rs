@@ -1,5 +1,7 @@
 use super::api_client::{ApiClient, AuthMethod};
-use super::base::{ConfigKey, MessageStream, Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::base::{
+    ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage,
+};
 use super::errors::ProviderError;
 use super::retry::ProviderRetry;
 use super::utils::{
@@ -34,6 +36,15 @@ pub const TETRATE_KNOWN_MODELS: &[&str] = &[
     "gpt-4.1",
 ];
 pub const TETRATE_DOC_URL: &str = "https://router.tetrate.ai";
+
+fn tetrate_model_supports_vision(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    (normalized.starts_with("claude-")
+        || normalized.starts_with("gemini-")
+        || normalized.starts_with("gpt-4.1")
+        || normalized.starts_with("gpt-5"))
+        && !normalized.contains("codex")
+}
 
 #[derive(serde::Serialize)]
 pub struct TetrateProvider {
@@ -129,12 +140,24 @@ impl TetrateProvider {
 #[async_trait]
 impl Provider for TetrateProvider {
     fn metadata() -> ProviderMetadata {
-        ProviderMetadata::new(
+        let models: Vec<ModelInfo> = TETRATE_KNOWN_MODELS
+            .iter()
+            .map(|&name| {
+                let info = ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit());
+                if tetrate_model_supports_vision(name) {
+                    info.with_vision()
+                } else {
+                    info
+                }
+            })
+            .collect();
+
+        ProviderMetadata::with_models(
             "tetrate",
             "Tetrate Agent Router Service",
             "Enterprise router for AI models",
             TETRATE_DEFAULT_MODEL,
-            TETRATE_KNOWN_MODELS.to_vec(),
+            models,
             TETRATE_DOC_URL,
             vec![
                 ConfigKey::new("TETRATE_API_KEY", true, true, None),
