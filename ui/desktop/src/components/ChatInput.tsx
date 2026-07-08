@@ -1668,6 +1668,8 @@ export default function ChatInput({
             onRestartEnd={() => setChatState?.(ChatState.Idle)}
           />
 
+          <div className={TOOLBAR_DIVIDER_CLASS} />
+
           <div className={TOOLBAR_GROUP_CLASS}>
             <BottomMenuExtensionSelection sessionId={sessionId} />
             <BottomMenuSkillSelection sessionId={sessionId} />
@@ -1689,15 +1691,6 @@ export default function ChatInput({
                   />
                 </div>
               </Tooltip>
-              {COST_TRACKING_ENABLED && (
-                <div className={TOOLBAR_GROUP_CLASS}>
-                  <CostTracker
-                    inputTokens={accumulatedInputTokens}
-                    outputTokens={accumulatedOutputTokens}
-                    sessionCosts={sessionCosts}
-                  />
-                </div>
-              )}
               <ContextWindowIndicator
                 totalTokens={totalTokens}
                 tokenLimit={tokenLimit}
@@ -1710,6 +1703,15 @@ export default function ChatInput({
                   );
                 }}
               />
+              {COST_TRACKING_ENABLED && (
+                <div className={TOOLBAR_GROUP_CLASS}>
+                  <CostTracker
+                    inputTokens={accumulatedInputTokens}
+                    outputTokens={accumulatedOutputTokens}
+                    sessionCosts={sessionCosts}
+                  />
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1745,27 +1747,44 @@ export default function ChatInput({
                   />
                 </PickerRow>
                 {COST_TRACKING_ENABLED && (
-                  <PickerRow>
-                    <CostTracker
-                      inputTokens={accumulatedInputTokens}
-                      outputTokens={accumulatedOutputTokens}
-                      sessionCosts={sessionCosts}
+                  <>
+                    <ContextWindowGauge
+                      totalTokens={totalTokens}
+                      tokenLimit={tokenLimit}
+                      isTokenLimitLoaded={isTokenLimitLoaded}
+                      onCompact={() => {
+                        handleSubmit(
+                          new CustomEvent('submit', {
+                            detail: { value: MANUAL_COMPACT_TRIGGER },
+                          }) as unknown as React.FormEvent
+                        );
+                        setPickerExpanded(false);
+                      }}
                     />
-                  </PickerRow>
+                    <PickerRow>
+                      <CostTracker
+                        inputTokens={accumulatedInputTokens}
+                        outputTokens={accumulatedOutputTokens}
+                        sessionCosts={sessionCosts}
+                      />
+                    </PickerRow>
+                  </>
                 )}
-                <ContextWindowGauge
-                  totalTokens={totalTokens}
-                  tokenLimit={tokenLimit}
-                  isTokenLimitLoaded={isTokenLimitLoaded}
-                  onCompact={() => {
-                    handleSubmit(
-                      new CustomEvent('submit', {
-                        detail: { value: MANUAL_COMPACT_TRIGGER },
-                      }) as unknown as React.FormEvent
-                    );
-                    setPickerExpanded(false);
-                  }}
-                />
+                {!COST_TRACKING_ENABLED && (
+                  <ContextWindowGauge
+                    totalTokens={totalTokens}
+                    tokenLimit={tokenLimit}
+                    isTokenLimitLoaded={isTokenLimitLoaded}
+                    onCompact={() => {
+                      handleSubmit(
+                        new CustomEvent('submit', {
+                          detail: { value: MANUAL_COMPACT_TRIGGER },
+                        }) as unknown as React.FormEvent
+                      );
+                      setPickerExpanded(false);
+                    }}
+                  />
+                )}
               </PopoverContent>
             </Popover>
           )}
