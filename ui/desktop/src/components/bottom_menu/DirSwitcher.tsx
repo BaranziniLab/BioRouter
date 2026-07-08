@@ -89,12 +89,12 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
       >
         <TooltipTrigger asChild>
           <button
-            className={`z-[100] ${isDirectoryChooserOpen ? 'opacity-50' : 'hover:cursor-pointer hover:text-text-default'} text-text-default/70 text-xs flex items-center transition-colors pl-1 [&>svg]:size-4 ${className}`}
+            className={`z-[100] h-7 min-w-0 rounded-md px-1 ${isDirectoryChooserOpen ? 'opacity-50' : 'hover:cursor-pointer hover:bg-background-medium hover:text-text-default'} text-text-default/70 text-xs flex items-center transition-colors [&>svg]:size-4 ${className}`}
             onClick={handleDirectoryClick}
             disabled={isDirectoryChooserOpen}
           >
-            <FolderDot className="mr-1" size={16} />
-            <div className="max-w-[200px] truncate [direction:rtl]">{workingDir}</div>
+            <FolderDot className="mr-0.5" size={16} />
+            <div className="max-w-[112px] min-w-0 truncate [direction:rtl]">{workingDir}</div>
           </button>
         </TooltipTrigger>
         <TooltipContent side="top">{workingDir}</TooltipContent>

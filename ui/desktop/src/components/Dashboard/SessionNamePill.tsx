@@ -12,12 +12,35 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(name);
   const inputRef = useRef<HTMLInputElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const noDragStyle = { WebkitAppRegion: 'no-drag' } as React.CSSProperties;
 
   useEffect(() => {
     setDraft(name);
   }, [name]);
   useEffect(() => {
     if (editing) inputRef.current?.select();
+  }, [editing]);
+  useEffect(() => {
+    const button = buttonRef.current;
+    if (!button || editing) return;
+
+    const startEditingFromNativeEvent = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setEditing(true);
+    };
+
+    const eventNames = ['pointerdown', 'mousedown', 'click', 'dblclick'];
+    eventNames.forEach((eventName) => {
+      button.addEventListener(eventName, startEditingFromNativeEvent, { capture: true });
+    });
+
+    return () => {
+      eventNames.forEach((eventName) => {
+        button.removeEventListener(eventName, startEditingFromNativeEvent, { capture: true });
+      });
+    };
   }, [editing]);
 
   const commit = () => {
@@ -26,13 +49,18 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
     setEditing(false);
   };
 
+  const startEditing = (event: React.SyntheticEvent) => {
+    event.stopPropagation();
+    setEditing(true);
+  };
+
   return (
-    // `no-drag` (CSS class -> -webkit-app-region: no-drag) on the pill's
-    // own bounding box so the inline-flex content doesn't inherit the
-    // drag behavior of the wrapping container — without this the click
-    // would be captured by the OS title-bar drag handler.
     <div
-      className={`inline-flex items-center gap-2 px-2 py-1 rounded-md no-drag ${className ?? ''}`}
+      className={`inline-flex h-10 min-w-0 items-center gap-2 rounded-md no-drag ${className ?? ''}`}
+      style={noDragStyle}
+      onPointerDown={(event) => {
+        if (!editing) startEditing(event);
+      }}
     >
       {accentColor && (
         <span
@@ -46,6 +74,7 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
+          onPointerDown={(event) => event.stopPropagation()}
           onKeyDown={(e) => {
             if (e.key === 'Enter') commit();
             if (e.key === 'Escape') {
@@ -53,16 +82,20 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
               setEditing(false);
             }
           }}
-          className="bg-transparent text-sm font-medium outline-none border-b border-border-subtle min-w-[120px]"
+          style={noDragStyle}
+          className="h-8 w-[min(360px,70vw)] min-w-[120px] bg-transparent px-1 text-sm font-medium outline-none border-b border-border-subtle"
         />
       ) : (
         <button
+          ref={buttonRef}
           type="button"
-          className="text-sm font-medium cursor-text hover:bg-background-medium/40 rounded px-1 -mx-1 transition-colors text-left"
-          onClick={() => setEditing(true)}
+          className="inline-flex h-8 max-w-full min-w-0 cursor-text items-center rounded px-1 text-left text-sm font-medium leading-none text-text-default transition-colors hover:bg-background-medium/40"
+          onPointerDown={startEditing}
+          onClick={startEditing}
+          style={noDragStyle}
           title="Click to rename"
         >
-          {name}
+          <span className="pointer-events-none truncate no-drag">{name}</span>
         </button>
       )}
     </div>

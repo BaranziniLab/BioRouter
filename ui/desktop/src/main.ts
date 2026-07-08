@@ -717,7 +717,7 @@ const createChat = async (
     y: initialBounds?.y ?? mainWindowState.y,
     width: initialBounds?.width ?? mainWindowState.width,
     height: initialBounds?.height ?? mainWindowState.height,
-    minWidth: 450,
+    minWidth: 720,
     resizable: true,
     useContentSize: true,
     show: windowOptions?.show ?? true,
@@ -2829,6 +2829,96 @@ function isVersionOlder(a: string, b: string): boolean {
   return false;
 }
 
+function usableWorkingDir(workingDir?: string): string | undefined {
+  if (!workingDir || typeof workingDir !== 'string') return undefined;
+  try {
+    if (fsSync.statSync(workingDir).isDirectory()) {
+      return workingDir;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+type TerminalBackend = 'pty' | 'process';
+
+type TerminalCreateOptions = {
+  workingDir?: string;
+  cols?: number;
+  rows?: number;
+};
+
+type TerminalSession = {
+  backend: TerminalBackend;
+  cwd: string;
+  write: (data: string) => void;
+  resize: (cols: number, rows: number) => void;
+  dispose: () => void;
+};
+
+type NodePtyModule = typeof import('node-pty');
+
+const terminalSessions = new Map<string, TerminalSession>();
+let nodePtyModule: NodePtyModule | null | undefined;
+
+function terminalSize(value: unknown, fallback: number, min: number, max: number): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
+  return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+function terminalShell(): { shellPath: string; ptyArgs: string[]; processArgs: string[] } {
+  if (process.platform === 'win32') {
+    return {
+      shellPath: process.env.ComSpec || 'cmd.exe',
+      ptyArgs: [],
+      processArgs: [],
+    };
+  }
+  const shellPath = process.env.SHELL || '/bin/zsh';
+  return {
+    shellPath,
+    ptyArgs: shellPath.endsWith('zsh') ? ['-l'] : [],
+    processArgs: shellPath.endsWith('zsh') ? ['-i'] : [],
+  };
+}
+
+function terminalEnv(): NodeJS.ProcessEnv {
+  return {
+    ...SPAWN_ENV,
+    COLORTERM: 'truecolor',
+    FORCE_COLOR: '1',
+    TERM: 'xterm-256color',
+  };
+}
+
+async function loadNodePty(): Promise<NodePtyModule | null> {
+  if (nodePtyModule !== undefined) return nodePtyModule;
+  try {
+    nodePtyModule = await import('node-pty');
+  } catch (error) {
+    log.warn('[terminal] node-pty unavailable; falling back to process pipes:', error);
+    nodePtyModule = null;
+  }
+  return nodePtyModule;
+}
+
+function disposeTerminalSession(sessionId: string) {
+  const session = terminalSessions.get(sessionId);
+  if (!session) return false;
+  terminalSessions.delete(sessionId);
+  try {
+    session.dispose();
+  } catch (error) {
+    log.warn('[terminal] failed to dispose session:', error);
+  }
+  return true;
+}
+
 function registerCliInstallHandlers() {
   // Is the `biorouter` command callable from a terminal, and is it current?
   //
@@ -2885,6 +2975,118 @@ function registerCliInstallHandlers() {
     };
   });
 
+  ipcMain.handle('terminal:create', async (event, options?: TerminalCreateOptions) => {
+    const cwd = usableWorkingDir(options?.workingDir) || os.homedir();
+    const cols = terminalSize(options?.cols, 80, 24, 500);
+    const rows = terminalSize(options?.rows, 18, 8, 200);
+    const { shellPath, ptyArgs, processArgs } = terminalShell();
+    const sessionId = crypto.randomUUID();
+    const owner = event.sender;
+
+    const sendData = (data: string) => {
+      if (!owner.isDestroyed()) {
+        owner.send('terminal:data', { sessionId, data });
+      }
+    };
+    const sendExit = (exitCode: number | null, signal?: string | number | null) => {
+      terminalSessions.delete(sessionId);
+      if (!owner.isDestroyed()) {
+        owner.send('terminal:exit', {
+          sessionId,
+          exitCode,
+          signal: signal === null || typeof signal === 'undefined' ? null : String(signal),
+        });
+      }
+    };
+
+    try {
+      const pty = await loadNodePty();
+      if (pty) {
+        const ptyProcess = pty.spawn(shellPath, ptyArgs, {
+          cols,
+          cwd,
+          env: terminalEnv(),
+          name: 'xterm-256color',
+          rows,
+        });
+        const dataDisposer = ptyProcess.onData(sendData);
+        const exitDisposer = ptyProcess.onExit(({ exitCode, signal }) => {
+          dataDisposer.dispose();
+          exitDisposer.dispose();
+          sendExit(exitCode, signal);
+        });
+        terminalSessions.set(sessionId, {
+          backend: 'pty',
+          cwd,
+          write: (data) => ptyProcess.write(data),
+          resize: (nextCols, nextRows) => {
+            ptyProcess.resize(
+              terminalSize(nextCols, cols, 24, 500),
+              terminalSize(nextRows, rows, 8, 200)
+            );
+          },
+          dispose: () => {
+            dataDisposer.dispose();
+            exitDisposer.dispose();
+            ptyProcess.kill();
+          },
+        });
+        owner.once('destroyed', () => disposeTerminalSession(sessionId));
+        return { success: true, sessionId, cwd, backend: 'pty' as const };
+      }
+
+      const child = spawn(shellPath, processArgs, {
+        cwd,
+        env: terminalEnv(),
+        stdio: 'pipe',
+        windowsHide: true,
+      });
+      child.stdout.setEncoding('utf8');
+      child.stderr.setEncoding('utf8');
+      child.stdout.on('data', sendData);
+      child.stderr.on('data', sendData);
+      child.on('close', (code, signal) => sendExit(code, signal));
+      child.on('error', (error) => {
+        sendData(`\r\n${error.message}\r\n`);
+        sendExit(1, null);
+      });
+      terminalSessions.set(sessionId, {
+        backend: 'process',
+        cwd,
+        write: (data) => {
+          child.stdin.write(data);
+        },
+        resize: () => {},
+        dispose: () => {
+          child.kill();
+        },
+      });
+      owner.once('destroyed', () => disposeTerminalSession(sessionId));
+      return { success: true, sessionId, cwd, backend: 'process' as const };
+    } catch (error) {
+      return { success: false, error: (error as Error).message };
+    }
+  });
+
+  ipcMain.handle('terminal:write', async (_event, sessionId: string, data: string) => {
+    const session = terminalSessions.get(sessionId);
+    if (!session) return { success: false, error: 'Terminal session is no longer running.' };
+    session.write(data);
+    return { success: true };
+  });
+
+  ipcMain.handle('terminal:resize', async (_event, sessionId: string, cols: number, rows: number) => {
+    const session = terminalSessions.get(sessionId);
+    if (!session) return { success: false, error: 'Terminal session is no longer running.' };
+    session.resize(cols, rows);
+    return { success: true };
+  });
+
+  ipcMain.handle('terminal:dispose', async (_event, sessionId: string) => {
+    disposeTerminalSession(sessionId);
+    return { success: true };
+  });
+
   // Launch the installed CLI in the user's terminal app. Assumes `biorouter`
   // is already on PATH (the renderer checks `cli:status` first and offers the
   // install flow otherwise).
@@ -2893,25 +3095,14 @@ function registerCliInstallHandlers() {
     // directory) so the terminal opens in the exact folder the user is
     // working in, rather than the terminal's default/home directory. Only
     // honor an existing directory; fall back to no `cd` otherwise.
-    let cwd: string | undefined;
-    if (workingDir && typeof workingDir === 'string') {
-      try {
-        if (fsSync.statSync(workingDir).isDirectory()) {
-          cwd = workingDir;
-        }
-      } catch {
-        // Not a usable directory — leave cwd undefined.
-      }
-    }
-    // Single-quote the path for safe interpolation into shell command strings.
-    const shQuote = (p: string) => `'${p.replace(/'/g, `'\\''`)}'`;
+    const cwd = usableWorkingDir(workingDir);
     try {
       if (process.platform === 'darwin') {
         // Open Terminal.app with `do script`, which runs the literal `biorouter`
         // command in a new window (prefixed with a `cd` into the working
         // directory). This is transparent — the user sees `biorouter` run, not a
         // generated helper script — and relies on the CLI already being on PATH.
-        const doScript = cwd ? `cd ${shQuote(cwd)} && biorouter` : 'biorouter';
+        const doScript = cwd ? `cd ${shellQuote(cwd)} && biorouter` : 'biorouter';
         // Escape for the AppleScript string literal: backslashes first, then
         // double quotes.
         const asLiteral = doScript.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
@@ -3793,6 +3984,15 @@ async function appMain() {
   const ACP_WS_ADDR = '127.0.0.1:11577';
   let acpWsSidecar: import('child_process').ChildProcess | null = null;
   let acpWsCleanupRegistered = false;
+  const artifactCdnAssetCache = new Map<string, Promise<string>>();
+  const artifactCdnAssets = [
+    'https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js',
+    'https://cdn.jsdelivr.net/npm/d3-sankey@0.12/dist/d3-sankey.min.js',
+    'https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js',
+    'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js',
+    'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css',
+    'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js',
+  ];
   const ensureAcpWsServer = () => {
     if (acpWsSidecar && acpWsSidecar.exitCode === null) return;
     try {
@@ -3817,7 +4017,47 @@ async function appMain() {
     }
   };
 
-  const prepareArtifactHtml = (rawHtml: string): string => {
+  const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  const fetchArtifactCdnAsset = (url: string): Promise<string> => {
+    let cached = artifactCdnAssetCache.get(url);
+    if (!cached) {
+      cached = fetch(url).then((response) => {
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        return response.text();
+      });
+      artifactCdnAssetCache.set(url, cached);
+    }
+    return cached;
+  };
+
+  const inlineKnownArtifactCdnAssets = async (rawHtml: string): Promise<string> => {
+    let html = rawHtml;
+    for (const url of artifactCdnAssets) {
+      if (!html.includes(url)) continue;
+      try {
+        const asset = await fetchArtifactCdnAsset(url);
+        if (url.endsWith('.css')) {
+          html = html.replace(
+            new RegExp(`<link\\b[^>]*href=["']${escapeRegExp(url)}["'][^>]*>`, 'g'),
+            `<style>${asset}</style>`
+          );
+        } else {
+          html = html.replace(
+            new RegExp(`<script\\b[^>]*src=["']${escapeRegExp(url)}["'][^>]*>\\s*</script>`, 'g'),
+            `<script>${asset}</script>`
+          );
+        }
+      } catch (error) {
+        console.warn(`Could not inline artifact CDN asset ${url}:`, error);
+      }
+    }
+    return html;
+  };
+
+  const prepareArtifactHtml = async (rawHtml: string): Promise<string> => {
     let html = rawHtml;
     const isAgentic = html.includes('"transport":"bridge"');
     if (isAgentic) {
@@ -3827,11 +4067,11 @@ async function appMain() {
         .replace('"transport":"bridge"', '"transport":"acp-ws"')
         .replace('"endpoint":null', `"endpoint":${JSON.stringify(endpoint)}`);
     }
-    return html;
+    return inlineKnownArtifactCdnAssets(html);
   };
 
   ipcMain.handle('prepare-artifact-html', async (_event, payload: { html: string }) => ({
-    html: prepareArtifactHtml(payload.html),
+    html: await prepareArtifactHtml(payload.html),
   }));
 
   // Open an Agent Drafter artifact's HTML in a large standalone window so the
@@ -3852,7 +4092,7 @@ async function appMain() {
       }
     ) => {
       try {
-        const html = prepareArtifactHtml(payload.html);
+        const html = await prepareArtifactHtml(payload.html);
 
         const isDark = payload.theme === 'dark';
         const win = new BrowserWindow({

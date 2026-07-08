@@ -25,12 +25,34 @@ export const WindowTitleBar: React.FC<Props> = ({
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(name);
   const inputRef = useRef<HTMLInputElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     setDraft(name);
   }, [name]);
   useEffect(() => {
     if (editing) inputRef.current?.select();
+  }, [editing]);
+  useEffect(() => {
+    const button = buttonRef.current;
+    if (!button || editing) return;
+
+    const startEditingFromNativeEvent = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      setEditing(true);
+    };
+
+    const eventNames = ['pointerdown', 'mousedown', 'click', 'dblclick'];
+    eventNames.forEach((eventName) => {
+      button.addEventListener(eventName, startEditingFromNativeEvent, { capture: true });
+    });
+
+    return () => {
+      eventNames.forEach((eventName) => {
+        button.removeEventListener(eventName, startEditingFromNativeEvent, { capture: true });
+      });
+    };
   }, [editing]);
 
   const commit = () => {
@@ -40,6 +62,11 @@ export const WindowTitleBar: React.FC<Props> = ({
   };
 
   const iconBtnClass = 'flex-shrink-0 p-1 rounded hover:bg-background-medium transition-colors';
+  const noDragStyle = { WebkitAppRegion: 'no-drag' } as React.CSSProperties;
+  const startEditing = (event: React.SyntheticEvent) => {
+    event.stopPropagation();
+    setEditing(true);
+  };
 
   return (
     <div
@@ -59,6 +86,7 @@ export const WindowTitleBar: React.FC<Props> = ({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commit}
+          onPointerDown={(event) => event.stopPropagation()}
           onKeyDown={(e) => {
             if (e.key === 'Enter') commit();
             if (e.key === 'Escape') {
@@ -66,17 +94,23 @@ export const WindowTitleBar: React.FC<Props> = ({
               setEditing(false);
             }
           }}
-          className="flex-1 min-w-0 bg-transparent text-sm font-medium outline-none border-b border-border-subtle"
+          style={noDragStyle}
+          className="h-8 w-[min(360px,calc(100vw-180px))] min-w-[120px] bg-transparent px-1 text-sm font-medium outline-none border-b border-border-subtle"
         />
       ) : (
-        <span
-          className="flex-1 min-w-0 truncate text-sm font-medium"
-          onDoubleClick={() => setEditing(true)}
-          title="Double-click to rename"
+        <button
+          ref={buttonRef}
+          type="button"
+          className="inline-flex h-8 min-w-0 max-w-[min(420px,calc(100vw-180px))] cursor-text items-center rounded px-1 text-left text-sm font-medium leading-none text-text-default transition-colors hover:bg-background-medium/40"
+          onPointerDown={startEditing}
+          onClick={startEditing}
+          style={noDragStyle}
+          title="Click to rename"
         >
-          {name}
-        </span>
+          <span className="pointer-events-none truncate no-drag">{name}</span>
+        </button>
       )}
+      <span className="min-w-0 flex-1" />
       {/* Order: Fold | Shrink | Enlarge | Close — right-aligned. */}
       <button
         type="button"

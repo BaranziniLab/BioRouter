@@ -839,6 +839,32 @@ body.dashboard-route-active .titlebar-drag-region {
   pointer-events: none;
 }
 
+body.biorouter-chat-route-active .titlebar-drag-region {
+  pointer-events: none;
+}
+
+body.biorouter-sidebar-compact [data-slot='sidebar-gap'] {
+  width: 0 !important;
+}
+
+body.biorouter-sidebar-compact [data-slot='sidebar-inset'] {
+  margin-left: 0 !important;
+}
+
+body.biorouter-sidebar-compact [data-slot='sidebar-container'] {
+  z-index: 90;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.16);
+}
+
+body.biorouter-window-resizing .biorouter-route-surface,
+body.biorouter-window-resizing .biorouter-sidebar-inset-depth,
+body.biorouter-window-resizing .biorouter-sidebar-shell,
+body.biorouter-window-resizing [data-slot='sidebar-gap'],
+body.biorouter-window-resizing [data-testid='artifact-viewer'] {
+  animation: none !important;
+  transition-duration: 0ms !important;
+}
+
 .bg-inline-code {
   border-radius: 4px;
   color: var(--text-default);
@@ -1008,9 +1034,6 @@ em > code.bg-inline-code {
 
 /* Optimize route transitions for better performance */
 .route-container {
-  /* Use hardware acceleration for smoother transitions */
-  transform: translateZ(0);
-  backface-visibility: hidden;
   /* Optimize for content changes */
   contain: layout style paint;
 }

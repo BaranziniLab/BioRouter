@@ -110,6 +110,31 @@ type ArtifactFilePreview =
       found: false;
     };
 
+type TerminalCreateResult =
+  | {
+      success: true;
+      sessionId: string;
+      cwd: string;
+      backend: 'pty' | 'process';
+    }
+  | {
+      success: false;
+      error: string;
+    };
+
+type TerminalActionResult = { success: true } | { success: false; error: string };
+
+type TerminalDataEvent = {
+  sessionId: string;
+  data: string;
+};
+
+type TerminalExitEvent = {
+  sessionId: string;
+  exitCode: number | null;
+  signal: string | null;
+};
+
 const config = JSON.parse(process.argv.find((arg) => arg.startsWith('{')) || '{}');
 
 interface UpdaterEvent {
@@ -287,6 +312,20 @@ type ElectronAPI = {
   launchCli: (
     workingDir?: string
   ) => Promise<{ success: true } | { success: false; error: string }>;
+  createTerminalSession: (options?: {
+    workingDir?: string;
+    cols?: number;
+    rows?: number;
+  }) => Promise<TerminalCreateResult>;
+  writeTerminalSession: (sessionId: string, data: string) => Promise<TerminalActionResult>;
+  resizeTerminalSession: (
+    sessionId: string,
+    cols: number,
+    rows: number
+  ) => Promise<TerminalActionResult>;
+  disposeTerminalSession: (sessionId: string) => Promise<TerminalActionResult>;
+  onTerminalData: (callback: (event: TerminalDataEvent) => void) => () => void;
+  onTerminalExit: (callback: (event: TerminalExitEvent) => void) => () => void;
   // Extension updater (events pushed via 'extension-update-event' channel)
   onExtensionUpdateEvent: (
     callback: (event: import('./utils/extensionUpdater').ExtensionUpdateEvent) => void
@@ -472,6 +511,23 @@ const electronAPI: ElectronAPI = {
   cliStatus: () => ipcRenderer.invoke('cli:status'),
   installCli: () => ipcRenderer.invoke('cli:install'),
   launchCli: (workingDir?: string) => ipcRenderer.invoke('cli:launch', workingDir),
+  createTerminalSession: (options?: { workingDir?: string; cols?: number; rows?: number }) =>
+    ipcRenderer.invoke('terminal:create', options),
+  writeTerminalSession: (sessionId: string, data: string) =>
+    ipcRenderer.invoke('terminal:write', sessionId, data),
+  resizeTerminalSession: (sessionId: string, cols: number, rows: number) =>
+    ipcRenderer.invoke('terminal:resize', sessionId, cols, rows),
+  disposeTerminalSession: (sessionId: string) => ipcRenderer.invoke('terminal:dispose', sessionId),
+  onTerminalData: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, data: TerminalDataEvent) => callback(data);
+    ipcRenderer.on('terminal:data', listener);
+    return () => ipcRenderer.removeListener('terminal:data', listener);
+  },
+  onTerminalExit: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, data: TerminalExitEvent) => callback(data);
+    ipcRenderer.on('terminal:exit', listener);
+    return () => ipcRenderer.removeListener('terminal:exit', listener);
+  },
   onExtensionUpdateEvent: (callback) => {
     ipcRenderer.on('extension-update-event', (_event, data) => callback(data));
   },

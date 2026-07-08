@@ -8,11 +8,15 @@ import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } fr
 import { getInitialWorkingDir } from '../../utils/workingDir';
 import DependencySetupModal from '../DependencySetupModal';
 
+const SIDEBAR_AUTO_COLLAPSE_WIDTH = 1120;
+
 const AppLayoutContent: React.FC = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const safeIsMacOS = (window?.electron?.platform || 'darwin') === 'darwin';
-  const { isMobile, openMobile } = useSidebar();
+  const { isMobile, open, openMobile, setOpen } = useSidebar();
+  const autoCollapsedSidebarRef = React.useRef(false);
+  const resizeSettlingTimerRef = React.useRef<number | null>(null);
 
   // Calculate padding based on sidebar state and macOS
   const headerPadding = safeIsMacOS ? 'pl-[100px]' : 'pl-4';
@@ -20,6 +24,59 @@ const AppLayoutContent: React.FC = () => {
 
   // Hide buttons when mobile sheet is showing
   const shouldHideButtons = isMobile && openMobile;
+
+  React.useEffect(() => {
+    const isChatRoute = location.pathname === '/' || location.pathname === '/pair';
+    document.body.classList.toggle('biorouter-chat-route-active', isChatRoute);
+    return () => document.body.classList.remove('biorouter-chat-route-active');
+  }, [location.pathname]);
+
+  React.useEffect(() => {
+    const updateSidebarMode = () => {
+      const shouldCollapse = window.innerWidth < SIDEBAR_AUTO_COLLAPSE_WIDTH;
+      document.body.classList.toggle('biorouter-sidebar-compact', shouldCollapse && !isMobile);
+
+      if (shouldCollapse && open && !autoCollapsedSidebarRef.current) {
+        autoCollapsedSidebarRef.current = true;
+        setOpen(false);
+        return;
+      }
+
+      if (!shouldCollapse && autoCollapsedSidebarRef.current) {
+        autoCollapsedSidebarRef.current = false;
+        setOpen(true);
+      }
+    };
+
+    updateSidebarMode();
+    window.addEventListener('resize', updateSidebarMode);
+    return () => {
+      document.body.classList.remove('biorouter-sidebar-compact');
+      window.removeEventListener('resize', updateSidebarMode);
+    };
+  }, [isMobile, open, setOpen]);
+
+  React.useEffect(() => {
+    const markWindowResizing = () => {
+      document.body.classList.add('biorouter-window-resizing');
+      if (resizeSettlingTimerRef.current !== null) {
+        window.clearTimeout(resizeSettlingTimerRef.current);
+      }
+      resizeSettlingTimerRef.current = window.setTimeout(() => {
+        resizeSettlingTimerRef.current = null;
+        document.body.classList.remove('biorouter-window-resizing');
+      }, 180);
+    };
+
+    window.addEventListener('resize', markWindowResizing);
+    return () => {
+      window.removeEventListener('resize', markWindowResizing);
+      if (resizeSettlingTimerRef.current !== null) {
+        window.clearTimeout(resizeSettlingTimerRef.current);
+      }
+      document.body.classList.remove('biorouter-window-resizing');
+    };
+  }, []);
 
   const setView = (view: View, viewOptions?: ViewOptions) => {
     // Convert view-based navigation to route-based navigation
@@ -74,7 +131,7 @@ const AppLayoutContent: React.FC = () => {
   return (
     <div className="flex flex-1 w-full relative animate-fade-in">
       {!shouldHideButtons && (
-        <div className={`${headerPadding} absolute top-3 z-100 flex items-center`}>
+        <div className={`${headerPadding} absolute top-3 z-[120] flex items-center`}>
           <SidebarTrigger
             shape="round"
             className={`no-drag hover:border-border-strong hover:text-text-default hover:!bg-background-medium hover:scale-105`}
@@ -112,7 +169,7 @@ const AppLayoutContent: React.FC = () => {
       </Sidebar>
       <SidebarInset>
         <main
-          className="route-container biorouter-route-surface flex h-full min-h-0 min-w-0 flex-1 flex-col"
+          className="route-container biorouter-route-surface relative z-[60] flex h-full min-h-0 min-w-0 flex-1 flex-col"
           data-route-path={location.pathname}
         >
           <Outlet />

@@ -106,6 +106,30 @@ const fallbackDownloadLabel = (model: LlamaCppModel | undefined) => {
   }
 };
 
+const WarmupDetailRow = ({
+  label,
+  children,
+  mono = false,
+}: {
+  label: string;
+  children: React.ReactNode;
+  mono?: boolean;
+}) => (
+  <div className="grid grid-cols-[minmax(7.5rem,auto)_minmax(0,1fr)] items-start gap-x-3 gap-y-1">
+    <span className="text-text-muted">{label}</span>
+    <span
+      className={[
+        'min-w-0 text-right text-text-default',
+        mono ? 'break-all font-mono text-[11px] leading-relaxed' : '',
+      ]
+        .filter(Boolean)
+        .join(' ')}
+    >
+      {children}
+    </span>
+  </div>
+);
+
 const ModelAndProviderContext = createContext<ModelAndProviderContextType | undefined>(undefined);
 
 export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> = ({ children }) => {
@@ -466,7 +490,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           }
         }}
       >
-        <DialogContent className="sm:max-w-[520px]">
+        <DialogContent className="w-[calc(100vw-2rem)] overflow-hidden sm:max-w-[520px]">
           <DialogHeader>
             <DialogTitle>Warm up local model</DialogTitle>
             <DialogDescription>
@@ -478,75 +502,48 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
 
           {llamaWarmupDialog && (
             <div className="space-y-4 text-sm">
-              <div className="rounded-md border border-border-subtle bg-background-medium p-3">
-                <div className="grid gap-1 text-xs text-text-muted">
-                  <div className="flex justify-between gap-3">
-                    <span>Download</span>
-                    <span className="text-text-default">
-                      {llamaWarmupDialog.entry?.download_size ?? 'custom'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span>Local copy</span>
-                    <span className="text-text-default">
-                      {modelDownloadLabel(llamaWarmupDialog.entry)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span>Llama Server fallback</span>
-                    <span className="text-text-default">
-                      {fallbackDownloadLabel(llamaWarmupDialog.entry)}
-                    </span>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span>Ollama model</span>
-                    <span className="text-text-default">
-                      {llamaWarmupDialog.entry?.ollama_name ?? 'custom'}
-                    </span>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span>Model store</span>
-                    <span className="truncate font-mono text-text-default">
-                      {llamaWarmupDialog.status.system.model_cache_dir}
-                    </span>
-                  </div>
+              <div className="min-w-0 rounded-md border border-border-subtle bg-background-medium p-3">
+                <div className="grid min-w-0 gap-1.5 text-xs">
+                  <WarmupDetailRow label="Download">
+                    {llamaWarmupDialog.entry?.download_size ?? 'custom'}
+                  </WarmupDetailRow>
+                  <WarmupDetailRow label="Local copy">
+                    {modelDownloadLabel(llamaWarmupDialog.entry)}
+                  </WarmupDetailRow>
+                  <WarmupDetailRow label="Llama Server fallback">
+                    {fallbackDownloadLabel(llamaWarmupDialog.entry)}
+                  </WarmupDetailRow>
+                  <WarmupDetailRow label="Ollama model">
+                    {llamaWarmupDialog.entry?.ollama_name ?? 'custom'}
+                  </WarmupDetailRow>
+                  <WarmupDetailRow label="Model store" mono>
+                    {llamaWarmupDialog.status.system.model_cache_dir}
+                  </WarmupDetailRow>
                   {llamaWarmupDialog.entry?.model_path && (
-                    <div className="flex justify-between gap-3">
-                      <span>Model blob</span>
-                      <span className="truncate font-mono text-text-default">
-                        {llamaWarmupDialog.entry.model_path}
-                      </span>
-                    </div>
+                    <WarmupDetailRow label="Model blob" mono>
+                      {llamaWarmupDialog.entry.model_path}
+                    </WarmupDetailRow>
                   )}
                   {llamaWarmupDialog.entry?.suitability_message && (
-                    <div className="pt-1 text-text-default">
+                    <div className="pt-1 text-text-default break-words">
                       {llamaWarmupDialog.entry.suitability_message}
                     </div>
                   )}
-                  <div className="flex justify-between gap-3">
-                    <span>Default context</span>
-                    <span className="text-text-default">
-                      {formatContext(llamaWarmupDialog.status.system.default_context_size)} tokens
-                    </span>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span>Detected GPU memory</span>
-                    <span className="text-text-default">
-                      {typeof llamaWarmupDialog.status.system.accelerator_memory_gib === 'number'
-                        ? `${llamaWarmupDialog.status.system.accelerator_memory_gib} GiB ${acceleratorMemoryLabel(llamaWarmupDialog.status.system.accelerator_memory_kind)}`
-                        : acceleratorMemoryLabel(
-                            llamaWarmupDialog.status.system.accelerator_memory_kind
-                          )}
-                    </span>
-                  </div>
-                  <div className="flex justify-between gap-3">
-                    <span>Recommended GPU memory</span>
-                    <span className="text-text-default">
-                      {llamaWarmupDialog.entry
-                        ? `${llamaWarmupDialog.entry.recommended_gpu_memory_gib} GiB`
-                        : 'unknown'}
-                    </span>
-                  </div>
+                  <WarmupDetailRow label="Default context">
+                    {formatContext(llamaWarmupDialog.status.system.default_context_size)} tokens
+                  </WarmupDetailRow>
+                  <WarmupDetailRow label="Detected GPU memory">
+                    {typeof llamaWarmupDialog.status.system.accelerator_memory_gib === 'number'
+                      ? `${llamaWarmupDialog.status.system.accelerator_memory_gib} GiB ${acceleratorMemoryLabel(llamaWarmupDialog.status.system.accelerator_memory_kind)}`
+                      : acceleratorMemoryLabel(
+                          llamaWarmupDialog.status.system.accelerator_memory_kind
+                        )}
+                  </WarmupDetailRow>
+                  <WarmupDetailRow label="Recommended GPU memory">
+                    {llamaWarmupDialog.entry
+                      ? `${llamaWarmupDialog.entry.recommended_gpu_memory_gib} GiB`
+                      : 'unknown'}
+                  </WarmupDetailRow>
                 </div>
               </div>
 
@@ -572,10 +569,11 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             </div>
           )}
 
-          <DialogFooter className="pt-2">
+          <DialogFooter className="flex-col gap-2 pt-2 sm:flex-row">
             <Button
               type="button"
               variant="outline"
+              className="w-full sm:w-auto"
               onClick={() => resolveWarmupDialog(false)}
               disabled={llamaWarmupDialog?.isWarming}
             >
@@ -583,6 +581,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             </Button>
             <Button
               type="button"
+              className="w-full sm:w-auto"
               onClick={handleWarmupConfirm}
               disabled={!llamaWarmupDialog || llamaWarmupDialog.isWarming}
             >

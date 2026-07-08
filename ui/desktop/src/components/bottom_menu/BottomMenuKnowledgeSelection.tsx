@@ -37,11 +37,11 @@ export function BottomMenuKnowledgeSelection() {
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button
-          className="flex items-center cursor-pointer [&_svg]:size-4 text-text-default/70 hover:text-text-default hover:scale-100 hover:bg-transparent text-xs"
+          className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-xs"
           title={labelForVisibleCount(visibleBases.length)}
           aria-label={labelForVisibleCount(visibleBases.length)}
         >
-          <BookOpen className="mr-1 h-4 w-4" />
+          <BookOpen className="mr-0.5 h-4 w-4" />
           <span>{visibleBases.length}</span>
         </button>
       </PopoverTrigger>
