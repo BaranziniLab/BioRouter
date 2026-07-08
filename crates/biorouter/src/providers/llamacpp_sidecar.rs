@@ -253,6 +253,10 @@ pub fn model_cache_status(hf_spec: &str) -> ModelCacheStatus {
     model_cache_status_in_dir(&model_cache_dir(), hf_spec)
 }
 
+pub fn delete_model_cache(hf_spec: &str) -> Result<bool> {
+    delete_model_cache_in_dir(&model_cache_dir(), hf_spec)
+}
+
 pub fn model_source_cache_status(source: &ModelSource) -> ModelCacheStatus {
     let dir = model_cache_dir();
     model_source_cache_status_in_dir(&dir, source)
@@ -278,12 +282,10 @@ pub fn model_source_path(source: &ModelSource) -> Option<PathBuf> {
 }
 
 fn model_cache_status_in_dir(cache_dir: &Path, hf_spec: &str) -> ModelCacheStatus {
-    let repo = hf_spec.split_once(':').map_or(hf_spec, |(repo, _)| repo);
-    let Some((owner, name)) = repo.split_once('/') else {
+    let Some(repo_dir) = model_cache_repo_dir(cache_dir, hf_spec) else {
         return ModelCacheStatus::NotDownloaded;
     };
 
-    let repo_dir = cache_dir.join(format!("models--{owner}--{name}"));
     if !repo_dir.is_dir() {
         return ModelCacheStatus::NotDownloaded;
     }
@@ -319,6 +321,23 @@ fn model_cache_status_in_dir(cache_dir: &Path, hf_spec: &str) -> ModelCacheStatu
     } else {
         ModelCacheStatus::NotDownloaded
     }
+}
+
+fn delete_model_cache_in_dir(cache_dir: &Path, hf_spec: &str) -> Result<bool> {
+    let Some(repo_dir) = model_cache_repo_dir(cache_dir, hf_spec) else {
+        return Ok(false);
+    };
+    if !repo_dir.exists() {
+        return Ok(false);
+    }
+    std::fs::remove_dir_all(&repo_dir)?;
+    Ok(true)
+}
+
+fn model_cache_repo_dir(cache_dir: &Path, hf_spec: &str) -> Option<PathBuf> {
+    let repo = hf_spec.split_once(':').map_or(hf_spec, |(repo, _)| repo);
+    let (owner, name) = repo.split_once('/')?;
+    Some(cache_dir.join(format!("models--{owner}--{name}")))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1459,6 +1478,23 @@ mod tests {
             model_cache_status_in_dir(tmp.path(), "unsloth/model-GGUF:Q8_0"),
             ModelCacheStatus::Downloaded
         );
+    }
+
+    #[test]
+    fn delete_model_cache_removes_huggingface_repo_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("models--unsloth--model-GGUF");
+        let snapshot_dir = repo_dir.join("snapshots").join("rev");
+        std::fs::create_dir_all(&snapshot_dir).unwrap();
+        std::fs::write(snapshot_dir.join("model-Q4_K_M.gguf"), b"model").unwrap();
+
+        assert_eq!(
+            model_cache_status_in_dir(tmp.path(), "unsloth/model-GGUF:Q4_K_M"),
+            ModelCacheStatus::Downloaded
+        );
+        assert!(delete_model_cache_in_dir(tmp.path(), "unsloth/model-GGUF:Q4_K_M").unwrap());
+        assert!(!repo_dir.exists());
+        assert!(!delete_model_cache_in_dir(tmp.path(), "unsloth/model-GGUF:Q4_K_M").unwrap());
     }
 
     #[test]
