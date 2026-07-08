@@ -4,7 +4,7 @@ import { ChatWindow } from './ChatWindow';
 import { snapToDevicePixel } from './pixelSnap';
 
 // Kept in sync with DashboardProvider — minimum + default spawn size.
-const MIN_WINDOW_W = 520;
+const MIN_WINDOW_W = 760;
 const MIN_WINDOW_H = 440;
 
 const Z_FOCUSED = 100;

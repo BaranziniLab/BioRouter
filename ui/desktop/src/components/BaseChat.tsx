@@ -310,10 +310,6 @@ interface BaseChatProps {
   /** Hide the SessionNamePill at the top of the chat. Dashboard windows pass this
    * because their own WindowTitleBar already shows the editable name. */
   hideSessionNamePill?: boolean;
-  /** When true, the ChatInput's secondary picker controls (cost, model, mode,
-   * workflow, diagnostics) live behind a chevron popover. When false (chat
-   * tab default), they render inline. Dashboard windows pass true. */
-  compactPicker?: boolean;
   /** Fires when the inner chat transitions between idle and any non-idle state
    * (streaming, thinking, tool-running, etc.). Used by DashboardContext to
    * drive the per-window busy indicator on folded cards. */
@@ -343,7 +339,6 @@ function BaseChatContent({
   onSessionUpdate,
   accentColor,
   hideSessionNamePill = false,
-  compactPicker = false,
   onBusyChange,
   onLatestMessage,
   focusTrigger,
@@ -1254,7 +1249,7 @@ function BaseChatContent({
       data-composer-shell="true"
       className={cn(
         'w-full max-w-[760px] mx-auto biorouter-chat-composer biorouter-composer-motion',
-        !compactPicker && 'biorouter-composer-view-transition'
+        'biorouter-composer-view-transition'
       )}
     >
       <ChatInput
@@ -1282,7 +1277,6 @@ function BaseChatContent({
         workflowAccepted={!hasNotAcceptedWorkflow}
         initialPrompt={initialPrompt}
         toolCount={toolCount || 0}
-        compactPicker={compactPicker}
         supportsVisionOverride={sessionSupportsVision ?? undefined}
         supportedInputMimeTypesOverride={sessionSupportedInputMimeTypes}
         {...customChatInputProps}
@@ -1384,8 +1378,7 @@ function BaseChatContent({
                     <Greeting
                       key={sessionId}
                       className={cn(
-                        'text-center font-semibold tracking-tight text-text-default animate-in fade-in duration-300',
-                        compactPicker ? 'text-xl' : 'text-2xl'
+                        'text-center text-2xl font-semibold tracking-tight text-text-default animate-in fade-in duration-300'
                       )}
                     />
                     {renderChatInput()}

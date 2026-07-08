@@ -1,8 +1,7 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
-import { ScrollText, ChevronRight, ChevronLeft } from './icons/app-icons';
-import { ContextWindowGauge, ContextWindowIndicator } from './ContextWindowIndicator';
+import { ScrollText } from './icons/app-icons';
+import { ContextWindowIndicator } from './ContextWindowIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
-import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Button } from './ui/button';
 import type { View } from '../utils/navigationUtils';
 import Stop from './ui/Stop';
@@ -63,9 +62,7 @@ const MANUAL_COMPACT_TRIGGER = '/compact';
 const DIVERGE_TRIGGER = '/diverge';
 const TOOLBAR_DIVIDER_CLASS = 'h-4 w-px flex-shrink-0 bg-border-default/70';
 const TOOLBAR_GROUP_CLASS = 'flex flex-shrink-0 items-center gap-0.5';
-const TOOLBAR_ICON_BUTTON_CLASS =
-  'flex h-7 w-7 items-center justify-center rounded-md p-0 text-text-default/70 transition-colors hover:bg-background-medium hover:text-text-default';
-const TOOLBAR_COMPACT_WIDTH = 680;
+const SEND_BUTTON_CLASS = 'bg-background-accent text-text-on-accent hover:bg-background-accent/90';
 
 function canonicalMimeType(mimeType: string): string {
   const normalized = mimeType.toLowerCase().trim();
@@ -97,18 +94,6 @@ interface ModelLimit {
   context_limit: number;
 }
 
-/** Single row in the secondary-controls popover. Children are rendered
- * directly — the inner control's own leading icon (e.g. brain, tornado,
- * dollar) serves as the left-aligned visual marker. Rows share the same
- * left-padding so every icon lines up cleanly. */
-function PickerRow({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex items-center px-2 py-1.5 rounded hover:bg-background-medium/40">
-      {children}
-    </div>
-  );
-}
-
 interface ChatInputProps {
   sessionId: string | null;
   handleSubmit: (e: React.FormEvent) => void;
@@ -138,10 +123,6 @@ interface ChatInputProps {
   toolCount: number;
   append?: (message: Message) => void;
   onWorkingDirChange?: (newDir: string) => void;
-  /** When true (dashboard mode), secondary controls live behind a chevron
-   * popover. When false (chat tab), they're rendered inline so users with
-   * the room get every control at a glance. */
-  compactPicker?: boolean;
   /** Optional override for vision capability. When the chat is bound to a
    * specific session whose model differs from the user's global default
    * (notably dashboard windows), the override reflects the session's actual
@@ -173,7 +154,6 @@ export default function ChatInput({
   toolCount,
   append: _append,
   onWorkingDirChange,
-  compactPicker = false,
   supportsVisionOverride,
   supportedInputMimeTypesOverride,
 }: ChatInputProps) {
@@ -216,36 +196,9 @@ export default function ChatInput({
   const [tokenLimit, setTokenLimit] = useState<number>(TOKEN_LIMIT_DEFAULT);
   const [isTokenLimitLoaded, setIsTokenLimitLoaded] = useState(false);
   const [sessionWorkingDir, setSessionWorkingDir] = useState<string | null>(null);
-  const toolbarRef = useRef<HTMLDivElement>(null);
-  const [isToolbarNarrow, setIsToolbarNarrow] = useState(false);
-  // Collapsible group: model, pricing, and context details live behind a
-  // chevron so the picker row stays narrow. Session-level actions live in the
-  // conversation header, keeping the composer focused on prompt resources.
-  const [pickerExpanded, setPickerExpanded] = useState(false);
-  const useCompactControls = compactPicker || isToolbarNarrow;
 
   // Branch-the-conversation action shared with the message-level Diverge button.
   const { diverge } = useDiverge();
-
-  useEffect(() => {
-    const toolbar = toolbarRef.current;
-    if (!toolbar) return;
-
-    const updateToolbarMode = () => {
-      setIsToolbarNarrow(toolbar.clientWidth < TOOLBAR_COMPACT_WIDTH);
-    };
-
-    updateToolbarMode();
-
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateToolbarMode);
-      return () => window.removeEventListener('resize', updateToolbarMode);
-    }
-
-    const resizeObserver = new ResizeObserver(updateToolbarMode);
-    resizeObserver.observe(toolbar);
-    return () => resizeObserver.disconnect();
-  }, []);
 
   useEffect(() => {
     if (!sessionId) {
@@ -1649,7 +1602,6 @@ export default function ChatInput({
 
       {/* Secondary actions and controls row below input. */}
       <div
-        ref={toolbarRef}
         data-testid="chat-input-toolbar"
         className="flex flex-row flex-nowrap items-center gap-1.5 px-2 pt-2 pb-1 relative min-w-0 overflow-hidden"
       >
@@ -1678,116 +1630,44 @@ export default function ChatInput({
 
           <div className={TOOLBAR_DIVIDER_CLASS} />
 
-          {!useCompactControls && (
-            <div className="flex min-w-0 flex-row items-center gap-1">
-              <Tooltip>
-                <div className="min-w-0">
-                  <ModelsBottomBar
-                    sessionId={sessionId}
-                    dropdownRef={dropdownRef}
-                    setView={setView}
-                    alerts={alerts}
-                    hideAlertPopover
-                  />
-                </div>
-              </Tooltip>
-              <ContextWindowIndicator
-                totalTokens={totalTokens}
-                tokenLimit={tokenLimit}
-                isTokenLimitLoaded={isTokenLimitLoaded}
-                onCompact={() => {
-                  handleSubmit(
-                    new CustomEvent('submit', {
-                      detail: { value: MANUAL_COMPACT_TRIGGER },
-                    }) as unknown as React.FormEvent
-                  );
-                }}
-              />
-              {COST_TRACKING_ENABLED && (
-                <div className={TOOLBAR_GROUP_CLASS}>
-                  <CostTracker
-                    inputTokens={accumulatedInputTokens}
-                    outputTokens={accumulatedOutputTokens}
-                    sessionCosts={sessionCosts}
-                  />
-                </div>
-              )}
-            </div>
-          )}
+          <div className="flex min-w-0 flex-row items-center gap-1">
+            <Tooltip>
+              <div className="min-w-0">
+                <ModelsBottomBar
+                  sessionId={sessionId}
+                  dropdownRef={dropdownRef}
+                  setView={setView}
+                  alerts={alerts}
+                  hideAlertPopover
+                />
+              </div>
+            </Tooltip>
+            <ContextWindowIndicator
+              totalTokens={totalTokens}
+              tokenLimit={tokenLimit}
+              isTokenLimitLoaded={isTokenLimitLoaded}
+              onCompact={() => {
+                handleSubmit(
+                  new CustomEvent('submit', {
+                    detail: { value: MANUAL_COMPACT_TRIGGER },
+                  }) as unknown as React.FormEvent
+                );
+              }}
+            />
+            {COST_TRACKING_ENABLED && (
+              <div className={TOOLBAR_GROUP_CLASS}>
+                <CostTracker
+                  inputTokens={accumulatedInputTokens}
+                  outputTokens={accumulatedOutputTokens}
+                  sessionCosts={sessionCosts}
+                />
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Send / Stop button — on far right of picker row. */}
         <div className="ml-auto flex flex-shrink-0 items-center gap-1 pl-1">
-          {useCompactControls && (
-            <Popover open={pickerExpanded} onOpenChange={setPickerExpanded}>
-              <PopoverTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size="sm"
-                  shape="round"
-                  className={`${TOOLBAR_ICON_BUTTON_CLASS} cursor-pointer`}
-                  aria-label={pickerExpanded ? 'Collapse extra controls' : 'Expand extra controls'}
-                >
-                  {pickerExpanded ? (
-                    <ChevronLeft className="w-4 h-4" />
-                  ) : (
-                    <ChevronRight className="w-4 h-4" />
-                  )}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent side="top" align="end" className="flex flex-col gap-0.5 w-72 p-1.5">
-                <PickerRow>
-                  <ModelsBottomBar
-                    sessionId={sessionId}
-                    dropdownRef={dropdownRef}
-                    setView={setView}
-                    alerts={alerts}
-                    hideAlertPopover
-                  />
-                </PickerRow>
-                {COST_TRACKING_ENABLED && (
-                  <>
-                    <ContextWindowGauge
-                      totalTokens={totalTokens}
-                      tokenLimit={tokenLimit}
-                      isTokenLimitLoaded={isTokenLimitLoaded}
-                      onCompact={() => {
-                        handleSubmit(
-                          new CustomEvent('submit', {
-                            detail: { value: MANUAL_COMPACT_TRIGGER },
-                          }) as unknown as React.FormEvent
-                        );
-                        setPickerExpanded(false);
-                      }}
-                    />
-                    <PickerRow>
-                      <CostTracker
-                        inputTokens={accumulatedInputTokens}
-                        outputTokens={accumulatedOutputTokens}
-                        sessionCosts={sessionCosts}
-                      />
-                    </PickerRow>
-                  </>
-                )}
-                {!COST_TRACKING_ENABLED && (
-                  <ContextWindowGauge
-                    totalTokens={totalTokens}
-                    tokenLimit={tokenLimit}
-                    isTokenLimitLoaded={isTokenLimitLoaded}
-                    onCompact={() => {
-                      handleSubmit(
-                        new CustomEvent('submit', {
-                          detail: { value: MANUAL_COMPACT_TRIGGER },
-                        }) as unknown as React.FormEvent
-                      );
-                      setPickerExpanded(false);
-                    }}
-                  />
-                )}
-              </PopoverContent>
-            </Popover>
-          )}
           {isLoading && !hasSubmittableContent ? (
             <Button
               type="button"
@@ -1795,9 +1675,11 @@ export default function ChatInput({
               size="sm"
               shape="round"
               variant="outline"
-              className="bg-background-accent text-text-on-accent hover:bg-background-accent/90 rounded-md px-3 py-1.5"
+              className={SEND_BUTTON_CLASS}
+              aria-label="Stop response"
+              title="Stop response"
             >
-              <Stop />
+              <Stop size={14} />
             </Button>
           ) : (
             <Tooltip>
@@ -1807,17 +1689,17 @@ export default function ChatInput({
                     type="submit"
                     form="bior-chat-form"
                     size="sm"
-                    shape="pill"
+                    shape="round"
                     variant="outline"
                     disabled={isSubmitButtonDisabled}
-                    className={`rounded-md px-3 py-1.5 flex items-center gap-1 ${
+                    aria-label="Send message"
+                    className={
                       isSubmitButtonDisabled
-                        ? 'bg-background-accent text-text-on-accent cursor-not-allowed opacity-50'
-                        : 'bg-background-accent text-text-on-accent hover:bg-background-accent/90 hover:cursor-pointer'
-                    }`}
+                        ? `${SEND_BUTTON_CLASS} cursor-not-allowed opacity-50`
+                        : `${SEND_BUTTON_CLASS} hover:cursor-pointer`
+                    }
                   >
                     <Send className="w-3.5 h-3.5" />
-                    <span className="text-xs">Send</span>
                   </Button>
                 </span>
               </TooltipTrigger>

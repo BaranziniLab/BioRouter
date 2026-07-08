@@ -197,7 +197,6 @@ export const ChatWindow: React.FC<Props> = ({
                 suppressEmptyState
                 coherent
                 hideSessionNamePill
-                compactPicker
                 showPopularTopics={false}
                 accentColor={win.accentColor}
                 onBusyChange={(busy) => dashboard.setWindowBusy(win.windowId, busy)}
