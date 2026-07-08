@@ -77,6 +77,44 @@ describe('InAppTerminalDock', () => {
     expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('BioRouter 2');
   });
 
+  it('closes only the selected terminal tab and keeps another tab active', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+
+    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={onClose} />);
+
+    await user.click(screen.getByRole('button', { name: /new terminal session/i }));
+    await waitFor(() => {
+      expect(screen.getAllByRole('tab')).toHaveLength(2);
+    });
+
+    await user.click(screen.getByRole('button', { name: /close terminal tab biorouter 2/i }));
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('tab')).toHaveLength(1);
+    });
+    expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('BioRouter');
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('closes the dock when users close the last terminal tab', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+
+    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={onClose} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('BioRouter');
+    });
+
+    await user.click(screen.getByRole('button', { name: /close terminal tab biorouter/i }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+    });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('forwards plain keystrokes to the active terminal when focus stays on the window chrome', async () => {
     render(
       <InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={vi.fn()} />

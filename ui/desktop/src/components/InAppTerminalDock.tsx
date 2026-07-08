@@ -313,6 +313,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
   const [panes, setPanes] = useState<TerminalPane[]>([]);
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const dockRef = useRef<HTMLElement | null>(null);
+  const suppressAutoOpenRef = useRef(false);
 
   const addPane = useCallback(() => {
     setPanes((current) => {
@@ -327,10 +328,40 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
   }, [workingDir]);
 
   useEffect(() => {
-    if (open && panes.length === 0) {
+    if (!open) {
+      suppressAutoOpenRef.current = false;
+      return;
+    }
+    if (panes.length === 0 && !suppressAutoOpenRef.current) {
       addPane();
     }
   }, [addPane, open, panes.length]);
+
+  const closePane = useCallback(
+    (paneId: string) => {
+      setPanes((current) => {
+        const closedIndex = current.findIndex((pane) => pane.id === paneId);
+        if (closedIndex === -1) return current;
+
+        const next = current.filter((pane) => pane.id !== paneId);
+        if (next.length === 0) {
+          suppressAutoOpenRef.current = true;
+          setActivePaneId(null);
+          onClose();
+          return [];
+        }
+
+        setActivePaneId((activeId) => {
+          if (activeId && activeId !== paneId && next.some((pane) => pane.id === activeId)) {
+            return activeId;
+          }
+          return next[Math.min(closedIndex, next.length - 1)].id;
+        });
+        return next;
+      });
+    },
+    [onClose]
+  );
 
   useEffect(() => {
     if (!open || panes.length === 0) return;
@@ -368,22 +399,39 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
           {panes.map((pane) => {
             const active = pane.id === activePaneId;
             return (
-              <button
+              <div
                 key={pane.id}
-                type="button"
-                role="tab"
-                aria-selected={active}
-                onClick={() => setActivePaneId(pane.id)}
                 className={cn(
-                  'relative flex h-7 min-w-0 max-w-[180px] items-center gap-1.5 rounded-md px-2 text-xs transition-colors',
+                  'relative flex h-7 min-w-0 max-w-[190px] items-center overflow-hidden rounded-md text-xs transition-colors',
                   active
                     ? 'bg-background-default text-text-default shadow-sm shadow-black/[0.04] before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-[#b98b52]'
                     : 'text-[#6f6255] hover:bg-background-default/70 hover:text-text-default'
                 )}
               >
-                <TerminalIcon className="h-3.5 w-3.5 flex-shrink-0" />
-                <span className="truncate">{pane.title}</span>
-              </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => setActivePaneId(pane.id)}
+                  className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 text-left outline-none focus-visible:ring-1 focus-visible:ring-[#b98b52]/35"
+                >
+                  <TerminalIcon className="h-3.5 w-3.5 flex-shrink-0" />
+                  <span className="truncate">{pane.title}</span>
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.stopPropagation()}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    closePane(pane.id);
+                  }}
+                  className="mr-1 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-[#7a6a5a] transition-colors hover:bg-[#eadfce] hover:text-text-default focus-visible:ring-1 focus-visible:ring-[#b98b52]/35"
+                  aria-label={`Close terminal tab ${pane.title}`}
+                  title={`Close ${pane.title}`}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
             );
           })}
           <Button
