@@ -1,18 +1,17 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
-import { CodeAnalysis, ScrollText, Pipeline, ChevronRight, ChevronLeft } from './icons/app-icons';
+import { ScrollText, ChevronRight, ChevronLeft } from './icons/app-icons';
 import { ContextWindowGauge, ContextWindowIndicator } from './ContextWindowIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Button } from './ui/button';
 import type { View } from '../utils/navigationUtils';
 import Stop from './ui/Stop';
-import { Attach, Send, Close } from './icons';
+import { Send, Close } from './icons';
 import { ChatState } from '../types/chatState';
 import debounce from 'lodash/debounce';
 import { LocalMessageStorage } from '../utils/localMessageStorage';
 import { DirSwitcher } from './bottom_menu/DirSwitcher';
 import ModelsBottomBar from './settings/models/bottom_bar/ModelsBottomBar';
-import { LaunchTerminalButton } from './bottom_menu/LaunchTerminalButton';
 import { BottomMenuExtensionSelection } from './bottom_menu/BottomMenuExtensionSelection';
 import { BottomMenuSkillSelection } from './bottom_menu/BottomMenuSkillSelection';
 import { BottomMenuKnowledgeSelection } from './bottom_menu/BottomMenuKnowledgeSelection';
@@ -27,10 +26,7 @@ import { useDiverge } from '../hooks/useDiverge';
 import { Workflow } from '../workflow';
 import MessageQueue from './MessageQueue';
 import { detectInterruption } from '../utils/interruptionDetector';
-import { DiagnosticsModal } from './ui/Diagnostics';
 import { getSession, llamacppStatus, Message } from '../api';
-import CreateWorkflowFromSessionModal from './workflows/CreateWorkflowFromSessionModal';
-import CreateEditWorkflowModal from './workflows/CreateEditWorkflowModal';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
 import { getNavigationShortcutText } from '../utils/keyboardShortcuts';
@@ -65,6 +61,11 @@ const MANUAL_COMPACT_TRIGGER = '/compact';
 // Client-side slash command: branch the conversation into a new chat. Handled
 // entirely in the renderer (never sent to the agent).
 const DIVERGE_TRIGGER = '/diverge';
+const TOOLBAR_DIVIDER_CLASS = 'h-4 w-px flex-shrink-0 bg-border-default/70';
+const TOOLBAR_GROUP_CLASS = 'flex flex-shrink-0 items-center gap-0.5';
+const TOOLBAR_ICON_BUTTON_CLASS =
+  'flex h-7 w-7 items-center justify-center rounded-md p-0 text-text-default/70 transition-colors hover:bg-background-medium hover:text-text-default';
+const TOOLBAR_COMPACT_WIDTH = 680;
 
 function canonicalMimeType(mimeType: string): string {
   const normalized = mimeType.toLowerCase().trim();
@@ -132,7 +133,6 @@ interface ChatInputProps {
   };
   disableAnimation?: boolean;
   workflow?: Workflow | null;
-  workflowId?: string | null;
   workflowAccepted?: boolean;
   initialPrompt?: string;
   toolCount: number;
@@ -168,8 +168,6 @@ export default function ChatInput({
   messages = [],
   disableAnimation = false,
   sessionCosts,
-  workflow,
-  workflowId,
   workflowAccepted,
   initialPrompt,
   toolCount,
@@ -217,18 +215,37 @@ export default function ChatInput({
       : globalSupportedInputMimeTypes;
   const [tokenLimit, setTokenLimit] = useState<number>(TOKEN_LIMIT_DEFAULT);
   const [isTokenLimitLoaded, setIsTokenLimitLoaded] = useState(false);
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
-  const [showCreateWorkflowModal, setShowCreateWorkflowModal] = useState(false);
-  const [showEditWorkflowModal, setShowEditWorkflowModal] = useState(false);
-  const [isFilePickerOpen, setIsFilePickerOpen] = useState(false);
   const [sessionWorkingDir, setSessionWorkingDir] = useState<string | null>(null);
-  // Collapsible group: cost tracker, model selector, mode selector, workflow,
-  // and diagnostics live behind a `>` chevron so the picker row stays narrow.
-  // Always visible: DirSwitcher, Attach, Extensions, Skills.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [isToolbarNarrow, setIsToolbarNarrow] = useState(false);
+  // Collapsible group: model, pricing, and context details live behind a
+  // chevron so the picker row stays narrow. Session-level actions live in the
+  // conversation header, keeping the composer focused on prompt resources.
   const [pickerExpanded, setPickerExpanded] = useState(false);
+  const useCompactControls = compactPicker || isToolbarNarrow;
 
   // Branch-the-conversation action shared with the message-level Diverge button.
   const { diverge } = useDiverge();
+
+  useEffect(() => {
+    const toolbar = toolbarRef.current;
+    if (!toolbar) return;
+
+    const updateToolbarMode = () => {
+      setIsToolbarNarrow(toolbar.clientWidth < TOOLBAR_COMPACT_WIDTH);
+    };
+
+    updateToolbarMode();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateToolbarMode);
+      return () => window.removeEventListener('resize', updateToolbarMode);
+    }
+
+    const resizeObserver = new ResizeObserver(updateToolbarMode);
+    resizeObserver.observe(toolbar);
+    return () => resizeObserver.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!sessionId) {
@@ -740,7 +757,11 @@ export default function ChatInput({
     const beforeCursor = text.slice(0, cursorPosition);
     const lastAtIndex = beforeCursor.lastIndexOf('@');
     let lastSlashIndex = -1;
-    for (let index = beforeCursor.lastIndexOf('/'); index >= 0; index = beforeCursor.lastIndexOf('/', index - 1)) {
+    for (
+      let index = beforeCursor.lastIndexOf('/');
+      index >= 0;
+      index = beforeCursor.lastIndexOf('/', index - 1)
+    ) {
       if (index === 0 || /\s/.test(beforeCursor[index - 1])) {
         lastSlashIndex = index;
         break;
@@ -1048,9 +1069,7 @@ export default function ChatInput({
             .map((file) => ({ path: droppedImageAttachmentPath(file), kind: 'image' as const })),
         ]
       : [];
-    const droppedFilePaths = allDroppedFiles
-      .filter(canSendDroppedFileAsPath)
-      .map(droppedFilePath);
+    const droppedFilePaths = allDroppedFiles.filter(canSendDroppedFileAsPath).map(droppedFilePath);
 
     let contentToQueue = displayValue.trim();
     if (droppedFilePaths.length > 0) {
@@ -1321,22 +1340,6 @@ export default function ChatInput({
     }
   };
 
-  const handleFileSelect = async () => {
-    if (isFilePickerOpen) return;
-    setIsFilePickerOpen(true);
-    try {
-      const path = await window.electron.selectFileOrDirectory();
-      if (path) {
-        const newValue = displayValue.trim() ? `${displayValue.trim()} ${path}` : path;
-        setDisplayValue(newValue);
-        setValue(newValue);
-        textAreaRef.current?.focus();
-      }
-    } finally {
-      setIsFilePickerOpen(false);
-    }
-  };
-
   const handleMentionItemSelect = (itemText: string) => {
     const beforeMention = displayValue.slice(0, mentionPopover.mentionStart);
     const afterMention = displayValue.slice(
@@ -1449,7 +1452,7 @@ export default function ChatInput({
 
   return (
     <div
-      className={`flex flex-col relative h-auto px-4 pt-3 pb-2 transition-colors ${
+      className={`flex flex-col relative h-auto px-4 pt-3 pb-3 transition-colors ${
         disableAnimation ? '' : 'page-transition'
       } ${
         isDraggingOver
@@ -1645,75 +1648,57 @@ export default function ChatInput({
       )}
 
       {/* Secondary actions and controls row below input. */}
-      <div className="flex flex-row flex-nowrap items-center gap-1 px-2 pt-2 pb-0 relative overflow-x-auto">
-        <LaunchTerminalButton workingDir={sessionWorkingDir ?? getInitialWorkingDir()} />
-        <DirSwitcher
-          className="mr-0"
-          sessionId={sessionId ?? undefined}
-          workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
-          onWorkingDirChange={(newDir) => {
-            setSessionWorkingDir(newDir);
-            if (onWorkingDirChange) {
-              onWorkingDirChange(newDir);
-            }
-          }}
-          onRestartStart={() => setChatState?.(ChatState.RestartingAgent)}
-          onRestartEnd={() => setChatState?.(ChatState.Idle)}
-        />
-        <div className="w-px h-4 bg-border-default mx-2" />
+      <div
+        ref={toolbarRef}
+        data-testid="chat-input-toolbar"
+        className="flex flex-row flex-nowrap items-center gap-1.5 px-2 pt-2 pb-1 relative min-w-0 overflow-hidden"
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+          <DirSwitcher
+            className="mr-0"
+            sessionId={sessionId ?? undefined}
+            workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
+            onWorkingDirChange={(newDir) => {
+              setSessionWorkingDir(newDir);
+              if (onWorkingDirChange) {
+                onWorkingDirChange(newDir);
+              }
+            }}
+            onRestartStart={() => setChatState?.(ChatState.RestartingAgent)}
+            onRestartEnd={() => setChatState?.(ChatState.Idle)}
+          />
 
-        <div className="flex flex-row items-center gap-2">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                type="button"
-                onClick={handleFileSelect}
-                disabled={isFilePickerOpen}
-                variant="ghost"
-                size="sm"
-                className={`flex items-center justify-center text-text-default/70 hover:text-text-default text-xs transition-colors ${isFilePickerOpen ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-              >
-                <Attach className="w-4 h-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>Attach file or directory</TooltipContent>
-          </Tooltip>
-          <BottomMenuExtensionSelection sessionId={sessionId} />
-          <BottomMenuSkillSelection sessionId={sessionId} />
-          <BottomMenuKnowledgeSelection />
-        </div>
-
-        <div className="w-px h-4 bg-border-default mx-2" />
-
-        {COST_TRACKING_ENABLED && (
-          <div className="flex items-center h-full">
-            <CostTracker
-              inputTokens={accumulatedInputTokens}
-              outputTokens={accumulatedOutputTokens}
-              sessionCosts={sessionCosts}
-            />
+          <div className={TOOLBAR_GROUP_CLASS}>
+            <BottomMenuExtensionSelection sessionId={sessionId} />
+            <BottomMenuSkillSelection sessionId={sessionId} />
+            <BottomMenuKnowledgeSelection />
           </div>
-        )}
 
-        {compactPicker ? (
-          <Popover open={pickerExpanded} onOpenChange={setPickerExpanded}>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer ml-1"
-                aria-label={pickerExpanded ? 'Collapse extra controls' : 'Expand extra controls'}
-              >
-                {pickerExpanded ? (
-                  <ChevronLeft className="w-4 h-4" />
-                ) : (
-                  <ChevronRight className="w-4 h-4" />
-                )}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent side="top" align="start" className="flex flex-col gap-0.5 w-72 p-1.5">
-              <ContextWindowGauge
+          <div className={TOOLBAR_DIVIDER_CLASS} />
+
+          {!useCompactControls && (
+            <div className="flex min-w-0 flex-row items-center gap-1">
+              <Tooltip>
+                <div className="min-w-0">
+                  <ModelsBottomBar
+                    sessionId={sessionId}
+                    dropdownRef={dropdownRef}
+                    setView={setView}
+                    alerts={alerts}
+                    hideAlertPopover
+                  />
+                </div>
+              </Tooltip>
+              {COST_TRACKING_ENABLED && (
+                <div className={TOOLBAR_GROUP_CLASS}>
+                  <CostTracker
+                    inputTokens={accumulatedInputTokens}
+                    outputTokens={accumulatedOutputTokens}
+                    sessionCosts={sessionCosts}
+                  />
+                </div>
+              )}
+              <ContextWindowIndicator
                 totalTokens={totalTokens}
                 tokenLimit={tokenLimit}
                 isTokenLimitLoaded={isTokenLimitLoaded}
@@ -1723,133 +1708,67 @@ export default function ChatInput({
                       detail: { value: MANUAL_COMPACT_TRIGGER },
                     }) as unknown as React.FormEvent
                   );
-                  setPickerExpanded(false);
                 }}
               />
-              <PickerRow>
-                <ModelsBottomBar
-                  sessionId={sessionId}
-                  dropdownRef={dropdownRef}
-                  setView={setView}
-                  alerts={alerts}
-                  hideAlertPopover
-                />
-              </PickerRow>
-              {sessionId && (
-                <PickerRow>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (workflow) {
-                        setShowEditWorkflowModal(true);
-                      } else {
-                        setShowCreateWorkflowModal(true);
-                      }
-                      setPickerExpanded(false);
-                    }}
-                    className="flex items-center w-full text-left text-text-default/70 hover:text-text-default text-xs cursor-pointer"
-                  >
-                    <Pipeline className="mr-1 h-4 w-4 flex-shrink-0" />
-                    <span className="truncate">
-                      {workflow ? 'View/Edit Workflow' : 'Create Workflow'}
-                    </span>
-                  </button>
-                </PickerRow>
-              )}
-              {sessionId && (
-                <PickerRow>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDiagnosticsOpen(true);
-                      setPickerExpanded(false);
-                    }}
-                    className="flex items-center w-full text-left text-text-default/70 hover:text-text-default text-xs cursor-pointer"
-                  >
-                    <CodeAnalysis className="mr-1 h-4 w-4 flex-shrink-0" />
-                    <span className="truncate">Diagnostics</span>
-                  </button>
-                </PickerRow>
-              )}
-            </PopoverContent>
-          </Popover>
-        ) : (
-          <div className="flex flex-row items-center">
-            <ContextWindowIndicator
-              totalTokens={totalTokens}
-              tokenLimit={tokenLimit}
-              isTokenLimitLoaded={isTokenLimitLoaded}
-              onCompact={() => {
-                handleSubmit(
-                  new CustomEvent('submit', {
-                    detail: { value: MANUAL_COMPACT_TRIGGER },
-                  }) as unknown as React.FormEvent
-                );
-              }}
-            />
-            <Tooltip>
-              <div>
-                <ModelsBottomBar
-                  sessionId={sessionId}
-                  dropdownRef={dropdownRef}
-                  setView={setView}
-                  alerts={alerts}
-                  hideAlertPopover
-                />
-              </div>
-            </Tooltip>
-            {/* Workflow + diagnostics sit immediately to the right of the
-                model selector as a single grouped pair (one divider before
-                the group, none between the two buttons). */}
-            {sessionId && (
-              <>
-                <div className="w-px h-4 bg-border-default mx-2" />
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      onClick={() => {
-                        if (workflow) {
-                          setShowEditWorkflowModal(true);
-                        } else {
-                          setShowCreateWorkflowModal(true);
-                        }
-                      }}
-                      variant="ghost"
-                      size="sm"
-                      className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer"
-                    >
-                      <Pipeline size={16} />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {workflow ? 'View/Edit Workflow' : 'Create Workflow from Session'}
-                  </TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      onClick={() => {
-                        setDiagnosticsOpen(true);
-                      }}
-                      aria-label="Generate diagnostics bundle"
-                      title="Generate diagnostics bundle"
-                      variant="ghost"
-                      size="sm"
-                      className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer transition-colors"
-                    >
-                      <CodeAnalysis className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Generate diagnostics bundle</TooltipContent>
-                </Tooltip>
-              </>
-            )}
-          </div>
-        )}
+            </div>
+          )}
+        </div>
 
         {/* Send / Stop button — on far right of picker row. */}
-        <div className="ml-auto flex items-center pl-2 flex-shrink-0">
+        <div className="ml-auto flex flex-shrink-0 items-center gap-1 pl-1">
+          {useCompactControls && (
+            <Popover open={pickerExpanded} onOpenChange={setPickerExpanded}>
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  shape="round"
+                  className={`${TOOLBAR_ICON_BUTTON_CLASS} cursor-pointer`}
+                  aria-label={pickerExpanded ? 'Collapse extra controls' : 'Expand extra controls'}
+                >
+                  {pickerExpanded ? (
+                    <ChevronLeft className="w-4 h-4" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4" />
+                  )}
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent side="top" align="end" className="flex flex-col gap-0.5 w-72 p-1.5">
+                <PickerRow>
+                  <ModelsBottomBar
+                    sessionId={sessionId}
+                    dropdownRef={dropdownRef}
+                    setView={setView}
+                    alerts={alerts}
+                    hideAlertPopover
+                  />
+                </PickerRow>
+                {COST_TRACKING_ENABLED && (
+                  <PickerRow>
+                    <CostTracker
+                      inputTokens={accumulatedInputTokens}
+                      outputTokens={accumulatedOutputTokens}
+                      sessionCosts={sessionCosts}
+                    />
+                  </PickerRow>
+                )}
+                <ContextWindowGauge
+                  totalTokens={totalTokens}
+                  tokenLimit={tokenLimit}
+                  isTokenLimitLoaded={isTokenLimitLoaded}
+                  onCompact={() => {
+                    handleSubmit(
+                      new CustomEvent('submit', {
+                        detail: { value: MANUAL_COMPACT_TRIGGER },
+                      }) as unknown as React.FormEvent
+                    );
+                    setPickerExpanded(false);
+                  }}
+                />
+              </PopoverContent>
+            </Popover>
+          )}
           {isLoading && !hasSubmittableContent ? (
             <Button
               type="button"
@@ -1897,13 +1816,6 @@ export default function ChatInput({
             </Tooltip>
           )}
         </div>
-        {sessionId && diagnosticsOpen && (
-          <DiagnosticsModal
-            isOpen={diagnosticsOpen}
-            onClose={() => setDiagnosticsOpen(false)}
-            sessionId={sessionId}
-          />
-        )}
         <MentionPopover
           ref={mentionPopoverRef}
           isOpen={mentionPopover.isOpen}
@@ -1919,23 +1831,6 @@ export default function ChatInput({
           workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
           sessionId={sessionId}
         />
-
-        {sessionId && showCreateWorkflowModal && (
-          <CreateWorkflowFromSessionModal
-            isOpen={showCreateWorkflowModal}
-            onClose={() => setShowCreateWorkflowModal(false)}
-            sessionId={sessionId}
-          />
-        )}
-
-        {workflow && showEditWorkflowModal && (
-          <CreateEditWorkflowModal
-            isOpen={showEditWorkflowModal}
-            onClose={() => setShowEditWorkflowModal(false)}
-            workflow={workflow}
-            workflowId={workflowId}
-          />
-        )}
       </div>
     </div>
   );

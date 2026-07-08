@@ -131,7 +131,7 @@ export default function BioRouterMessage({
   }, [messages, messageIndex, toolRequests]);
 
   return (
-    <div className="biorouter-message flex w-[90%] justify-start min-w-0">
+    <div className="biorouter-message flex w-full justify-start min-w-0">
       <div className="flex flex-col w-full min-w-0">
         {cotText && (
           <details className="bg-background-medium border border-border-subtle rounded p-2 mb-2">

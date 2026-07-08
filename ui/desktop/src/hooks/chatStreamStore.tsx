@@ -395,7 +395,9 @@ class ChatStreamController {
     }
 
     if (!error && this.sessionId) {
-      const userMessageCount = this.messagesRef.filter((m) => m.role === 'user').length;
+      const userMessageCount = this.messagesRef.filter(
+        (m) => m.role === 'user' && m.metadata?.userVisible !== false
+      ).length;
       if (userMessageCount <= 3) {
         const pollDelays = [800, 1200, 2000, 3000, 4000, 6000, 8000, 10000];
         void (async () => {
@@ -512,50 +514,12 @@ class ChatStreamController {
     }
   }
 
-  handleSubmit = async (userMessage: string, attachments: UserAttachment[] = []): Promise<void> => {
-    await this.loadSession();
-
-    if (!this.snapshot.session || this.snapshot.chatState === ChatState.LoadingConversation) {
-      return;
-    }
-
-    if (this.abortController && !this.abortController.signal.aborted) {
-      return;
-    }
-
-    const hasExistingMessages = this.messagesRef.length > 0;
-    const hasNewMessage = userMessage.trim().length > 0 || attachments.length > 0;
-    if (!hasNewMessage && !hasExistingMessages) {
-      return;
-    }
-
-    this.lastInteractionTime = Date.now();
-    if (userMessage.trim().length > 0) {
-      this.lastSubmittedTitle = userMessage.trim().slice(0, 80);
-    } else if (attachments.length > 0) {
-      this.lastSubmittedTitle = `${attachments.length} attachment${attachments.length === 1 ? '' : 's'}`;
-    }
-
-    if (!hasExistingMessages && hasNewMessage) {
-      window.dispatchEvent(new CustomEvent('session-created'));
-    }
-
-    let newMessage: Message;
-    if (hasNewMessage) {
-      try {
-        newMessage = await createUserMessage(userMessage, attachments);
-      } catch (error) {
-        await this.finishCurrentStream('Submit error: ' + errorMessage(error));
-        return;
-      }
-    } else {
-      newMessage = this.messagesRef[this.messagesRef.length - 1];
-    }
-
-    const currentMessages = hasNewMessage
-      ? [...this.messagesRef, newMessage]
-      : [...this.messagesRef];
-    if (hasNewMessage) {
+  private submitPreparedMessage = async (
+    newMessage: Message,
+    currentMessages: Message[],
+    updateMessageList: boolean
+  ): Promise<void> => {
+    if (updateMessageList) {
       this.updateMessages(currentMessages);
     }
 
@@ -592,17 +556,75 @@ class ChatStreamController {
     }
   };
 
+  private canSubmitMessage(): boolean {
+    return (
+      !!this.snapshot.session &&
+      this.snapshot.chatState !== ChatState.LoadingConversation &&
+      !(this.abortController && !this.abortController.signal.aborted)
+    );
+  }
+
+  submitSystemMessage = async (message: Message): Promise<void> => {
+    await this.loadSession();
+
+    if (!this.canSubmitMessage()) {
+      return;
+    }
+
+    this.lastInteractionTime = Date.now();
+    const currentMessages = [...this.messagesRef, message];
+    await this.submitPreparedMessage(message, currentMessages, true);
+  };
+
+  handleSubmit = async (userMessage: string, attachments: UserAttachment[] = []): Promise<void> => {
+    await this.loadSession();
+
+    if (!this.canSubmitMessage()) {
+      return;
+    }
+
+    const hasExistingMessages = this.messagesRef.length > 0;
+    const hasNewMessage = userMessage.trim().length > 0 || attachments.length > 0;
+    if (!hasNewMessage && !hasExistingMessages) {
+      return;
+    }
+
+    this.lastInteractionTime = Date.now();
+    if (userMessage.trim().length > 0) {
+      this.lastSubmittedTitle = userMessage.trim().slice(0, 80);
+    } else if (attachments.length > 0) {
+      this.lastSubmittedTitle = `${attachments.length} attachment${attachments.length === 1 ? '' : 's'}`;
+    }
+
+    if (!hasExistingMessages && hasNewMessage) {
+      window.dispatchEvent(new CustomEvent('session-created'));
+    }
+
+    let newMessage: Message;
+    if (hasNewMessage) {
+      try {
+        newMessage = await createUserMessage(userMessage, attachments);
+      } catch (error) {
+        await this.finishCurrentStream('Submit error: ' + errorMessage(error));
+        return;
+      }
+    } else {
+      newMessage = this.messagesRef[this.messagesRef.length - 1];
+    }
+
+    const currentMessages = hasNewMessage
+      ? [...this.messagesRef, newMessage]
+      : [...this.messagesRef];
+    await this.submitPreparedMessage(newMessage, currentMessages, hasNewMessage);
+  };
+
   submitElicitationResponse = async (
     elicitationId: string,
     userData: Record<string, unknown>
   ): Promise<void> => {
     await this.loadSession();
 
-    if (!this.snapshot.session || this.snapshot.chatState === ChatState.LoadingConversation) {
-      return;
-    }
-
-    if (this.abortController && !this.abortController.signal.aborted) {
+    if (!this.canSubmitMessage()) {
       return;
     }
 
@@ -610,37 +632,7 @@ class ChatStreamController {
     const responseMessage = createElicitationResponseMessage(elicitationId, userData);
     const currentMessages = [...this.messagesRef, responseMessage];
 
-    this.updateMessages(currentMessages);
-    this.updateSnapshot((prev) => ({
-      ...prev,
-      chatState: ChatState.Streaming,
-      notifications: [],
-    }));
-    this.abortController = new AbortController();
-    const streamId = this.activeStreamId + 1;
-    this.activeStreamId = streamId;
-
-    try {
-      const { stream } = await reply({
-        body: {
-          session_id: this.sessionId,
-          user_message: responseMessage,
-        },
-        throwOnError: true,
-        signal: this.abortController.signal,
-        sseMaxRetryAttempts: 1,
-      });
-
-      await this.streamFromResponse(stream, currentMessages, streamId);
-    } catch (error) {
-      if (error instanceof Error && error.name !== 'AbortError') {
-        await this.finishCurrentStream('Submit error: ' + errorMessage(error));
-      }
-    } finally {
-      if (this.activeStreamId === streamId && this.abortController?.signal.aborted) {
-        this.abortController = null;
-      }
-    }
+    await this.submitPreparedMessage(responseMessage, currentMessages, true);
   };
 
   setWorkflowUserParams = async (user_workflow_values: Record<string, string>): Promise<void> => {

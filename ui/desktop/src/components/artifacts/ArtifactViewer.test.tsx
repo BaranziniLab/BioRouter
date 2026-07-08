@@ -76,4 +76,47 @@ describe('ArtifactViewer', () => {
       expect(screen.getByText(/select/)).toBeInTheDocument();
     });
   });
+
+  it('reports visualization render errors from the preview frame once', async () => {
+    installElectronMock();
+    const onRenderError = vi.fn();
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{
+            kind: 'html',
+            title: 'chart',
+            html: '<!doctype html><html><body><h1>Plot</h1></body></html>',
+          }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+          onRenderError={onRenderError}
+        />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => expect(screen.getByTestId('artifact-viewer')).toBeInTheDocument());
+
+    const message = new MessageEvent('message', {
+      data: {
+        type: 'biorouter-viz-render-error',
+        payload: {
+          message: 'This visualization could not be rendered.',
+          detail: 'ReferenceError: Chart is not defined',
+          href: 'file:///tmp/chart.html',
+        },
+      },
+    });
+    window.dispatchEvent(message);
+    window.dispatchEvent(message);
+
+    expect(onRenderError).toHaveBeenCalledTimes(1);
+    expect(onRenderError).toHaveBeenCalledWith({
+      artifactTitle: 'chart',
+      message: 'This visualization could not be rendered.',
+      detail: 'ReferenceError: Chart is not defined',
+      href: 'file:///tmp/chart.html',
+    });
+  });
 });

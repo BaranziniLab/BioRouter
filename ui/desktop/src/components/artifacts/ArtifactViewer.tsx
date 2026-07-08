@@ -1,5 +1,5 @@
 import { UIResourceRenderer } from '@mcp-ui/client';
-import { useEffect, useMemo, useState } from 'react';
+import { type CSSProperties, type PointerEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useTheme } from '../../contexts/ThemeContext';
@@ -20,9 +20,21 @@ import { basenameFromPath, languageFromPath } from './artifactUtils';
 
 interface ArtifactViewerProps {
   artifact: ArtifactSource | null;
+  isOpen?: boolean;
+  isResizing?: boolean;
   onClose: () => void;
   onOpenArtifact: (artifact: ArtifactSource) => void;
+  onResizeStart?: (event: PointerEvent<HTMLDivElement>) => void;
+  onRenderError?: (error: ArtifactRenderError) => void;
   className?: string;
+  style?: CSSProperties;
+}
+
+export interface ArtifactRenderError {
+  artifactTitle: string;
+  message: string;
+  detail?: string;
+  href?: string;
 }
 
 type HtmlPreview = { kind: 'html'; html: string };
@@ -32,7 +44,12 @@ type McpPreview = { kind: 'mcpResource' };
 type LoadingPreview = { kind: 'loading' };
 type ErrorPreview = { kind: 'error'; message: string };
 type PreviewState =
-  HtmlPreview | ExternalPreview | FilePreview | McpPreview | LoadingPreview | ErrorPreview;
+  | HtmlPreview
+  | ExternalPreview
+  | FilePreview
+  | McpPreview
+  | LoadingPreview
+  | ErrorPreview;
 
 const previewCodeTheme = {
   ...oneLight,
@@ -74,12 +91,18 @@ function formatBytes(value?: number) {
 
 export default function ArtifactViewer({
   artifact,
+  isOpen = true,
+  isResizing = false,
   onClose,
   onOpenArtifact,
+  onResizeStart,
+  onRenderError,
   className,
+  style,
 }: ArtifactViewerProps) {
   const { resolvedTheme } = useTheme();
   const [preview, setPreview] = useState<PreviewState>({ kind: 'loading' });
+  const lastRenderErrorKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -139,6 +162,45 @@ export default function ArtifactViewer({
     };
   }, [artifact]);
 
+  useEffect(() => {
+    if (!artifact || !onRenderError) return;
+
+    const handleMessage = (event: MessageEvent) => {
+      const data = event.data as
+        | {
+            type?: string;
+            payload?: {
+              message?: unknown;
+              detail?: unknown;
+              href?: unknown;
+            };
+          }
+        | undefined;
+
+      if (!data || data.type !== 'biorouter-viz-render-error') return;
+
+      const message =
+        typeof data.payload?.message === 'string'
+          ? data.payload.message
+          : 'This visualization could not be rendered.';
+      const detail = typeof data.payload?.detail === 'string' ? data.payload.detail : undefined;
+      const href = typeof data.payload?.href === 'string' ? data.payload.href : undefined;
+      const key = `${artifact.title}\n${message}\n${detail ?? ''}`;
+      if (lastRenderErrorKeyRef.current === key) return;
+      lastRenderErrorKeyRef.current = key;
+
+      onRenderError({
+        artifactTitle: artifact.title,
+        message,
+        detail,
+        href,
+      });
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [artifact, onRenderError]);
+
   const Icon = iconForArtifact(artifact);
   const subtitle = useMemo(() => {
     if (!artifact) return '';
@@ -168,52 +230,76 @@ export default function ArtifactViewer({
   return (
     <aside
       data-testid="artifact-viewer"
+      style={{
+        ...style,
+        contain: 'layout paint',
+        willChange: 'width, flex-basis, transform, opacity',
+      }}
       className={cn(
-        'flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-border-subtle bg-background-muted/95 backdrop-blur',
+        'relative flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-border-subtle bg-background-muted/95 backdrop-blur',
+        isResizing
+          ? 'transition-none'
+          : 'transition-[width,flex-basis,opacity,transform] duration-200 ease-out',
+        isOpen ? 'translate-x-0 opacity-100' : 'translate-x-3 opacity-0',
         className
       )}
     >
-      <div className="flex min-h-0 flex-1 flex-col p-3">
-        <div className="mb-2 flex items-center gap-2 rounded-lg border border-border-subtle bg-background-default/80 px-3 py-2 shadow-[0_12px_28px_rgba(15,23,42,0.08)]">
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-background-medium text-text-muted">
+      {onResizeStart && (
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize artifact panel"
+          onPointerDown={onResizeStart}
+          className="group absolute inset-y-0 left-0 z-30 w-2 cursor-col-resize"
+        >
+          <div className="h-full w-px bg-transparent transition-colors group-hover:bg-border-strong" />
+        </div>
+      )}
+
+      <div className="flex h-14 flex-shrink-0 items-center gap-2 border-b border-border-subtle/35 bg-background-muted/95 px-4">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-background-medium/80 text-text-muted">
             <Icon className="h-4 w-4" aria-hidden="true" />
           </div>
           <div className="min-w-0 flex-1">
             <div className="truncate text-sm font-medium text-text-default">{artifact.title}</div>
             <div className="truncate text-xs text-text-muted">{subtitle}</div>
           </div>
-          {(preview.kind === 'html' || preview.kind === 'externalUrl') && (
-            <button
-              type="button"
-              onClick={openStandalone}
-              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
-              aria-label="Open artifact outside side viewer"
-              title="Open outside side viewer"
-            >
-              {preview.kind === 'externalUrl' ? (
-                <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
-              ) : (
-                <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
-              )}
-            </button>
-          )}
+        </div>
+        {(preview.kind === 'html' || preview.kind === 'externalUrl') && (
           <button
             type="button"
-            onClick={onClose}
+            onClick={openStandalone}
             className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
-            aria-label="Close artifact viewer"
-            title="Close"
+            aria-label="Open artifact outside side viewer"
+            title="Open outside side viewer"
           >
-            <X className="h-3.5 w-3.5" aria-hidden="true" />
+            {preview.kind === 'externalUrl' ? (
+              <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+            ) : (
+              <Maximize2 className="h-3.5 w-3.5" aria-hidden="true" />
+            )}
           </button>
-        </div>
+        )}
+        <button
+          type="button"
+          onClick={onClose}
+          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+          aria-label="Close artifact viewer"
+          title="Close"
+        >
+          <X className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      </div>
 
+      <div className="flex min-h-0 flex-1 flex-col p-3">
         <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border-subtle bg-background-default shadow-[0_18px_46px_rgba(15,23,42,0.10)]">
           <ArtifactPreviewBody
             preview={preview}
             artifact={artifact}
             onOpenArtifact={onOpenArtifact}
             resolvedTheme={resolvedTheme}
+            isResizing={isResizing}
           />
         </div>
       </div>
@@ -226,11 +312,13 @@ function ArtifactPreviewBody({
   artifact,
   onOpenArtifact,
   resolvedTheme,
+  isResizing,
 }: {
   preview: PreviewState;
   artifact: ArtifactSource;
   onOpenArtifact: (artifact: ArtifactSource) => void;
   resolvedTheme: 'light' | 'dark';
+  isResizing: boolean;
 }) {
   if (preview.kind === 'loading') {
     return (
@@ -248,7 +336,7 @@ function ArtifactPreviewBody({
         title={artifact.title}
         srcDoc={preview.html}
         sandbox="allow-scripts allow-forms allow-popups allow-modals"
-        className="h-full w-full bg-white"
+        className={cn('h-full w-full bg-white', isResizing && 'pointer-events-none')}
       />
     );
   }
@@ -259,7 +347,7 @@ function ArtifactPreviewBody({
         title={artifact.title}
         src={preview.url}
         sandbox="allow-scripts allow-forms allow-popups allow-modals"
-        className="h-full w-full bg-white"
+        className={cn('h-full w-full bg-white', isResizing && 'pointer-events-none')}
       />
     );
   }

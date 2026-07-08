@@ -340,6 +340,15 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       cliStatus: async () => ({ installed: false }),
       installCli: async () => ({ success: false }),
       launchCli: async () => ({ success: false }),
+      createTerminalSession: async () => ({
+        success: false,
+        error: 'In-app terminal is only available in Electron.',
+      }),
+      writeTerminalSession: async () => ({ success: false, error: 'No terminal session.' }),
+      resizeTerminalSession: async () => ({ success: false, error: 'No terminal session.' }),
+      disposeTerminalSession: async () => ({ success: true }),
+      onTerminalData: () => () => {},
+      onTerminalExit: () => () => {},
       addRecentDir: async () => {},
       openDirectoryInExplorer: async () => {},
       openArtifactWindow: async (payload: { html: string } | string) => {

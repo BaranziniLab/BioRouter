@@ -42,7 +42,10 @@ const CLIENT_INSERT_COMMANDS: Record<string, { description: string; insert: stri
 };
 
 const REMOVED_SLASH_COMMANDS = new Set(['prompt', 'prompts']);
-const COMPACT_EXTENSION_ALIASES: Record<string, { canonical: string; name: string; label: string }> = {
+const COMPACT_EXTENSION_ALIASES: Record<
+  string,
+  { canonical: string; name: string; label: string }
+> = {
   agentdrafter: { canonical: 'agent_drafter', name: 'agentdrafter', label: 'Agent Drafter' },
   autovisualiser: {
     canonical: 'autovisualiser',
@@ -65,7 +68,9 @@ const isKnownBuiltInExtension = (name: string) => {
   const normalized = normalizedExtensionName(name);
   return (
     Boolean(COMPACT_EXTENSION_ALIASES[normalized]) ||
-    bundledExtensionsData.some((extension) => normalizedExtensionName(extension.name) === normalized) ||
+    bundledExtensionsData.some(
+      (extension) => normalizedExtensionName(extension.name) === normalized
+    ) ||
     ['todo', 'skills', 'extensionmanager', 'chatrecall', 'codeexecution'].includes(normalized)
   );
 };
@@ -491,28 +496,25 @@ const MentionPopover = forwardRef<
 
     const loadReferenceItems = useCallback(
       async (includeCommands: boolean) => {
-        const [
-          commandsResponse,
-          basesResponse,
-          activeResponse,
-          skillsResult,
-          sessionExtensions,
-        ] = await Promise.all([
-          includeCommands
-            ? getSlashCommands({ throwOnError: true })
-            : Promise.resolve({ data: { commands: [] } }),
-          listBases({ throwOnError: false }),
-          getActive({
-            query: sessionId ? { session_id: sessionId } : undefined,
-            throwOnError: false,
-          }),
-          loadSkillsFromDirs(ALL_SKILL_DIRS).catch(() => ({ singles: [], bundles: [] })),
-          sessionId
-            ? getSessionExtensions({ path: { session_id: sessionId } }).catch(() => null)
-            : Promise.resolve(null),
-        ]);
+        const [commandsResponse, basesResponse, activeResponse, skillsResult, sessionExtensions] =
+          await Promise.all([
+            includeCommands
+              ? getSlashCommands({ throwOnError: true })
+              : Promise.resolve({ data: { commands: [] } }),
+            listBases({ throwOnError: false }),
+            getActive({
+              query: sessionId ? { session_id: sessionId } : undefined,
+              throwOnError: false,
+            }),
+            loadSkillsFromDirs(ALL_SKILL_DIRS).catch(() => ({ singles: [], bundles: [] })),
+            sessionId
+              ? getSessionExtensions({ path: { session_id: sessionId } }).catch(() => null)
+              : Promise.resolve(null),
+          ]);
         const commandItems: DisplayItem[] = (commandsResponse.data?.commands || [])
-          .filter((cmd) => !REMOVED_SLASH_COMMANDS.has(cmd.command.replace(/^\/+/, '').toLowerCase()))
+          .filter(
+            (cmd) => !REMOVED_SLASH_COMMANDS.has(cmd.command.replace(/^\/+/, '').toLowerCase())
+          )
           .map((cmd) => ({
             name: cmd.command,
             extra: cmd.help,
@@ -775,7 +777,7 @@ const MentionPopover = forwardRef<
     const menu = (
       <div
         ref={popoverRef}
-        className="biorouter-popover-surface fixed z-50 bg-background-default rounded-xl max-h-72 overflow-hidden"
+        className="biorouter-popover-surface fixed z-[1210] bg-background-default rounded-xl max-h-72 overflow-hidden"
         style={{
           left: menuLeft,
           top: position.y - 8,
@@ -819,9 +821,7 @@ const MentionPopover = forwardRef<
                         <div className="text-xs leading-4 truncate text-text-default">
                           {item.name}
                         </div>
-                        {item.builtIn && (
-                          <BuiltInBadge title="Built in. Ships with Biorouter." />
-                        )}
+                        {item.builtIn && <BuiltInBadge title="Built in. Ships with Biorouter." />}
                       </div>
                       <div className="text-[11px] leading-3 truncate text-text-muted">
                         {item.extra}
