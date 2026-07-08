@@ -256,7 +256,7 @@ export default function ArtifactViewer({
         </div>
       )}
 
-      <div className="flex h-14 flex-shrink-0 items-center gap-2 border-b border-border-subtle/35 bg-background-muted/95 px-4">
+      <div className="relative z-20 flex h-14 flex-shrink-0 items-center gap-2 border-b border-border-subtle/35 bg-background-muted/95 px-4">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-background-medium/80 text-text-muted">
             <Icon className="h-4 w-4" aria-hidden="true" />
@@ -270,7 +270,7 @@ export default function ArtifactViewer({
           <button
             type="button"
             onClick={openStandalone}
-            className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+            className="relative z-30 inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
             aria-label="Open artifact outside side viewer"
             title="Open outside side viewer"
           >
@@ -284,7 +284,7 @@ export default function ArtifactViewer({
         <button
           type="button"
           onClick={onClose}
-          className="inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+          className="relative z-30 inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
           aria-label="Close artifact viewer"
           title="Close"
         >
@@ -292,7 +292,7 @@ export default function ArtifactViewer({
         </button>
       </div>
 
-      <div className="flex min-h-0 flex-1 flex-col p-3">
+      <div className="relative z-0 flex min-h-0 flex-1 flex-col p-3">
         <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border-subtle bg-background-default shadow-[0_18px_46px_rgba(15,23,42,0.10)]">
           <ArtifactPreviewBody
             preview={preview}
