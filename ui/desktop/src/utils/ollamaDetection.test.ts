@@ -7,6 +7,7 @@ import {
   getOllamaModels,
   hasModel,
   pullOllamaModel,
+  deleteOllamaModel,
   pollForOllama,
   getOllamaDownloadUrl,
   getPreferredModel,
@@ -229,6 +230,13 @@ describe('ollamaDetection', () => {
       const result = await pullOllamaModel('gpt-oss:20b', onProgress);
 
       expect(result).toBe(true);
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:11434/api/pull',
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ model: 'gpt-oss:20b', stream: true }),
+        })
+      );
       expect(onProgress).toHaveBeenCalledTimes(3);
       expect(progressUpdates).toContainEqual({
         status: 'downloading',
@@ -250,6 +258,36 @@ describe('ollamaDetection', () => {
       });
 
       const result = await pullOllamaModel('invalid-model');
+
+      expect(result).toBe(false);
+    });
+  });
+
+  describe('deleteOllamaModel', () => {
+    it('should delete a model through the Ollama API', async () => {
+      (globalThis.fetch as any).mockResolvedValueOnce({
+        ok: true,
+      });
+
+      const result = await deleteOllamaModel('gemma4:e2b');
+
+      expect(result).toBe(true);
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:11434/api/delete',
+        expect.objectContaining({
+          method: 'DELETE',
+          body: JSON.stringify({ model: 'gemma4:e2b' }),
+        })
+      );
+    });
+
+    it('should return false when delete fails', async () => {
+      (globalThis.fetch as any).mockResolvedValueOnce({
+        ok: false,
+        statusText: 'Model not found',
+      });
+
+      const result = await deleteOllamaModel('missing-model');
 
       expect(result).toBe(false);
     });

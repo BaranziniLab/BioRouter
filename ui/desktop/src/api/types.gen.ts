@@ -592,6 +592,21 @@ export type ListWorkflowResponse = {
     manifests: Array<WorkflowManifest>;
 };
 
+export type LlamaCppDeleteRequest = {
+    /**
+     * Catalog model name (e.g. `gemma4`) or raw Hugging Face spec.
+     */
+    model: string;
+};
+
+export type LlamaCppDeleteResponse = {
+    /**
+     * Whether a Biorouter/llama.cpp Hugging Face fallback cache directory was removed.
+     */
+    deleted_fallback_cache: boolean;
+    status: LlamaCppStatusResponse;
+};
+
 export type LlamaCppEnsureRequest = {
     /**
      * Catalog model name (e.g. `gemma4`) or raw Hugging Face spec.
@@ -621,6 +636,7 @@ export type LlamaCppModel = {
      * Whether the llama.cpp-compatible Hugging Face fallback is already cached.
      */
     fallback_downloaded: boolean;
+    family: string;
     hf_spec: string;
     /**
      * True for the model Biorouter preselects.
@@ -632,6 +648,7 @@ export type LlamaCppModel = {
      */
     model_path?: string | null;
     name: string;
+    official_url: string;
     ollama_name?: string | null;
     recommended_gpu_memory_gib: number;
     suitability_message: string;
@@ -3425,6 +3442,29 @@ export type CheckModelResponses = {
 };
 
 export type CheckModelResponse2 = CheckModelResponses[keyof CheckModelResponses];
+
+export type LlamacppDeleteData = {
+    body: LlamaCppDeleteRequest;
+    path?: never;
+    query?: never;
+    url: '/llamacpp/delete';
+};
+
+export type LlamacppDeleteErrors = {
+    /**
+     * Unknown model name
+     */
+    400: unknown;
+};
+
+export type LlamacppDeleteResponses = {
+    /**
+     * Cached Llama Server fallback model removed
+     */
+    200: LlamaCppDeleteResponse;
+};
+
+export type LlamacppDeleteResponse = LlamacppDeleteResponses[keyof LlamacppDeleteResponses];
 
 export type LlamacppEnsureData = {
     body: LlamaCppEnsureRequest;

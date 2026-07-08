@@ -125,7 +125,7 @@ export async function pullOllamaModel(
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        name: modelName,
+        model: modelName,
         stream: true,
       }),
     });
@@ -166,6 +166,29 @@ export async function pullOllamaModel(
     return true;
   } catch (error) {
     console.error('Failed to pull model:', error);
+    return false;
+  }
+}
+
+export async function deleteOllamaModel(modelName: string): Promise<boolean> {
+  try {
+    const response = await fetch(`${DEFAULT_OLLAMA_HOST}/api/delete`, {
+      method: 'DELETE',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: modelName,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to delete model: ${response.statusText}`);
+    }
+
+    return true;
+  } catch (error) {
+    console.error('Failed to delete Ollama model:', error);
     return false;
   }
 }

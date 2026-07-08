@@ -72,6 +72,20 @@ async fn status_returns_catalog_with_default_first_class() {
     );
     assert!(
         catalog.iter().all(|m| m
+            .get("official_url")
+            .and_then(|url| url.as_str())
+            .is_some_and(|url| url.starts_with("https://ollama.com/library/"))),
+        "catalog entries should expose the official Ollama library URL"
+    );
+    assert!(
+        catalog.iter().all(|m| m
+            .get("family")
+            .and_then(|family| family.as_str())
+            .is_some_and(|family| ["Gemma 4", "Qwen3.6"].contains(&family))),
+        "catalog entries should expose their model family"
+    );
+    assert!(
+        catalog.iter().all(|m| m
             .get("recommended_gpu_memory_gib")
             .and_then(|n| n.as_u64())
             .is_some()),
@@ -193,6 +207,56 @@ async fn warmup_rejects_unknown_model_before_starting_sidecar() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
+}
+
+#[tokio::test]
+async fn delete_rejects_unknown_model() {
+    let res = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/llamacpp/delete")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"gpt-4o"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+}
+
+#[tokio::test]
+async fn delete_removes_cached_huggingface_fallback() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tmp_path = tmp.path().to_string_lossy().into_owned();
+    let _guard = env_lock::lock_env([("OLLAMA_MODELS", Some(tmp_path.as_str()))]);
+
+    let repo_dir = tmp
+        .path()
+        .join("models--google--gemma-4-E4B-it-qat-q4_0-gguf");
+    let snapshot_dir = repo_dir.join("snapshots").join("rev");
+    std::fs::create_dir_all(&snapshot_dir).unwrap();
+    std::fs::write(snapshot_dir.join("gemma-4-E4B-Q4_0.gguf"), b"model").unwrap();
+
+    let res = app()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/llamacpp/delete")
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"model":"gemma4"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let v = body_json(res).await;
+    assert_eq!(
+        v.get("deleted_fallback_cache")
+            .and_then(|deleted| deleted.as_bool()),
+        Some(true)
+    );
+    assert!(!repo_dir.exists());
 }
 
 #[tokio::test]
