@@ -39,7 +39,7 @@ async function releaseDashboardSession(sessionId: string): Promise<void> {
 }
 
 // Default window size — kept in sync with DashboardBoard.MIN_WINDOW_*.
-const MIN_WINDOW_W = 600;
+const MIN_WINDOW_W = 760;
 const MIN_WINDOW_H = 440;
 const GAP = 16;
 

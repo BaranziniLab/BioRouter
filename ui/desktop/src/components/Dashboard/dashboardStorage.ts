@@ -5,7 +5,7 @@ const STORAGE_VERSION = 2;
 
 // Defaults used when migrating windows that lacked an explicit position/size.
 // Kept in sync with the constants in DashboardProvider/DashboardBoard.
-const DEFAULT_W = 600;
+const DEFAULT_W = 760;
 const DEFAULT_H = 440;
 const DEFAULT_GAP = 16;
 
