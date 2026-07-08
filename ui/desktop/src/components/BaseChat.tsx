@@ -34,6 +34,7 @@ import { WorkflowHeader } from './WorkflowHeader';
 import { WorkflowWarningModal } from './ui/WorkflowWarningModal';
 import { scanWorkflow } from '../workflow';
 import { useCostTracking } from '../hooks/useCostTracking';
+import { useDiverge } from '../hooks/useDiverge';
 import WorkflowActivities from './workflows/WorkflowActivities';
 import { useToolCount } from './alerts/useToolCount';
 import { Button } from './ui/button';
@@ -391,6 +392,7 @@ function BaseChatContent({
     return typeof window !== 'undefined' && window.innerWidth < SIDEBAR_COMPACT_TITLE_WIDTH;
   });
   const isMacOS = (window?.electron?.platform || 'darwin') === 'darwin';
+  const { diverge } = useDiverge();
   const isCompactSidebarOverlayOpen = isSidebarCompact && !isMobile && sidebarState !== 'collapsed';
   const reserveTitlebarControls =
     isMacOS && (isMobile || isSidebarCompact || sidebarState === 'collapsed');
@@ -659,6 +661,15 @@ function BaseChatContent({
     sessionId,
     onStreamFinish,
   });
+
+  const canDivergeSession = useMemo(
+    () => messages.some((message) => message.role === 'assistant'),
+    [messages]
+  );
+  const handleTitleDiverge = useCallback(() => {
+    if (!canDivergeSession) return;
+    void diverge(sessionId);
+  }, [canDivergeSession, diverge, sessionId]);
 
   const submitArtifactRepairMessage = useCallback(
     (message: Message) => {
@@ -1360,6 +1371,8 @@ function BaseChatContent({
                     <SessionNamePill
                       name={session?.name || 'New Session'}
                       onRename={handleRename}
+                      onDiverge={handleTitleDiverge}
+                      canDiverge={canDivergeSession}
                       accentColor={accentColor}
                       className="w-fit max-w-[min(520px,calc(100%-16px))]"
                     />

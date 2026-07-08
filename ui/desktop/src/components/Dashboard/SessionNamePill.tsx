@@ -10,13 +10,23 @@ import {
 interface Props {
   name: string;
   onRename: (newName: string) => void;
+  onDiverge?: () => void | Promise<void>;
+  canDiverge?: boolean;
   /** Optional accent color dot (dashboard windows pass theirs). */
   accentColor?: string;
   className?: string;
 }
 
-export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, className }) => {
+export const SessionNamePill: React.FC<Props> = ({
+  name,
+  onRename,
+  onDiverge,
+  canDiverge = false,
+  accentColor,
+  className,
+}) => {
   const [editing, setEditing] = useState(false);
+  const [diverging, setDiverging] = useState(false);
   const [draft, setDraft] = useState(name);
   const inputRef = useRef<HTMLInputElement>(null);
   const noDragStyle = { WebkitAppRegion: 'no-drag' } as React.CSSProperties;
@@ -39,9 +49,16 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
     setEditing(true);
   };
 
+  const handleDiverge = (event?: React.SyntheticEvent | Event) => {
+    event?.stopPropagation();
+    if (!onDiverge || !canDiverge || diverging) return;
+    setDiverging(true);
+    void Promise.resolve(onDiverge()).finally(() => setDiverging(false));
+  };
+
   return (
     <div
-      className={`inline-flex h-10 min-w-0 items-center gap-2 rounded-md no-drag ${className ?? ''}`}
+      className={`inline-flex h-10 min-w-0 items-center gap-1 rounded-md no-drag ${className ?? ''}`}
       style={noDragStyle}
     >
       {accentColor && (
@@ -70,7 +87,7 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
       ) : (
         <>
           <span
-            className="inline-flex h-8 max-w-full min-w-0 items-center rounded px-1 text-sm font-medium leading-none text-text-default"
+            className="inline-flex h-8 max-w-full min-w-0 items-center rounded py-0 pl-1 pr-0 text-sm font-medium leading-none text-text-default"
             title={name}
           >
             <span className="truncate no-drag">{name}</span>
@@ -81,7 +98,7 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
                 type="button"
                 aria-label="Conversation title actions"
                 title="Conversation title actions"
-                className="inline-flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+                className="inline-flex h-7 w-6 flex-shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
                 style={noDragStyle}
                 onPointerDown={(event) => event.stopPropagation()}
               >
@@ -90,6 +107,14 @@ export const SessionNamePill: React.FC<Props> = ({ name, onRename, accentColor, 
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" side="bottom" className="w-36">
               <DropdownMenuItem onSelect={startEditing}>Rename</DropdownMenuItem>
+              {onDiverge && (
+                <DropdownMenuItem
+                  disabled={!canDiverge || diverging}
+                  onSelect={handleDiverge}
+                >
+                  {diverging ? 'Diverging...' : 'Diverge'}
+                </DropdownMenuItem>
+              )}
             </DropdownMenuContent>
           </DropdownMenu>
         </>

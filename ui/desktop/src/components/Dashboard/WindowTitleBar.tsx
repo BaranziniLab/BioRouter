@@ -16,6 +16,8 @@ interface Props {
   onShrink: () => void;
   onEnlarge: () => void;
   onFold: () => void;
+  onDiverge?: () => void | Promise<void>;
+  canDiverge?: boolean;
   onPointerDownDrag: (e: React.PointerEvent<HTMLDivElement>) => void;
 }
 
@@ -27,9 +29,12 @@ export const WindowTitleBar: React.FC<Props> = ({
   onShrink,
   onEnlarge,
   onFold,
+  onDiverge,
+  canDiverge = false,
   onPointerDownDrag,
 }) => {
   const [editing, setEditing] = useState(false);
+  const [diverging, setDiverging] = useState(false);
   const [draft, setDraft] = useState(name);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -52,10 +57,16 @@ export const WindowTitleBar: React.FC<Props> = ({
     event?.stopPropagation();
     setEditing(true);
   };
+  const handleDiverge = (event?: React.SyntheticEvent | Event) => {
+    event?.stopPropagation();
+    if (!onDiverge || !canDiverge || diverging) return;
+    setDiverging(true);
+    void Promise.resolve(onDiverge()).finally(() => setDiverging(false));
+  };
 
   return (
     <div
-      className="flex items-center gap-2 px-3 h-9 select-none cursor-grab active:cursor-grabbing border-b border-border-subtle/30 bg-background-default/80 backdrop-blur-sm rounded-t-2xl"
+      className="flex items-center gap-1.5 px-3 h-9 select-none cursor-grab active:cursor-grabbing border-b border-border-subtle/30 bg-background-default/80 backdrop-blur-sm rounded-t-2xl"
       onPointerDown={(e) => {
         if ((e.target as HTMLElement).closest('button, input')) return;
         onPointerDownDrag(e);
@@ -83,7 +94,7 @@ export const WindowTitleBar: React.FC<Props> = ({
           className="h-8 w-[min(360px,calc(100vw-180px))] min-w-[120px] bg-transparent px-1 text-sm font-medium outline-none border-b border-border-subtle"
         />
       ) : (
-        <span className="inline-flex h-8 min-w-0 max-w-[min(420px,calc(100vw-220px))] items-center rounded px-1 text-sm font-medium leading-none text-text-default">
+        <span className="inline-flex h-8 min-w-0 max-w-[min(420px,calc(100vw-220px))] items-center rounded py-0 pl-1 pr-0 text-sm font-medium leading-none text-text-default">
           <span className="truncate" title={name}>
             {name}
           </span>
@@ -105,6 +116,11 @@ export const WindowTitleBar: React.FC<Props> = ({
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" side="bottom" className="w-36">
             <DropdownMenuItem onSelect={startEditing}>Rename</DropdownMenuItem>
+            {onDiverge && (
+              <DropdownMenuItem disabled={!canDiverge || diverging} onSelect={handleDiverge}>
+                {diverging ? 'Diverging...' : 'Diverge'}
+              </DropdownMenuItem>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       )}

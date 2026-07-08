@@ -26,6 +26,25 @@ describe('session title controls', () => {
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
   });
 
+  it('offers Diverge from the main chat title menu when a response exists', async () => {
+    const user = userEvent.setup();
+    const onDiverge = vi.fn();
+
+    render(
+      <SessionNamePill
+        name="Weather summary website"
+        onRename={vi.fn()}
+        onDiverge={onDiverge}
+        canDiverge
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: /conversation title actions/i }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Diverge' }));
+
+    expect(onDiverge).toHaveBeenCalledTimes(1);
+  });
+
   it('turns the dashboard window title into an input from the title menu', async () => {
     const user = userEvent.setup();
 
@@ -70,5 +89,30 @@ describe('session title controls', () => {
 
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
     expect(onPointerDownDrag).not.toHaveBeenCalled();
+  });
+
+  it('offers Diverge from the dashboard title menu', async () => {
+    const user = userEvent.setup();
+    const onDiverge = vi.fn();
+
+    render(
+      <WindowTitleBar
+        name="Weather summary website"
+        accentColor="#eab308"
+        onRename={vi.fn()}
+        onClose={vi.fn()}
+        onShrink={vi.fn()}
+        onEnlarge={vi.fn()}
+        onFold={vi.fn()}
+        onDiverge={onDiverge}
+        canDiverge
+        onPointerDownDrag={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole('button', { name: /conversation title actions/i }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Diverge' }));
+
+    expect(onDiverge).toHaveBeenCalledTimes(1);
   });
 });

@@ -14,6 +14,7 @@ import { errorMessage } from '../../utils/conversionUtils';
 import { FoldedCard } from './FoldedCard';
 import { CARD_W, CARD_H } from './DashboardProvider';
 import { snapSizeToDevicePixel, snapToDevicePixel } from './pixelSnap';
+import { useDiverge } from '../../hooks/useDiverge';
 
 // Default "comfort" size used by the Enlarge button — matches the standalone
 // chat window dimensions in main.ts.
@@ -42,6 +43,7 @@ export const ChatWindow: React.FC<Props> = ({
   onManipulateStart,
 }) => {
   const dashboard = useDashboard();
+  const { diverge } = useDiverge();
   const [chat, setChat] = useState<ChatType>({
     sessionId: win.sessionId,
     name: win.name || DEFAULT_CHAT_TITLE,
@@ -61,6 +63,10 @@ export const ChatWindow: React.FC<Props> = ({
   // input row.
   const [focusTrigger, setFocusTrigger] = useState(0);
   const prevFoldedRef = useRef(win.folded);
+  const handleTitleDiverge = React.useCallback(() => {
+    void diverge(win.sessionId);
+  }, [diverge, win.sessionId]);
+
   useEffect(() => {
     if (prevFoldedRef.current && !win.folded) {
       setFocusTrigger((c) => c + 1);
@@ -183,6 +189,8 @@ export const ChatWindow: React.FC<Props> = ({
             );
           }}
           onFold={() => dashboard.foldWindow(win.windowId, true)}
+          onDiverge={handleTitleDiverge}
+          canDiverge={Boolean(win.sessionId)}
           onPointerDownDrag={dragStart}
         />
         <div className="flex-1 min-h-0 relative">
