@@ -175,7 +175,14 @@ describe('ArtifactViewer', () => {
       ).toBeInTheDocument();
     });
 
-    await user.click(screen.getByRole('button', { name: /open artifact outside side viewer/i }));
+    const viewer = screen.getByTestId('artifact-viewer');
+    const expandButton = screen.getByRole('button', { name: /open artifact outside side viewer/i });
+    const closeButton = screen.getByRole('button', { name: /close artifact viewer/i });
+    expect(viewer).toHaveClass('no-drag');
+    expect(expandButton).toHaveClass('no-drag');
+    expect(closeButton).toHaveClass('no-drag');
+
+    await user.click(expandButton);
     expect(window.electron.openArtifactWindow).toHaveBeenCalledWith({
       html: '<!doctype html><html><body><button>Inside frame</button></body></html>',
       title: 'interactive.html',
@@ -184,7 +191,7 @@ describe('ArtifactViewer', () => {
       height: undefined,
     });
 
-    await user.click(screen.getByRole('button', { name: /close artifact viewer/i }));
+    await user.click(closeButton);
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

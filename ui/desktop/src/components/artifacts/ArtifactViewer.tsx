@@ -230,7 +230,7 @@ export default function ArtifactViewer({
         willChange: 'width, flex-basis, transform, opacity',
       }}
       className={cn(
-        'relative flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-border-subtle bg-background-muted/95 backdrop-blur',
+        'no-drag relative isolate flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-border-subtle bg-background-muted/95 backdrop-blur',
         isResizing
           ? 'transition-none'
           : 'transition-[width,flex-basis,opacity,transform] duration-200 ease-out',
@@ -250,7 +250,7 @@ export default function ArtifactViewer({
         </div>
       )}
 
-      <div className="relative z-20 flex h-12 flex-shrink-0 items-center gap-2 border-b border-border-subtle/35 bg-background-muted/95 px-4">
+      <div className="no-drag relative z-50 flex h-12 flex-shrink-0 items-center gap-2 border-b border-border-subtle/35 bg-background-muted/95 px-4">
         <div className="flex min-w-0 flex-1 items-center gap-2">
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-background-medium/80 text-text-muted">
             <Icon className="h-4 w-4" aria-hidden="true" />
@@ -268,7 +268,7 @@ export default function ArtifactViewer({
           <button
             type="button"
             onClick={openStandalone}
-            className="relative z-30 inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+            className="no-drag relative z-50 inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
             aria-label="Open artifact outside side viewer"
             title="Open outside side viewer"
           >
@@ -282,7 +282,7 @@ export default function ArtifactViewer({
         <button
           type="button"
           onClick={onClose}
-          className="relative z-30 inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+          className="no-drag relative z-50 inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
           aria-label="Close artifact viewer"
           title="Close"
         >
