@@ -44,6 +44,12 @@ const warmLightTheme = {
 
 import { Check, Copy } from './icons';
 import { wrapHTMLInCodeBlock } from '../utils/htmlSecurity';
+import type { ArtifactSource } from './artifacts/artifactTypes';
+import {
+  basenameFromPath,
+  looksLikePreviewableFile,
+  pathFromArtifactHref,
+} from './artifacts/artifactUtils';
 
 interface CodeProps extends React.ClassAttributes<HTMLElement>, React.HTMLAttributes<HTMLElement> {
   inline?: boolean;
@@ -52,6 +58,7 @@ interface CodeProps extends React.ClassAttributes<HTMLElement>, React.HTMLAttrib
 interface MarkdownContentProps {
   content: string;
   className?: string;
+  onOpenArtifact?: (artifact: ArtifactSource) => void;
 }
 
 // Memoized CodeBlock component to prevent re-rendering when props haven't changed
@@ -181,6 +188,7 @@ const MarkdownParagraph = ({
 const MarkdownContent = memo(function MarkdownContent({
   content,
   className = '',
+  onOpenArtifact,
 }: MarkdownContentProps) {
   const [processedContent, setProcessedContent] = useState(content);
 
@@ -229,7 +237,32 @@ const MarkdownContent = memo(function MarkdownContent({
           ],
         ]}
         components={{
-          a: ({ ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+          a: ({ href, children, ...props }) => {
+            const artifactPath =
+              href && looksLikePreviewableFile(href) ? pathFromArtifactHref(href) : null;
+            if (artifactPath && onOpenArtifact) {
+              return (
+                <button
+                  type="button"
+                  className="inline cursor-pointer break-all text-left text-text-default underline underline-offset-2 decoration-border-strong hover:text-text-muted"
+                  onClick={() =>
+                    onOpenArtifact({
+                      kind: 'file',
+                      title: basenameFromPath(artifactPath),
+                      path: artifactPath,
+                    })
+                  }
+                >
+                  {children}
+                </button>
+              );
+            }
+            return (
+              <a href={href} {...props} target="_blank" rel="noopener noreferrer">
+                {children}
+              </a>
+            );
+          },
           code: MarkdownCode,
           p: MarkdownParagraph,
         }}

@@ -44,7 +44,7 @@ describe('DashboardProvider (canvas mode)', () => {
     expect(result.current.state.focusedWindowId).toBe(w.windowId);
     expect(w.position).toBeDefined();
     // Spawn default size = DashboardProvider.MIN_WINDOW_{W,H}.
-    expect(w.size).toEqual({ w: 600, h: 440 });
+    expect(w.size).toEqual({ w: 760, h: 440 });
   });
 
   it('spawning multiple windows places them non-overlappingly', async () => {

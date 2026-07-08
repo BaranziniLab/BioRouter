@@ -16,6 +16,7 @@ interface UseChatStreamReturn {
   chatState: ChatState;
   setChatState: (state: ChatState) => void;
   handleSubmit: (userMessage: string, attachments?: UserAttachment[]) => Promise<void>;
+  submitSystemMessage: (message: Message) => Promise<void>;
   submitElicitationResponse: (
     elicitationId: string,
     userData: Record<string, unknown>
@@ -70,6 +71,7 @@ export function useChatStream({
     chatState: snapshot.chatState,
     setChatState: controller.setChatState,
     handleSubmit: controller.handleSubmit,
+    submitSystemMessage: controller.submitSystemMessage,
     submitElicitationResponse: controller.submitElicitationResponse,
     stopStreaming: controller.stopStreaming,
     setWorkflowUserParams: controller.setWorkflowUserParams,

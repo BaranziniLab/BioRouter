@@ -16,6 +16,7 @@ use biorouter::providers::base::{ProviderMetadata, ProviderType};
 use biorouter::providers::canonical::maybe_get_canonical_model;
 use biorouter::providers::create_with_default_model;
 use biorouter::providers::errors::ProviderError;
+use biorouter::providers::pricing::{provider_model_pricing, ProviderModelPricing};
 use biorouter::providers::providers as get_providers;
 use biorouter::providers::{retry_operation, RetryConfig};
 use biorouter::{
@@ -516,6 +517,20 @@ pub struct PricingQuery {
 pub async fn get_pricing(
     Json(query): Json<PricingQuery>,
 ) -> Result<Json<PricingResponse>, StatusCode> {
+    if let Some(pricing) = provider_model_pricing(&query.provider, &query.model) {
+        return Ok(Json(PricingResponse {
+            pricing: vec![pricing_data_from_provider_pricing(&query, pricing)],
+            source: "provider".to_string(),
+        }));
+    }
+
+    if let Some(pricing) = provider_metadata_pricing(&query).await {
+        return Ok(Json(PricingResponse {
+            pricing: vec![pricing],
+            source: "provider_metadata".to_string(),
+        }));
+    }
+
     let canonical_model =
         maybe_get_canonical_model(&query.provider, &query.model).ok_or(StatusCode::NOT_FOUND)?;
 
@@ -539,6 +554,41 @@ pub async fn get_pricing(
         pricing: pricing_data,
         source: "canonical".to_string(),
     }))
+}
+
+fn pricing_data_from_provider_pricing(
+    query: &PricingQuery,
+    pricing: ProviderModelPricing,
+) -> PricingData {
+    PricingData {
+        provider: query.provider.clone(),
+        model: query.model.clone(),
+        input_token_cost: pricing.input_token_cost,
+        output_token_cost: pricing.output_token_cost,
+        currency: pricing.currency,
+        context_length: pricing.context_length,
+    }
+}
+
+async fn provider_metadata_pricing(query: &PricingQuery) -> Option<PricingData> {
+    let providers = get_providers().await;
+    let provider = providers
+        .into_iter()
+        .find(|(metadata, _)| metadata.name == query.provider)?;
+    let model = provider
+        .0
+        .known_models
+        .into_iter()
+        .find(|model| model.name == query.model)?;
+
+    Some(PricingData {
+        provider: query.provider.clone(),
+        model: query.model.clone(),
+        input_token_cost: model.input_token_cost?,
+        output_token_cost: model.output_token_cost?,
+        currency: model.currency.unwrap_or_else(|| "$".to_string()),
+        context_length: Some(model.context_limit as u32),
+    })
 }
 
 #[utoipa::path(

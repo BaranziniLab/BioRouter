@@ -20,6 +20,7 @@ import MessageCopyLink from './MessageCopyLink';
 import MessageDivergeLink from './MessageDivergeLink';
 import { cn } from '../utils';
 import { identifyConsecutiveToolCalls, shouldHideTimestamp } from '../utils/toolCallChaining';
+import type { ArtifactSource } from './artifacts/artifactTypes';
 
 interface BioRouterMessageProps {
   sessionId: string;
@@ -39,6 +40,7 @@ interface BioRouterMessageProps {
     elicitationId: string,
     userData: Record<string, unknown>
   ) => Promise<void>;
+  onOpenArtifact?: (artifact: ArtifactSource) => void;
 }
 
 export default function BioRouterMessage({
@@ -51,6 +53,7 @@ export default function BioRouterMessage({
   messageIndex: messageIndexProp,
   toolCallChains: toolCallChainsProp,
   submitElicitationResponse,
+  onOpenArtifact,
 }: BioRouterMessageProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
 
@@ -128,7 +131,7 @@ export default function BioRouterMessage({
   }, [messages, messageIndex, toolRequests]);
 
   return (
-    <div className="biorouter-message flex w-[90%] justify-start min-w-0">
+    <div className="biorouter-message flex w-full justify-start min-w-0">
       <div className="flex flex-col w-full min-w-0">
         {cotText && (
           <details className="bg-background-medium border border-border-subtle rounded p-2 mb-2">
@@ -144,7 +147,7 @@ export default function BioRouterMessage({
         {displayText && (
           <div className="flex flex-col group">
             <div ref={contentRef} className="w-full">
-              <MarkdownContent content={displayText} />
+              <MarkdownContent content={displayText} onOpenArtifact={onOpenArtifact} />
             </div>
 
             {imagePaths.length > 0 && (
@@ -203,6 +206,7 @@ export default function BioRouterMessage({
                       notifications={toolCallNotifications.get(toolRequest.id)}
                       isStreamingMessage={isStreaming}
                       append={append}
+                      onOpenArtifact={onOpenArtifact}
                     />
                   </div>
                 ))}

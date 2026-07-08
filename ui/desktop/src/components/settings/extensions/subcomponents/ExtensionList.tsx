@@ -96,7 +96,15 @@ export default function ExtensionList({
 }
 
 // Helper functions
+const PLATFORM_EXTENSION_DISPLAY_NAMES: Record<string, string> = {
+  chatrecall: 'Chat Recall',
+};
+
 export function formatExtensionName(name: string): string {
+  const normalized = name.toLowerCase().replace(/\s+/g, '');
+  const displayName = PLATFORM_EXTENSION_DISPLAY_NAMES[normalized];
+  if (displayName) return displayName;
+
   return name
     .split(/[-_]/) // Split on hyphens and underscores
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1))

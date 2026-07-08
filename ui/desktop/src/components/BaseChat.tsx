@@ -18,7 +18,11 @@ import { ScrollArea, ScrollAreaHandle } from './ui/scroll-area';
 import { useFileDrop } from '../hooks/useFileDrop';
 import { Message } from '../api';
 import type { UserAttachment } from '../types/message';
-import { getProviderMetadata } from './settings/models/modelInterface';
+import {
+  getProviderMetadata,
+  modelSupportedInputMimeTypes,
+  modelSupportsVision,
+} from './settings/models/modelInterface';
 import { ChatState } from '../types/chatState';
 import { ChatType } from '../types/chat';
 import { useIsMobile } from '../hooks/use-mobile';
@@ -30,12 +34,23 @@ import { WorkflowHeader } from './WorkflowHeader';
 import { WorkflowWarningModal } from './ui/WorkflowWarningModal';
 import { scanWorkflow } from '../workflow';
 import { useCostTracking } from '../hooks/useCostTracking';
+import { useDiverge } from '../hooks/useDiverge';
 import WorkflowActivities from './workflows/WorkflowActivities';
 import { useToolCount } from './alerts/useToolCount';
-import { getThinkingMessage, getTextContent } from '../types/message';
+import { Button } from './ui/button';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
+import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
+import { CodeAnalysis, Pipeline, ScrollText, Terminal } from './icons/app-icons';
+import {
+  createArtifactRenderRepairMessage,
+  getThinkingMessage,
+  getTextContent,
+} from '../types/message';
 import ParameterInputModal from './ParameterInputModal';
 import { substituteParameters } from '../utils/providerUtils';
 import CreateWorkflowFromSessionModal from './workflows/CreateWorkflowFromSessionModal';
+import CreateEditWorkflowModal from './workflows/CreateEditWorkflowModal';
+import { DiagnosticsModal } from './ui/Diagnostics';
 import { toastSuccess } from '../toasts';
 import { Workflow } from '../workflow';
 import { createSession } from '../sessions';
@@ -47,10 +62,241 @@ import { toastError } from '../toasts';
 import { errorMessage } from '../utils/conversionUtils';
 import { Greeting } from './common/Greeting';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
+import ArtifactViewer from './artifacts/ArtifactViewer';
+import InAppTerminalDock from './InAppTerminalDock';
+import type { ArtifactRenderError } from './artifacts/ArtifactViewer';
+import type { ArtifactSource } from './artifacts/artifactTypes';
+import {
+  artifactSourceFromResource,
+  basenameFromPath,
+  looksLikePreviewableFile,
+  pathFromArtifactHref,
+} from './artifacts/artifactUtils';
+import type { CallToolResponse, Content, EmbeddedResource, ResourceContents } from '../api';
 
 // Context for sharing current model info
 const CurrentModelContext = createContext<{ model: string; mode: string } | null>(null);
 export const useCurrentModelInfo = () => useContext(CurrentModelContext);
+
+const ARTIFACT_PANEL_MIN_WIDTH = 360;
+const ARTIFACT_PANEL_MAX_WIDTH = 860;
+const ARTIFACT_PANEL_MIN_CHAT_WIDTH = 640;
+const ARTIFACT_PANEL_AUTO_TUCK_WIDTH =
+  ARTIFACT_PANEL_MIN_WIDTH + ARTIFACT_PANEL_MIN_CHAT_WIDTH + 48;
+const ARTIFACT_PANEL_AUTO_EXPAND_PADDING = 24;
+const ARTIFACT_PANEL_EXIT_MS = 180;
+const SIDEBAR_COMPACT_TITLE_WIDTH = 1120;
+const HEADER_ACTION_BUTTON_CLASS =
+  'no-drag flex h-8 w-8 items-center justify-center rounded-md p-0 text-text-default/70 transition-colors hover:bg-background-medium hover:text-text-default';
+const PREVIEWABLE_TEXT_ARTIFACT_RE =
+  /(file:\/\/[^\s)\]]+|(?:~|\.{1,2}|\/)[^\s)\]]+\.(?:html?|png|jpe?g|gif|webp|svg|sql|md|txt|json|csv|ts|tsx|js|jsx|py|r)(?:[?#][^\s)\]]*)?)/gi;
+
+function clampArtifactPanelWidth(value: number, max: number) {
+  return Math.min(Math.max(value, ARTIFACT_PANEL_MIN_WIDTH), max);
+}
+
+export function getArtifactPanelExpansionContentWidth(
+  contentWidth: number,
+  splitPaneWidth: number
+): number | null {
+  if (!Number.isFinite(contentWidth) || !Number.isFinite(splitPaneWidth)) return null;
+  const deficit = ARTIFACT_PANEL_AUTO_TUCK_WIDTH - splitPaneWidth;
+  if (deficit <= 0) return null;
+  return Math.ceil(contentWidth + deficit + ARTIFACT_PANEL_AUTO_EXPAND_PADDING);
+}
+
+function isEmbeddedResource(content: Content): content is EmbeddedResource {
+  return 'resource' in content && typeof (content as Record<string, unknown>).resource === 'object';
+}
+
+function getToolResultContent(toolResult: Record<string, unknown>): Content[] {
+  const wrapped = toolResult as {
+    status?: string;
+    value?: CallToolResponse;
+  };
+  const response =
+    wrapped.status === 'success'
+      ? wrapped.value
+      : (toolResult as unknown as CallToolResponse | undefined);
+  if (!response || !Array.isArray(response.content)) return [];
+  return response.content.filter((item) => {
+    const annotations = (item as { annotations?: { audience?: string[] } }).annotations;
+    return !annotations?.audience || annotations.audience.includes('user');
+  });
+}
+
+function artifactKey(artifact: ArtifactSource) {
+  switch (artifact.kind) {
+    case 'html':
+      return `html:${artifact.title}:${artifact.html.length}:${artifact.html.slice(0, 80)}`;
+    case 'externalUrl':
+      return `url:${artifact.url}`;
+    case 'file':
+      return `file:${artifact.path}`;
+    case 'mcpResource': {
+      const resource = artifact.resource as ResourceContents & { blob?: string };
+      const textLength = 'text' in resource ? resource.text.length : 0;
+      const blobLength = typeof resource.blob === 'string' ? resource.blob.length : 0;
+      return `resource:${resource.uri}:${resource.mimeType ?? ''}:${textLength}:${blobLength}`;
+    }
+  }
+}
+
+function collectTextArtifacts(text: string): ArtifactSource[] {
+  const artifacts: ArtifactSource[] = [];
+  for (const match of text.matchAll(PREVIEWABLE_TEXT_ARTIFACT_RE)) {
+    const href = match[0];
+    if (!looksLikePreviewableFile(href)) continue;
+    const path = pathFromArtifactHref(href);
+    artifacts.push({
+      kind: 'file',
+      title: basenameFromPath(path),
+      path,
+    });
+  }
+  return artifacts;
+}
+
+export function collectArtifactsFromMessages(messages: Message[]): ArtifactSource[] {
+  const artifacts: ArtifactSource[] = [];
+  const seen = new Set<string>();
+  const visibleToolRequestIds = new Set<string>();
+  const addArtifact = (artifact: ArtifactSource | null) => {
+    if (!artifact) return;
+    const key = artifactKey(artifact);
+    if (seen.has(key)) return;
+    seen.add(key);
+    artifacts.push(artifact);
+  };
+
+  for (const message of messages) {
+    if (message.role !== 'assistant' || message.metadata?.userVisible === false) continue;
+    for (const artifact of collectTextArtifacts(getTextContent(message))) {
+      addArtifact(artifact);
+    }
+    for (const content of message.content) {
+      if (content.type === 'toolRequest') {
+        visibleToolRequestIds.add(content.id);
+      }
+    }
+  }
+
+  for (const message of messages) {
+    for (const content of message.content) {
+      if (content.type !== 'toolResponse' || !visibleToolRequestIds.has(content.id)) continue;
+      for (const resultContent of getToolResultContent(content.toolResult)) {
+        if (!isEmbeddedResource(resultContent)) continue;
+        addArtifact(
+          artifactSourceFromResource({ ...resultContent, type: 'resource' as const }, 'Artifact')
+        );
+      }
+    }
+  }
+
+  return artifacts;
+}
+
+function formatCompactNumber(value: number) {
+  if (!Number.isFinite(value) || value <= 0) return '0';
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`;
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}k`;
+  return value.toLocaleString();
+}
+
+function countToolRequests(messages: Message[]) {
+  return messages.reduce(
+    (count, message) =>
+      count + message.content.filter((content) => content.type === 'toolRequest').length,
+    0
+  );
+}
+
+function visitStrings(
+  value: unknown,
+  visitor: (text: string) => void,
+  seen = new WeakSet<object>()
+) {
+  if (typeof value === 'string') {
+    visitor(value);
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  if (seen.has(value)) return;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    value.forEach((item) => visitStrings(item, visitor, seen));
+    return;
+  }
+  Object.values(value as Record<string, unknown>).forEach((item) =>
+    visitStrings(item, visitor, seen)
+  );
+}
+
+function countPatchLines(text: string) {
+  let added = 0;
+  let removed = 0;
+  for (const line of text.split(/\r?\n/)) {
+    if (line.startsWith('+++') || line.startsWith('---')) continue;
+    if (line.startsWith('+')) added += 1;
+    if (line.startsWith('-')) removed += 1;
+  }
+  return { added, removed };
+}
+
+function collectCodeDelta(messages: Message[]) {
+  let added = 0;
+  let removed = 0;
+  const seenMatches = new Set<string>();
+  const compactDiffRe = /\+([0-9][\d,]*)\s+[-−]([0-9][\d,]*)/g;
+  const gitDiffRe = /([0-9][\d,]*)\s+insertions?\(\+\)(?:,\s*([0-9][\d,]*)\s+deletions?\(-\))?/gi;
+  const codeFenceRe = /```[^\n]*\n([\s\S]*?)```/g;
+
+  for (const message of messages) {
+    visitStrings(message.content, (text) => {
+      if (!text.trim()) return;
+
+      for (const match of text.matchAll(compactDiffRe)) {
+        const key = `compact:${match[0]}`;
+        if (seenMatches.has(key)) continue;
+        seenMatches.add(key);
+        added += Number(match[1].replace(/,/g, '')) || 0;
+        removed += Number(match[2].replace(/,/g, '')) || 0;
+      }
+
+      for (const match of text.matchAll(gitDiffRe)) {
+        const key = `git:${match[0]}`;
+        if (seenMatches.has(key)) continue;
+        seenMatches.add(key);
+        added += Number(match[1].replace(/,/g, '')) || 0;
+        removed += Number(match[2]?.replace(/,/g, '') ?? 0) || 0;
+      }
+
+      if (text.includes('*** Begin Patch') || text.includes('diff --git')) {
+        const delta = countPatchLines(text);
+        added += delta.added;
+        removed += delta.removed;
+      }
+
+      for (const match of text.matchAll(codeFenceRe)) {
+        const key = `fence:${match[0].slice(0, 120)}:${match[0].length}`;
+        if (seenMatches.has(key)) continue;
+        seenMatches.add(key);
+        added += match[1].split(/\r?\n/).filter((line) => line.trim()).length;
+      }
+    });
+  }
+
+  return { added, removed };
+}
+
+function SummaryMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-background-medium/60 px-2.5 py-2">
+      <div className="text-[11px] uppercase tracking-wide text-text-muted">{label}</div>
+      <div className="mt-1 truncate text-sm font-medium text-text-default">{value}</div>
+    </div>
+  );
+}
 
 interface BaseChatProps {
   setChat: (chat: ChatType) => void;
@@ -76,10 +322,6 @@ interface BaseChatProps {
   /** Hide the SessionNamePill at the top of the chat. Dashboard windows pass this
    * because their own WindowTitleBar already shows the editable name. */
   hideSessionNamePill?: boolean;
-  /** When true, the ChatInput's secondary picker controls (cost, model, mode,
-   * workflow, diagnostics) live behind a chevron popover. When false (chat
-   * tab default), they render inline. Dashboard windows pass true. */
-  compactPicker?: boolean;
   /** Fires when the inner chat transitions between idle and any non-idle state
    * (streaming, thinking, tool-running, etc.). Used by DashboardContext to
    * drive the per-window busy indicator on folded cards. */
@@ -109,7 +351,6 @@ function BaseChatContent({
   onSessionUpdate,
   accentColor,
   hideSessionNamePill = false,
-  compactPicker = false,
   onBusyChange,
   onLatestMessage,
   focusTrigger,
@@ -125,31 +366,68 @@ function BaseChatContent({
   // against the session's own provider/model so attach gating reflects what
   // the session will actually use.
   const [sessionSupportsVision, setSessionSupportsVision] = React.useState<boolean | null>(null);
+  const [sessionSupportedInputMimeTypes, setSessionSupportedInputMimeTypes] = React.useState<
+    string[] | null | undefined
+  >(undefined);
 
   const disableAnimation = location.state?.disableAnimation || false;
   const [hasStartedUsingWorkflow, setHasStartedUsingWorkflow] = React.useState(false);
   const [hasNotAcceptedWorkflow, setHasNotAcceptedWorkflow] = useState<boolean>();
   const [hasWorkflowSecurityWarnings, setHasWorkflowSecurityWarnings] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
+  const [presentedArtifact, setPresentedArtifact] = useState<ArtifactSource | null>(null);
+  const [isArtifactPanelOpen, setIsArtifactPanelOpen] = useState(false);
+  const [isArtifactPanelResizing, setIsArtifactPanelResizing] = useState(false);
+  const [artifactPanelWidth, setArtifactPanelWidth] = useState<number | null>(null);
+  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [isTerminalDockOpen, setIsTerminalDockOpen] = useState(false);
+  const [showEditWorkflowModal, setShowEditWorkflowModal] = useState(false);
+  const splitPaneRef = useRef<HTMLDivElement>(null);
+  const artifactPanelCloseTimerRef = useRef<number | null>(null);
+  const artifactPanelOpenFrameRef = useRef<number | null>(null);
+  const artifactPanelResizeFrameRef = useRef<number | null>(null);
+  const artifactPanelEnsureFrameRef = useRef<number | null>(null);
+  const pendingArtifactPanelWidthRef = useRef<number | null>(null);
+  const artifactPanelWidthUserSetRef = useRef(false);
+  const reportedArtifactRenderErrorsRef = useRef<Set<string>>(new Set());
+  const pendingArtifactRenderFeedbackRef = useRef<Message | null>(null);
+  const knownArtifactKeysRef = useRef<Set<string>>(new Set());
+  const artifactInitialScanDoneRef = useRef(false);
   const composerMotionRef = useRef<HTMLDivElement>(null);
   const pendingComposerRectRef = useRef<DOMRect | null>(null);
 
   const isMobile = useIsMobile();
   const { state: sidebarState } = useSidebar();
+  const [isSidebarCompact, setIsSidebarCompact] = useState(() => {
+    return typeof window !== 'undefined' && window.innerWidth < SIDEBAR_COMPACT_TITLE_WIDTH;
+  });
   const isMacOS = (window?.electron?.platform || 'darwin') === 'darwin';
-  // When the sidebar is collapsed the chat spans full width and the top-left
-  // strip holds the floating controls (sidebar toggle / new-window / dashboard)
-  // plus, on macOS, the window traffic lights. Shrink the pill wrapper to fit and
-  // offset it PAST the controls so it neither overlaps them nor lets its
-  // -webkit-app-region: drag surface swallow their clicks (app-region is resolved
-  // by the compositor, so a full-width drag wrapper eats clicks even under a
-  // higher-z no-drag button). Expanded keeps the full-width draggable header strip
-  // — there the controls sit over the sidebar, not over this wrapper.
-  const sessionPillWrapperCls =
-    sidebarState === 'collapsed' ? `w-fit ${isMacOS ? 'ml-[184px]' : 'ml-[104px]'}` : 'w-full pl-4';
+  const { diverge } = useDiverge();
+  const isCompactSidebarOverlayOpen = isSidebarCompact && !isMobile && sidebarState !== 'collapsed';
+  const reserveTitlebarControls =
+    isMacOS && (isMobile || isSidebarCompact || sidebarState === 'collapsed');
+  const sessionPillWrapperCls = isCompactSidebarOverlayOpen
+    ? 'pl-[224px]'
+    : reserveTitlebarControls
+      ? `${isMacOS ? 'pl-[184px]' : 'pl-[104px]'}`
+      : 'pl-4';
   const setView = useNavigation();
 
-  const contentClassName = cn('pr-1 pb-10', (isMobile || sidebarState === 'collapsed') && 'pt-11');
+  useEffect(() => {
+    const updateSidebarCompact = () => {
+      setIsSidebarCompact(window.innerWidth < SIDEBAR_COMPACT_TITLE_WIDTH);
+    };
+
+    updateSidebarCompact();
+    window.addEventListener('resize', updateSidebarCompact);
+    return () => window.removeEventListener('resize', updateSidebarCompact);
+  }, []);
+
+  const contentClassName = cn(
+    'pr-1 pb-10',
+    (isMobile || isSidebarCompact || sidebarState === 'collapsed') && 'pt-11'
+  );
 
   // Use shared file drop
   const { droppedFiles, setDroppedFiles, handleDrop, handleDragOver } = useFileDrop();
@@ -162,7 +440,218 @@ function BaseChatContent({
   // Reset auto-submit flag when session changes
   useEffect(() => {
     hasAutoSubmittedRef.current = false;
+    setPresentedArtifact(null);
+    setIsArtifactPanelOpen(false);
+    setIsArtifactPanelResizing(false);
+    setArtifactPanelWidth(null);
+    artifactPanelWidthUserSetRef.current = false;
+    setDiagnosticsOpen(false);
+    setReviewOpen(false);
+    setIsTerminalDockOpen(false);
+    setShowEditWorkflowModal(false);
+    knownArtifactKeysRef.current.clear();
+    artifactInitialScanDoneRef.current = false;
   }, [sessionId]);
+
+  useEffect(() => {
+    return () => {
+      if (artifactPanelCloseTimerRef.current) {
+        window.clearTimeout(artifactPanelCloseTimerRef.current);
+      }
+      if (artifactPanelOpenFrameRef.current) {
+        window.cancelAnimationFrame(artifactPanelOpenFrameRef.current);
+      }
+      if (artifactPanelResizeFrameRef.current) {
+        window.cancelAnimationFrame(artifactPanelResizeFrameRef.current);
+      }
+      if (artifactPanelEnsureFrameRef.current) {
+        window.cancelAnimationFrame(artifactPanelEnsureFrameRef.current);
+      }
+    };
+  }, []);
+
+  const ensureArtifactPanelFits = useCallback(async () => {
+    if (isMobile) return;
+
+    const splitPaneWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
+    const targetWidth = getArtifactPanelExpansionContentWidth(window.innerWidth, splitPaneWidth);
+    if (!targetWidth || !window.electron.ensureWindowContentWidth) return;
+
+    await window.electron.ensureWindowContentWidth(targetWidth).catch(() => undefined);
+  }, [isMobile]);
+
+  const handleOpenArtifact = useCallback(
+    async (artifact: ArtifactSource) => {
+      if (artifactPanelCloseTimerRef.current) {
+        window.clearTimeout(artifactPanelCloseTimerRef.current);
+        artifactPanelCloseTimerRef.current = null;
+      }
+      if (artifactPanelOpenFrameRef.current) {
+        window.cancelAnimationFrame(artifactPanelOpenFrameRef.current);
+        artifactPanelOpenFrameRef.current = null;
+      }
+
+      artifactPanelWidthUserSetRef.current = false;
+
+      await ensureArtifactPanelFits();
+
+      setPresentedArtifact(artifact);
+
+      if (presentedArtifact) {
+        setIsArtifactPanelOpen(true);
+        return;
+      }
+
+      setIsArtifactPanelOpen(false);
+      artifactPanelOpenFrameRef.current = window.requestAnimationFrame(() => {
+        artifactPanelOpenFrameRef.current = null;
+        setIsArtifactPanelOpen(true);
+      });
+    },
+    [ensureArtifactPanelFits, presentedArtifact]
+  );
+
+  const handleCloseArtifactPanel = useCallback(() => {
+    setIsArtifactPanelOpen(false);
+
+    if (artifactPanelCloseTimerRef.current) {
+      window.clearTimeout(artifactPanelCloseTimerRef.current);
+    }
+
+    artifactPanelCloseTimerRef.current = window.setTimeout(() => {
+      artifactPanelCloseTimerRef.current = null;
+      setPresentedArtifact(null);
+      setIsArtifactPanelResizing(false);
+    }, ARTIFACT_PANEL_EXIT_MS);
+  }, []);
+
+  useEffect(() => {
+    const splitPane = splitPaneRef.current;
+    if (!splitPane) return;
+
+    const updateArtifactFitState = () => {
+      if (!presentedArtifact || isMobile) return;
+      if (artifactPanelEnsureFrameRef.current !== null) return;
+      artifactPanelEnsureFrameRef.current = window.requestAnimationFrame(() => {
+        artifactPanelEnsureFrameRef.current = null;
+        void ensureArtifactPanelFits();
+      });
+    };
+
+    updateArtifactFitState();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateArtifactFitState);
+      return () => window.removeEventListener('resize', updateArtifactFitState);
+    }
+
+    const resizeObserver = new ResizeObserver(updateArtifactFitState);
+    resizeObserver.observe(splitPane);
+    return () => resizeObserver.disconnect();
+  }, [ensureArtifactPanelFits, isMobile, presentedArtifact]);
+
+  const getMaxArtifactPanelWidth = useCallback(() => {
+    const containerWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
+    return Math.max(
+      ARTIFACT_PANEL_MIN_WIDTH,
+      Math.min(ARTIFACT_PANEL_MAX_WIDTH, containerWidth - ARTIFACT_PANEL_MIN_CHAT_WIDTH)
+    );
+  }, []);
+
+  const getDefaultArtifactPanelWidth = useCallback(() => {
+    const containerWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
+    return clampArtifactPanelWidth(Math.round(containerWidth * 0.38), getMaxArtifactPanelWidth());
+  }, [getMaxArtifactPanelWidth]);
+
+  useEffect(() => {
+    if (!presentedArtifact || isMobile || artifactPanelWidth !== null) return;
+    setArtifactPanelWidth(getDefaultArtifactPanelWidth());
+  }, [artifactPanelWidth, getDefaultArtifactPanelWidth, isMobile, presentedArtifact]);
+
+  useEffect(() => {
+    const splitPane = splitPaneRef.current;
+    if (!splitPane || !presentedArtifact || isMobile) return;
+
+    const updateArtifactPanelWidth = () => {
+      setArtifactPanelWidth((currentWidth) => {
+        const maxWidth = getMaxArtifactPanelWidth();
+        if (currentWidth === null || !artifactPanelWidthUserSetRef.current) {
+          return getDefaultArtifactPanelWidth();
+        }
+        const nextWidth = clampArtifactPanelWidth(currentWidth, maxWidth);
+        return nextWidth === currentWidth ? currentWidth : nextWidth;
+      });
+    };
+
+    updateArtifactPanelWidth();
+
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', updateArtifactPanelWidth);
+      return () => window.removeEventListener('resize', updateArtifactPanelWidth);
+    }
+
+    const resizeObserver = new ResizeObserver(updateArtifactPanelWidth);
+    resizeObserver.observe(splitPane);
+    return () => resizeObserver.disconnect();
+  }, [getDefaultArtifactPanelWidth, getMaxArtifactPanelWidth, isMobile, presentedArtifact]);
+
+  const handleArtifactPanelResizeStart = useCallback(
+    (event: React.PointerEvent<HTMLDivElement>) => {
+      if (isMobile) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+
+      const startX = event.clientX;
+      const startWidth = artifactPanelWidth ?? getDefaultArtifactPanelWidth();
+      const previousCursor = document.body.style.cursor;
+      const previousUserSelect = document.body.style.userSelect;
+
+      setIsArtifactPanelResizing(true);
+      artifactPanelWidthUserSetRef.current = true;
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+
+      const applyPendingWidth = () => {
+        artifactPanelResizeFrameRef.current = null;
+        if (pendingArtifactPanelWidthRef.current === null) return;
+        setArtifactPanelWidth(pendingArtifactPanelWidthRef.current);
+      };
+
+      const scheduleWidth = (nextWidth: number) => {
+        pendingArtifactPanelWidthRef.current = nextWidth;
+        if (artifactPanelResizeFrameRef.current !== null) return;
+        artifactPanelResizeFrameRef.current = window.requestAnimationFrame(applyPendingWidth);
+      };
+
+      const handleMove = (moveEvent: PointerEvent) => {
+        const nextWidth = startWidth - (moveEvent.clientX - startX);
+        scheduleWidth(clampArtifactPanelWidth(nextWidth, getMaxArtifactPanelWidth()));
+      };
+
+      const handleEnd = () => {
+        if (artifactPanelResizeFrameRef.current !== null) {
+          window.cancelAnimationFrame(artifactPanelResizeFrameRef.current);
+          artifactPanelResizeFrameRef.current = null;
+        }
+        if (pendingArtifactPanelWidthRef.current !== null) {
+          setArtifactPanelWidth(pendingArtifactPanelWidthRef.current);
+          pendingArtifactPanelWidthRef.current = null;
+        }
+        setIsArtifactPanelResizing(false);
+        document.body.style.cursor = previousCursor;
+        document.body.style.userSelect = previousUserSelect;
+        window.removeEventListener('pointermove', handleMove);
+        window.removeEventListener('pointerup', handleEnd);
+        window.removeEventListener('pointercancel', handleEnd);
+      };
+
+      window.addEventListener('pointermove', handleMove);
+      window.addEventListener('pointerup', handleEnd);
+      window.addEventListener('pointercancel', handleEnd);
+    },
+    [artifactPanelWidth, getDefaultArtifactPanelWidth, getMaxArtifactPanelWidth, isMobile]
+  );
 
   const {
     session,
@@ -170,6 +659,7 @@ function BaseChatContent({
     chatState,
     setChatState,
     handleSubmit,
+    submitSystemMessage,
     submitElicitationResponse,
     stopStreaming,
     sessionLoadError,
@@ -181,6 +671,46 @@ function BaseChatContent({
     sessionId,
     onStreamFinish,
   });
+
+  const canDivergeSession = useMemo(
+    () => messages.some((message) => message.role === 'assistant'),
+    [messages]
+  );
+  const handleTitleDiverge = useCallback(() => {
+    if (!canDivergeSession) return;
+    void diverge(sessionId);
+  }, [canDivergeSession, diverge, sessionId]);
+
+  const submitArtifactRepairMessage = useCallback(
+    (message: Message) => {
+      if (chatState !== ChatState.Idle) {
+        pendingArtifactRenderFeedbackRef.current = message;
+        return;
+      }
+
+      pendingArtifactRenderFeedbackRef.current = null;
+      void submitSystemMessage(message);
+    },
+    [chatState, submitSystemMessage]
+  );
+
+  const handleArtifactRenderError = useCallback(
+    (error: ArtifactRenderError) => {
+      const key = `${error.artifactTitle}\n${error.message}\n${error.detail ?? ''}`;
+      if (reportedArtifactRenderErrorsRef.current.has(key)) return;
+      reportedArtifactRenderErrorsRef.current.add(key);
+
+      submitArtifactRepairMessage(createArtifactRenderRepairMessage(error));
+    },
+    [submitArtifactRepairMessage]
+  );
+
+  useEffect(() => {
+    if (chatState !== ChatState.Idle || !pendingArtifactRenderFeedbackRef.current) return;
+    const message = pendingArtifactRenderFeedbackRef.current;
+    pendingArtifactRenderFeedbackRef.current = null;
+    void submitSystemMessage(message);
+  }, [chatState, submitSystemMessage]);
 
   const stageComposerMotion = useCallback(() => {
     const rect = composerMotionRef.current?.getBoundingClientRect();
@@ -224,7 +754,7 @@ function BaseChatContent({
   const commandHistory = useMemo(() => {
     return messages
       .reduce<string[]>((history, message) => {
-        if (message.role === 'user') {
+        if (message.role === 'user' && message.metadata?.userVisible !== false) {
           const text = getTextContent(message).trim();
           if (text) {
             history.push(text);
@@ -264,16 +794,22 @@ function BaseChatContent({
     const sessionModel = session?.model_config?.model_name;
     if (!sessionProvider || !sessionModel) {
       setSessionSupportsVision(null);
+      setSessionSupportedInputMimeTypes(undefined);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
         const metadata = await getProviderMetadata(sessionProvider, getProviders);
-        const info = metadata.known_models.find((m) => m.name === sessionModel);
-        if (!cancelled) setSessionSupportsVision(info?.supports_vision === true);
+        if (!cancelled) {
+          setSessionSupportsVision(modelSupportsVision(metadata, sessionModel));
+          setSessionSupportedInputMimeTypes(modelSupportedInputMimeTypes(metadata, sessionModel));
+        }
       } catch {
-        if (!cancelled) setSessionSupportsVision(false);
+        if (!cancelled) {
+          setSessionSupportsVision(false);
+          setSessionSupportedInputMimeTypes(null);
+        }
       }
     })();
     return () => {
@@ -290,7 +826,8 @@ function BaseChatContent({
     }
 
     // If no session exists, create one and navigate with the initial message
-    if (!session && !sessionId && textValue.trim() && !isCreatingSession) {
+    const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+    if (!session && !sessionId && (textValue.trim() || hasAttachments) && !isCreatingSession) {
       setIsCreatingSession(true);
       try {
         const newSession = await createSession(getInitialWorkingDir(), {
@@ -370,6 +907,37 @@ function BaseChatContent({
   }, [messages.length]);
 
   const toolCount = useToolCount(sessionId);
+  const sessionArtifacts = useMemo(() => collectArtifactsFromMessages(messages), [messages]);
+  const sessionToolCallCount = useMemo(() => countToolRequests(messages), [messages]);
+  const codeDelta = useMemo(() => collectCodeDelta(messages), [messages]);
+  const totalSessionTokens =
+    tokenState?.totalTokens ??
+    session?.total_tokens ??
+    session?.accumulated_total_tokens ??
+    ((session?.accumulated_input_tokens ?? 0) + (session?.accumulated_output_tokens ?? 0) || null);
+  const sessionWorkingDir = session?.working_dir || getInitialWorkingDir();
+
+  useEffect(() => {
+    if (!session) return;
+    if (!artifactInitialScanDoneRef.current) {
+      if ((session.message_count ?? 0) > 0 && messages.length === 0) return;
+      knownArtifactKeysRef.current = new Set(sessionArtifacts.map(artifactKey));
+      artifactInitialScanDoneRef.current = true;
+      return;
+    }
+
+    const newArtifacts = sessionArtifacts.filter((artifact) => {
+      const key = artifactKey(artifact);
+      if (knownArtifactKeysRef.current.has(key)) return false;
+      knownArtifactKeysRef.current.add(key);
+      return true;
+    });
+
+    const latestArtifact = newArtifacts[newArtifacts.length - 1];
+    if (latestArtifact) {
+      handleOpenArtifact(latestArtifact);
+    }
+  }, [handleOpenArtifact, messages.length, session, sessionArtifacts]);
 
   // Listen for global scroll-to-bottom requests (e.g., from MCP UI prompt actions)
   useEffect(() => {
@@ -526,6 +1094,24 @@ function BaseChatContent({
     }
   };
 
+  const handleOpenTerminal = () => {
+    setIsTerminalDockOpen((open) => !open);
+  };
+
+  const handleWorkflowReviewAction = () => {
+    setReviewOpen(false);
+    if (workflow) {
+      setShowEditWorkflowModal(true);
+    } else {
+      setIsCreateWorkflowModalOpen(true);
+    }
+  };
+
+  const handleDiagnosticsReviewAction = () => {
+    setReviewOpen(false);
+    setDiagnosticsOpen(true);
+  };
+
   // Only use initialMessage for the prompt if it hasn't been submitted yet
   // If we have a workflow prompt and user workflow values, substitute parameters
   let workflowPrompt = '';
@@ -543,6 +1129,99 @@ function BaseChatContent({
     !initialPrompt &&
     chatState === ChatState.Idle &&
     !isCreatingSession;
+
+  const renderSessionHeaderActions = () => (
+    <div
+      className="ml-auto flex flex-shrink-0 items-center gap-1"
+      style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
+    >
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            onClick={handleOpenTerminal}
+            variant="ghost"
+            size="sm"
+            shape="round"
+            className={cn(
+              HEADER_ACTION_BUTTON_CLASS,
+              isTerminalDockOpen && 'bg-background-medium text-text-default'
+            )}
+            aria-label={isTerminalDockOpen ? 'Close in-app terminal' : 'Open in-app terminal'}
+            title={isTerminalDockOpen ? 'Close in-app terminal' : 'Open in-app terminal'}
+          >
+            <Terminal className="h-4 w-4" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{isTerminalDockOpen ? 'Close terminal' : 'Open terminal'}</TooltipContent>
+      </Tooltip>
+
+      <Popover open={reviewOpen} onOpenChange={setReviewOpen}>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                shape="round"
+                className={HEADER_ACTION_BUTTON_CLASS}
+                aria-label="Review session summary"
+                title="Review session summary"
+              >
+                <ScrollText className="h-4 w-4" />
+              </Button>
+            </PopoverTrigger>
+          </TooltipTrigger>
+          <TooltipContent>Review session summary</TooltipContent>
+        </Tooltip>
+        <PopoverContent side="bottom" align="end" className="w-80 p-3">
+          <div className="space-y-3">
+            <div>
+              <div className="text-sm font-medium text-text-default">Session review</div>
+              <div className="text-xs text-text-muted">
+                {session?.name || 'Current conversation'}
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <SummaryMetric label="Tool calls" value={sessionToolCallCount.toLocaleString()} />
+              <SummaryMetric label="Tokens" value={formatCompactNumber(totalSessionTokens ?? 0)} />
+              <SummaryMetric label="Artifacts" value={sessionArtifacts.length.toLocaleString()} />
+              <div className="rounded-md bg-background-medium/60 px-2.5 py-2">
+                <div className="text-[11px] uppercase tracking-wide text-text-muted">Code</div>
+                <div className="mt-1 flex items-center gap-2 text-sm font-medium">
+                  <span className="text-text-success">+{codeDelta.added.toLocaleString()}</span>
+                  <span className="text-text-danger">-{codeDelta.removed.toLocaleString()}</span>
+                </div>
+              </div>
+            </div>
+            <div className="flex gap-2 border-t border-border-subtle pt-3">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="min-w-0 flex-1 justify-center gap-1.5"
+                onClick={handleWorkflowReviewAction}
+              >
+                <Pipeline className="h-3.5 w-3.5" />
+                <span className="truncate">{workflow ? 'Workflow' : 'Make workflow'}</span>
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="min-w-0 flex-1 justify-center gap-1.5"
+                onClick={handleDiagnosticsReviewAction}
+              >
+                <CodeAnalysis className="h-3.5 w-3.5" />
+                <span className="truncate">Diagnostics</span>
+              </Button>
+            </div>
+          </div>
+        </PopoverContent>
+      </Popover>
+    </div>
+  );
 
   useLayoutEffect(() => {
     if (isCleanConversation) return;
@@ -591,7 +1270,7 @@ function BaseChatContent({
       data-composer-shell="true"
       className={cn(
         'w-full max-w-[760px] mx-auto biorouter-chat-composer biorouter-composer-motion',
-        !compactPicker && 'biorouter-composer-view-transition'
+        'biorouter-composer-view-transition'
       )}
     >
       <ChatInput
@@ -619,8 +1298,8 @@ function BaseChatContent({
         workflowAccepted={!hasNotAcceptedWorkflow}
         initialPrompt={initialPrompt}
         toolCount={toolCount || 0}
-        compactPicker={compactPicker}
         supportsVisionOverride={sessionSupportsVision ?? undefined}
+        supportedInputMimeTypesOverride={sessionSupportedInputMimeTypes}
         {...customChatInputProps}
       />
     </div>
@@ -674,7 +1353,7 @@ function BaseChatContent({
   }
 
   return (
-    <div className="h-full flex flex-col min-h-0">
+    <div className="relative z-[60] h-full flex flex-col min-h-0">
       <MainPanelLayout
         backgroundColor={'bg-background-muted'}
         removeTopPadding={true}
@@ -683,119 +1362,155 @@ function BaseChatContent({
         {/* Custom header */}
         {renderHeader && renderHeader()}
 
-        {/* Chat container with sticky workflow header */}
-        <div
-          className={
-            coherent
-              ? 'flex flex-col flex-1 min-h-0 relative rounded-t-2xl overflow-hidden bg-background-muted'
-              : 'flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden'
-          }
-        >
-          {!hideSessionNamePill && (
-            // Wrapper sits above the fixed `.titlebar-drag-region` (z-50,
-            // top 32px) so the pill can receive clicks despite overlapping
-            // the OS title-bar drag zone. It explicitly opts INTO drag, so
-            // the wrapper area outside the pill itself still drags the
-            // window — only the pill's own (inline-flex) bounding box is
-            // marked no-drag (done inside SessionNamePill).
+        <div ref={splitPaneRef} className="relative flex flex-1 min-h-0 min-w-0">
+          <div className="flex min-w-0 flex-1 flex-col">
+            {/* Chat container with sticky workflow header */}
             <div
-              className={`flex-shrink-0 ${sessionPillWrapperCls} pr-4 pt-3 relative z-[60]`}
-              style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
-            >
-              <SessionNamePill
-                name={session?.name || 'New Session'}
-                onRename={handleRename}
-                accentColor={accentColor}
-              />
-            </div>
-          )}
-          {isCleanConversation ? (
-            <div
-              className="flex-1 min-h-0 flex items-center justify-center px-4 py-10 sm:px-6 sm:py-16"
-              onDrop={handleDrop}
-              onDragOver={handleDragOver}
-              data-drop-zone="true"
-            >
-              <div className="w-full max-w-[760px] flex flex-col items-center gap-6 -translate-y-10 sm:-translate-y-12">
-                <Greeting
-                  key={sessionId}
-                  className={cn(
-                    'text-center font-semibold tracking-tight text-text-default animate-in fade-in duration-300',
-                    compactPicker ? 'text-xl' : 'text-2xl'
-                  )}
-                />
-                {renderChatInput()}
-              </div>
-            </div>
-          ) : (
-            <ScrollArea
-              ref={scrollRef}
               className={
                 coherent
-                  ? `flex-1 min-h-0 relative ${contentClassName}`
-                  : `flex-1 bg-background-default rounded-2xl min-h-0 relative ${contentClassName}`
+                  ? 'flex flex-col flex-1 min-h-0 relative rounded-t-2xl overflow-hidden bg-background-muted'
+                  : 'flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden'
               }
-              autoScroll
-              onDrop={handleDrop}
-              onDragOver={handleDragOver}
-              data-drop-zone="true"
-              paddingX={6}
-              paddingY={0}
             >
-              <div className="biorouter-chat-column mx-auto w-full max-w-[920px]">
-                {workflow?.title && (
-                  <div className="sticky top-0 z-10 bg-background-muted mb-4 pt-2">
-                    <WorkflowHeader title={workflow.title} />
-                  </div>
-                )}
-
-                {workflow && (
-                  <div className={hasStartedUsingWorkflow ? 'mb-6' : ''}>
-                    <WorkflowActivities
-                      append={(text: string) => handleSubmit(text)}
-                      activities={Array.isArray(workflow.activities) ? workflow.activities : null}
-                      title={workflow.title}
-                      parameterValues={session?.user_workflow_values || {}}
+              {!hideSessionNamePill && (
+                <div
+                  className={`relative z-[60] flex h-14 flex-shrink-0 items-center gap-3 border-b border-border-subtle/35 bg-background-muted/95 pr-4 backdrop-blur ${sessionPillWrapperCls}`}
+                  style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
+                >
+                  <div className="min-w-0 flex-1">
+                    <SessionNamePill
+                      name={session?.name || 'New Session'}
+                      onRename={handleRename}
+                      onDiverge={handleTitleDiverge}
+                      canDiverge={canDivergeSession}
+                      accentColor={accentColor}
+                      className="w-fit max-w-[min(520px,calc(100%-16px))]"
                     />
                   </div>
-                )}
+                  {renderSessionHeaderActions()}
+                </div>
+              )}
+              {isCleanConversation ? (
+                <div
+                  className="flex-1 min-h-0 flex items-center justify-center px-4 py-10 sm:px-6 sm:py-16"
+                  onDrop={handleDrop}
+                  onDragOver={handleDragOver}
+                  data-drop-zone="true"
+                >
+                  <div className="w-full max-w-[760px] flex flex-col items-center gap-6 -translate-y-10 sm:-translate-y-12">
+                    <Greeting
+                      key={sessionId}
+                      className={cn(
+                        'text-center text-2xl font-semibold tracking-tight text-text-default animate-in fade-in duration-300'
+                      )}
+                    />
+                    {renderChatInput()}
+                  </div>
+                </div>
+              ) : (
+                <ScrollArea
+                  ref={scrollRef}
+                  className={
+                    coherent
+                      ? `flex-1 min-h-0 relative ${contentClassName}`
+                      : `flex-1 bg-background-default rounded-2xl min-h-0 relative ${contentClassName}`
+                  }
+                  autoScroll
+                  onDrop={handleDrop}
+                  onDragOver={handleDragOver}
+                  data-drop-zone="true"
+                  paddingX={6}
+                  paddingY={0}
+                >
+                  <div className="biorouter-chat-column mx-auto w-full max-w-[760px]">
+                    {workflow?.title && (
+                      <div className="sticky top-0 z-10 bg-background-muted mb-4 pt-2">
+                        <WorkflowHeader title={workflow.title} />
+                      </div>
+                    )}
 
-                {messages.length > 0 || workflow ? (
-                  <>
-                    <SearchView>
-                      <ProgressiveMessageList
-                        messages={messages}
-                        chat={{ sessionId }}
-                        toolCallNotifications={toolCallNotifications}
-                        append={(text: string) => handleSubmit(text)}
-                        isUserMessage={(m: Message) => m.role === 'user'}
-                        isStreamingMessage={chatState !== ChatState.Idle}
-                        onRenderingComplete={handleRenderingComplete}
-                        onMessageUpdate={onMessageUpdate}
-                        submitElicitationResponse={submitElicitationResponse}
-                      />
-                    </SearchView>
+                    {workflow && (
+                      <div className={hasStartedUsingWorkflow ? 'mb-6' : ''}>
+                        <WorkflowActivities
+                          append={(text: string) => handleSubmit(text)}
+                          activities={
+                            Array.isArray(workflow.activities) ? workflow.activities : null
+                          }
+                          title={workflow.title}
+                          parameterValues={session?.user_workflow_values || {}}
+                        />
+                      </div>
+                    )}
 
-                    <div className="block h-8" />
-                  </>
-                ) : null}
+                    {messages.length > 0 || workflow ? (
+                      <>
+                        <SearchView>
+                          <ProgressiveMessageList
+                            messages={messages}
+                            chat={{ sessionId }}
+                            toolCallNotifications={toolCallNotifications}
+                            append={(text: string) => handleSubmit(text)}
+                            isUserMessage={(m: Message) => m.role === 'user'}
+                            isStreamingMessage={chatState !== ChatState.Idle}
+                            onRenderingComplete={handleRenderingComplete}
+                            onMessageUpdate={onMessageUpdate}
+                            submitElicitationResponse={submitElicitationResponse}
+                            onOpenArtifact={handleOpenArtifact}
+                          />
+                        </SearchView>
+
+                        <div className="block h-8" />
+                      </>
+                    ) : null}
+                  </div>
+                </ScrollArea>
+              )}
+            </div>
+
+            {!isCleanConversation && (
+              <div
+                className={
+                  coherent
+                    ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-muted'
+                    : `px-4 sm:px-6 pb-6 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`
+                }
+              >
+                {renderWorkingStatus()}
+                {renderChatInput()}
               </div>
-            </ScrollArea>
+            )}
+          </div>
+
+          {presentedArtifact && (
+            <ArtifactViewer
+              artifact={presentedArtifact}
+              isOpen={isArtifactPanelOpen}
+              isResizing={isArtifactPanelResizing}
+              onClose={handleCloseArtifactPanel}
+              onOpenArtifact={handleOpenArtifact}
+              onResizeStart={isMobile ? undefined : handleArtifactPanelResizeStart}
+              onRenderError={handleArtifactRenderError}
+              style={
+                isMobile
+                  ? undefined
+                  : {
+                      width: artifactPanelWidth ?? getDefaultArtifactPanelWidth(),
+                      flexBasis: artifactPanelWidth ?? getDefaultArtifactPanelWidth(),
+                    }
+              }
+              className={
+                isMobile
+                  ? 'absolute inset-x-2 bottom-2 top-16 z-[70] rounded-lg border border-border-subtle'
+                  : 'min-w-[360px] flex-shrink-0'
+              }
+            />
           )}
         </div>
-
-        {!isCleanConversation && (
-          <div
-            className={
-              coherent
-                ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-muted'
-                : `px-4 sm:px-6 pb-6 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`
-            }
-          >
-            {renderWorkingStatus()}
-            {renderChatInput()}
-          </div>
-        )}
+        <InAppTerminalDock
+          open={isTerminalDockOpen}
+          workingDir={sessionWorkingDir}
+          onClose={() => setIsTerminalDockOpen(false)}
+        />
       </MainPanelLayout>
 
       {workflow && (
@@ -830,6 +1545,22 @@ function BaseChatContent({
         sessionId={chat.sessionId}
         onWorkflowCreated={handleWorkflowCreated}
       />
+
+      {sessionId && diagnosticsOpen && (
+        <DiagnosticsModal
+          isOpen={diagnosticsOpen}
+          onClose={() => setDiagnosticsOpen(false)}
+          sessionId={sessionId}
+        />
+      )}
+
+      {workflow && showEditWorkflowModal && (
+        <CreateEditWorkflowModal
+          isOpen={showEditWorkflowModal}
+          onClose={() => setShowEditWorkflowModal(false)}
+          workflow={workflow}
+        />
+      )}
     </div>
   );
 }

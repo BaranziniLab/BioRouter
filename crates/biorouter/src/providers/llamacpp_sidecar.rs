@@ -3,7 +3,8 @@
 //! Biorouter bundles a pinned llama.cpp `llama-server` binary (build
 //! [`LLAMA_SERVER_BUILD`]) next to its own binaries. This module owns the
 //! lifecycle of that process: locating the binary, spawning it with the
-//! requested model (downloaded from Hugging Face via `-hf` on first use),
+//! requested model (prefering an Ollama-style local model blob when present,
+//! otherwise falling back to llama.cpp's Hugging Face `-hf` downloader),
 //! waiting for readiness via `GET /health`, exposing a status snapshot for
 //! the GUI/CLI, and restarting when the requested model changes or the
 //! process dies.
@@ -13,7 +14,7 @@
 //! request stream. Switching models restarts the sidecar.
 
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
@@ -29,6 +30,7 @@ use utoipa::ToSchema;
 pub const LLAMA_SERVER_BUILD: &str = "b9611";
 /// Default port the managed sidecar listens on (loopback only).
 pub const LLAMACPP_DEFAULT_PORT: u16 = 11543;
+pub const LLAMACPP_AGENT_CONTEXT_SIZE: usize = 65_536;
 const LOG_TAIL_LINES: usize = 60;
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(500);
 const STATUS_PROBE_TIMEOUT: Duration = Duration::from_millis(800);
@@ -58,6 +60,17 @@ pub struct SidecarStatus {
     pub model: Option<String>,
     /// Hugging Face `repo:quant` spec backing `model`.
     pub hf_spec: Option<String>,
+    /// Ollama model name checked first, when this is a catalog model.
+    #[serde(default)]
+    pub ollama_name: Option<String>,
+    /// Local model blob path used for the running process, if an Ollama model
+    /// store hit was available.
+    #[serde(default)]
+    pub model_path: Option<String>,
+    /// `ollama` when launched from an Ollama model blob, otherwise
+    /// `huggingface`.
+    #[serde(default)]
+    pub model_source: Option<String>,
     pub port: Option<u16>,
     pub binary_path: Option<String>,
     /// Pinned llama.cpp build.
@@ -68,6 +81,62 @@ pub struct SidecarStatus {
     /// server), or `None` until it is ready. Tracks the model, not a preset.
     #[serde(default)]
     pub context_size: Option<usize>,
+    /// True only after Biorouter has received a non-empty completion from this
+    /// model in this process.
+    #[serde(default)]
+    pub warmed: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCacheStatus {
+    Downloaded,
+    Partial,
+    NotDownloaded,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelSource {
+    pub hf_spec: String,
+    pub ollama_name: Option<String>,
+}
+
+impl ModelSource {
+    pub fn huggingface(hf_spec: impl Into<String>) -> Self {
+        Self {
+            hf_spec: hf_spec.into(),
+            ollama_name: None,
+        }
+    }
+
+    pub fn ollama(ollama_name: impl Into<String>, hf_spec: impl Into<String>) -> Self {
+        Self {
+            hf_spec: hf_spec.into(),
+            ollama_name: Some(ollama_name.into()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum LaunchSource {
+    OllamaBlob(PathBuf),
+    HuggingFace(String),
+}
+
+impl LaunchSource {
+    fn model_path(&self) -> Option<String> {
+        match self {
+            Self::OllamaBlob(path) => Some(path.display().to_string()),
+            Self::HuggingFace(_) => None,
+        }
+    }
+
+    fn source_name(&self) -> &'static str {
+        match self {
+            Self::OllamaBlob(_) => "ollama",
+            Self::HuggingFace(_) => "huggingface",
+        }
+    }
 }
 
 struct Inner {
@@ -75,11 +144,17 @@ struct Inner {
     /// Port the current/last process was started on.
     port: Option<u16>,
     model: Option<String>,
-    hf_spec: Option<String>,
+    model_source: Option<ModelSource>,
+    launch_source: Option<LaunchSource>,
     log_tail: Arc<StdMutex<VecDeque<String>>>,
     last_error: Option<String>,
     /// Live context window of the running model, filled once ready.
     context_size: Option<usize>,
+    /// Context window requested at process launch. This can differ from the
+    /// memory-tiered default if automatic startup falls back after an OOM.
+    requested_context_size: Option<usize>,
+    automatic_context_size: bool,
+    warmed_model: Option<String>,
 }
 
 /// Singleton manager for the llama-server sidecar.
@@ -96,10 +171,14 @@ pub fn global() -> &'static LlamaSidecar {
             child: None,
             port: None,
             model: None,
-            hf_spec: None,
+            model_source: None,
+            launch_source: None,
             log_tail: Arc::new(StdMutex::new(VecDeque::new())),
             last_error: None,
             context_size: None,
+            requested_context_size: None,
+            automatic_context_size: false,
+            warmed_model: None,
         }),
     })
 }
@@ -155,10 +234,195 @@ fn which_on_path(exe_name: &str) -> Option<PathBuf> {
     })
 }
 
-/// Directory used as `LLAMA_CACHE` so downloaded GGUFs live under a
-/// Biorouter-owned path rather than the shared `~/.cache/llama.cpp`.
+/// Directory used as `LLAMA_CACHE`. This follows Ollama's model-store
+/// convention (`OLLAMA_MODELS`, then `~/.ollama/models`) so local model data
+/// lives where Ollama users expect it.
 pub fn model_cache_dir() -> PathBuf {
-    crate::config::paths::Paths::in_data_dir("llamacpp/models")
+    std::env::var_os("OLLAMA_MODELS")
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::home_dir()
+                .expect("biorouter requires a home dir")
+                .join(".ollama")
+                .join("models")
+        })
+}
+
+pub fn model_cache_status(hf_spec: &str) -> ModelCacheStatus {
+    model_cache_status_in_dir(&model_cache_dir(), hf_spec)
+}
+
+pub fn model_source_cache_status(source: &ModelSource) -> ModelCacheStatus {
+    let dir = model_cache_dir();
+    model_source_cache_status_in_dir(&dir, source)
+}
+
+fn model_source_cache_status_in_dir(cache_dir: &Path, source: &ModelSource) -> ModelCacheStatus {
+    let ollama_status = source
+        .ollama_name
+        .as_deref()
+        .map(|name| ollama_model_cache_status_in_dir(cache_dir, name));
+    match ollama_status {
+        Some(ModelCacheStatus::Downloaded) => ModelCacheStatus::Downloaded,
+        Some(ModelCacheStatus::Partial) => ModelCacheStatus::Partial,
+        _ => model_cache_status_in_dir(cache_dir, &source.hf_spec),
+    }
+}
+
+pub fn model_source_path(source: &ModelSource) -> Option<PathBuf> {
+    source
+        .ollama_name
+        .as_deref()
+        .and_then(|name| ollama_model_blob_path_in_dir(&model_cache_dir(), name))
+}
+
+fn model_cache_status_in_dir(cache_dir: &Path, hf_spec: &str) -> ModelCacheStatus {
+    let repo = hf_spec.split_once(':').map_or(hf_spec, |(repo, _)| repo);
+    let Some((owner, name)) = repo.split_once('/') else {
+        return ModelCacheStatus::NotDownloaded;
+    };
+
+    let repo_dir = cache_dir.join(format!("models--{owner}--{name}"));
+    if !repo_dir.is_dir() {
+        return ModelCacheStatus::NotDownloaded;
+    }
+
+    let quant = hf_spec
+        .split_once(':')
+        .map(|(_, quant)| quant.to_ascii_lowercase());
+    let mut has_partial = false;
+    let mut has_any_gguf = false;
+    let mut has_matching_gguf = false;
+    visit_cache_files(&repo_dir, &mut |path| {
+        let Some(file_name) = path.file_name().and_then(|s| s.to_str()) else {
+            return;
+        };
+        if file_name.ends_with(".downloadInProgress") {
+            has_partial = true;
+        }
+        if file_name.to_ascii_lowercase().ends_with(".gguf") {
+            has_any_gguf = true;
+            if quant
+                .as_ref()
+                .is_none_or(|q| file_name.to_ascii_lowercase().contains(q))
+            {
+                has_matching_gguf = true;
+            }
+        }
+    });
+
+    if has_matching_gguf || (quant.is_none() && has_any_gguf) {
+        ModelCacheStatus::Downloaded
+    } else if has_partial {
+        ModelCacheStatus::Partial
+    } else {
+        ModelCacheStatus::NotDownloaded
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct OllamaName {
+    host: String,
+    namespace: String,
+    model: String,
+    tag: String,
+}
+
+fn parse_ollama_name(name: &str) -> Option<OllamaName> {
+    let (without_tag, tag) = name.rsplit_once(':').unwrap_or((name, "latest"));
+    if without_tag.is_empty() || tag.is_empty() {
+        return None;
+    }
+    let parts: Vec<_> = without_tag.split('/').collect();
+    let (host, namespace, model) = match parts.as_slice() {
+        [model] => ("registry.ollama.ai", "library", *model),
+        [namespace, model] => ("registry.ollama.ai", *namespace, *model),
+        [host, namespace, model] => (*host, *namespace, *model),
+        _ => return None,
+    };
+    if [host, namespace, model, tag]
+        .iter()
+        .any(|part| part.is_empty())
+    {
+        return None;
+    }
+    Some(OllamaName {
+        host: host.to_string(),
+        namespace: namespace.to_string(),
+        model: model.to_string(),
+        tag: tag.to_string(),
+    })
+}
+
+fn ollama_manifest_path(cache_dir: &Path, name: &str) -> Option<PathBuf> {
+    let name = parse_ollama_name(name)?;
+    Some(
+        cache_dir
+            .join("manifests")
+            .join(name.host)
+            .join(name.namespace)
+            .join(name.model)
+            .join(name.tag),
+    )
+}
+
+fn ollama_model_cache_status_in_dir(cache_dir: &Path, name: &str) -> ModelCacheStatus {
+    let Some(manifest_path) = ollama_manifest_path(cache_dir, name) else {
+        return ModelCacheStatus::NotDownloaded;
+    };
+    if !manifest_path.is_file() {
+        return ModelCacheStatus::NotDownloaded;
+    }
+    let Some(blob_path) = ollama_model_blob_path_in_dir(cache_dir, name) else {
+        return ModelCacheStatus::Partial;
+    };
+    if is_gguf_file(&blob_path) {
+        ModelCacheStatus::Downloaded
+    } else {
+        ModelCacheStatus::Partial
+    }
+}
+
+fn ollama_model_blob_path_in_dir(cache_dir: &Path, name: &str) -> Option<PathBuf> {
+    let manifest_path = ollama_manifest_path(cache_dir, name)?;
+    let bytes = std::fs::read(manifest_path).ok()?;
+    let manifest: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+    let digest = manifest
+        .get("layers")?
+        .as_array()?
+        .iter()
+        .find(|layer| {
+            layer.get("mediaType").and_then(|value| value.as_str())
+                == Some("application/vnd.ollama.image.model")
+        })?
+        .get("digest")?
+        .as_str()?;
+    let digest_path = digest.replace(':', "-");
+    let path = cache_dir.join("blobs").join(digest_path);
+    path.is_file().then_some(path)
+}
+
+fn is_gguf_file(path: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut magic = [0u8; 4];
+    std::io::Read::read_exact(&mut file, &mut magic).is_ok() && magic == *b"GGUF"
+}
+
+fn visit_cache_files(dir: &Path, f: &mut impl FnMut(&Path)) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            visit_cache_files(&path, f);
+        } else {
+            f(&path);
+        }
+    }
 }
 
 fn configured_port() -> u16 {
@@ -170,29 +434,177 @@ fn configured_port() -> u16 {
 /// Total physical memory in GiB (best-effort; 0 when it can't be read). On
 /// Apple Silicon this is unified memory, which doubles as the GPU/Metal budget,
 /// so it's a good proxy for how much KV cache we can afford.
-fn total_memory_gib() -> u64 {
+pub fn total_memory_gib() -> u64 {
     // `sys_info::mem_info().total` is in KiB.
     sys_info::mem_info()
         .map(|m| m.total / (1024 * 1024))
         .unwrap_or(0)
 }
 
+fn is_apple_silicon() -> bool {
+    cfg!(target_os = "macos") && cfg!(target_arch = "aarch64")
+}
+
+/// The memory budget relevant for local GPU inference. On Apple Silicon this
+/// is unified system memory; elsewhere it is discrete VRAM when we can detect
+/// it. Unknown VRAM is reported as `None` so the UI can warn instead of
+/// pretending system RAM is enough.
+pub fn accelerator_memory_gib() -> Option<u64> {
+    if is_apple_silicon() {
+        let total = total_memory_gib();
+        return (total > 0).then_some(total);
+    }
+    detect_discrete_vram_gib()
+}
+
+pub fn accelerator_memory_kind() -> &'static str {
+    if is_apple_silicon() {
+        "apple_unified"
+    } else if accelerator_memory_gib().is_some() {
+        "vram"
+    } else {
+        "unknown_vram"
+    }
+}
+
+pub fn recommendation_memory_gib() -> u64 {
+    accelerator_memory_gib().unwrap_or(0)
+}
+
+fn detect_discrete_vram_gib() -> Option<u64> {
+    static VRAM_GIB: OnceLock<Option<u64>> = OnceLock::new();
+    *VRAM_GIB.get_or_init(detect_discrete_vram_gib_uncached)
+}
+
+fn detect_discrete_vram_gib_uncached() -> Option<u64> {
+    if cfg!(target_os = "macos") {
+        detect_macos_vram_gib()
+    } else if cfg!(target_os = "windows") {
+        detect_windows_vram_gib()
+    } else {
+        detect_linux_vram_gib()
+    }
+}
+
+fn detect_macos_vram_gib() -> Option<u64> {
+    let output = std::process::Command::new("system_profiler")
+        .args(["SPDisplaysDataType", "-json"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let mut best = None;
+    collect_vram_from_json(&json, &mut best);
+    best
+}
+
+fn collect_vram_from_json(value: &serde_json::Value, best: &mut Option<u64>) {
+    match value {
+        serde_json::Value::Object(map) => {
+            for (key, value) in map {
+                if key.to_ascii_lowercase().contains("vram") {
+                    if let Some(text) = value.as_str() {
+                        if let Some(gib) = parse_memory_gib(text) {
+                            *best = Some(best.map_or(gib, |current| current.max(gib)));
+                        }
+                    }
+                }
+                collect_vram_from_json(value, best);
+            }
+        }
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_vram_from_json(item, best);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn detect_windows_vram_gib() -> Option<u64> {
+    let output = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "Get-CimInstance Win32_VideoController | ForEach-Object { $_.AdapterRAM }",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse::<u64>().ok())
+        .filter(|bytes| *bytes > 0)
+        .map(bytes_to_gib)
+        .max()
+}
+
+fn detect_linux_vram_gib() -> Option<u64> {
+    let output = std::process::Command::new("nvidia-smi")
+        .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse::<u64>().ok())
+        .filter(|mib| *mib > 0)
+        .map(|mib| mib.div_ceil(1024))
+        .max()
+}
+
+fn bytes_to_gib(bytes: u64) -> u64 {
+    bytes.div_ceil(1024 * 1024 * 1024)
+}
+
+fn parse_memory_gib(text: &str) -> Option<u64> {
+    let normalized = text.to_ascii_lowercase().replace(',', "");
+    let number = normalized
+        .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .find(|s| !s.is_empty())?
+        .parse::<f64>()
+        .ok()?;
+    if normalized.contains("tb") || normalized.contains("tib") {
+        Some((number * 1024.0).ceil() as u64)
+    } else if normalized.contains("gb") || normalized.contains("gib") {
+        Some(number.ceil() as u64)
+    } else if normalized.contains("mb") || normalized.contains("mib") {
+        Some((number / 1024.0).ceil() as u64)
+    } else {
+        None
+    }
+}
+
 /// The default context window when the user hasn't pinned `LLAMACPP_CONTEXT_SIZE`.
 ///
-/// A model's *trained* window (read later from `/props`) can be huge — Qwen3.5
+/// A model's *trained* window (read later from `/props`) can be huge — Qwen3.6
 /// is 262k — but the KV cache for it scales with both the window and the model
 /// size, and allocating tens of GB at startup is slow-to-impossible on a
-/// laptop. So instead of the model's full native window we pick a memory-tiered
-/// cap: generous on a workstation, conservative on a 16 GB machine. 128k is the
-/// ceiling. Users can still pin any explicit `LLAMACPP_CONTEXT_SIZE`, and the
-/// real allocated window is always read back from `/props` for accounting.
+/// laptop. BioRouter's agent bootstrap can also consume around 20k tokens
+/// before the first user turn, so machines with at least 16 GiB of
+/// GPU-addressable memory get a 64k context. On Apple Silicon, unified memory
+/// counts; on Intel Macs, Windows, and Linux this uses detected VRAM. 128k is
+/// the ceiling. Users can still pin any explicit `LLAMACPP_CONTEXT_SIZE`, and
+/// the real allocated window is always read back from `/props` for accounting.
 pub fn default_context_size() -> usize {
-    match total_memory_gib() {
+    match recommendation_memory_gib() {
         gib if gib >= 64 => 131_072, // 128k — workstations / Apple Silicon Max/Ultra
-        gib if gib >= 32 => 65_536,  // 64k
-        gib if gib >= 16 => 32_768,  // 32k — typical 16 GB laptop
-        _ => 16_384,                 // 16k — small or unknown
+        gib if gib >= 16 => LLAMACPP_AGENT_CONTEXT_SIZE, // 64k — agent-ready accelerator default
+        _ => 32_768,                 // 32k — small or unknown VRAM, with a UI warning
     }
+}
+
+fn explicit_context_size() -> Option<usize> {
+    crate::config::Config::global()
+        .get_param::<usize>("LLAMACPP_CONTEXT_SIZE")
+        .ok()
+        .filter(|&n| n > 0)
 }
 
 /// The `--ctx-size` passed to llama-server. An explicit positive
@@ -204,11 +616,41 @@ pub fn default_context_size() -> usize {
 /// token accounting, so the gauge always matches reality. q8_0 KV-cache
 /// quantization keeps the memory cost affordable.
 fn configured_context_size() -> usize {
-    crate::config::Config::global()
-        .get_param::<usize>("LLAMACPP_CONTEXT_SIZE")
-        .ok()
-        .filter(|&n| n > 0)
-        .unwrap_or_else(default_context_size)
+    explicit_context_size().unwrap_or_else(default_context_size)
+}
+
+fn next_lower_auto_context_size(ctx_size: usize) -> Option<usize> {
+    match ctx_size {
+        n if n > LLAMACPP_AGENT_CONTEXT_SIZE => Some(LLAMACPP_AGENT_CONTEXT_SIZE),
+        n if n > 32_768 => Some(32_768),
+        _ => None,
+    }
+}
+
+fn looks_like_memory_failure(log: &str) -> bool {
+    let log = log.to_ascii_lowercase();
+    [
+        "out of memory",
+        "not enough memory",
+        "failed to allocate",
+        "cannot allocate",
+        "unable to allocate",
+        "memory allocation",
+    ]
+    .iter()
+    .any(|needle| log.contains(needle))
+}
+
+fn looks_like_model_load_failure(log: &str) -> bool {
+    let log = log.to_ascii_lowercase();
+    [
+        "wrong number of tensors",
+        "error loading model",
+        "failed to load model",
+        "failed to load model from file",
+    ]
+    .iter()
+    .any(|needle| log.contains(needle))
 }
 
 /// Query a running llama-server's `/props` for the context window it actually
@@ -251,13 +693,23 @@ async fn live_context_size(port: u16) -> Option<usize> {
         .map(|n| n as usize)
 }
 
+fn launch_source_for(source: &ModelSource) -> LaunchSource {
+    model_source_path(source)
+        .map(LaunchSource::OllamaBlob)
+        .unwrap_or_else(|| LaunchSource::HuggingFace(source.hf_spec.clone()))
+}
+
 /// Build the llama-server argv (without the program itself). Factored out for
 /// testing.
-fn build_args(hf_spec: &str, alias: &str, port: u16, ctx_size: usize) -> Vec<String> {
+fn build_args(source: &LaunchSource, alias: &str, port: u16, ctx_size: usize) -> Vec<String> {
     let config = crate::config::Config::global();
-    let mut args = vec![
-        "-hf".to_string(),
-        hf_spec.to_string(),
+    let mut args = match source {
+        LaunchSource::OllamaBlob(path) => {
+            vec!["-m".to_string(), path.display().to_string()]
+        }
+        LaunchSource::HuggingFace(hf_spec) => vec!["-hf".to_string(), hf_spec.to_string()],
+    };
+    args.extend([
         "--alias".to_string(),
         alias.to_string(),
         "--host".to_string(),
@@ -268,6 +720,7 @@ fn build_args(hf_spec: &str, alias: &str, port: u16, ctx_size: usize) -> Vec<Str
         ctx_size.to_string(),
         "--jinja".to_string(),
         "--no-webui".to_string(),
+        "--no-mmproj".to_string(),
         // Halve KV-cache memory so the (memory-tiered) default context stays
         // affordable. q8_0 is considered lossless in practice; it's q4 KV that
         // degrades tool calling. Overridable via LLAMACPP_EXTRA_ARGS.
@@ -275,15 +728,15 @@ fn build_args(hf_spec: &str, alias: &str, port: u16, ctx_size: usize) -> Vec<Str
         "q8_0".to_string(),
         "--cache-type-v".to_string(),
         "q8_0".to_string(),
-    ];
-    // Thinking is enabled by default so reasoning-capable models (Qwen3.5,
-    // Gemma 4) can reason before answering. Set LLAMACPP_ENABLE_THINKING=false
-    // to turn it off (faster, but weaker on multi-step and tool-use tasks).
+    ]);
+    // Thinking is off by default so small warm-up/test completions produce
+    // visible content instead of spending the budget on hidden reasoning.
+    // Set LLAMACPP_ENABLE_THINKING=true to enable it for capable models.
     // Uses the current `--reasoning on|off` flag, not the deprecated
     // `--chat-template-kwargs {"enable_thinking":...}` form.
     let thinking = config
         .get_param::<bool>("LLAMACPP_ENABLE_THINKING")
-        .unwrap_or(true);
+        .unwrap_or(false);
     args.push("--reasoning".to_string());
     args.push(if thinking { "on" } else { "off" }.to_string());
     if let Ok(extra) = config.get_param::<String>("LLAMACPP_EXTRA_ARGS") {
@@ -505,22 +958,117 @@ fn log_tail_joined(tail: &StdMutex<VecDeque<String>>, n: usize) -> String {
         .unwrap_or_default()
 }
 
+fn spawn_child(
+    inner: &mut Inner,
+    binary: &Path,
+    cache_dir: &Path,
+    model: &str,
+    source: &ModelSource,
+    port: u16,
+    ctx_size: usize,
+) -> Result<Child> {
+    let launch_source = launch_source_for(source);
+    spawn_child_with_launch_source(
+        inner,
+        binary,
+        cache_dir,
+        model,
+        launch_source,
+        port,
+        ctx_size,
+    )
+}
+
+fn spawn_child_with_launch_source(
+    inner: &mut Inner,
+    binary: &Path,
+    cache_dir: &Path,
+    model: &str,
+    launch_source: LaunchSource,
+    port: u16,
+    ctx_size: usize,
+) -> Result<Child> {
+    let args = build_args(&launch_source, model, port, ctx_size);
+    tracing::info!(
+        "Starting llama-server ({}) on port {port}: {} {}",
+        LLAMA_SERVER_BUILD,
+        binary.display(),
+        args.join(" ")
+    );
+
+    if let Ok(mut t) = inner.log_tail.lock() {
+        t.clear();
+    }
+    inner.last_error = None;
+    inner.launch_source = Some(launch_source);
+
+    let mut child = Command::new(binary)
+        .args(&args)
+        .env("LLAMA_CACHE", cache_dir)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|e| anyhow!("Failed to start llama-server at {}: {e}", binary.display()))?;
+
+    if let Some(stdout) = child.stdout.take() {
+        let tail = inner.log_tail.clone();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    push_log(&tail, line);
+                }
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let tail = inner.log_tail.clone();
+        tokio::spawn(async move {
+            let mut lines = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                if !line.trim().is_empty() {
+                    push_log(&tail, line);
+                }
+            }
+        });
+    }
+
+    if let Some(child_pid) = child.id() {
+        write_pidfile(child_pid);
+    }
+
+    Ok(child)
+}
+
 impl LlamaSidecar {
     /// Ensure a llama-server is running and serving `model` (friendly alias)
-    /// backed by `hf_spec`. Returns the port it is (or will be) serving on.
+    /// backed by `source`. Returns the port it is (or will be) serving on.
     /// Does NOT wait for readiness — pair with [`Self::wait_ready`].
-    pub async fn ensure(&self, model: &str, hf_spec: &str) -> Result<u16> {
+    pub async fn ensure(&self, model: &str, source: &ModelSource) -> Result<u16> {
         let mut inner = self.inner.lock().await;
+        let explicit_ctx = explicit_context_size();
+        let ctx_size = configured_context_size();
+        let automatic_context_size = explicit_ctx.is_none();
 
         // Already running the requested model?
         if inner.model.as_deref() == Some(model) {
             if let Some(child) = inner.child.as_mut() {
                 if child.try_wait()?.is_none() {
-                    return Ok(inner.port.expect("running child always has a port"));
+                    let same_context = if inner.automatic_context_size && automatic_context_size {
+                        true
+                    } else {
+                        inner.requested_context_size == Some(ctx_size)
+                            && inner.automatic_context_size == automatic_context_size
+                    };
+                    if same_context {
+                        return Ok(inner.port.expect("running child always has a port"));
+                    }
                 }
                 // Process died — fall through to respawn.
                 inner.last_error = Some(log_tail_joined(&inner.log_tail, 8));
                 inner.child = None;
+                inner.warmed_model = None;
             }
         }
 
@@ -562,72 +1110,26 @@ impl LlamaSidecar {
         let cache_dir = model_cache_dir();
         std::fs::create_dir_all(&cache_dir)?;
 
-        let ctx_size = configured_context_size();
-        let args = build_args(hf_spec, model, port, ctx_size);
-        tracing::info!(
-            "Starting llama-server ({}) on port {port}: {} {}",
-            LLAMA_SERVER_BUILD,
-            binary.display(),
-            args.join(" ")
-        );
-
-        if let Ok(mut t) = inner.log_tail.lock() {
-            t.clear();
-        }
-        inner.last_error = None;
-
-        let mut child = Command::new(&binary)
-            .args(&args)
-            .env("LLAMA_CACHE", &cache_dir)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| anyhow!("Failed to start llama-server at {}: {e}", binary.display()))?;
-
-        // Stream child output into the rolling log tail (download progress,
-        // model load stages) so status polling can surface it.
-        if let Some(stdout) = child.stdout.take() {
-            let tail = inner.log_tail.clone();
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if !line.trim().is_empty() {
-                        push_log(&tail, line);
-                    }
-                }
-            });
-        }
-        if let Some(stderr) = child.stderr.take() {
-            let tail = inner.log_tail.clone();
-            tokio::spawn(async move {
-                let mut lines = BufReader::new(stderr).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if !line.trim().is_empty() {
-                        push_log(&tail, line);
-                    }
-                }
-            });
-        }
-
-        if let Some(child_pid) = child.id() {
-            write_pidfile(child_pid);
-        }
+        let child = spawn_child(
+            &mut inner, &binary, &cache_dir, model, source, port, ctx_size,
+        )?;
         inner.child = Some(child);
         inner.port = Some(port);
         inner.model = Some(model.to_string());
-        inner.hf_spec = Some(hf_spec.to_string());
+        inner.model_source = Some(source.clone());
         // New model: the previous model's window no longer applies; it is
         // re-read from /props once this one is ready.
         inner.context_size = None;
+        inner.requested_context_size = Some(ctx_size);
+        inner.automatic_context_size = automatic_context_size;
+        inner.warmed_model = None;
         Ok(port)
     }
 
     /// Wait until `GET /health` succeeds or `timeout` elapses. The first run
-    /// of a model includes the Hugging Face download, so generous timeouts
-    /// are expected here.
+    /// can include a large fallback download, so generous timeouts are expected.
     pub async fn wait_ready(&self, timeout: Duration) -> Result<u16> {
-        let deadline = tokio::time::Instant::now() + timeout;
+        let mut deadline = tokio::time::Instant::now() + timeout;
         loop {
             let (port, dead, tail) = {
                 let mut inner = self.inner.lock().await;
@@ -643,6 +1145,15 @@ impl LlamaSidecar {
 
             if dead {
                 let tail = log_tail_joined(&tail, 10);
+                if self.retry_with_lower_auto_context(&tail).await? {
+                    deadline = tokio::time::Instant::now() + timeout;
+                    continue;
+                }
+                if self.retry_with_huggingface_fallback(&tail).await? {
+                    deadline = tokio::time::Instant::now() + timeout;
+                    continue;
+                }
+                self.inner.lock().await.last_error = Some(tail.clone());
                 return Err(anyhow!("llama-server exited during startup:\n{tail}"));
             }
             if health_ok(port, STATUS_PROBE_TIMEOUT).await {
@@ -655,6 +1166,7 @@ impl LlamaSidecar {
             }
             if tokio::time::Instant::now() >= deadline {
                 let last = last_log(&tail).unwrap_or_default();
+                self.inner.lock().await.last_error = Some(last.clone());
                 return Err(anyhow!(
                     "llama-server did not become ready within {}s (last output: {last})",
                     timeout.as_secs()
@@ -662,6 +1174,116 @@ impl LlamaSidecar {
             }
             tokio::time::sleep(HEALTH_POLL_INTERVAL).await;
         }
+    }
+
+    async fn retry_with_lower_auto_context(&self, startup_log: &str) -> Result<bool> {
+        let mut inner = self.inner.lock().await;
+        if !inner.automatic_context_size || !looks_like_memory_failure(startup_log) {
+            return Ok(false);
+        }
+
+        let Some(current_ctx) = inner.requested_context_size else {
+            return Ok(false);
+        };
+        let Some(next_ctx) = next_lower_auto_context_size(current_ctx) else {
+            return Ok(false);
+        };
+        let Some(model) = inner.model.clone() else {
+            return Ok(false);
+        };
+        let Some(source) = inner.model_source.clone() else {
+            return Ok(false);
+        };
+        let Some(port) = inner.port else {
+            return Ok(false);
+        };
+
+        inner.child = None;
+        clear_pidfile();
+        let binary = find_binary().ok_or_else(|| {
+            anyhow!(
+                "llama-server binary not found. It ships with the Biorouter desktop app; for \
+                 CLI-only installs, install llama.cpp (e.g. `brew install llama.cpp`) or set \
+                 BIOROUTER_LLAMACPP_BIN to a llama-server path."
+            )
+        })?;
+        let cache_dir = model_cache_dir();
+        std::fs::create_dir_all(&cache_dir)?;
+
+        tracing::warn!(
+            "llama-server exited while loading {model} with {current_ctx} context; retrying \
+             automatic context at {next_ctx}"
+        );
+        let child = spawn_child(
+            &mut inner, &binary, &cache_dir, &model, &source, port, next_ctx,
+        )?;
+        inner.child = Some(child);
+        inner.context_size = None;
+        inner.requested_context_size = Some(next_ctx);
+        inner.automatic_context_size = true;
+        inner.warmed_model = None;
+        push_log(
+            &inner.log_tail,
+            format!("Retrying with lower automatic context ({next_ctx}) after memory failure"),
+        );
+        Ok(true)
+    }
+
+    async fn retry_with_huggingface_fallback(&self, startup_log: &str) -> Result<bool> {
+        if !looks_like_model_load_failure(startup_log) {
+            return Ok(false);
+        }
+
+        let mut inner = self.inner.lock().await;
+        if !matches!(inner.launch_source, Some(LaunchSource::OllamaBlob(_))) {
+            return Ok(false);
+        }
+        let Some(model) = inner.model.clone() else {
+            return Ok(false);
+        };
+        let Some(source) = inner.model_source.clone() else {
+            return Ok(false);
+        };
+        let Some(port) = inner.port else {
+            return Ok(false);
+        };
+        let ctx_size = inner
+            .requested_context_size
+            .unwrap_or_else(configured_context_size);
+
+        inner.child = None;
+        clear_pidfile();
+        let binary = find_binary().ok_or_else(|| {
+            anyhow!(
+                "llama-server binary not found. It ships with the Biorouter desktop app; for \
+                 CLI-only installs, install llama.cpp (e.g. `brew install llama.cpp`) or set \
+                 BIOROUTER_LLAMACPP_BIN to a llama-server path."
+            )
+        })?;
+        let cache_dir = model_cache_dir();
+        std::fs::create_dir_all(&cache_dir)?;
+
+        tracing::warn!(
+            "llama-server could not load Ollama blob for {model}; retrying Hugging Face fallback"
+        );
+        let child = spawn_child_with_launch_source(
+            &mut inner,
+            &binary,
+            &cache_dir,
+            &model,
+            LaunchSource::HuggingFace(source.hf_spec),
+            port,
+            ctx_size,
+        )?;
+        inner.child = Some(child);
+        inner.context_size = None;
+        inner.warmed_model = None;
+        push_log(
+            &inner.log_tail,
+            "Ollama model blob could not be loaded by llama-server; retrying Hugging Face GGUF fallback"
+                .to_string(),
+        );
+        Ok(true)
     }
 
     /// Non-blocking-ish status snapshot for UIs.
@@ -672,16 +1294,34 @@ impl LlamaSidecar {
         let mut status = SidecarStatus {
             state: SidecarState::Stopped,
             model: inner.model.clone(),
-            hf_spec: inner.hf_spec.clone(),
+            hf_spec: inner
+                .model_source
+                .as_ref()
+                .map(|source| source.hf_spec.clone()),
+            ollama_name: inner
+                .model_source
+                .as_ref()
+                .and_then(|source| source.ollama_name.clone()),
+            model_path: inner
+                .launch_source
+                .as_ref()
+                .and_then(LaunchSource::model_path),
+            model_source: inner
+                .launch_source
+                .as_ref()
+                .map(|source| source.source_name().to_string()),
             port: inner.port,
             binary_path: binary.as_ref().map(|p| p.display().to_string()),
             build: LLAMA_SERVER_BUILD.to_string(),
             detail: None,
             context_size: inner.context_size,
+            warmed: inner.warmed_model.as_deref() == inner.model.as_deref()
+                && inner.model.is_some(),
         };
 
         if binary.is_none() {
             status.state = SidecarState::NoBinary;
+            status.warmed = false;
             return status;
         }
 
@@ -690,6 +1330,7 @@ impl LlamaSidecar {
                 Ok(None) => true,
                 _ => {
                     status.state = SidecarState::Error;
+                    status.warmed = false;
                     status.detail = Some(
                         inner
                             .last_error
@@ -713,6 +1354,7 @@ impl LlamaSidecar {
             if health_ok(probe_port, STATUS_PROBE_TIMEOUT).await {
                 status.state = SidecarState::Ready;
                 status.port = Some(probe_port);
+                status.warmed = false;
                 if let Some(ctx) = live_context_size(probe_port).await {
                     inner.context_size = Some(ctx);
                     status.context_size = Some(ctx);
@@ -733,9 +1375,18 @@ impl LlamaSidecar {
             }
         } else {
             status.state = SidecarState::Starting;
+            status.warmed = false;
             status.detail = last_log(&inner.log_tail);
         }
         status
+    }
+
+    /// Mark the currently served model as warmed after a real generation.
+    pub async fn mark_warmed(&self, model: &str) {
+        let mut inner = self.inner.lock().await;
+        if inner.model.as_deref() == Some(model) {
+            inner.warmed_model = Some(model.to_string());
+        }
     }
 
     /// Stop the managed process (no-op when nothing is running or adopted).
@@ -747,8 +1398,13 @@ impl LlamaSidecar {
         }
         clear_pidfile();
         inner.model = None;
-        inner.hf_spec = None;
+        inner.model_source = None;
+        inner.launch_source = None;
         inner.port = None;
+        inner.context_size = None;
+        inner.requested_context_size = None;
+        inner.automatic_context_size = false;
+        inner.warmed_model = None;
     }
 }
 
@@ -757,61 +1413,263 @@ mod tests {
     use super::*;
 
     #[test]
+    fn model_cache_status_detects_missing_partial_and_downloaded() {
+        let tmp = tempfile::tempdir().unwrap();
+        let hf_spec = "unsloth/Qwen3.5-0.8B-GGUF:Q4_K_M";
+
+        assert_eq!(
+            model_cache_status_in_dir(tmp.path(), hf_spec),
+            ModelCacheStatus::NotDownloaded
+        );
+
+        let repo_dir = tmp.path().join("models--unsloth--Qwen3.5-0.8B-GGUF");
+        std::fs::create_dir_all(repo_dir.join("blobs")).unwrap();
+        std::fs::write(
+            repo_dir.join("blobs").join("abc.downloadInProgress"),
+            b"partial",
+        )
+        .unwrap();
+        assert_eq!(
+            model_cache_status_in_dir(tmp.path(), hf_spec),
+            ModelCacheStatus::Partial
+        );
+
+        let snapshot_dir = repo_dir.join("snapshots").join("rev");
+        std::fs::create_dir_all(&snapshot_dir).unwrap();
+        std::fs::write(snapshot_dir.join("Qwen3.5-0.8B-Q4_K_M.gguf"), b"model").unwrap();
+        assert_eq!(
+            model_cache_status_in_dir(tmp.path(), hf_spec),
+            ModelCacheStatus::Downloaded
+        );
+    }
+
+    #[test]
+    fn model_cache_status_requires_matching_quant_when_specified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo_dir = tmp.path().join("models--unsloth--model-GGUF");
+        let snapshot_dir = repo_dir.join("snapshots").join("rev");
+        std::fs::create_dir_all(&snapshot_dir).unwrap();
+        std::fs::write(snapshot_dir.join("model-Q8_0.gguf"), b"model").unwrap();
+
+        assert_eq!(
+            model_cache_status_in_dir(tmp.path(), "unsloth/model-GGUF:Q4_K_M"),
+            ModelCacheStatus::NotDownloaded
+        );
+        assert_eq!(
+            model_cache_status_in_dir(tmp.path(), "unsloth/model-GGUF:Q8_0"),
+            ModelCacheStatus::Downloaded
+        );
+    }
+
+    #[test]
+    fn model_source_cache_status_detects_ollama_manifest_blob() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest_dir = tmp
+            .path()
+            .join("manifests")
+            .join("registry.ollama.ai")
+            .join("library")
+            .join("gemma4");
+        std::fs::create_dir_all(&manifest_dir).unwrap();
+        let digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        std::fs::write(
+            manifest_dir.join("latest"),
+            serde_json::json!({
+                "schemaVersion": 2,
+                "layers": [
+                    {
+                        "mediaType": "application/vnd.ollama.image.model",
+                        "digest": digest,
+                        "size": 4
+                    }
+                ]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let source = ModelSource::ollama("gemma4:latest", "ggml-org/gemma-4-E4B-it-GGUF:Q4_K_M");
+
+        assert_eq!(
+            model_source_cache_status_in_dir(tmp.path(), &source),
+            ModelCacheStatus::Partial
+        );
+
+        let blob_dir = tmp.path().join("blobs");
+        std::fs::create_dir_all(&blob_dir).unwrap();
+        std::fs::write(
+            blob_dir
+                .join("sha256-1111111111111111111111111111111111111111111111111111111111111111"),
+            b"GGUF",
+        )
+        .unwrap();
+
+        assert_eq!(
+            model_source_cache_status_in_dir(tmp.path(), &source),
+            ModelCacheStatus::Downloaded
+        );
+        assert_eq!(
+            ollama_model_blob_path_in_dir(tmp.path(), "gemma4:latest")
+                .unwrap()
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some("sha256-1111111111111111111111111111111111111111111111111111111111111111")
+        );
+    }
+
+    #[test]
+    fn parse_ollama_name_applies_registry_defaults() {
+        assert_eq!(
+            parse_ollama_name("qwen3.6:latest"),
+            Some(OllamaName {
+                host: "registry.ollama.ai".to_string(),
+                namespace: "library".to_string(),
+                model: "qwen3.6".to_string(),
+                tag: "latest".to_string(),
+            })
+        );
+        assert_eq!(
+            parse_ollama_name("team/model:tag"),
+            Some(OllamaName {
+                host: "registry.ollama.ai".to_string(),
+                namespace: "team".to_string(),
+                model: "model".to_string(),
+                tag: "tag".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn model_cache_dir_follows_ollama_models() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tmp_path = tmp.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([("OLLAMA_MODELS", Some(tmp_path.as_str()))]);
+
+        assert_eq!(model_cache_dir(), PathBuf::from(&tmp_path));
+    }
+
+    #[test]
     fn default_context_size_is_memory_tiered_and_capped() {
         // Whatever this machine reports, the default must be one of the tiers,
         // never exceed the 128k cap, and never be absurdly small.
         let d = default_context_size();
         assert!(
-            [16_384usize, 32_768, 65_536, 131_072].contains(&d),
+            [32_768usize, LLAMACPP_AGENT_CONTEXT_SIZE, 131_072].contains(&d),
             "unexpected tier: {d}"
         );
         assert!(d <= 131_072, "must not exceed the 128k cap: {d}");
-        assert!(d >= 16_384, "must stay usable: {d}");
+        assert!(d >= 32_768, "must stay usable: {d}");
         // The tier must agree with the measured memory (guards the thresholds).
-        let gib = total_memory_gib();
+        let gib = recommendation_memory_gib();
         let expected = if gib >= 64 {
             131_072
-        } else if gib >= 32 {
-            65_536
         } else if gib >= 16 {
-            32_768
+            LLAMACPP_AGENT_CONTEXT_SIZE
         } else {
-            16_384
+            32_768
         };
-        assert_eq!(d, expected, "tier disagrees with {gib} GiB");
+        assert_eq!(
+            d, expected,
+            "tier disagrees with {gib} GiB of GPU-addressable memory"
+        );
+    }
+
+    #[test]
+    fn parses_vram_size_strings() {
+        assert_eq!(parse_memory_gib("1536 MB"), Some(2));
+        assert_eq!(parse_memory_gib("5.07 GB"), Some(6));
+        assert_eq!(parse_memory_gib("1 TB"), Some(1024));
+        assert_eq!(parse_memory_gib("Built-In"), None);
     }
 
     #[test]
     fn build_args_includes_model_port_and_jinja() {
-        // ctx_size 0 means "use the model's own trained context".
-        let args = build_args("unsloth/Qwen3.5-4B-GGUF:Q4_K_M", "qwen3.5-4b", 12345, 0);
+        let _guard = env_lock::lock_env([("LLAMACPP_ENABLE_THINKING", None::<&str>)]);
+        let source =
+            LaunchSource::HuggingFace("google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0".to_string());
+        let args = build_args(&source, "gemma-4-e4b", 12345, 32_768);
         let joined = args.join(" ");
-        assert!(joined.contains("-hf unsloth/Qwen3.5-4B-GGUF:Q4_K_M"));
-        assert!(joined.contains("--alias qwen3.5-4b"));
+        assert!(joined.contains("-hf google/gemma-4-E4B-it-qat-q4_0-gguf:Q4_0"));
+        assert!(joined.contains("--alias gemma-4-e4b"));
         assert!(joined.contains("--port 12345"));
-        // Model-native context window (tracks the model, not a fixed preset).
-        assert!(joined.contains("--ctx-size 0"));
+        assert!(joined.contains("--ctx-size 32768"));
         assert!(joined.contains("--cache-type-k q8_0"));
         assert!(joined.contains("--cache-type-v q8_0"));
         assert!(joined.contains("--jinja"));
         assert!(joined.contains("--host 127.0.0.1"));
         assert!(joined.contains("--no-webui"));
-        // Thinking is enabled by default via the current --reasoning flag.
-        assert!(joined.contains("--reasoning on"));
+        assert!(joined.contains("--no-mmproj"));
+        // Thinking is disabled by default via the current --reasoning flag.
+        assert!(joined.contains("--reasoning off"));
         assert!(!joined.contains("enable_thinking"));
     }
 
     #[test]
     fn build_args_explicit_ctx_size_is_passed_through() {
-        let args = build_args("owner/repo:Q4_K_M", "m", 11543, 16384);
+        let args = build_args(
+            &LaunchSource::HuggingFace("owner/repo:Q4_K_M".to_string()),
+            "m",
+            11543,
+            16384,
+        );
         assert!(args.join(" ").contains("--ctx-size 16384"));
+    }
+
+    #[test]
+    fn auto_context_steps_down_like_ollama() {
+        assert_eq!(
+            next_lower_auto_context_size(131_072),
+            Some(LLAMACPP_AGENT_CONTEXT_SIZE)
+        );
+        assert_eq!(
+            next_lower_auto_context_size(65_537),
+            Some(LLAMACPP_AGENT_CONTEXT_SIZE)
+        );
+        assert_eq!(
+            next_lower_auto_context_size(LLAMACPP_AGENT_CONTEXT_SIZE),
+            Some(32_768)
+        );
+        assert_eq!(next_lower_auto_context_size(32_768), None);
+    }
+
+    #[test]
+    fn detects_memory_failure_log_fragments() {
+        assert!(looks_like_memory_failure("failed to allocate Metal buffer"));
+        assert!(looks_like_memory_failure("CUDA out of memory"));
+        assert!(looks_like_memory_failure("not enough memory for KV cache"));
+        assert!(!looks_like_memory_failure("download failed with 404"));
+    }
+
+    #[test]
+    fn detects_model_load_failure_log_fragments() {
+        assert!(looks_like_model_load_failure(
+            "wrong number of tensors; expected 2131, got 720"
+        ));
+        assert!(looks_like_model_load_failure("error loading model"));
+        assert!(!looks_like_model_load_failure("download failed with 404"));
     }
 
     #[test]
     fn build_args_reasoning_off_when_disabled() {
         let _guard = env_lock::lock_env([("LLAMACPP_ENABLE_THINKING", Some("false"))]);
-        let args = build_args("owner/repo:Q4_K_M", "m", 11543, 0);
+        let args = build_args(
+            &LaunchSource::HuggingFace("owner/repo:Q4_K_M".to_string()),
+            "m",
+            11543,
+            32_768,
+        );
         assert!(args.join(" ").contains("--reasoning off"));
+    }
+
+    #[test]
+    fn build_args_reasoning_on_when_enabled() {
+        let _guard = env_lock::lock_env([("LLAMACPP_ENABLE_THINKING", Some("true"))]);
+        let args = build_args(
+            &LaunchSource::HuggingFace("owner/repo:Q4_K_M".to_string()),
+            "m",
+            11543,
+            32_768,
+        );
+        assert!(args.join(" ").contains("--reasoning on"));
     }
 
     #[test]
@@ -846,7 +1704,12 @@ mod tests {
     fn build_args_reasserts_loopback_last_even_with_injected_host() {
         let _guard =
             env_lock::lock_env([("LLAMACPP_EXTRA_ARGS", Some("--host 0.0.0.0 --port 9999"))]);
-        let args = build_args("owner/repo:Q4_K_M", "m", 11543, 32768);
+        let args = build_args(
+            &LaunchSource::HuggingFace("owner/repo:Q4_K_M".to_string()),
+            "m",
+            11543,
+            32768,
+        );
         // The injected 0.0.0.0 must not survive, and the final --host/--port
         // (last-wins for llama-server) must be the loopback bind on our port.
         assert!(!args.iter().any(|a| a == "0.0.0.0"));
@@ -854,6 +1717,21 @@ mod tests {
         assert_eq!(args[last_host + 1], "127.0.0.1");
         let last_port = args.iter().rposition(|a| a == "--port").unwrap();
         assert_eq!(args[last_port + 1], "11543");
+    }
+
+    #[test]
+    fn build_args_can_launch_from_ollama_blob_path() {
+        let path = PathBuf::from("/tmp/ollama/models/blobs/sha256-abc");
+        let args = build_args(
+            &LaunchSource::OllamaBlob(path.clone()),
+            "gemma4",
+            11543,
+            32768,
+        );
+        let joined = args.join(" ");
+        assert!(joined.contains(&format!("-m {}", path.display())));
+        assert!(!joined.contains("-hf"));
+        assert!(joined.contains("--alias gemma4"));
     }
 
     #[test]

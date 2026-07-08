@@ -1,5 +1,4 @@
 import { useState, useEffect } from 'react';
-import { CircleDollarSign } from 'lucide-react';
 import { useModelAndProvider } from '../ModelAndProviderContext';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { fetchModelPricing } from '../../utils/pricing';
@@ -15,6 +14,25 @@ interface CostTrackerProps {
       totalCost: number;
     };
   };
+}
+
+const COST_TRIGGER_CLASS =
+  'flex h-7 items-center justify-center rounded-md px-0.5 transition-colors cursor-default text-text-default/70 hover:bg-background-medium hover:text-text-default';
+const COST_SYMBOL_CLASS = 'mr-0.5 text-xs font-mono font-semibold leading-none text-current';
+
+export function formatTooltipMoney(amount: number, currency = '$'): string {
+  if (!Number.isFinite(amount) || amount <= 0) {
+    return `${currency}0.00`;
+  }
+
+  if (amount < 0.01) {
+    return `<${currency}0.01`;
+  }
+
+  return `${currency}${amount.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
 }
 
 export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }: CostTrackerProps) {
@@ -119,7 +137,7 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
   // If still loading, show a placeholder
   if (isLoading) {
     return (
-      <div className="flex items-center justify-center h-full text-text-muted translate-y-[1px]">
+      <div className="flex h-7 items-center justify-center rounded-md px-1 text-text-muted">
         <span className="text-xs font-mono">...</span>
       </div>
     );
@@ -136,8 +154,8 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
       return (
         <Tooltip>
           <TooltipTrigger asChild>
-            <div className="flex items-center justify-center h-full text-text-default/70 hover:text-text-default transition-colors cursor-default translate-y-[1px]">
-              <CircleDollarSign className="mr-0.5 h-4 w-4" strokeWidth={1.75} />
+            <div className={COST_TRIGGER_CLASS}>
+              <span className={COST_SYMBOL_CLASS}>$</span>
               <span className="text-xs font-mono">0.00</span>
             </div>
           </TooltipTrigger>
@@ -159,8 +177,8 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
     return (
       <Tooltip>
         <TooltipTrigger asChild>
-          <div className="flex items-center justify-center h-full transition-colors cursor-default translate-y-[1px] text-text-default/70 hover:text-text-default">
-            <CircleDollarSign className="mr-0.5 h-4 w-4" strokeWidth={1.75} />
+          <div className={COST_TRIGGER_CLASS}>
+            <span className={COST_SYMBOL_CLASS}>$</span>
             <span className="text-xs font-mono">0.00</span>
           </div>
         </TooltipTrigger>
@@ -184,7 +202,7 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
       let tooltip = 'Session cost breakdown:\n';
 
       Object.entries(sessionCosts).forEach(([modelKey, cost]) => {
-        const costStr = `${costInfo?.currency || '$'}${cost.totalCost.toFixed(6)}`;
+        const costStr = formatTooltipMoney(cost.totalCost, costInfo?.currency || '$');
         tooltip += `${modelKey}: ${costStr} (${cost.inputTokens.toLocaleString()} in, ${cost.outputTokens.toLocaleString()} out)\n`;
       });
 
@@ -194,23 +212,23 @@ export function CostTracker({ inputTokens = 0, outputTokens = 0, sessionCosts }:
           inputTokens * (costInfo.input_token_cost || 0) +
           outputTokens * (costInfo.output_token_cost || 0);
         if (currentCost > 0) {
-          tooltip += `${currentProvider}/${currentModel} (current): ${costInfo.currency || '$'}${currentCost.toFixed(6)} (${inputTokens.toLocaleString()} in, ${outputTokens.toLocaleString()} out)\n`;
+          tooltip += `${currentProvider}/${currentModel} (current): ${formatTooltipMoney(currentCost, costInfo.currency || '$')} (${inputTokens.toLocaleString()} in, ${outputTokens.toLocaleString()} out)\n`;
         }
       }
 
-      tooltip += `\nTotal session cost: ${costInfo?.currency || '$'}${totalCost.toFixed(6)}`;
+      tooltip += `\nTotal session cost: ${formatTooltipMoney(totalCost, costInfo?.currency || '$')}`;
       return tooltip;
     }
 
     // Default tooltip for single model
-    return `Input: ${inputTokens.toLocaleString()} tokens (${costInfo?.currency || '$'}${(inputTokens * (costInfo?.input_token_cost || 0)).toFixed(6)}) | Output: ${outputTokens.toLocaleString()} tokens (${costInfo?.currency || '$'}${(outputTokens * (costInfo?.output_token_cost || 0)).toFixed(6)})`;
+    return `Input: ${inputTokens.toLocaleString()} tokens (${formatTooltipMoney(inputTokens * (costInfo?.input_token_cost || 0), costInfo?.currency || '$')}) | Output: ${outputTokens.toLocaleString()} tokens (${formatTooltipMoney(outputTokens * (costInfo?.output_token_cost || 0), costInfo?.currency || '$')})`;
   };
 
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <div className="flex items-center justify-center h-full transition-colors cursor-default translate-y-[1px] text-text-default/70 hover:text-text-default">
-          <CircleDollarSign className="mr-0.5 h-4 w-4" strokeWidth={1.75} />
+        <div className={COST_TRIGGER_CLASS}>
+          <span className={COST_SYMBOL_CLASS}>$</span>
           <span className="text-xs font-mono">{formatCost(totalCost)}</span>
         </div>
       </TooltipTrigger>

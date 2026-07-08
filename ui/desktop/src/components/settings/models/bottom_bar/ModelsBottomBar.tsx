@@ -26,6 +26,8 @@ interface ModelsBottomBarProps {
   hideAlertPopover?: boolean;
 }
 
+const MAX_INLINE_MODEL_LABEL_CHARS = 24;
+
 export default function ModelsBottomBar({
   sessionId,
   dropdownRef,
@@ -114,6 +116,12 @@ export default function ModelsBottomBar({
     isLeadWorkerActive && currentModelInfo?.model
       ? currentModelInfo.model
       : currentModel || providerDefaultModel || displayModelName;
+  const fullModelLabel =
+    isLeadWorkerActive && modelMode ? `${displayModel} (${modelMode})` : displayModel;
+  const inlineModelLabel =
+    fullModelLabel.length > MAX_INLINE_MODEL_LABEL_CHARS
+      ? `${fullModelLabel.slice(0, MAX_INLINE_MODEL_LABEL_CHARS - 3)}...`
+      : fullModelLabel;
 
   // Update display provider when current provider changes
   useEffect(() => {
@@ -160,15 +168,14 @@ export default function ModelsBottomBar({
     <div className="relative flex items-center" ref={dropdownRef}>
       {!hideAlertPopover && <BottomMenuAlertPopover alerts={alerts} />}
       <DropdownMenu>
-        <DropdownMenuTrigger className="flex items-center hover:cursor-pointer max-w-[180px] md:max-w-[200px] lg:max-w-[380px] min-w-0 text-text-default/70 hover:text-text-default transition-colors">
-          <div className="flex items-center truncate max-w-[130px] md:max-w-[200px] lg:max-w-[360px] min-w-0">
+        <DropdownMenuTrigger
+          title={fullModelLabel}
+          aria-label={`Current model: ${fullModelLabel}`}
+          className="flex h-7 min-w-0 max-w-[120px] flex-shrink-0 items-center rounded-md px-1 hover:cursor-pointer text-text-default/70 hover:bg-background-medium hover:text-text-default transition-colors"
+        >
+          <div className="flex items-center truncate max-w-full min-w-0">
             <Brain className="mr-1 h-4 w-4 flex-shrink-0" />
-            <span className="truncate text-xs">
-              {displayModel}
-              {isLeadWorkerActive && modelMode && (
-                <span className="ml-1 text-[11px] opacity-60">({modelMode})</span>
-              )}
-            </span>
+            <span className="truncate text-xs">{inlineModelLabel}</span>
           </div>
         </DropdownMenuTrigger>
         <DropdownMenuContent side="top" align="center" className="w-64 text-sm">

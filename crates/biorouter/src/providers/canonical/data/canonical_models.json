@@ -12,8 +12,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 2e-6,
-      "completion": 8e-6
+      "prompt": 0.000002,
+      "completion": 0.000008
     }
   },
   {
@@ -31,7 +31,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 2.5e-7,
-      "completion": 1.25e-6
+      "completion": 0.00000125
     }
   },
   {
@@ -49,7 +49,26 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 8e-7,
-      "completion": 4e-6
+      "completion": 0.000004
+    }
+  },
+  {
+    "id": "anthropic/claude-fable-5",
+    "name": "Anthropic: Claude Fable 5",
+    "context_length": 1000000,
+    "max_completion_tokens": 128000,
+    "input_modalities": [
+      "file",
+      "image",
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 0.00001,
+      "completion": 0.00005
     }
   },
   {
@@ -67,8 +86,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1e-6,
-      "completion": 5e-6
+      "prompt": 0.000001,
+      "completion": 0.000005
     }
   },
   {
@@ -124,7 +143,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 5e-6,
+      "prompt": 0.000005,
       "completion": 0.000025
     }
   },
@@ -143,7 +162,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 5e-6,
+      "prompt": 0.000005,
       "completion": 0.000025
     }
   },
@@ -181,7 +200,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 5e-6,
+      "prompt": 0.000005,
       "completion": 0.000025
     }
   },
@@ -205,6 +224,25 @@
     }
   },
   {
+    "id": "anthropic/claude-opus-4.8",
+    "name": "Anthropic: Claude Opus 4.8",
+    "context_length": 1000000,
+    "max_completion_tokens": 128000,
+    "input_modalities": [
+      "file",
+      "image",
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 0.000005,
+      "completion": 0.000025
+    }
+  },
+  {
     "id": "anthropic/claude-sonnet-4",
     "name": "Anthropic: Claude Sonnet 4",
     "context_length": 1000000,
@@ -219,7 +257,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 3e-6,
+      "prompt": 0.000003,
       "completion": 0.000015
     }
   },
@@ -238,7 +276,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 3e-6,
+      "prompt": 0.000003,
       "completion": 0.000015
     }
   },
@@ -257,8 +295,27 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 3e-6,
+      "prompt": 0.000003,
       "completion": 0.000015
+    }
+  },
+  {
+    "id": "anthropic/claude-sonnet-5",
+    "name": "Anthropic: Claude Sonnet 5",
+    "context_length": 1000000,
+    "max_completion_tokens": 128000,
+    "input_modalities": [
+      "file",
+      "image",
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 0.000002,
+      "completion": 0.00001
     }
   },
   {
@@ -274,7 +331,7 @@
     ],
     "supports_tools": false,
     "pricing": {
-      "prompt": 2.5e-6,
+      "prompt": 0.0000025,
       "completion": 0.00001
     }
   },
@@ -308,7 +365,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 2.5e-6,
+      "prompt": 0.0000025,
       "completion": 0.00001
     }
   },
@@ -377,7 +434,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 7e-7,
-      "completion": 2.5e-6
+      "completion": 0.0000025
     }
   },
   {
@@ -544,7 +601,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 3e-7,
-      "completion": 2.5e-6,
+      "completion": 0.0000025,
       "image": 3e-7
     }
   },
@@ -564,7 +621,7 @@
     "supports_tools": false,
     "pricing": {
       "prompt": 3e-7,
-      "completion": 2.5e-6,
+      "completion": 0.0000025,
       "image": 3e-7
     }
   },
@@ -591,6 +648,23 @@
     }
   },
   {
+    "id": "google/gemini-2.5-flash-preview-tts",
+    "name": "Google: Gemini 2.5 Flash Preview TTS",
+    "context_length": 1048576,
+    "max_completion_tokens": 65536,
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "audio"
+    ],
+    "supports_tools": false,
+    "pricing": {
+      "prompt": 5e-7,
+      "completion": 0.00001
+    }
+  },
+  {
     "id": "google/gemini-2.5-pro",
     "name": "Google: Gemini 2.5 Pro",
     "context_length": 1048576,
@@ -607,9 +681,26 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.25e-6,
+      "prompt": 0.00000125,
       "completion": 0.00001,
-      "image": 1.25e-6
+      "image": 0.00000125
+    }
+  },
+  {
+    "id": "google/gemini-2.5-pro-preview-tts",
+    "name": "Google: Gemini 2.5 Pro Preview TTS",
+    "context_length": 1048576,
+    "max_completion_tokens": 65536,
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "audio"
+    ],
+    "supports_tools": false,
+    "pricing": {
+      "prompt": 0.000001,
+      "completion": 0.00002
     }
   },
   {
@@ -630,7 +721,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 5e-7,
-      "completion": 3e-6,
+      "completion": 0.000003,
       "image": 5e-7
     }
   },
@@ -649,9 +740,9 @@
     ],
     "supports_tools": false,
     "pricing": {
-      "prompt": 2e-6,
+      "prompt": 0.000002,
       "completion": 0.000012,
-      "image": 2e-6
+      "image": 0.000002
     }
   },
   {
@@ -670,7 +761,7 @@
     "supports_tools": false,
     "pricing": {
       "prompt": 5e-7,
-      "completion": 3e-6
+      "completion": 0.000003
     }
   },
   {
@@ -691,7 +782,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 2.5e-7,
-      "completion": 1.5e-6,
+      "completion": 0.0000015,
       "image": 2.5e-7
     }
   },
@@ -712,9 +803,9 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 2e-6,
+      "prompt": 0.000002,
       "completion": 0.000012,
-      "image": 2e-6
+      "image": 0.000002
     }
   },
   {
@@ -734,9 +825,30 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 2e-6,
+      "prompt": 0.000002,
       "completion": 0.000012,
-      "image": 2e-6
+      "image": 0.000002
+    }
+  },
+  {
+    "id": "google/gemini-3.5-flash",
+    "name": "Google: Gemini 3.5 Flash",
+    "context_length": 1048576,
+    "max_completion_tokens": 65536,
+    "input_modalities": [
+      "audio",
+      "file",
+      "image",
+      "text",
+      "video"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 0.0000015,
+      "completion": 0.000009
     }
   },
   {
@@ -878,8 +990,8 @@
     ],
     "supports_tools": false,
     "pricing": {
-      "prompt": 0.0,
-      "completion": 0.0
+      "prompt": 0,
+      "completion": 0
     }
   },
   {
@@ -897,8 +1009,42 @@
     ],
     "supports_tools": false,
     "pricing": {
-      "prompt": 0.0,
-      "completion": 0.0
+      "prompt": 0,
+      "completion": 0
+    }
+  },
+  {
+    "id": "inception/mercury-2",
+    "name": "Inception: Mercury 2",
+    "context_length": 128000,
+    "max_completion_tokens": 32768,
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 2.5e-7,
+      "completion": 7.5e-7
+    }
+  },
+  {
+    "id": "inception/mercury-edit-2",
+    "name": "Inception: Mercury Edit 2",
+    "context_length": 32000,
+    "max_completion_tokens": 32000,
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": false,
+    "pricing": {
+      "prompt": 2.5e-7,
+      "completion": 7.5e-7
     }
   },
   {
@@ -1107,6 +1253,23 @@
     }
   },
   {
+    "id": "minimax/minimax-m3",
+    "name": "MiniMax: MiniMax M3",
+    "context_length": 1048576,
+    "max_completion_tokens": 65536,
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 3e-7,
+      "completion": 0.0000012
+    }
+  },
+  {
     "id": "mistralai/codestral",
     "name": "Mistral: Codestral 2508",
     "context_length": 256000,
@@ -1135,7 +1298,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 4e-7,
-      "completion": 2e-6
+      "completion": 0.000002
     }
   },
   {
@@ -1151,7 +1314,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 4e-7,
-      "completion": 2e-6
+      "completion": 0.000002
     }
   },
   {
@@ -1249,8 +1412,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 2e-6,
-      "completion": 6e-6
+      "prompt": 0.000002,
+      "completion": 0.000006
     }
   },
   {
@@ -1267,7 +1430,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 4e-7,
-      "completion": 2e-6
+      "completion": 0.000002
     }
   },
   {
@@ -1284,7 +1447,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 4e-7,
-      "completion": 2e-6
+      "completion": 0.000002
     }
   },
   {
@@ -1300,8 +1463,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.5e-6,
-      "completion": 7.5e-6
+      "prompt": 0.0000015,
+      "completion": 0.0000075
     }
   },
   {
@@ -1417,8 +1580,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 2e-6,
-      "completion": 6e-6
+      "prompt": 0.000002,
+      "completion": 0.000006
     }
   },
   {
@@ -1434,8 +1597,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 2e-6,
-      "completion": 6e-6
+      "prompt": 0.000002,
+      "completion": 0.000006
     }
   },
   {
@@ -1456,6 +1619,40 @@
     }
   },
   {
+    "id": "moonshotai/kimi-k2.6",
+    "name": "Moonshot AI: Kimi K2.6",
+    "context_length": 262144,
+    "max_completion_tokens": 65536,
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 6.6e-7,
+      "completion": 0.00000341
+    }
+  },
+  {
+    "id": "moonshotai/kimi-k2.7-code",
+    "name": "Moonshot AI: Kimi K2.7 Code",
+    "context_length": 262144,
+    "max_completion_tokens": 65536,
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 7.4e-7,
+      "completion": 0.0000035
+    }
+  },
+  {
     "id": "openai/gpt-3.5-turbo",
     "name": "OpenAI: GPT-3.5 Turbo",
     "context_length": 16385,
@@ -1469,7 +1666,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 5e-7,
-      "completion": 1.5e-6
+      "completion": 0.0000015
     }
   },
   {
@@ -1485,8 +1682,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 3e-6,
-      "completion": 4e-6
+      "prompt": 0.000003,
+      "completion": 0.000004
     }
   },
   {
@@ -1502,8 +1699,8 @@
     ],
     "supports_tools": false,
     "pricing": {
-      "prompt": 1.5e-6,
-      "completion": 2e-6
+      "prompt": 0.0000015,
+      "completion": 0.000002
     }
   },
   {
@@ -1555,8 +1752,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 2e-6,
-      "completion": 8e-6
+      "prompt": 0.000002,
+      "completion": 0.000008
     }
   },
   {
@@ -1575,7 +1772,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 4e-7,
-      "completion": 1.6e-6
+      "completion": 0.0000016
     }
   },
   {
@@ -1612,7 +1809,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 2.5e-6,
+      "prompt": 0.0000025,
       "completion": 0.00001
     }
   },
@@ -1631,7 +1828,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 2.5e-6,
+      "prompt": 0.0000025,
       "completion": 0.00001
     }
   },
@@ -1684,7 +1881,7 @@
     ],
     "supports_tools": false,
     "pricing": {
-      "prompt": 2.5e-6,
+      "prompt": 0.0000025,
       "completion": 0.00001
     }
   },
@@ -1703,7 +1900,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.25e-6,
+      "prompt": 0.00000125,
       "completion": 0.00001
     }
   },
@@ -1722,7 +1919,7 @@
     ],
     "supports_tools": false,
     "pricing": {
-      "prompt": 1.25e-6,
+      "prompt": 0.00000125,
       "completion": 0.00001
     }
   },
@@ -1740,7 +1937,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.25e-6,
+      "prompt": 0.00000125,
       "completion": 0.00001
     }
   },
@@ -1780,8 +1977,8 @@
     ],
     "supports_tools": false,
     "pricing": {
-      "prompt": 2.5e-6,
-      "completion": 2e-6
+      "prompt": 0.0000025,
+      "completion": 0.000002
     }
   },
   {
@@ -1800,7 +1997,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 2.5e-7,
-      "completion": 2e-6
+      "completion": 0.000002
     }
   },
   {
@@ -1855,7 +2052,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.25e-6,
+      "prompt": 0.00000125,
       "completion": 0.00001
     }
   },
@@ -1874,7 +2071,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.25e-6,
+      "prompt": 0.00000125,
       "completion": 0.00001
     }
   },
@@ -1892,7 +2089,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.25e-6,
+      "prompt": 0.00000125,
       "completion": 0.00001
     }
   },
@@ -1910,7 +2107,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.25e-6,
+      "prompt": 0.00000125,
       "completion": 0.00001
     }
   },
@@ -1929,7 +2126,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 2.5e-7,
-      "completion": 2e-6
+      "completion": 0.000002
     }
   },
   {
@@ -1947,7 +2144,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.75e-6,
+      "prompt": 0.00000175,
       "completion": 0.000014
     }
   },
@@ -1966,7 +2163,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.75e-6,
+      "prompt": 0.00000175,
       "completion": 0.000014
     }
   },
@@ -1984,7 +2181,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.75e-6,
+      "prompt": 0.00000175,
       "completion": 0.000014
     }
   },
@@ -2022,7 +2219,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.75e-6,
+      "prompt": 0.00000175,
       "completion": 0.000014
     }
   },
@@ -2041,7 +2238,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.75e-6,
+      "prompt": 0.00000175,
       "completion": 0.000014
     }
   },
@@ -2060,7 +2257,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 2.5e-6,
+      "prompt": 0.0000025,
       "completion": 0.000015
     }
   },
@@ -2080,7 +2277,7 @@
     ],
     "supports_tools": false,
     "pricing": {
-      "prompt": 8e-6,
+      "prompt": 0.000008,
       "completion": 0.000015
     }
   },
@@ -2100,7 +2297,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 7.5e-7,
-      "completion": 4.5e-6
+      "completion": 0.0000045
     }
   },
   {
@@ -2119,7 +2316,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 2e-7,
-      "completion": 1.25e-6
+      "completion": 0.00000125
     }
   },
   {
@@ -2156,7 +2353,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 5e-6,
+      "prompt": 0.000005,
       "completion": 0.00003
     }
   },
@@ -2194,7 +2391,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 2.5e-6,
+      "prompt": 0.0000025,
       "completion": 0.00001
     }
   },
@@ -2214,7 +2411,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 6e-7,
-      "completion": 2.4e-6
+      "completion": 0.0000024
     }
   },
   {
@@ -2232,7 +2429,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 5e-6,
+      "prompt": 0.000005,
       "completion": 0.00003
     }
   },
@@ -2339,8 +2536,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 2e-6,
-      "completion": 8e-6
+      "prompt": 0.000002,
+      "completion": 0.000008
     }
   },
   {
@@ -2376,8 +2573,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.1e-6,
-      "completion": 4.4e-6
+      "prompt": 0.0000011,
+      "completion": 0.0000044
     }
   },
   {
@@ -2394,8 +2591,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.1e-6,
-      "completion": 4.4e-6
+      "prompt": 0.0000011,
+      "completion": 0.0000044
     }
   },
   {
@@ -2432,8 +2629,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.1e-6,
-      "completion": 4.4e-6
+      "prompt": 0.0000011,
+      "completion": 0.0000044
     }
   },
   {
@@ -2451,8 +2648,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 2e-6,
-      "completion": 8e-6
+      "prompt": 0.000002,
+      "completion": 0.000008
     }
   },
   {
@@ -2470,8 +2667,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.1e-6,
-      "completion": 4.4e-6
+      "prompt": 0.0000011,
+      "completion": 0.0000044
     }
   },
   {
@@ -2521,7 +2718,7 @@
     "supports_tools": false,
     "pricing": {
       "prompt": 6.6e-7,
-      "completion": 1e-6
+      "completion": 0.000001
     }
   },
   {
@@ -2606,7 +2803,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 4.55e-7,
-      "completion": 1.82e-6
+      "completion": 0.00000182
     }
   },
   {
@@ -2622,7 +2819,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 1.495e-7,
-      "completion": 1.495e-6
+      "completion": 0.000001495
     }
   },
   {
@@ -2724,7 +2921,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 2.2e-7,
-      "completion": 1.8e-6
+      "completion": 0.0000018
     }
   },
   {
@@ -2792,7 +2989,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 6.5e-7,
-      "completion": 3.25e-6
+      "completion": 0.00000325
     }
   },
   {
@@ -2809,7 +3006,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 7.8e-7,
-      "completion": 3.9e-6
+      "completion": 0.0000039
     }
   },
   {
@@ -2826,7 +3023,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 7.8e-7,
-      "completion": 3.9e-6
+      "completion": 0.0000039
     }
   },
   {
@@ -2843,7 +3040,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 9e-8,
-      "completion": 1.1e-6
+      "completion": 0.0000011
     }
   },
   {
@@ -2896,7 +3093,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 2.6e-7,
-      "completion": 2.6e-6
+      "completion": 0.0000026
     }
   },
   {
@@ -2932,7 +3129,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 1.3e-7,
-      "completion": 1.56e-6
+      "completion": 0.00000156
     }
   },
   {
@@ -2986,7 +3183,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 1.17e-7,
-      "completion": 1.365e-6
+      "completion": 0.000001365
     }
   },
   {
@@ -3005,7 +3202,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 2.6e-7,
-      "completion": 2.08e-6
+      "completion": 0.00000208
     }
   },
   {
@@ -3024,7 +3221,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 1.95e-7,
-      "completion": 1.56e-6
+      "completion": 0.00000156
     }
   },
   {
@@ -3043,7 +3240,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 1.4e-7,
-      "completion": 1e-6
+      "completion": 0.000001
     }
   },
   {
@@ -3062,7 +3259,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 3.9e-7,
-      "completion": 2.34e-6
+      "completion": 0.00000234
     }
   },
   {
@@ -3119,7 +3316,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 4e-7,
-      "completion": 2.4e-6
+      "completion": 0.0000024
     }
   },
   {
@@ -3138,7 +3335,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 2.6e-7,
-      "completion": 1.56e-6
+      "completion": 0.00000156
     }
   },
   {
@@ -3157,7 +3354,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 3.2e-7,
-      "completion": 3.2e-6
+      "completion": 0.0000032
     }
   },
   {
@@ -3176,7 +3373,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 1.5e-7,
-      "completion": 1e-6
+      "completion": 0.000001
     }
   },
   {
@@ -3195,7 +3392,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 2.5e-7,
-      "completion": 1.5e-6
+      "completion": 0.0000015
     }
   },
   {
@@ -3211,8 +3408,8 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.04e-6,
-      "completion": 6.24e-6
+      "prompt": 0.00000104,
+      "completion": 0.00000624
     }
   },
   {
@@ -3231,7 +3428,7 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 3.25e-7,
-      "completion": 1.95e-6
+      "completion": 0.00000195
     }
   },
   {
@@ -3246,7 +3443,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 3e-6,
+      "prompt": 0.000003,
       "completion": 0.000015
     }
   },
@@ -3280,7 +3477,7 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 3e-6,
+      "prompt": 0.000003,
       "completion": 0.000015
     }
   },
@@ -3325,7 +3522,7 @@
   {
     "id": "x-ai/grok-4.20",
     "name": "xAI: Grok 4.20",
-    "context_length": 2000000,
+    "context_length": 1000000,
     "input_modalities": [
       "file",
       "image",
@@ -3336,14 +3533,14 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.25e-6,
-      "completion": 2.5e-6
+      "prompt": 0.00000125,
+      "completion": 0.0000025
     }
   },
   {
     "id": "x-ai/grok-4.20-multi-agent",
     "name": "xAI: Grok 4.20 Multi-Agent",
-    "context_length": 2000000,
+    "context_length": 1000000,
     "input_modalities": [
       "file",
       "image",
@@ -3354,8 +3551,8 @@
     ],
     "supports_tools": false,
     "pricing": {
-      "prompt": 2e-6,
-      "completion": 6e-6
+      "prompt": 0.00000125,
+      "completion": 0.0000025
     }
   },
   {
@@ -3371,8 +3568,25 @@
     ],
     "supports_tools": true,
     "pricing": {
-      "prompt": 1.25e-6,
-      "completion": 2.5e-6
+      "prompt": 0.00000125,
+      "completion": 0.0000025
+    }
+  },
+  {
+    "id": "x-ai/grok-build-0.1",
+    "name": "xAI: Grok Build 0.1",
+    "context_length": 256000,
+    "max_completion_tokens": 131072,
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 0.000001,
+      "completion": 0.000002
     }
   },
   {
@@ -3389,7 +3603,113 @@
     "supports_tools": true,
     "pricing": {
       "prompt": 2e-7,
-      "completion": 1.5e-6
+      "completion": 0.0000015
+    }
+  },
+  {
+    "id": "xiaomi/mimo-v2.5",
+    "name": "Xiaomi: MiMo v2.5",
+    "context_length": 1000000,
+    "max_completion_tokens": 128000,
+    "input_modalities": [
+      "audio",
+      "file",
+      "image",
+      "text",
+      "video"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 1.4e-7,
+      "completion": 2.8e-7
+    }
+  },
+  {
+    "id": "xiaomi/mimo-v2.5-pro",
+    "name": "Xiaomi: MiMo v2.5 Pro",
+    "context_length": 1000000,
+    "max_completion_tokens": 128000,
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 4.35e-7,
+      "completion": 8.7e-7
+    }
+  },
+  {
+    "id": "z-ai/glm-5",
+    "name": "Z.ai: GLM-5",
+    "context_length": 200000,
+    "max_completion_tokens": 128000,
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 0.000001,
+      "completion": 0.0000032
+    }
+  },
+  {
+    "id": "z-ai/glm-5-turbo",
+    "name": "Z.ai: GLM-5-Turbo",
+    "context_length": 200000,
+    "max_completion_tokens": 128000,
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 0.0000012,
+      "completion": 0.000004
+    }
+  },
+  {
+    "id": "z-ai/glm-5.1",
+    "name": "Z.ai: GLM-5.1",
+    "context_length": 202752,
+    "max_completion_tokens": 128000,
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 0.0000014,
+      "completion": 0.0000044
+    }
+  },
+  {
+    "id": "z-ai/glm-5.2",
+    "name": "Z.ai: GLM-5.2",
+    "context_length": 1048576,
+    "max_completion_tokens": 128000,
+    "input_modalities": [
+      "text"
+    ],
+    "output_modalities": [
+      "text"
+    ],
+    "supports_tools": true,
+    "pricing": {
+      "prompt": 0.0000014,
+      "completion": 0.0000044
     }
   }
 ]

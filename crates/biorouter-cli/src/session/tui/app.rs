@@ -34,7 +34,6 @@ pub enum CompletionKind {
     Skill,
     Extension,
     Knowledge,
-    Prompt,
 }
 
 impl CompletionKind {
@@ -44,7 +43,6 @@ impl CompletionKind {
             CompletionKind::Skill => "skill",
             CompletionKind::Extension => "ext",
             CompletionKind::Knowledge => "kb",
-            CompletionKind::Prompt => "prompt",
         }
     }
 }
@@ -66,6 +64,7 @@ pub struct CompletionItem {
 pub struct Completion {
     pub matches: Vec<usize>,
     pub selected: usize,
+    pub start: usize,
 }
 
 /// One-line status info shown above the input box.
@@ -229,11 +228,21 @@ impl App {
         if self.completion_dismissed {
             return;
         }
-        let line = &self.input;
-        if !line.starts_with('/') || line.contains(' ') || line.contains('\n') {
+        let before_cursor = self.input.get(..self.cursor).unwrap_or(&self.input);
+        let Some(start) = before_cursor.rfind('/') else {
+            return;
+        };
+        if start > 0 {
+            let prev = before_cursor.get(..start).unwrap_or("").chars().next_back();
+            if !prev.is_some_and(|ch| ch.is_whitespace()) {
+                return;
+            }
+        }
+        let token = before_cursor.get(start..).unwrap_or("");
+        if token.chars().any(|ch| ch.is_whitespace()) {
             return;
         }
-        let q = line.strip_prefix('/').unwrap_or(line).to_lowercase();
+        let q = token.strip_prefix('/').unwrap_or(token).to_lowercase();
         let mut matches: Vec<usize> = self
             .catalog
             .iter()
@@ -255,6 +264,7 @@ impl App {
             self.completion = Some(Completion {
                 matches,
                 selected: 0,
+                start,
             });
         }
     }
@@ -270,15 +280,17 @@ impl App {
 
     /// Apply the highlighted entry to the input buffer. Returns true if applied.
     pub fn completion_accept(&mut self) -> bool {
-        let insert = self.completion.as_ref().and_then(|c| {
-            c.matches
+        let completion = self.completion.as_ref().and_then(|c| {
+            let insert = c
+                .matches
                 .get(c.selected)
                 .and_then(|&i| self.catalog.get(i))
-                .map(|it| it.insert.clone())
+                .map(|it| it.insert.clone())?;
+            Some((c.start, insert))
         });
-        if let Some(insert) = insert {
-            self.input = insert;
-            self.cursor = self.input.len();
+        if let Some((start, insert)) = completion {
+            self.input.replace_range(start..self.cursor, &insert);
+            self.cursor = start + insert.len();
             self.completion = None;
             return true;
         }

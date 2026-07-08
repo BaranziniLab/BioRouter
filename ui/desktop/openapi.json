@@ -2401,6 +2401,42 @@
         }
       }
     },
+    "/llamacpp/warmup": {
+      "post": {
+        "tags": [
+          "super::routes::llamacpp"
+        ],
+        "operationId": "llamacpp_warmup",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LlamaCppWarmupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Model loaded and produced a test completion",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LlamaCppWarmupResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown model name"
+          },
+          "502": {
+            "description": "Model failed to produce a warm-up completion"
+          }
+        }
+      }
+    },
     "/mcp-ui-proxy": {
       "get": {
         "tags": [
@@ -3005,7 +3041,7 @@
           "Session Management"
         ],
         "summary": "Diverge (branch) a session into a brand-new session that inherits the full",
-        "description": "conversation history and metadata of the original, while leaving the\noriginal completely untouched. Unlike `edit_message` with `Fork`, no\ntruncation is performed \u2014 the entire history is carried over so the user can\ncontinue a fresh conversation from exactly where they left off.",
+        "description": "conversation history and metadata of the original, while leaving the\noriginal completely untouched. Unlike `edit_message` with `Fork`, no\ntruncation is performed — the entire history is carried over so the user can\ncontinue a fresh conversation from exactly where they left off.",
         "operationId": "diverge_session",
         "parameters": [
           {
@@ -4648,7 +4684,7 @@
           "truncateAfter": {
             "type": "integer",
             "format": "int64",
-            "description": "Optional anchor: the `created` timestamp (ms) of the assistant message a\nper-message Diverge button was clicked on. The branch is trimmed to end\nat that answer. When omitted, the branch ends at the most recent\ncomplete assistant answer \u2014 an in-flight turn captured mid-generation is\nnever carried over.",
+            "description": "Optional anchor: the `created` timestamp (ms) of the assistant message a\nper-message Diverge button was clicked on. The branch is trimmed to end\nat that answer. When omitted, the branch ends at the most recent\ncomplete assistant answer — an in-flight turn captured mid-generation is\nnever carried over.",
             "nullable": true
           }
         }
@@ -5546,7 +5582,7 @@
         "properties": {
           "model": {
             "type": "string",
-            "description": "Catalog model name (e.g. `qwen3.5-4b`) or raw Hugging Face spec."
+            "description": "Catalog model name (e.g. `gemma4`) or raw Hugging Face spec."
           }
         }
       },
@@ -5559,9 +5595,24 @@
           "hf_spec",
           "download_size",
           "description",
-          "is_default"
+          "min_gpu_memory_gib",
+          "recommended_gpu_memory_gib",
+          "context_limit",
+          "is_default",
+          "downloaded",
+          "download_status",
+          "download_source",
+          "fallback_downloaded",
+          "fallback_download_status",
+          "suitable",
+          "suitability_status",
+          "suitability_message"
         ],
         "properties": {
+          "context_limit": {
+            "type": "integer",
+            "minimum": 0
+          },
           "description": {
             "type": "string"
           },
@@ -5571,6 +5622,24 @@
           "download_size": {
             "type": "string"
           },
+          "download_source": {
+            "type": "string",
+            "description": "`ollama`, `huggingface_cache`, or `none`."
+          },
+          "download_status": {
+            "$ref": "#/components/schemas/ModelCacheStatus"
+          },
+          "downloaded": {
+            "type": "boolean",
+            "description": "Whether the exact GGUF/quantization is already in Biorouter's llama.cpp cache."
+          },
+          "fallback_download_status": {
+            "$ref": "#/components/schemas/ModelCacheStatus"
+          },
+          "fallback_downloaded": {
+            "type": "boolean",
+            "description": "Whether the llama.cpp-compatible Hugging Face fallback is already cached."
+          },
           "hf_spec": {
             "type": "string"
           },
@@ -5578,8 +5647,37 @@
             "type": "boolean",
             "description": "True for the model Biorouter preselects."
           },
+          "min_gpu_memory_gib": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "model_path": {
+            "type": "string",
+            "description": "The local GGUF blob path used when Ollama has already pulled this model.",
+            "nullable": true
+          },
           "name": {
             "type": "string"
+          },
+          "ollama_name": {
+            "type": "string",
+            "nullable": true
+          },
+          "recommended_gpu_memory_gib": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "suitability_message": {
+            "type": "string"
+          },
+          "suitability_status": {
+            "$ref": "#/components/schemas/LlamaCppSuitability"
+          },
+          "suitable": {
+            "type": "boolean",
+            "description": "True when detected GPU-addressable memory meets the recommended tier."
           }
         }
       },
@@ -5587,7 +5685,8 @@
         "type": "object",
         "required": [
           "sidecar",
-          "catalog"
+          "catalog",
+          "system"
         ],
         "properties": {
           "catalog": {
@@ -5595,6 +5694,87 @@
             "items": {
               "$ref": "#/components/schemas/LlamaCppModel"
             }
+          },
+          "sidecar": {
+            "$ref": "#/components/schemas/SidecarStatus"
+          },
+          "system": {
+            "$ref": "#/components/schemas/LlamaCppSystemInfo"
+          }
+        }
+      },
+      "LlamaCppSuitability": {
+        "type": "string",
+        "enum": [
+          "suitable",
+          "above_recommendation",
+          "unknown_resources"
+        ]
+      },
+      "LlamaCppSystemInfo": {
+        "type": "object",
+        "required": [
+          "os",
+          "total_memory_gib",
+          "accelerator_memory_kind",
+          "default_context_size",
+          "model_cache_dir",
+          "model_cache_layout"
+        ],
+        "properties": {
+          "accelerator_memory_gib": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Apple Silicon unified memory, or detected discrete VRAM elsewhere.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "accelerator_memory_kind": {
+            "type": "string",
+            "description": "`apple_unified`, `vram`, or `unknown_vram`."
+          },
+          "default_context_size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "model_cache_dir": {
+            "type": "string",
+            "description": "Ollama-compatible model store root (`OLLAMA_MODELS` or `~/.ollama/models`)."
+          },
+          "model_cache_layout": {
+            "type": "string"
+          },
+          "os": {
+            "type": "string"
+          },
+          "total_memory_gib": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "LlamaCppWarmupRequest": {
+        "type": "object",
+        "required": [
+          "model"
+        ],
+        "properties": {
+          "model": {
+            "type": "string",
+            "description": "Catalog model name (e.g. `gemma4`) or raw Hugging Face spec."
+          }
+        }
+      },
+      "LlamaCppWarmupResponse": {
+        "type": "object",
+        "required": [
+          "sidecar",
+          "output"
+        ],
+        "properties": {
+          "output": {
+            "type": "string"
           },
           "sidecar": {
             "$ref": "#/components/schemas/SidecarStatus"
@@ -5624,7 +5804,7 @@
         "properties": {
           "path": {
             "type": "string",
-            "description": "Absolute on-disk path to the knowledge base directory (the folder that\nholds `knowledge/`, `raw/`, `index.md`, \u2026). Clients use this to open the\nfolder in the OS file explorer so users can inspect raw markdown."
+            "description": "Absolute on-disk path to the knowledge base directory (the folder that\nholds `knowledge/`, `raw/`, `index.md`, …). Clients use this to open the\nfolder in the OS file explorer so users can inspect raw markdown."
           }
         }
       },
@@ -6129,6 +6309,14 @@
           }
         }
       },
+      "ModelCacheStatus": {
+        "type": "string",
+        "enum": [
+          "downloaded",
+          "partial",
+          "not_downloaded"
+        ]
+      },
       "ModelConfig": {
         "type": "object",
         "required": [
@@ -6205,6 +6393,14 @@
             "type": "number",
             "format": "double",
             "description": "Cost per token for output (optional)",
+            "nullable": true
+          },
+          "supported_input_mime_types": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "MIME types that can be sent as structured model input blocks.",
             "nullable": true
           },
           "supports_cache_control": {
@@ -7053,7 +7249,7 @@
           "max_runs": {
             "type": "integer",
             "format": "int32",
-            "description": "Optional cap on total firings. When `Some(n)`, the job auto-pauses once\n`run_count` reaches `n` \u2014 the bound that keeps `/loop` from running\nforever. `None` = unbounded (durable `/schedule` jobs).",
+            "description": "Optional cap on total firings. When `Some(n)`, the job auto-pauses once\n`run_count` reaches `n` — the bound that keeps `/loop` from running\nforever. `None` = unbounded (durable `/schedule` jobs).",
             "nullable": true,
             "minimum": 0
           },
@@ -7117,7 +7313,7 @@
           },
           "diverged_from": {
             "type": "string",
-            "description": "Id of the session this one was diverged (branched) from, if any. Set by\n`diverge_session`; `None` for normally-created sessions. Lets the UI show\na session's lineage (\"branched from \u2026\").",
+            "description": "Id of the session this one was diverged (branched) from, if any. Set by\n`diverge_session`; `None` for normally-created sessions. Lets the UI show\na session's lineage (\"branched from …\").",
             "nullable": true
           },
           "extension_data": {
@@ -7489,6 +7685,21 @@
             "description": "Friendly model name (catalog name or raw HF spec) currently requested.",
             "nullable": true
           },
+          "model_path": {
+            "type": "string",
+            "description": "Local model blob path used for the running process, if an Ollama model\nstore hit was available.",
+            "nullable": true
+          },
+          "model_source": {
+            "type": "string",
+            "description": "`ollama` when launched from an Ollama model blob, otherwise\n`huggingface`.",
+            "nullable": true
+          },
+          "ollama_name": {
+            "type": "string",
+            "description": "Ollama model name checked first, when this is a catalog model.",
+            "nullable": true
+          },
           "port": {
             "type": "integer",
             "format": "int32",
@@ -7497,6 +7708,10 @@
           },
           "state": {
             "$ref": "#/components/schemas/SidecarState"
+          },
+          "warmed": {
+            "type": "boolean",
+            "description": "True only after Biorouter has received a non-empty completion from this\nmodel in this process."
           }
         }
       },

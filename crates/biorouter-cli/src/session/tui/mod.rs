@@ -755,7 +755,7 @@ async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bo
         }
         // Agent-serviced commands: let submit() send them through the normal
         // reply flow, where Agent::execute_command handles them.
-        s if ["/goal", "/loop", "/schedule", "/prompts", "/prompt"]
+        s if ["/goal", "/loop", "/schedule"]
             .iter()
             .any(|cmd| s == *cmd || s.starts_with(&format!("{cmd} "))) =>
         {
@@ -1416,10 +1416,8 @@ fn pluralize(count: usize, singular: &str) -> String {
 }
 
 /// Build the completion catalog shown in the slash-command popup: the TUI slash
-/// commands, plus references to skills, extensions, knowledge bases, and
-/// extension prompts. Selecting a reference inserts a templated natural-language
-/// instruction (mirroring the desktop mention popover).
-fn build_catalog(session: &CliSession) -> Vec<app::CompletionItem> {
+/// commands, plus references to skills, extensions, and knowledge bases.
+fn build_catalog(_session: &CliSession) -> Vec<app::CompletionItem> {
     use app::{CompletionItem, CompletionKind};
     let mut items: Vec<CompletionItem> = Vec::new();
 
@@ -1438,28 +1436,69 @@ fn build_catalog(session: &CliSession) -> Vec<app::CompletionItem> {
     items.push(cmd("/clear", "Clear the conversation"));
     items.push(cmd("/exit", "Leave the session"));
 
-    // Skills — "Use the \"x\" skill for this request, "
     for name in list_skills() {
         items.push(CompletionItem {
             label: name.clone(),
             description: "Ask the agent to use this skill".to_string(),
-            insert: format!("Use the \"{}\" skill for this request, ", name),
+            insert: format!("/skill:{name} "),
             filter: format!("skill {}", name.to_lowercase()),
             kind: CompletionKind::Skill,
         });
     }
 
-    // Extensions enabled for this chat.
+    // Extensions enabled for this chat plus bundled built-ins that can be
+    // enabled deterministically when selected.
+    let compact_extension_canonicals = ["agent_drafter", "autovisualiser", "Extension Manager"];
     for ext in biorouter::config::get_enabled_extensions() {
         let name = ext.name();
+        if compact_extension_canonicals
+            .iter()
+            .any(|canonical| name.eq_ignore_ascii_case(canonical))
+        {
+            continue;
+        }
         items.push(CompletionItem {
             label: name.clone(),
             description: "Ask the agent to use this extension".to_string(),
-            insert: format!("Use the \"{}\" extension for this request, ", name),
+            insert: format!("/ext:{name} "),
             filter: format!("extension {}", name.to_lowercase()),
             kind: CompletionKind::Extension,
         });
     }
+    for name in biorouter_mcp::BUILTIN_EXTENSIONS.keys() {
+        if compact_extension_canonicals.contains(name) {
+            continue;
+        }
+        items.push(CompletionItem {
+            label: (*name).to_string(),
+            description: "Ask the agent to use this built-in extension".to_string(),
+            insert: format!("/ext:{name} "),
+            filter: format!("extension builtin {}", name.to_lowercase()),
+            kind: CompletionKind::Extension,
+        });
+    }
+    items.push(CompletionItem {
+        label: "agentdrafter".to_string(),
+        description: "Ask the agent to use Agent Drafter".to_string(),
+        insert: "/ext:agentdrafter ".to_string(),
+        filter: "extension builtin agentdrafter agent drafter".to_string(),
+        kind: CompletionKind::Extension,
+    });
+    items.push(CompletionItem {
+        label: "autovisualizer".to_string(),
+        description: "Ask the agent to use Auto Visualiser".to_string(),
+        insert: "/ext:autovisualizer ".to_string(),
+        filter: "extension builtin autovisualizer auto visualizer autovisualiser auto visualiser"
+            .to_string(),
+        kind: CompletionKind::Extension,
+    });
+    items.push(CompletionItem {
+        label: "extensionmanager".to_string(),
+        description: "Ask the agent to use Extension Manager".to_string(),
+        insert: "/ext:extensionmanager ".to_string(),
+        filter: "extension builtin extensionmanager extension manager".to_string(),
+        kind: CompletionKind::Extension,
+    });
 
     // Knowledge bases visible to the agent.
     if let Ok(svc) = biorouter::knowledge::service::KnowledgeService::new_default() {
@@ -1469,35 +1508,23 @@ fn build_catalog(session: &CliSession) -> Vec<app::CompletionItem> {
                 items.push(CompletionItem {
                     label: b.id.clone(),
                     description: format!("Focus knowledge base · {}", b.name),
-                    insert: format!(
-                        "Using the Knowledge extension, focus the \"{}\" knowledge base for this request, ",
-                        b.id
+                    insert: format!("/kb:{} ", b.id),
+                    filter: format!(
+                        "kb knowledge {} {}",
+                        b.id.to_lowercase(),
+                        b.name.to_lowercase()
                     ),
-                    filter: format!("kb knowledge {} {}", b.id.to_lowercase(), b.name.to_lowercase()),
                     kind: CompletionKind::Knowledge,
                 });
             }
         }
     }
 
-    // Extension prompts discovered in the completion cache.
-    if let Ok(cache) = session.completion_cache.read() {
-        for (name, info) in &cache.prompt_info {
-            let desc = info
-                .description
-                .clone()
-                .unwrap_or_else(|| "Extension prompt".to_string());
-            items.push(CompletionItem {
-                label: name.clone(),
-                description: desc,
-                insert: format!("Use the \"{}\" prompt for this request, ", name),
-                filter: format!("prompt {}", name.to_lowercase()),
-                kind: CompletionKind::Prompt,
-            });
-        }
-    }
-
+    let mut seen = std::collections::HashSet::new();
     items
+        .into_iter()
+        .filter(|item| seen.insert((item.kind.tag(), item.insert.clone(), item.label.clone())))
+        .collect()
 }
 
 /// Surface the same checks `biorouter doctor` runs — missing required
@@ -1768,6 +1795,15 @@ mod tests {
         assert!(app.completion_accept());
         assert_eq!(app.input, "/help ");
         assert!(!app.completion_active());
+
+        app.input.clear();
+        app.cursor = 0;
+        app.input = "please use /he".to_string();
+        app.cursor = app.input.len();
+        app.refresh_completion();
+        assert!(app.completion_accept());
+        assert_eq!(app.input, "please use /help ");
+
         // The popup renders without panicking.
         let text = buffer_text(
             &mut {

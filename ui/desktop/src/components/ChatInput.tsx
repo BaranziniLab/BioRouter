@@ -1,18 +1,16 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
-import { CodeAnalysis, ScrollText, Pipeline, ChevronRight, ChevronLeft } from './icons/app-icons';
-import { ContextWindowGauge, ContextWindowIndicator } from './ContextWindowIndicator';
+import { ScrollText } from './icons/app-icons';
+import { ContextWindowIndicator } from './ContextWindowIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
-import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Button } from './ui/button';
 import type { View } from '../utils/navigationUtils';
 import Stop from './ui/Stop';
-import { Attach, Send, Close } from './icons';
+import { Send, Close } from './icons';
 import { ChatState } from '../types/chatState';
 import debounce from 'lodash/debounce';
 import { LocalMessageStorage } from '../utils/localMessageStorage';
 import { DirSwitcher } from './bottom_menu/DirSwitcher';
 import ModelsBottomBar from './settings/models/bottom_bar/ModelsBottomBar';
-import { LaunchTerminalButton } from './bottom_menu/LaunchTerminalButton';
 import { BottomMenuExtensionSelection } from './bottom_menu/BottomMenuExtensionSelection';
 import { BottomMenuSkillSelection } from './bottom_menu/BottomMenuSkillSelection';
 import { BottomMenuKnowledgeSelection } from './bottom_menu/BottomMenuKnowledgeSelection';
@@ -27,10 +25,7 @@ import { useDiverge } from '../hooks/useDiverge';
 import { Workflow } from '../workflow';
 import MessageQueue from './MessageQueue';
 import { detectInterruption } from '../utils/interruptionDetector';
-import { DiagnosticsModal } from './ui/Diagnostics';
 import { getSession, llamacppStatus, Message } from '../api';
-import CreateWorkflowFromSessionModal from './workflows/CreateWorkflowFromSessionModal';
-import CreateEditWorkflowModal from './workflows/CreateEditWorkflowModal';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
 import { getNavigationShortcutText } from '../utils/keyboardShortcuts';
@@ -39,6 +34,7 @@ import type { UserAttachment } from '../types/message';
 interface QueuedMessage {
   id: string;
   content: string;
+  attachments?: UserAttachment[];
   timestamp: number;
 }
 
@@ -52,7 +48,7 @@ interface PastedImage {
 
 // Constants for image handling
 const MAX_IMAGES_PER_MESSAGE = 5;
-const MAX_IMAGE_SIZE_MB = 5;
+const MAX_IMAGE_SIZE_MB = 3;
 
 // Constants for token and tool alerts
 const TOKEN_LIMIT_DEFAULT = 128000; // fallback for custom models that the backend doesn't know about
@@ -64,22 +60,38 @@ const MANUAL_COMPACT_TRIGGER = '/compact';
 // Client-side slash command: branch the conversation into a new chat. Handled
 // entirely in the renderer (never sent to the agent).
 const DIVERGE_TRIGGER = '/diverge';
+const TOOLBAR_DIVIDER_CLASS = 'h-4 w-px flex-shrink-0 bg-border-default/70';
+const TOOLBAR_GROUP_CLASS = 'flex flex-shrink-0 items-center gap-0.5';
+const SEND_BUTTON_CLASS = 'bg-background-accent text-text-on-accent hover:bg-background-accent/90';
+
+function canonicalMimeType(mimeType: string): string {
+  const normalized = mimeType.toLowerCase().trim();
+  return normalized === 'image/jpg' ? 'image/jpeg' : normalized;
+}
+
+function mimeTypeAllowed(mimeTypes: string[] | null, mimeType: string): boolean {
+  if (!mimeTypes) return true;
+  const canonical = canonicalMimeType(mimeType);
+  return mimeTypes.some((allowedMimeType) => canonicalMimeType(allowedMimeType) === canonical);
+}
+
+async function validateImageDataUrl(dataUrl: string): Promise<void> {
+  if (
+    typeof Image === 'undefined' ||
+    typeof HTMLImageElement === 'undefined' ||
+    typeof HTMLImageElement.prototype.decode !== 'function'
+  ) {
+    return;
+  }
+
+  const img = new Image();
+  img.src = dataUrl;
+  await img.decode();
+}
 
 interface ModelLimit {
   pattern: string;
   context_limit: number;
-}
-
-/** Single row in the secondary-controls popover. Children are rendered
- * directly — the inner control's own leading icon (e.g. brain, tornado,
- * dollar) serves as the left-aligned visual marker. Rows share the same
- * left-padding so every icon lines up cleanly. */
-function PickerRow({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex items-center px-2 py-1.5 rounded hover:bg-background-medium/40">
-      {children}
-    </div>
-  );
 }
 
 interface ChatInputProps {
@@ -106,22 +118,18 @@ interface ChatInputProps {
   };
   disableAnimation?: boolean;
   workflow?: Workflow | null;
-  workflowId?: string | null;
   workflowAccepted?: boolean;
   initialPrompt?: string;
   toolCount: number;
   append?: (message: Message) => void;
   onWorkingDirChange?: (newDir: string) => void;
-  /** When true (dashboard mode), secondary controls live behind a chevron
-   * popover. When false (chat tab), they're rendered inline so users with
-   * the room get every control at a glance. */
-  compactPicker?: boolean;
   /** Optional override for vision capability. When the chat is bound to a
    * specific session whose model differs from the user's global default
    * (notably dashboard windows), the override reflects the session's actual
    * model. Falls back to the global ModelAndProviderContext flag when
    * undefined. */
   supportsVisionOverride?: boolean;
+  supportedInputMimeTypesOverride?: string[] | null;
 }
 
 export default function ChatInput({
@@ -141,15 +149,13 @@ export default function ChatInput({
   messages = [],
   disableAnimation = false,
   sessionCosts,
-  workflow,
-  workflowId,
   workflowAccepted,
   initialPrompt,
   toolCount,
   append: _append,
   onWorkingDirChange,
-  compactPicker = false,
   supportsVisionOverride,
+  supportedInputMimeTypesOverride,
 }: ChatInputProps) {
   const [_value, setValue] = useState(initialValue);
   const [displayValue, setDisplayValue] = useState(initialValue); // For immediate visual feedback
@@ -176,23 +182,20 @@ export default function ChatInput({
     currentModel,
     currentProvider,
     currentModelSupportsVision: globalSupportsVision,
+    currentModelSupportedInputMimeTypes: globalSupportedInputMimeTypes,
   } = useModelAndProvider();
   // Prefer the session-scoped flag when provided. This matters in dashboard
   // mode (where each window may be bound to a different model than the user's
   // global default) and after per-session model switches.
   const currentModelSupportsVision =
     supportsVisionOverride !== undefined ? supportsVisionOverride : globalSupportsVision;
+  const currentModelSupportedInputMimeTypes =
+    supportedInputMimeTypesOverride !== undefined
+      ? supportedInputMimeTypesOverride
+      : globalSupportedInputMimeTypes;
   const [tokenLimit, setTokenLimit] = useState<number>(TOKEN_LIMIT_DEFAULT);
   const [isTokenLimitLoaded, setIsTokenLimitLoaded] = useState(false);
-  const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
-  const [showCreateWorkflowModal, setShowCreateWorkflowModal] = useState(false);
-  const [showEditWorkflowModal, setShowEditWorkflowModal] = useState(false);
-  const [isFilePickerOpen, setIsFilePickerOpen] = useState(false);
   const [sessionWorkingDir, setSessionWorkingDir] = useState<string | null>(null);
-  // Collapsible group: cost tracker, model selector, mode selector, workflow,
-  // and diagnostics live behind a `>` chevron so the picker row stays narrow.
-  // Always visible: DirSwitcher, Attach, Extensions, Skills.
-  const [pickerExpanded, setPickerExpanded] = useState(false);
 
   // Branch-the-conversation action shared with the message-level Diverge button.
   const { diverge } = useDiverge();
@@ -270,7 +273,7 @@ export default function ChatInput({
         LocalMessageStorage.addMessage(nextMessage.content);
         handleSubmit(
           new CustomEvent('submit', {
-            detail: { value: nextMessage.content },
+            detail: { value: nextMessage.content, attachments: nextMessage.attachments ?? [] },
           }) as unknown as React.FormEvent
         );
         setQueuedMessages((prev) => {
@@ -376,23 +379,55 @@ export default function ChatInput({
   const {
     droppedFiles: localDroppedFiles,
     setDroppedFiles: setLocalDroppedFiles,
+    isDraggingOver,
     handleDrop: handleLocalDrop,
+    handleDragEnter: handleLocalDragEnter,
     handleDragOver: handleLocalDragOver,
+    handleDragLeave: handleLocalDragLeave,
   } = useFileDrop();
 
-  // Merge local dropped files with parent dropped files.
-  // When the active model does not support vision, strip any image-typed
-  // entries from BOTH sources so they never reach the send path. The parent
-  // BaseChat installs its own useFileDrop on the message-scroll area, so we
-  // need to filter that channel too — it's not just our own ChatInput drop
-  // zone that needs gating.
+  // Merge local dropped files with parent dropped files. Keep every dropped
+  // item visible: model capability determines whether an image is uploaded as
+  // content or sent as a filesystem path, never whether the drop disappears.
   const allDroppedFiles = useMemo(() => {
-    if (currentModelSupportsVision) {
-      return [...droppedFiles, ...localDroppedFiles];
-    }
-    const stripImages = (arr: DroppedFile[]) => arr.filter((f) => !f.type?.startsWith('image/'));
-    return [...stripImages(droppedFiles), ...stripImages(localDroppedFiles)];
-  }, [droppedFiles, localDroppedFiles, currentModelSupportsVision]);
+    return [...droppedFiles, ...localDroppedFiles];
+  }, [droppedFiles, localDroppedFiles]);
+
+  const currentModelAcceptsMimeType = useCallback(
+    (mimeType: string) =>
+      currentModelSupportsVision &&
+      Boolean(mimeType) &&
+      mimeTypeAllowed(currentModelSupportedInputMimeTypes, mimeType),
+    [currentModelSupportedInputMimeTypes, currentModelSupportsVision]
+  );
+
+  const canUploadDroppedImage = useCallback(
+    (file: DroppedFile) =>
+      currentModelSupportsVision &&
+      file.isImage &&
+      currentModelAcceptsMimeType(file.type) &&
+      file.canUploadAsImage === true &&
+      !file.error &&
+      !file.isLoading &&
+      Boolean(file.stagedPath),
+    [currentModelAcceptsMimeType, currentModelSupportsVision]
+  );
+
+  const canSendDroppedFileAsPath = useCallback(
+    (file: DroppedFile) =>
+      Boolean(file.sourcePath || file.path) &&
+      !file.isLoading &&
+      (!file.isImage || !canUploadDroppedImage(file)),
+    [canUploadDroppedImage]
+  );
+
+  const canSendDroppedFile = useCallback(
+    (file: DroppedFile) => canUploadDroppedImage(file) || canSendDroppedFileAsPath(file),
+    [canSendDroppedFileAsPath, canUploadDroppedImage]
+  );
+
+  const droppedFilePath = (file: DroppedFile) => file.sourcePath || file.path;
+  const droppedImageAttachmentPath = (file: DroppedFile) => file.stagedPath || file.path;
 
   const handleRemoveDroppedFile = (idToRemove: string) => {
     // Remove from local dropped files
@@ -672,19 +707,29 @@ export default function ChatInput({
     cursorPosition: number,
     textArea: HTMLTextAreaElement
   ) => {
-    const isSlashCommand = text.startsWith('/');
     const beforeCursor = text.slice(0, cursorPosition);
-    const lastAtIndex = isSlashCommand ? 0 : beforeCursor.lastIndexOf('@');
+    const lastAtIndex = beforeCursor.lastIndexOf('@');
+    let lastSlashIndex = -1;
+    for (
+      let index = beforeCursor.lastIndexOf('/');
+      index >= 0;
+      index = beforeCursor.lastIndexOf('/', index - 1)
+    ) {
+      if (index === 0 || /\s/.test(beforeCursor[index - 1])) {
+        lastSlashIndex = index;
+        break;
+      }
+    }
+    const triggerIndex = Math.max(lastAtIndex, lastSlashIndex);
 
-    if (lastAtIndex === -1) {
-      // No @ found, close mention popover
+    if (triggerIndex === -1) {
       setMentionPopover((prev) => ({ ...prev, isOpen: false }));
       return;
     }
 
-    // Check if there's a space between @ and cursor (which would end the mention)
-    const afterAt = beforeCursor.slice(lastAtIndex + 1);
-    if (afterAt.includes(' ') || afterAt.includes('\n')) {
+    const trigger = beforeCursor[triggerIndex];
+    const query = beforeCursor.slice(triggerIndex + 1);
+    if (query.includes(' ') || query.includes('\n')) {
       setMentionPopover((prev) => ({ ...prev, isOpen: false }));
       return;
     }
@@ -699,23 +744,50 @@ export default function ChatInput({
         x: textAreaRect.left,
         y: textAreaRect.top, // Position at the top of the textarea
       },
-      query: afterAt,
-      mentionStart: lastAtIndex,
+      query,
+      mentionStart: triggerIndex,
       selectedIndex: 0, // Reset selection when query changes
-      isSlashCommand,
+      isSlashCommand: trigger === '/',
       // filteredFiles will be populated by the MentionPopover component
     }));
   };
 
   const handlePaste = async (evt: React.ClipboardEvent<HTMLTextAreaElement>) => {
     const files = Array.from(evt.clipboardData.files || []);
-    const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+    const clipboardImages = files.filter((file) => file.type.startsWith('image/'));
+    const imageFiles = clipboardImages.filter((file) => currentModelAcceptsMimeType(file.type));
+    const unsupportedImages = clipboardImages.filter(
+      (file) => !currentModelAcceptsMimeType(file.type)
+    );
 
-    if (imageFiles.length === 0) return;
+    if (clipboardImages.length === 0) return;
 
     // If the active model does not support vision, ignore image pastes and
     // let the browser handle any plain-text content in the clipboard.
     if (!currentModelSupportsVision) return;
+
+    if (unsupportedImages.length > 0) {
+      evt.preventDefault();
+      setPastedImages((prev) => [
+        ...prev,
+        {
+          id: `error-${Date.now()}`,
+          dataUrl: '',
+          isLoading: false,
+          error: `This model cannot accept ${unsupportedImages
+            .map((file) => file.type || 'this image type')
+            .join(', ')} as image input.`,
+        },
+      ]);
+
+      const timeoutId = setTimeout(() => {
+        setPastedImages((prev) => prev.filter((img) => !img.id.startsWith('error-')));
+        timeoutRefsRef.current.delete(timeoutId);
+      }, 5000);
+      timeoutRefsRef.current.add(timeoutId);
+
+      if (imageFiles.length === 0) return;
+    }
 
     // Check if adding these images would exceed the limit
     if (pastedImages.length + imageFiles.length > MAX_IMAGES_PER_MESSAGE) {
@@ -780,7 +852,24 @@ export default function ChatInput({
       reader.onload = async (e) => {
         const dataUrl = e.target?.result as string;
         if (dataUrl) {
-          // Update the image with the data URL
+          try {
+            await validateImageDataUrl(dataUrl);
+          } catch {
+            setPastedImages((prev) =>
+              prev.map((img) =>
+                img.id === imageId
+                  ? {
+                      ...img,
+                      dataUrl: '',
+                      error: 'Image preview could not be decoded.',
+                      isLoading: false,
+                    }
+                  : img
+              )
+            );
+            return;
+          }
+
           setPastedImages((prev) =>
             prev.map((img) => (img.id === imageId ? { ...img, dataUrl, isLoading: true } : img))
           );
@@ -923,17 +1012,21 @@ export default function ChatInput({
       return false;
     }
 
-    const validPastedImageFilesPaths = pastedImages
-      .filter((img) => img.filePath && !img.error && !img.isLoading)
-      .map((img) => img.filePath as string);
-    const droppedFilePaths = allDroppedFiles
-      .filter((file) => !file.error && !file.isLoading)
-      .map((file) => file.path);
+    const imageAttachments: UserAttachment[] = currentModelSupportsVision
+      ? [
+          ...pastedImages
+            .filter((img) => img.filePath && !img.error && !img.isLoading)
+            .map((img) => ({ path: img.filePath as string, kind: 'image' as const })),
+          ...allDroppedFiles
+            .filter(canUploadDroppedImage)
+            .map((file) => ({ path: droppedImageAttachmentPath(file), kind: 'image' as const })),
+        ]
+      : [];
+    const droppedFilePaths = allDroppedFiles.filter(canSendDroppedFileAsPath).map(droppedFilePath);
 
     let contentToQueue = displayValue.trim();
-    const allFilePaths = [...validPastedImageFilesPaths, ...droppedFilePaths];
-    if (allFilePaths.length > 0) {
-      const pathsString = allFilePaths.join(' ');
+    if (droppedFilePaths.length > 0) {
+      const pathsString = droppedFilePaths.join(' ');
       contentToQueue = contentToQueue ? `${contentToQueue} ${pathsString}` : pathsString;
     }
 
@@ -950,6 +1043,7 @@ export default function ChatInput({
       const interruptionMessage = {
         id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
         content: contentToQueue,
+        attachments: imageAttachments,
         timestamp: Date.now(),
       };
 
@@ -971,6 +1065,7 @@ export default function ChatInput({
     const newMessage = {
       id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
       content: contentToQueue,
+      attachments: imageAttachments,
       timestamp: Date.now(),
     };
     setQueuedMessages((prev) => {
@@ -997,32 +1092,34 @@ export default function ChatInput({
   const canSubmit =
     !isLoading &&
     (displayValue.trim() ||
-      pastedImages.some((img) => img.filePath && !img.error && !img.isLoading) ||
-      allDroppedFiles.some((file) => !file.error && !file.isLoading));
+      (currentModelSupportsVision &&
+        pastedImages.some((img) => img.filePath && !img.error && !img.isLoading)) ||
+      allDroppedFiles.some(canSendDroppedFile));
 
   const performSubmit = useCallback(
     (text?: string) => {
       const validPastedImages = pastedImages.filter(
         (img) => img.filePath && !img.error && !img.isLoading
       );
-      const validDroppedImages = allDroppedFiles.filter(
-        (file) => file.isImage && !file.error && !file.isLoading
-      );
-      const validDroppedFiles = allDroppedFiles.filter(
-        (file) => !file.isImage && !file.error && !file.isLoading
-      );
+      const validDroppedImages = allDroppedFiles.filter(canUploadDroppedImage);
+      const validDroppedFiles = allDroppedFiles.filter(canSendDroppedFileAsPath);
 
       // Build structured image attachments (sent as content blocks, not path tokens)
       const imageAttachments: UserAttachment[] = [
-        ...validPastedImages.map((img) => ({
-          path: img.filePath as string,
+        ...(currentModelSupportsVision
+          ? validPastedImages.map((img) => ({
+              path: img.filePath as string,
+              kind: 'image' as const,
+            }))
+          : []),
+        ...validDroppedImages.map((file) => ({
+          path: droppedImageAttachmentPath(file),
           kind: 'image' as const,
         })),
-        ...validDroppedImages.map((file) => ({ path: file.path, kind: 'image' as const })),
       ];
 
-      // Non-image dropped files still go into the text as paths (file content is not base64-embedded)
-      const nonImageFilePaths = validDroppedFiles.map((file) => file.path);
+      // Files that cannot or should not be uploaded still go into the text as paths.
+      const nonImageFilePaths = validDroppedFiles.map(droppedFilePath);
 
       // Intercept the client-side /diverge command before it becomes a message.
       // It branches the current conversation instead of being sent to the agent.
@@ -1088,8 +1185,13 @@ export default function ChatInput({
     },
     [
       allDroppedFiles,
+      canSendDroppedFileAsPath,
+      canUploadDroppedImage,
+      currentModelSupportsVision,
       displayValue,
       diverge,
+      droppedFilePath,
+      droppedImageAttachmentPath,
       droppedFiles.length,
       handleSubmit,
       lastInterruption,
@@ -1183,31 +1285,15 @@ export default function ChatInput({
     const canSubmit =
       !isLoading &&
       (displayValue.trim() ||
-        pastedImages.some((img) => img.filePath && !img.error && !img.isLoading) ||
-        allDroppedFiles.some((file) => !file.error && !file.isLoading));
+        (currentModelSupportsVision &&
+          pastedImages.some((img) => img.filePath && !img.error && !img.isLoading)) ||
+        allDroppedFiles.some(canSendDroppedFile));
     if (canSubmit) {
       performSubmit();
     }
   };
 
-  const handleFileSelect = async () => {
-    if (isFilePickerOpen) return;
-    setIsFilePickerOpen(true);
-    try {
-      const path = await window.electron.selectFileOrDirectory();
-      if (path) {
-        const newValue = displayValue.trim() ? `${displayValue.trim()} ${path}` : path;
-        setDisplayValue(newValue);
-        setValue(newValue);
-        textAreaRef.current?.focus();
-      }
-    } finally {
-      setIsFilePickerOpen(false);
-    }
-  };
-
   const handleMentionItemSelect = (itemText: string) => {
-    // Replace the @ mention with the file path
     const beforeMention = displayValue.slice(0, mentionPopover.mentionStart);
     const afterMention = displayValue.slice(
       mentionPopover.mentionStart + 1 + mentionPopover.query.length
@@ -1230,16 +1316,17 @@ export default function ChatInput({
 
   const hasSubmittableContent =
     displayValue.trim() ||
-    pastedImages.some((img) => img.filePath && !img.error && !img.isLoading) ||
-    allDroppedFiles.some((file) => !file.error && !file.isLoading);
+    (currentModelSupportsVision &&
+      pastedImages.some((img) => img.filePath && !img.error && !img.isLoading)) ||
+    allDroppedFiles.some(canSendDroppedFile);
   const isAnyImageLoading = pastedImages.some((img) => img.isLoading);
   const isAnyDroppedFileLoading = allDroppedFiles.some((file) => file.isLoading);
 
-  const hasImageAttachments =
-    pastedImages.some((img) => img.filePath && !img.error && !img.isLoading) ||
-    allDroppedFiles.some((file) => file.isImage && !file.error && !file.isLoading);
+  const hasPastedImageAttachments = pastedImages.some(
+    (img) => img.filePath && !img.error && !img.isLoading
+  );
 
-  const visionMismatch = !currentModelSupportsVision && hasImageAttachments;
+  const visionMismatch = !currentModelSupportsVision && hasPastedImageAttachments;
 
   const isSubmitButtonDisabled =
     !hasSubmittableContent ||
@@ -1283,7 +1370,7 @@ export default function ChatInput({
     LocalMessageStorage.addMessage(messageToSend.content);
     handleSubmit(
       new CustomEvent('submit', {
-        detail: { value: messageToSend.content },
+        detail: { value: messageToSend.content, attachments: messageToSend.attachments ?? [] },
       }) as unknown as React.FormEvent
     );
 
@@ -1301,7 +1388,7 @@ export default function ChatInput({
       LocalMessageStorage.addMessage(nextMessage.content);
       handleSubmit(
         new CustomEvent('submit', {
-          detail: { value: nextMessage.content },
+          detail: { value: nextMessage.content, attachments: nextMessage.attachments ?? [] },
         }) as unknown as React.FormEvent
       );
       setQueuedMessages((prev) => {
@@ -1318,16 +1405,21 @@ export default function ChatInput({
 
   return (
     <div
-      className={`flex flex-col relative h-auto px-4 pt-3 pb-2 transition-colors ${
+      className={`flex flex-col relative h-auto px-4 pt-3 pb-3 transition-colors ${
         disableAnimation ? '' : 'page-transition'
       } ${
-        isFocused
-          ? 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)]'
-          : 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)]'
-      } bg-background-default z-10 rounded-2xl border`}
+        isDraggingOver
+          ? 'border-border-strong bg-background-medium/80 shadow-[var(--shadow-composer)] ring-2 ring-border-strong/30'
+          : isFocused
+            ? 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)] bg-background-default'
+            : 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)] bg-background-default'
+      } z-10 rounded-2xl border`}
       data-drop-zone="true"
+      data-drag-active={isDraggingOver ? 'true' : 'false'}
       onDrop={handleLocalDrop}
+      onDragEnter={handleLocalDragEnter}
       onDragOver={handleLocalDragOver}
+      onDragLeave={handleLocalDragLeave}
     >
       {/* Message Queue Display */}
       {queuedMessages.length > 0 && (
@@ -1453,7 +1545,7 @@ export default function ChatInput({
           {/* Render dropped files after pasted images */}
           {allDroppedFiles.map((file) => (
             <div key={file.id} className="relative group">
-              {file.isImage ? (
+              {file.canUploadAsImage ? (
                 // Image preview
                 <div className="w-20 h-20">
                   {file.dataUrl && (
@@ -1509,90 +1601,38 @@ export default function ChatInput({
       )}
 
       {/* Secondary actions and controls row below input. */}
-      <div className="flex flex-row flex-nowrap items-center gap-1 px-2 pt-2 pb-0 relative overflow-x-auto">
-        <LaunchTerminalButton workingDir={sessionWorkingDir ?? getInitialWorkingDir()} />
-        <DirSwitcher
-          className="mr-0"
-          sessionId={sessionId ?? undefined}
-          workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
-          onWorkingDirChange={(newDir) => {
-            setSessionWorkingDir(newDir);
-            if (onWorkingDirChange) {
-              onWorkingDirChange(newDir);
-            }
-          }}
-          onRestartStart={() => setChatState?.(ChatState.RestartingAgent)}
-          onRestartEnd={() => setChatState?.(ChatState.Idle)}
-        />
-        <div className="w-px h-4 bg-border-default mx-2" />
+      <div
+        data-testid="chat-input-toolbar"
+        className="flex flex-row flex-nowrap items-center gap-1.5 px-2 pt-2 pb-1 relative min-w-0 overflow-hidden"
+      >
+        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+          <DirSwitcher
+            className="mr-0"
+            sessionId={sessionId ?? undefined}
+            workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
+            onWorkingDirChange={(newDir) => {
+              setSessionWorkingDir(newDir);
+              if (onWorkingDirChange) {
+                onWorkingDirChange(newDir);
+              }
+            }}
+            onRestartStart={() => setChatState?.(ChatState.RestartingAgent)}
+            onRestartEnd={() => setChatState?.(ChatState.Idle)}
+          />
 
-        <div className="flex flex-row items-center gap-2">
-          {currentModelSupportsVision && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  onClick={handleFileSelect}
-                  disabled={isFilePickerOpen}
-                  variant="ghost"
-                  size="sm"
-                  className={`flex items-center justify-center text-text-default/70 hover:text-text-default text-xs transition-colors ${isFilePickerOpen ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-                >
-                  <Attach className="w-4 h-4" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>Attach file or directory</TooltipContent>
-            </Tooltip>
-          )}
-          <BottomMenuExtensionSelection sessionId={sessionId} />
-          <BottomMenuSkillSelection sessionId={sessionId} />
-          <BottomMenuKnowledgeSelection />
-        </div>
+          <div className={TOOLBAR_DIVIDER_CLASS} />
 
-        <div className="w-px h-4 bg-border-default mx-2" />
-
-        {COST_TRACKING_ENABLED && (
-          <div className="flex items-center h-full">
-            <CostTracker
-              inputTokens={accumulatedInputTokens}
-              outputTokens={accumulatedOutputTokens}
-              sessionCosts={sessionCosts}
-            />
+          <div className={TOOLBAR_GROUP_CLASS}>
+            <BottomMenuExtensionSelection sessionId={sessionId} />
+            <BottomMenuSkillSelection sessionId={sessionId} />
+            <BottomMenuKnowledgeSelection />
           </div>
-        )}
 
-        {compactPicker ? (
-          <Popover open={pickerExpanded} onOpenChange={setPickerExpanded}>
-            <PopoverTrigger asChild>
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer ml-1"
-                aria-label={pickerExpanded ? 'Collapse extra controls' : 'Expand extra controls'}
-              >
-                {pickerExpanded ? (
-                  <ChevronLeft className="w-4 h-4" />
-                ) : (
-                  <ChevronRight className="w-4 h-4" />
-                )}
-              </Button>
-            </PopoverTrigger>
-            <PopoverContent side="top" align="start" className="flex flex-col gap-0.5 w-72 p-1.5">
-              <ContextWindowGauge
-                totalTokens={totalTokens}
-                tokenLimit={tokenLimit}
-                isTokenLimitLoaded={isTokenLimitLoaded}
-                onCompact={() => {
-                  handleSubmit(
-                    new CustomEvent('submit', {
-                      detail: { value: MANUAL_COMPACT_TRIGGER },
-                    }) as unknown as React.FormEvent
-                  );
-                  setPickerExpanded(false);
-                }}
-              />
-              <PickerRow>
+          <div className={TOOLBAR_DIVIDER_CLASS} />
+
+          <div className="flex min-w-0 flex-row items-center gap-1">
+            <Tooltip>
+              <div className="min-w-0">
                 <ModelsBottomBar
                   sessionId={sessionId}
                   dropdownRef={dropdownRef}
@@ -1600,47 +1640,8 @@ export default function ChatInput({
                   alerts={alerts}
                   hideAlertPopover
                 />
-              </PickerRow>
-              {sessionId && (
-                <PickerRow>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (workflow) {
-                        setShowEditWorkflowModal(true);
-                      } else {
-                        setShowCreateWorkflowModal(true);
-                      }
-                      setPickerExpanded(false);
-                    }}
-                    className="flex items-center w-full text-left text-text-default/70 hover:text-text-default text-xs cursor-pointer"
-                  >
-                    <Pipeline className="mr-1 h-4 w-4 flex-shrink-0" />
-                    <span className="truncate">
-                      {workflow ? 'View/Edit Workflow' : 'Create Workflow'}
-                    </span>
-                  </button>
-                </PickerRow>
-              )}
-              {sessionId && (
-                <PickerRow>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDiagnosticsOpen(true);
-                      setPickerExpanded(false);
-                    }}
-                    className="flex items-center w-full text-left text-text-default/70 hover:text-text-default text-xs cursor-pointer"
-                  >
-                    <CodeAnalysis className="mr-1 h-4 w-4 flex-shrink-0" />
-                    <span className="truncate">Diagnostics</span>
-                  </button>
-                </PickerRow>
-              )}
-            </PopoverContent>
-          </Popover>
-        ) : (
-          <div className="flex flex-row items-center">
+              </div>
+            </Tooltip>
             <ContextWindowIndicator
               totalTokens={totalTokens}
               tokenLimit={tokenLimit}
@@ -1653,69 +1654,20 @@ export default function ChatInput({
                 );
               }}
             />
-            <Tooltip>
-              <div>
-                <ModelsBottomBar
-                  sessionId={sessionId}
-                  dropdownRef={dropdownRef}
-                  setView={setView}
-                  alerts={alerts}
-                  hideAlertPopover
+            {COST_TRACKING_ENABLED && (
+              <div className={TOOLBAR_GROUP_CLASS}>
+                <CostTracker
+                  inputTokens={accumulatedInputTokens}
+                  outputTokens={accumulatedOutputTokens}
+                  sessionCosts={sessionCosts}
                 />
               </div>
-            </Tooltip>
-            {/* Workflow + diagnostics sit immediately to the right of the
-                model selector as a single grouped pair (one divider before
-                the group, none between the two buttons). */}
-            {sessionId && (
-              <>
-                <div className="w-px h-4 bg-border-default mx-2" />
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      onClick={() => {
-                        if (workflow) {
-                          setShowEditWorkflowModal(true);
-                        } else {
-                          setShowCreateWorkflowModal(true);
-                        }
-                      }}
-                      variant="ghost"
-                      size="sm"
-                      className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer"
-                    >
-                      <Pipeline size={16} />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    {workflow ? 'View/Edit Workflow' : 'Create Workflow from Session'}
-                  </TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      type="button"
-                      onClick={() => {
-                        setDiagnosticsOpen(true);
-                      }}
-                      aria-label="Generate diagnostics bundle"
-                      title="Generate diagnostics bundle"
-                      variant="ghost"
-                      size="sm"
-                      className="flex items-center justify-center text-text-default/70 hover:text-text-default text-xs cursor-pointer transition-colors"
-                    >
-                      <CodeAnalysis className="w-4 h-4" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>Generate diagnostics bundle</TooltipContent>
-                </Tooltip>
-              </>
             )}
           </div>
-        )}
+        </div>
 
         {/* Send / Stop button — on far right of picker row. */}
-        <div className="ml-auto flex items-center pl-2 flex-shrink-0">
+        <div className="ml-auto flex flex-shrink-0 items-center gap-1 pl-1">
           {isLoading && !hasSubmittableContent ? (
             <Button
               type="button"
@@ -1723,9 +1675,11 @@ export default function ChatInput({
               size="sm"
               shape="round"
               variant="outline"
-              className="bg-background-accent text-text-on-accent hover:bg-background-accent/90 rounded-md px-3 py-1.5"
+              className={SEND_BUTTON_CLASS}
+              aria-label="Stop response"
+              title="Stop response"
             >
-              <Stop />
+              <Stop size={14} />
             </Button>
           ) : (
             <Tooltip>
@@ -1735,17 +1689,17 @@ export default function ChatInput({
                     type="submit"
                     form="bior-chat-form"
                     size="sm"
-                    shape="pill"
+                    shape="round"
                     variant="outline"
                     disabled={isSubmitButtonDisabled}
-                    className={`rounded-md px-3 py-1.5 flex items-center gap-1 ${
+                    aria-label="Send message"
+                    className={
                       isSubmitButtonDisabled
-                        ? 'bg-background-accent text-text-on-accent cursor-not-allowed opacity-50'
-                        : 'bg-background-accent text-text-on-accent hover:bg-background-accent/90 hover:cursor-pointer'
-                    }`}
+                        ? `${SEND_BUTTON_CLASS} cursor-not-allowed opacity-50`
+                        : `${SEND_BUTTON_CLASS} hover:cursor-pointer`
+                    }
                   >
                     <Send className="w-3.5 h-3.5" />
-                    <span className="text-xs">Send</span>
                   </Button>
                 </span>
               </TooltipTrigger>
@@ -1763,13 +1717,6 @@ export default function ChatInput({
             </Tooltip>
           )}
         </div>
-        {sessionId && diagnosticsOpen && (
-          <DiagnosticsModal
-            isOpen={diagnosticsOpen}
-            onClose={() => setDiagnosticsOpen(false)}
-            sessionId={sessionId}
-          />
-        )}
         <MentionPopover
           ref={mentionPopoverRef}
           isOpen={mentionPopover.isOpen}
@@ -1785,23 +1732,6 @@ export default function ChatInput({
           workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
           sessionId={sessionId}
         />
-
-        {sessionId && showCreateWorkflowModal && (
-          <CreateWorkflowFromSessionModal
-            isOpen={showCreateWorkflowModal}
-            onClose={() => setShowCreateWorkflowModal(false)}
-            sessionId={sessionId}
-          />
-        )}
-
-        {workflow && showEditWorkflowModal && (
-          <CreateEditWorkflowModal
-            isOpen={showEditWorkflowModal}
-            onClose={() => setShowEditWorkflowModal(false)}
-            workflow={workflow}
-            workflowId={workflowId}
-          />
-        )}
       </div>
     </div>
   );
