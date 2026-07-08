@@ -100,6 +100,7 @@ export function titleFromResourceUri(uri?: string): string | null {
       .filter(Boolean);
   }
   if (parts.length === 0) return null;
+  if (parts.some((part) => /\.[a-z0-9]+$/i.test(part))) return null;
 
   const specific = parts.filter((part) => !GENERIC_UI_TITLE_PARTS.has(part.toLowerCase()));
   if (specific.length > 0) {

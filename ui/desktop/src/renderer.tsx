@@ -336,6 +336,11 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       restartApp: () => {},
       onUpdaterEvent: () => () => {},
       getPathForFile: (file: File) => file.name,
+      ensureWindowContentWidth: async (width: number) => ({
+        expanded: false,
+        width,
+        height: window.innerHeight,
+      }),
       checkForOllama: async () => false,
       cliStatus: async () => ({ installed: false }),
       installCli: async () => ({ success: false }),

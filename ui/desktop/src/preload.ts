@@ -245,6 +245,11 @@ type ElectronAPI = {
   isUsingGitHubFallback: () => Promise<boolean>;
   // Workflow warning functions
   closeWindow: () => void;
+  ensureWindowContentWidth: (width: number) => Promise<{
+    expanded: boolean;
+    width: number;
+    height: number;
+  }>;
   hasAcceptedWorkflowBefore: (workflow: Workflow) => Promise<boolean>;
   recordWorkflowHash: (workflow: Workflow) => Promise<boolean>;
   openDirectoryInExplorer: (directoryPath: string) => Promise<boolean>;
@@ -480,6 +485,8 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke('is-using-github-fallback');
   },
   closeWindow: () => ipcRenderer.send('close-window'),
+  ensureWindowContentWidth: (width: number) =>
+    ipcRenderer.invoke('window:ensure-content-width', width),
   hasAcceptedWorkflowBefore: (workflow: Workflow) =>
     ipcRenderer.invoke('has-accepted-workflow-before', workflow),
   recordWorkflowHash: (workflow: Workflow) => ipcRenderer.invoke('record-workflow-hash', workflow),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Message } from '../api';
-import { collectArtifactsFromMessages } from './BaseChat';
+import { collectArtifactsFromMessages, getArtifactPanelExpansionContentWidth } from './BaseChat';
 
 const visibleMessage = (content: Message['content']): Message => ({
   id: crypto.randomUUID(),
@@ -71,5 +71,15 @@ describe('collectArtifactsFromMessages', () => {
     expect(collectArtifactsFromMessages([hiddenToolResponse('tool-1', '<p>Hidden</p>')])).toEqual(
       []
     );
+  });
+});
+
+describe('getArtifactPanelExpansionContentWidth', () => {
+  it('requests enough extra window width for a narrow split pane', () => {
+    expect(getArtifactPanelExpansionContentWidth(1000, 980)).toBe(1092);
+  });
+
+  it('does not request expansion when the split pane already fits the artifact panel', () => {
+    expect(getArtifactPanelExpansionContentWidth(1200, 1100)).toBeNull();
   });
 });

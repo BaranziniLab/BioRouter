@@ -1497,6 +1497,52 @@ ipcMain.handle('dashboard:exit', (event) => {
   }
 });
 
+ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (!win || !Number.isFinite(minWidth)) {
+    return { expanded: false, width: 0, height: 0 };
+  }
+
+  const currentContentBounds = win.getContentBounds();
+  if (currentContentBounds.width >= minWidth || win.isMaximized() || win.isFullScreen()) {
+    return {
+      expanded: false,
+      width: currentContentBounds.width,
+      height: currentContentBounds.height,
+    };
+  }
+
+  const windowBounds = win.getBounds();
+  const display = screen.getDisplayMatching(windowBounds);
+  const maxContentWidth = Math.max(720, display.workArea.width);
+  const targetContentWidth = Math.min(Math.ceil(minWidth), maxContentWidth);
+
+  win.setContentSize(targetContentWidth, currentContentBounds.height, true);
+
+  const nextWindowBounds = win.getBounds();
+  const maxX = display.workArea.x + display.workArea.width - nextWindowBounds.width;
+  const maxY = display.workArea.y + display.workArea.height - nextWindowBounds.height;
+  const adjustedX =
+    maxX < display.workArea.x
+      ? display.workArea.x
+      : Math.min(Math.max(nextWindowBounds.x, display.workArea.x), maxX);
+  const adjustedY =
+    maxY < display.workArea.y
+      ? display.workArea.y
+      : Math.min(Math.max(nextWindowBounds.y, display.workArea.y), maxY);
+
+  if (adjustedX !== nextWindowBounds.x || adjustedY !== nextWindowBounds.y) {
+    win.setBounds({ ...nextWindowBounds, x: adjustedX, y: adjustedY }, true);
+  }
+
+  const nextContentBounds = win.getContentBounds();
+  return {
+    expanded: nextContentBounds.width > currentContentBounds.width,
+    width: nextContentBounds.width,
+    height: nextContentBounds.height,
+  };
+});
+
 ipcMain.handle('open-external', async (_event, url: string) => {
   try {
     const parsed = new URL(url);
