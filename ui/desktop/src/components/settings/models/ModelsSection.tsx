@@ -9,6 +9,7 @@ import {
 } from '../../ModelAndProviderContext';
 import { toastError } from '../../../toasts';
 import ResetProviderSection from '../reset_provider/ResetProviderSection';
+import LocalModelInventory from './LocalModelInventory';
 
 interface ModelsSectionProps {
   setView: (view: View) => void;
@@ -104,6 +105,8 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
           </div>
         </div>
       </div>
+
+      <LocalModelInventory />
 
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
