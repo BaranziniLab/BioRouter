@@ -314,6 +314,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
   const dockRef = useRef<HTMLElement | null>(null);
   const suppressAutoOpenRef = useRef(false);
+  const pendingDockCloseRef = useRef(false);
 
   const addPane = useCallback(() => {
     setPanes((current) => {
@@ -330,6 +331,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
   useEffect(() => {
     if (!open) {
       suppressAutoOpenRef.current = false;
+      pendingDockCloseRef.current = false;
       return;
     }
     if (panes.length === 0 && !suppressAutoOpenRef.current) {
@@ -346,8 +348,8 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
         const next = current.filter((pane) => pane.id !== paneId);
         if (next.length === 0) {
           suppressAutoOpenRef.current = true;
+          pendingDockCloseRef.current = true;
           setActivePaneId(null);
-          onClose();
           return [];
         }
 
@@ -362,6 +364,12 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
     },
     [onClose]
   );
+
+  useEffect(() => {
+    if (!open || panes.length !== 0 || !pendingDockCloseRef.current) return;
+    pendingDockCloseRef.current = false;
+    onClose();
+  }, [onClose, open, panes.length]);
 
   useEffect(() => {
     if (!open || panes.length === 0) return;
