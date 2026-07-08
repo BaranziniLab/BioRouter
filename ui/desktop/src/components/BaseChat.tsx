@@ -83,6 +83,7 @@ const ARTIFACT_PANEL_MAX_WIDTH = 860;
 const ARTIFACT_PANEL_MIN_CHAT_WIDTH = 640;
 const ARTIFACT_PANEL_AUTO_TUCK_WIDTH =
   ARTIFACT_PANEL_MIN_WIDTH + ARTIFACT_PANEL_MIN_CHAT_WIDTH + 48;
+const ARTIFACT_PANEL_AUTO_EXPAND_PADDING = 24;
 const ARTIFACT_PANEL_EXIT_MS = 180;
 const SIDEBAR_COMPACT_TITLE_WIDTH = 1120;
 const HEADER_ACTION_BUTTON_CLASS =
@@ -92,6 +93,16 @@ const PREVIEWABLE_TEXT_ARTIFACT_RE =
 
 function clampArtifactPanelWidth(value: number, max: number) {
   return Math.min(Math.max(value, ARTIFACT_PANEL_MIN_WIDTH), max);
+}
+
+export function getArtifactPanelExpansionContentWidth(
+  contentWidth: number,
+  splitPaneWidth: number
+): number | null {
+  if (!Number.isFinite(contentWidth) || !Number.isFinite(splitPaneWidth)) return null;
+  const deficit = ARTIFACT_PANEL_AUTO_TUCK_WIDTH - splitPaneWidth;
+  if (deficit <= 0) return null;
+  return Math.ceil(contentWidth + deficit + ARTIFACT_PANEL_AUTO_EXPAND_PADDING);
 }
 
 function isEmbeddedResource(content: Content): content is EmbeddedResource {
@@ -457,7 +468,7 @@ function BaseChatContent({
   }, []);
 
   const handleOpenArtifact = useCallback(
-    (artifact: ArtifactSource) => {
+    async (artifact: ArtifactSource) => {
       if (artifactPanelCloseTimerRef.current) {
         window.clearTimeout(artifactPanelCloseTimerRef.current);
         artifactPanelCloseTimerRef.current = null;
@@ -469,6 +480,18 @@ function BaseChatContent({
 
       autoTuckedArtifactRef.current = null;
       artifactPanelWidthUserSetRef.current = false;
+
+      if (!isMobile) {
+        const splitPaneWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
+        const targetWidth = getArtifactPanelExpansionContentWidth(
+          window.innerWidth,
+          splitPaneWidth
+        );
+        if (targetWidth && window.electron.ensureWindowContentWidth) {
+          await window.electron.ensureWindowContentWidth(targetWidth).catch(() => undefined);
+        }
+      }
+
       setPresentedArtifact(artifact);
 
       if (presentedArtifact) {
@@ -482,7 +505,7 @@ function BaseChatContent({
         setIsArtifactPanelOpen(true);
       });
     },
-    [presentedArtifact]
+    [isMobile, presentedArtifact]
   );
 
   const handleCloseArtifactPanel = useCallback(() => {
