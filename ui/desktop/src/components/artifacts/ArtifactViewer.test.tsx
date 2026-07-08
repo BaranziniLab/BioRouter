@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { ThemeProvider } from '../../contexts/ThemeContext';
 import ArtifactViewer from './ArtifactViewer';
@@ -118,5 +119,41 @@ describe('ArtifactViewer', () => {
       detail: 'ReferenceError: Chart is not defined',
       href: 'file:///tmp/chart.html',
     });
+  });
+
+  it('keeps artifact header buttons clickable above embedded previews', async () => {
+    installElectronMock();
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{
+            kind: 'html',
+            title: 'interactive.html',
+            html: '<!doctype html><html><body><button>Inside frame</button></body></html>',
+          }}
+          onClose={onClose}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: /open artifact outside side viewer/i })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole('button', { name: /open artifact outside side viewer/i }));
+    expect(window.electron.openArtifactWindow).toHaveBeenCalledWith({
+      html: '<!doctype html><html><body><button>Inside frame</button></body></html>',
+      title: 'interactive.html',
+      theme: 'light',
+      width: undefined,
+      height: undefined,
+    });
+
+    await user.click(screen.getByRole('button', { name: /close artifact viewer/i }));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
