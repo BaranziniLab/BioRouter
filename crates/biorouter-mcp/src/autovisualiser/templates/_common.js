@@ -89,6 +89,30 @@
     window.addEventListener('resize', reportSize);
   }
 
+  function normalizeErrorDetail(detail) {
+    if (!detail) return '';
+    if (detail && detail.stack) return String(detail.stack);
+    if (detail && detail.message) return String(detail.message);
+    return String(detail);
+  }
+
+  function reportRenderError(message, detail) {
+    if (window.parent === window) return;
+    try {
+      window.parent.postMessage({
+        type: 'biorouter-viz-render-error',
+        payload: {
+          message: message || 'This visualization could not be rendered.',
+          detail: normalizeErrorDetail(detail),
+          title: document.title || 'Visualization',
+          href: window.location.href,
+        },
+      }, '*');
+    } catch (e) {
+      /* ignore */
+    }
+  }
+
   function showError(message, detail) {
     var host = document.querySelector('.viz-root') || document.body;
     var card = document.createElement('div');
@@ -109,6 +133,7 @@
     }
     host.appendChild(card);
     reportSize();
+    reportRenderError(message, detail);
   }
 
   function guard(fn) {
@@ -163,23 +188,6 @@
     var b = Math.round(255 * Math.min(1, 0.1 + 1.6 * (1 - t)));
     return 'rgb(' + r + ',' + g + ',' + b + ')';
   }
-
-  // Blanket safety net: any uncaught error or rejected promise during rendering
-  // surfaces as a friendly card instead of a blank/broken frame. Individual
-  // templates can still call guard()/showError() for finer-grained handling.
-  var errorShown = false;
-  function handleGlobalError(detail) {
-    if (errorShown) return;
-    errorShown = true;
-    showError('This visualization could not be rendered.', detail);
-  }
-  window.addEventListener('error', function (e) {
-    handleGlobalError(e && e.message ? e.message : 'Unexpected rendering error.');
-  });
-  window.addEventListener('unhandledrejection', function (e) {
-    var r = e && e.reason;
-    handleGlobalError(r && r.message ? r.message : String(r || 'Unexpected rendering error.'));
-  });
 
   window.BioRouterViz = {
     theme: theme,
