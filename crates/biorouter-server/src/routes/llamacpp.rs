@@ -27,7 +27,9 @@ use crate::state::AppState;
 pub struct LlamaCppModel {
     pub name: String,
     pub display_name: String,
+    pub family: String,
     pub ollama_name: Option<String>,
+    pub official_url: String,
     pub hf_spec: String,
     pub download_size: String,
     pub description: String,
@@ -96,10 +98,23 @@ pub struct LlamaCppWarmupRequest {
     pub model: String,
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct LlamaCppDeleteRequest {
+    /// Catalog model name (e.g. `gemma4`) or raw Hugging Face spec.
+    pub model: String,
+}
+
 #[derive(Serialize, Deserialize, ToSchema)]
 pub struct LlamaCppWarmupResponse {
     pub sidecar: SidecarStatus,
     pub output: String,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct LlamaCppDeleteResponse {
+    /// Whether a Biorouter/llama.cpp Hugging Face fallback cache directory was removed.
+    pub deleted_fallback_cache: bool,
+    pub status: LlamaCppStatusResponse,
 }
 
 fn catalog() -> Vec<LlamaCppModel> {
@@ -128,7 +143,9 @@ fn catalog() -> Vec<LlamaCppModel> {
             LlamaCppModel {
                 name: e.name.to_string(),
                 display_name: e.display_name.to_string(),
+                family: e.family.to_string(),
                 ollama_name: e.ollama_name.map(str::to_string),
+                official_url: e.official_url.to_string(),
                 hf_spec: e.hf_spec.to_string(),
                 download_size: e.download_size.to_string(),
                 description: e.description.to_string(),
@@ -296,6 +313,34 @@ async fn llamacpp_warmup(
 
 #[utoipa::path(
     post,
+    path = "/llamacpp/delete",
+    request_body = LlamaCppDeleteRequest,
+    responses(
+        (status = 200, description = "Cached Llama Server fallback model removed", body = LlamaCppDeleteResponse),
+        (status = 400, description = "Unknown model name"),
+    ),
+)]
+async fn llamacpp_delete(
+    Json(req): Json<LlamaCppDeleteRequest>,
+) -> Result<Json<LlamaCppDeleteResponse>, (StatusCode, String)> {
+    let source =
+        resolve_model_source(&req.model).map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
+
+    let sidecar = llamacpp_sidecar::global();
+    if sidecar.status().await.model.as_deref() == Some(req.model.as_str()) {
+        sidecar.stop().await;
+    }
+    let deleted_fallback_cache = llamacpp_sidecar::delete_model_cache(&source.hf_spec)
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(LlamaCppDeleteResponse {
+        deleted_fallback_cache,
+        status: status_response().await,
+    }))
+}
+
+#[utoipa::path(
+    post,
     path = "/llamacpp/stop",
     responses(
         (status = 200, description = "Sidecar stopped", body = LlamaCppStatusResponse)
@@ -314,6 +359,7 @@ pub fn router() -> Router {
         .route("/llamacpp/status", get(llamacpp_status))
         .route("/llamacpp/ensure", post(llamacpp_ensure))
         .route("/llamacpp/warmup", post(llamacpp_warmup))
+        .route("/llamacpp/delete", post(llamacpp_delete))
         .route("/llamacpp/stop", post(llamacpp_stop))
 }
 

@@ -29,15 +29,25 @@ import {
 // authored in priority order in the Rust provider definition (typically newest
 // / preferred model first), so picking [0] gives the right default per provider
 // without falling back to cross-provider name heuristics.
-function findFirstAvailableModel(
-  models: { value: string; label: string; provider: string }[]
-): string | null {
+type ModelOption = {
+  value: string;
+  label: string;
+  provider: string;
+  providerType?: ProviderType;
+  isDisabled?: boolean;
+  detail?: string;
+};
+
+function findFirstAvailableModel(models: ModelOption[]): string | null {
   const validModels = models.filter(
     (m) => m.value !== 'custom' && m.value !== '__loading__' && !m.value.startsWith('__')
   );
   if (validModels.length === 0) return null;
   return validModels[0].value;
 }
+
+const formatContext = (value: number | null | undefined) =>
+  typeof value === 'number' ? `${value.toLocaleString()} context` : 'context unknown';
 
 const llamaDownloadLabel = (model: LlamaCppModel | undefined) => {
   switch (model?.download_status) {
@@ -78,20 +88,62 @@ const llamaFallbackLabel = (model: LlamaCppModel | undefined) => {
   }
 };
 
-const llamaModelLabel = (modelName: string, catalog: Map<string, LlamaCppModel>) => {
+const llamaModelOption = (
+  modelName: string,
+  catalog: Map<string, LlamaCppModel>,
+  selectedProvider: ProviderDetails
+): ModelOption => {
   const entry = catalog.get(modelName);
-  if (!entry) return modelName;
+  if (!entry) {
+    return {
+      value: modelName,
+      label: modelName,
+      provider: selectedProvider.name,
+      providerType: selectedProvider.provider_type,
+    };
+  }
 
-  return [
-    entry.display_name,
+  const detail = [
     entry.download_size,
+    formatContext(entry.context_limit),
     llamaDownloadLabel(entry),
     llamaFallbackLabel(entry),
     llamaFitLabel(entry),
-    entry.ollama_name ? `Ollama ${entry.ollama_name}` : null,
+    entry.ollama_name ?? entry.hf_spec,
   ]
     .filter(Boolean)
     .join(' · ');
+
+  return {
+    value: modelName,
+    label: entry.display_name,
+    provider: selectedProvider.name,
+    providerType: selectedProvider.provider_type,
+    detail,
+  };
+};
+
+const modelOptionSearchText = (option: ModelOption) =>
+  [option.value, option.label, option.detail].filter(Boolean).join(' ').toLowerCase();
+
+const renderModelOptionLabel = (rawOption: unknown, meta: { context: 'menu' | 'value' }) => {
+  const option = rawOption as ModelOption;
+  if (option.provider !== 'llamacpp' || !option.detail) {
+    return option.label;
+  }
+
+  if (meta.context === 'value') {
+    return <span className="block max-w-full truncate">{option.label}</span>;
+  }
+
+  return (
+    <div className="min-w-0 py-0.5">
+      <div className="truncate text-sm font-medium text-current">{option.label}</div>
+      <div className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-current opacity-70">
+        {option.detail}
+      </div>
+    </div>
+  );
 };
 
 type SwitchModelModalProps = {
@@ -114,13 +166,6 @@ export const SwitchModelModal = ({
   const { changeModel, currentModel, currentProvider } = useModelAndProvider();
   const [providerOptions, setProviderOptions] = useState<{ value: string; label: string }[]>([]);
   const [activeProviders, setActiveProviders] = useState<ProviderDetails[]>([]);
-  type ModelOption = {
-    value: string;
-    label: string;
-    provider: string;
-    providerType?: ProviderType;
-    isDisabled?: boolean;
-  };
   const [modelOptionsByProvider, setModelOptionsByProvider] = useState<
     Record<string, ModelOption[]>
   >({});
@@ -306,12 +351,16 @@ export const SwitchModelModal = ({
           }
         }
 
-        const options: ModelOption[] = modelList.map((m) => ({
-          value: m,
-          label: llamaModelLabel(m, llamaCatalog),
-          provider: selectedProvider.name,
-          providerType: selectedProvider.provider_type,
-        }));
+        const options: ModelOption[] = modelList.map((m) =>
+          selectedProvider.name === 'llamacpp'
+            ? llamaModelOption(m, llamaCatalog, selectedProvider)
+            : {
+                value: m,
+                label: m,
+                provider: selectedProvider.name,
+                providerType: selectedProvider.provider_type,
+              }
+        );
 
         if (selectedProvider.metadata.allows_unlisted_models) {
           options.push({
@@ -355,7 +404,8 @@ export const SwitchModelModal = ({
     const matchingOptions = providerGroups
       .map((group) => ({
         options: group.options.filter(
-          (option) => option.value.toLowerCase().includes(loweredInput) && option.value !== 'custom'
+          (option) =>
+            modelOptionSearchText(option).includes(loweredInput) && option.value !== 'custom'
         ),
       }))
       .filter((group) => group.options.length > 0);
@@ -387,7 +437,8 @@ export const SwitchModelModal = ({
     const selectedOption = provider
       ? modelOptionsByProvider[provider]?.find((option) => option.value === model)
       : null;
-    return { value: model, label: selectedOption?.label || model };
+    if (selectedOption) return selectedOption;
+    return { value: model, label: model, provider: provider || '' };
   }, [model, modelOptionsByProvider, provider]);
   const providerSelectValue = useMemo(
     () => providerOptions.find((option) => option.value === provider) || null,
@@ -565,6 +616,7 @@ export const SwitchModelModal = ({
                         onInputChange={handleInputChange}
                         inputValue={modelInputValue}
                         value={modelSelectValue}
+                        formatOptionLabel={renderModelOptionLabel}
                         placeholder={
                           loadingModels ? 'Loading models…' : 'Select a model, type to search'
                         }
