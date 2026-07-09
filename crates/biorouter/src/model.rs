@@ -44,9 +44,214 @@ pub enum ConfigError {
     InvalidRange(String, String),
 }
 
-// Patterns are matched with `str::contains`, first match wins — keep more
-// specific patterns before their prefixes (e.g. "gpt-5.4-mini" before "gpt-5").
-// Context windows verified against official provider docs, June 2026.
+/// Exact, per-model context windows — the single source of truth.
+///
+/// Every model any provider advertises has its **own** entry. A model never
+/// inherits another model's window, and a config that names two models (a main
+/// model and a fast model) never reconciles them into one number: each is
+/// resolved independently from this table. Lookup is exact-match on the full
+/// model id; [`MODEL_SPECIFIC_LIMITS`] is only a fallback for ids that are not
+/// known ahead of time (Ollama tags, arbitrary OpenRouter ids, raw HF specs).
+///
+/// Verified July 2026 against each vendor's docs. The per-provider catalogs are
+/// authoritative for their own models; `tests/context_windows.rs` fails the
+/// build if a provider declares a window that drifts from this table, or if a
+/// provider advertises a model that has no entry here.
+static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| {
+    HashMap::from([
+        // ── OpenAI ──
+        ("gpt-4.1", 1_047_576),
+        ("gpt-4.1-2025-04-14", 1_047_576),
+        ("gpt-4.1-mini", 1_047_576),
+        ("gpt-4.1-mini-2025-04-14", 1_047_576),
+        ("gpt-4o-2024-11-20", 128_000),
+        ("gpt-4o-mini", 128_000),
+        ("gpt-5", 400_000),
+        ("gpt-5-2025-08-07", 400_000),
+        ("gpt-5-mini", 400_000),
+        ("gpt-5-nano", 400_000),
+        ("gpt-5.1", 400_000),
+        ("gpt-5.1-2025-11-13", 400_000),
+        ("gpt-5.2", 400_000),
+        ("gpt-5.2-2025-12-11", 400_000),
+        ("gpt-5.3-codex", 400_000),
+        ("gpt-5.4", 1_050_000),
+        ("gpt-5.4-2026-03-05", 1_050_000),
+        ("gpt-5.4-mini", 400_000),
+        ("gpt-5.4-mini-2026-03-17", 400_000),
+        ("gpt-5.4-nano", 400_000),
+        ("gpt-5.4-nano-2026-03-17", 400_000),
+        ("gpt-5.4-pro", 1_050_000),
+        ("gpt-5.5", 1_050_000),
+        ("gpt-5.5-2026-04-24", 1_050_000),
+        ("gpt-5.5-pro", 1_050_000),
+        ("gpt-5.6", 1_050_000),
+        ("gpt-5.6-luna", 1_050_000),
+        ("gpt-5.6-sol", 1_050_000),
+        ("gpt-5.6-terra", 1_050_000),
+        ("o3", 200_000),
+        ("o3-2025-04-16", 200_000),
+        // ── Anthropic ──
+        ("anthropic/claude-haiku-4.5", 200_000),
+        ("anthropic/claude-opus-4.8", 1_000_000),
+        ("anthropic/claude-sonnet-4.6", 1_000_000),
+        ("anthropic/claude-sonnet-5", 1_000_000),
+        ("claude-4-sonnet", 200_000),
+        ("claude-fable-5", 1_000_000),
+        ("claude-haiku-4-5", 200_000),
+        ("claude-haiku-4-5-20251001", 200_000),
+        ("claude-haiku-4-5@20251001", 200_000),
+        ("claude-haiku-4.5", 200_000),
+        ("claude-opus-4-1", 200_000),
+        ("claude-opus-4-5", 200_000),
+        ("claude-opus-4-5-20251101", 200_000),
+        ("claude-opus-4-5@20251101", 200_000),
+        ("claude-opus-4-6", 1_000_000),
+        ("claude-opus-4-7", 1_000_000),
+        ("claude-opus-4-8", 1_000_000),
+        ("claude-opus-4.8", 1_000_000),
+        ("claude-sonnet-4-5", 200_000),
+        ("claude-sonnet-4-5-20250929", 200_000),
+        ("claude-sonnet-4-5@20250929", 200_000),
+        ("claude-sonnet-4-6", 1_000_000),
+        ("claude-sonnet-4.5", 200_000),
+        ("claude-sonnet-4.6", 1_000_000),
+        ("claude-sonnet-5", 1_000_000),
+        ("us.anthropic.claude-haiku-4-5-20251001-v1:0", 200_000),
+        ("us.anthropic.claude-opus-4-5-20251101-v1:0", 200_000),
+        ("us.anthropic.claude-opus-4-6-v1", 1_000_000),
+        ("us.anthropic.claude-opus-4-8", 1_000_000),
+        ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 200_000),
+        ("us.anthropic.claude-sonnet-4-6", 1_000_000),
+        ("us.anthropic.claude-sonnet-5", 1_000_000),
+        // ── Google ──
+        ("gemini-2.5-flash", 1_048_576),
+        ("gemini-2.5-flash-image", 1_048_576),
+        ("gemini-2.5-flash-lite", 1_048_576),
+        ("gemini-2.5-flash-preview-tts", 1_048_576),
+        ("gemini-2.5-pro", 1_048_576),
+        ("gemini-2.5-pro-preview-tts", 1_048_576),
+        ("gemini-3-flash-preview", 1_048_576),
+        ("gemini-3-pro", 1_048_576),
+        ("gemini-3-pro-image", 1_048_576),
+        ("gemini-3.1-flash-image", 1_048_576),
+        ("gemini-3.1-flash-lite", 1_048_576),
+        ("gemini-3.1-pro", 1_048_576),
+        ("gemini-3.1-pro-preview", 1_048_576),
+        ("gemini-3.5-flash", 1_048_576),
+        ("gemma4", 131_072),
+        ("gemma4-12b", 262_144),
+        ("gemma4-26b", 262_144),
+        ("gemma4-31b", 262_144),
+        ("gemma4-e2b", 131_072),
+        // ── Meta Llama ──
+        ("llama-3.1-8b-instant", 131_072),
+        ("llama-3.2-3b", 128_000),
+        ("llama-3.3-70b", 128_000),
+        ("llama-3.3-70b-versatile", 131_072),
+        // ── Qwen ──
+        ("qwen/qwen3-coder-next", 262_144),
+        ("qwen3.6", 262_144),
+        ("qwen3.6-27b", 262_144),
+        ("qwen3.6-35b-a3b", 262_144),
+        // ── DeepSeek ──
+        ("deepseek-chat", 1_000_000),
+        ("deepseek-reasoner", 1_000_000),
+        ("deepseek-v4-flash", 1_000_000),
+        ("deepseek-v4-pro", 1_000_000),
+        ("deepseek/deepseek-v4-flash", 1_000_000),
+        ("deepseek/deepseek-v4-pro", 1_000_000),
+        // ── Z.ai GLM ──
+        ("glm-4.5", 131_072),
+        ("glm-4.5-air", 131_072),
+        ("glm-4.6", 200_000),
+        ("glm-4.7", 200_000),
+        ("glm-5", 200_000),
+        ("glm-5-turbo", 200_000),
+        ("glm-5.1", 202_752),
+        ("glm-5.2", 1_048_576),
+        // ── xAI Grok ──
+        ("grok-4.20-0309-non-reasoning", 1_000_000),
+        ("grok-4.20-0309-reasoning", 1_000_000),
+        ("grok-4.20-multi-agent-0309", 1_000_000),
+        ("grok-4.3", 1_000_000),
+        ("grok-4.3-latest", 1_000_000),
+        ("grok-build-0.1", 256_000),
+        ("grok-imagine-image", 131_072),
+        ("grok-imagine-image-quality", 131_072),
+        ("grok-latest", 131_072),
+        ("x-ai/grok-4.20", 1_000_000),
+        ("x-ai/grok-4.3", 1_000_000),
+        ("x-ai/grok-build-0.1", 256_000),
+        // ── Moonshot Kimi ──
+        ("moonshotai/kimi-k2.6", 262_144),
+        ("moonshotai/kimi-k2.7-code", 262_144),
+        // ── Xiaomi MiMo ──
+        ("mimo-v2-omni", 262_144),
+        ("mimo-v2-pro", 262_144),
+        ("mimo-v2.5", 1_000_000),
+        ("mimo-v2.5-pro", 1_000_000),
+        // ── Inception Mercury ──
+        ("mercury-2", 128_000),
+        ("mercury-coder", 128_000),
+        // ── Mistral ──
+        ("codestral-2508", 128_000),
+        ("devstral-2512", 262_144),
+        ("magistral-medium-2509", 128_000),
+        ("ministral-8b-2512", 262_144),
+        ("mistral-large-2512", 262_144),
+        ("mistral-medium-2508", 128_000),
+        ("mistral-medium-3-5", 262_144),
+        ("mistral-medium-latest", 128_000),
+        ("mistral-small-2603", 262_144),
+        ("mistral-small-3-2-24b-instruct", 128_000),
+        // ── MiniMax ──
+        ("minimax/minimax-m3", 1_048_576),
+        // ── Groq-hosted ──
+        ("groq/compound", 131_072),
+        ("groq/compound-mini", 131_072),
+        ("openai/gpt-oss-120b", 131_072),
+        ("openai/gpt-oss-20b", 131_072),
+        ("openai/gpt-oss-safeguard-20b", 131_072),
+        // ── Databricks ──
+        ("databricks-claude-fable-5", 1_000_000),
+        ("databricks-claude-haiku-4-5", 200_000),
+        ("databricks-claude-opus-4-5", 200_000),
+        ("databricks-claude-opus-4-6", 1_000_000),
+        ("databricks-claude-opus-4-7", 1_000_000),
+        ("databricks-claude-opus-4-8", 1_000_000),
+        ("databricks-claude-sonnet-4-5", 200_000),
+        ("databricks-claude-sonnet-4-6", 1_000_000),
+        ("databricks-gemini-2-5-flash", 1_048_576),
+        ("databricks-gemini-2-5-pro", 1_048_576),
+        ("databricks-gemini-3-1-flash-lite", 1_048_576),
+        ("databricks-gemini-3-1-pro", 1_048_576),
+        ("databricks-gemini-3-5-flash", 1_048_576),
+        ("databricks-gemini-3-flash", 1_048_576),
+        ("databricks-gpt-5-4", 400_000),
+        ("databricks-gpt-5-4-mini", 400_000),
+        ("databricks-gpt-5-4-nano", 400_000),
+        ("databricks-gpt-5-5", 400_000),
+        ("databricks-gpt-5-5-pro", 400_000),
+        ("databricks-llama-4-maverick", 128_000),
+        ("databricks-meta-llama-3-3-70b-instruct", 128_000),
+        // ── Other ──
+        ("google/gemini-3.1-pro-preview", 1_048_576),
+        ("google/gemini-3.5-flash", 1_048_576),
+        ("o4-mini-2025-04-16", 200_000),
+        ("sagemaker-tgi-endpoint", 128_000),
+        ("z-ai/glm-5.1", 202_752),
+        ("z-ai/glm-5.2", 1_048_576),
+    ])
+});
+
+/// Heuristic **fallback only**, for model ids the exact registry above cannot
+/// know ahead of time: Ollama tags (`qwen3.6:latest`), arbitrary OpenRouter ids,
+/// raw `owner/repo:QUANT` HF specs. Patterns are matched with `str::contains`,
+/// first match wins — keep more specific patterns before their prefixes.
+///
+/// Never add a model here that a provider advertises; give it an exact entry in
+/// [`MODEL_CONTEXT_WINDOWS`] instead, or a broad pattern will silently shadow it.
 static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
     vec![
         // openai
@@ -141,7 +346,9 @@ static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
         ("minimax-m3", 1_048_576),
         ("mercury-2", 128_000),
         ("mercury-edit-2", 32_000),
-        ("mercury-coder", 32_000),
+        // Inception raised Mercury Coder to 128k; the old 32k here was stale and
+        // shadowed inception.json's (correct) 128k declaration.
+        ("mercury-coder", 128_000),
         // xiaomi mimo — MiMo v2.5 family advertises ~1M; MiMo v2 family ~256k
         ("mimo-v2.5", 1_000_000), // covers mimo-v2.5 and mimo-v2.5-pro
         ("mimo-v2", 262_144),     // covers mimo-v2-pro and mimo-v2-omni
@@ -196,7 +403,7 @@ impl ModelConfig {
                 pm.context_limit
             }
         } else {
-            Self::parse_context_limit(&model_name, None, context_env_var)?
+            Self::parse_context_limit(&model_name, context_env_var)?
         };
 
         let request_params = predefined.and_then(|pm| pm.request_params);
@@ -218,12 +425,14 @@ impl ModelConfig {
         })
     }
 
+    /// Resolve `model_name`'s own context window. Never consults any other
+    /// model — a config's fast model has no bearing on its main model's window,
+    /// and vice versa.
     fn parse_context_limit(
         model_name: &str,
-        fast_model: Option<&str>,
         custom_env_var: Option<&str>,
     ) -> Result<Option<usize>, ConfigError> {
-        // First check if there's an explicit environment variable override
+        // An explicit environment override wins over the model's own window.
         if let Some(env_var) = custom_env_var {
             if let Ok(val) = std::env::var(env_var) {
                 return Self::validate_context_limit(&val, env_var).map(Some);
@@ -233,23 +442,7 @@ impl ModelConfig {
             return Self::validate_context_limit(&val, "BIOROUTER_CONTEXT_LIMIT").map(Some);
         }
 
-        // Get the model's limit
-        let model_limit = Self::get_model_specific_limit(model_name);
-
-        // If there's a fast_model, get its limit and use the minimum
-        if let Some(fast_model_name) = fast_model {
-            let fast_model_limit = Self::get_model_specific_limit(fast_model_name);
-
-            // Return the minimum of both limits (if both exist)
-            match (model_limit, fast_model_limit) {
-                (Some(m), Some(f)) => Ok(Some(m.min(f))),
-                (Some(m), None) => Ok(Some(m)),
-                (None, Some(f)) => Ok(Some(f)),
-                (None, None) => Ok(None),
-            }
-        } else {
-            Ok(model_limit)
-        }
+        Ok(Self::resolve_context_window(model_name))
     }
 
     fn validate_context_limit(val: &str, env_var: &str) -> Result<usize, ConfigError> {
@@ -347,6 +540,32 @@ impl ModelConfig {
             .map(|(_, limit)| *limit)
     }
 
+    /// This model's own context window: exact registry entry first, then the
+    /// substring fallback for ids we can't enumerate ahead of time. Returns
+    /// `None` when neither knows the model.
+    fn resolve_context_window(model_name: &str) -> Option<usize> {
+        MODEL_CONTEXT_WINDOWS
+            .get(model_name)
+            .copied()
+            .or_else(|| Self::get_model_specific_limit(model_name))
+    }
+
+    /// The context window `model_name` has by virtue of being that model,
+    /// ignoring any per-config or environment override. Use this when you need a
+    /// model's intrinsic window (e.g. to advertise it in provider metadata)
+    /// rather than the effective window of a particular session.
+    pub fn context_window_for(model_name: &str) -> usize {
+        Self::resolve_context_window(model_name).unwrap_or(DEFAULT_CONTEXT_LIMIT)
+    }
+
+    /// Whether this model has its **own** entry in [`MODEL_CONTEXT_WINDOWS`],
+    /// rather than borrowing a window from a substring pattern or the default.
+    /// Every model a provider advertises must satisfy this — see the
+    /// `context_windows` integration test.
+    pub fn has_declared_context_window(model_name: &str) -> bool {
+        MODEL_CONTEXT_WINDOWS.contains_key(model_name)
+    }
+
     pub fn get_all_model_limits() -> Vec<ModelLimitConfig> {
         MODEL_SPECIFIC_LIMITS
             .iter()
@@ -394,34 +613,51 @@ impl ModelConfig {
         self
     }
 
+    /// Switch to the configured fast model, treating it as the separate model it
+    /// is: it gets **its own** context window (and its own predefined request
+    /// params), not the main model's. Sampling settings that describe how we call
+    /// a model — temperature, max tokens, toolshim — carry over.
+    ///
+    /// Rebuilt via [`Self::new`] so an explicit `BIOROUTER_CONTEXT_LIMIT` still
+    /// applies to the fast model too. If that fails (only possible when an env
+    /// var holds an invalid value), fall back to renaming and re-resolving.
     pub fn use_fast_model(&self) -> Self {
-        if let Some(fast_model) = &self.fast_model {
-            let mut config = self.clone();
-            config.model_name = fast_model.clone();
-            config
-        } else {
-            self.clone()
+        let Some(fast_model) = &self.fast_model else {
+            return self.clone();
+        };
+
+        let mut config = Self::new(fast_model).unwrap_or_else(|_| {
+            let mut fallback = self.clone();
+            fallback.model_name = fast_model.clone();
+            fallback.context_limit = Self::resolve_context_window(fast_model);
+            fallback
+        });
+
+        config.temperature = self.temperature;
+        config.max_tokens = self.max_tokens;
+        config.toolshim = self.toolshim;
+        config.toolshim_model = self.toolshim_model.clone();
+        // Keep `fast_model` set so callers can tell a fast config from the main
+        // one (see `Provider::complete_fast`'s fallback check).
+        config.fast_model = self.fast_model.clone();
+        // Prefer the fast model's own predefined params; inherit only if it has none.
+        if config.request_params.is_none() {
+            config.request_params = self.request_params.clone();
         }
+        config
     }
 
+    /// The effective context window for **this config's** model.
+    ///
+    /// An explicit override (set via [`Self::with_context_limit`] or an env var)
+    /// wins; otherwise the model's own registry window is used. The fast model,
+    /// if any, is a different model and never constrains this one — call
+    /// [`Self::use_fast_model`] to get a config for it.
     pub fn context_limit(&self) -> usize {
-        // If we have an explicit context limit set, use it
         if let Some(limit) = self.context_limit {
             return limit;
         }
-
-        // Otherwise, get the model's default limit
-        let main_limit =
-            Self::get_model_specific_limit(&self.model_name).unwrap_or(DEFAULT_CONTEXT_LIMIT);
-
-        // If we have a fast_model, also check its limit and use the minimum
-        if let Some(fast_model) = &self.fast_model {
-            let fast_limit =
-                Self::get_model_specific_limit(fast_model).unwrap_or(DEFAULT_CONTEXT_LIMIT);
-            main_limit.min(fast_limit)
-        } else {
-            main_limit
-        }
+        Self::context_window_for(&self.model_name)
     }
 
     pub fn new_or_fail(model_name: &str) -> ModelConfig {
@@ -496,5 +732,128 @@ mod tests {
         ]);
         let config = ModelConfig::new("test-model").unwrap();
         assert_eq!(config.max_tokens, None);
+    }
+
+    // ── Per-model context windows: two models are two models ────────────────
+
+    /// Pin the env so these exercise the registry, not an override. Other tests
+    /// in this workspace set BIOROUTER_CONTEXT_LIMIT process-wide.
+    fn clean_env() -> impl Drop {
+        env_lock::lock_env([
+            ("BIOROUTER_CONTEXT_LIMIT", None::<&str>),
+            ("BIOROUTER_PREDEFINED_MODELS", None::<&str>),
+        ])
+    }
+
+    #[test]
+    fn a_fast_model_does_not_shrink_the_main_models_window() {
+        let _guard = clean_env();
+        // gpt-5.6 is 1.05M; the default fast model gpt-5.4-mini is only 400k.
+        let cfg = ModelConfig::new("gpt-5.6")
+            .unwrap()
+            .with_fast("gpt-5.4-mini".to_string());
+        assert_eq!(
+            cfg.context_limit(),
+            1_050_000,
+            "the main model keeps its own window regardless of the fast model"
+        );
+    }
+
+    #[test]
+    fn the_fast_model_gets_its_own_window_not_the_main_models() {
+        let _guard = clean_env();
+        let main = ModelConfig::new("gpt-5.6")
+            .unwrap()
+            .with_fast("gpt-5.4-mini".to_string());
+        let fast = main.use_fast_model();
+
+        assert_eq!(fast.model_name, "gpt-5.4-mini");
+        assert_eq!(
+            fast.context_limit(),
+            400_000,
+            "the fast model must not inherit the main model's 1.05M budget"
+        );
+        assert_eq!(main.context_limit(), 1_050_000, "main config is untouched");
+    }
+
+    #[test]
+    fn use_fast_model_is_a_noop_without_a_fast_model() {
+        let _guard = clean_env();
+        let cfg = ModelConfig::new("gpt-5.6").unwrap();
+        let same = cfg.use_fast_model();
+        assert_eq!(same.model_name, "gpt-5.6");
+        assert_eq!(same.context_limit(), 1_050_000);
+    }
+
+    #[test]
+    fn use_fast_model_carries_over_call_settings() {
+        let _guard = clean_env();
+        let main = ModelConfig::new("gpt-5.6")
+            .unwrap()
+            .with_fast("gpt-5.4-mini".to_string())
+            .with_temperature(Some(0.25))
+            .with_max_tokens(Some(4096))
+            .with_toolshim(true)
+            .with_toolshim_model(Some("shim-model".to_string()));
+        let fast = main.use_fast_model();
+
+        assert_eq!(fast.temperature, Some(0.25));
+        assert_eq!(fast.max_tokens, Some(4096));
+        assert!(fast.toolshim);
+        assert_eq!(fast.toolshim_model.as_deref(), Some("shim-model"));
+        // Still knows it is the fast variant, so `complete_fast` can detect fallback.
+        assert_eq!(fast.fast_model.as_deref(), Some("gpt-5.4-mini"));
+    }
+
+    #[test]
+    fn an_unknown_main_model_is_not_capped_by_the_fast_model() {
+        let _guard = clean_env();
+        // Previously the min() branch let a known fast model cap an unknown main
+        // model. An unknown model gets the default window, full stop.
+        let cfg = ModelConfig::new("some-unlisted-model-xyz")
+            .unwrap()
+            .with_fast("gemma-3-1b".to_string()); // 32k
+        assert_eq!(cfg.context_limit(), DEFAULT_CONTEXT_LIMIT);
+    }
+
+    #[test]
+    fn an_explicit_override_still_wins_for_the_model_it_was_set_on() {
+        let _guard = clean_env();
+        let cfg = ModelConfig::new("gpt-5.6")
+            .unwrap()
+            .with_context_limit(Some(50_000));
+        assert_eq!(cfg.context_limit(), 50_000);
+    }
+
+    #[test]
+    fn a_global_env_override_applies_to_the_fast_model_too() {
+        let _guard = env_lock::lock_env([
+            ("BIOROUTER_CONTEXT_LIMIT", Some("64000")),
+            ("BIOROUTER_PREDEFINED_MODELS", None::<&str>),
+        ]);
+        let main = ModelConfig::new("gpt-5.6")
+            .unwrap()
+            .with_fast("gpt-5.4-mini".to_string());
+        assert_eq!(main.context_limit(), 64_000);
+        assert_eq!(main.use_fast_model().context_limit(), 64_000);
+    }
+
+    #[test]
+    fn exact_registry_beats_the_substring_fallback() {
+        let _guard = clean_env();
+        // "gpt-5" (400k) is a substring of "gpt-5.6-luna"; the exact entry wins.
+        assert_eq!(ModelConfig::context_window_for("gpt-5.6-luna"), 1_050_000);
+        // "claude" (200k catch-all) is a substring of "claude-sonnet-5".
+        assert_eq!(
+            ModelConfig::context_window_for("claude-sonnet-5"),
+            1_000_000
+        );
+        // An id nobody declared still falls back to the pattern table.
+        assert_eq!(ModelConfig::context_window_for("qwen3.6:latest"), 262_144);
+        // And an id nothing matches gets the default.
+        assert_eq!(
+            ModelConfig::context_window_for("totally-unknown-model"),
+            DEFAULT_CONTEXT_LIMIT
+        );
     }
 }
