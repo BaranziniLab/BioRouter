@@ -50,6 +50,7 @@ pub enum ConfigError {
 static MODEL_SPECIFIC_LIMITS: Lazy<Vec<(&'static str, usize)>> = Lazy::new(|| {
     vec![
         // openai
+        ("gpt-5.6", 1_050_000), // covers gpt-5.6 and its -sol/-terra/-luna variants
         ("gpt-5.5", 1_050_000), // covers gpt-5.5 and gpt-5.5-pro
         ("gpt-5.4-mini", 400_000),
         ("gpt-5.4-nano", 400_000),
