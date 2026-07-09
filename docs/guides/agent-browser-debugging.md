@@ -26,7 +26,7 @@ Electron app's own Chromium, not a standalone browser.
 The Playwright default port is **9222**, but on this machine a regular Google
 Chrome is often already listening on 9222. If the Electron app loses the race to
 bind 9222, agent-browser silently connects to Chrome instead (you'll see
-Google/YouTube tabs, not BioRouter). The `agent-browser-ui` recipe therefore
+Google/YouTube tabs, not BioRouter). The `agent-browser-ui` workflow therefore
 exposes CDP on **9333** via `PLAYWRIGHT_CDP_PORT`, which `ui/desktop/src/main.ts`
 honors. (See the `dev-gui-cdp-port-conflict` note.)
 

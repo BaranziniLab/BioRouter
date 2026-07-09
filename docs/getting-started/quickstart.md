@@ -25,28 +25,20 @@ Let's begin 🚀
         
       
       
-        Run the following command to install biorouter:
-
-        ```sh
-        curl -fsSL https://github.com/BaranziniLab/biorouter/releases/download/stable/download_cli.sh | bash
-        ```
+        The `biorouter` CLI ships inside the desktop app. On macOS and Windows, install the app, then run `biorouter setup-path` to add the bundled `biorouter` binary to your `PATH`. On Linux, install the standalone CLI package from the [download page](http://biorouter.ucsf.edu/download) (`biorouter-cli_*_amd64.deb` or `biorouter-cli-*-1.x86_64.rpm`), which provides `biorouter` and `biorouterd` without the desktop app.
       
     
   
 
   
     
-> **Caution:** Linux installation for BioRouter is not yet available. We're working on bringing BioRouter to Linux and will release builds soon.
-
-    Please check back later or [watch our GitHub repository](https://github.com/BaranziniLab/biorouter) for updates.
+Linux builds are available. Install the desktop app with the `biorouter_*_amd64.deb` (Debian/Ubuntu) or `BioRouter-*-1.x86_64.rpm` (Fedora/RHEL) package, or install the standalone CLI with the `biorouter-cli_*_amd64.deb` / `biorouter-cli-*-1.x86_64.rpm` package. Grab them from the [download page](http://biorouter.ucsf.edu/download).
 
   
 
   
     
-> **Caution:** Windows installation for BioRouter is not yet available. We're working on bringing BioRouter to Windows and will release builds soon.
-
-    Please check back later or [watch our GitHub repository](https://github.com/BaranziniLab/biorouter) for updates.
+Windows builds are available. Download `BioRouter-win32-x64-*.zip` from the [download page](http://biorouter.ucsf.edu/download), unzip it, and run `BioRouter.exe`. The `biorouter` CLI is bundled inside the app — run `biorouter setup-path` to add it to your `PATH`.
 
   
 

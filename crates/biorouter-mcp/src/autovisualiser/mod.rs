@@ -7,6 +7,7 @@
 
 mod common;
 
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use common::{
     check_limit, html_escape, invalid, js_data, js_value, render, Asset, MAX_LABELS, MAX_LINKS,
     MAX_MARKERS, MAX_MATRIX_DIM, MAX_MERMAID_LEN, MAX_NODES, MAX_TREE_DEPTH, MAX_VALUES,
@@ -14,11 +15,13 @@ use common::{
 use indoc::formatdoc;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{CallToolResult, ErrorData, Implementation, ServerCapabilities, ServerInfo},
+    model::{
+        CallToolResult, ErrorData, Implementation, ResourceContents, ServerCapabilities, ServerInfo,
+    },
     tool, tool_handler, tool_router, ServerHandler,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::PathBuf;
 
 // ===========================================================================
@@ -466,6 +469,22 @@ impl AutoVisualiserRouter {
             Match the data format to the chart type you have chosen. The user may request a specific
             chart, or you can pick the most appropriate one and shape the data to fit it.
 
+            ## Combining figures — read this first
+            **If your answer needs more than one figure, call `render_dashboard` once instead of
+            calling several `render_*` tools.** Each `render_*` call produces a separate artifact
+            that the user must open on its own; a reader faced with six of them has to click six
+            times and reassemble the story themselves. `render_dashboard` renders the same figures
+            into a single scrollable report: title, summary, contents, section prose, and a
+            numbered caption under every figure.
+
+            - Two or more figures on one topic → one `render_dashboard` call.
+            - Exactly one figure, with nothing to compare it against → the plain `render_*` tool.
+            - Always write the `caption` for each panel and a `summary` for the report. The prose is
+              what makes the figures mean something; a report of unlabelled charts is worse than one
+              good chart. Say what the figure shows and what the reader should notice in it.
+            - `render_dashboard` takes the other tools' names and their exact arguments, so anything
+              you can render on its own can be a panel.
+
             ## Statistical & comparison charts
             - **show_chart**: line, scatter, or bar charts
             - **render_histogram**: distribution of a single numeric variable (auto-binned)
@@ -507,6 +526,9 @@ impl AutoVisualiserRouter {
             ## Geographic
             - **render_map**: interactive map with location markers
             - **render_choropleth**: value-shaded regions from GeoJSON
+
+            ## Composite
+            - **render_dashboard**: several of the above, combined into one documented report
         "#};
 
         Self {
@@ -514,7 +536,8 @@ impl AutoVisualiserRouter {
                 + Self::diagrams_router()
                 + Self::charts_router()
                 + Self::d3_router()
-                + Self::geo_router(),
+                + Self::geo_router()
+                + Self::dashboard_router(),
             cache_dir,
             instructions,
         }
@@ -948,6 +971,7 @@ fn treemap_stats(node: &TreemapNode, depth: usize) -> (usize, usize) {
 }
 
 include!("tools_extra.rs");
+include!("tools_dashboard.rs");
 
 #[cfg(test)]
 mod tests;

@@ -168,7 +168,7 @@ Main commands: `biorouter session` (interactive chat, `--name`/`--resume`),
 `biorouter run` (headless: `--text "prompt"` or `--workflow file.yaml --param
 k=v`), `biorouter configure` (interactive setup), `biorouter models …`,
 `biorouter schedule …`, `biorouter workflow …`, `biorouter skill …`,
-`biorouter session-list`, `biorouter info`, `biorouter update`.
+`biorouter session-list`, `biorouter info`, `biorouter setup-path`.
 
 ## Configuration file map
 
@@ -177,7 +177,7 @@ k=v`), `biorouter configure` (interactive setup), `biorouter models …`,
 | `~/.config/biorouter/config.yaml` | Providers, model defaults, extensions, secrets backend |
 | `~/.config/biorouter/sessions/` | Session history |
 | `~/.config/biorouter/skills/` | Installed skills |
-| `~/.config/biorouter/recipes/` | Recipes |
+| `~/.config/biorouter/workflows/` | Workflows |
 | `~/.config/biorouter/knowledge/` | Knowledge bases |
 | `~/.config/biorouter/schedule.json` | Scheduled jobs |
 | `~/.config/biorouter/skills-config.json` | Skill enable/disable state |

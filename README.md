@@ -8,7 +8,7 @@
 
 <p>
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="Apache 2.0 License"></a>
-  <img src="https://img.shields.io/badge/version-1.86.0-tan.svg" alt="Version 1.86.0">
+  <img src="https://img.shields.io/badge/version-1.87.2-tan.svg" alt="Version 1.87.2">
 </p>
 
 <a href="http://biorouter.ucsf.edu/">Website</a> ·
@@ -65,7 +65,7 @@ Turn structured data into self-contained, interactive HTML figures rendered inli
 ### Three surfaces, one core
 
 - **Desktop app** (Electron + React) for interactive work.
-- **`biorouter` CLI** — a full-screen TUI at parity with the GUI: slash-command palette, model/provider setup, knowledge bases, and extension/skill/workflow install, all from the terminal. `biorouter doctor` checks prerequisites and self-updates.
+- **`biorouter` CLI** — a full-screen TUI at parity with the GUI: slash-command palette, model/provider setup, knowledge bases, and extension/skill/workflow install, all from the terminal. `biorouter doctor` checks prerequisites and flags when a newer release is available.
 - **`biorouterd` server** — REST + WebSocket API with an OpenAPI-generated TypeScript client.
 
 ### Built for the desktop
@@ -90,11 +90,7 @@ Native installers for all major platforms are available in every release:
 
 **[Download Biorouter →](http://biorouter.ucsf.edu/download)** or grab assets from the [Releases page](https://github.com/BaranziniLab/biorouter/releases).
 
-To install just the command-line tool:
-
-```bash
-curl -fsSL https://github.com/BaranziniLab/biorouter/releases/download/stable/download_cli.sh | bash
-```
+The `biorouter` command-line tool ships **inside** the desktop app. On macOS and Windows, install the app above, then accept the in-app "Install Biorouter CLI" prompt (or run `biorouter setup-path`) to add the bundled `biorouter` binary to your `PATH`. On Linux you can install the CLI on its own with the headless `biorouter-cli` package (`biorouter-cli_*_amd64.deb` or `biorouter-cli-*-1.x86_64.rpm`) — no desktop app required.
 
 Always install the newest version for the latest features and fixes.
 

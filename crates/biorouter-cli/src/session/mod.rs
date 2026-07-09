@@ -1395,7 +1395,11 @@ async fn print_startup_notices() {
                 "{} {} {}",
                 style("↑").color256(137).bold(),
                 style(format!("Biorouter {} is available", u.latest)).color256(137),
-                style(format!("(you have {}) — run `biorouter update`", u.current)).dim()
+                style(format!(
+                    "(you have {}) — install the latest release to upgrade",
+                    u.current
+                ))
+                .dim()
             );
         }
     }

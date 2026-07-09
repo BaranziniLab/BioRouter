@@ -4,23 +4,23 @@ This guide covers building Docker images for BioRouter CLI for production use, C
 
 ## Quick Start
 
-### Using Pre-built Images
+### No Pre-built Image — Build Locally
 
-The easiest way to use BioRouter with Docker is to pull the pre-built image from GitHub Container Registry:
+There is **no** published BioRouter container image: no registry hosts one and no CI workflow builds or pushes it. Build the image yourself from source (see [Building from Source](#building-from-source)) and refer to it by its local tag `biorouter:local`:
 
 ```bash
-# Pull the latest image
-docker pull ghcr.io/BaranziniLab/BioRouter:latest
+# Build the image from the repo root
+docker build -t biorouter:local .
 
 # Run BioRouter CLI
-docker run --rm ghcr.io/BaranziniLab/BioRouter:latest --version
+docker run --rm biorouter:local --version
 
 # Run with LLM configuration
 docker run --rm \
   -e BIOROUTER_PROVIDER=openai \
   -e BIOROUTER_MODEL=gpt-4o \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
-  ghcr.io/BaranziniLab/BioRouter:latest run -t "Summarize the latest PubMed review on CRISPR gene therapy"
+  biorouter:local run -t "Summarize the latest PubMed review on CRISPR gene therapy"
 ```
 
 ## Building from Source
@@ -50,11 +50,6 @@ The build process:
 - Results in a ~340MB image containing the `biorouter` CLI binary
 
 ### Build Options
-
-For a development build with debug symbols:
-```bash
-docker build --build-arg CARGO_PROFILE_RELEASE_STRIP=false -t biorouter:dev .
-```
 
 For multi-platform builds:
 ```bash
@@ -110,7 +105,7 @@ version: '3.8'
 
 services:
   biorouter:
-    image: ghcr.io/BaranziniLab/BioRouter:latest
+    image: biorouter:local
     environment:
       - BIOROUTER_PROVIDER=${BIOROUTER_PROVIDER:-openai}
       - BIOROUTER_MODEL=${BIOROUTER_MODEL:-gpt-4o}
@@ -163,7 +158,7 @@ docker run --rm \
   -c "apt-get update && apt-get install -y vim && biorouter --version"
 
 # Or create a custom Dockerfile
-FROM ghcr.io/BaranziniLab/BioRouter:latest
+FROM biorouter:local
 USER root
 RUN apt-get update && apt-get install -y \
     vim \
@@ -181,7 +176,7 @@ jobs:
   analyze:
     runs-on: ubuntu-latest
     container:
-      image: ghcr.io/BaranziniLab/BioRouter:latest
+      image: biorouter:local
       env:
         BIOROUTER_PROVIDER: openai
         BIOROUTER_MODEL: gpt-4o
@@ -197,7 +192,7 @@ jobs:
 
 ```yaml
 analyze:
-  image: ghcr.io/BaranziniLab/BioRouter:latest
+  image: biorouter:local
   variables:
     BIOROUTER_PROVIDER: openai
     BIOROUTER_MODEL: gpt-4o
@@ -298,7 +293,7 @@ For production deployments:
 
 Example production Dockerfile:
 ```dockerfile
-FROM ghcr.io/BaranziniLab/BioRouter:v1.86.0
+FROM biorouter:local
 # Add any additional tools needed for your use case
 USER root
 RUN apt-get update && apt-get install -y your-tools && rm -rf /var/lib/apt/lists/*

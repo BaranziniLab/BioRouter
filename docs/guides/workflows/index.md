@@ -40,7 +40,7 @@ BioRouter discovers workflows from:
 | `extensions` | No | MCP servers and extensions the workflow needs |
 | `settings` | No | Provider/model overrides for this workflow |
 | `activities` | No | Clickable prompt buttons shown in Desktop (Desktop only) |
-| `sub_recipes` | No | Subworkflows this workflow calls |
+| `sub_workflows` | No | Subworkflows this workflow calls |
 | `response` | No | Enforce structured JSON output |
 | `retry` | No | Auto-retry logic with success validation |
 | `version` | No | Workflow format version (defaults to `"1.0.0"`) |

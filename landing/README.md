@@ -13,15 +13,15 @@ Static landing site for **BioRouter v1.60.0** — a local-first AI routing layer
 | `index.html` | — | Redirects to `intro.html` |
 | `intro.html` | Introduction | Hero section, feature highlights, supported AI providers |
 | `download.html` | Download | OS-aware download card (auto-detects macOS arm64/x64, Windows, Linux), platform table, setup instructions |
-| `docs.html` | Documentation | Sidebar-navigated documentation covering installation, configuration, recipes, federation, and CLI reference |
-| `baam.html` | BAAM Marketplace | BioRouter AI Agent Marketplace — agent cards, install instructions, and community recipes |
+| `docs.html` | Documentation | Sidebar-navigated documentation covering installation, configuration, workflows, federation, and CLI reference |
+| `baam.html` | BAAM Marketplace | BioRouter AI Agent Marketplace — agent cards, install instructions, and community workflows |
 | `about.html` | About | News & announcements, related links, acknowledgments, developer info |
 
 ### Shared assets
 
 - `shared.css` — design tokens, navbar, buttons, tables, and all shared component styles
 - `icon.png` — BioRouter app icon
-- `assets/ehr-diabetes-recipe.yaml` — downloadable example recipe (EHR Diabetes Demographics Dashboard)
+- `assets/ehr-diabetes-recipe.yaml` — downloadable example workflow (EHR Diabetes Demographics Dashboard)
 - `assets/landing-site-content.md` — content requirements tracker
 
 ---

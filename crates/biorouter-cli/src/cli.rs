@@ -1141,23 +1141,6 @@ enum Command {
     )]
     SetupPath {},
 
-    /// Update the Biorouter CLI version
-    #[command(about = "Update the Biorouter CLI version")]
-    Update {
-        /// Update to canary version
-        #[arg(
-            short,
-            long,
-            help = "Update to canary version",
-            long_help = "Update to the latest canary version of the Biorouter CLI, otherwise updates to the latest stable version."
-        )]
-        canary: bool,
-
-        /// Enforce to re-configure Biorouter during update
-        #[arg(short, long, help = "Enforce to re-configure Biorouter during update")]
-        reconfigure: bool,
-    },
-
     /// Evaluate system configuration across a range of practical tasks
     #[command(about = "Evaluate system configuration across a range of practical tasks")]
     Bench {
@@ -1321,7 +1304,6 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Knowledge { .. }) => "knowledge",
         Some(Command::Extension { .. }) => "extension",
         Some(Command::Skill { .. }) => "skill",
-        Some(Command::Update { .. }) => "update",
         Some(Command::Doctor { .. }) => "doctor",
         Some(Command::SetupPath { .. }) => "setup-path",
         Some(Command::Bench { .. }) => "bench",
@@ -1941,13 +1923,6 @@ pub async fn cli() -> anyhow::Result<()> {
             .await
         }
         Some(Command::Schedule { command }) => handle_schedule_command(command).await,
-        Some(Command::Update {
-            canary,
-            reconfigure,
-        }) => {
-            crate::commands::update::update(canary, reconfigure)?;
-            Ok(())
-        }
         Some(Command::Doctor { format, no_update }) => {
             crate::commands::doctor::handle_doctor(&format, !no_update).await
         }

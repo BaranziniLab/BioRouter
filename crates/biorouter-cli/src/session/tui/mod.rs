@@ -1567,7 +1567,10 @@ async fn push_startup_notices(app: &mut App) {
                     Style::new().fg(ACCENT),
                 ),
                 Span::styled(
-                    format!("  (you have {}) — run `biorouter update`", u.current),
+                    format!(
+                        "  (you have {}) — install the latest release to upgrade",
+                        u.current
+                    ),
                     Style::new().add_modifier(Modifier::DIM),
                 ),
             ]));

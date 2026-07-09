@@ -458,3 +458,4 @@ async fn test_mermaid_blob_has_escaped_code() {
 }
 
 include!("tests_extra.rs");
+include!("tests_dashboard.rs");

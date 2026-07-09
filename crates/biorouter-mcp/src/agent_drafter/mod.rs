@@ -586,8 +586,12 @@ impl AgentDrafterServer {
         ArtifactStore::new(self.root.clone())
     }
 
-    /// Build a card-preview result (ui:// blob for the user + assistant note).
-    fn card_result(&self, manifest: &Manifest, note: &str) -> Result<CallToolResult, ErrorData> {
+    /// The app's live preview card as a user-audience `ui://` resource.
+    ///
+    /// Every tool that leaves an app in a new visible state returns this, so the
+    /// GUI's artifact panel shows the app itself rather than a line of text
+    /// describing it.
+    fn card_content(&self, manifest: &Manifest) -> Result<Content, ErrorData> {
         let store = self.store();
         let entry_html = store
             .read_file(&manifest.id, &manifest.entry)
@@ -615,8 +619,13 @@ impl AgentDrafterServer {
             blob,
             meta: Some(rmcp::model::Meta(meta_obj)),
         };
+        Ok(Content::resource(resource).with_audience(vec![Role::User]))
+    }
+
+    /// Build a card-preview result (ui:// blob for the user + assistant note).
+    fn card_result(&self, manifest: &Manifest, note: &str) -> Result<CallToolResult, ErrorData> {
         Ok(CallToolResult::success(vec![
-            Content::resource(resource).with_audience(vec![Role::User]),
+            self.card_content(manifest)?,
             Content::text(note.to_string()).with_audience(vec![Role::Assistant]),
         ]))
     }
@@ -930,13 +939,19 @@ impl AgentDrafterServer {
             // Run the guardrail harness and surface findings so the agent can
             // self-correct (SDK-wired, self-contained, on-theme).
             let lint = bundle::lint_app(&store.artifact_dir(&p.id));
-            Ok(CallToolResult::success(vec![Content::text(format!(
-                "Built '{}' with {} → dist/app.js.\n{}\n\n{}",
-                p.id,
-                report.used,
-                bundle::format_lint(&lint),
-                report.log
-            ))]))
+            // A fresh bundle is a new visible state: show the rebuilt app, don't
+            // just tell the user it compiled.
+            Ok(CallToolResult::success(vec![
+                self.card_content(&manifest)?,
+                Content::text(format!(
+                    "Built '{}' with {} → dist/app.js.\n{}\n\n{}",
+                    p.id,
+                    report.used,
+                    bundle::format_lint(&lint),
+                    report.log
+                ))
+                .with_audience(vec![Role::Assistant]),
+            ]))
         } else {
             Err(err(
                 ErrorCode::INTERNAL_ERROR,
@@ -1025,10 +1040,16 @@ impl AgentDrafterServer {
             serde_json::json!(manifest.id),
         );
         meta.insert("biorouter/app-path".to_string(), serde_json::json!(path));
-        let mut result = CallToolResult::success(vec![Content::text(format!(
-            "App '{}' is ready. Open it in your browser: {}\n(In the desktop GUI use the Applications panel's Launch button; in the CLI open the URL above with a running biorouterd.)",
-            manifest.id, url
-        ))]);
+        let mut result = CallToolResult::success(vec![
+            // Launching is the moment the user most wants to see the app, so hand
+            // the artifact panel a live preview alongside the URL.
+            self.card_content(&manifest)?,
+            Content::text(format!(
+                "App '{}' is ready. Open it in your browser: {}\n(In the desktop GUI use the Applications panel's Launch button; in the CLI open the URL above with a running biorouterd.)",
+                manifest.id, url
+            ))
+            .with_audience(vec![Role::Assistant]),
+        ]);
         result.meta = Some(rmcp::model::Meta(meta));
         Ok(result)
     }

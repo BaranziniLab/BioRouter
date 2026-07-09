@@ -102,8 +102,8 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
                 style(format!("(you have {})", u.current)).dim()
             );
             println!(
-                "      run {} to update",
-                style("biorouter update").fg(ACCENT)
+                "      install the latest release, then run {}",
+                style("biorouter setup-path").fg(ACCENT)
             );
         }
         Some(u) => println!(

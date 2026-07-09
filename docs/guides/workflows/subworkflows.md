@@ -6,7 +6,7 @@ Subworkflows are workflows that are used by another workflow to perform specific
 
 ## How Subworkflows Work
 
-The "main workflow" registers its subworkflows in the `sub_recipes` field, which contains the following fields:
+The "main workflow" registers its subworkflows in the `sub_workflows` field, which contains the following fields:
 
 - `name`: Unique identifier for the subworkflow, used to generate the tool name
 - `path`: File path to the subworkflow file (relative or absolute)

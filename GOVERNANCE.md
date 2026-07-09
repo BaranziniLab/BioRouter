@@ -49,7 +49,7 @@ Core Maintainers have admin access across all repositories but use standard cont
 
 ### Day-to-Day Decisions
 
-* Most technical and process decisions are made through consensus in pull requests, GitHub discussions, or Discord.
+* Most technical and process decisions are made through consensus in pull requests, GitHub Discussions, or the UCSF Slack.
 * Core Maintainers can approve and merge changes quickly when there's clear benefit.
 * Significant architectural changes should have discussion in a GitHub issue or discussion before implementation.
 * Core Maintainers may step in when disputes arise or when decisions have project-wide impact.
@@ -59,7 +59,7 @@ Core Maintainers have admin access across all repositories but use standard cont
 * If Maintainers cannot reach consensus, the matter is escalated to Core Maintainers.
 * Core Maintainers aim for consensus through discussion.
 * If no resolution is reached after reasonable discussion, Core Maintainers may hold a simple majority vote to resolve the issue.
-* All dispute resolutions should be publicly announced on GitHub and Discord.
+* All dispute resolutions should be publicly announced on GitHub and the UCSF Slack.
 
 This process ensures fairness and transparency while enabling timely decision-making.
 
@@ -74,7 +74,7 @@ Major architectural or directional changes should:
 1. Be proposed as a GitHub issue or discussion.
 2. Undergo open community review for at least one week.
 3. Require approval from a majority of Core Maintainers.
-4. Be publicly announced on GitHub and Discord.
+4. Be publicly announced on GitHub and the UCSF Slack.
 
 ## Selection and Removal of Maintainers
 
@@ -92,7 +92,7 @@ Major architectural or directional changes should:
    * Alignment with the project’s values.
 2. Discussion among all Core Maintainers.
 3. Approval by majority vote.
-4. Public announcement on GitHub and Discord.
+4. Public announcement on GitHub and the UCSF Slack.
 
 ### Core Maintainer Appointment
 
@@ -104,7 +104,7 @@ We aim to have between 3 and 7 Core Maintainers at any time. We strive for an od
    * Long-term commitment to the project’s values
 2. Discussion among all Core Maintainers.
 3. Approval by majority vote.
-4. Public announcement on GitHub and Discord.
+4. Public announcement on GitHub and the UCSF Slack.
 
 ### Removal
 
@@ -130,7 +130,7 @@ If a Core Maintainer leaves for any reason:
 ### Channels
 
 * **GitHub**: The canonical home for issues, pull requests, and documentation.
-* **Discord**: Used for real-time collaboration and informal discussions.
+* **UCSF Slack**: Used for real-time collaboration and informal discussions.
 
 ### Transparency
 
@@ -155,7 +155,7 @@ If a Core Maintainer leaves for any reason:
 * Discuss first: For new features or architectural changes, open an issue or discussion.
 * Keep PRs focused: Smaller, focused changes are easier to review and merge.
 * Write meaningful tests: Tests should guard against real bugs, not just increase coverage.
-* Engage with the community: All Maintainers should be active on Discord and on GitHub, and be responsive to other contributors.
+* Engage with the community: All Maintainers should be active on GitHub and the UCSF Slack, and be responsive to other contributors.
 
 #### Release Process
 

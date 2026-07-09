@@ -268,27 +268,30 @@ if (process.env.ENABLE_PLAYWRIGHT) {
   app.commandLine.appendSwitch('remote-debugging-port', cdpPort);
 }
 
-// In development mode, force registration as the default protocol client
-// In production, register normally
-if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-  // Development mode - force registration
-  console.log('[Main] Development mode: Forcing protocol registration for biorouter://');
-  app.setAsDefaultProtocolClient('biorouter');
-
-  if (process.platform === 'darwin') {
-    try {
-      // Reset the default handler to ensure dev version takes precedence
-      spawn('open', ['-a', process.execPath, '--args', '--reset-protocol-handler', 'biorouter'], {
-        detached: true,
-        stdio: 'ignore',
-      });
-    } catch {
-      console.warn('[Main] Could not reset protocol handler');
-    }
+// Register as the handler for biorouter:// deep links.
+//
+// On macOS this maps the scheme to the *running bundle's* identifier. In a dev
+// tree that bundle is `node_modules/electron/dist/Electron.app`
+// (`com.github.Electron`) — a bare Electron shell with no app to run. Claiming
+// the scheme from there permanently steals `biorouter://` from the installed
+// app, and every subsequent link launches the shell, which exits immediately.
+// So on macOS we only register from a packaged build.
+//
+// Windows/Linux resolve the handler by executable path rather than bundle id,
+// and Electron's documented dev form (execPath + the app entry point) launches
+// the real app, so registering there is both safe and useful.
+if (process.platform === 'darwin') {
+  if (app.isPackaged) {
+    app.setAsDefaultProtocolClient('biorouter');
+  } else {
+    log.info(
+      '[Main] Dev build on macOS: skipping biorouter:// registration so the installed app keeps the scheme'
+    );
   }
-} else {
-  // Production mode - normal registration
+} else if (app.isPackaged || !process.argv[1]) {
   app.setAsDefaultProtocolClient('biorouter');
+} else {
+  app.setAsDefaultProtocolClient('biorouter', process.execPath, [path.resolve(process.argv[1])]);
 }
 
 // Apply single instance lock on Windows and Linux where it's needed for deep links
@@ -453,9 +456,24 @@ let windowDeeplinkURL: string | null = null;
 
 app.on('open-url', async (_event, url) => {
   if (process.platform !== 'win32') {
-    const parsedUrl = new URL(url);
+    let parsedUrl: URL;
+    try {
+      parsedUrl = new URL(url);
+    } catch (error) {
+      log.error('[Main] Ignoring malformed deep link:', url, error);
+      return;
+    }
 
     log.info('[Main] Received open-url event:', url);
+
+    // On a cold launch macOS emits open-url before `ready`, so this handler and
+    // appMain both wait on the same whenReady() promise — and appMain's
+    // continuation was queued first. Claim the launch *now*, synchronously,
+    // otherwise appMain sees the flag still false and opens a redundant empty
+    // window alongside the one this handler is about to create.
+    if (!app.isReady() && ['diverge', 'bot', 'workflow'].includes(parsedUrl.hostname)) {
+      openUrlHandledLaunch = true;
+    }
 
     await app.whenReady();
 
@@ -3614,8 +3632,29 @@ function buildApplicationMenu() {
   Menu.setApplicationMenu(menu);
 }
 
+/**
+ * Re-claim `biorouter://` if something else holds it.
+ *
+ * Older dev builds registered the bare Electron shell as the handler, which
+ * silently broke every shared workflow link on that machine — the shell has no
+ * app to run, so it launches and exits. Re-asserting on each packaged launch
+ * heals those machines without the user having to know any of this.
+ */
+function ensureDeepLinkHandler() {
+  if (!app.isPackaged) return;
+  try {
+    if (app.isDefaultProtocolClient('biorouter')) return;
+    const reclaimed = app.setAsDefaultProtocolClient('biorouter');
+    log.info(`[Main] biorouter:// was claimed by another app; reclaim ${reclaimed ? 'ok' : 'failed'}`);
+  } catch (error) {
+    log.warn('[Main] Could not verify biorouter:// handler registration:', error);
+  }
+}
+
 async function appMain() {
   await configureProxy();
+
+  ensureDeepLinkHandler();
 
   // Ensure Windows shims are available before any MCP processes are spawned
   await ensureWinShims();
