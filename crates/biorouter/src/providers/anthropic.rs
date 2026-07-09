@@ -170,9 +170,17 @@ impl Provider for AnthropicProvider {
     fn metadata() -> ProviderMetadata {
         // All current Claude models (3.x and 4.x) are vision-capable.
         // If a text-only Claude ships, switch this to a per-model match.
+        //
+        // Context windows are per-model, not a blanket 200k: Fable 5, Sonnet 5,
+        // and Opus 4.6+/Sonnet 4.6 are 1M (GA — no beta header), while the 4.5
+        // tier and Haiku 4.5 remain 200k. `context_window_for` is the single
+        // source of truth; don't hardcode a number here.
         let models: Vec<ModelInfo> = ANTHROPIC_KNOWN_MODELS
             .iter()
-            .map(|&model_name| ModelInfo::new(model_name, 200_000).with_vision())
+            .map(|&model_name| {
+                ModelInfo::new(model_name, ModelConfig::context_window_for(model_name))
+                    .with_vision()
+            })
             .collect();
 
         ProviderMetadata::with_models(
