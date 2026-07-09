@@ -44,6 +44,11 @@ pub struct BioRouterAcpAgent {
     sessions: Arc<Mutex<HashMap<String, BioRouterAcpSession>>>,
     agent: Arc<Agent>,
     provider: Arc<dyn biorouter::providers::base::Provider>,
+    /// Whether a client may register `McpServer::Stdio` extensions, which spawn
+    /// an arbitrary command. True over stdio, where the client is the process
+    /// that launched us (an editor). False over the WebSocket transport, whose
+    /// clients are artifact documents and must never gain process execution.
+    allow_stdio_mcp: bool,
 }
 
 pub struct BioRouterAcpConfig {
@@ -335,7 +340,15 @@ impl BioRouterAcpAgent {
             provider: config.provider.clone(),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             agent: agent_ptr,
+            allow_stdio_mcp: true,
         })
+    }
+
+    /// Deny client-registered stdio MCP servers on this agent. Used for the
+    /// WebSocket transport, where the peer is untrusted artifact content.
+    pub fn deny_stdio_mcp(mut self) -> Self {
+        self.allow_stdio_mcp = false;
+        self
     }
 
     fn convert_acp_prompt_to_message(&self, prompt: Vec<ContentBlock>) -> Message {
@@ -702,6 +715,11 @@ impl BioRouterAcpAgent {
 
         // Add MCP servers specified in the session request
         for mcp_server in args.mcp_servers {
+            if !self.allow_stdio_mcp && matches!(mcp_server, McpServer::Stdio(_)) {
+                return Err(sacp::Error::invalid_params().data(
+                    "stdio MCP servers are not permitted over this transport".to_string(),
+                ));
+            }
             let config = match mcp_server_to_extension_config(mcp_server) {
                 Ok(c) => c,
                 Err(msg) => {
@@ -1097,20 +1115,116 @@ pub async fn serve_ws(
     Ok(())
 }
 
+/// Name of the environment variable carrying the WebSocket bearer token.
+///
+/// Passed via the environment rather than argv so it does not show up in `ps`.
+pub const ACP_WS_TOKEN_ENV: &str = "BIOROUTER_ACP_WS_TOKEN";
+
+/// Compare two tokens without an early return, so a network peer cannot recover
+/// the secret one byte at a time by timing the reply. Length is not secret: the
+/// token is always a fixed-width hex string.
+fn tokens_match(candidate: &str, expected: &str) -> bool {
+    let (a, b) = (candidate.as_bytes(), expected.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Extract `token` from a request query string (`a=1&token=xyz`).
+fn token_from_query(query: &str) -> Option<&str> {
+    query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("token="))
+}
+
+/// Resolve the bearer token the WebSocket server will require.
+///
+/// The desktop app sets `BIOROUTER_ACP_WS_TOKEN` when it spawns the sidecar. A
+/// human running `biorouter acp --ws` by hand gets a freshly generated token
+/// printed once, so the endpoint is never unauthenticated by default.
+fn resolve_ws_token() -> String {
+    if let Ok(token) = std::env::var(ACP_WS_TOKEN_ENV) {
+        if !token.is_empty() {
+            return token;
+        }
+    }
+    use rand::Rng;
+    let token: String = rand::thread_rng()
+        .sample_iter(rand::distributions::Uniform::new(0u8, 16u8))
+        .take(64)
+        .map(|nibble| char::from_digit(nibble as u32, 16).unwrap_or('0'))
+        .collect();
+    eprintln!("ACP WebSocket token (append `?token=<TOKEN>` when connecting): {token}");
+    token
+}
+
 /// Run the ACP agent as a WebSocket server, accepting many client connections.
 /// Each connection is served by the shared agent over its own ACP session.
+///
+/// The transport is authenticated. Anything that can open a TCP socket to this
+/// port -- any local process, and any web page the user happens to be visiting,
+/// since browsers permit cross-origin WebSocket connects -- would otherwise be
+/// able to drive a full agent session. Two gates:
+///
+///   * a bearer token, supplied as a `?token=` query parameter;
+///   * an `Origin` check. Artifact documents load from `file://` or an opaque
+///     sandbox, so they send `Origin: null` or omit it. A page on a real
+///     web origin is rejected outright.
+///
+/// The agent additionally refuses client-registered stdio MCP servers here
+/// (`deny_stdio_mcp`), so a token leak cannot escalate to process execution.
 pub async fn run_ws(builtins: Vec<String>, addr: String) -> Result<()> {
+    use tokio_tungstenite::tungstenite::handshake::server::{
+        ErrorResponse, Request, Response as HsResponse,
+    };
+    use tokio_tungstenite::tungstenite::http::StatusCode;
+
+    let expected_token = Arc::new(resolve_ws_token());
+
     let listener = tokio::net::TcpListener::bind(&addr).await?;
     let local = listener.local_addr()?;
-    info!(address = %local, "ACP WebSocket server listening");
+    info!(address = %local, "ACP WebSocket server listening (authenticated)");
 
-    let agent = Arc::new(BioRouterAcpAgent::new(builtins).await?);
+    let agent = Arc::new(BioRouterAcpAgent::new(builtins).await?.deny_stdio_mcp());
 
     loop {
         let (stream, peer) = listener.accept().await?;
         let agent = agent.clone();
+        let expected_token = expected_token.clone();
         tokio::spawn(async move {
-            match tokio_tungstenite::accept_async(stream).await {
+            let reject = |status: StatusCode, why: &'static str| {
+                warn!(%peer, why, "rejected ACP WebSocket handshake");
+                let mut resp = ErrorResponse::new(Some(why.to_string()));
+                *resp.status_mut() = status;
+                resp
+            };
+
+            let check = |req: &Request, resp: HsResponse| -> Result<HsResponse, ErrorResponse> {
+                // A browser page always sends its origin. Artifact documents are
+                // file:// or sandboxed, so their origin is opaque ("null").
+                if let Some(origin) = req.headers().get("origin") {
+                    let origin = origin.to_str().unwrap_or("<invalid>");
+                    if !origin.eq_ignore_ascii_case("null") {
+                        return Err(reject(StatusCode::FORBIDDEN, "cross-origin connect rejected"));
+                    }
+                }
+                let authorized = req
+                    .uri()
+                    .query()
+                    .and_then(token_from_query)
+                    .is_some_and(|t| tokens_match(t, &expected_token));
+                if !authorized {
+                    return Err(reject(StatusCode::UNAUTHORIZED, "missing or invalid token"));
+                }
+                Ok(resp)
+            };
+
+            match tokio_tungstenite::accept_hdr_async(stream, check).await {
                 Ok(ws) => {
                     info!(%peer, "ACP WebSocket client connected");
                     if let Err(e) = serve_ws(agent, ws).await {
@@ -1285,5 +1399,34 @@ print(\"hello, world\")
         expected: PermissionConfirmation,
     ) {
         assert_eq!(outcome_to_confirmation(&input), expected);
+    }
+}
+
+#[cfg(test)]
+mod ws_auth_tests {
+    use super::{token_from_query, tokens_match};
+
+    #[test]
+    fn token_matches_only_on_exact_equality() {
+        assert!(tokens_match("abc123", "abc123"));
+        assert!(!tokens_match("abc123", "abc124"));
+        assert!(!tokens_match("abc12", "abc123"));
+        assert!(!tokens_match("", "abc123"));
+        assert!(!tokens_match("abc123", ""));
+    }
+
+    #[test]
+    fn token_is_parsed_from_any_query_position() {
+        assert_eq!(token_from_query("token=xyz"), Some("xyz"));
+        assert_eq!(token_from_query("a=1&token=xyz"), Some("xyz"));
+        assert_eq!(token_from_query("token=xyz&b=2"), Some("xyz"));
+    }
+
+    #[test]
+    fn missing_or_lookalike_token_params_are_not_accepted() {
+        assert_eq!(token_from_query(""), None);
+        assert_eq!(token_from_query("a=1"), None);
+        // `nottoken=` must not satisfy the `token=` prefix.
+        assert_eq!(token_from_query("nottoken=xyz"), None);
     }
 }
