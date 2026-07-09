@@ -94,3 +94,42 @@ async fn same_family_models_with_different_windows_stay_distinct() {
         );
     }
 }
+
+/// The desktop chat input resolves a model's window client-side by scanning the
+/// list `/config/read model-limits` serves and taking the first entry whose
+/// pattern is a substring of the model name (`ChatInput.tsx::findModelLimit`).
+///
+/// Replicate that algorithm exactly: it must land on each model's true window,
+/// or the UI shows the user a different budget than the agent actually uses.
+#[tokio::test]
+async fn the_uis_pattern_scan_lands_on_each_models_true_window() {
+    let served = ModelConfig::get_all_model_limits();
+
+    // Verbatim port of findModelLimit().
+    let ui_would_show = |model: &str| -> Option<usize> {
+        served
+            .iter()
+            .find(|l| model.to_lowercase().contains(&l.pattern.to_lowercase()))
+            .map(|l| l.context_limit)
+    };
+
+    let wrong: Vec<_> = advertised_models()
+        .await
+        .iter()
+        .filter_map(|(provider, model, _)| {
+            let truth = ModelConfig::context_window_for(model);
+            match ui_would_show(model) {
+                Some(shown) if shown == truth => None,
+                shown => Some(format!(
+                    "  {provider}/{model}: agent uses {truth}, UI would show {shown:?}"
+                )),
+            }
+        })
+        .collect();
+
+    assert!(
+        wrong.is_empty(),
+        "the UI's pattern scan disagrees with the real context window:\n{}",
+        wrong.join("\n")
+    );
+}
