@@ -1,6 +1,6 @@
 version: 1.0.0
 title: BioRouter Self-Testing Integration Suite
-description: A comprehensive meta-testing recipe where BioRouter tests its own capabilities using its own tools - true first-person integration testing
+description: A comprehensive meta-testing workflow where BioRouter tests its own capabilities using its own tools - true first-person integration testing
 author:
   contact: biorouter-self-test
   
@@ -11,7 +11,7 @@ activities:
   - Analyze code structure and parsing capabilities
   - Test extension discovery and management
   - Create and orchestrate subagents for meta-testing
-  - Generate and execute test recipes
+  - Generate and execute test workflows
   - Test error boundaries and security controls
   - Measure performance and resource usage
   - Generate comprehensive test report
@@ -21,7 +21,7 @@ parameters:
     input_type: string
     requirement: optional
     default: "all"
-    description: "Which test phases to run: all, basic, extensions, subagents, recipes, advanced"
+    description: "Which test phases to run: all, basic, extensions, subagents, workflows, advanced"
   
   - key: test_depth
     input_type: string

@@ -295,16 +295,24 @@ This project requires a [Developer Certificate of Origin](https://en.wikipedia.o
 git commit --signoff ...
 ```
 
+## Contributing workflows
+
+Workflows are reusable, shareable YAML files that capture a BioRouter session so
+others can run it. Documentation and examples live in
+[`docs/guides/workflows/`](docs/guides/workflows/). To share one with the
+community, open a submission using the
+[`Submit a workflow`](.github/ISSUE_TEMPLATE/submit-workflow.yml) GitHub issue
+template and paste your YAML into the form — we'll review it and add it to the
+cookbook.
+
 ## Other Ways to Contribute
 
-There are numerous ways to be an open source contributor and contribute to BioRouter. We're here to help you on your way! Here are some suggestions to get started. If you have any questions or need help, feel free to reach out to us on [Discord](https://discord.gg/biorouter-oss).
+There are numerous ways to be an open source contributor and contribute to BioRouter. We're here to help you on your way! Here are some suggestions to get started. If you have any questions or need help, feel free to reach out to us on [GitHub Discussions](https://github.com/BaranziniLab/biorouter/discussions).
 
 - **Stars on GitHub:** If you resonate with our project and find it valuable, consider starring BioRouter on GitHub! 🌟
-- **Ask Questions:** Your questions not only help us improve but also benefit the community. If you have a question, don't hesitate to ask it on [Discord](https://discord.gg/biorouter-oss).
-- **Give Feedback:** Have a feature you want to see or encounter an issue with BioRouter, [click here to open an issue](https://github.com/BaranziniLab/BioRouter/issues/new/choose), [start a discussion](https://github.com/BaranziniLab/BioRouter/discussions) or tell us on Discord.
-- **Participate in Community Events:** We host a variety of community events and livestreams on Discord every month, ranging from workshops to brainstorming sessions. You can subscribe to our [events calendar](https://calget.com/c/t7jszrie) or follow us on [social media](https://linktr.ee/biorouter_oss) to stay in touch.
+- **Ask Questions:** Your questions not only help us improve but also benefit the community. If you have a question, don't hesitate to ask it on [GitHub Discussions](https://github.com/BaranziniLab/biorouter/discussions).
+- **Give Feedback:** Have a feature you want to see or encounter an issue with BioRouter, [click here to open an issue](https://github.com/BaranziniLab/BioRouter/issues/new/choose) or [start a discussion](https://github.com/BaranziniLab/biorouter/discussions).
 - **Improve Documentation:** Good documentation is key to the success of any project. You can help improve the quality of our existing docs or add new pages.
 - **Help Other Members:** See another community member stuck? Or a contributor blocked by a question you know the answer to? Reply to community threads or do a code review for others to help.
-- **Showcase Your Work:** Working on a project or written a blog post recently? Share it with the community in our [#share-your-work](https://discord.com/channels/1287729918100246654/1287729920797179958) channel.
-- **Give Shoutouts:** Is there a project you love or a community/staff who's been especially helpful? Feel free to give them a shoutout in our [#general](https://discord.com/channels/1287729918100246654/1287729920797179957) channel.
-- **Spread the Word:** Help us reach more people by sharing BioRouter's project, website, YouTube, and/or Twitter/X.
+- **Showcase Your Work:** Working on a project or written a blog post recently? Share it with the community in [GitHub Discussions](https://github.com/BaranziniLab/biorouter/discussions).
+- **Spread the Word:** Help us reach more people by sharing BioRouter's project and website.

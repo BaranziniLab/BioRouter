@@ -32,11 +32,11 @@ TESTDIR=$(mktemp -d)
 echo "Created test directory: $TESTDIR"
 
 cp -r "$SCRIPT_DIR/scripts/test-subrecipes-examples/"* "$TESTDIR/"
-echo "Copied test recipes from scripts/test-subrecipes-examples"
+echo "Copied test workflows from scripts/test-subrecipes-examples"
 
 echo ""
-echo "=== Testing Subrecipe Workflow ==="
-echo "Recipe: $TESTDIR/project_analyzer.yaml"
+echo "=== Testing Subworkflow Execution ==="
+echo "Workflow: $TESTDIR/project_analyzer.yaml"
 echo ""
 
 # Create sample code files for analysis
@@ -73,7 +73,7 @@ echo ""
 
 RESULTS=()
 
-check_recipe_output() {
+check_workflow_output() {
   local tmpfile=$1
   local mode=$2
   
@@ -86,25 +86,28 @@ check_recipe_output() {
     RESULTS+=("✗ Subagent tool invocation ($mode)")
   fi
   
-  # Check that both subrecipes were called (shown as "subrecipe: <name>" in output)
-  if grep -q "subrecipe:.*file_stats\|file_stats.*subrecipe" "$tmpfile" && grep -q "subrecipe:.*code_patterns\|code_patterns.*subrecipe" "$tmpfile"; then
-    echo "✓ SUCCESS: Both subrecipes (file_stats, code_patterns) found in output"
-    RESULTS+=("✓ Both subrecipes present ($mode)")
+  # Check that both subworkflows were called. The CLI renders the tool argument as
+  # "subworkflow <name>" (crates/biorouter-cli/src/session/output.rs); the pre-rename
+  # "subrecipe" spelling is still accepted here so an older binary can be tested too.
+  if grep -qiE "sub(workflow|recipe).*file_stats|file_stats.*sub(workflow|recipe)" "$tmpfile" \
+    && grep -qiE "sub(workflow|recipe).*code_patterns|code_patterns.*sub(workflow|recipe)" "$tmpfile"; then
+    echo "✓ SUCCESS: Both subworkflows (file_stats, code_patterns) found in output"
+    RESULTS+=("✓ Both subworkflows present ($mode)")
   else
-    echo "✗ FAILED: Not all subrecipes found in output"
-    RESULTS+=("✗ Subrecipe names ($mode)")
+    echo "✗ FAILED: Not all subworkflows found in output"
+    RESULTS+=("✗ Subworkflow names ($mode)")
   fi
 }
 
-echo "Running recipe with parallel subrecipes..."
+echo "Running workflow with parallel subworkflows..."
 TMPFILE=$(mktemp)
-if (cd "$TESTDIR" && "$SCRIPT_DIR/target/release/biorouter" run --recipe project_analyzer_parallel.yaml --no-session 2>&1) | tee "$TMPFILE"; then
-  echo "✓ SUCCESS: Recipe completed successfully"
-  RESULTS+=("✓ Recipe exit code")
-  check_recipe_output "$TMPFILE" "parallel"
+if (cd "$TESTDIR" && "$SCRIPT_DIR/target/release/biorouter" run --workflow project_analyzer_parallel.yaml --no-session 2>&1) | tee "$TMPFILE"; then
+  echo "✓ SUCCESS: Workflow completed successfully"
+  RESULTS+=("✓ Workflow exit code")
+  check_workflow_output "$TMPFILE" "parallel"
 else
-  echo "✗ FAILED: Recipe execution failed"
-  RESULTS+=("✗ Recipe exit code")
+  echo "✗ FAILED: Workflow execution failed"
+  RESULTS+=("✗ Workflow exit code")
 fi
 rm "$TMPFILE"
 echo ""

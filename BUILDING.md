@@ -2,6 +2,8 @@
 
 This guide covers how to build BioRouter for all supported platforms from a macOS Apple Silicon development machine. Follow the steps in order — some steps depend on previous ones.
 
+> **Version placeholder:** File names below use `<version>` for the workspace version — currently **1.87.2** (kept in sync across `Cargo.toml` and `ui/desktop/package.json`). Substitute the real version when you build.
+
 ---
 
 ## Table of Contents
@@ -51,21 +53,21 @@ This compiles the native macOS ARM64 backend binary. It must be done before any 
 cargo build --release
 ```
 
-Output: `target/release/biorouter`
+Output: `target/release/biorouter` (CLI) and `target/release/biorouterd` (daemon) — the desktop bundle requires **both**.
 
-Then copy it into the Electron app's bin directory:
+Then copy **both** binaries into the Electron app's bin directory. `just copy-binary` copies `biorouter` and `biorouterd` and re-signs them with the Developer ID (so Keychain grants survive rebuilds):
 
 ```bash
-cp target/release/biorouter ui/desktop/src/bin/biorouter
+just copy-binary
 ```
 
-Verify it is the right architecture:
+Verify the CLI is the right architecture:
 ```bash
 file ui/desktop/src/bin/biorouter
 # Expected: Mach-O 64-bit executable arm64
 ```
 
-> **Note:** The ARM64 binary is gitignored (it exceeds GitHub's 100MB limit). It must be rebuilt on each machine.
+> **Note:** Packaging requires **both** `biorouter` and `biorouterd` in `src/bin/` — `prepare-platform-binaries.js` aborts the build if either is missing (it also fetches the `llamacpp/llama-server` sidecar automatically). The ARM64 binaries are gitignored (they exceed GitHub's 100MB limit) and must be rebuilt on each machine.
 
 ---
 
@@ -112,12 +114,12 @@ Then cross-compile the Rust binary for Intel:
 cargo build --release --target x86_64-apple-darwin
 ```
 
-Output: `target/x86_64-apple-darwin/release/biorouter`
+Output: `target/x86_64-apple-darwin/release/biorouter` and `.../biorouterd`.
 
-Copy the Intel binary into the bin directory (replacing ARM):
+Copy **both** Intel binaries into the bin directory (replacing ARM). `just copy-binary-intel` copies `biorouter` and `biorouterd` from the Intel target:
 
 ```bash
-cp target/x86_64-apple-darwin/release/biorouter ui/desktop/src/bin/biorouter
+just copy-binary-intel
 ```
 
 Verify:
@@ -147,7 +149,7 @@ Output: `out/BioRouter-darwin-x64/BioRouter_intel_mac.zip`
 After this step, restore the ARM binary so subsequent builds aren't broken:
 
 ```bash
-cp target/release/biorouter ui/desktop/src/bin/biorouter
+just copy-binary
 ```
 
 ---
@@ -212,8 +214,8 @@ The `build-linux-deb.sh` script:
 3. Runs `electron-forge make` for `linux/x64` producing `.deb` and `.rpm`
 
 Outputs:
-- `ui/desktop/out/make/deb/x64/biorouter_1.86.0_amd64.deb`
-- `ui/desktop/out/make/rpm/x64/BioRouter-1.86.0-1.x86_64.rpm`
+- `ui/desktop/out/make/deb/x64/biorouter_<version>_amd64.deb`
+- `ui/desktop/out/make/rpm/x64/BioRouter-<version>-1.x86_64.rpm`
 
 ---
 
@@ -222,7 +224,7 @@ Outputs:
 The Linux Docker build replaces `src/bin/biorouter` with the Linux x64 binary. **Always restore the ARM binary before the Windows build or any future macOS work:**
 
 ```bash
-cp target/release/biorouter ui/desktop/src/bin/biorouter
+just copy-binary
 ```
 
 Also, the Docker `npm ci` inside the container corrupts the local `node_modules` (missing macOS ARM native modules). Fix this every time after a Linux Docker build:
@@ -238,24 +240,24 @@ cd ../..
 
 ## Step 6 — Build Windows App
 
-Requires the macOS ARM binary to be restored (Step 5). The Windows Rust binary (`biorouter.exe`) is pre-built and stored in `ui/desktop/src/platform/windows/bin/` — the build script copies it automatically.
+The Windows Rust binaries (`biorouter.exe` and `biorouterd.exe`) are **not** checked into the repo — they must be cross-compiled from macOS/Linux inside Docker before packaging. `just make-ui-windows` runs the whole flow: it calls `just release-windows` (a Docker `rust:latest` cross-compile to `target/x86_64-pc-windows-gnu/release/`, producing both `.exe`s plus the required mingw runtime DLLs), copies them into `src/bin/`, then runs the Electron bundle.
 
 ```bash
-cd ui/desktop
-npm run bundle:windows
+just make-ui-windows
 ```
 
-What this does:
+Under the hood `npm run bundle:windows` (via `prepare-platform-binaries.js`):
 1. Builds the Vite main process bundle
-2. Copies Windows-specific binaries (`.exe`, `.dll`, `.cmd`) from `src/platform/windows/bin/` into `src/bin/`
-3. Removes the macOS binary from `src/bin/`
-4. Runs `electron-forge make` for `win32/x64`
+2. Copies the **supporting** Windows runtime files (`uv.exe`/`uvx.exe`, `git/`, `.cmd` shims, and the mingw `.dll`s) from `src/platform/windows/bin/` into `src/bin/` — that directory holds only these support files, **not** the Rust `.exe`s
+3. Removes the macOS binaries from `src/bin/`
+4. Fetches the `llamacpp/llama-server.exe` sidecar and verifies `biorouter.exe` + `biorouterd.exe` are present (packaging aborts if either is missing)
+5. Runs `electron-forge make` for `win32/x64`
 
-Output: `out/make/zip/win32/x64/BioRouter-win32-x64-1.86.0.zip`
+Output: `out/make/zip/win32/x64/BioRouter-win32-x64-<version>.zip`
 
 After this, restore the ARM binary again:
 ```bash
-cp target/release/biorouter ui/desktop/src/bin/biorouter
+just copy-binary
 ```
 
 ---
@@ -281,14 +283,14 @@ APPLE_APP_SPECIFIC_PASSWORD=<app-specific-password> \
 npm run bundle:dmg
 ```
 
-Output: `out/make/BioRouter-1.86.0-arm64.dmg`
+Output: `out/make/BioRouter-<version>-arm64.dmg`
 
 ### Intel DMG
 
-Swap in the Intel binary first:
+Swap in the Intel binaries first:
 
 ```bash
-cp target/x86_64-apple-darwin/release/biorouter ui/desktop/src/bin/biorouter
+just copy-binary-intel
 ```
 
 ```bash
@@ -299,12 +301,12 @@ APPLE_APP_SPECIFIC_PASSWORD=<app-specific-password> \
 npm run bundle:intel-dmg
 ```
 
-Output: `out/make/BioRouter-1.86.0-x64.dmg`
+Output: `out/make/BioRouter-<version>-x64.dmg`
 
 Restore the ARM binary after:
 
 ```bash
-cp target/release/biorouter ui/desktop/src/bin/biorouter
+just copy-binary
 ```
 
 ---
@@ -315,13 +317,13 @@ After completing all steps, your distributable files are:
 
 | Platform | File | Location |
 |----------|------|----------|
-| macOS Apple Silicon (DMG) | `BioRouter-1.86.0-arm64.dmg` | `ui/desktop/out/make/` |
-| macOS Intel (DMG) | `BioRouter-1.86.0-x64.dmg` | `ui/desktop/out/make/` |
+| macOS Apple Silicon (DMG) | `BioRouter-<version>-arm64.dmg` | `ui/desktop/out/make/` |
+| macOS Intel (DMG) | `BioRouter-<version>-x64.dmg` | `ui/desktop/out/make/` |
 | macOS Apple Silicon (zip) | `BioRouter.zip` | `ui/desktop/out/BioRouter-darwin-arm64/` |
 | macOS Intel (zip) | `BioRouter_intel_mac.zip` | `ui/desktop/out/BioRouter-darwin-x64/` |
-| Linux Ubuntu / Pop!_OS | `biorouter_1.86.0_amd64.deb` | `ui/desktop/out/make/deb/x64/` |
-| Linux Fedora / RHEL | `BioRouter-1.86.0-1.x86_64.rpm` | `ui/desktop/out/make/rpm/x64/` |
-| Windows x64 | `BioRouter-win32-x64-1.86.0.zip` | `ui/desktop/out/make/zip/win32/x64/` |
+| Linux Ubuntu / Pop!_OS | `biorouter_<version>_amd64.deb` | `ui/desktop/out/make/deb/x64/` |
+| Linux Fedora / RHEL | `BioRouter-<version>-1.x86_64.rpm` | `ui/desktop/out/make/rpm/x64/` |
+| Windows x64 | `BioRouter-win32-x64-<version>.zip` | `ui/desktop/out/make/zip/win32/x64/` |
 
 Upload all five files to the GitHub Release assets.
 
@@ -418,5 +420,5 @@ file ui/desktop/src/bin/biorouter
 If it shows `ELF 64-bit` instead of `Mach-O`, restore it:
 
 ```bash
-cp target/release/biorouter ui/desktop/src/bin/biorouter
+just copy-binary
 ```

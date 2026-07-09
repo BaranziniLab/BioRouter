@@ -67,7 +67,7 @@ ui/desktop/           # Electron app
 ## Rules
 
 Test: Prefer tests/ folder, e.g. crates/biorouter/tests/
-Test: When adding features, update biorouter-self-test.yaml, rebuild, then run `biorouter run --recipe biorouter-self-test.yaml` to validate
+Test: When adding features, update biorouter-self-test.yaml, rebuild, then run `biorouter run --workflow biorouter-self-test.yaml` to validate
 Error: Use anyhow::Result
 Provider: Implement Provider trait see providers/base.rs
 MCP: Extensions in crates/biorouter-mcp/

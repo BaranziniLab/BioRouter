@@ -672,7 +672,7 @@ biorouter schedule sessions --schedule-id review-weekly --limit 20</pre>
 
         <p style="font-size:13px;color:var(--text-2);">The desktop GUI keeps its own version in <code>package.json</code>; a CI guard (<code>check-version-consistency.sh</code>) fails the build if any copy drifts from the Cargo workspace version.</p>
 
-        <p>Key dependencies: tokio (async), axum (HTTP), rmcp (Model Context Protocol), serde/serde_json, tiktoken-rs (token counting), sqlx/SQLite (session persistence), minijinja (workflow/recipe templates), tokio-cron-scheduler (scheduling), and a vendored libgit2 (knowledge-base history, no system <code>git</code> needed).</p>
+        <p>Key dependencies: tokio (async), axum (HTTP), rmcp (Model Context Protocol), serde/serde_json, tiktoken-rs (token counting), sqlx/SQLite (session persistence), minijinja (workflow templates), tokio-cron-scheduler (scheduling), and a vendored libgit2 (knowledge-base history, no system <code>git</code> needed).</p>
 
         <h2>Frontend Electron and React</h2>
         <p>Desktop app: Electron 39, React 19, TypeScript, built with Vite and Electron Forge. Communicates with the local <code>biorouterd</code> REST API.</p>

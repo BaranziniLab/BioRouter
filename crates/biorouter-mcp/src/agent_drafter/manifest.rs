@@ -57,6 +57,12 @@ pub struct Capabilities {
     pub memory: MemoryCapability,
     #[serde(default)]
     pub tracing: TracingCapability,
+    /// Agent-driven UI control (`ui_*` tools). Unlike the other capabilities this
+    /// one is **on by default**: it is confined to the app's own page — the agent
+    /// can only mutate the DOM it already owns, and reaches nothing outside the
+    /// browser tab. Set `{"enabled": false}` to make an app text-only.
+    #[serde(default)]
+    pub ui: UiCapability,
     /// Lifecycle events the app may receive via `br.on()`
     /// (e.g. `["tool","handoff","llm","session","compaction"]`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -86,10 +92,59 @@ impl Capabilities {
         if self.tracing.enabled {
             v.push("tracing".to_string());
         }
+        if self.ui.enabled {
+            v.push("ui".to_string());
+        }
         for e in &self.events {
             v.push(format!("event:{e}"));
         }
         v
+    }
+}
+
+/// Agent-driven UI control. The agent gets `ui_*` tools that push commands down
+/// the app's own WebSocket, so it can build panels/dashboards, draw charts,
+/// highlight regions, restyle, and ask the user structured questions — instead of
+/// only emitting text. Scoped entirely to the app's page.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UiCapability {
+    /// Grant the `ui_*` tools. Default: true (see [`Capabilities::ui`]).
+    #[serde(default = "yes")]
+    pub enabled: bool,
+    /// Allow `ui_theme` to restyle the app (accent, mode, density).
+    #[serde(default = "yes")]
+    pub allow_theme: bool,
+    /// Allow `ui_layout` to switch the page's region layout.
+    #[serde(default = "yes")]
+    pub allow_layout: bool,
+    /// Allow `ui_ask` to block a tool call on a user form submission.
+    #[serde(default = "yes")]
+    pub allow_ask: bool,
+    /// Cap on simultaneously mounted agent panels (oldest evicted past this).
+    #[serde(default = "default_max_panels")]
+    pub max_panels: usize,
+    /// Seconds a `ui_ask` waits for the user before returning a timeout result.
+    #[serde(default = "default_ask_timeout_s")]
+    pub ask_timeout_s: u64,
+}
+
+fn default_max_panels() -> usize {
+    12
+}
+fn default_ask_timeout_s() -> u64 {
+    300
+}
+
+impl Default for UiCapability {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            allow_theme: true,
+            allow_layout: true,
+            allow_ask: true,
+            max_panels: default_max_panels(),
+            ask_timeout_s: default_ask_timeout_s(),
+        }
     }
 }
 

@@ -88,7 +88,7 @@ Before submitting AI assisted code, confirm that:
 
 AI is a powerful assistant, not a replacement for your judgment. Use it to speed up development; while keeping your brain engaged, your standards high, and BioRouter secure.
 
-Questions? Join our [Discord](https://discord.gg/biorouter-oss) or [GitHub Discussions](https://github.com/BaranziniLab/BioRouter/discussions) to talk more about responsible AI development.  
+Questions? Join our [GitHub Discussions](https://github.com/BaranziniLab/biorouter/discussions) to talk more about responsible AI development.  
 
 ---
 

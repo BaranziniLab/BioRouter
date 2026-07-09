@@ -27,18 +27,6 @@ sudo dnf install dpkg-dev fakeroot gcc gcc-c++ make libxcb-devel
 sudo zypper install dpkg fakeroot gcc gcc-c++ make
 ```
 
-**android / termux:**
-
-BioRouter is not officially support termux build yet, you need some minor patch to fix build issues.
-We will publish BioRouter into termux-packages.
-If you want to try there is a non-official build, https://github.com/shawn111/BioRouter/releases/download/termux/biorouter-termux-aarch64.tar.bz2
-For more details, see: https://github.com/BaranziniLab/BioRouter/pull/3890
-
-```bash
-pkg install rust
-pkg install cmake protobuf clang build-essential
-```
-
 ### Development Tools
 
 - **Rust**: Install via [rustup](https://rustup.rs/)
@@ -54,8 +42,11 @@ cd BioRouter
 ```
 
 ### 2. Build the Rust Backend
+
+Build the whole workspace in release mode — the desktop bundle needs **both** the daemon (`biorouterd`) and the CLI (`biorouter`):
+
 ```bash
-cargo build --release -p biorouter-server
+cargo build --release
 ```
 
 ### 3. Prepare the Desktop Application
@@ -63,9 +54,16 @@ cargo build --release -p biorouter-server
 cd ui/desktop
 npm install
 
-# Copy the server binary to the expected location
+# Copy BOTH backend binaries to the expected location
 mkdir -p src/bin
 cp ../../target/release/biorouterd src/bin/
+cp ../../target/release/biorouter src/bin/
+
+# Fetch the pinned llama-server sidecar and verify all required binaries.
+# This downloads llamacpp/llama-server and fails fast if biorouter or
+# biorouterd is missing. Plain `npm run make` does NOT run this prep step
+# (so it ships without the local-models sidecar) — run it explicitly first.
+node scripts/prepare-platform-binaries.js
 ```
 
 ### 4. Build the Application
@@ -76,7 +74,7 @@ Works on all Linux distributions:
 npm run make -- --targets=@electron-forge/maker-zip
 ```
 
-Output: `out/make/zip/linux/x64/biorouter-linux-x64-{version}.zip`
+Output: `out/make/zip/linux/x64/BioRouter-linux-x64-{version}.zip`
 
 #### Option B: DEB Package
 For Debian/Ubuntu systems:
@@ -95,7 +93,7 @@ npm run make
 
 #### From Build Directory
 ```bash
-./out/biorouter-linux-x64/biorouter
+./out/BioRouter-linux-x64/BioRouter
 ```
 
 #### Install DEB Package (if built)
@@ -122,8 +120,8 @@ These are harmless and don't affect functionality. To suppress them, create a la
 
 ```bash
 #!/bin/bash
-cd /path/to/BioRouter/ui/desktop/out/biorouter-linux-x64
-./biorouter 2>&1 | grep -v "GLib-GObject" | grep -v "browser_main_loop"
+cd /path/to/BioRouter/ui/desktop/out/BioRouter-linux-x64
+./BioRouter 2>&1 | grep -v "GLib-GObject" | grep -v "browser_main_loop"
 ```
 
 #### Server Binary Not Found
@@ -161,7 +159,7 @@ Building as Snap packages is not currently supported but may be added in the fut
 For active development:
 
 1. **Backend changes**: Rebuild with `cargo build --release -p biorouter-server` and copy the binary
-2. **Frontend changes**: Use `npm run start` for hot reload during development
+2. **Frontend changes**: Use `npm run start-gui` for hot reload during development (`npm run start` runs `just run-ui`, which does a full release `cargo build` first)
 3. **Full rebuild**: Run the complete build process above
 
 ## Creating System Integration
@@ -172,8 +170,8 @@ Create `~/.local/share/applications/biorouter.desktop`:
 [Desktop Entry]
 Name=BioRouter AI Agent
 Comment=AI research environment for biomedical discovery
-Exec=/path/to/BioRouter/ui/desktop/out/biorouter-linux-x64/biorouter %U
-Icon=/path/to/BioRouter/ui/desktop/out/biorouter-linux-x64/resources/app.asar.unpacked/src/images/icon.png
+Exec=/path/to/BioRouter/ui/desktop/out/BioRouter-linux-x64/BioRouter %U
+Icon=/path/to/BioRouter/ui/desktop/out/BioRouter-linux-x64/resources/app.asar.unpacked/src/images/icon.png
 Terminal=false
 Type=Application
 Categories=Science;Education;Utility;
@@ -184,8 +182,8 @@ MimeType=x-scheme-handler/biorouter
 ### System-wide Installation
 To install system-wide:
 ```bash
-sudo cp -r out/biorouter-linux-x64 /opt/biorouter
-sudo ln -s /opt/biorouter/biorouter /usr/local/bin/biorouter-gui
+sudo cp -r out/BioRouter-linux-x64 /opt/biorouter
+sudo ln -s /opt/biorouter/BioRouter /usr/local/bin/biorouter-gui
 ```
 
 ## Contributing

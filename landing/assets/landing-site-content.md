@@ -80,9 +80,9 @@ GitHub: https://github.com/BaranziniLab/BioRouter
 ### Feature Cards (6)
 1. Enterprise-Grade Security — UCSF-hosted AI, local Ollama, patient data stays in institution
 2. Agentic Orchestration — MCP agents, clinical DBs, knowledge graphs
-3. Federated Collaboration — Recipes shareable across institutions without sharing data
+3. Federated Collaboration — Workflows shareable across institutions without sharing data
 4. Multi-Provider LLMs — Claude, GPT, Gemini, commercial/institutional/local
-5. Automation & Scheduling — Recipes, cron scheduling
+5. Automation & Scheduling — Workflows, cron scheduling
 6. Desktop + CLI — GUI for exploration, CLI for scripting
 
 ### Provider Ecosystem
@@ -147,7 +147,7 @@ After installing, users should:
 **Core Concepts:**
 - Providers & Models
 - Extensions & Skills
-- Recipes & Automation
+- Workflows & Automation
 - Data Privacy
 
 **Advanced:**
@@ -186,13 +186,13 @@ Source: `/Users/wgu/Desktop/biorouter/documentation/extensions-skills-mcp.md`
 - Adding external MCP servers (Desktop UI + config YAML)
 - Skills system description
 
-#### Recipes & Automation
-Source: `/Users/wgu/Desktop/biorouter/documentation/recipes.md`
-- What is a Recipe?
-- Recipe YAML structure example
-- Running recipes (Desktop + CLI)
+#### Workflows & Automation
+Source: `/Users/wgu/Desktop/biorouter/documentation/workflows.md`
+- What is a Workflow?
+- Workflow YAML structure example
+- Running workflows (Desktop + CLI)
 - Scheduling with cron
-- Sharing recipes across institutions
+- Sharing workflows across institutions
 
 #### Data Privacy
 Source: `/Users/wgu/Desktop/biorouter/documentation/data-privacy.md`
@@ -375,11 +375,11 @@ Each card contains:
 - `/Users/wgu/Desktop/biorouter/documentation/data-privacy.md`
 - `/Users/wgu/Desktop/biorouter/documentation/providers-and-models.md`
 - `/Users/wgu/Desktop/biorouter/documentation/extensions-skills-mcp.md`
-- `/Users/wgu/Desktop/biorouter/documentation/recipes.md`
+- `/Users/wgu/Desktop/biorouter/documentation/workflows.md`
 - `/Users/wgu/Desktop/biorouter/documentation/schedulers.md`
 - `/Users/wgu/Desktop/biorouter/documentation/architecture.md`
 - `/Users/wgu/Desktop/biorouter/ui/desktop/src/images/icon.png`
 - `/Users/wgu/Desktop/biorouter/README.md`
-- `/Users/wgu/Desktop/biorouter/RELEASE_NOTES.md`
+- `/Users/wgu/Desktop/biorouter/docs/release-notes/vX.Y.Z.md`
 - GitHub: https://github.com/BaranziniLab/BioRouter
 - GitHub Agents: UCSFOMOPAgent, SPOKEAgent, MedCP, playwright-mcp

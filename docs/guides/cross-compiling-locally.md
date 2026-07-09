@@ -1,7 +1,11 @@
----
-draft: true
----
-# Instructions for running cross to test release builds locally
+# Cross-compiling locally with `cross`
+
+Optional local-QA path for building release binaries for other architectures on your own machine.
+
+> **Note:** this is *not* how releases are cut. The shipped pipeline
+> ([`scripts/release.sh`](../../scripts/release.sh) and the `release-*` targets in the `Justfile`)
+> cross-compiles by invoking `docker run` + `cargo build` directly and never calls `cross`. Use this
+> guide only for ad-hoc local testing of a target the release matrix doesn't cover.
 
 ## Prerequisites
 Before start, check the comments in `Cross.toml` to turn on some commented configs for the target you want to build.

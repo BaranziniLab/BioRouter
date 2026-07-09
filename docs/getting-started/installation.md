@@ -21,19 +21,23 @@ Always install the newest release for the latest features and bug fixes.
 
 ### macOS (CLI)
 
-```sh
-curl -fsSL https://github.com/BaranziniLab/biorouter/releases/download/stable/download_cli.sh | bash
-```
+On macOS the `biorouter` command-line tool is bundled inside the desktop app — there is no separate CLI download. After installing the app (above), add it to your `PATH`:
 
-To install without interactive configuration:
-```sh
-curl -fsSL https://github.com/BaranziniLab/biorouter/releases/download/stable/download_cli.sh | CONFIGURE=false bash
-```
+1. Accept the in-app **Install Biorouter CLI** prompt, or run:
 
-To update:
-```sh
-biorouter update
-```
+   ```sh
+   biorouter setup-path
+   ```
+
+   This symlinks the bundled `biorouter` binary onto your `PATH`.
+
+2. Configure a provider and extensions from the terminal:
+
+   ```sh
+   biorouter configure
+   ```
+
+To upgrade, re-download the latest app from the [releases page](https://github.com/BaranziniLab/biorouter/releases) and run `biorouter setup-path` again to point at the new binary.
 
 ### Linux and Windows
 
@@ -210,10 +214,7 @@ This file stores provider settings, API keys (encrypted), extension configuratio
 
 **Desktop:** BioRouter checks for updates automatically. You can also manually download the latest release from https://github.com/BaranziniLab/biorouter/releases.
 
-**CLI:**
-```sh
-biorouter update
-```
+**CLI:** The `biorouter` CLI is bundled with the desktop app. To upgrade it on macOS or Windows, re-download the latest app from https://github.com/BaranziniLab/biorouter/releases and run `biorouter setup-path` to point your `PATH` at the new binary. On Linux, upgrade the headless `biorouter-cli` package instead (`sudo apt install ./biorouter-cli_*.deb` or `sudo dnf install ./biorouter-cli-*.rpm`).
 
 ---
 

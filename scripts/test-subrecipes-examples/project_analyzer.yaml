@@ -1,6 +1,6 @@
 version: 1.0.0
 title: Project Analyzer
-description: Analyze project codebase using parallel subrecipes for file statistics and code patterns
+description: Analyze project codebase using sequential subworkflows for file statistics and code patterns
 instructions: You are a code analysis assistant that examines project structure and code patterns.
 parameters:
   - key: target_directory
@@ -14,15 +14,15 @@ parameters:
     default: "true"
     description: "Whether to include test files in analysis"
 prompt: |
-  Run two subrecipes sequentially:
-    - use file_stats subrecipe to gather file statistics for {{ target_directory }}
-    - use code_patterns subrecipe to analyze code patterns in {{ target_directory }}
+  Run two subworkflows sequentially:
+    - use file_stats subworkflow to gather file statistics for {{ target_directory }}
+    - use code_patterns subworkflow to analyze code patterns in {{ target_directory }}
 extensions:
   - type: builtin
     name: developer
     timeout: 300
     bundled: true
-sub_recipes:
+sub_workflows:
   - name: file_stats
     path: "./subrecipes/file_stats.yaml"
     values:

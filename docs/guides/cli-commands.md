@@ -81,27 +81,6 @@ biorouter --version
 
 ---
 
-#### update [options]
-Update the biorouter CLI to a newer version.
-
-**Options:**
-- **`--canary, -c`**: Update to the canary (development) version instead of the stable version
-- **`--reconfigure, -r`**: Forces biorouter to reset configuration settings during the update process
-
-**Usage:**
-```bash
-# Update to latest stable version
-biorouter update
-
-# Update to latest canary version
-biorouter update --canary
-
-# Update and reconfigure settings
-biorouter update --reconfigure
-```
-
----
-
 ### Session Management
 
 > **Info:** Starting with version 1.10.0, biorouter uses a SQLite database (`sessions.db`) instead of individual `.jsonl` files.
@@ -294,7 +273,7 @@ Execute commands from an instruction file or stdin. Check out the [full guide](/
 - **`-i, --instructions <FILE>`**: Path to instruction file containing commands. Use `-` for stdin
 - **`-t, --text <TEXT>`**: Input text to provide to biorouter directly
 - **`--system <TEXT>`**: Provide additional system instructions to customize the agent's behavior
-- **`--workflow <RECIPE_FILE_NAME> <OPTIONS>`**: Load a custom workflow in current session
+- **`--workflow <WORKFLOW_NAME_OR_PATH> <OPTIONS>`**: Load a custom workflow in current session
 - **`--params <KEY=VALUE>`**: Key-value parameters to pass to the workflow file. Can be specified multiple times
 - **`--sub-workflow <WORKFLOW>`**: Specify sub-workflows to include alongside the main workflow. Can be specified multiple times
 
@@ -367,14 +346,14 @@ biorouter bench ...etc.
 Used to validate workflow files, manage workflow sharing, list available workflows, and open workflows in biorouter desktop.
 
 **Commands:**
-- **`deeplink <RECIPE_NAME>`**: Generate a shareable link for a workflow file
+- **`deeplink <WORKFLOW_NAME>`**: Generate a shareable link for a workflow file
   - **`-p, --param <KEY=VALUE>`**: Pre-fill workflow parameter (can be specified multiple times)
 - **`list [OPTIONS]`**: List all available workflows from local directories and configured GitHub repositories
   - **`--format <FORMAT>`**: Output format (`text` or `json`). Default is `text`
   - **`-v, --verbose`**: Show verbose information including workflow titles and full file paths
-- **`open <RECIPE_NAME>`**: Open a workflow file directly in biorouter desktop
+- **`open <WORKFLOW_NAME>`**: Open a workflow file directly in biorouter desktop
   - **`-p, --param <KEY=VALUE>`**: Pre-fill workflow parameter (can be specified multiple times)
-- **`validate <RECIPE_NAME>`**: Validate a workflow file
+- **`validate <WORKFLOW_NAME>`**: Validate a workflow file
 
 **Usage:**
 ```bash

@@ -122,6 +122,38 @@ pub enum Asset {
     Mermaid,
 }
 
+impl Asset {
+    /// Stable key used to name this asset in a dashboard's shared asset store.
+    pub fn key(&self) -> &'static str {
+        match self {
+            Asset::D3 => "d3",
+            Asset::D3Sankey => "d3-sankey",
+            Asset::ChartJs => "chartjs",
+            Asset::Leaflet => "leaflet",
+            Asset::Mermaid => "mermaid",
+        }
+    }
+
+    /// The raw library sources this asset injects, in load order.
+    ///
+    /// `(kind, source)` where kind is `"js"` or `"css"`. Only used by the
+    /// dashboard, which stores each source once and re-inlines it into every
+    /// panel iframe at render time (instead of duplicating megabytes per panel).
+    pub fn sources(&self) -> Vec<(&'static str, &'static str)> {
+        match self {
+            Asset::D3 => vec![("js", D3_MIN)],
+            Asset::D3Sankey => vec![("js", D3_SANKEY)],
+            Asset::ChartJs => vec![("js", CHART_MIN)],
+            Asset::Leaflet => vec![
+                ("css", LEAFLET_CSS),
+                ("js", LEAFLET_JS),
+                ("js", MARKERCLUSTER_JS),
+            ],
+            Asset::Mermaid => vec![("js", MERMAID_MIN)],
+        }
+    }
+}
+
 // Vendored libraries (compiled into the binary for offline use).
 const D3_MIN: &str = include_str!("templates/assets/d3.min.js");
 const D3_SANKEY: &str = include_str!("templates/assets/d3.sankey.min.js");
@@ -163,8 +195,64 @@ fn script_src(url: &str) -> String {
     format!("<script src=\"{url}\" crossorigin=\"anonymous\"></script>\n")
 }
 
+// ---------------------------------------------------------------------------
+// Fragment mode — how `render_dashboard` reuses the 32 single-figure tools.
+//
+// A dashboard is a page of `<iframe srcdoc>` panels, one per figure. Naively it
+// would call each tool and embed the returned document, but each document
+// inlines its own copy of D3/Chart.js/Mermaid (Mermaid alone is 3.3 MB), so a
+// six-panel dashboard would weigh tens of megabytes.
+//
+// Instead the dashboard runs each tool inside `render_fragment`, which swaps
+// `asset_html` for a sentinel comment and records which libraries the tool asked
+// for. The dashboard then stores each library's source exactly once and has the
+// page's JS splice it back into every panel at render time. Tools are untouched.
+// ---------------------------------------------------------------------------
+
+/// Sentinel left in a figure's `<head>` where its libraries would have gone.
+pub const ASSET_PLACEHOLDER: &str = "<!--AUTOVIS_ASSETS-->";
+
+tokio::task_local! {
+    /// Present only while a figure is being rendered in fragment mode.
+    static ASSET_SINK: std::sync::Arc<std::sync::Mutex<Vec<Asset>>>;
+}
+
+fn fragment_mode() -> bool {
+    ASSET_SINK.try_with(|_| ()).is_ok()
+}
+
+/// Render `fut` (a single-figure tool call) in fragment mode.
+///
+/// Returns the tool's own result plus the de-duplicated, load-ordered list of
+/// libraries it requested. The HTML inside the result carries
+/// [`ASSET_PLACEHOLDER`] instead of the inlined library sources.
+pub async fn render_fragment<F, T>(fut: F) -> (T, Vec<Asset>)
+where
+    F: std::future::Future<Output = T>,
+{
+    let sink = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let out = ASSET_SINK.scope(sink.clone(), fut).await;
+    let captured = std::mem::take(&mut *sink.lock().expect("asset sink poisoned"));
+
+    let mut assets = Vec::new();
+    for asset in captured {
+        if !assets.contains(&asset) {
+            assets.push(asset);
+        }
+    }
+    (out, assets)
+}
+
 /// Render the `<head>` asset tags (scripts + stylesheets) for the given libraries.
 pub fn asset_html(assets: &[Asset]) -> String {
+    // Fragment mode: record what was asked for, emit a placeholder instead.
+    if ASSET_SINK
+        .try_with(|sink| sink.lock().expect("asset sink poisoned").extend_from_slice(assets))
+        .is_ok()
+    {
+        return ASSET_PLACEHOLDER.to_string();
+    }
+
     let cdn = use_cdn();
     let mut out = String::new();
     for a in assets {
@@ -231,6 +319,11 @@ pub fn assemble(template: &str, assets: &[Asset], subs: &[(&str, &str)]) -> Stri
 /// a per-process unique file in the app cache dir (never the world-writable,
 /// race-prone, Windows-nonexistent `/tmp`).
 pub fn debug_dump(name: &str, html: &str) {
+    // Panels rendered inside a dashboard are intermediates, not figures a user
+    // ever sees on their own — dumping one file per panel is just noise.
+    if fragment_mode() {
+        return;
+    }
     let enabled = cfg!(debug_assertions)
         || matches!(
             std::env::var("BIOROUTER_AUTOVIS_DEBUG").ok().as_deref(),
@@ -270,6 +363,26 @@ pub fn finish(uri: &str, debug_name: &str, label: &str, html: String) -> CallToo
         Content::resource(resource).with_audience(vec![Role::User]),
         Content::text(label.to_string()).with_audience(vec![Role::Assistant]),
     ])
+}
+
+/// Recover the HTML document from a `CallToolResult` produced by [`finish`].
+///
+/// Used by the dashboard to pull each panel's markup back out of the figure tool
+/// it just called, so that panels inherit every tool's validation and template
+/// verbatim rather than re-implementing them.
+pub fn html_from_result(result: &CallToolResult) -> Result<String, ErrorData> {
+    for content in result.content.iter() {
+        if let rmcp::model::RawContent::Resource(embedded) = &content.raw {
+            if let ResourceContents::BlobResourceContents { blob, .. } = &embedded.resource {
+                let bytes = STANDARD
+                    .decode(blob)
+                    .map_err(|e| invalid(format!("figure produced an unreadable blob: {e}")))?;
+                return String::from_utf8(bytes)
+                    .map_err(|e| invalid(format!("figure produced invalid UTF-8: {e}")));
+            }
+        }
+    }
+    Err(invalid("figure produced no HTML resource"))
 }
 
 /// Convenience: assemble a template and build the result in one step.

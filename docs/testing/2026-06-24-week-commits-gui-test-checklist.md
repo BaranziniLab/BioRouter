@@ -272,7 +272,7 @@ Environment: dev build from HEAD @ 1.86.1, launched with `ENABLE_PLAYWRIGHT=1`
 
 ### Notes / environment constraints
 - agent-browser + Electron: the persistent daemon wedges when reconnecting to a
-  *restarted* Electron. Reliable recipe: full teardown (kill daemon + electron,
+  *restarted* Electron. Reliable procedure: full teardown (kill daemon + electron,
   `rm ~/.agent-browser/default.*`), relaunch GUI, then a single `connect 9222`.
 - `mimo-v2.5-pro` is autonomous-by-default and frequently fans out into many tool
   calls; the Knowledge "Resolve Entity" tool was observed hanging (~100s) on a

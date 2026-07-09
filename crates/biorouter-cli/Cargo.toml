@@ -76,8 +76,6 @@ winapi = { version = "0.3", features = ["wincred"] }
 default = ["jemalloc"]
 # Use tuned jemalloc as the global allocator (returns freed pages to the OS).
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
-# disables the update command
-disable-update = []
 
 [dev-dependencies]
 tempfile = "3"

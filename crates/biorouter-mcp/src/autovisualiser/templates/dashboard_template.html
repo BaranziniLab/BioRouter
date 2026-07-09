@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{{TITLE}}</title>
+<script>{{COMMON}}</script>
+<style>
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg, #f5f7fa);
+    color: var(--text, #2b2f36);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .report { max-width: 1180px; margin: 0 auto; padding: 0 24px 72px; }
+
+  /* ---- Masthead ---------------------------------------------------- */
+  .masthead { padding: 44px 0 26px; border-bottom: 1px solid var(--border, #e5e7eb); }
+  .eyebrow {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase;
+    color: var(--muted, #6b7280); margin-bottom: 12px;
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  }
+  .eyebrow .dot { width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: 0.5; }
+  h1.report-title { margin: 0; font-size: 30px; line-height: 1.22; font-weight: 650; letter-spacing: -0.018em; }
+  .report-subtitle { margin: 10px 0 0; font-size: 17px; color: var(--muted, #6b7280); font-weight: 400; }
+  .report-summary { margin-top: 20px; max-width: 76ch; }
+  .report-summary p { margin: 0 0 10px; }
+  .report-summary p:last-child { margin-bottom: 0; }
+  .report-summary ul { margin: 0 0 10px; padding-left: 20px; }
+
+  /* ---- Contents ---------------------------------------------------- */
+  .toc { margin: 26px 0 0; padding: 16px 18px; border: 1px solid var(--border, #e5e7eb); border-radius: 10px; background: var(--surface, #fff); }
+  .toc-heading { font-size: 11px; font-weight: 600; letter-spacing: 0.09em; text-transform: uppercase; color: var(--muted, #6b7280); margin-bottom: 10px; }
+  .toc ol { margin: 0; padding: 0; list-style: none; display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 2px 20px; }
+  .toc li { display: flex; align-items: baseline; gap: 9px; padding: 3px 0; min-width: 0; }
+  .toc .fignum { font-variant-numeric: tabular-nums; font-size: 12px; color: var(--muted, #6b7280); min-width: 2.4em; }
+  .toc a { color: inherit; text-decoration: none; border-bottom: 1px solid transparent; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .toc a:hover { border-bottom-color: var(--muted, #6b7280); }
+
+  /* ---- Sections ---------------------------------------------------- */
+  section.group { margin-top: 44px; }
+  .group-header { margin-bottom: 20px; }
+  h2.group-title { margin: 0; font-size: 20px; font-weight: 620; letter-spacing: -0.012em; }
+  .group-desc { margin: 8px 0 0; color: var(--muted, #6b7280); max-width: 76ch; font-size: 14.5px; }
+  .group-desc p { margin: 0 0 8px; }
+  .group-desc p:last-child { margin-bottom: 0; }
+
+  /* `align-items: start` so a short figure beside a tall one keeps its own
+     height instead of stretching and leaving dead space under its iframe. */
+  .panel-grid {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 22px; align-items: start;
+  }
+  @media (max-width: 860px) { .panel-grid { grid-template-columns: minmax(0, 1fr); } }
+
+  /* ---- Figure cards ------------------------------------------------ */
+  figure.panel {
+    margin: 0; min-width: 0;
+    background: var(--surface, #fff);
+    border: 1px solid var(--border, #e5e7eb);
+    border-radius: 12px;
+    overflow: hidden;
+    display: flex; flex-direction: column;
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.045);
+    scroll-margin-top: 16px;
+  }
+  figure.panel.span-full { grid-column: 1 / -1; }
+
+  .panel-head { padding: 15px 18px 12px; border-bottom: 1px solid var(--border, #e5e7eb); display: flex; gap: 12px; align-items: flex-start; }
+  .panel-head-text { min-width: 0; flex: 1; }
+  .panel-label { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted, #6b7280); font-variant-numeric: tabular-nums; }
+  .panel-title { margin: 3px 0 0; font-size: 15.5px; font-weight: 600; line-height: 1.35; }
+  .panel-caption { margin: 7px 0 0; font-size: 13.5px; color: var(--muted, #6b7280); line-height: 1.55; }
+
+  .panel-actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .icon-btn {
+    appearance: none; border: 1px solid transparent; background: transparent; cursor: pointer;
+    color: var(--muted, #6b7280); border-radius: 7px; width: 28px; height: 28px;
+    display: inline-flex; align-items: center; justify-content: center; padding: 0;
+    transition: background 0.14s ease, color 0.14s ease;
+  }
+  .icon-btn:hover { background: var(--bg, #f5f7fa); color: var(--text, #2b2f36); border-color: var(--border, #e5e7eb); }
+  .icon-btn svg { width: 15px; height: 15px; display: block; }
+
+  .panel-body { position: relative; flex: 1; min-height: 0; background: var(--surface, #fff); }
+  .panel-body iframe { display: block; width: 100%; border: 0; background: transparent; }
+  .panel-skeleton {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted, #6b7280); font-size: 13px; gap: 9px; pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+  .panel-skeleton.hidden { opacity: 0; }
+  .spinner {
+    width: 13px; height: 13px; border-radius: 50%;
+    border: 2px solid currentColor; border-top-color: transparent;
+    animation: spin 0.72s linear infinite; opacity: 0.55;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+
+  /* ---- Notes / methods --------------------------------------------- */
+  .panel-notes { border-top: 1px solid var(--border, #e5e7eb); }
+  .panel-notes summary {
+    cursor: pointer; list-style: none; padding: 10px 18px;
+    font-size: 12.5px; font-weight: 550; color: var(--muted, #6b7280);
+    display: flex; align-items: center; gap: 7px; user-select: none;
+  }
+  .panel-notes summary::-webkit-details-marker { display: none; }
+  .panel-notes summary:hover { color: var(--text, #2b2f36); }
+  .panel-notes summary .chev { transition: transform 0.16s ease; width: 12px; height: 12px; }
+  .panel-notes[open] summary .chev { transform: rotate(90deg); }
+  .notes-body { padding: 0 18px 15px; font-size: 13.5px; color: var(--muted, #6b7280); line-height: 1.6; }
+  .notes-body p { margin: 0 0 8px; }
+  .notes-body p:last-child { margin-bottom: 0; }
+  .notes-body ul { margin: 0 0 8px; padding-left: 19px; }
+
+  /* ---- Failed panel ------------------------------------------------- */
+  .panel-error { padding: 22px 18px; font-size: 13.5px; }
+  .panel-error .err-title { font-weight: 600; margin-bottom: 6px; }
+  .panel-error .err-detail { font-size: 12.5px; opacity: 0.85; white-space: pre-wrap; word-break: break-word; }
+
+  /* ---- Footer ------------------------------------------------------- */
+  .report-footer { margin-top: 52px; padding-top: 20px; border-top: 1px solid var(--border, #e5e7eb); font-size: 13px; color: var(--muted, #6b7280); max-width: 76ch; }
+  .report-footer p { margin: 0 0 8px; }
+  .report-footer p:last-child { margin-bottom: 0; }
+
+  /* ---- Inline markdown ---------------------------------------------- */
+  code {
+    font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, monospace;
+    font-size: 0.88em; padding: 0.12em 0.36em; border-radius: 4px;
+    background: rgba(127, 127, 127, 0.14);
+  }
+  a { color: #4f7cff; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  @media print {
+    .toc, .panel-actions { display: none; }
+    figure.panel { break-inside: avoid; box-shadow: none; }
+    .panel-notes[open] summary .chev { display: none; }
+  }
+</style>
+</head>
+<body>
+<main class="report">
+  <header class="masthead">
+    <div class="eyebrow">
+      <span>Auto Visualiser report</span>
+      <span class="dot"></span>
+      <span id="figure-count"></span>
+    </div>
+    <h1 class="report-title" id="report-title"></h1>
+    <p class="report-subtitle" id="report-subtitle" hidden></p>
+    <div class="report-summary" id="report-summary" hidden></div>
+  </header>
+
+  <nav class="toc" id="toc" hidden aria-label="Figures in this report">
+    <div class="toc-heading">Contents</div>
+    <ol id="toc-list"></ol>
+  </nav>
+
+  <div id="sections"></div>
+
+  <footer class="report-footer" id="report-footer" hidden></footer>
+</main>
+
+<!-- Shared library sources: stored once, spliced into every panel at render time. -->
+{{ASSET_STORE}}
+
+<!-- Panel documents (base64; each carries an asset placeholder, not the libraries). -->
+{{PANEL_STORE}}
+
+<script>
+(function () {
+  'use strict';
+
+  var DATA = {{DASHBOARD_DATA}};
+
+  // -- tiny inline markdown (input is plain text; we escape first) ----------
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  // Only http(s)/mailto links survive; everything else stays literal text. The
+  // input is already HTML-escaped, so the tags below are the only markup added.
+  function inlineMd(escaped) {
+    return escaped
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>')
+      .replace(
+        /\[([^\]]+)\]\(((?:https?:\/\/|mailto:)[^\s)]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+      );
+  }
+
+  // Render a block of prose: blank-line paragraphs plus "- " bullet lists.
+  function renderProse(host, text) {
+    if (!text) return false;
+    var blocks = String(text).split(/\n{2,}/);
+    var html = '';
+    blocks.forEach(function (block) {
+      var lines = block.split('\n').filter(function (l) { return l.trim() !== ''; });
+      if (!lines.length) return;
+      var isList = lines.every(function (l) { return /^\s*[-*]\s+/.test(l); });
+      if (isList) {
+        html += '<ul>' + lines.map(function (l) {
+          return '<li>' + inlineMd(escapeHtml(l.replace(/^\s*[-*]\s+/, ''))) + '</li>';
+        }).join('') + '</ul>';
+      } else {
+        html += '<p>' + inlineMd(escapeHtml(lines.join('\n'))).replace(/\n/g, '<br>') + '</p>';
+      }
+    });
+    host.innerHTML = html;
+    host.hidden = false;
+    return true;
+  }
+
+  function decodeB64(text) {
+    var bin = atob(text.replace(/\s+/g, ''));
+    var bytes = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new TextDecoder('utf-8').decode(bytes);
+  }
+
+  // -- shared library store -------------------------------------------------
+  // Each <script type="text/plain" data-autovis-asset="..."> holds one library's
+  // source. Panels reference them by key; we splice the source into each panel's
+  // srcdoc so the document as a whole carries only one copy of D3/Mermaid/etc.
+  var ASSETS = Object.create(null);
+  Array.prototype.forEach.call(
+    document.querySelectorAll('script[data-autovis-asset]'),
+    function (el) {
+      var key = el.getAttribute('data-autovis-asset');
+      var raw = el.getAttribute('data-b64') === '1' ? decodeB64(el.textContent) : el.textContent;
+      (ASSETS[key] = ASSETS[key] || []).push({ kind: el.getAttribute('data-kind') || 'js', src: raw });
+    }
+  );
+
+  // Every figure template is a standalone page: it paints its own background,
+  // wraps itself in a rounded white card, and prints its own title banner. Inside
+  // a report that reads as a card within a card, with the title said twice. These
+  // rules strip that chrome so the figure sits flush in the panel we drew for it.
+  // They are `!important` because `_common.js` sets the page background inline.
+  function embedStyle(hideOwnTitle) {
+    return '<style>' +
+      'html,body{background:transparent!important;margin:0!important;padding:0!important;}' +
+      '.viz-root,.container{max-width:none!important;margin:0!important;width:auto!important;' +
+      'border:0!important;border-radius:0!important;box-shadow:none!important;' +
+      'background:transparent!important;overflow:visible!important;}' +
+      '.header{background:transparent!important;color:inherit!important;' +
+      'padding:14px 18px 0!important;text-align:left!important;}' +
+      '.header h1{font-size:14px!important;font-weight:600!important;margin:0!important;' +
+      'letter-spacing:0!important;}' +
+      '.header p{font-size:12.5px!important;opacity:.72!important;margin:4px 0 0!important;}' +
+      (hideOwnTitle ? '.header{display:none!important;}' : '') +
+      '</style>\n';
+  }
+
+  function assetTagsFor(keys, hideOwnTitle) {
+    var out = '';
+    (keys || []).forEach(function (key) {
+      (ASSETS[key] || []).forEach(function (part) {
+        out += part.kind === 'css'
+          ? '<style>' + part.src + '</style>\n'
+          : '<script>' + part.src + '<\/script>\n';
+      });
+    });
+    return out + embedStyle(hideOwnTitle);
+  }
+
+  function panelHtml(index) {
+    var el = document.getElementById('autovis-panel-' + index);
+    return el ? decodeB64(el.textContent) : null;
+  }
+
+  // -- icons ---------------------------------------------------------------
+  var ICON_EXPAND = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2H2v4M10 14h4v-4M14 6V2h-4M2 10v4h4"/></svg>';
+  var ICON_COLLAPSE = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 6h4V2M14 10h-4v4M10 2v4h4M6 14v-4H2"/></svg>';
+  var ICON_CHEV = '<svg class="chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3l5 5-5 5"/></svg>';
+
+  // -- build ----------------------------------------------------------------
+  var titleEl = document.getElementById('report-title');
+  titleEl.textContent = DATA.title;
+  document.title = DATA.title;
+
+  if (DATA.subtitle) {
+    var sub = document.getElementById('report-subtitle');
+    sub.textContent = DATA.subtitle;
+    sub.hidden = false;
+  }
+  renderProse(document.getElementById('report-summary'), DATA.summary);
+  renderProse(document.getElementById('report-footer'), DATA.footer);
+
+  var totalPanels = DATA.sections.reduce(function (n, s) { return n + s.panels.length; }, 0);
+  document.getElementById('figure-count').textContent =
+    totalPanels + (totalPanels === 1 ? ' figure' : ' figures');
+
+  var sectionsHost = document.getElementById('sections');
+  var tocList = document.getElementById('toc-list');
+  var iframes = [];          // { el, index, fixedHeight }
+  var figureNumber = 0;
+
+  DATA.sections.forEach(function (section) {
+    var sectionEl = document.createElement('section');
+    sectionEl.className = 'group';
+
+    if (section.title || section.description) {
+      var head = document.createElement('div');
+      head.className = 'group-header';
+      if (section.title) {
+        var h2 = document.createElement('h2');
+        h2.className = 'group-title';
+        h2.textContent = section.title;
+        head.appendChild(h2);
+      }
+      if (section.description) {
+        var desc = document.createElement('div');
+        desc.className = 'group-desc';
+        renderProse(desc, section.description);
+        head.appendChild(desc);
+      }
+      sectionEl.appendChild(head);
+    }
+
+    var grid = document.createElement('div');
+    grid.className = 'panel-grid';
+
+    section.panels.forEach(function (panel) {
+      figureNumber += 1;
+      var num = figureNumber;
+      var anchor = 'figure-' + num;
+
+      var fig = document.createElement('figure');
+      fig.className = 'panel' + (panel.width === 'half' ? '' : ' span-full');
+      fig.id = anchor;
+
+      // --- header
+      var phead = document.createElement('div');
+      phead.className = 'panel-head';
+      var ptext = document.createElement('div');
+      ptext.className = 'panel-head-text';
+
+      var label = document.createElement('div');
+      label.className = 'panel-label';
+      label.textContent = 'Figure ' + num;
+      ptext.appendChild(label);
+
+      if (panel.title) {
+        var ptitle = document.createElement('figcaption');
+        ptitle.className = 'panel-title';
+        ptitle.textContent = panel.title;
+        ptext.appendChild(ptitle);
+      }
+      if (panel.caption) {
+        var pcap = document.createElement('div');
+        pcap.className = 'panel-caption';
+        pcap.innerHTML = inlineMd(escapeHtml(panel.caption));
+        ptext.appendChild(pcap);
+      }
+      phead.appendChild(ptext);
+
+      var actions = document.createElement('div');
+      actions.className = 'panel-actions';
+      var expandBtn = document.createElement('button');
+      expandBtn.type = 'button';
+      expandBtn.className = 'icon-btn';
+      expandBtn.innerHTML = ICON_EXPAND;
+      expandBtn.title = 'Expand figure to full width';
+      expandBtn.setAttribute('aria-label', 'Expand figure to full width');
+      expandBtn.addEventListener('click', function () {
+        var full = fig.classList.toggle('span-full');
+        expandBtn.innerHTML = full ? ICON_COLLAPSE : ICON_EXPAND;
+        expandBtn.title = full ? 'Collapse figure' : 'Expand figure to full width';
+        // Layout width changed: let the figure re-measure itself.
+        window.setTimeout(function () {
+          try { frame.contentWindow.dispatchEvent(new Event('resize')); } catch (e) { /* cross-doc */ }
+        }, 60);
+      });
+      actions.appendChild(expandBtn);
+      phead.appendChild(actions);
+      fig.appendChild(phead);
+
+      // --- body
+      var body = document.createElement('div');
+      body.className = 'panel-body';
+
+      if (panel.error) {
+        var errBox = document.createElement('div');
+        errBox.className = 'panel-error';
+        errBox.setAttribute('role', 'alert');
+        errBox.style.color = BioRouterViz.dark ? '#f3b0b0' : '#9b2c2c';
+        errBox.innerHTML =
+          '<div class="err-title">⚠ This figure could not be generated.</div>' +
+          '<div class="err-detail"></div>';
+        errBox.querySelector('.err-detail').textContent = panel.error;
+        body.appendChild(errBox);
+        fig.appendChild(body);
+      } else {
+        var initialHeight = panel.height || 420;
+        var frame = document.createElement('iframe');
+        frame.setAttribute('title', panel.title || 'Figure ' + num);
+        frame.setAttribute('loading', 'lazy');
+        frame.setAttribute('scrolling', 'no');
+        frame.style.height = initialHeight + 'px';
+
+        var skeleton = document.createElement('div');
+        skeleton.className = 'panel-skeleton';
+        skeleton.innerHTML = '<span class="spinner"></span><span>Rendering figure ' + num + '…</span>';
+
+        body.appendChild(skeleton);
+        body.appendChild(frame);
+        fig.appendChild(body);
+
+        iframes.push({
+          el: frame,
+          skeleton: skeleton,
+          index: panel.index,
+          assets: panel.assets,
+          fixedHeight: !!panel.height,
+          title: panel.title || 'Figure ' + num,
+          // The card already names the figure; don't repeat it inside the frame.
+          // With no panel title, the figure's own heading is the only label there is.
+          hideOwnTitle: !!panel.title,
+        });
+      }
+
+      // --- notes
+      if (panel.notes) {
+        var details = document.createElement('details');
+        details.className = 'panel-notes';
+        var summary = document.createElement('summary');
+        summary.innerHTML = ICON_CHEV + '<span>Notes &amp; methods</span>';
+        details.appendChild(summary);
+        var notesBody = document.createElement('div');
+        notesBody.className = 'notes-body';
+        renderProse(notesBody, panel.notes);
+        details.appendChild(notesBody);
+        fig.appendChild(details);
+      }
+
+      grid.appendChild(fig);
+
+      // --- table of contents entry
+      var li = document.createElement('li');
+      var numSpan = document.createElement('span');
+      numSpan.className = 'fignum';
+      numSpan.textContent = num + '.';
+      var link = document.createElement('a');
+      link.href = '#' + anchor;
+      link.textContent = panel.title || 'Figure ' + num;
+      li.appendChild(numSpan);
+      li.appendChild(link);
+      tocList.appendChild(li);
+    });
+
+    sectionEl.appendChild(grid);
+    sectionsHost.appendChild(sectionEl);
+  });
+
+  if (totalPanels > 2) document.getElementById('toc').hidden = false;
+
+  // -- panel hydration (lazy: only build the srcdoc when it nears the viewport)
+  function hydrate(entry) {
+    if (entry.loaded) return;
+    entry.loaded = true;
+    var html = panelHtml(entry.index);
+    if (html == null) return;
+    entry.el.srcdoc = html.replace('{{ASSET_PLACEHOLDER}}', function () {
+      return assetTagsFor(entry.assets, entry.hideOwnTitle);
+    });
+    entry.el.addEventListener('load', function () {
+      entry.skeleton.classList.add('hidden');
+      window.setTimeout(function () { entry.skeleton.remove(); }, 300);
+    });
+  }
+
+  if (typeof IntersectionObserver !== 'undefined') {
+    var io = new IntersectionObserver(function (entries) {
+      entries.forEach(function (e) {
+        if (!e.isIntersecting) return;
+        var entry = iframes.filter(function (f) { return f.el === e.target; })[0];
+        if (entry) { hydrate(entry); io.unobserve(e.target); }
+      });
+    }, { rootMargin: '600px 0px' });
+    iframes.forEach(function (entry) { io.observe(entry.el); });
+  } else {
+    iframes.forEach(hydrate);
+  }
+
+  // -- messages from panels -------------------------------------------------
+  // Panels post `ui-size-change` at their own natural height; we grow the iframe
+  // to fit instead of forwarding the message on (the host must size the report,
+  // not one figure inside it). Render errors are forwarded up, tagged with the
+  // figure that failed, so the chat surfaces them like a standalone figure's.
+  window.addEventListener('message', function (event) {
+    var data = event.data;
+    if (!data || !data.type) return;
+
+    var entry = iframes.filter(function (f) {
+      try { return f.el.contentWindow === event.source; } catch (e) { return false; }
+    })[0];
+    if (!entry) return;
+
+    if (data.type === 'ui-size-change') {
+      if (entry.fixedHeight) return;
+      var h = data.payload && data.payload.height;
+      if (typeof h === 'number' && h > 0) {
+        entry.el.style.height = Math.min(Math.max(Math.ceil(h), 220), 1600) + 'px';
+        reportOwnSize();
+      }
+      return;
+    }
+
+    if (data.type === 'biorouter-viz-render-error' && window.parent !== window) {
+      var payload = data.payload || {};
+      window.parent.postMessage({
+        type: 'biorouter-viz-render-error',
+        payload: {
+          message: entry.title + ': ' + (payload.message || 'This figure could not be rendered.'),
+          detail: payload.detail,
+          title: document.title,
+          href: window.location.href,
+        },
+      }, '*');
+    }
+  });
+
+  BioRouterViz.applyPageTheme();
+
+  // A report is a scrollable page, not a single figure. Reporting its full
+  // height would make the chat transcript grow by thousands of pixels, so we
+  // ask the host for a reading-pane height and scroll the rest internally.
+  // (In the artifact side panel the host ignores this and gives us full height.)
+  var MAX_REPORTED_HEIGHT = 820;
+  function reportOwnSize() {
+    if (window.parent === window) return;
+    var natural = Math.max(
+      document.body ? document.body.scrollHeight : 0,
+      document.documentElement.scrollHeight
+    );
+    window.parent.postMessage(
+      { type: 'ui-size-change', payload: { height: Math.min(natural, MAX_REPORTED_HEIGHT) } },
+      '*'
+    );
+  }
+  window.setTimeout(reportOwnSize, 80);
+  window.setTimeout(reportOwnSize, 400);
+  window.addEventListener('resize', reportOwnSize);
+})();
+</script>
+</body>
+</html>

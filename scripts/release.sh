@@ -12,12 +12,17 @@
 #   bump <ver>        Bump version in the 5 release files + refresh Cargo.lock.
 #   backends <ver>    Compile release backends for all 4 targets
 #                     (mac arm64, mac x64, windows-gnu, linux-gnu).
+#   linux-backend <ver>
+#                     Rebuild just the linux x86_64 backend from scratch.
 #   mac-arm64 <ver>   Package + sign + NOTARIZE the Apple Silicon .dmg.
 #   mac-intel <ver>   Package + sign + NOTARIZE the Intel .dmg.
 #   windows <ver>     Package the Windows .zip.
-#   linux <ver>       Package the Linux .deb + .rpm.
+#   linux <ver>       Package the GUI .deb + .rpm.
+#   cli-linux <ver>   Build the headless CLI-only .deb + .rpm.
 #   headless-linux <ver>
 #                     Build the browser-served headless Linux artifact.
+#   mac-manifest <ver>
+#                     Generate latest-mac.yml for electron-updater.
 #   verify <ver>      Verify all release artifacts (arch, notarization, dmg format).
 #   publish <ver>     Create the GitHub release with assets + notes.
 #   all <ver>         Run every phase in order (bump → … → publish).
@@ -101,9 +106,12 @@ cmd_bump() {
 import json, sys
 v = sys.argv[1]
 def setver(path, fn):
-    with open(path) as f: data = json.load(f)
+    with open(path, encoding='utf-8') as f: data = json.load(f)
     fn(data)
-    with open(path, 'w') as f: json.dump(data, f, indent=2); f.write('\n')
+    # ensure_ascii=False: these files contain literal em-dashes/ellipses (openapi.json
+    # doc comments). Escaping them to \uXXXX churns hundreds of unrelated lines.
+    # encoding pinned so a C/POSIX locale can't turn that into a UnicodeEncodeError.
+    with open(path, 'w', encoding='utf-8') as f: json.dump(data, f, indent=2, ensure_ascii=False); f.write('\n')
 setver('ui/desktop/package.json', lambda d: d.__setitem__('version', v))
 setver('ui/desktop/openapi.json', lambda d: d['info'].__setitem__('version', v))
 def lock(d):
