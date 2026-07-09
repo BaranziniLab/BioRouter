@@ -20,8 +20,10 @@ import {
   shell,
   Tray,
 } from 'electron';
-import { pathToFileURL, format as formatUrl, URLSearchParams } from 'node:url';
+import { pathToFileURL, fileURLToPath, format as formatUrl, URLSearchParams } from 'node:url';
 import { Buffer } from 'node:buffer';
+import { isIP } from 'node:net';
+import dns from 'node:dns/promises';
 import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import started from 'electron-squirrel-startup';
@@ -31,7 +33,12 @@ import { spawn, spawnSync } from 'child_process';
 import AdmZip from 'adm-zip';
 import { safeExtractZip, safeZipEntryTarget } from './utils/safeZip';
 import 'dotenv/config';
-import { checkServerStatus, startBiorouterd, getBiorouterCliBinaryPath } from './biorouterd';
+import {
+  checkServerStatus,
+  startBiorouterd,
+  getBiorouterCliBinaryPath,
+  findAvailablePort,
+} from './biorouterd';
 import { expandTilde } from './utils/pathUtils';
 import log from './utils/logger';
 import { ensureWinShims } from './utils/winShims';
@@ -103,6 +110,98 @@ function isAllowedFilePath(resolvedPath: string): boolean {
   return allowedRoots.some(
     (root) => resolvedPath.startsWith(root + path.sep) || resolvedPath === root
   );
+}
+
+/**
+ * Reject addresses that only exist inside the user's machine or LAN: the
+ * biorouterd loopback API, cloud metadata at 169.254.169.254, printers, routers.
+ */
+export function isPrivateAddress(address: string): boolean {
+  const family = isIP(address);
+  if (family === 4) {
+    const [a, b] = address.split('.').map(Number);
+    if (a === 0 || a === 127 || a === 10) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true; // link-local, incl. cloud metadata
+    if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+    if (a >= 224) return true; // multicast / reserved / broadcast
+    return false;
+  }
+  if (family === 6) {
+    const addr = address.toLowerCase();
+    if (addr === '::' || addr === '::1') return true;
+    if (addr.startsWith('fe8') || addr.startsWith('fe9')) return true;
+    if (addr.startsWith('fea') || addr.startsWith('feb')) return true; // fe80::/10
+    if (addr.startsWith('fc') || addr.startsWith('fd')) return true; // fc00::/7 ULA
+    const mapped = addr.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+    if (mapped) return isPrivateAddress(mapped[1]);
+    return false;
+  }
+  return false;
+}
+
+/** Throws unless `candidate` is an http(s) URL whose host resolves off-machine. */
+async function assertPublicHttpUrl(candidate: string): Promise<URL> {
+  const parsed = new URL(candidate);
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('Invalid URL protocol. Only HTTP and HTTPS are allowed.');
+  }
+  const host = parsed.hostname.replace(/^\[|\]$/g, '');
+  if (isIP(host)) {
+    if (isPrivateAddress(host)) throw new Error(`Blocked non-public address: ${host}`);
+    return parsed;
+  }
+  const resolved = await dns.lookup(host, { all: true });
+  if (resolved.some((entry) => isPrivateAddress(entry.address))) {
+    throw new Error(`Blocked non-public address for host: ${host}`);
+  }
+  return parsed;
+}
+
+/** Largest artifact the previewer will read into memory. */
+const ARTIFACT_PREVIEW_MAX_BYTES = 16 * 1024 * 1024;
+
+/** Only http(s) may be handed to the OS opener. */
+export function isExternallyOpenableUrl(candidate: string): boolean {
+  try {
+    const { protocol } = new URL(candidate);
+    return protocol === 'http:' || protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Where the renderer legitimately lives: the Vite dev server in development,
+ * and the packaged renderer bundle (a `file://` directory) in production.
+ */
+export function isAppOrigin(candidate: string, appUrl: URL): boolean {
+  let url: URL;
+  try {
+    url = new URL(candidate);
+  } catch {
+    return false;
+  }
+
+  if (appUrl.protocol !== 'file:') return url.origin === appUrl.origin;
+
+  // Packaged build: allow the renderer bundle's own directory, nothing else.
+  if (url.protocol !== 'file:') return false;
+  try {
+    const entry = fileURLToPath(appUrl);
+    const rendererDir = path.dirname(entry);
+    const target = path.resolve(fileURLToPath(url));
+    return target === entry || target.startsWith(rendererDir + path.sep);
+  } catch {
+    return false;
+  }
+}
+
+function rendererEntryUrl(): URL {
+  return MAIN_WINDOW_VITE_DEV_SERVER_URL
+    ? new URL(MAIN_WINDOW_VITE_DEV_SERVER_URL)
+    : pathToFileURL(path.join(__dirname, `../renderer/${MAIN_WINDOW_VITE_NAME}/index.html`));
 }
 
 function mimeTypeForArtifactPath(filePath: string): string {
@@ -895,14 +994,18 @@ const createChat = async (
     }
   });
 
-  // Handle new window creation for links
+  // Handle new window creation for links.
+  //
+  // Deny by default. An `allow` here would open a BrowserWindow that inherits
+  // this window's webPreferences -- including the preload IPC bridge -- and
+  // non-http(s) schemes (`data:`, `blob:`, `about:`) receive no CSP, since the
+  // CSP is injected by onHeadersReceived. Agent-authored artifact HTML must
+  // never reach such a window.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    // Open all links in external browser
-    if (url.startsWith('http:') || url.startsWith('https:')) {
+    if (isExternallyOpenableUrl(url)) {
       shell.openExternal(url);
-      return { action: 'deny' };
     }
-    return { action: 'allow' };
+    return { action: 'deny' };
   });
 
   // Handle new-window events (alternative approach for external links)
@@ -910,7 +1013,27 @@ const createChat = async (
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mainWindow.webContents.on('new-window' as any, function (event: any, url: string) {
     event.preventDefault();
-    shell.openExternal(url);
+    // Unlike setWindowOpenHandler above, this legacy path used to hand any
+    // scheme -- including file:// and custom protocols -- to the OS opener.
+    if (isExternallyOpenableUrl(url)) {
+      shell.openExternal(url);
+    }
+  });
+
+  // Nothing in this app navigates the top frame away from its own origin. A
+  // file:// or data: navigation would keep the preload bridge and get no CSP.
+  const blockOffOriginNavigation = (event: Electron.Event, url: string) => {
+    if (isAppOrigin(url, rendererEntryUrl())) return;
+    log.warn('[Main] Blocked off-origin navigation to', url);
+    event.preventDefault();
+    if (isExternallyOpenableUrl(url)) {
+      shell.openExternal(url);
+    }
+  };
+  mainWindow.webContents.on('will-navigate', blockOffOriginNavigation);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  mainWindow.webContents.on('will-frame-navigate' as any, (event: any) => {
+    if (event.isMainFrame) blockOffOriginNavigation(event, event.url);
   });
 
   const windowId = mainWindow.id;
@@ -2275,8 +2398,24 @@ ipcMain.handle('read-artifact-file', async (_event, filePath: string) => {
       throw new Error('Path is not a regular file or directory');
     }
 
-    const buffer = await fs.readFile(resolvedPath);
     const mimeType = mimeTypeForArtifactPath(resolvedPath);
+
+    // Artifacts are auto-detected from assistant text and opened without a
+    // click, so a model that names a huge file must not be able to make the
+    // main process buffer it (images additionally grow ~4/3 as base64).
+    // Report oversized files as binary: the UI shows metadata, not content.
+    if (stats.size > ARTIFACT_PREVIEW_MAX_BYTES) {
+      return {
+        kind: 'binary',
+        title,
+        path: resolvedPath,
+        mimeType,
+        size: stats.size,
+        found: true,
+      };
+    }
+
+    const buffer = await fs.readFile(resolvedPath);
     if (mimeType.startsWith('image/')) {
       return {
         kind: 'image',
@@ -2920,6 +3059,13 @@ type TerminalCreateOptions = {
 type TerminalSession = {
   backend: TerminalBackend;
   cwd: string;
+  /**
+   * `webContents.id` of the renderer that created this session. A session id is
+   * an unguessable UUID, but ids leak (devtools, logs, crash dumps) and a
+   * session drives a real shell -- so authorize on the caller, not on knowledge
+   * of the id.
+   */
+  ownerId: number;
   write: (data: string) => void;
   resize: (cols: number, rows: number) => void;
   dispose: () => void;
@@ -3082,6 +3228,7 @@ function registerCliInstallHandlers() {
         terminalSessions.set(sessionId, {
           backend: 'pty',
           cwd,
+          ownerId: owner.id,
           write: (data) => ptyProcess.write(data),
           resize: (nextCols, nextRows) => {
             ptyProcess.resize(
@@ -3117,6 +3264,7 @@ function registerCliInstallHandlers() {
       terminalSessions.set(sessionId, {
         backend: 'process',
         cwd,
+        ownerId: owner.id,
         write: (data) => {
           child.stdin.write(data);
         },
@@ -3132,21 +3280,36 @@ function registerCliInstallHandlers() {
     }
   });
 
-  ipcMain.handle('terminal:write', async (_event, sessionId: string, data: string) => {
+  // A session may only be driven by the renderer that created it. Without this,
+  // any window holding a session id could write into (or kill) another window's
+  // shell.
+  const ownedTerminalSession = (event: Electron.IpcMainInvokeEvent, sessionId: string) => {
     const session = terminalSessions.get(sessionId);
+    if (!session || session.ownerId !== event.sender.id) return null;
+    return session;
+  };
+
+  ipcMain.handle('terminal:write', async (event, sessionId: string, data: string) => {
+    const session = ownedTerminalSession(event, sessionId);
     if (!session) return { success: false, error: 'Terminal session is no longer running.' };
     session.write(data);
     return { success: true };
   });
 
-  ipcMain.handle('terminal:resize', async (_event, sessionId: string, cols: number, rows: number) => {
-    const session = terminalSessions.get(sessionId);
-    if (!session) return { success: false, error: 'Terminal session is no longer running.' };
-    session.resize(cols, rows);
-    return { success: true };
-  });
+  ipcMain.handle(
+    'terminal:resize',
+    async (event, sessionId: string, cols: number, rows: number) => {
+      const session = ownedTerminalSession(event, sessionId);
+      if (!session) return { success: false, error: 'Terminal session is no longer running.' };
+      session.resize(cols, rows);
+      return { success: true };
+    }
+  );
 
-  ipcMain.handle('terminal:dispose', async (_event, sessionId: string) => {
+  ipcMain.handle('terminal:dispose', async (event, sessionId: string) => {
+    if (!ownedTerminalSession(event, sessionId)) {
+      return { success: false, error: 'Terminal session is no longer running.' };
+    }
     disposeTerminalSession(sessionId);
     return { success: true };
   });
@@ -3645,7 +3808,9 @@ function ensureDeepLinkHandler() {
   try {
     if (app.isDefaultProtocolClient('biorouter')) return;
     const reclaimed = app.setAsDefaultProtocolClient('biorouter');
-    log.info(`[Main] biorouter:// was claimed by another app; reclaim ${reclaimed ? 'ok' : 'failed'}`);
+    log.info(
+      `[Main] biorouter:// was claimed by another app; reclaim ${reclaimed ? 'ok' : 'failed'}`
+    );
   } catch (error) {
     log.warn('[Main] Could not verify biorouter:// handler registration:', error);
   }
@@ -3714,13 +3879,20 @@ async function appMain() {
     const isArtifactWindow =
       details.url.startsWith('file://') && details.url.includes('biorouter-artifacts');
 
+    // Artifact HTML is agent-generated. It must be able to run its own inline
+    // scripts and reach the local ACP sidecar, but a blanket `script-src https:`
+    // would let it pull in arbitrary remote code, and `connect-src https:` would
+    // let it beacon the figure's data to any host. The only CDN it legitimately
+    // loads is jsdelivr (and `prepareArtifactHtml` inlines those assets anyway,
+    // so this only matters when BIOROUTER_AUTOVIS_CDN is on). `img-src https:`
+    // stays: map tiles come from third-party tile servers.
     const csp = isArtifactWindow
       ? "default-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob:;" +
-        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https: blob:;" +
-        "style-src 'self' 'unsafe-inline' https:;" +
+        "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.jsdelivr.net blob:;" +
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net;" +
         "img-src 'self' data: blob: https:;" +
-        "connect-src 'self' https: http://127.0.0.1:* ws://127.0.0.1:* ws://localhost:*;" +
-        "font-src 'self' data: https:;" +
+        "connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* ws://localhost:*;" +
+        "font-src 'self' data: https://cdn.jsdelivr.net;" +
         "frame-src 'self' https: http:;" +
         "worker-src 'self' blob:;" +
         "base-uri 'self';"
@@ -3976,19 +4148,25 @@ async function appMain() {
   // Handle metadata fetching from main process
   ipcMain.handle('fetch-metadata', async (_event, url) => {
     try {
-      // Validate URL
-      const parsedUrl = new URL(url);
-
-      // Only allow http and https protocols
-      if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-        throw new Error('Invalid URL protocol. Only HTTP and HTTPS are allowed.');
+      // Each hop is validated: a public URL that 302s to 127.0.0.1 or
+      // 169.254.169.254 would otherwise turn this handler into an SSRF proxy.
+      let target = await assertPublicHttpUrl(url);
+      let response: Response | undefined;
+      for (let hop = 0; hop < 5; hop++) {
+        response = await fetch(target.href, {
+          redirect: 'manual',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; BioRouter/1.0)',
+          },
+        });
+        const location = response.headers.get('location');
+        if (response.status >= 300 && response.status < 400 && location) {
+          target = await assertPublicHttpUrl(new URL(location, target).href);
+          continue;
+        }
+        break;
       }
-
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (compatible; BioRouter/1.0)',
-        },
-      });
+      if (!response) throw new Error('Too many redirects');
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -4066,7 +4244,14 @@ async function appMain() {
   // A single shared `biorouter acp --ws` sidecar that standalone artifact
   // windows connect to, so an agentic artifact's chat genuinely answers
   // (instead of the in-chat preview's bridge mode, which routes to the host).
-  const ACP_WS_ADDR = '127.0.0.1:11577';
+  //
+  // The endpoint is authenticated. The ACP protocol lets a client register an
+  // `McpServer::Stdio`, i.e. spawn a process, and browsers allow cross-origin
+  // WebSocket connects -- so a fixed unauthenticated port would let any page the
+  // user visits drive an agent. The port is ephemeral, a per-launch bearer token
+  // is required, and the server refuses stdio MCP servers on this transport.
+  let acpWsEndpoint: string | null = null;
+  let acpWsStarting: Promise<string | null> | null = null;
   let acpWsSidecar: import('child_process').ChildProcess | null = null;
   let acpWsCleanupRegistered = false;
   const artifactCdnAssetCache = new Map<string, Promise<string>>();
@@ -4078,28 +4263,48 @@ async function appMain() {
     'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css',
     'https://cdn.jsdelivr.net/npm/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js',
   ];
-  const ensureAcpWsServer = () => {
-    if (acpWsSidecar && acpWsSidecar.exitCode === null) return;
-    try {
-      const cli = getBiorouterCliBinaryPath(app);
-      acpWsSidecar = spawn(cli, ['acp', '--ws', ACP_WS_ADDR], { stdio: 'ignore' });
-      acpWsSidecar.on('exit', () => {
-        acpWsSidecar = null;
-      });
-      if (!acpWsCleanupRegistered) {
-        acpWsCleanupRegistered = true;
-        app.on('before-quit', () => {
-          try {
-            acpWsSidecar?.kill();
-          } catch {
-            // best-effort
-          }
+  const ensureAcpWsServer = async (): Promise<string | null> => {
+    if (acpWsSidecar && acpWsSidecar.exitCode === null && acpWsEndpoint) return acpWsEndpoint;
+    if (acpWsStarting) return acpWsStarting;
+
+    acpWsStarting = (async () => {
+      try {
+        const cli = getBiorouterCliBinaryPath(app);
+        const port = await findAvailablePort();
+        const addr = `127.0.0.1:${port}`;
+        const token = crypto.randomBytes(32).toString('hex');
+
+        // Token travels in the environment, not argv, so it does not appear in `ps`.
+        acpWsSidecar = spawn(cli, ['acp', '--ws', addr], {
+          stdio: 'ignore',
+          env: { ...process.env, BIOROUTER_ACP_WS_TOKEN: token },
         });
+        acpWsSidecar.on('exit', () => {
+          acpWsSidecar = null;
+          acpWsEndpoint = null;
+        });
+        if (!acpWsCleanupRegistered) {
+          acpWsCleanupRegistered = true;
+          app.on('before-quit', () => {
+            try {
+              acpWsSidecar?.kill();
+            } catch {
+              // best-effort
+            }
+          });
+        }
+        acpWsEndpoint = `ws://${addr}/acp?token=${token}`;
+        console.log('Started authenticated ACP WebSocket sidecar for artifacts on', addr);
+        return acpWsEndpoint;
+      } catch (e) {
+        console.error('Failed to start ACP WebSocket sidecar:', e);
+        return null;
+      } finally {
+        acpWsStarting = null;
       }
-      console.log('Started ACP WebSocket sidecar for artifacts on', ACP_WS_ADDR);
-    } catch (e) {
-      console.error('Failed to start ACP WebSocket sidecar:', e);
-    }
+    })();
+
+    return acpWsStarting;
   };
 
   const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -4124,15 +4329,18 @@ async function appMain() {
       if (!html.includes(url)) continue;
       try {
         const asset = await fetchArtifactCdnAsset(url);
+        // Replacement must be a function: minified bundles contain `$&`, `$'`,
+        // `$1`, `$$` sequences, which String.replace would expand as match
+        // references and corrupt the inlined script.
         if (url.endsWith('.css')) {
           html = html.replace(
             new RegExp(`<link\\b[^>]*href=["']${escapeRegExp(url)}["'][^>]*>`, 'g'),
-            `<style>${asset}</style>`
+            () => `<style>${asset}</style>`
           );
         } else {
           html = html.replace(
             new RegExp(`<script\\b[^>]*src=["']${escapeRegExp(url)}["'][^>]*>\\s*</script>`, 'g'),
-            `<script>${asset}</script>`
+            () => `<script>${asset}</script>`
           );
         }
       } catch (error) {
@@ -4146,11 +4354,12 @@ async function appMain() {
     let html = rawHtml;
     const isAgentic = html.includes('"transport":"bridge"');
     if (isAgentic) {
-      ensureAcpWsServer();
-      const endpoint = `ws://${ACP_WS_ADDR}/acp`;
-      html = html
-        .replace('"transport":"bridge"', '"transport":"acp-ws"')
-        .replace('"endpoint":null', `"endpoint":${JSON.stringify(endpoint)}`);
+      const endpoint = await ensureAcpWsServer();
+      if (endpoint) {
+        html = html
+          .replace('"transport":"bridge"', '"transport":"acp-ws"')
+          .replace('"endpoint":null', () => `"endpoint":${JSON.stringify(endpoint)}`);
+      }
     }
     return inlineKnownArtifactCdnAssets(html);
   };
