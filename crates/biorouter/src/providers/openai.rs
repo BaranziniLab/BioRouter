@@ -32,13 +32,22 @@ use crate::providers::base::MessageStream;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
-pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-5.5";
+pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-5.6";
 pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-5.4-mini";
-// Verified against OpenAI docs (June 2026). Context windows are per-model
+// Verified against OpenAI docs (July 2026). Context windows are per-model
 // pages at developers.openai.com/api/docs/models. Removed (API-deprecated,
 // shutdown 2026): o1, o3-mini, o4-mini, gpt-4.1-nano, gpt-4o, gpt-5.1-codex.
 // Models marked [responses] route to /v1/responses instead of /v1/chat/completions.
 pub const OPEN_AI_KNOWN_MODELS: &[(&str, usize)] = &[
+    // GPT-5.6 family [responses] — frontier, released 2026-07-09. All three
+    // variants share a 1,050,000 context window / 128k max output. `gpt-5.6` is
+    // OpenAI's documented alias for `gpt-5.6-sol` and is kept first so it stays
+    // the default the UI resolves to. Sol prices >272k-token prompts at 2x input
+    // / 1.5x output for the whole request.
+    ("gpt-5.6", 1_050_000),
+    ("gpt-5.6-sol", 1_050_000),
+    ("gpt-5.6-terra", 1_050_000),
+    ("gpt-5.6-luna", 1_050_000),
     // GPT-5.5 family [responses] — requires /v1/responses API
     ("gpt-5.5", 1_050_000),
     ("gpt-5.5-pro", 1_050_000),
@@ -266,6 +275,7 @@ impl OpenAiProvider {
             || model_name.starts_with("gpt-5.3-codex")
             || model_name.starts_with("gpt-5.4")
             || model_name.starts_with("gpt-5.5")
+            || model_name.starts_with("gpt-5.6")
     }
 
     async fn post(&self, payload: &Value) -> Result<Value, ProviderError> {
@@ -292,6 +302,10 @@ impl Provider for OpenAiProvider {
         // most o-series models accept image inputs. Excluded: codex variants
         // (text-focused).
         const OPEN_AI_VISION_MODELS: &[&str] = &[
+            "gpt-5.6",
+            "gpt-5.6-sol",
+            "gpt-5.6-terra",
+            "gpt-5.6-luna",
             "gpt-5.5",
             "gpt-5.5-pro",
             "gpt-5.4",
@@ -618,6 +632,90 @@ mod alias_tests {
         // No alias table → the (now-retired) id is left as-is.
         let chat = model("deepseek-chat");
         assert_eq!(p.resolve_model(&chat).model_name, "deepseek-chat");
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::items_after_test_module)]
+mod gpt_5_6_tests {
+    use super::*;
+
+    /// The three GPT-5.6 variants plus the `gpt-5.6` alias, all 1,050,000 ctx.
+    /// Verified against developers.openai.com/api/docs/models (July 2026).
+    const GPT_5_6_IDS: &[&str] = &["gpt-5.6", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+
+    #[test]
+    fn gpt_5_6_family_is_in_the_known_model_catalog() {
+        for id in GPT_5_6_IDS {
+            let entry = OPEN_AI_KNOWN_MODELS.iter().find(|(name, _)| name == id);
+            let (_, limit) = entry.unwrap_or_else(|| panic!("{id} missing from known models"));
+            assert_eq!(*limit, 1_050_000, "{id} should have a 1,050,000 ctx window");
+        }
+    }
+
+    #[test]
+    fn gpt_5_6_routes_to_the_responses_api() {
+        // These reject function tools on /v1/chat/completions, same as 5.4/5.5.
+        for id in GPT_5_6_IDS {
+            assert!(
+                OpenAiProvider::uses_responses_api(id),
+                "{id} must route to /v1/responses"
+            );
+        }
+    }
+
+    #[test]
+    fn older_chat_completions_models_are_not_rerouted() {
+        // Guard the `starts_with("gpt-5.6")` prefix against over-matching.
+        for id in ["gpt-5", "gpt-5-mini", "gpt-5.2", "gpt-4.1", "o3"] {
+            assert!(
+                !OpenAiProvider::uses_responses_api(id),
+                "{id} must stay on /v1/chat/completions"
+            );
+        }
+    }
+
+    #[test]
+    fn default_model_is_gpt_5_6_and_is_a_listed_model() {
+        assert_eq!(OPEN_AI_DEFAULT_MODEL, "gpt-5.6");
+        assert!(
+            OPEN_AI_KNOWN_MODELS
+                .iter()
+                .any(|(name, _)| *name == OPEN_AI_DEFAULT_MODEL),
+            "the default model must appear in the catalog so the UI can resolve it"
+        );
+    }
+
+    #[test]
+    fn gpt_5_6_family_advertises_vision() {
+        let meta = OpenAiProvider::metadata();
+        for id in GPT_5_6_IDS {
+            let model = meta
+                .known_models
+                .iter()
+                .find(|m| m.name == *id)
+                .unwrap_or_else(|| panic!("{id} missing from provider metadata"));
+            assert_eq!(
+                model.supports_vision,
+                Some(true),
+                "{id} accepts image input per OpenAI"
+            );
+        }
+    }
+
+    #[test]
+    fn gpt_5_6_context_limit_resolves_from_model_config() {
+        // Exercises the separate `contains`-based table in model.rs. `context_limit()`
+        // honours BIOROUTER_CONTEXT_LIMIT, which other tests set process-wide, so take
+        // the shared env lock and pin it unset rather than racing them.
+        let _guard = env_lock::lock_env([
+            ("BIOROUTER_CONTEXT_LIMIT", None::<&str>),
+            ("BIOROUTER_PREDEFINED_MODELS", None::<&str>),
+        ]);
+        for id in GPT_5_6_IDS {
+            let cfg = ModelConfig::new(id).unwrap();
+            assert_eq!(cfg.context_limit(), 1_050_000, "{id} ctx limit");
+        }
     }
 }
 
