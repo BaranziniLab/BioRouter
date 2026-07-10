@@ -127,8 +127,9 @@ describe('dashboardStorage', () => {
     const loaded = loadDashboardState();
     expect(loaded!.windows.length).toBe(1);
     expect(loaded!.windows[0].position).toEqual({ x: 0, y: 0 });
-    // Migration default = dashboardStorage.DEFAULT_{W,H} (600×440).
-    expect(loaded!.windows[0].size).toEqual({ w: 600, h: 440 });
+    // Migration default = dashboardStorage.DEFAULT_{W,H} (760×440). Widened
+    // from 600 so the streamlined composer keeps its controls inline.
+    expect(loaded!.windows[0].size).toEqual({ w: 760, h: 440 });
   });
 
   it('migrates legacy labmeeting key into v2', () => {
