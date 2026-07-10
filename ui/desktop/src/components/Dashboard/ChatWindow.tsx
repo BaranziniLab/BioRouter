@@ -142,14 +142,12 @@ export const ChatWindow: React.FC<Props> = ({
   // window always sits at exactly its grid slot (no visual size drift).
   const popStyle = {};
   void boardSize;
-  const focusClasses = isFocused
-    ? 'shadow-[0_18px_54px_rgba(32,25,15,0.20),0_2px_10px_rgba(32,25,15,0.10)]'
-    : 'shadow-[0_10px_30px_rgba(32,25,15,0.10),0_1px_4px_rgba(32,25,15,0.06)]';
+  const focusClasses = isFocused ? 'shadow-modal' : 'shadow-popover';
   void isSolo;
 
   return (
     <div
-      className={`absolute top-0 left-0 rounded-2xl bg-background-default border border-border-subtle/45 overflow-hidden transition-shadow ${focusClasses}`}
+      className={`absolute top-0 left-0 rounded-2xl bg-background-default border border-border-subtle overflow-hidden transition-shadow ${focusClasses}`}
       style={{ ...stylePos, ...popStyle }}
       onMouseDown={(e) => {
         if (isFocused) return;

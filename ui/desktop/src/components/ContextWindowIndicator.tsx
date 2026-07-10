@@ -223,7 +223,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
                   onMouseLeave={() => {
                     if (!draggingRef.current) setTooltipOpen(false);
                   }}
-                  className="absolute flex items-end justify-center cursor-ew-resize focus:outline-none"
+                  className="absolute flex items-end justify-center cursor-ew-resize"
                   style={{
                     left: `${thresholdPct}%`,
                     top: '-12px',
@@ -268,11 +268,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
         }}
         disabled={current === 0}
         title={current === 0 ? 'Nothing to compact yet' : 'Compact conversation'}
-        className={`flex items-center justify-center w-7 h-7 rounded transition-colors flex-shrink-0 ${
-          current === 0
-            ? 'opacity-40 cursor-not-allowed'
-            : 'text-text-default/70 hover:text-text-default hover:bg-background-medium cursor-pointer'
-        }`}
+        className={`flex items-center justify-center w-7 h-7 rounded transition-colors flex-shrink-0 ${current === 0 ? 'opacity-40 cursor-not-allowed' : 'text-text-default/70 hover:text-text-default hover:bg-background-medium cursor-pointer'}`}
       >
         <ScrollText size={14} />
       </button>

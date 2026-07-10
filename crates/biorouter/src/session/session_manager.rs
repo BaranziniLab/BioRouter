@@ -18,7 +18,7 @@ use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 9;
+pub const CURRENT_SCHEMA_VERSION: i32 = 10;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -77,12 +77,18 @@ pub struct Session {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub extension_data: ExtensionData,
+    /// The *current* turn's usage — the live context-window occupancy. Bounded by
+    /// the model's context limit, so `i32` is safe.
     pub total_tokens: Option<i32>,
     pub input_tokens: Option<i32>,
     pub output_tokens: Option<i32>,
-    pub accumulated_total_tokens: Option<i32>,
-    pub accumulated_input_tokens: Option<i32>,
-    pub accumulated_output_tokens: Option<i32>,
+    /// Lifetime totals: the sum of every turn's usage, i.e. tokens actually
+    /// processed and billed. They grow without bound and overflowed `i32` at
+    /// ~2.1e9 — in release that wraps *negative* and then subtracts from the
+    /// insights `SUM`. SQLite's INTEGER is already 64-bit.
+    pub accumulated_total_tokens: Option<i64>,
+    pub accumulated_input_tokens: Option<i64>,
+    pub accumulated_output_tokens: Option<i64>,
     pub schedule_id: Option<String>,
     pub workflow: Option<Workflow>,
     pub user_workflow_values: Option<HashMap<String, String>>,
@@ -97,6 +103,20 @@ pub struct Session {
     pub diverged_from: Option<String>,
 }
 
+/// One turn's token usage, applied additively and atomically in SQL.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TokenDelta {
+    pub input: Option<i32>,
+    pub output: Option<i32>,
+    pub total: Option<i32>,
+}
+
+impl TokenDelta {
+    fn is_empty(self) -> bool {
+        self.input.is_none() && self.output.is_none() && self.total.is_none()
+    }
+}
+
 pub struct SessionUpdateBuilder<'a> {
     session_manager: &'a SessionManager,
     session_id: String,
@@ -108,9 +128,13 @@ pub struct SessionUpdateBuilder<'a> {
     total_tokens: Option<Option<i32>>,
     input_tokens: Option<Option<i32>>,
     output_tokens: Option<Option<i32>>,
-    accumulated_total_tokens: Option<Option<i32>>,
-    accumulated_input_tokens: Option<Option<i32>>,
-    accumulated_output_tokens: Option<Option<i32>>,
+    accumulated_total_tokens: Option<Option<i64>>,
+    accumulated_input_tokens: Option<Option<i64>>,
+    accumulated_output_tokens: Option<Option<i64>>,
+    /// A per-turn DELTA, applied atomically as `col = COALESCE(col,0) + ?` in
+    /// SQL. The old path read the row into Rust, added, and wrote back — a
+    /// lost-update race whenever two turns raced on one session.
+    token_delta: Option<TokenDelta>,
     schedule_id: Option<Option<String>>,
     workflow: Option<Option<Workflow>>,
     user_workflow_values: Option<Option<HashMap<String, String>>>,
@@ -130,6 +154,208 @@ pub struct SessionInsights {
     pub tokens_last_30_days: i64,
 }
 
+/// The session types a user actually sees. `SubAgent`, `Hidden` and `Terminal`
+/// sessions are internal machinery — one user task can spawn several — so
+/// counting them made the insight tiles disagree with the session list printed
+/// directly beneath them. This mirrors what `list_sessions` shows.
+pub const USER_FACING_SESSION_TYPES: [&str; 2] = ["user", "scheduled"];
+
+/// One calendar day of usage, for the Home heatmap.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyActivity {
+    /// Local calendar day, `YYYY-MM-DD`.
+    pub date: String,
+    /// Sessions *started* that day (exact; keyed on the immutable `created_at`).
+    pub sessions: i64,
+    /// Tokens processed that day, summed from per-turn `token_events`.
+    pub tokens: i64,
+    pub input_tokens: i64,
+    pub output_tokens: i64,
+    /// Assistant + user messages exchanged that day.
+    pub messages: i64,
+    /// 1–4. Level 0 days are omitted from the response entirely.
+    pub level: u8,
+}
+
+/// The Home heatmap payload.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ActivityWindow {
+    pub start: String,
+    pub end: String,
+    pub max_sessions: i64,
+    pub max_tokens: i64,
+    pub current_streak: i64,
+    pub longest_streak: i64,
+    /// Only days with activity. The client fills the rest of the grid with level 0.
+    pub days: Vec<DailyActivity>,
+}
+
+/// A day's raw intensity, before bucketing.
+///
+/// Tokens lead; sessions break ties, so a day of deep work outranks a day of
+/// three trivial sessions. Both are log-compressed because token counts are
+/// heavy-tailed — one marathon day can be 30x a normal one, and on a linear
+/// scale it flattens every other day to the faintest shade.
+fn activity_score(sessions: i64, tokens: i64) -> f64 {
+    if sessions == 0 && tokens == 0 {
+        return 0.0;
+    }
+    (1.0 + tokens as f64).ln() + 0.5 * (1.0 + sessions as f64).ln()
+}
+
+/// Linear-interpolated quantile of a pre-sorted slice.
+fn quantile(sorted: &[f64], q: f64) -> f64 {
+    if sorted.is_empty() {
+        return 0.0;
+    }
+    let pos = (sorted.len() - 1) as f64 * q;
+    let lo = pos.floor() as usize;
+    let hi = pos.ceil() as usize;
+    sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo as f64)
+}
+
+/// Merge the three per-day queries into the heatmap payload.
+///
+/// Bucketing uses the **quartiles of the active days in this window**, not the
+/// window maximum. Dividing by the max saturates: `ln` compresses so hard that
+/// nearly every active day lands at 0.75-1.0 of the maximum, so a 4k-token day
+/// renders as dark as a 250k-token day and the faintest level goes unused.
+/// Quartiles give an even spread and match the GitHub convention every user
+/// already recognises. Absolute values live in the tooltip, where they belong.
+fn build_activity_window(
+    start: String,
+    end: String,
+    session_rows: &[(String, i64)],
+    token_rows: &[(String, i64, i64, i64)],
+    message_rows: &[(String, i64)],
+) -> ActivityWindow {
+    use std::collections::BTreeMap;
+
+    #[derive(Default)]
+    struct Day {
+        sessions: i64,
+        tokens: i64,
+        input: i64,
+        output: i64,
+        messages: i64,
+    }
+
+    let mut by_day: BTreeMap<String, Day> = BTreeMap::new();
+
+    for (day, n) in session_rows {
+        by_day.entry(day.clone()).or_default().sessions += n;
+    }
+    for (day, tokens, input, output) in token_rows {
+        let d = by_day.entry(day.clone()).or_default();
+        d.tokens += tokens;
+        d.input += input;
+        d.output += output;
+    }
+    for (day, n) in message_rows {
+        by_day.entry(day.clone()).or_default().messages += n;
+    }
+
+    // A day is "active" if it started a session or spent a token. Messages alone
+    // (an edited transcript, say) do not light a cell.
+    let mut scores: Vec<f64> = by_day
+        .values()
+        .map(|d| activity_score(d.sessions, d.tokens))
+        .filter(|s| *s > 0.0)
+        .collect();
+    scores.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let (q1, q2, q3) = (
+        quantile(&scores, 0.25),
+        quantile(&scores, 0.50),
+        quantile(&scores, 0.75),
+    );
+
+    let max_sessions = by_day.values().map(|d| d.sessions).max().unwrap_or(0);
+    let max_tokens = by_day.values().map(|d| d.tokens).max().unwrap_or(0);
+
+    let days: Vec<DailyActivity> = by_day
+        .iter()
+        .filter_map(|(date, d)| {
+            let score = activity_score(d.sessions, d.tokens);
+            if score <= 0.0 {
+                return None;
+            }
+            let level = if score <= q1 {
+                1
+            } else if score <= q2 {
+                2
+            } else if score <= q3 {
+                3
+            } else {
+                4
+            };
+            Some(DailyActivity {
+                date: date.clone(),
+                sessions: d.sessions,
+                tokens: d.tokens,
+                input_tokens: d.input,
+                output_tokens: d.output,
+                messages: d.messages,
+                level,
+            })
+        })
+        .collect();
+
+    let (current_streak, longest_streak) = streaks(&start, &end, &days);
+
+    ActivityWindow {
+        start,
+        end,
+        max_sessions,
+        max_tokens,
+        current_streak,
+        longest_streak,
+        days,
+    }
+}
+
+/// Consecutive active calendar days. `current` counts back from `end`.
+fn streaks(start: &str, end: &str, days: &[DailyActivity]) -> (i64, i64) {
+    use chrono::NaiveDate;
+    use std::collections::HashSet;
+
+    let active: HashSet<&str> = days.iter().map(|d| d.date.as_str()).collect();
+    let (Ok(from), Ok(to)) = (
+        NaiveDate::parse_from_str(start, "%Y-%m-%d"),
+        NaiveDate::parse_from_str(end, "%Y-%m-%d"),
+    ) else {
+        return (0, 0);
+    };
+
+    let (mut longest, mut run) = (0i64, 0i64);
+    let mut day = from;
+    while day <= to {
+        if active.contains(day.format("%Y-%m-%d").to_string().as_str()) {
+            run += 1;
+            longest = longest.max(run);
+        } else {
+            run = 0;
+        }
+        day = day.succ_opt().unwrap_or(day + chrono::Duration::days(1));
+    }
+
+    // The current streak may legitimately end yesterday: a user who has not yet
+    // opened the app today has not broken it.
+    let mut current = 0i64;
+    let mut cursor = to;
+    if !active.contains(cursor.format("%Y-%m-%d").to_string().as_str()) {
+        cursor = cursor.pred_opt().unwrap_or(cursor);
+    }
+    while cursor >= from && active.contains(cursor.format("%Y-%m-%d").to_string().as_str()) {
+        current += 1;
+        let Some(prev) = cursor.pred_opt() else { break };
+        cursor = prev;
+    }
+
+    (current, longest)
+}
+
 impl<'a> SessionUpdateBuilder<'a> {
     fn new(session_manager: &'a SessionManager, session_id: String) -> Self {
         Self {
@@ -146,6 +372,7 @@ impl<'a> SessionUpdateBuilder<'a> {
             accumulated_total_tokens: None,
             accumulated_input_tokens: None,
             accumulated_output_tokens: None,
+            token_delta: None,
             schedule_id: None,
             workflow: None,
             user_workflow_values: None,
@@ -207,18 +434,41 @@ impl<'a> SessionUpdateBuilder<'a> {
         self
     }
 
-    pub fn accumulated_total_tokens(mut self, tokens: Option<i32>) -> Self {
+    pub fn accumulated_total_tokens(mut self, tokens: Option<i64>) -> Self {
+        // A column may appear only once in a SET list.
+        self.token_delta = None;
         self.accumulated_total_tokens = Some(tokens);
         self
     }
 
-    pub fn accumulated_input_tokens(mut self, tokens: Option<i32>) -> Self {
+    pub fn accumulated_input_tokens(mut self, tokens: Option<i64>) -> Self {
+        // A column may appear only once in a SET list.
+        self.token_delta = None;
         self.accumulated_input_tokens = Some(tokens);
         self
     }
 
-    pub fn accumulated_output_tokens(mut self, tokens: Option<i32>) -> Self {
+    pub fn accumulated_output_tokens(mut self, tokens: Option<i64>) -> Self {
+        // A column may appear only once in a SET list.
+        self.token_delta = None;
         self.accumulated_output_tokens = Some(tokens);
+        self
+    }
+
+    /// Add one turn's usage to the session's lifetime counters, atomically.
+    ///
+    /// Prefer this over the absolute `accumulated_*` setters for anything on the
+    /// hot path: it compiles to `col = COALESCE(col, 0) + ?` so two concurrent
+    /// turns on the same session cannot lose an update, and the arithmetic
+    /// happens in SQLite's 64-bit INTEGER rather than in `i32`.
+    pub fn accumulate_tokens(mut self, delta: TokenDelta) -> Self {
+        if !delta.is_empty() {
+            // A column may appear only once in a SET list.
+            self.accumulated_total_tokens = None;
+            self.accumulated_input_tokens = None;
+            self.accumulated_output_tokens = None;
+            self.token_delta = Some(delta);
+        }
         self
     }
 
@@ -264,9 +514,9 @@ pub struct SessionTokenCounts {
     pub total_tokens: Option<i32>,
     pub input_tokens: Option<i32>,
     pub output_tokens: Option<i32>,
-    pub accumulated_total_tokens: Option<i32>,
-    pub accumulated_input_tokens: Option<i32>,
-    pub accumulated_output_tokens: Option<i32>,
+    pub accumulated_total_tokens: Option<i64>,
+    pub accumulated_input_tokens: Option<i64>,
+    pub accumulated_output_tokens: Option<i64>,
 }
 
 pub struct SessionManager {
@@ -359,6 +609,24 @@ impl SessionManager {
 
     pub async fn get_insights(&self) -> Result<SessionInsights> {
         self.storage.get_insights().await
+    }
+
+    /// Per-day usage for the Home heatmap, over the last `days` calendar days.
+    pub async fn get_activity(&self, days: i64) -> Result<ActivityWindow> {
+        self.storage.get_activity(days).await
+    }
+
+    /// Append one turn's usage to the per-turn token ledger.
+    pub async fn record_token_event(
+        &self,
+        session_id: &str,
+        input: Option<i32>,
+        output: Option<i32>,
+        total: i32,
+    ) -> Result<()> {
+        self.storage
+            .record_token_event(session_id, input, output, total)
+            .await
     }
 
     pub async fn export_session(&self, id: &str) -> Result<String> {
@@ -848,6 +1116,30 @@ impl SessionStorage {
         .execute(pool)
         .await?;
 
+        // Append-only per-turn token accounting. See migration 10 for why this is
+        // a side table rather than `messages.tokens`.
+        sqlx::query(
+            r#"
+            CREATE TABLE token_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                ts INTEGER NOT NULL,
+                input_tokens INTEGER,
+                output_tokens INTEGER,
+                total_tokens INTEGER NOT NULL DEFAULT 0
+            )
+        "#,
+        )
+        .execute(pool)
+        .await?;
+
+        sqlx::query("CREATE INDEX idx_token_events_ts ON token_events(ts)")
+            .execute(pool)
+            .await?;
+        sqlx::query("CREATE INDEX idx_token_events_session ON token_events(session_id, ts)")
+            .execute(pool)
+            .await?;
+
         sqlx::query("CREATE INDEX idx_messages_session ON messages(session_id)")
             .execute(pool)
             .await?;
@@ -1156,6 +1448,62 @@ impl SessionStorage {
                 .execute(pool)
                 .await?;
             }
+            10 => {
+                // Per-turn token accounting.
+                //
+                // Before this, tokens existed only as one lifetime total per
+                // session with a single created_at/updated_at, so there was no
+                // way to answer "how many tokens did I use on Tuesday?" — and
+                // the "past 7 days" tile summed the whole lifetime of any
+                // session merely *touched* in the window.
+                //
+                // This is an append-only side table, deliberately NOT
+                // `messages.tokens`: `replace_conversation` DELETEs and
+                // re-inserts the whole message list, which would drop or
+                // re-stamp historical token rows on every edit.
+                sqlx::query(
+                    r#"
+                    CREATE TABLE IF NOT EXISTS token_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT NOT NULL,
+                        ts INTEGER NOT NULL,
+                        input_tokens INTEGER,
+                        output_tokens INTEGER,
+                        total_tokens INTEGER NOT NULL DEFAULT 0
+                    )
+                "#,
+                )
+                .execute(pool)
+                .await?;
+
+                sqlx::query("CREATE INDEX idx_token_events_ts ON token_events(ts)")
+                    .execute(pool)
+                    .await?;
+                sqlx::query(
+                    "CREATE INDEX idx_token_events_session ON token_events(session_id, ts)",
+                )
+                .execute(pool)
+                .await?;
+
+                // Seed history so the heatmap is not empty before instrumentation
+                // landed. Each pre-existing session's lifetime total is attributed
+                // wholesale to the day it was created — the only anchor that
+                // exists, and a stable one (created_at never moves).
+                sqlx::query(
+                    r#"
+                    INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens)
+                    SELECT id,
+                           CAST(strftime('%s', created_at) AS INTEGER),
+                           accumulated_input_tokens,
+                           accumulated_output_tokens,
+                           COALESCE(accumulated_total_tokens, total_tokens, 0)
+                    FROM sessions
+                    WHERE COALESCE(accumulated_total_tokens, total_tokens, 0) > 0
+                "#,
+                )
+                .execute(pool)
+                .await?;
+            }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
             }
@@ -1343,6 +1691,29 @@ impl SessionStorage {
             builder.accumulated_output_tokens,
             "accumulated_output_tokens"
         );
+
+        // Additive, atomic accumulation. Emitted as `col = COALESCE(col,0) + ?`
+        // so a concurrent turn on the same session cannot lose an update.
+        if let Some(delta) = builder.token_delta {
+            for (value, name) in [
+                (delta.total, "accumulated_total_tokens"),
+                (delta.input, "accumulated_input_tokens"),
+                (delta.output, "accumulated_output_tokens"),
+            ] {
+                if value.is_none() {
+                    continue;
+                }
+                if !updates.is_empty() {
+                    query.push_str(", ");
+                }
+                updates.push(name);
+                query.push_str(name);
+                query.push_str(" = COALESCE(");
+                query.push_str(name);
+                query.push_str(", 0) + ?");
+            }
+        }
+
         add_update!(builder.schedule_id, "schedule_id");
         add_update!(builder.workflow, "workflow_json");
         add_update!(builder.user_workflow_values, "user_workflow_values_json");
@@ -1391,6 +1762,15 @@ impl SessionStorage {
         }
         if let Some(aot) = builder.accumulated_output_tokens {
             q = q.bind(aot);
+        }
+        if let Some(delta) = builder.token_delta {
+            // Bind order must match the clause order appended above.
+            for value in [delta.total, delta.input, delta.output]
+                .into_iter()
+                .flatten()
+            {
+                q = q.bind(i64::from(value));
+            }
         }
         if let Some(sid) = builder.schedule_id {
             q = q.bind(sid);
@@ -1599,34 +1979,150 @@ impl SessionStorage {
 
     async fn get_insights(&self) -> Result<SessionInsights> {
         let pool = self.pool().await?;
-        // Single aggregate over sessions: totals plus 7d/30d windows.
-        // Window uses updated_at (already indexed) so an active session
-        // counts toward the recent window even if it was started earlier.
-        let row = sqlx::query_as::<_, (i64, Option<i64>, i64, i64, Option<i64>, Option<i64>)>(
+
+        // Sessions: totals plus 7d/30d windows.
+        //
+        // The session windows key on `updated_at` deliberately — an active
+        // session counts as recent even if it was started earlier. Only
+        // user-facing session types are counted, so these tiles agree with the
+        // session list rendered beneath them.
+        let sessions = sqlx::query_as::<_, (i64, Option<i64>, i64, i64)>(
             r#"
             SELECT
               COUNT(*) AS total_sessions,
               COALESCE(SUM(COALESCE(accumulated_total_tokens, total_tokens, 0)), 0) AS total_tokens,
               SUM(CASE WHEN updated_at >= datetime('now', '-7 days') THEN 1 ELSE 0 END) AS sessions_7d,
-              SUM(CASE WHEN updated_at >= datetime('now', '-30 days') THEN 1 ELSE 0 END) AS sessions_30d,
-              COALESCE(SUM(CASE WHEN updated_at >= datetime('now', '-7 days')
-                THEN COALESCE(accumulated_total_tokens, total_tokens, 0) ELSE 0 END), 0) AS tokens_7d,
-              COALESCE(SUM(CASE WHEN updated_at >= datetime('now', '-30 days')
-                THEN COALESCE(accumulated_total_tokens, total_tokens, 0) ELSE 0 END), 0) AS tokens_30d
+              SUM(CASE WHEN updated_at >= datetime('now', '-30 days') THEN 1 ELSE 0 END) AS sessions_30d
             FROM sessions
+            WHERE session_type IN ('user', 'scheduled')
             "#,
         )
-            .fetch_one(pool)
-            .await?;
+        .fetch_one(pool)
+        .await?;
+
+        // Tokens: summed from per-turn events inside the window.
+        //
+        // The old query summed each session's WHOLE lifetime total if the session
+        // had merely been touched in the window, so a 60-day-old session holding
+        // 2,000,000 tokens that received one reply today contributed all
+        // 2,000,000 to "past 7 days".
+        let tokens = sqlx::query_as::<_, (Option<i64>, Option<i64>)>(
+            r#"
+            SELECT
+              COALESCE(SUM(CASE WHEN te.ts >= CAST(strftime('%s', 'now', '-7 days') AS INTEGER)
+                THEN te.total_tokens ELSE 0 END), 0) AS tokens_7d,
+              COALESCE(SUM(CASE WHEN te.ts >= CAST(strftime('%s', 'now', '-30 days') AS INTEGER)
+                THEN te.total_tokens ELSE 0 END), 0) AS tokens_30d
+            FROM token_events te
+            JOIN sessions s ON s.id = te.session_id
+            WHERE s.session_type IN ('user', 'scheduled')
+            "#,
+        )
+        .fetch_one(pool)
+        .await?;
 
         Ok(SessionInsights {
-            total_sessions: row.0 as usize,
-            total_tokens: row.1.unwrap_or(0),
-            sessions_last_7_days: row.2.max(0) as usize,
-            sessions_last_30_days: row.3.max(0) as usize,
-            tokens_last_7_days: row.4.unwrap_or(0),
-            tokens_last_30_days: row.5.unwrap_or(0),
+            total_sessions: sessions.0 as usize,
+            total_tokens: sessions.1.unwrap_or(0),
+            sessions_last_7_days: sessions.2.max(0) as usize,
+            sessions_last_30_days: sessions.3.max(0) as usize,
+            tokens_last_7_days: tokens.0.unwrap_or(0),
+            tokens_last_30_days: tokens.1.unwrap_or(0),
         })
+    }
+
+    /// Record one turn's usage. Append-only; never updated, never deleted.
+    async fn record_token_event(
+        &self,
+        session_id: &str,
+        input: Option<i32>,
+        output: Option<i32>,
+        total: i32,
+    ) -> Result<()> {
+        let pool = self.pool().await?;
+        sqlx::query(
+            r#"
+            INSERT INTO token_events (session_id, ts, input_tokens, output_tokens, total_tokens)
+            VALUES (?, CAST(strftime('%s', 'now') AS INTEGER), ?, ?, ?)
+            "#,
+        )
+        .bind(session_id)
+        .bind(input.map(i64::from))
+        .bind(output.map(i64::from))
+        .bind(i64::from(total))
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_activity(&self, days: i64) -> Result<ActivityWindow> {
+        let pool = self.pool().await?;
+        let days = days.clamp(1, 371);
+        // SQLite's `-N days` modifier takes a literal, so build it once.
+        let window = format!("-{days} days");
+
+        // Sessions started per LOCAL calendar day. `created_at` never moves, so a
+        // day's session count is stable across renders — unlike `updated_at`.
+        let session_rows = sqlx::query_as::<_, (String, i64)>(
+            r#"
+            SELECT date(created_at, 'localtime') AS day, COUNT(*) AS n
+            FROM sessions
+            WHERE session_type IN ('user', 'scheduled')
+              AND created_at >= datetime('now', ?1)
+            GROUP BY day
+            "#,
+        )
+        .bind(&window)
+        .fetch_all(pool)
+        .await?;
+
+        let token_rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
+            r#"
+            SELECT date(te.ts, 'unixepoch', 'localtime') AS day,
+                   COALESCE(SUM(te.total_tokens), 0)  AS tokens,
+                   COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
+                   COALESCE(SUM(te.output_tokens), 0) AS output_tokens
+            FROM token_events te
+            JOIN sessions s ON s.id = te.session_id
+            WHERE s.session_type IN ('user', 'scheduled')
+              AND te.ts >= CAST(strftime('%s', 'now', ?1) AS INTEGER)
+            GROUP BY day
+            "#,
+        )
+        .bind(&window)
+        .fetch_all(pool)
+        .await?;
+
+        // `messages.created_timestamp` is unix SECONDS (Message::new uses
+        // `Utc::now().timestamp()`), not milliseconds.
+        let message_rows = sqlx::query_as::<_, (String, i64)>(
+            r#"
+            SELECT date(m.created_timestamp, 'unixepoch', 'localtime') AS day, COUNT(*) AS n
+            FROM messages m
+            JOIN sessions s ON s.id = m.session_id
+            WHERE s.session_type IN ('user', 'scheduled')
+              AND m.created_timestamp >= CAST(strftime('%s', 'now', ?1) AS INTEGER)
+            GROUP BY day
+            "#,
+        )
+        .bind(&window)
+        .fetch_all(pool)
+        .await?;
+
+        let bounds = sqlx::query_as::<_, (String, String)>(
+            "SELECT date('now', ?1, 'localtime'), date('now', 'localtime')",
+        )
+        .bind(&window)
+        .fetch_one(pool)
+        .await?;
+
+        Ok(build_activity_window(
+            bounds.0,
+            bounds.1,
+            &session_rows,
+            &token_rows,
+            &message_rows,
+        ))
     }
 
     async fn export_session(&self, id: &str) -> Result<String> {
@@ -1936,7 +2432,7 @@ mod tests {
         const TOTAL_TOKENS: i32 = 500;
         const INPUT_TOKENS: i32 = 300;
         const OUTPUT_TOKENS: i32 = 200;
-        const ACCUMULATED_TOKENS: i32 = 1000;
+        const ACCUMULATED_TOKENS: i64 = 1000;
         const USER_MESSAGE: &str = "test message";
         const ASSISTANT_MESSAGE: &str = "test response";
 
@@ -2455,6 +2951,122 @@ mod tests {
         assert_eq!(original_after.total_tokens, Some(1234));
     }
 
+    /// The old path read the row into Rust, added, and wrote it back. Two turns
+    /// racing on the same session silently lost one update.
+    #[tokio::test]
+    async fn accumulate_tokens_is_additive_and_atomic() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = seed_session_with_messages(&sm, 1).await;
+
+        for _ in 0..3 {
+            sm.update(&session.id)
+                .accumulate_tokens(TokenDelta {
+                    input: Some(100),
+                    output: Some(20),
+                    total: Some(120),
+                })
+                .apply()
+                .await
+                .unwrap();
+        }
+
+        let counts = sm.get_token_counts(&session.id).await.unwrap();
+        assert_eq!(counts.accumulated_total_tokens, Some(360));
+        assert_eq!(counts.accumulated_input_tokens, Some(300));
+        assert_eq!(counts.accumulated_output_tokens, Some(60));
+    }
+
+    /// SQLite's INTEGER is 64-bit; the Rust side used to be `i32`, which wraps
+    /// negative past ~2.1e9 and then *subtracts* from the insights SUM.
+    #[tokio::test]
+    async fn accumulated_tokens_exceed_i32() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = seed_session_with_messages(&sm, 1).await;
+
+        let beyond_i32 = i64::from(i32::MAX) + 1_000;
+        sm.update(&session.id)
+            .accumulated_total_tokens(Some(beyond_i32))
+            .apply()
+            .await
+            .unwrap();
+
+        let counts = sm.get_token_counts(&session.id).await.unwrap();
+        assert_eq!(counts.accumulated_total_tokens, Some(beyond_i32));
+
+        let insights = sm.get_insights().await.unwrap();
+        assert_eq!(
+            insights.total_tokens, beyond_i32,
+            "no wrap, no negative sum"
+        );
+    }
+
+    /// The tiles on Home must agree with the session list printed beneath them.
+    #[tokio::test]
+    async fn insights_exclude_internal_session_types() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        for (session_type, tokens) in [
+            (SessionType::User, 1_000i64),
+            (SessionType::Scheduled, 500),
+            (SessionType::SubAgent, 9_000),
+            (SessionType::Hidden, 9_000),
+            (SessionType::Terminal, 9_000),
+        ] {
+            let s = sm
+                .create_session("/tmp".into(), String::new(), session_type)
+                .await
+                .unwrap();
+            sm.update(&s.id)
+                .accumulated_total_tokens(Some(tokens))
+                .apply()
+                .await
+                .unwrap();
+        }
+
+        let insights = sm.get_insights().await.unwrap();
+        assert_eq!(insights.total_sessions, 2, "user + scheduled only");
+        assert_eq!(insights.total_tokens, 1_500);
+    }
+
+    /// The per-turn ledger is what makes a real per-day token series possible —
+    /// and what makes "tokens in the last 7 days" mean what it says.
+    #[tokio::test]
+    async fn token_events_drive_the_windowed_totals() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = seed_session_with_messages(&sm, 1).await;
+
+        // No events yet: the lifetime total is non-zero but the window is empty.
+        sm.update(&session.id)
+            .accumulated_total_tokens(Some(50_000))
+            .apply()
+            .await
+            .unwrap();
+        let insights = sm.get_insights().await.unwrap();
+        assert_eq!(insights.total_tokens, 50_000);
+        assert_eq!(
+            insights.tokens_last_7_days, 0,
+            "a lifetime total is not a 7-day total"
+        );
+
+        sm.record_token_event(&session.id, Some(80), Some(20), 100)
+            .await
+            .unwrap();
+        let insights = sm.get_insights().await.unwrap();
+        assert_eq!(insights.tokens_last_7_days, 100);
+        assert_eq!(insights.tokens_last_30_days, 100);
+
+        let activity = sm.get_activity(30).await.unwrap();
+        assert_eq!(activity.days.len(), 1);
+        assert_eq!(activity.days[0].tokens, 100);
+        assert_eq!(activity.days[0].sessions, 1);
+        assert!(activity.days[0].level >= 1);
+        assert_eq!(activity.current_streak, 1);
+    }
+
     #[tokio::test]
     async fn test_get_token_counts_matches_get_session() {
         let temp_dir = TempDir::new().unwrap();
@@ -2874,5 +3486,106 @@ mod tests {
             .unwrap()
             .as_concat_text();
         assert_eq!(last, "answer 0");
+    }
+}
+
+#[cfg(test)]
+mod activity_tests {
+    use super::*;
+
+    fn day(n: u32) -> String {
+        format!("2026-03-{n:02}")
+    }
+
+    /// Linear scaling collapses every ordinary day into the faintest shade as
+    /// soon as one marathon day exists. This pins the log+quartile behaviour that
+    /// replaced it: ordinary days must occupy more than one level.
+    #[test]
+    fn one_huge_day_does_not_flatten_the_rest() {
+        let mut sessions = Vec::new();
+        let mut tokens = Vec::new();
+        // 12 ordinary days spanning 20k..150k tokens ...
+        for i in 1..=12u32 {
+            sessions.push((day(i), 1 + i64::from(i % 3)));
+            tokens.push((day(i), 20_000 + i64::from(i) * 11_000, 0, 0));
+        }
+        // ... and one 1.8M-token outlier.
+        sessions.push((day(13), 6));
+        tokens.push((day(13), 1_800_000, 0, 0));
+
+        let w = build_activity_window(day(1), day(13), &sessions, &tokens, &[]);
+
+        assert_eq!(w.days.len(), 13);
+        let outlier = w.days.iter().find(|d| d.date == day(13)).unwrap();
+        assert_eq!(outlier.level, 4, "the marathon day is the darkest");
+
+        let ordinary: std::collections::BTreeSet<u8> = w
+            .days
+            .iter()
+            .filter(|d| d.date != day(13))
+            .map(|d| d.level)
+            .collect();
+        assert!(
+            ordinary.len() >= 3,
+            "ordinary days must spread across levels, got {ordinary:?}"
+        );
+        assert!(!ordinary.contains(&0), "an active day is never level 0");
+    }
+
+    #[test]
+    fn idle_days_are_omitted_entirely() {
+        let sessions = vec![(day(1), 1)];
+        let w = build_activity_window(day(1), day(5), &sessions, &[], &[]);
+        assert_eq!(w.days.len(), 1);
+        assert_eq!(w.days[0].date, day(1));
+    }
+
+    /// Messages alone (an edited transcript) must not light a cell — only a
+    /// session started or a token spent counts as activity.
+    #[test]
+    fn messages_alone_do_not_create_an_active_day() {
+        let messages = vec![(day(2), 40)];
+        let w = build_activity_window(day(1), day(3), &[], &[], &messages);
+        assert!(w.days.is_empty());
+    }
+
+    #[test]
+    fn tokens_lead_sessions_break_ties() {
+        // Same session count, more tokens -> strictly higher score.
+        assert!(activity_score(1, 200_000) > activity_score(1, 20_000));
+        // Same tokens, more sessions -> strictly higher score.
+        assert!(activity_score(3, 50_000) > activity_score(1, 50_000));
+        // A deep single session outranks three trivial ones.
+        assert!(activity_score(1, 500_000) > activity_score(3, 1_000));
+        assert_eq!(activity_score(0, 0), 0.0);
+    }
+
+    #[test]
+    fn streaks_count_consecutive_active_days() {
+        // active: 1,2,3   idle: 4   active: 6,7  (5 idle)
+        let sessions: Vec<(String, i64)> =
+            [1u32, 2, 3, 6, 7].iter().map(|i| (day(*i), 1)).collect();
+        let w = build_activity_window(day(1), day(7), &sessions, &[], &[]);
+        assert_eq!(w.longest_streak, 3);
+        assert_eq!(w.current_streak, 2, "6th and 7th");
+    }
+
+    /// A user who has not opened the app *yet today* has not broken their streak.
+    #[test]
+    fn current_streak_tolerates_an_inactive_today() {
+        let sessions: Vec<(String, i64)> = [4u32, 5, 6].iter().map(|i| (day(*i), 1)).collect();
+        let w = build_activity_window(day(1), day(7), &sessions, &[], &[]);
+        assert_eq!(w.current_streak, 3);
+    }
+
+    #[test]
+    fn max_sessions_and_tokens_reported() {
+        let sessions = vec![(day(1), 2), (day(2), 5)];
+        let tokens = vec![(day(1), 900, 400, 500), (day(2), 100, 60, 40)];
+        let w = build_activity_window(day(1), day(2), &sessions, &tokens, &[]);
+        assert_eq!(w.max_sessions, 5);
+        assert_eq!(w.max_tokens, 900);
+        let d1 = &w.days[0];
+        assert_eq!((d1.input_tokens, d1.output_tokens), (400, 500));
     }
 }

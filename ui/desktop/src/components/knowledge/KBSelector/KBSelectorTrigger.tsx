@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { Badge } from '../../ui/badge';
 import { useKnowledge } from '../KnowledgeContext';
 import { KBSelectorPalette } from './KBSelectorPalette';
 
@@ -23,21 +24,22 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
       <button
         data-testid="knowledge-kb-selector-trigger"
         onClick={() => setOpen(true)}
-        className="group inline-flex w-full items-center gap-3 rounded-xl border border-border-subtle bg-background-default px-3 py-3 transition-colors duration-150 hover:bg-background-medium/82 focus:outline-none focus:ring-1 focus:ring-ring"
+        className="group flex h-9 w-full items-center gap-2.5 rounded-md border border-border-input bg-background-default px-3 text-sm transition-colors duration-[var(--motion-fast)] hover:border-border-strong"
       >
         <span
-          className="w-2 h-2 rounded-full flex-shrink-0"
+          className="h-2 w-2 flex-shrink-0 rounded-full"
           style={{ background: activeKb?.color ?? 'var(--text-muted)' }}
         />
-        <span className="flex-1 text-left min-w-0">
-          <span className="block text-sm font-semibold truncate">
-            {activeKb?.name ?? 'Focus a knowledge base'}
-          </span>
+        <span className="min-w-0 flex-1 truncate text-left font-semibold">
+          {activeKb?.name ?? 'Focus a knowledge base'}
         </span>
-        <span className="flex shrink-0 items-center gap-1 rounded-md bg-background-muted px-2 py-1 text-[10px] font-medium uppercase tracking-wider text-text-muted transition-colors group-hover:bg-background-default/72 group-hover:text-text-default">
+        <Badge uppercase className="text-[10px]">
           KB
-          <ChevronDown className="w-3 h-3" />
-        </span>
+        </Badge>
+        <ChevronDown
+          className={`h-4 w-4 shrink-0 text-text-muted transition-transform duration-[var(--motion-fast)] ${open ? 'rotate-180' : ''}`}
+          strokeWidth={1.5}
+        />
       </button>
       {open && <KBSelectorPalette onClose={() => setOpen(false)} />}
     </>

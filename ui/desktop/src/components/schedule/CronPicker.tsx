@@ -143,7 +143,8 @@ export const CronPicker: React.FC<CronPickerProps> = ({ schedule, onChange, isVa
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [period, second, minute, hour12, isPM, dayOfWeek, dayOfMonth, month]);
 
-  const selectClassName = 'px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:outline-none focus:border-border-default';
+  const selectClassName =
+    'px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default  focus:border-border-default';
 
   return (
     <div className="space-y-4">
@@ -197,7 +198,7 @@ export const CronPicker: React.FC<CronPickerProps> = ({ schedule, onChange, isVa
               max="31"
               value={dayOfMonth}
               onChange={(e) => setDayOfMonth(e.target.value)}
-              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:outline-none focus:border-border-default"
+              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:border-border-default"
             />
           </div>
         )}
@@ -230,7 +231,7 @@ export const CronPicker: React.FC<CronPickerProps> = ({ schedule, onChange, isVa
               max="12"
               value={hour12}
               onChange={(e) => setHour12(parseInt(e.target.value) || 1)}
-              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:outline-none focus:border-border-default"
+              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:border-border-default"
             />
             <span className="text-sm">:</span>
             <input
@@ -239,7 +240,7 @@ export const CronPicker: React.FC<CronPickerProps> = ({ schedule, onChange, isVa
               max="59"
               value={minute}
               onChange={(e) => setMinute(e.target.value.padStart(2, '0'))}
-              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:outline-none focus:border-border-default"
+              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:border-border-default"
             />
             <select
               value={isPM ? 'PM' : 'AM'}
@@ -261,7 +262,7 @@ export const CronPicker: React.FC<CronPickerProps> = ({ schedule, onChange, isVa
               max="59"
               value={minute}
               onChange={(e) => setMinute(e.target.value)}
-              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:outline-none focus:border-border-default"
+              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:border-border-default"
             />
           </div>
         )}
@@ -275,7 +276,7 @@ export const CronPicker: React.FC<CronPickerProps> = ({ schedule, onChange, isVa
               max="59"
               value={second}
               onChange={(e) => setSecond(e.target.value)}
-              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:outline-none focus:border-border-default"
+              className="w-16 px-2 py-1 border border-border-subtle rounded-md bg-background-default text-text-default focus:border-border-default"
             />
           </div>
         )}

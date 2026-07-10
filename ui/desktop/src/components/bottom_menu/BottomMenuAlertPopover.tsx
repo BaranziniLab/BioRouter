@@ -236,7 +236,7 @@ export default function BottomMenuAlertPopover({ alerts }: AlertPopoverProps) {
       {isOpen && (
         <div
           ref={popoverRef}
-          className="biorouter-popover-surface fixed w-[275px] p-0 rounded-xl overflow-hidden bg-app z-[1000] pointer-events-auto text-left"
+          className="biorouter-popover-surface fixed w-[275px] p-0 rounded-xl overflow-hidden bg-background-default z-[var(--z-dropdown)] pointer-events-auto text-left"
           style={{
             top: `${popoverPosition.top}px`,
             left: `${popoverPosition.left}px`,

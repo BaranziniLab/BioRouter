@@ -91,10 +91,12 @@ export function WorkflowResourcePicker({
           <PopoverTrigger asChild>
             <button
               type="button"
-              className="inline-flex h-8 shrink-0 items-center gap-2 rounded-md bg-background-medium px-2.5 text-xs text-text-default transition-colors hover:bg-background-muted focus:outline-none focus:ring-2 focus:ring-border-strong"
+              className="inline-flex h-8 shrink-0 items-center gap-2 rounded-md bg-background-medium px-2.5 text-xs text-text-default transition-colors hover:bg-background-muted "
             >
               <span>{countLabel(selectedIds.length, noun)}</span>
-              <ChevronDown className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')} />
+              <ChevronDown
+                className={cn('h-3.5 w-3.5 transition-transform', open && 'rotate-180')}
+              />
             </button>
           </PopoverTrigger>
           <PopoverContent
@@ -108,7 +110,7 @@ export function WorkflowResourcePicker({
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
                 placeholder={searchPlaceholder}
-                className="h-full min-w-0 flex-1 bg-transparent text-sm text-text-default placeholder:text-text-muted focus:outline-none"
+                className="h-full min-w-0 flex-1 bg-transparent text-sm text-text-default placeholder:text-text-muted"
                 autoFocus
               />
             </div>

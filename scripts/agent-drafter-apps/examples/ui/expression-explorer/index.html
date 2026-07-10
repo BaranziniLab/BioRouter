@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Expression Explorer</title>
+</head>
+<body>
+  <main class="br-container" data-br-main>
+    <span class="br-badge">BioRouter App</span>
+    <h1>Expression Explorer</h1>
+    <p class="br-text br-text--muted">
+      Choose a gene and a tissue panel, then slide the expression floor. Every change asks the
+      agent to redraw the bar chart from reference RNA-seq data.
+    </p>
+
+    <div class="br-card">
+      <div class="br-field">
+        <label class="br-label" for="gene">Gene symbol</label>
+        <input id="gene" class="br-input" value="TP53" placeholder="e.g. TP53, MYC, INS" autocomplete="off" spellcheck="false" />
+      </div>
+      <div class="br-row">
+        <div class="br-field">
+          <label class="br-label" for="tissue">Tissue panel</label>
+          <select id="tissue" class="br-select">
+            <option value="major">Major tissues (GTEx overview)</option>
+            <option value="brain">Brain subregions</option>
+            <option value="digestive">Digestive tract</option>
+            <option value="immune">Immune &amp; blood</option>
+            <option value="reproductive">Reproductive</option>
+          </select>
+        </div>
+        <div class="br-field">
+          <label class="br-label" for="floor">Expression floor <span id="floorval" class="br-slider-val"></span></label>
+          <!-- Slider position is log10(TPM): -1 -> 0.1 TPM, 3 -> 1000 TPM. -->
+          <input id="floor" class="br-slider" type="range" min="-1" max="3" step="0.1" value="0" />
+        </div>
+      </div>
+    </div>
+
+    <!-- The agent draws the bar chart here via ui_chart(target="@region:chart"). -->
+    <section class="br-card" data-br-region="chart" aria-label="Expression chart">
+      <p class="br-text br-text--muted">Adjust any control to plot expression across tissues.</p>
+    </section>
+
+    <!-- br.run streams the agent's one-line read (and a step timeline) into #out. -->
+    <div class="br-output" id="out" data-placeholder="The agent's read on the plot appears here."></div>
+
+    <p class="br-footer">Powered by BioRouter · built with Agent Drafter</p>
+  </main>
+</body>
+</html>

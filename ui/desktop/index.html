@@ -7,7 +7,23 @@
     <script>
       // Initialize theme before any content loads
       (function () {
+        function initializeThemeFamily() {
+          // The theme *family* (Parchment / Alma Mater) is a `data-theme` attribute,
+          // orthogonal to the dark class. Set it before first paint so Alma Mater
+          // does not flash Parchment on load.
+          try {
+            const fam =
+              window.localStorage && localStorage.getItem('theme_family') === 'alma-mater'
+                ? 'alma-mater'
+                : 'parchment';
+            document.documentElement.setAttribute('data-theme', fam);
+          } catch (error) {
+            document.documentElement.setAttribute('data-theme', 'parchment');
+          }
+        }
+
         function initializeTheme() {
+          initializeThemeFamily();
           try {
             if (window.localStorage) {
               const useSystemTheme = localStorage.getItem('use_system_theme') === 'true';

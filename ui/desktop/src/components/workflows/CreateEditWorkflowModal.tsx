@@ -6,6 +6,7 @@ import { Check, ExternalLink, Play, Save, X } from '../icons/app-icons';
 import Copy from '../icons/Copy';
 import { ExtensionConfig } from '../ConfigContext';
 import { Button } from '../ui/button';
+import { Input } from '../ui/input';
 
 import { WorkflowFormFields } from './shared/WorkflowFormFields';
 import { WorkflowFormData } from './shared/workflowFormSchema';
@@ -204,6 +205,7 @@ export default function CreateEditWorkflowModal({
 
   const [deeplink, setDeeplink] = useState('');
   const [isGeneratingDeeplink, setIsGeneratingDeeplink] = useState(false);
+  const [deeplinkError, setDeeplinkError] = useState(false);
 
   // Generate deeplink whenever workflow configuration changes
   useEffect(() => {
@@ -216,6 +218,7 @@ export default function CreateEditWorkflowModal({
         (!instructions.trim() && !(prompt || '').trim())
       ) {
         setDeeplink('');
+        setDeeplinkError(false);
         return;
       }
 
@@ -225,11 +228,13 @@ export default function CreateEditWorkflowModal({
         const link = await generateDeepLink(currentWorkflow);
         if (!isCancelled) {
           setDeeplink(link);
+          setDeeplinkError(false);
         }
       } catch (error) {
         console.error('Failed to generate deeplink:', error);
         if (!isCancelled) {
-          setDeeplink('Error generating deeplink');
+          setDeeplink('');
+          setDeeplinkError(true);
         }
       } finally {
         if (!isCancelled) {
@@ -256,8 +261,10 @@ export default function CreateEditWorkflowModal({
     getCurrentWorkflow,
   ]);
 
+  const canCopyDeeplink = Boolean(deeplink) && !isGeneratingDeeplink && !deeplinkError;
+
   const handleCopy = () => {
-    if (!deeplink || isGeneratingDeeplink || deeplink === 'Error generating deeplink') {
+    if (!canCopyDeeplink) {
       return;
     }
 
@@ -418,38 +425,48 @@ export default function CreateEditWorkflowModal({
 
           {/* Deep Link Display */}
           {requiredFieldsAreFilled() && (
-            <div className="biorouter-modal-panel w-full p-4 rounded-lg mt-6">
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-sm text-text-muted">
-                  Copy this link to share with friends or paste directly in Chrome to open
-                </div>
-                <Button
-                  onClick={handleCopy}
-                  variant="ghost"
-                  size="sm"
-                  disabled={
-                    !deeplink || isGeneratingDeeplink || deeplink === 'Error generating deeplink'
+            <div className="biorouter-modal-panel w-full p-4 rounded-xl mt-6">
+              <label
+                htmlFor="workflow-share-link"
+                className="block text-sm font-medium text-text-default mb-2"
+              >
+                Share link
+              </label>
+              <div className="flex items-center">
+                <Input
+                  id="workflow-share-link"
+                  type="text"
+                  readOnly
+                  value={
+                    isGeneratingDeeplink
+                      ? 'Generating link…'
+                      : deeplinkError
+                        ? 'Could not generate a share link'
+                        : deeplink
                   }
-                  className="ml-4 p-2 hover:bg-background-default rounded-lg transition-colors flex items-center disabled:opacity-50 disabled:hover:bg-transparent"
+                  onFocus={(e) => e.currentTarget.select()}
+                  aria-invalid={deeplinkError}
+                  className="flex-1 text-xs font-mono"
+                />
+                <Button
+                  type="button"
+                  onClick={handleCopy}
+                  variant="outline"
+                  disabled={!canCopyDeeplink}
+                  aria-label={copied ? 'Link copied' : 'Copy share link'}
+                  className="ml-2 px-3 py-2 rounded-md flex items-center"
                 >
                   {copied ? (
                     <Check className="w-4 h-4 text-text-success" />
                   ) : (
-                    <Copy className="w-4 h-4 text-text-muted" />
+                    <Copy className="w-4 h-4" />
                   )}
-                  <span className="ml-1 text-sm text-text-muted">
-                    {copied ? 'Copied!' : 'Copy'}
-                  </span>
                 </Button>
               </div>
-              <div
-                onClick={handleCopy}
-                className="text-sm truncate font-mono cursor-pointer text-text-default"
-              >
-                {isGeneratingDeeplink
-                  ? 'Generating deeplink...'
-                  : deeplink || 'Click to generate deeplink'}
-              </div>
+              <p className="text-xs text-text-muted mt-1">
+                Anyone with this link can open this workflow in Biorouter. Paste it into a browser,
+                or send it to a collaborator.
+              </p>
             </div>
           )}
         </div>

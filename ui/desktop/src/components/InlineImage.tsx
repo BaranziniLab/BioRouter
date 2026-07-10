@@ -99,9 +99,7 @@ export function InlineImage(props: InlineImageProps) {
         <button
           type="button"
           onClick={toggleExpand}
-          className={`block rounded transition-opacity hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring ${
-            isExpanded ? 'max-w-full' : 'max-w-40 max-h-40'
-          } ${isLoading ? 'hidden' : ''}`}
+          className={`block rounded transition-opacity hover:opacity-90 ${isExpanded ? 'max-w-full' : 'max-w-40 max-h-40'} ${isLoading ? 'hidden' : ''}`}
           title={isExpanded ? 'Collapse image' : 'Expand image'}
           aria-label={isExpanded ? 'Collapse image' : 'Expand image'}
         >
@@ -109,7 +107,9 @@ export function InlineImage(props: InlineImageProps) {
             src={imageData}
             alt={alt}
             onError={handleError}
-            className={isExpanded ? 'max-h-96 max-w-full object-contain' : 'max-h-40 max-w-40 object-contain'}
+            className={
+              isExpanded ? 'max-h-96 max-w-full object-contain' : 'max-h-40 max-w-40 object-contain'
+            }
           />
         </button>
       )}

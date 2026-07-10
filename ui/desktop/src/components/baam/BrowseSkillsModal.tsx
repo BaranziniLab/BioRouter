@@ -131,8 +131,8 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
   const selectedCount = selected.size;
 
   return (
-    <div className="biorouter-modal-overlay fixed inset-0 z-50 flex items-center justify-center">
-      <div className="biorouter-modal-surface bg-background-default w-[720px] max-w-[92vw] max-h-[86vh] flex flex-col overflow-hidden">
+    <div className="biorouter-modal-overlay fixed inset-0 z-[var(--z-overlay)] flex items-center justify-center">
+      <div className="biorouter-modal-surface bg-background-default z-[var(--z-modal)] w-[720px] max-w-[92vw] max-h-[86vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="px-6 pt-5 pb-4 border-b border-border-subtle flex items-start justify-between gap-4">
           <div>
@@ -158,7 +158,7 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search skills by name, description, or tag…"
-            className="biorouter-modal-panel w-full rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="biorouter-modal-panel w-full rounded-lg px-3 py-2 text-sm"
           />
           <div className="flex items-center gap-2 flex-wrap">
             {(['All', ...CATEGORY_ORDER] as Filter[]).map((f) => (
@@ -168,7 +168,7 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
                 className={[
                   'text-xs px-2.5 py-1 rounded-full transition-colors',
                   filter === f
-                    ? 'bg-background-info/15 text-text-default shadow-sm'
+                    ? 'bg-background-info/15 text-text-default'
                     : 'bg-background-muted/60 text-text-muted hover:bg-background-medium',
                 ].join(' ')}
               >
@@ -227,7 +227,7 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
                             installed
                               ? 'biorouter-modal-row opacity-70 cursor-default'
                               : checked
-                                ? 'bg-background-info/10 shadow-sm ring-1 ring-background-info/30 cursor-pointer'
+                                ? 'bg-background-info/10 ring-1 ring-background-info/30 cursor-pointer'
                                 : 'biorouter-modal-row hover:bg-background-default cursor-pointer',
                           ].join(' ')}
                         >

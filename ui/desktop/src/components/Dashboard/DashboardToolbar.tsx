@@ -22,7 +22,7 @@ export const DashboardToolbar: React.FC = () => {
     (foldMode ? 'left-[12px]' : 'left-[2px]');
 
   return (
-    <div className="relative z-[100] no-drag flex items-center gap-2 px-4 py-1.5 border-b border-border-subtle/30 bg-background-muted/40 backdrop-blur-sm">
+    <div className="relative z-[100] no-drag flex items-center gap-2 px-4 py-1.5 border border-border-subtle bg-background-default shadow-popover">
       <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-2 no-drag">
         <button
           type="button"

@@ -7,6 +7,7 @@ import UpdateSection from './UpdateSection';
 
 import { COST_TRACKING_ENABLED, UPDATES_ENABLED } from '../../../updates';
 import ThemeSelector from '../../BioRouterSidebar/ThemeSelector';
+import ThemeFamilySelector from '../../BioRouterSidebar/ThemeFamilySelector';
 import BlockLogoBlack from './icons/block-lockup_black.png';
 import BlockLogoWhite from './icons/block-lockup_white.png';
 
@@ -222,8 +223,22 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
           </h2>
           <p className="text-xs text-text-muted">Customize the look and feel of BioRouter</p>
         </div>
-        <div className="biorouter-settings-control-strip">
-          <ThemeSelector className="w-auto" hideTitle horizontal />
+        <div className="flex flex-col gap-4">
+          <div>
+            <p className="text-xs text-text-muted mb-1.5">
+              Palette{' — '}
+              <span className="text-text-subtle">Parchment (warm) or Alma Mater (UCSF)</span>
+            </p>
+            <div className="biorouter-settings-control-strip">
+              <ThemeFamilySelector className="w-auto" hideTitle horizontal />
+            </div>
+          </div>
+          <div>
+            <p className="text-xs text-text-muted mb-1.5">Mode</p>
+            <div className="biorouter-settings-control-strip">
+              <ThemeSelector className="w-auto" hideTitle horizontal />
+            </div>
+          </div>
         </div>
       </div>
 

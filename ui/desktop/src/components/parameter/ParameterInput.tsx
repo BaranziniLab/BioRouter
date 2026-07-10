@@ -13,9 +13,9 @@ interface ParameterInputProps {
 
 const labelCls = 'block text-xs font-medium text-text-muted uppercase tracking-wider mb-1';
 const inputCls =
-  'w-full px-3 py-2 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150';
+  'w-full px-3 py-2 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted  focus:border-border-strong transition-colors duration-150';
 const selectCls =
-  'w-full px-3 py-2 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default focus:outline-none focus:border-border-strong transition-colors duration-150';
+  'w-full px-3 py-2 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default  focus:border-border-strong transition-colors duration-150';
 
 const ParameterInput: React.FC<ParameterInputProps> = ({
   parameter,
@@ -104,7 +104,9 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
               className={inputCls}
               placeholder={`Enter the name or prompt shown to the user for "${key}"`}
             />
-            <p className="text-xs text-text-muted mt-1">Shown to the end-user when running the workflow.</p>
+            <p className="text-xs text-text-muted mt-1">
+              Shown to the end-user when running the workflow.
+            </p>
           </div>
 
           {/* Controls row */}
@@ -114,7 +116,9 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
               <select
                 className={selectCls}
                 value={parameter.input_type || 'string'}
-                onChange={(e) => onChange(key, { input_type: e.target.value as Parameter['input_type'] })}
+                onChange={(e) =>
+                  onChange(key, { input_type: e.target.value as Parameter['input_type'] })
+                }
               >
                 <option value="string">String</option>
                 <option value="select">Select</option>
@@ -128,7 +132,9 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
               <select
                 className={selectCls}
                 value={requirement}
-                onChange={(e) => onChange(key, { requirement: e.target.value as Parameter['requirement'] })}
+                onChange={(e) =>
+                  onChange(key, { requirement: e.target.value as Parameter['requirement'] })
+                }
               >
                 <option value="required">Required</option>
                 <option value="optional">Optional</option>
@@ -157,7 +163,9 @@ const ParameterInput: React.FC<ParameterInputProps> = ({
               <textarea
                 value={(parameter.options || []).join('\n')}
                 onChange={(e) => onChange(key, { options: e.target.value.split('\n') })}
-                onKeyDown={(e) => { if (e.key === 'Enter') e.stopPropagation(); }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.stopPropagation();
+                }}
                 className={`${inputCls} resize-none`}
                 placeholder={'Option 1\nOption 2\nOption 3'}
                 rows={3}

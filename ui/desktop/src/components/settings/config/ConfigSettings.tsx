@@ -187,7 +187,7 @@ export default function ConfigSettings() {
                         onChange={(e) => handleChange(key, e.target.value)}
                         className={cn(
                           'text-text-default border-border-subtle hover:border-border-subtle transition-colors',
-                          modifiedKeys.has(key) && 'border-border-info focus:ring-ring'
+                          modifiedKeys.has(key) && 'border-border-info '
                         )}
                         placeholder={`Enter ${getUiNames(key)}`}
                       />

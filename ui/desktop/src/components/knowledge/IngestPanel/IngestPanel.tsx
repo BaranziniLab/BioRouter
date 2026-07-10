@@ -324,7 +324,11 @@ export function IngestPanel() {
     stream.abort();
   }
 
-  const canDigest = items.length > 0 && !!activeKbId && digestState === 'idle';
+  const busy = digestState !== 'idle';
+  // K-04: the one primary action stays full-opacity even with nothing staged,
+  // guarded by a cursor + helper line, so it never trains the eye to ignore a
+  // permanently half-lit button.
+  const nothingToDigest = !activeKbId || items.length === 0;
   const digestLabel =
     digestState === 'checking'
       ? 'Checking model…'
@@ -335,41 +339,45 @@ export function IngestPanel() {
           : 'Digest Staged Sources';
 
   return (
-    <div className="flex flex-col gap-4 pt-3">
-      <Dropzone onFiles={onFiles} onPathPickRequested={() => void onPathPickRequested()} />
-      <Button
-        data-testid="knowledge-ingest-paste-text"
-        type="button"
-        variant="secondary"
-        size="sm"
-        onClick={() => setShowPasteBox(true)}
-        className="h-10 w-full border border-border-subtle bg-background-default/74 font-medium transition-colors duration-150 hover:bg-background-medium/82"
-      >
-        <Clipboard className="mr-1.5 h-4 w-4" />
-        Paste text
-      </Button>
-      <IngestWarnings
-        warnings={warnings}
-        onDismiss={(id) => setWarnings((current) => current.filter((warning) => warning.id !== id))}
-        onClear={() => setWarnings([])}
-      />
-
-      {showPasteBox && (
-        <PasteTextBox
-          onCancel={() => setShowPasteBox(false)}
-          onStage={(text, title, urls) => {
-            add({ kind: 'text', id: genId(), text, title, status: 'pending' });
-            for (const url of urls) add({ kind: 'url', id: genId(), url, status: 'pending' });
-            setShowPasteBox(false);
-          }}
+    <div className="flex flex-col">
+      <div className="flex flex-col gap-4 p-4">
+        <Dropzone onFiles={onFiles} onPathPickRequested={() => void onPathPickRequested()} />
+        <Button
+          data-testid="knowledge-ingest-paste-text"
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={() => setShowPasteBox(true)}
+          className="w-full"
+        >
+          <Clipboard className="mr-1.5 h-4 w-4" strokeWidth={1.5} />
+          Paste text
+        </Button>
+        <IngestWarnings
+          warnings={warnings}
+          onDismiss={(id) =>
+            setWarnings((current) => current.filter((warning) => warning.id !== id))
+          }
+          onClear={() => setWarnings([])}
         />
-      )}
 
-      <StagedList items={items} onRemove={remove} onClear={clear} />
+        {showPasteBox && (
+          <PasteTextBox
+            onCancel={() => setShowPasteBox(false)}
+            onStage={(text, title, urls) => {
+              add({ kind: 'text', id: genId(), text, title, status: 'pending' });
+              for (const url of urls) add({ kind: 'url', id: genId(), url, status: 'pending' });
+              setShowPasteBox(false);
+            }}
+          />
+        )}
 
-      <DispatchProgress state={stream} onAbort={onAbort} />
+        <StagedList items={items} onRemove={remove} onClear={clear} />
 
-      <div className="flex flex-col gap-2 pt-1">
+        <DispatchProgress state={stream} onAbort={onAbort} />
+      </div>
+
+      <div className="flex flex-col gap-2 border-t border-border-subtle p-4">
         <IngestModelPicker
           value={model}
           onChange={(next) => void onDefaultModelChange(next)}
@@ -380,19 +388,23 @@ export function IngestPanel() {
           data-testid="knowledge-digest-button"
           variant="default"
           size="sm"
-          disabled={!canDigest}
-          onClick={() => void onDigest()}
-          className="w-full min-h-9"
+          disabled={busy}
+          aria-disabled={nothingToDigest || undefined}
+          onClick={() => {
+            if (!nothingToDigest && !busy) void onDigest();
+          }}
+          className={`w-full min-h-9 ${nothingToDigest && !busy ? 'cursor-not-allowed' : ''}`}
         >
           {digestLabel}
         </Button>
+        {nothingToDigest && !busy && (
+          <p className="text-center text-[11px] text-text-muted">
+            {activeKbId
+              ? 'Stage a file to digest.'
+              : 'Focus or create a knowledge base above to enable digestion.'}
+          </p>
+        )}
       </div>
-
-      {!activeKbId && (
-        <p className="text-[11px] text-text-muted text-center">
-          Focus or create a knowledge base above to enable digestion.
-        </p>
-      )}
     </div>
   );
 }

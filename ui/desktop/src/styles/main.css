@@ -13,12 +13,29 @@
 @theme {
   --shadow-*: initial;
 
+  /* Radius scale — retuned so Tailwind's own rounded-* classes land exactly on
+     the canonical 4 / 8 / 12 / 16 scale (design.md §3.4, D-04). No call-site churn. */
+  --radius-sm: 4px; /* chips, tags, inline code, checkbox */
+  --radius-md: 8px; /* buttons, inputs, selects, list rows, menu items */
+  --radius-lg: 8px; /* alias of md — both render the control radius */
+  --radius-xl: 12px; /* cards, panels, code blocks, tool-call cards */
+  --radius-2xl: 16px; /* modals, popovers, the composer */
+
   --color-white: #ffffff;
   --color-black: #000000;
 
-  /* Claude-inspired coral accent */
-  --color-block-teal: #cf6d47;
-  --color-block-orange: #b85a32;
+  /* Brand — one hue, three stops (D-01 / D-02 / D-03).
+     coral-600 is the ONLY stop that carries white text at AA (4.62:1);
+     coral-500 fails at 3.54:1 and is restricted to bars, dots and hairlines. */
+  --color-coral-400: #e8895f; /* dark-mode accent + focus ring */
+  --color-coral-500: #cf6d47; /* accent bars, status dots, brand gradient start */
+  --color-coral-600: #b85a32; /* light-mode CTA fill + focus ring */
+  --color-coral-700: #a94f2a; /* light-mode CTA hover */
+
+  /* Deprecated aliases: `block-teal` held a coral, not a teal (DR-02).
+     Retained so existing call sites keep rendering; sweep them to coral-*. */
+  --color-block-teal: var(--color-coral-500);
+  --color-block-orange: var(--color-coral-600);
 
   /* Warm cream-gray neutral palette — calmer than the yellow-cast original */
   --color-neutral-50: #faf8f3;
@@ -33,31 +50,55 @@
   --color-neutral-900: #16120c;
   --color-neutral-950: #0d0a06;
 
+  /* Status hues (D-13).
+     *-100 = the DARK-theme stop: bright enough on near-black, dark ink on top.
+     *-200 = legacy mid stop, kept only for existing `bg-*-200` call sites.
+     *-600/700 = the LIGHT-theme stop: each clears 4.5:1 as text on white,
+     canvas and the sidebar. Light and dark must NOT share a hue — the old
+     system did, which is why every light-mode status colour failed AA. */
   --color-red-100: #f07575;
   --color-red-200: #e85252;
+  --color-red-600: #b3261e;
 
   --color-blue-100: #7aabf5;
   --color-blue-200: #5892ee;
+  --color-blue-700: #1e5fbf;
 
   --color-green-100: #7ac87c;
   --color-green-200: #5bbe5e;
+  --color-green-600: #1f7a3d;
 
   --color-yellow-100: #f0c84a;
   --color-yellow-200: #e8b830;
-
-  --color-accent: var(--color-neutral-900);
+  --color-yellow-700: #8a5a00;
 }
 
 :root {
-  /* fonts */
-  --font-sans: Arial, Helvetica, sans-serif;
-  --font-mono: monospace;
+  /* Geometry, motion, layering (design.md §3.3–§3.7).
+     Fonts live in the @theme inline block below — the single source of truth. */
+  --radius-full: 9999px;
+  --motion-fast: 120ms; /* hover, focus, colour — and every exit */
+  --motion-base: 180ms; /* popover / dropdown / tooltip enter, tab switch */
+  --motion-slow: 260ms; /* modal enter, route transition, drawer */
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --row-height: 40px; /* D-12·B — one row rhythm, no compact mode */
 
-  /* theming accents */
-  --background-accent: var(--color-accent);
-  --border-accent: var(--color-accent);
-  --text-accent: var(--color-accent);
+  --z-base: 0;
+  --z-sticky: 100;
+  --z-dropdown: 200;
+  --z-overlay: 300;
+  --z-modal: 400;
+  --z-modal-dropdown: 500;
+  --z-toast: 600;
+
+  /* Accent (D-01). coral-600 is the CTA fill: white on it is 4.62:1. */
+  --background-accent: var(--color-coral-600);
+  --background-accent-hover: var(--color-coral-700);
+  --border-accent: var(--color-coral-600);
+  --text-accent: var(--color-coral-600);
   --text-on-accent: var(--color-white);
+  --accent-bar: var(--color-coral-500); /* sidebar rail, tab underline, status dots */
 
   /* Semantic */
   --background-app: var(--color-white);
@@ -67,29 +108,66 @@
   --background-medium: var(--color-neutral-100);
   --background-strong: var(--color-neutral-300);
   --background-inverse: var(--color-black);
-  --background-danger: var(--color-red-200);
-  --background-success: var(--color-green-200);
-  --background-info: var(--color-blue-200);
-  --background-warning: var(--color-yellow-200);
+  /* Status FILLS — a solid background. The ink placed on top is --text-on-*. */
+  --background-danger: var(--color-red-600);
+  --background-success: var(--color-green-600);
+  --background-info: var(--color-blue-700);
+  --background-warning: var(--color-yellow-700);
+  --text-on-status: var(--color-white);
 
-  --border-default: var(--color-neutral-100);
-  --border-input: var(--color-neutral-100);
-  --border-strong: var(--color-neutral-100);
-  --border-danger: var(--color-red-200);
-  --border-success: var(--color-green-200);
-  --border-warning: var(--color-yellow-200);
-  --border-info: var(--color-blue-200);
+  /* Borders. Three real tokens; `--border-default` is a deprecated alias of
+     the hairline, kept because 45 call sites still name it. Previously all
+     three collapsed to neutral-100, and `strong` was LIGHTER than `subtle`,
+     so `hover:border-border-strong` weakened the border (DR-06, DR-51). */
+  --border-subtle: var(--color-neutral-200);
+  --border-strong: var(--color-neutral-300);
+  --border-input: var(--color-neutral-200);
+  --border-default: var(--border-subtle);
+  --border-danger: var(--color-red-600);
+  --border-success: var(--color-green-600);
+  --border-warning: var(--color-yellow-700);
+  --border-info: var(--color-blue-700);
 
-  --text-default: #2a2520;
-  --text-muted: #7a736c;
-  --text-subtle: #948d83;
+  /* Text. `muted` is darker than `subtle` — the old ramp had them inverted.
+     Both clear 4.5:1 on white, canvas #faf8f3, medium #f4f0e6 and the
+     two-tone sidebar #f3ede1 (the darkest ground either can land on). */
+  --text-default: #2a2520; /* min 9.34:1 */
+  --text-muted: #635c54; /* min 5.65:1 */
+  --text-subtle: #6e6760; /* min 4.78:1 */
   --text-inverse: var(--color-white);
-  --text-danger: var(--color-red-200);
-  --text-success: var(--color-green-200);
-  --text-warning: var(--color-yellow-200);
-  --text-info: var(--color-blue-200);
 
-  --ring: var(--border-strong);
+  /* Status TEXT/ICON colours — must themselves pass on the page ground.
+     Deliberately a different hue from the dark theme's stop. */
+  --text-danger: var(--color-red-600); /* 6.54:1 on white */
+  --text-success: var(--color-green-600); /* 5.37:1 */
+  --text-warning: var(--color-yellow-700); /* 5.93:1 */
+  --text-info: var(--color-blue-700); /* 6.10:1 */
+
+  /* Focus (D-03, revised by D-15).
+     The ring is NEUTRAL, not the brand coral. A 2px coral outline around every
+     focused field read as an alarm on a surface whose whole thesis is calm — and
+     because browsers treat text inputs as always `:focus-visible`, it fired on a
+     plain mouse click, not just on keyboard navigation.
+     neutral-600 clears 5.89:1 against every ground it can appear on. It is only
+     drawn under `prefers-contrast: more` / `forced-colors` — see @layer base. */
+  --ring: var(--color-neutral-600);
+  /* Focus is a SURFACE SHIFT, not a border (D-15). This is the fill a focused
+     control takes: one step past hover, so focus and hover are distinguishable. */
+  --background-focus: #e4dcc9;
+  --border-focus: var(--text-subtle);
+
+  /* Home usage heatmap — a warm sequential ramp, monotonic in luminance so the
+     five steps read in order even in greyscale. Level 0 is the empty-day fill,
+     deliberately a shade above the canvas so the grid is legible when idle. */
+  --heat-0: #ece5d6;
+  --heat-1: #e9c9ab;
+  --heat-2: #dda27a;
+  --heat-3: #c6774c;
+  --heat-4: #a04a27;
+  /* Grid metrics: 22 weeks x (24 + 6) - 6 = 654px, inside the 760px chat column. */
+  --heat-cell: 24px;
+  --heat-gap: 6px;
+  --heat-labels: 34px;
 
   /* Two-tone canvas: the sidebar is a distinct, slightly deeper warm-beige
      surface sitting against the lighter main canvas (Codex-style layering,
@@ -103,7 +181,7 @@
   --sidebar-accent: var(--sidebar-hover);
   --sidebar-accent-foreground: var(--text-default);
   --sidebar-border: #e9e1d0;
-  --sidebar-ring: var(--border-default);
+  --sidebar-ring: var(--ring);
 
   /* custom shadow — flat by default; popover for elevated menus/modals */
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.06), 0px 0px 1px 0px rgba(0, 0, 0, 0.12);
@@ -115,22 +193,28 @@
   --shadow-modal:
     0px 22px 60px -18px rgba(32, 25, 15, 0.22), 0px 8px 24px -18px rgba(32, 25, 15, 0.16),
     0px 0px 0px 1px rgba(32, 25, 15, 0.045);
-  --shadow-modal-chrome-bottom: 0px 18px 28px -30px rgba(32, 25, 15, 0.34);
-  --shadow-modal-chrome-top: 0px -18px 28px -30px rgba(32, 25, 15, 0.34);
-  --border-subtle: var(--color-neutral-200);
+  /* D-05: elevation is hairline-only outside the four permitted surfaces.
+     These two chrome shadows existed solely to fake a gradient page header;
+     they are now no-ops, retained as null values so any stale reference is inert. */
+  --shadow-modal-chrome-bottom: none;
+  --shadow-modal-chrome-top: none;
 }
 
 .dark {
-  /* theming accents */
-  --background-accent: var(--color-white);
-  --border-accent: var(--color-white);
-  --text-accent: var(--color-white);
-  --text-on-accent: var(--color-black);
+  /* Accent (D-01). The dark accent is coral-400; ink on it is the surface
+     colour, not black: #16120c on #e8895f is 7.26:1. */
+  --background-accent: var(--color-coral-400);
+  --background-accent-hover: #f0a07c;
+  --border-accent: var(--color-coral-400);
+  --text-accent: var(--color-coral-400);
+  --text-on-accent: var(--color-neutral-900);
+  --accent-bar: var(--color-coral-400);
 
-  /* semantic */
+  /* Surfaces. `default`/`card` now sit one step ABOVE the canvas so a card
+     reads as a surface rather than dissolving into the page. */
   --background-app: var(--color-neutral-950);
-  --background-default: var(--color-neutral-950);
-  --background-card: var(--color-neutral-950);
+  --background-default: var(--color-neutral-900);
+  --background-card: var(--color-neutral-900);
   --background-muted: var(--color-neutral-800);
   --background-medium: var(--color-neutral-700);
   --background-strong: var(--color-neutral-600);
@@ -139,25 +223,41 @@
   --background-success: var(--color-green-100);
   --background-info: var(--color-blue-100);
   --background-warning: var(--color-yellow-100);
+  --text-on-status: var(--color-neutral-900);
 
-  --border-default: var(--color-neutral-900);
-  --border-input: var(--color-neutral-800);
+  /* Borders. `default` was neutral-900 against a neutral-950 canvas: 1.06:1,
+     i.e. invisible. It is now the hairline, matching light-mode intent. */
+  --border-subtle: var(--color-neutral-800);
   --border-strong: var(--color-neutral-700);
+  --border-input: var(--color-neutral-700);
+  --border-default: var(--border-subtle);
   --border-danger: var(--color-red-100);
   --border-success: var(--color-green-100);
   --border-warning: var(--color-yellow-100);
   --border-info: var(--color-blue-100);
 
-  --text-default: var(--color-white);
-  --text-muted: var(--color-neutral-400);
-  --text-subtle: var(--color-neutral-500);
-  --text-inverse: var(--color-black);
+  /* Text. Pure white on near-black is harsh; the warm bone reads calmer and
+     still clears 17:1. `subtle` was neutral-500, which failed AA at 4.01:1 on
+     the sidebar ground; #9c937b clears 5.16:1 there. */
+  --text-default: var(--color-neutral-100);
+  --text-muted: var(--color-neutral-400); /* 6.66:1 on the sidebar */
+  --text-subtle: #9c937b; /* 5.16:1 on the sidebar */
+  --text-inverse: var(--color-neutral-900);
   --text-danger: var(--color-red-100);
   --text-success: var(--color-green-100);
   --text-warning: var(--color-yellow-100);
   --text-info: var(--color-blue-100);
 
-  --ring: var(--border-strong);
+  /* Focus (D-03, revised by D-15) — neutral, not coral. 7.05:1 minimum. */
+  --ring: var(--color-neutral-300);
+  --background-focus: #4d4430;
+  --border-focus: var(--text-subtle);
+
+  --heat-0: #241f16;
+  --heat-1: #4a3524;
+  --heat-2: #7a4d2e;
+  --heat-3: #b0653a;
+  --heat-4: #e8895f;
 
   /* Dark mode mirrors the two-tone: sidebar sits one warm step above the
      near-black main canvas, with its own hover/active steps. */
@@ -169,8 +269,8 @@
   --sidebar-active: #3d3524;
   --sidebar-accent: var(--sidebar-hover);
   --sidebar-accent-foreground: var(--text-default);
-  --sidebar-border: var(--border-default);
-  --sidebar-ring: var(--border-default);
+  --sidebar-border: var(--color-neutral-700);
+  --sidebar-ring: var(--ring);
 
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
   --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
@@ -178,9 +278,210 @@
   --shadow-modal:
     0px 22px 64px -16px rgba(0, 0, 0, 0.62), 0px 8px 26px -18px rgba(0, 0, 0, 0.5),
     0px 0px 0px 1px rgba(255, 255, 255, 0.055);
-  --shadow-modal-chrome-bottom: 0px 18px 28px -30px rgba(0, 0, 0, 0.72);
-  --shadow-modal-chrome-top: 0px -18px 28px -30px rgba(0, 0, 0, 0.72);
-  --border-subtle: var(--color-neutral-800);
+  --shadow-modal-chrome-bottom: none;
+  --shadow-modal-chrome-top: none;
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   ALMA MATER — the UCSF brand theme family (docs/design/alma-mater-theme.md).
+   A pure RE-COLOURING of Parchment: navy foundation, cool neutrals, a UCSF
+   Violet / eggplant accent. Same layout, same fonts, same flat-surface
+   discipline. Selected via `data-theme='alma-mater'` on <html>, orthogonal
+   to the `.dark` class, so light AND dark are both honoured.
+
+   Specificity `(0,2,0)` for these blocks beats the bare `:root` / `.dark`
+   `(0,1,0)` without touching them, and each token is re-declared in the
+   dark block too so no light value ever leaks into dark mode.
+
+   All pairs are WCAG-AA verified — see scripts/check-contrast.mjs. Palette
+   sourced from identity.ucsf.edu/brand-guide (letter-coded UCSF matrix).
+   ══════════════════════════════════════════════════════════════════ */
+:root[data-theme='alma-mater'] {
+  /* ── Raw palette remap (mode-independent): recolours the stray
+     `coral-*`/`block-*` and `neutral-*` direct utility usages so nothing is
+     left warm. Semantic tokens below are authoritative; these only catch
+     components that reach past the semantic layer. ── */
+  --color-coral-400: #c45ed8; /* dark accent + orchid */
+  --color-coral-500: #a238ba; /* accent bar / dots (UCSF Violet G3) */
+  --color-coral-600: #6c247c; /* light CTA fill (UCSF Eggplant G2) */
+  --color-coral-700: #571c66; /* light CTA hover */
+
+  /* Cool navy-gray ramp — the opposite bias to Parchment's warm bone. */
+  --color-neutral-50: #f7f8f9;
+  --color-neutral-100: #f2f3f4; /* I6 */
+  --color-neutral-200: #e1e3e5; /* J5 */
+  --color-neutral-300: #d1d3d3; /* K3 */
+  --color-neutral-400: #b4b9bf; /* J3 */
+  --color-neutral-500: #878d96; /* J2 */
+  --color-neutral-600: #5a6b86;
+  --color-neutral-700: #3a4a66;
+  --color-neutral-800: #1f3152;
+  --color-neutral-900: #0f2545;
+  --color-neutral-950: #04142e; /* navy canvas */
+
+  /* Status hues re-mapped to the UCSF alert columns. */
+  --color-red-100: #f5768a;
+  --color-red-200: #e85268;
+  --color-red-600: #c40d3e;
+  --color-blue-100: #7fb3e6;
+  --color-blue-200: #4f8fd6;
+  --color-blue-700: #0f388a;
+  --color-green-100: #5fbf74;
+  --color-green-200: #38a552;
+  --color-green-600: #007242;
+  --color-yellow-100: #feb80a;
+  --color-yellow-200: #e0a400;
+  --color-yellow-700: #8a5a00;
+
+  /* ── Semantic tokens — Alma Mater LIGHT (direct hex per the design doc) ── */
+  --background-accent: #6c247c; /* Eggplant G2; white ink 9.63:1 */
+  --background-accent-hover: #571c66;
+  --border-accent: #6c247c;
+  --text-accent: #6c247c; /* links / coloured labels, 9.63:1 on white */
+  --text-on-accent: #ffffff;
+  --accent-bar: #a238ba; /* rails, dots, underline (UCSF Violet) */
+
+  --background-app: #ffffff;
+  --background-default: #ffffff;
+  --background-card: #ffffff;
+  --background-muted: #f2f3f4;
+  --background-medium: #e1e3e5;
+  --background-strong: #d1d3d3;
+  --background-inverse: #052049; /* UCSF Navy, not black */
+  --background-danger: #e61048; /* N3 Red */
+  --background-success: #007242; /* D2 Green */
+  --background-info: #0f388a; /* A2 Blue */
+  --background-warning: #8a5a00; /* dark amber, white ink (bright yellow is dark-only) */
+  --text-on-status: #ffffff;
+
+  --border-subtle: #e1e3e5;
+  --border-strong: #cfd3d8;
+  --border-input: #d1d3d3;
+  --border-default: var(--border-subtle);
+  --border-danger: #c40d3e;
+  --border-success: #007242;
+  --border-warning: #8a5a00;
+  --border-info: #0f388a;
+
+  --text-default: #052049; /* Navy, 16.0:1 on white */
+  --text-muted: #506380; /* I3 Blue-Gray, 5.5:1 on ground */
+  --text-subtle: #586780; /* 5.15:1 on ground */
+  --text-inverse: #ffffff;
+  --text-danger: #c40d3e; /* 6.04:1 on white */
+  --text-success: #007242;
+  --text-warning: #8a5a00;
+  --text-info: #0f388a;
+
+  /* Focus stays a NEUTRAL surface shift, never the accent (design.md D-15).
+     background-focus is one cool step past the hover fill (--background-medium
+     #e1e3e5) so focus and hover stay distinguishable. */
+  --ring: #506380;
+  --background-focus: #d0d6de;
+  --border-focus: #586780;
+
+  /* Usage heatmap — UCSF Violet ladder, monotonic in luminance. */
+  --heat-0: #ece6f1;
+  --heat-1: #d9c2e8;
+  --heat-2: #c48ed6;
+  --heat-3: #9e44b4;
+  --heat-4: #6c247c;
+
+  /* Two-tone canvas — cool-gray sidebar one calm step deeper than the app. */
+  --sidebar: #eceef1;
+  --sidebar-foreground: var(--text-default);
+  --sidebar-primary: var(--background-accent);
+  --sidebar-primary-foreground: var(--text-inverse);
+  --sidebar-hover: #e3e6ea;
+  --sidebar-active: #d7dbe0;
+  --sidebar-accent: var(--sidebar-hover);
+  --sidebar-accent-foreground: var(--text-default);
+  --sidebar-border: #e1e3e5;
+  --sidebar-ring: var(--ring);
+
+  /* Shadows shift from warm brown to navy tint; flat-by-default is unchanged. */
+  --shadow-default: 0px 1px 3px 0px rgba(5, 32, 73, 0.08), 0px 0px 1px 0px rgba(5, 32, 73, 0.14);
+  --shadow-composer:
+    0px 2px 6px -1px rgba(5, 32, 73, 0.1), 0px 1px 2px 0px rgba(5, 32, 73, 0.06);
+  --shadow-popover: 0px 8px 24px 0px rgba(5, 32, 73, 0.12), 0px 0px 1px 0px rgba(5, 32, 73, 0.18);
+  --shadow-modal:
+    0px 22px 60px -18px rgba(5, 32, 73, 0.24), 0px 8px 24px -18px rgba(5, 32, 73, 0.16),
+    0px 0px 0px 1px rgba(5, 32, 73, 0.05);
+  --shadow-modal-chrome-bottom: none;
+  --shadow-modal-chrome-top: none;
+}
+
+.dark[data-theme='alma-mater'] {
+  /* ── Semantic tokens — Alma Mater DARK. Navy-based surfaces; the accent
+     lifts to orchid so it glows on the navy canvas. Every token the light
+     block sets is re-declared here so no light value leaks into dark. ── */
+  --background-accent: #c45ed8; /* Orchid G4 */
+  --background-accent-hover: #d07ee0;
+  --border-accent: #c45ed8;
+  --text-accent: #d7a5e8; /* light orchid link, 8.03:1 on card */
+  --text-on-accent: #1a0a24; /* plum-black ink, 5.34:1 */
+  --accent-bar: #c45ed8;
+
+  --background-app: #04142e; /* deep navy canvas */
+  --background-default: #08213f; /* navy card */
+  --background-card: #08213f;
+  --background-muted: #0d2a50;
+  --background-medium: #143563;
+  --background-strong: #1e477f;
+  --background-inverse: #f2f3f4;
+  --background-danger: #f5768a;
+  --background-success: #5fbf74;
+  --background-info: #7fb3e6;
+  --background-warning: #feb80a; /* bright UCSF yellow, navy ink */
+  --text-on-status: #052049;
+
+  --border-subtle: #17386a;
+  --border-strong: #24487f;
+  --border-input: #24487f;
+  --border-default: var(--border-subtle);
+  --border-danger: #f5768a;
+  --border-success: #5fbf74;
+  --border-warning: #feb80a;
+  --border-info: #7fb3e6;
+
+  --text-default: #f2f3f4; /* I6, 16.5:1 on canvas */
+  --text-muted: #b4b9bf; /* J3, 8.2:1 */
+  --text-subtle: #909aa6; /* 5.66:1 */
+  --text-inverse: #052049;
+  --text-danger: #f5768a;
+  --text-success: #5fbf74;
+  --text-warning: #feb80a;
+  --text-info: #7fb3e6;
+
+  --ring: #b4b9bf;
+  --background-focus: #163c74;
+  --border-focus: #909aa6;
+
+  --heat-0: #10223f;
+  --heat-1: #3a1e52;
+  --heat-2: #6c247c;
+  --heat-3: #a238ba;
+  --heat-4: #c45ed8;
+
+  --sidebar: #071b3a;
+  --sidebar-foreground: var(--text-default);
+  --sidebar-primary: var(--background-accent);
+  --sidebar-primary-foreground: var(--text-inverse);
+  --sidebar-hover: #0e2a50;
+  --sidebar-active: #163864;
+  --sidebar-accent: var(--sidebar-hover);
+  --sidebar-accent-foreground: var(--text-default);
+  --sidebar-border: #1a3a66;
+  --sidebar-ring: var(--ring);
+
+  /* Dark shadows stay black, like Parchment dark. */
+  --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
+  --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
+  --shadow-popover: 0px 8px 24px 0px rgba(0, 0, 0, 0.4), 0px 0px 1px 0px rgba(0, 0, 0, 0.5);
+  --shadow-modal:
+    0px 22px 64px -16px rgba(0, 0, 0, 0.62), 0px 8px 26px -18px rgba(0, 0, 0, 0.5),
+    0px 0px 0px 1px rgba(255, 255, 255, 0.055);
+  --shadow-modal-chrome-bottom: none;
+  --shadow-modal-chrome-top: none;
 }
 
 @theme inline {
@@ -198,9 +499,12 @@
   --color-background-card: var(--background-card);
 
   --color-background-accent: var(--background-accent);
+  --color-background-accent-hover: var(--background-accent-hover);
   --color-border-accent: var(--border-accent);
   --color-text-accent: var(--text-accent);
   --color-text-on-accent: var(--text-on-accent);
+  --color-text-on-status: var(--text-on-status);
+  --color-accent-bar: var(--accent-bar);
 
   --color-border-default: var(--border-default);
   --color-border-subtle: var(--border-subtle);
@@ -220,9 +524,24 @@
   --color-text-warning: var(--text-warning);
   --color-text-info: var(--text-info);
 
-  --font-sans: Arial, Helvetica, sans-serif;
-  --font-mono: monospace;
+  /* Fonts (D-06) — native stacks, no webfont fetched, no @font-face.
+     This block is the single source of truth: it both defines the CSS var and
+     generates Tailwind's `font-sans` / `font-mono` utilities. The mono stack is
+     shared verbatim by markdown code blocks AND the xterm terminal, so a pasted
+     command and its output are set identically. */
+  --font-sans:
+    ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
+    sans-serif;
+  --font-mono:
+    ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono',
+    monospace;
   --font-serif: serif;
+
+  --color-heat-0: var(--heat-0);
+  --color-heat-1: var(--heat-1);
+  --color-heat-2: var(--heat-2);
+  --color-heat-3: var(--heat-3);
+  --color-heat-4: var(--heat-4);
 
   --color-ring: var(--ring);
 
@@ -236,19 +555,110 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
 
+  /* The four permitted elevations (D-05). Tailwind's default shadow scale is
+     unset above (`--shadow-*: initial`), so `shadow-sm/md/lg/xl` generate
+     nothing on purpose — every surface is flat unless it is one of these. */
   --shadow-default: var(--shadow-default);
+  --shadow-composer: var(--shadow-composer);
+  --shadow-popover: var(--shadow-popover);
+  --shadow-modal: var(--shadow-modal);
 }
 
 @layer base {
-  * {
-    @apply border-border-default;
+  /* Tailwind v4's preflight defaults `border-color` to currentColor, which would
+     paint any un-coloured border in the TEXT colour. Pin it to the hairline so a
+     bare `border` class is correct by default. (Previously this pointed at
+     `--border-default`, which was a near-invisible neutral-100 in light mode.) */
+  *,
+  ::before,
+  ::after {
+    border-color: var(--border-subtle);
   }
+
   body {
     @apply text-text-default;
+    font-family: var(--font-sans);
+  }
+
+  /* P5 / D-15 — focus is a SURFACE SHIFT, never a ring.
+     An outline drawn around the control reads as an alarm on a surface whose
+     whole thesis is calm, and because browsers treat text fields as always
+     `:focus-visible`, it fired on a plain mouse click too. Instead the focused
+     control deepens its own fill by one step and firms its text.
+
+     `:where()` keeps specificity at 0 so any component can still opt out. */
+  :where(
+    a,
+    button,
+    summary,
+    [role='button'],
+    [role='tab'],
+    [role='menuitem'],
+    [role='option'],
+    input[type='checkbox'],
+    input[type='radio'],
+    [tabindex]:not([tabindex='-1'])
+  ):focus-visible {
+    outline: none;
+    background-color: var(--background-focus);
+    color: var(--text-default);
+  }
+
+  /* Text fields already own a border, so they shift their fill AND firm that
+     existing edge. No new strip is introduced. */
+  :where(
+    input:not([type='checkbox']):not([type='radio']):not([type='range']),
+    textarea,
+    select
+  ):focus,
+  :where(
+    input:not([type='checkbox']):not([type='radio']):not([type='range']),
+    textarea,
+    select
+  ):focus-visible {
+    outline: none;
+    background-color: var(--background-focus);
+    border-color: var(--border-focus);
+  }
+
+  /* A container that holds a focused field (the composer, a search shell) takes
+     the same quiet shift rather than letting the inner control draw a box. */
+  :where(.biorouter-chat-composer, .biorouter-list-row, .biorouter-settings-row):focus-within {
+    border-color: var(--border-focus);
+  }
+
+  /* The colour shift is deliberately soft, which is the point — but it cannot
+     meet the 3:1 non-text contrast floor for a state indicator. Users who have
+     asked their OS for a stronger signal get the ring back. */
+  @media (prefers-contrast: more), (forced-colors: active) {
+    :where(
+      a,
+      button,
+      input,
+      textarea,
+      select,
+      summary,
+      [tabindex]:not([tabindex='-1'])
+    ):focus-visible {
+      outline: 2px solid var(--ring);
+      outline-offset: 2px;
+      border-radius: inherit;
+    }
   }
 }
 
-/* Arial is a system font — no @font-face needed */
+/* Motion is short and informative. Everything animated must null out here —
+   applied once, globally, rather than per-class (DR-13). */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
 
 /* animations */
 @keyframes appear {
@@ -311,75 +721,19 @@
   }
 }
 
-@keyframes sidebar-item-in {
-  from {
-    opacity: 0;
-    transform: translateX(20px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
+/* `sidebar-item-in` and `wind` are gone with the staggered nav entrance and the
+   FlyingBird decoration they drove (D-14). */
 
-@keyframes wind {
-  0% {
-    transform: translate(0, 0);
-  }
-  99.99% {
-    transform: translate(-100%, 100%);
-  }
-  100% {
-    transform: translate(0, 0);
-  }
-}
-
-/* Non-blocking sidebar animations */
+/* D-14: the staggered per-nth-child sidebar entrance is deleted. The nav is
+   seen on every cold start; a 0.8s performance there is the opposite of "calm".
+   The class is retained (still referenced by AppSidebar) but is now inert. */
 .sidebar-item {
-  /* Start hidden and positioned to the right */
-  opacity: 0;
-  transform: translateX(20px);
-  animation: sidebar-item-in 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-  /* Use will-change sparingly and remove after animation */
-  will-change: transform, opacity;
-}
-
-.sidebar-item:nth-child(1) {
-  animation-delay: 0.05s;
-}
-.sidebar-item:nth-child(2) {
-  animation-delay: 0.2s;
-}
-.sidebar-item:nth-child(3) {
-  animation-delay: 0.4s;
-}
-.sidebar-item:nth-child(4) {
-  animation-delay: 0.45s;
-}
-.sidebar-item:nth-child(5) {
-  animation-delay: 0.5s;
-}
-.sidebar-item:nth-child(6) {
-  animation-delay: 0.25s;
-}
-.sidebar-item:nth-child(7) {
-  animation-delay: 0.5s;
-}
-
-/* Remove will-change after animation completes */
-.sidebar-item {
-  animation-fill-mode: forwards;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .sidebar-item {
-    animation: none;
-    opacity: 1;
-    transform: none;
-  }
+  opacity: 1;
 }
 
 /* Toast close button styling */
+/* The close button is absolutely positioned at right:10px and is 20px wide, so
+   the body must reserve 38px or long messages run underneath it. */
 .Toastify__toast-body {
   align-items: center;
   display: flex;
@@ -388,6 +742,7 @@
   margin: 0;
   min-width: 0;
   padding: 0;
+  padding-inline-end: 38px;
 }
 
 .Toastify__toast-icon {
@@ -396,39 +751,50 @@
   margin-inline-end: 10px;
 }
 
+/* The toast is a light-on-light surface in light mode and dark-on-dark in dark
+   mode, so its chrome takes the ordinary text tokens. It previously referenced
+   `--text-prominent-inverse`, a variable defined nowhere, leaving the close
+   button uncoloured. */
+/* react-toastify ships its own `.Toastify__close-button` rules from the vendored
+   ReactToastify.css, which is imported AFTER this file. The positioning below
+   must stay `!important` or the vendor rule wins and the × lands outside the
+   pill, clipped against the toast's top-right corner. */
 .Toastify__close-button {
-  color: var(--text-prominent-inverse) !important;
+  color: var(--text-muted);
   opacity: 0.7;
-  align-self: center;
-  margin: 0;
+  align-self: center !important;
+  margin: 0 !important;
   padding: 4px;
   position: absolute !important;
-  right: 12px !important;
+  right: 10px !important;
   top: 50% !important;
+  bottom: auto !important;
   transform: translateY(-50%) !important;
-  border-radius: 4px;
+  width: 20px;
+  height: 20px;
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
   transition:
-    opacity 0.2s ease,
-    background-color 0.2s ease;
+    opacity var(--motion-fast) var(--ease-out),
+    background-color var(--motion-fast) var(--ease-out);
 }
 
 .Toastify__close-button:hover {
   opacity: 1;
-  background-color: rgba(255, 255, 255, 0.1);
+  color: var(--text-default);
+  background-color: var(--background-medium);
 }
 
-.Toastify__close-button:focus {
-  outline: 2px solid var(--color-block-teal); /* coral */
-  outline-offset: 2px;
-}
+/* Focus is drawn once, globally, in the @layer base block above. */
 
-/* Ensure close button is visible on all toast types */
 .Toastify__toast--success .Toastify__close-button,
 .Toastify__toast--error .Toastify__close-button,
 .Toastify__toast--info .Toastify__close-button,
 .Toastify__toast--warning .Toastify__close-button,
 .Toastify__toast--default .Toastify__close-button {
-  color: var(--text-prominent-inverse) !important;
+  color: var(--text-muted);
 }
 
 .animate-fade-slide-up {
@@ -444,24 +810,23 @@
   background: rgba(0, 0, 0, 0.48);
 }
 
+/* P7 — the diagnostics panel was a white card behind a CREAM scrim in dark mode.
+   It now uses the same tokens as every other modal. */
 .biorouter-diagnostics-overlay {
-  background: rgba(246, 243, 237, 0.74);
+  background: rgba(32, 25, 15, 0.18);
   backdrop-filter: blur(8px);
 }
 
 .dark .biorouter-diagnostics-overlay {
-  background: rgba(246, 243, 237, 0.7);
+  background: rgba(0, 0, 0, 0.48);
 }
 
 .biorouter-diagnostics-surface {
-  background: var(--color-white);
-  color: var(--color-black);
-  border: 1px solid rgba(32, 25, 15, 0.08);
-  border-radius: 16px;
-  box-shadow:
-    0px 22px 60px -18px rgba(32, 25, 15, 0.24),
-    0px 8px 24px -18px rgba(32, 25, 15, 0.16),
-    0px 0px 0px 1px rgba(32, 25, 15, 0.04);
+  background: var(--background-default);
+  color: var(--text-default);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-modal);
 }
 
 .biorouter-modal-surface {
@@ -469,38 +834,43 @@
   border: 1px solid color-mix(in srgb, var(--border-subtle) 44%, transparent);
   border-radius: 16px;
   box-shadow: var(--shadow-modal);
+  /* Structural safety floor: a modal surface must always stack ABOVE its scrim.
+     Radix's Dialog renders the overlay (--z-overlay) and the content as
+     SIBLINGS, so a content that keeps a stale/low z-index (as WorkflowWarningModal
+     once did with z-50) would sit UNDER the full-screen, pointer-eating overlay
+     and soft-lock the entire app — it reads as "the whole app froze." This
+     unlayered rule beats Tailwind's z-* utilities, guaranteeing --z-modal
+     (> --z-overlay) for every surface so that class of bug cannot recur. It is
+     inert on the statically-positioned surfaces of the nested-overlay modals
+     (z-index only affects positioned elements), so those are unaffected. */
+  z-index: var(--z-modal);
 }
 
+/* D-05 — modal header/footer separators are hairlines, not gradient washes. */
 .biorouter-modal-surface > .border-b {
-  border-bottom-color: transparent;
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--background-muted) 36%, transparent),
-    transparent
-  );
-  box-shadow: var(--shadow-modal-chrome-bottom);
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  box-shadow: none;
 }
 
 .biorouter-modal-surface > .border-t {
-  border-top-color: transparent;
-  background: linear-gradient(
-    to top,
-    color-mix(in srgb, var(--background-muted) 36%, transparent),
-    transparent
-  );
-  box-shadow: var(--shadow-modal-chrome-top);
+  border-top: 1px solid var(--border-subtle);
+  background: transparent;
+  box-shadow: none;
 }
 
+/* The inset white highlight had no dark override — it drew a glare line across
+   the top of every dark panel (DR-12). Flat surfaces need no highlight at all. */
 .biorouter-modal-panel {
-  background: color-mix(in srgb, var(--background-muted) 56%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border-subtle) 40%, transparent);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42);
+  background: var(--background-muted);
+  border: 1px solid var(--border-subtle);
+  box-shadow: none;
 }
 
 .biorouter-modal-row {
-  background: color-mix(in srgb, var(--background-muted) 42%, transparent);
-  border: 1px solid color-mix(in srgb, var(--border-subtle) 34%, transparent);
-  box-shadow: 0 1px 2px rgba(32, 25, 15, 0.025);
+  background: var(--background-muted);
+  border: 1px solid var(--border-subtle);
+  box-shadow: none;
 }
 
 .biorouter-popover-surface {
@@ -516,23 +886,33 @@
     0px 0px 0px 1px rgba(255, 255, 255, 0.055);
 }
 
+/* Alma Mater LIGHT — the modal/diagnostics scrims and the popover shadow are
+   hardcoded rgba() outside the token layer, so retint them navy to match the
+   theme. Scoped `:not(.dark)` so Alma dark keeps the neutral-black scrim. */
+:root[data-theme='alma-mater']:not(.dark) .biorouter-modal-overlay,
+:root[data-theme='alma-mater']:not(.dark) .biorouter-diagnostics-overlay {
+  background: rgba(5, 32, 73, 0.2);
+}
+
+:root[data-theme='alma-mater']:not(.dark) .biorouter-popover-surface {
+  box-shadow:
+    0px 14px 38px -18px rgba(5, 32, 73, 0.22),
+    0px 0px 0px 1px rgba(5, 32, 73, 0.04);
+}
+
+/* D-05 / P1 — a flat header separated by a hairline. The gradient wash and the
+   chrome shadow that used to replace the border are gone. */
 .biorouter-page-header {
-  border-bottom-color: transparent !important;
-  background: linear-gradient(
-    to bottom,
-    color-mix(in srgb, var(--background-muted) 42%, transparent),
-    transparent
-  );
-  box-shadow: var(--shadow-modal-chrome-bottom);
+  border-bottom: 1px solid var(--border-subtle);
+  background: transparent;
+  box-shadow: none;
 }
 
 .biorouter-page-block {
-  background: color-mix(in srgb, var(--background-default) 74%, var(--background-muted));
-  border: 1px solid color-mix(in srgb, var(--border-subtle) 30%, transparent);
-  border-radius: 16px;
-  box-shadow:
-    0px 16px 34px -28px rgba(32, 25, 15, 0.28),
-    inset 0 1px 0 rgba(255, 255, 255, 0.44);
+  background: var(--background-default);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  box-shadow: none;
 }
 
 .biorouter-list-shell {
@@ -542,13 +922,13 @@
 
 .biorouter-list-row {
   background: transparent;
-  border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 62%, transparent);
-  border-radius: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  min-height: var(--row-height); /* D-12·B — 40px, one rhythm, no compact mode */
   box-shadow: none;
   transition:
-    background-color 160ms ease,
-    box-shadow 160ms ease,
-    color 160ms ease;
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
 }
 
 .biorouter-list-row:last-child {
@@ -597,12 +977,12 @@
 }
 
 .biorouter-settings-row {
-  border-bottom: 1px solid color-mix(in srgb, var(--border-subtle) 48%, transparent);
-  border-radius: 8px;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  min-height: var(--row-height); /* D-12·B */
   transition:
-    background-color 160ms ease,
-    box-shadow 160ms ease,
-    color 160ms ease;
+    background-color var(--motion-fast) var(--ease-out),
+    color var(--motion-fast) var(--ease-out);
 }
 
 .biorouter-settings-row:last-child {
@@ -614,47 +994,17 @@
   background: color-mix(in srgb, var(--background-medium) 38%, transparent);
 }
 
-.dark .biorouter-page-block {
-  box-shadow:
-    0px 16px 34px -28px rgba(0, 0, 0, 0.7),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04);
-}
+/* No dark-mode override needed: the block is flat and token-driven in both themes. */
 
+/* D-09 / P1 — two-tone sidebar, separated by a hairline. The gradient edge
+   overlay and the dark-mode drop shadow are gone: the warm surface step already
+   separates it from the canvas. */
 .biorouter-sidebar-shell {
-  /* flat two-tone: a hairline edge instead of an elevation shadow —
-     the sidebar's warm-beige surface already separates it from the canvas */
   box-shadow: 1px 0 0 0 var(--sidebar-border);
 }
 
-.biorouter-sidebar-shell::after {
-  content: '';
-  position: absolute;
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 1px;
-  pointer-events: none;
-  background: linear-gradient(
-    to bottom,
-    transparent 0%,
-    rgba(32, 25, 15, 0.04) 18%,
-    rgba(32, 25, 15, 0.045) 72%,
-    transparent 100%
-  );
-}
-
 .dark .biorouter-sidebar-shell {
-  box-shadow: 8px 0 28px -24px rgba(0, 0, 0, 0.55);
-}
-
-.dark .biorouter-sidebar-shell::after {
-  background: linear-gradient(
-    to bottom,
-    transparent 0%,
-    rgba(255, 255, 255, 0.035) 18%,
-    rgba(255, 255, 255, 0.04) 72%,
-    transparent 100%
-  );
+  box-shadow: 1px 0 0 0 var(--sidebar-border);
 }
 
 @media (min-width: 768px) {
@@ -678,80 +1028,36 @@
   display: block !important;
 }
 
-/* Native scrollbar styling */
+/* Scrollbars. Previously `::-webkit-scrollbar-track` and `-thumb` were each
+   declared twice with different values and the second silently won (DR-38).
+   One declaration per selector now. */
 * {
   scrollbar-width: auto;
-  scrollbar-color: var(--color-neutral-200) transparent;
+  scrollbar-color: var(--border-strong) transparent;
 }
 
-.dark * {
-  scrollbar-color: var(--color-neutral-400) transparent;
-}
-
-/* Webkit scrollbar styles */
 ::-webkit-scrollbar {
   -webkit-appearance: none;
-  width: 12px; /* Increased from 8px */
-  height: 12px;
+  width: 10px;
+  height: 10px;
   background-color: transparent;
 }
 
 ::-webkit-scrollbar-track {
   background: transparent;
-  border-radius: 0;
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: var(--color-neutral-200);
-  border: 3px solid transparent; /* Creates padding effect */
-  border-radius: 8px;
+  background-color: var(--border-strong);
+  border: 3px solid transparent; /* padding effect via background-clip */
+  border-radius: var(--radius-full);
   background-clip: padding-box;
-  min-height: 40px; /* Minimum height of thumb */
+  min-height: 40px;
 }
 
-.dark ::-webkit-scrollbar-thumb {
-  background-color: var(--color-neutral-400);
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background-color: var(--color-neutral-300);
-  border: 2px solid transparent; /* Slightly less padding on hover */
-}
-
-.dark ::-webkit-scrollbar-thumb:hover {
-  background-color: var(--color-neutral-500);
-}
-
-/* Ensure the thumb is more prominent when active */
+::-webkit-scrollbar-thumb:hover,
 ::-webkit-scrollbar-thumb:active {
-  background-color: var(--color-neutral-400);
-  border: 2px solid transparent;
-}
-
-.dark ::-webkit-scrollbar-thumb:active {
-  background-color: var(--color-neutral-500);
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb {
-  background: var(--color-neutral-200);
-  border-radius: 4px;
-}
-
-.dark ::-webkit-scrollbar-thumb {
-  background: var(--color-neutral-400);
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--color-neutral-300);
-}
-
-.dark ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-neutral-500);
+  background-color: var(--text-subtle);
 }
 
 body {
@@ -851,9 +1157,12 @@ body.biorouter-sidebar-compact [data-slot='sidebar-inset'] {
   margin-left: 0 !important;
 }
 
+/* A collapsed sidebar overlays the canvas, so it is a floating surface.
+   The old shadow used rgba(15,23,42,…) — Tailwind's cold slate-900, foreign to
+   the warm ramp. */
 body.biorouter-sidebar-compact [data-slot='sidebar-container'] {
-  z-index: 90;
-  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.16);
+  z-index: var(--z-sticky);
+  box-shadow: var(--shadow-popover);
 }
 
 body.biorouter-window-resizing .biorouter-route-surface,
@@ -865,17 +1174,21 @@ body.biorouter-window-resizing [data-testid='artifact-viewer'] {
   transition-duration: 0ms !important;
 }
 
+/* P6 — inline code is MONOSPACE. It was `var(--font-sans)` (Arial), so every
+   inline path, flag and identifier in chat rendered in a proportional face. */
 .bg-inline-code {
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   color: var(--text-default);
   background-color: var(--background-medium);
-  font-family: var(--font-sans);
-  font-size: 1em;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
   font-style: normal;
   font-weight: 400;
   line-height: normal;
 }
 
+/* The typography plugin injects literal backticks around `prose code`.
+   These two rules suppress them — the fill already communicates "code". */
 .bg-inline-code:before {
   content: '';
 }
@@ -1211,5 +1524,27 @@ em > code.bg-inline-code {
   100% {
     transform: scale(1.6);
     opacity: 0;
+  }
+}
+
+/*
+ * Prism token class names are unprefixed — `token table`, `token list`, `token
+ * italic` — so they land in the same global namespace as Tailwind's utilities.
+ * `.table { display: table }` was capturing every cell of a markdown table inside
+ * a highlighted code block, turning one source line into a stack of table boxes
+ * (and orphaning the line numbers). A syntax token is always an inline run of
+ * text, never a layout box. This rule is deliberately unlayered so it wins over
+ * Tailwind's `utilities` cascade layer regardless of specificity.
+ */
+code [class~='token'] {
+  display: inline;
+}
+
+/* The heatmap must never make the page scroll sideways; shrink the cells. */
+@media (max-width: 860px) {
+  .biorouter-heatmap {
+    --heat-cell: 15px;
+    --heat-gap: 4px;
+    --heat-labels: 28px;
   }
 }

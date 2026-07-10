@@ -134,11 +134,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
                     <select
                       value={inputValues[param.key] || ''}
                       onChange={(e) => handleChange(param.key, e.target.value)}
-                      className={`w-full p-3 border rounded-lg bg-background-medium text-text-default focus:outline-none focus:ring-2 ${
-                        validationErrors[param.key]
-                          ? 'border-border-danger focus:ring-border-danger'
-                          : 'border-border-subtle focus:ring-ring'
-                      }`}
+                      className={`w-full p-3 border rounded-lg bg-background-medium text-text-default ${validationErrors[param.key] ? 'border-border-danger ' : 'border-border-subtle '}`}
                     >
                       <option value="">Select an option...</option>
                       {param.options.map((option) => (
@@ -151,11 +147,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
                     <select
                       value={inputValues[param.key] || ''}
                       onChange={(e) => handleChange(param.key, e.target.value)}
-                      className={`w-full p-3 border rounded-lg bg-background-medium text-text-default focus:outline-none focus:ring-2 ${
-                        validationErrors[param.key]
-                          ? 'border-border-danger focus:ring-border-danger'
-                          : 'border-border-subtle focus:ring-ring'
-                      }`}
+                      className={`w-full p-3 border rounded-lg bg-background-medium text-text-default ${validationErrors[param.key] ? 'border-border-danger ' : 'border-border-subtle '}`}
                     >
                       <option value="">Select...</option>
                       <option value="true">True</option>
@@ -166,11 +158,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
                       type={param.input_type === 'number' ? 'number' : 'text'}
                       value={inputValues[param.key] || ''}
                       onChange={(e) => handleChange(param.key, e.target.value)}
-                      className={`w-full p-3 border rounded-lg bg-background-medium text-text-default focus:outline-none focus:ring-2 ${
-                        validationErrors[param.key]
-                          ? 'border-border-danger focus:ring-border-danger'
-                          : 'border-border-subtle focus:ring-ring'
-                      }`}
+                      className={`w-full p-3 border rounded-lg bg-background-medium text-text-default ${validationErrors[param.key] ? 'border-border-danger ' : 'border-border-subtle '}`}
                       placeholder={param.default || `Enter value for ${param.key}...`}
                     />
                   )}

@@ -2,12 +2,6 @@ import ArrowDown from './ArrowDown';
 import ArrowUp from './ArrowUp';
 import Attach from './Attach';
 import Back from './Back';
-import { Bird1 } from './Bird1';
-import { Bird2 } from './Bird2';
-import { Bird3 } from './Bird3';
-import { Bird4 } from './Bird4';
-import { Bird5 } from './Bird5';
-import { Bird6 } from './Bird6';
 import ChatSmart from './ChatSmart';
 import Check from './Check';
 import ChevronDown from './ChevronDown';
@@ -59,12 +53,6 @@ export {
   ArrowUp,
   Attach,
   Back,
-  Bird1,
-  Bird2,
-  Bird3,
-  Bird4,
-  Bird5,
-  Bird6,
   ChatSmart,
   Check,
   ChevronDown,

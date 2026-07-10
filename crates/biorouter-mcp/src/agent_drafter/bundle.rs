@@ -13,6 +13,8 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::agent_drafter::store::Manifest;
+
 // ---------------------------------------------------------------------------
 // Build-time guardrail harness
 // ---------------------------------------------------------------------------
@@ -42,27 +44,51 @@ pub struct LintFinding {
 /// analysis — safe to run on every build/preview.
 #[allow(clippy::too_many_lines)]
 pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
-    let mut out = Vec::new();
-    let mut err = |m: &str| {
+    let mut out: Vec<LintFinding> = Vec::new();
+    // Free functions rather than closures: two capturing closures over `out`
+    // would be a double mutable borrow.
+    fn error(out: &mut Vec<LintFinding>, m: &str) {
         out.push(LintFinding {
             level: LintLevel::Error,
             msg: m.to_string(),
-        })
-    };
+        });
+    }
+    fn warning(out: &mut Vec<LintFinding>, m: &str) {
+        out.push(LintFinding {
+            level: LintLevel::Warn,
+            msg: m.to_string(),
+        });
+    }
     let index = std::fs::read_to_string(project_dir.join("index.html")).unwrap_or_default();
     let main = std::fs::read_to_string(project_dir.join("src/main.ts")).unwrap_or_default();
     let il = index.to_lowercase();
+    // The manifest carries the agent's system prompt, which is where an app says
+    // *how* the agent should drive the UI — so the visual/UI checks below have to
+    // see it, not just the markup.
+    let manifest: Option<Manifest> = std::fs::read_to_string(project_dir.join("manifest.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+    let system_prompt = manifest
+        .as_ref()
+        .and_then(|m| m.agent.as_ref())
+        .map(|a| a.system_prompt.to_lowercase())
+        .unwrap_or_default();
+    let ui_enabled = manifest
+        .as_ref()
+        .and_then(|m| m.agent.as_ref())
+        .map(|a| a.capabilities.ui.enabled)
+        .unwrap_or(true);
 
     // (2) Self-contained — no external/CDN assets.
     if il.contains("src=\"http") || il.contains("src='http") {
-        err("index.html loads an external <script src=\"http…\">. Apps must be self-contained — remove it and use the BioRouter App SDK instead.");
+        error(&mut out, "index.html loads an external <script src=\"http…\">. Apps must be self-contained — remove it and use the BioRouter App SDK instead.");
     }
     if il.contains("<link") && (il.contains("href=\"http") || il.contains("href='http")) {
-        err("index.html links an external stylesheet. Remove it; the BioRouter design system is injected automatically.");
+        error(&mut out, "index.html links an external stylesheet. Remove it; the BioRouter design system is injected automatically.");
     }
     for cdn in ["cdn.", "unpkg.com", "jsdelivr", "googleapis", "cdnjs"] {
         if il.contains(cdn) {
-            err(&format!(
+            error(&mut out, &format!(
                 "index.html references a CDN ('{cdn}'). Remove external assets — exported apps must run offline."
             ));
             break;
@@ -71,15 +97,18 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
 
     // (1) Backend wiring through the App SDK / agent protocol.
     if !main.contains("./sdk") {
-        err("src/main.ts must `import { createApp } from \"./sdk\"` — that's how the app reaches the BioRouter backend.");
+        error(&mut out, "src/main.ts must `import { createApp } from \"./sdk\"` — that's how the app reaches the BioRouter backend.");
     }
     for line in main.lines() {
         let t = line.trim_start();
         if t.starts_with("import ") && !t.contains("\"./") && !t.contains("'./") {
-            err(&format!(
-                "src/main.ts has a non-local import — only import from \"./sdk\": {}",
-                t.trim()
-            ));
+            error(
+                &mut out,
+                &format!(
+                    "src/main.ts has a non-local import — only import from \"./sdk\": {}",
+                    t.trim()
+                ),
+            );
         }
     }
     let calls_agent = main.contains("br.run")
@@ -108,11 +137,16 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
 
     // (1c) Wiring: if the page has interactive controls but main.ts wires no
     // events (and isn't an auto-chat app), the UI is inert.
+    //
+    // `br-region` is the clickable map cell. `data-br-region` is an agent render
+    // target and is NOT a control — match the class without swallowing the
+    // attribute, or every app that declares a render target gets a false warning.
+    let has_map_region = il.matches("br-region").count() > il.matches("data-br-region").count();
     let has_controls = il.contains("<button")
         || il.contains("<select")
         || il.contains("type=\"range\"")
         || il.contains("br-chip")
-        || il.contains("br-region")
+        || has_map_region
         || il.contains("br-dragitem")
         || il.contains("br-dropzone")
         || il.contains("br-tab");
@@ -145,25 +179,19 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     }
 
     // (3) Aesthetic alignment with the design system.
-    let mut warn = |m: &str| {
-        out.push(LintFinding {
-            level: LintLevel::Warn,
-            msg: m.to_string(),
-        })
-    };
     if il.contains("<style") {
-        warn("index.html contains a <style> block — prefer the design-system classes/CSS variables over custom CSS for a native look.");
+        warning(&mut out, "index.html contains a <style> block — prefer the design-system classes/CSS variables over custom CSS for a native look.");
     }
     if il.contains("color:#") || il.contains("color: #") || il.contains("background:#") {
-        warn("index.html uses raw hex colors — use var(--br-text)/var(--br-accent)/… tokens so the app matches BioRouter's theme.");
+        warning(&mut out, "index.html uses raw hex colors — use var(--br-text)/var(--br-accent)/… tokens so the app matches BioRouter's theme.");
     }
     if !il.contains("br-") {
-        warn("index.html uses no BioRouter design-system classes (br-*). The UI will look off-theme; compose with br-card/br-btn/br-select/etc.");
+        warning(&mut out, "index.html uses no BioRouter design-system classes (br-*). The UI will look off-theme; compose with br-card/br-btn/br-select/etc.");
     }
     if !il.contains("br-output") && !il.contains("data-br-chat") {
-        warn("No result surface found. Add a <div class=\"br-output\" id=\"out\"></div> (target for br.run) or a [data-br-chat] panel.");
+        warning(&mut out, "No result surface found. Add a <div class=\"br-output\" id=\"out\"></div> (target for br.run) or a [data-br-chat] panel.");
     }
-    let authored = format!("{}\n{}", il, main.to_lowercase());
+    let authored = format!("{}\n{}\n{}", il, main.to_lowercase(), system_prompt);
     let contains_word = |word: &str| {
         regex::Regex::new(&format!(r"\b{}\b", regex::escape(word)))
             .map(|re| re.is_match(&authored))
@@ -201,13 +229,64 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
         "\\`\\`\\`network",
         "renderchart",
         "rendergraph",
+        // Agent-driven UI satisfies the visualization contract directly: the
+        // agent draws into the page rather than emitting a markdown fence.
+        "ui_chart",
+        "ui_graph",
+        "ui_panel",
     ]
     .iter()
     .any(|needle| authored.contains(needle));
     if calls_agent && visual_claim && !asks_for_rendered_visual {
-        warn("This app appears to promise visual output, but its prompt/UI does not require a rendered ```chart or ```graph/diagram block. Ask the agent to emit one so the result surface shows an actual visualization, not only tool logs or prose.");
+        warning(&mut out, "This app appears to promise visual output, but its prompt/UI never asks for a rendered visual. Either tell the agent to call ui_chart/ui_graph, or to emit a ```chart / ```graph block, so the result surface shows an actual visualization rather than tool logs or prose.");
+    }
+
+    // (5) Agent-driven UI coherence.
+    if !ui_enabled {
+        if main.contains("br.ui.") {
+            error(&mut out, "src/main.ts uses `br.ui` but this app sets capabilities.ui.enabled = false — the agent can never send a UI command, so those handlers are dead. Enable the capability or drop the code.");
+        }
+        if system_prompt.contains("ui_") {
+            warning(&mut out, "The system prompt tells the agent to call ui_* tools, but capabilities.ui.enabled = false so it has none. Enable the capability or rewrite the prompt.");
+        }
+    } else {
+        // Duplicate region names make `ui_render(target=\"@region:x\")` ambiguous —
+        // the SDK resolves the first match and silently ignores the rest.
+        let names = region_names(&index);
+        let mut seen = std::collections::HashSet::new();
+        for n in &names {
+            if !seen.insert(*n) {
+                warning(&mut out, &format!(
+                    "index.html declares data-br-region=\"{n}\" more than once. The agent's `@region:{n}` target resolves to the first one only — give each region a unique name."
+                ));
+            }
+        }
     }
     out
+}
+
+/// The `data-br-region="…"` names an app declares — the targets the agent may
+/// address as `@region:<name>`.
+///
+/// Only quoted attribute values are recognised. Written with `split`/`split_once`
+/// rather than byte slicing: `&rest[1..]` after taking the first *char* panics on
+/// `data-br-region=é`, which is exactly the malformed markup a model emits now
+/// and then, and it would take the bundler down with it.
+fn region_names(index: &str) -> Vec<&str> {
+    let mut names = Vec::new();
+    for chunk in index.split("data-br-region=").skip(1) {
+        let mut chars = chunk.chars();
+        let Some(quote) = chars.next() else {
+            continue;
+        };
+        if quote != '"' && quote != '\'' {
+            continue; // unquoted attribute value — nothing well-defined to read
+        }
+        if let Some((name, _)) = chars.as_str().split_once(quote) {
+            names.push(name);
+        }
+    }
+    names
 }
 
 /// Element ids that `main.ts` looks up: `getElementById("x")` and CSS-id
@@ -343,6 +422,39 @@ fn which(prog: &str) -> bool {
 /// Build an app project rooted at `project_dir`. Expects `src/main.ts`; writes
 /// `dist/app.js`. Returns a report (never errors on a *build* failure — inspect
 /// `report.ok`); only returns `Err` for filesystem problems.
+/// The App SDK an app *should* be bundling — the template compiled into this
+/// binary.
+pub fn sdk_template() -> &'static str {
+    include_str!("templates/sdk.ts")
+}
+
+/// A short fingerprint of the current App SDK. Stored on the manifest after a
+/// build so a daemon can tell that an app's bundle predates an SDK upgrade and
+/// rebuild it, rather than serving a stale runtime that ignores frames the
+/// server now sends (this is how agent-driven UI reaches apps built before it
+/// existed).
+pub fn sdk_fingerprint() -> String {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    sdk_template().hash(&mut h);
+    format!("{:x}", h.finish())
+}
+
+/// Overwrite the app's vendored `src/sdk.ts` when it differs from the template.
+///
+/// The SDK is a *provided runtime*, not authored code: `create_app` writes it and
+/// nothing is meant to edit it. Refreshing it here means "rebuild the app" is all
+/// it takes to pick up SDK fixes, instead of a manual re-copy into every project.
+/// Returns whether it was replaced.
+fn refresh_sdk(project_dir: &Path) -> bool {
+    let path = project_dir.join("src/sdk.ts");
+    let current = std::fs::read_to_string(&path).unwrap_or_default();
+    if current == sdk_template() {
+        return false;
+    }
+    std::fs::write(&path, sdk_template()).is_ok()
+}
+
 pub fn build_app(project_dir: &Path) -> std::io::Result<BuildReport> {
     let entry = project_dir.join("src/main.ts");
     if !entry.exists() {
@@ -352,28 +464,36 @@ pub fn build_app(project_dir: &Path) -> std::io::Result<BuildReport> {
             log: "src/main.ts not found — nothing to build".into(),
         });
     }
+    let refreshed = refresh_sdk(project_dir);
     let dist = project_dir.join("dist");
     std::fs::create_dir_all(&dist)?;
     let out = dist.join("app.js");
 
+    let note = |mut report: BuildReport| {
+        if refreshed {
+            report.log = format!(
+                "Refreshed src/sdk.ts to the current App SDK.\n{}",
+                report.log
+            );
+        }
+        report
+    };
+
     if let Some((program, lead)) = find_esbuild() {
         match run_esbuild(&program, &lead, &entry, &out) {
-            Ok(report) if report.ok => return Ok(report),
-            Ok(report) => {
-                // esbuild ran but failed (syntax error etc.) — surface it rather
-                // than silently masking with the weaker fallback.
-                return Ok(report);
-            }
+            // esbuild ran: surface its result either way rather than silently
+            // masking a syntax error with the weaker fallback.
+            Ok(report) => return Ok(note(report)),
             Err(e) => {
                 // esbuild could not be spawned; fall through to the stripper.
                 let mut report = fallback_bundle(project_dir, &out)?;
                 report.log = format!("esbuild spawn failed ({e}); used fallback.\n{}", report.log);
-                return Ok(report);
+                return Ok(note(report));
             }
         }
     }
 
-    fallback_bundle(project_dir, &out)
+    fallback_bundle(project_dir, &out).map(note)
 }
 
 fn run_esbuild(
@@ -769,10 +889,7 @@ fn peek_word(chars: &[char], start: usize) -> String {
 /// Default project source files written for a fresh agentic app.
 pub fn default_sources() -> Vec<(PathBuf, String)> {
     vec![
-        (
-            PathBuf::from("src/sdk.ts"),
-            include_str!("templates/sdk.ts").to_string(),
-        ),
+        (PathBuf::from("src/sdk.ts"), sdk_template().to_string()),
         (
             PathBuf::from("src/main.ts"),
             include_str!("templates/main.ts").to_string(),
@@ -808,6 +925,34 @@ mod tests {
             );
         }
         assert!(out.contains("const k = 1"));
+    }
+
+    /// The App SDK renders MODEL-authored markdown into `innerHTML` (panels, the
+    /// `ui_ask` prompt, chat), and the app is not a sandboxed iframe. So the
+    /// markdown escaper must neutralize attribute breakout: escape quotes, and
+    /// only ever emit `http(s)` link hrefs stripped of quotes/angles/space. A
+    /// regression here is an XSS in the app's own origin, so guard the source.
+    #[test]
+    fn sdk_markdown_escaper_is_hardened_against_attribute_breakout() {
+        let sdk = sdk_template();
+        // escapeHtml must cover both quote characters.
+        assert!(
+            sdk.contains(r#".replace(/"/g, "&quot;")"#),
+            "escapeHtml must escape double quotes"
+        );
+        assert!(
+            sdk.contains(r#".replace(/'/g, "&#39;")"#),
+            "escapeHtml must escape single quotes"
+        );
+        // The link rule must stop the URL at whitespace and scrub the href.
+        assert!(
+            sdk.contains(r#"(https?:[^)\s]+)"#),
+            "link URLs must not span whitespace (an injected ` onX=` breaks the attribute)"
+        );
+        assert!(
+            sdk.contains(r#".replace(/["'<>`\s]/g, "")"#),
+            "the link href must be stripped of quotes/angles/backtick/space"
+        );
     }
 
     #[test]
@@ -979,6 +1124,21 @@ document.getElementById("run")!.addEventListener("click", () => br.prompt("go"))
     }
 
     #[test]
+    fn region_names_reads_quoted_values_and_survives_malformed_markup() {
+        assert_eq!(
+            region_names(r#"<i data-br-region="a"></i><i data-br-region='b'></i>"#),
+            vec!["a", "b"]
+        );
+        // Unquoted and unterminated values are skipped, not guessed at.
+        assert!(region_names("<i data-br-region=a>").is_empty());
+        assert!(region_names(r#"<i data-br-region="a>"#).is_empty());
+        assert!(region_names("data-br-region=").is_empty());
+        // A multibyte char right after `=` used to panic the bundler.
+        assert!(region_names("<i data-br-region=é>").is_empty());
+        assert_eq!(region_names(r#"<i data-br-region="é—ø">"#), vec!["é—ø"]);
+    }
+
+    #[test]
     fn lint_app_warns_when_visual_app_lacks_rendered_visual_contract() {
         let dir = TempDir::new().unwrap();
         let src = dir.path().join("src");
@@ -1002,8 +1162,98 @@ document.getElementById("run")!.addEventListener("click", () => br.run("visualiz
 
         let formatted = format_lint(&lint_app(dir.path()));
         assert!(
-            formatted.contains("rendered ```chart or ```graph"),
+            formatted.contains("never asks for a rendered visual"),
             "{formatted}"
         );
+    }
+
+    /// Write a minimal app, optionally with a manifest, and lint it.
+    fn lint_with(index: &str, main: &str, manifest: Option<&str>) -> String {
+        let dir = TempDir::new().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("index.html"), index).unwrap();
+        std::fs::write(dir.path().join("src/main.ts"), main).unwrap();
+        if let Some(m) = manifest {
+            std::fs::write(dir.path().join("manifest.json"), m).unwrap();
+        }
+        format_lint(&lint_app(dir.path()))
+    }
+
+    fn manifest_json(system_prompt: &str, ui_enabled: bool) -> String {
+        format!(
+            r#"{{"id":"a","title":"A","description":"","kind":"agentic","entry":"index.html",
+                "created_at":0,"updated_at":0,
+                "agent":{{"system_prompt":{},"capabilities":{{"ui":{{"enabled":{ui_enabled}}}}}}}}}"#,
+            serde_json::to_string(system_prompt).unwrap()
+        )
+    }
+
+    const CHATTY_INDEX: &str = r#"<html><body><main class="br-container">
+        <div class="br-card" data-br-chat></div></main></body></html>"#;
+    const CHATTY_MAIN: &str = "import { createApp } from \"./sdk\";\ncreateApp();\n";
+
+    /// The agent drawing with `ui_chart` satisfies the visualization contract —
+    /// it renders straight into the page, no markdown fence needed.
+    #[test]
+    fn lint_accepts_ui_chart_as_the_visualization_contract() {
+        let out = lint_with(
+            CHATTY_INDEX,
+            CHATTY_MAIN,
+            Some(&manifest_json(
+                "Visualize the gene counts: call ui_chart with the top 10.",
+                true,
+            )),
+        );
+        assert!(!out.contains("never asks for a rendered visual"), "{out}");
+    }
+
+    /// A `data-br-region` is an agent render target, not a clickable control.
+    /// Matching it as one made every app that declares a target warn.
+    #[test]
+    fn lint_does_not_treat_a_render_region_as_an_unwired_control() {
+        let index = r#"<html><body><main class="br-container" data-br-main>
+            <div class="br-card" data-br-chat></div>
+            <section data-br-region="results"></section></main></body></html>"#;
+        let out = lint_with(index, CHATTY_MAIN, None);
+        assert!(!out.contains("wires no events"), "{out}");
+    }
+
+    #[test]
+    fn lint_flags_duplicate_region_names_as_ambiguous_targets() {
+        let index = r#"<html><body><main class="br-container">
+            <div class="br-card" data-br-chat></div>
+            <section data-br-region="results"></section>
+            <section data-br-region="results"></section></main></body></html>"#;
+        let out = lint_with(index, CHATTY_MAIN, None);
+        assert!(out.contains("more than once"), "{out}");
+        assert!(out.contains("@region:results"), "{out}");
+    }
+
+    #[test]
+    fn lint_flags_ui_code_in_an_app_that_disabled_the_capability() {
+        let main = "import { createApp } from \"./sdk\";\nconst br = createApp();\nbr.ui.onState(() => {});\n";
+        let out = lint_with(
+            CHATTY_INDEX,
+            main,
+            Some(&manifest_json("Answer questions.", false)),
+        );
+        assert!(out.contains("capabilities.ui.enabled = false"), "{out}");
+        assert!(
+            out.to_lowercase().contains("error"),
+            "must block the build: {out}"
+        );
+    }
+
+    #[test]
+    fn lint_flags_a_prompt_that_calls_ui_tools_the_app_does_not_grant() {
+        let out = lint_with(
+            CHATTY_INDEX,
+            CHATTY_MAIN,
+            Some(&manifest_json(
+                "Always call ui_panel to show results.",
+                false,
+            )),
+        );
+        assert!(out.contains("it has none"), "{out}");
     }
 }

@@ -69,6 +69,7 @@ import type { ArtifactSource } from './artifacts/artifactTypes';
 import {
   artifactSourceFromResource,
   basenameFromPath,
+  fileArtifactPathsFromToolCall,
   looksLikePreviewableFile,
   pathFromArtifactHref,
 } from './artifacts/artifactUtils';
@@ -86,6 +87,13 @@ const ARTIFACT_PANEL_AUTO_TUCK_WIDTH =
 const ARTIFACT_PANEL_AUTO_EXPAND_PADDING = 24;
 const ARTIFACT_PANEL_EXIT_MS = 180;
 const SIDEBAR_COMPACT_TITLE_WIDTH = 1120;
+// How long after the agent last worked a render failure is still treated as part
+// of the current exchange (and worth auto-fixing). A figure the agent just made
+// usually errors within a second or two of finishing; a failure that surfaces
+// well after this window almost always means the user is managing an artifact
+// from a finished conversation — reopening an old figure, editing an app's code,
+// deleting it — and must not silently resume the chat.
+const ARTIFACT_REPAIR_ACTIVE_GRACE_MS = 15_000;
 const HEADER_ACTION_BUTTON_CLASS =
   'no-drag flex h-8 w-8 items-center justify-center rounded-md p-0 text-text-default/70 transition-colors hover:bg-background-medium hover:text-text-default';
 const PREVIEWABLE_TEXT_ARTIFACT_RE =
@@ -103,6 +111,24 @@ export function getArtifactPanelExpansionContentWidth(
   const deficit = ARTIFACT_PANEL_AUTO_TUCK_WIDTH - splitPaneWidth;
   if (deficit <= 0) return null;
   return Math.ceil(contentWidth + deficit + ARTIFACT_PANEL_AUTO_EXPAND_PADDING);
+}
+
+// Whether an artifact render failure should be fed back to the agent to fix.
+//
+// Only when the conversation is live: a turn is running (any non-idle state that
+// is not merely reloading a saved session), or one finished within the grace
+// window. Once the chat has been quiet longer than that it is treated as over,
+// so a failure surfacing from the user reopening an old figure, editing an app's
+// code, or deleting it does NOT silently resume the chat to "repair" it.
+export function shouldAutoRepairArtifact(
+  chatState: ChatState,
+  lastAgentActiveAt: number,
+  now: number
+): boolean {
+  if (chatState !== ChatState.Idle && chatState !== ChatState.LoadingConversation) {
+    return true;
+  }
+  return now - lastAgentActiveAt < ARTIFACT_REPAIR_ACTIVE_GRACE_MS;
 }
 
 function isEmbeddedResource(content: Content): content is EmbeddedResource {
@@ -157,10 +183,30 @@ function collectTextArtifacts(text: string): ArtifactSource[] {
   return artifacts;
 }
 
-export function collectArtifactsFromMessages(messages: Message[]): ArtifactSource[] {
+function toolCallOf(content: {
+  toolCall: Record<string, unknown>;
+}): { name: string; arguments: unknown } | null {
+  const call = content.toolCall as {
+    status?: string;
+    value?: { name?: string; arguments?: unknown };
+  };
+  if (call.status !== 'success' || typeof call.value?.name !== 'string') return null;
+  return { name: call.value.name, arguments: call.value.arguments };
+}
+
+function isSuccessfulToolResult(toolResult: Record<string, unknown>): boolean {
+  const wrapped = toolResult as { status?: string; value?: { is_error?: boolean } };
+  if (wrapped.status && wrapped.status !== 'success') return false;
+  return wrapped.value?.is_error !== true;
+}
+
+export function collectArtifactsFromMessages(
+  messages: Message[],
+  workingDir?: string
+): ArtifactSource[] {
   const artifacts: ArtifactSource[] = [];
   const seen = new Set<string>();
-  const visibleToolRequestIds = new Set<string>();
+  const visibleToolCalls = new Map<string, { name: string; arguments: unknown }>();
   const addArtifact = (artifact: ArtifactSource | null) => {
     if (!artifact) return;
     const key = artifactKey(artifact);
@@ -175,15 +221,26 @@ export function collectArtifactsFromMessages(messages: Message[]): ArtifactSourc
       addArtifact(artifact);
     }
     for (const content of message.content) {
-      if (content.type === 'toolRequest') {
-        visibleToolRequestIds.add(content.id);
-      }
+      if (content.type !== 'toolRequest') continue;
+      const call = toolCallOf(content);
+      if (call) visibleToolCalls.set(content.id, call);
     }
   }
 
   for (const message of messages) {
     for (const content of message.content) {
-      if (content.type !== 'toolResponse' || !visibleToolRequestIds.has(content.id)) continue;
+      if (content.type !== 'toolResponse') continue;
+      const call = visibleToolCalls.get(content.id);
+      if (!call) continue;
+
+      // A `ui://` resource carries its own preview; a written file only leaves
+      // its path behind, in the arguments of the call that created it.
+      if (isSuccessfulToolResult(content.toolResult)) {
+        for (const path of fileArtifactPathsFromToolCall(call.name, call.arguments, workingDir)) {
+          addArtifact({ kind: 'file', title: basenameFromPath(path), path });
+        }
+      }
+
       for (const resultContent of getToolResultContent(content.toolResult)) {
         if (!isEmbeddedResource(resultContent)) continue;
         addArtifact(
@@ -392,6 +449,10 @@ function BaseChatContent({
   const artifactPanelWidthUserSetRef = useRef(false);
   const reportedArtifactRenderErrorsRef = useRef<Set<string>>(new Set());
   const pendingArtifactRenderFeedbackRef = useRef<Message | null>(null);
+  // Wall-clock of the last moment the agent was actively working. Used to decide
+  // whether an artifact render failure belongs to the current exchange (auto-fix
+  // it) or surfaced long after the conversation went quiet (leave it alone).
+  const lastAgentActiveAtRef = useRef(0);
   const knownArtifactKeysRef = useRef<Set<string>>(new Set());
   const artifactInitialScanDoneRef = useRef(false);
   const composerMotionRef = useRef<HTMLDivElement>(null);
@@ -682,14 +743,23 @@ function BaseChatContent({
   }, [canDivergeSession, diverge, sessionId]);
 
   const submitArtifactRepairMessage = useCallback(
-    (message: Message) => {
-      if (chatState !== ChatState.Idle) {
-        pendingArtifactRenderFeedbackRef.current = message;
-        return;
+    (message: Message): boolean => {
+      if (!shouldAutoRepairArtifact(chatState, lastAgentActiveAtRef.current, Date.now())) {
+        // Conversation is over — do not auto-resume it to repair a failure the
+        // user almost certainly caused by editing or deleting the artifact.
+        return false;
       }
 
-      pendingArtifactRenderFeedbackRef.current = null;
-      void submitSystemMessage(message);
+      if (chatState === ChatState.Idle) {
+        // A turn just wrapped up (grace window): fold the fix in now.
+        pendingArtifactRenderFeedbackRef.current = null;
+        void submitSystemMessage(message);
+      } else {
+        // A turn is still running: queue the fix so it lands when the turn ends
+        // instead of interrupting it mid-flight.
+        pendingArtifactRenderFeedbackRef.current = message;
+      }
+      return true;
     },
     [chatState, submitSystemMessage]
   );
@@ -698,12 +768,24 @@ function BaseChatContent({
     (error: ArtifactRenderError) => {
       const key = `${error.artifactTitle}\n${error.message}\n${error.detail ?? ''}`;
       if (reportedArtifactRenderErrorsRef.current.has(key)) return;
-      reportedArtifactRenderErrorsRef.current.add(key);
 
-      submitArtifactRepairMessage(createArtifactRenderRepairMessage(error));
+      // Only mark the failure as handled if we actually acted on it. Otherwise a
+      // failure seen while the chat is dormant would block the agent from fixing
+      // the same artifact if it re-renders during a later, active turn.
+      if (submitArtifactRepairMessage(createArtifactRenderRepairMessage(error))) {
+        reportedArtifactRenderErrorsRef.current.add(key);
+      }
     },
     [submitArtifactRepairMessage]
   );
+
+  // Stamp the last-active time whenever the agent is working, so the grace window
+  // above measures from the end of real activity (not from session load).
+  useEffect(() => {
+    if (chatState !== ChatState.Idle && chatState !== ChatState.LoadingConversation) {
+      lastAgentActiveAtRef.current = Date.now();
+    }
+  }, [chatState]);
 
   useEffect(() => {
     if (chatState !== ChatState.Idle || !pendingArtifactRenderFeedbackRef.current) return;
@@ -907,7 +989,12 @@ function BaseChatContent({
   }, [messages.length]);
 
   const toolCount = useToolCount(sessionId);
-  const sessionArtifacts = useMemo(() => collectArtifactsFromMessages(messages), [messages]);
+  const sessionWorkingDir = session?.working_dir || getInitialWorkingDir();
+  // The working dir anchors relative paths a tool call names (`results/plot.png`).
+  const sessionArtifacts = useMemo(
+    () => collectArtifactsFromMessages(messages, sessionWorkingDir),
+    [messages, sessionWorkingDir]
+  );
   const sessionToolCallCount = useMemo(() => countToolRequests(messages), [messages]);
   const codeDelta = useMemo(() => collectCodeDelta(messages), [messages]);
   const totalSessionTokens =
@@ -915,7 +1002,6 @@ function BaseChatContent({
     session?.total_tokens ??
     session?.accumulated_total_tokens ??
     ((session?.accumulated_input_tokens ?? 0) + (session?.accumulated_output_tokens ?? 0) || null);
-  const sessionWorkingDir = session?.working_dir || getInitialWorkingDir();
 
   useEffect(() => {
     if (!session) return;
@@ -1374,7 +1460,11 @@ function BaseChatContent({
             >
               {!hideSessionNamePill && (
                 <div
-                  className={`relative z-[60] flex h-14 flex-shrink-0 items-center gap-3 border-b border-border-subtle/35 bg-background-muted/95 pr-4 backdrop-blur ${sessionPillWrapperCls}`}
+                  // Opaque, not frosted. The artifact panel's header sits flush
+                  // beside this one; a translucent, blurred fill made the two
+                  // bottom hairlines read at different weights so they never
+                  // visually aligned (D-18).
+                  className={`relative z-[var(--z-sticky)] flex h-14 flex-shrink-0 items-center gap-3 border-b border-border-subtle bg-background-muted pr-4 ${sessionPillWrapperCls}`}
                   style={{ WebkitAppRegion: 'drag' } as React.CSSProperties}
                 >
                   <div className="min-w-0 flex-1">

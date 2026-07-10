@@ -50,9 +50,7 @@ export function WorkflowNameField({
           onBlur();
         }}
         disabled={disabled}
-        className={`w-full p-3 border rounded-lg bg-background-default text-text-default focus:outline-none focus:ring-2 focus:ring-border-strong ${
-          errors.length > 0 ? 'border-border-danger' : 'border-border-subtle'
-        } ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+        className={`w-full p-3 border rounded-lg bg-background-default text-text-default ${errors.length > 0 ? 'border-border-danger' : 'border-border-subtle'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
         placeholder={WORKFLOW_NAME_PLACEHOLDER}
         data-testid="workflow-name-input"
       />

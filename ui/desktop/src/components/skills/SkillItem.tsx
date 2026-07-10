@@ -64,7 +64,7 @@ export default function SkillItem({
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 w-7 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+              className="h-7 w-7 p-0 text-text-danger hover:bg-background-danger/10"
               onClick={() => onDelete()}
               title="Delete"
             >

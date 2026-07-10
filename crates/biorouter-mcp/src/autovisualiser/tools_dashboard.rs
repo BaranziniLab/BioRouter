@@ -116,7 +116,7 @@ pub struct DashboardSection {
 }
 
 /// Parameters for `render_dashboard`.
-#[derive(Debug, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
+#[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
 pub struct RenderDashboardParams {
     /// The report's title, e.g. "Differential expression: tumour vs normal".
     pub title: String,
@@ -136,6 +136,88 @@ pub struct RenderDashboardParams {
     /// Closing prose: caveats, data provenance, next steps.
     #[serde(default)]
     pub footer: Option<String>,
+}
+
+/// The exact shape, deserialized once [`normalize_dashboard_args`] has coaxed the
+/// model's arguments into it.
+#[derive(Deserialize)]
+struct RenderDashboardParamsRaw {
+    title: String,
+    #[serde(default)]
+    subtitle: Option<String>,
+    #[serde(default)]
+    summary: Option<String>,
+    #[serde(default)]
+    sections: Option<Vec<DashboardSection>>,
+    #[serde(default)]
+    panels: Option<Vec<DashboardPanel>>,
+    #[serde(default)]
+    footer: Option<String>,
+}
+
+/// Parse a value that may have arrived as a JSON string instead of JSON.
+fn de_stringified(value: Value) -> Value {
+    match value {
+        Value::String(s) => serde_json::from_str(&s).unwrap_or(Value::String(s)),
+        other => other,
+    }
+}
+
+/// Reshape the arguments a model actually sends into the documented shape.
+///
+/// Every *other* Auto Visualiser tool takes a single `data` argument, so models
+/// generalise and wrap the whole report in one — observed with GPT-5.5, which
+/// sent `{"data": {"title": …, "sections": […]}}` and then retried identically
+/// after the rejection. Some models also stringify nested arguments. Rejecting
+/// either costs the user a wasted turn for no reason, so accept both.
+fn normalize_dashboard_args(value: Value) -> Value {
+    let mut value = de_stringified(value);
+
+    // Unwrap a `data` (or `dashboard`/`report`) envelope that carries the report.
+    if let Value::Object(map) = &value {
+        if !map.contains_key("title") {
+            if let Some(inner) = ["data", "dashboard", "report"]
+                .iter()
+                .find_map(|key| map.get(*key))
+            {
+                let unwrapped = de_stringified(inner.clone());
+                if unwrapped.is_object() {
+                    value = unwrapped;
+                }
+            }
+        }
+    }
+
+    // `sections` / `panels` may themselves arrive stringified.
+    if let Value::Object(map) = &mut value {
+        for key in ["sections", "panels"] {
+            if let Some(entry) = map.get_mut(key) {
+                *entry = de_stringified(entry.clone());
+            }
+        }
+    }
+    value
+}
+
+impl<'de> Deserialize<'de> for RenderDashboardParams {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        use serde::de::Error as DeError;
+        let value = normalize_dashboard_args(Value::deserialize(d)?);
+        let raw: RenderDashboardParamsRaw = serde_json::from_value(value).map_err(|e| {
+            DeError::custom(format!(
+                "{e}. `render_dashboard` takes the report directly \
+                 (title, summary, sections/panels) — not wrapped in a `data` argument."
+            ))
+        })?;
+        Ok(RenderDashboardParams {
+            title: raw.title,
+            subtitle: raw.subtitle,
+            summary: raw.summary,
+            sections: raw.sections,
+            panels: raw.panels,
+            footer: raw.footer,
+        })
+    }
 }
 
 /// Canonicalise a model-supplied tool name: `Volcano`, `volcano`,
@@ -410,7 +492,6 @@ Panel width is `full` (default) or `half` (two per row). Use `sections` for grou
         }
 
         // --- render every figure -------------------------------------------
-        let cdn = common::use_cdn();
         let mut panel_store = String::new();
         let mut asset_store = String::new();
         let mut stored_assets: Vec<Asset> = Vec::new();
@@ -442,41 +523,36 @@ Panel width is `full` (default) or `half` (two per row). Use `sections` for grou
 
                 match built.html {
                     Some(html) => {
-                        // CDN mode: the tags are tiny, so inline them per panel
-                        // and skip the shared store entirely.
-                        let (html, asset_keys) = if cdn {
-                            let assets: Vec<Asset> = ASSET_ORDER
-                                .iter()
-                                .copied()
-                                .filter(|a| built.assets.iter().any(|k| k == a.key()))
-                                .collect();
-                            (
-                                html.replace(common::ASSET_PLACEHOLDER, &common::asset_html(&assets)),
-                                Vec::new(),
-                            )
-                        } else {
-                            for key in &built.assets {
-                                if let Some(asset) =
-                                    ASSET_ORDER.iter().find(|a| a.key() == key.as_str())
-                                {
-                                    if !stored_assets.contains(asset) {
-                                        stored_assets.push(*asset);
-                                        for (kind, src) in asset.sources() {
-                                            asset_store
-                                                .push_str(&asset_store_entry(asset.key(), kind, src));
-                                        }
+                        // A report always inlines its libraries, even when
+                        // `BIOROUTER_AUTOVIS_CDN` is on — which the desktop app sets by
+                        // default. CDN mode only ever worked for a *standalone* figure,
+                        // because the Electron main process rewrites that figure's
+                        // `<script src=…>` back into an inline script before display: the
+                        // renderer's CSP is `script-src 'self' 'unsafe-inline'`, so a
+                        // remote script never loads. A report keeps its library tags
+                        // inside base64 asset/panel blobs, where that rewriter cannot
+                        // reach them, so a CDN report rendered blank figures with
+                        // "Chart is not defined". Inlining costs little: the shared store
+                        // holds each library exactly once, however many panels use it.
+                        for key in &built.assets {
+                            if let Some(asset) = ASSET_ORDER.iter().find(|a| a.key() == key.as_str())
+                            {
+                                if !stored_assets.contains(asset) {
+                                    stored_assets.push(*asset);
+                                    for (kind, src) in asset.sources() {
+                                        asset_store
+                                            .push_str(&asset_store_entry(asset.key(), kind, src));
                                     }
                                 }
                             }
-                            (html, built.assets.clone())
-                        };
+                        }
 
                         panel_store.push_str(&format!(
                             "<script type=\"text/plain\" id=\"autovis-panel-{panel_index}\">{}</script>\n",
                             STANDARD.encode(html.as_bytes())
                         ));
                         entry.insert("index".into(), json!(panel_index));
-                        entry.insert("assets".into(), json!(asset_keys));
+                        entry.insert("assets".into(), json!(built.assets.clone()));
                         entry.insert("error".into(), Value::Null);
                         panel_index += 1;
                     }

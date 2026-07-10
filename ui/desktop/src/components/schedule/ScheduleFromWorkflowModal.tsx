@@ -74,7 +74,7 @@ export const ScheduleFromWorkflowModal: React.FC<ScheduleFromWorkflowModalProps>
 
   return (
     <div className="biorouter-modal-overlay fixed inset-0 z-40 flex items-center justify-center p-4">
-      <Card className="biorouter-modal-surface w-full max-w-md bg-background-default z-50 flex flex-col">
+      <Card className="biorouter-modal-surface w-full max-w-md bg-background-default z-[var(--z-modal)] flex flex-col">
         <div className="px-6 pt-6 pb-4">
           <h2 className="text-base font-semibold text-text-default">
             Create Schedule from Workflow

@@ -573,10 +573,10 @@ export function AppInner() {
       <ToastContainer
         aria-label="Toast notifications"
         toastClassName={() =>
-          `relative min-h-16 mb-4 p-3 rounded-xl
+          `relative min-h-16 mb-4 p-3 rounded-2xl
                flex items-center justify-between overflow-hidden cursor-pointer
-               text-white bg-neutral-800/95 backdrop-blur-md
-               border border-white/10 shadow-lg
+               text-text-default bg-background-default
+               border border-border-subtle shadow-popover
               `
         }
         style={{ width: '450px' }}

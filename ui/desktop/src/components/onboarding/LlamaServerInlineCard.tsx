@@ -226,10 +226,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
     const warnings: string[] = [];
     const detected = system.accelerator_memory_gib;
     const memoryLabel = acceleratorMemoryLabel(system.accelerator_memory_kind);
-    if (
-      typeof detected === 'number' &&
-      detected < selectedEntry.recommended_gpu_memory_gib
-    ) {
+    if (typeof detected === 'number' && detected < selectedEntry.recommended_gpu_memory_gib) {
       warnings.push(
         `This machine reports ${detected} GiB ${memoryLabel}; ${selectedEntry.display_name} recommends ${selectedEntry.recommended_gpu_memory_gib} GiB GPU-addressable memory.`
       );
@@ -335,7 +332,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
               onChange={(e) => setSelectedModel(e.target.value)}
               disabled={isStarting || isConnecting}
               data-testid="llamacpp-model-select"
-              className="h-9 px-2 rounded-md border border-border-subtle bg-background-default text-sm text-text-default focus:outline-none focus:border-border-strong transition-colors duration-150"
+              className="h-9 px-2 rounded-md border border-border-subtle bg-background-default text-sm text-text-default focus:border-border-strong transition-colors duration-150"
             >
               {catalog.map((m) => (
                 <option key={m.name} value={m.name}>
@@ -380,9 +377,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                 </p>
               )}
               {selectedEntry.suitability_message && (
-                <p className="text-[11px] text-text-muted">
-                  {selectedEntry.suitability_message}
-                </p>
+                <p className="text-[11px] text-text-muted">{selectedEntry.suitability_message}</p>
               )}
             </div>
           )}

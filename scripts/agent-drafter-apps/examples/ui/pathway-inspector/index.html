@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pathway Inspector</title>
+</head>
+<body>
+  <main class="br-container" data-br-main>
+    <span class="br-badge">BioRouter App</span>
+    <h1>Pathway Inspector</h1>
+    <p class="br-text br-text--muted">
+      Name a gene, protein, or pathway. BioRouter maps its molecular interaction
+      network, then walks you through the key edges and the evidence behind them.
+    </p>
+
+    <div class="br-card">
+      <div class="br-row">
+        <input id="gene" class="br-input" style="flex:3"
+               placeholder="e.g. TP53, PI3K–AKT signaling, mTOR" />
+        <button id="trace" class="br-btn" style="flex:0 0 auto">Trace pathway</button>
+      </div>
+      <div id="examples" class="br-chips" aria-label="Example pathways">
+        <button class="br-chip" type="button" data-gene="TP53">TP53</button>
+        <button class="br-chip" type="button" data-gene="EGFR">EGFR</button>
+        <button class="br-chip" type="button" data-gene="Insulin / PI3K–AKT signaling">PI3K–AKT</button>
+        <button class="br-chip" type="button" data-gene="Wnt/β-catenin pathway">Wnt/β-catenin</button>
+      </div>
+      <div id="trace-status" class="br-text br-text--muted" role="status" aria-live="polite"></div>
+    </div>
+
+    <!-- The agent draws the interaction graph here (ui_graph → @region:overview). -->
+    <section class="br-card" data-br-region="overview" aria-label="Interaction network">
+      <div class="br-text br-text--muted">The interaction network will be drawn here.</div>
+    </section>
+
+    <!-- And an edge-by-edge evidence table here (ui_render → @region:evidence). -->
+    <section class="br-card" data-br-region="evidence" aria-label="Edge evidence">
+      <div class="br-text br-text--muted">Evidence for each interaction appears here as the agent narrates it.</div>
+    </section>
+
+    <div id="out" class="br-output" data-placeholder="The guided walkthrough streams here."></div>
+
+    <p class="br-footer">Powered by BioRouter · built with Agent Drafter</p>
+  </main>
+</body>
+</html>

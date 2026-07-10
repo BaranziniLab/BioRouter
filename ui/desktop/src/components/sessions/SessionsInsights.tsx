@@ -4,86 +4,57 @@ import { useNavigate } from 'react-router-dom';
 import { Button } from '../ui/button';
 import { ChatSmart } from '../icons/';
 import { Skeleton } from '../ui/skeleton';
-import {
-  getSessionInsights,
-  listSessions,
-  Session,
-  SessionInsights as ApiSessionInsights,
-} from '../../api';
+import { getSessionActivity, listSessions, ActivityWindow, Session } from '../../api';
 import { resumeSession } from '../../sessions';
 import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
+import { UsageHeatmap } from './UsageHeatmap';
+
+/** ~5 months of weeks; 22 columns fit the 760px chat column at 24px cells. */
+const ACTIVITY_DAYS = 155;
+
+/** With the flat token tiles gone, the freed space shows more recent chats. */
+const RECENT_LIMIT = 6;
 
 export function SessionInsights() {
-  const [insights, setInsights] = useState<ApiSessionInsights | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [activity, setActivity] = useState<ActivityWindow | null>(null);
+  const [activityFailed, setActivityFailed] = useState(false);
   const [recentSessions, setRecentSessions] = useState<Session[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
   const [isLoadingSessions, setIsLoadingSessions] = useState(true);
   const navigate = useNavigate();
   const setView = useNavigation();
 
   useEffect(() => {
-    let loadingTimeout: ReturnType<typeof setTimeout>;
-
-    const loadInsights = async () => {
+    // The heatmap carries the usage story now, so there is no separate insights
+    // fetch to gate a full-page skeleton on — each section shows its own loading
+    // state and the greeting renders instantly.
+    const loadActivity = async () => {
       try {
-        const response = await getSessionInsights({ throwOnError: true });
-        setInsights(response.data);
-        setError(null);
-      } catch (error) {
-        console.error('Failed to load insights:', error);
-        setError(error instanceof Error ? error.message : 'Failed to load insights');
-        setInsights({
-          totalSessions: 0,
-          totalTokens: 0,
-          sessionsLast7Days: 0,
-          sessionsLast30Days: 0,
-          tokensLast7Days: 0,
-          tokensLast30Days: 0,
+        const response = await getSessionActivity<true>({
+          query: { days: ACTIVITY_DAYS },
+          throwOnError: true,
         });
-      } finally {
-        setIsLoading(false);
+        setActivity(response.data);
+        setActivityFailed(false);
+      } catch (error) {
+        // A missing/old backend (404) or any failure must not leave a permanent
+        // blank where the heatmap should be — collapse the section instead.
+        console.error('Failed to load activity:', error);
+        setActivityFailed(true);
       }
     };
 
     const loadRecentSessions = async () => {
       try {
         const response = await listSessions<true>({ throwOnError: true });
-        setRecentSessions(response.data.sessions.slice(0, 3));
+        setRecentSessions(response.data.sessions.slice(0, RECENT_LIMIT));
       } finally {
         setIsLoadingSessions(false);
       }
     };
 
-    loadingTimeout = setTimeout(() => {
-      setInsights((currentInsights) => {
-        if (!currentInsights) {
-          console.warn('Loading timeout reached, showing fallback content');
-          setError('Failed to load insights');
-          setIsLoading(false);
-          return {
-            totalSessions: 0,
-            totalTokens: 0,
-            sessionsLast7Days: 0,
-            sessionsLast30Days: 0,
-            tokensLast7Days: 0,
-            tokensLast30Days: 0,
-          };
-        }
-        setIsLoading(false);
-        return currentInsights;
-      });
-    }, 10000);
-
-    loadInsights();
+    loadActivity();
     loadRecentSessions();
-
-    return () => {
-      if (loadingTimeout) {
-        window.clearTimeout(loadingTimeout);
-      }
-    };
   }, []);
 
   const handleSessionClick = async (session: Session) => {
@@ -109,147 +80,29 @@ export function SessionInsights() {
       .replace(/\//g, '/');
   };
 
-  const formatTokens = (tokens: number | undefined): string => {
-    return new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 2 }).format(
-      tokens || 0
-    );
-  };
-
-  const formatCount = (count: number | undefined): string => {
-    return Math.max(count ?? 0, 0).toLocaleString();
-  };
-
-  const renderSkeleton = () => (
-    <div className="bg-background-muted flex flex-col h-full">
-      <ReadableContent className="px-8 pt-16 pb-4">
-        <Greeting />
-      </ReadableContent>
-      <ReadableContent className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8 px-8 pb-8">
-        {(['Sessions', 'Tokens'] as const).map((group) => (
-          <div key={group}>
-            <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
-              {group}
-            </p>
-            <div className="flex items-end gap-8">
-              {[0, 1, 2].map((i) => (
-                <div key={i}>
-                  <Skeleton className="h-6 w-14 mb-1.5" />
-                  <Skeleton className="h-3 w-16" />
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </ReadableContent>
-      <ReadableContent className="px-8 pb-8">
-        <div>
-          <div className="flex justify-between items-center pb-2">
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
-              Recent chats
-            </span>
-          </div>
-          <div className="biorouter-list-shell min-h-[96px]">
-            {[200, 160, 220].map((w, i) => (
-              <div
-                key={i}
-                className="biorouter-list-row flex items-center justify-between px-3 py-2.5"
-              >
-                <div className="flex items-center space-x-2.5">
-                  <Skeleton className="h-4 w-4 rounded-sm flex-shrink-0" />
-                  <Skeleton style={{ width: w }} className="h-3.5" />
-                </div>
-                <Skeleton className="h-3.5 w-16" />
-              </div>
-            ))}
-          </div>
-        </div>
-      </ReadableContent>
-    </div>
-  );
-
-  if (isLoading) {
-    return renderSkeleton();
-  }
-
   return (
-    <div className="bg-background-muted flex flex-col h-full">
-      {/* Hero — text directly on canvas */}
-      <ReadableContent className="px-8 pt-16 pb-6">
+    <div className="bg-background-muted flex flex-col min-h-full">
+      {/* Hero — text directly on canvas. Aligned to the composer's column. */}
+      <ReadableContent size="chat" className="px-4 sm:px-6 pt-16 pb-6">
         <p className="text-xs font-medium text-text-muted tracking-widest mb-3">UCSF Biorouter</p>
         <Greeting />
       </ReadableContent>
 
-      {/* Grouped stats — Sessions / Tokens, each with Total · Past 30d · Past 7d */}
-      <ReadableContent className="px-8 pb-8">
-        {error ? (
-          <div className="flex items-center gap-2 text-xs text-text-warning">
-            <div className="w-2 h-2 bg-background-warning rounded-full flex-shrink-0" />
-            Failed to load insights
+      {/* Usage heatmap — the single source of the usage story. */}
+      <ReadableContent size="chat" className="px-4 sm:px-6 pb-8">
+        {activity ? (
+          <div className="page-transition">
+            <UsageHeatmap window={activity} />
           </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-8 page-transition">
-            {(
-              [
-                {
-                  heading: 'Sessions',
-                  items: [
-                    { value: formatCount(insights?.totalSessions), label: 'Total' },
-                    {
-                      value: formatCount(insights?.sessionsLast30Days),
-                      label: 'Past 30 days',
-                    },
-                    {
-                      value: formatCount(insights?.sessionsLast7Days),
-                      label: 'Past 7 days',
-                    },
-                  ],
-                },
-                {
-                  heading: 'Tokens',
-                  items: [
-                    { value: formatTokens(insights?.totalTokens), label: 'Total' },
-                    {
-                      value: formatTokens(insights?.tokensLast30Days),
-                      label: 'Past 30 days',
-                    },
-                    {
-                      value: formatTokens(insights?.tokensLast7Days),
-                      label: 'Past 7 days',
-                    },
-                  ],
-                },
-              ] as const
-            ).map((group) => (
-              <div key={group.heading}>
-                <p className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3">
-                  {group.heading}
-                </p>
-                <div className="flex items-end gap-8">
-                  {group.items.map((item, idx) => (
-                    <div key={item.label}>
-                      <p
-                        className={
-                          idx === 0
-                            ? 'text-3xl font-mono font-light leading-none mb-1.5 tabular-nums'
-                            : 'text-lg font-medium leading-none mb-1.5 text-text-muted tabular-nums'
-                        }
-                      >
-                        {item.value}
-                      </p>
-                      <span className="text-xs text-text-muted uppercase tracking-wider whitespace-nowrap">
-                        {item.label}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ))}
-          </div>
+        ) : activityFailed ? null : ( // definitive failure: collapse, don't leave a void
+          // A plain Skeleton is `bg-background-muted` — the same colour as this
+          // canvas, so it reads as blank. Give it a real surface while loading.
+          <Skeleton className="h-[204px] w-full rounded-xl border border-border-subtle !bg-background-default" />
         )}
       </ReadableContent>
 
       {/* Recent chats */}
-      <ReadableContent className="px-8 pb-8 page-transition">
+      <ReadableContent size="chat" className="px-4 sm:px-6 pb-8 page-transition">
         <div>
           <div className="flex justify-between items-center pb-2">
             <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
@@ -267,10 +120,10 @@ export function SessionInsights() {
 
           <div className="biorouter-list-shell min-h-[96px] transition-all duration-300 ease-in-out">
             {isLoadingSessions ? (
-              [200, 160, 220].map((w, i) => (
+              [200, 160, 220, 180, 210, 150].map((w, i) => (
                 <div
                   key={i}
-                  className="biorouter-list-row flex items-center justify-between px-3 py-2.5"
+                  className="biorouter-list-row flex items-center justify-between px-3 py-2"
                 >
                   <div className="flex items-center space-x-2.5">
                     <Skeleton className="h-4 w-4 rounded-sm flex-shrink-0" />
@@ -283,7 +136,7 @@ export function SessionInsights() {
               recentSessions.map((session, index) => (
                 <div
                   key={session.id}
-                  className="biorouter-list-row session-item flex items-center justify-between text-sm px-3 py-2.5 cursor-pointer"
+                  className="biorouter-list-row session-item flex items-center justify-between text-sm px-3 py-2 cursor-pointer"
                   onClick={() => handleSessionClick(session)}
                   role="button"
                   tabIndex={0}

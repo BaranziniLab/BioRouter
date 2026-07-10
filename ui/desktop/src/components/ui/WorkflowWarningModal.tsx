@@ -37,7 +37,11 @@ export function WorkflowWarningModal({
         <DialogOverlay />
         <DialogPrimitive.Content
           className={cn(
-            'biorouter-modal-surface bg-background-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 duration-200 sm:max-w-[80vw] max-h-[80vh] flex flex-col p-0 overflow-hidden'
+            // z-[var(--z-modal)] must stay ABOVE the sibling <DialogOverlay/>
+            // (--z-overlay). A stale z-50 here put the full-screen, click-eating
+            // scrim on top of this modal's own buttons and the rest of the app,
+            // soft-locking it. See the .biorouter-modal-surface floor in main.css.
+            'biorouter-modal-surface bg-background-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-[var(--z-modal)] grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 duration-200 sm:max-w-[80vw] max-h-[80vh] flex flex-col p-0 overflow-hidden'
           )}
           onPointerDownOutside={(e) => e.preventDefault()}
           onEscapeKeyDown={(e) => e.preventDefault()}
@@ -55,7 +59,7 @@ export function WorkflowWarningModal({
 
           {hasSecurityWarnings && (
             <div className="px-6">
-              <div className="rounded-xl border border-border-warning/40 bg-background-warning/10 p-4 shadow-sm">
+              <div className="rounded-xl border border-border-warning/40 bg-background-warning/10 p-4">
                 <div className="flex items-start">
                   <div className="ml-3">
                     <div className="mt-2 text-sm text-text-warning">

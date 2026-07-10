@@ -161,7 +161,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
               value={editContent}
               onChange={handleContentChange}
               onKeyDown={handleKeyDown}
-              className="w-full resize-none bg-transparent text-text-default placeholder:text-text-muted border border-border-subtle rounded-lg focus:outline-none focus:ring-2 focus:ring-ring focus:border-border-strong transition-all duration-200 text-base leading-relaxed"
+              className="w-full resize-none bg-transparent text-text-default placeholder:text-text-muted border border-border-subtle rounded-lg focus:border-border-strong transition-all duration-200 text-base leading-relaxed"
               style={{
                 minHeight: '120px',
                 maxHeight: '300px',
@@ -218,10 +218,13 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
           <div className="message flex justify-end w-full">
             <div className="flex-col max-w-[85%] w-fit">
               <div className="flex flex-col group">
-                <div className="flex bg-background-accent text-text-on-accent rounded-xl py-2.5 px-4">
+                {/* The user's turn is tinted only so the eye can find the boundary
+                    when scrolling. It is NOT an accent surface — a solid coral block
+                    shouts on a canvas whose whole thesis is calm (design.md §4.18). */}
+                <div className="flex rounded-xl border border-border-subtle bg-background-medium px-4 py-2.5">
                   <div
                     ref={contentRef}
-                    className="text-sm text-text-on-accent whitespace-pre-wrap break-words leading-relaxed"
+                    className="text-sm text-text-default whitespace-pre-wrap break-words leading-relaxed"
                   >
                     {displayText}
                   </div>
@@ -265,7 +268,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                           handleEditClick();
                         }
                       }}
-                      className="flex items-center gap-1 font-sans text-sm text-text-muted hover:cursor-pointer hover:text-text-default transition-all duration-200 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-opacity-50 rounded"
+                      className="flex items-center gap-1 font-sans text-sm text-text-muted hover:cursor-pointer hover:text-text-default transition-all duration-200 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 rounded"
                       aria-label={`Edit message: ${displayText.substring(0, 50)}${displayText.length > 50 ? '...' : ''}`}
                       aria-expanded={isEditing}
                       title="Edit message"

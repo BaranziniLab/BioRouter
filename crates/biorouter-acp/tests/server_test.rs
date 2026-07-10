@@ -8,11 +8,11 @@ use biorouter_acp::server::{serve, BioRouterAcpAgent, BioRouterAcpConfig};
 use common::{setup_mock_openai, spawn_mcp_http_server, FAKE_CODE};
 use fs_err as fs;
 use sacp::schema::{
-    ContentBlock, ContentChunk, InitializeRequest, McpServer, McpServerHttp, NewSessionRequest,
-    PermissionOptionKind, PromptRequest, ProtocolVersion, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
-    SessionNotification, SessionUpdate, StopReason, TextContent, ToolCallId, ToolCallStatus,
-    ToolCallUpdate, ToolCallUpdateFields,
+    ContentBlock, ContentChunk, InitializeRequest, LoadSessionRequest, McpServer, McpServerHttp,
+    NewSessionRequest, PermissionOptionKind, PromptRequest, ProtocolVersion,
+    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
+    SelectedPermissionOutcome, SessionNotification, SessionUpdate, StopReason, TextContent,
+    ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
 };
 use sacp::{ClientToAgent, JrConnectionCx};
 use std::future::Future;
@@ -184,6 +184,109 @@ fn test_acp_with_builtin_and_mcp() {
     });
 }
 
+/// Simulates a client restart: complete one turn over a first connection, then
+/// reconnect with a second client and `session/load` the same session id. The
+/// agent must rehydrate the persisted conversation and replay the user-visible
+/// history — the user's prompt and the assistant's reply — as session updates.
+#[test]
+fn test_acp_load_session_replays_history() {
+    run_async_test(async {
+        let data_dir = tempfile::tempdir().unwrap();
+        let work_dir = tempfile::tempdir().unwrap();
+        let prompt = "what is 1+1";
+
+        let mock_server = setup_mock_openai(vec![(
+            format!(r#"</info-msg>\n{prompt}""#),
+            include_str!("./test_data/openai_basic_response.txt"),
+        )])
+        .await;
+
+        // First client: create a session, run one turn, remember the session id.
+        let captured = Arc::new(Mutex::new(None));
+        run_acp_client(
+            &mock_server,
+            &[],
+            data_dir.path(),
+            BioRouterMode::Auto,
+            None,
+            {
+                let captured = captured.clone();
+                let cwd = work_dir.path().to_path_buf();
+                move |cx, updates| async move {
+                    let session = cx
+                        .send_request(NewSessionRequest::new(cwd))
+                        .block_task()
+                        .await
+                        .unwrap();
+
+                    cx.send_request(PromptRequest::new(
+                        session.session_id.clone(),
+                        vec![ContentBlock::Text(TextContent::new(prompt))],
+                    ))
+                    .block_task()
+                    .await
+                    .unwrap();
+
+                    wait_for(
+                        &updates,
+                        &SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                            TextContent::new("2"),
+                        ))),
+                    )
+                    .await;
+
+                    *captured.lock().unwrap() = Some(session.session_id);
+                }
+            },
+        )
+        .await;
+
+        let session_id = captured
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("session id captured");
+
+        // Second client, same data dir: the first connection is gone, so this
+        // exercises rehydration from persisted state rather than in-memory state.
+        run_acp_client(
+            &mock_server,
+            &[],
+            data_dir.path(),
+            BioRouterMode::Auto,
+            None,
+            {
+                let cwd = work_dir.path().to_path_buf();
+                move |cx, updates| async move {
+                    cx.send_request(LoadSessionRequest::new(session_id, cwd))
+                        .block_task()
+                        .await
+                        .unwrap();
+
+                    // The user's original prompt is replayed back to the client...
+                    wait_for(
+                        &updates,
+                        &SessionUpdate::UserMessageChunk(ContentChunk::new(ContentBlock::Text(
+                            TextContent::new(prompt),
+                        ))),
+                    )
+                    .await;
+
+                    // ...along with the assistant's answer from the earlier turn.
+                    wait_for(
+                        &updates,
+                        &SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                            TextContent::new("2"),
+                        ))),
+                    )
+                    .await;
+                }
+            },
+        )
+        .await;
+    });
+}
+
 async fn wait_for(updates: &Arc<Mutex<Vec<SessionNotification>>>, expected: &SessionUpdate) {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(500);
     let mut context = String::new();
@@ -207,6 +310,20 @@ async fn wait_for(updates: &Arc<Mutex<Vec<SessionNotification>>>, expected: &Ses
                                 } else {
                                     context.push_str(&t.text);
                                 }
+                            }
+                        }
+                    }
+                    context.contains(expected_text)
+                }
+                SessionUpdate::UserMessageChunk(chunk) => {
+                    let expected_text = match &chunk.content {
+                        ContentBlock::Text(t) => &t.text,
+                        other => panic!("wait_for: unhandled content {:?}", other),
+                    };
+                    for n in guard.iter() {
+                        if let SessionUpdate::UserMessageChunk(c) = &n.update {
+                            if let ContentBlock::Text(t) = &c.content {
+                                context.push_str(&t.text);
                             }
                         }
                     }
@@ -277,25 +394,23 @@ async fn spawn_server_in_process(
     (client_read, client_write, handle)
 }
 
-async fn run_acp_session<F, Fut>(
+/// Connect one ACP client to a freshly spawned in-process server and run `test_fn`
+/// after the `initialize` handshake. The caller decides whether to create a new
+/// session or load an existing one, so a test can simulate a client restart by
+/// calling this twice against the same `data_root`.
+async fn run_acp_client<F, Fut>(
     mock_server: &MockServer,
-    mcp_servers: Vec<McpServer>,
     builtins: &[&str],
     data_root: &Path,
     mode: BioRouterMode,
     select: Option<PermissionOptionKind>,
     test_fn: F,
 ) where
-    F: FnOnce(
-        JrConnectionCx<ClientToAgent>,
-        sacp::schema::SessionId,
-        Arc<Mutex<Vec<SessionNotification>>>,
-    ) -> Fut,
+    F: FnOnce(JrConnectionCx<ClientToAgent>, Arc<Mutex<Vec<SessionNotification>>>) -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
     let (client_read, client_write, _handle) =
         spawn_server_in_process(mock_server, builtins, data_root, mode).await;
-    let work_dir = tempfile::tempdir().unwrap();
     let updates = Arc::new(Mutex::new(Vec::new()));
 
     let transport = sacp::ByteStreams::new(client_write.compat_write(), client_read.compat());
@@ -342,18 +457,49 @@ async fn run_acp_session<F, Fut>(
                     .await
                     .unwrap();
 
-                let session = cx
-                    .send_request(NewSessionRequest::new(work_dir.path()).mcp_servers(mcp_servers))
-                    .block_task()
-                    .await
-                    .unwrap();
-
-                test_fn(cx.clone(), session.session_id, updates).await;
+                test_fn(cx.clone(), updates).await;
                 Ok(())
             }
         })
         .await
         .unwrap();
+}
+
+async fn run_acp_session<F, Fut>(
+    mock_server: &MockServer,
+    mcp_servers: Vec<McpServer>,
+    builtins: &[&str],
+    data_root: &Path,
+    mode: BioRouterMode,
+    select: Option<PermissionOptionKind>,
+    test_fn: F,
+) where
+    F: FnOnce(
+        JrConnectionCx<ClientToAgent>,
+        sacp::schema::SessionId,
+        Arc<Mutex<Vec<SessionNotification>>>,
+    ) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let work_dir = tempfile::tempdir().unwrap();
+
+    run_acp_client(
+        mock_server,
+        builtins,
+        data_root,
+        mode,
+        select,
+        move |cx, updates| async move {
+            let session = cx
+                .send_request(NewSessionRequest::new(work_dir.path()).mcp_servers(mcp_servers))
+                .block_task()
+                .await
+                .unwrap();
+
+            test_fn(cx.clone(), session.session_id, updates).await;
+        },
+    )
+    .await;
 }
 
 #[test_case(Some(PermissionOptionKind::AllowAlways), ToolCallStatus::Completed, "user:\n  always_allow:\n  - lookup__get_code\n  ask_before: []\n  never_allow: []\n"; "allow_always")]

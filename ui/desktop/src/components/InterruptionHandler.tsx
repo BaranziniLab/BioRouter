@@ -134,27 +134,19 @@ export const InterruptionHandler: React.FC<InterruptionHandlerProps> = ({
       className={`biorouter-modal-overlay fixed inset-0 flex items-center justify-center z-50 p-4 ${className}`}
     >
       <div
-        className={`w-full max-w-md mx-auto transition-all duration-300 ease-out ${
-          isVisible ? 'scale-100 opacity-100' : 'scale-95 opacity-0'
-        }`}
+        className={`w-full max-w-md mx-auto transition-all duration-300 ease-out ${isVisible ? 'scale-100 opacity-100' : 'scale-95 opacity-0'}`}
       >
         {/* Main card */}
-        <div
-          className={`biorouter-modal-surface rounded-2xl backdrop-blur-xl ${colors.bg} ${colors.border}`}
-        >
+        <div className={`biorouter-modal-surface rounded-2xl ${colors.bg} ${colors.border}`}>
           {/* Header */}
           <div className="p-6 border-b border-current/10">
             <div className="flex items-start gap-4">
-              <div className="flex-shrink-0 p-2 rounded-lg bg-white/50 dark:bg-black/20">
-                {getIcon()}
-              </div>
+              <div className="flex-shrink-0 p-2 rounded-lg bg-background-muted">{getIcon()}</div>
               <div className="flex-1">
                 <h3 className={`text-lg font-semibold ${colors.text}`}>{getActionTitle()}</h3>
                 <p className={`text-sm mt-1 ${colors.accent}`}>Detected: "{match.matchedText}"</p>
               </div>
-              <div
-                className={`text-xs px-2 py-1 rounded-md bg-white/30 dark:bg-black/20 ${colors.text}`}
-              >
+              <div className={`text-xs px-2 py-1 rounded-md bg-background-muted ${colors.text}`}>
                 {Math.round(match.confidence * 100)}% confident
               </div>
             </div>
@@ -177,7 +169,7 @@ export const InterruptionHandler: React.FC<InterruptionHandlerProps> = ({
                   value={redirectMessage}
                   onChange={(e) => setRedirectMessage(e.target.value)}
                   placeholder="Enter your new instruction..."
-                  className={`w-full px-3 py-2 border rounded-lg resize-none focus:outline-none focus:ring-2 focus:ring-current/20 bg-white/50 dark:bg-black/20 ${colors.border} ${colors.text}`}
+                  className={`w-full px-3 py-2 border rounded-lg resize-none bg-background-default ${colors.border} ${colors.text}`}
                   rows={3}
                   autoFocus
                 />
@@ -190,15 +182,9 @@ export const InterruptionHandler: React.FC<InterruptionHandlerProps> = ({
                 <span className={colors.accent}>Detection Confidence</span>
                 <span className={colors.text}>{Math.round(match.confidence * 100)}%</span>
               </div>
-              <div className="w-full bg-white/30 dark:bg-black/20 rounded-full h-2">
+              <div className="w-full bg-background-muted rounded-full h-2">
                 <div
-                  className={`h-2 rounded-full transition-all duration-500 ${
-                    match.confidence > 0.8
-                      ? 'bg-background-success'
-                      : match.confidence > 0.6
-                        ? 'bg-background-warning'
-                        : 'bg-background-danger'
-                  }`}
+                  className={`h-2 rounded-full transition-all duration-500 ${match.confidence > 0.8 ? 'bg-background-success' : match.confidence > 0.6 ? 'bg-background-warning' : 'bg-background-danger'}`}
                   style={{ width: `${match.confidence * 100}%` }}
                 />
               </div>
@@ -210,14 +196,14 @@ export const InterruptionHandler: React.FC<InterruptionHandlerProps> = ({
             <Button
               variant="ghost"
               onClick={onCancelInterruption}
-              className={`flex-1 hover:bg-white/20 dark:hover:bg-black/20 ${colors.text}`}
+              className={`flex-1 hover:bg-background-muted ${colors.text}`}
             >
               Cancel
             </Button>
             <Button
               onClick={handleConfirm}
               disabled={showRedirectInput && !redirectMessage.trim()}
-              className={`flex-1 bg-white/80 hover:bg-white dark:bg-white/10 dark:hover:bg-white/20 ${colors.text} font-medium transition-all duration-200`}
+              className={`flex-1 bg-background-muted hover:bg-background-medium ${colors.text} font-medium transition-all duration-200`}
             >
               <Zap className="w-4 h-4 mr-2" />
               {showRedirectInput
@@ -231,7 +217,7 @@ export const InterruptionHandler: React.FC<InterruptionHandlerProps> = ({
 
         {/* Backdrop hint */}
         <div className="text-center mt-4">
-          <p className="text-xs text-white/60">
+          <p className="text-xs text-text-muted">
             Click outside or press Cancel to continue current processing
           </p>
         </div>

@@ -126,15 +126,15 @@ export default function ToolConfirmation({
 
   // One cohesive, bordered "permission request" card. A single border wraps the
   // whole element (header + actions) so there are no mismatched borders, it uses
-  // the app's standard card tokens + typography, and a soft shadow plus a gentle
-  // slide-in make it read as a distinct prompt the user is meant to act on.
+  // the app's standard card tokens + typography, and a gentle slide-in makes it
+  // read as a distinct prompt the user is meant to act on.
   return isCancelledMessage ? (
     <div className="biorouter-message-content rounded-2xl border border-border-subtle bg-background-muted px-4 py-3 text-sm text-text-muted">
       Tool call confirmation was cancelled.
     </div>
   ) : (
     <>
-      <div className="biorouter-message-content overflow-hidden rounded-2xl border border-border-subtle bg-background-default shadow-sm animate-in fade-in slide-in-from-bottom-1 duration-200">
+      <div className="biorouter-message-content overflow-hidden rounded-2xl border border-border-subtle bg-background-default animate-in fade-in slide-in-from-bottom-1 duration-200">
         {/* Security finding banner, only when the backend flagged one */}
         {prompt && (
           <div className="flex items-start gap-2 border-b border-border-subtle bg-background-warning/10 px-4 py-2.5 text-sm text-text-warning">

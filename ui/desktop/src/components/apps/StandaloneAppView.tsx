@@ -121,7 +121,7 @@ export default function StandaloneAppView() {
         }}
       >
         <h2 style={{ color: 'var(--text-danger)' }}>Failed to Load App</h2>
-        <p style={{ color: 'var(--text-muted, #7a736c)' }}>{error}</p>
+        <p style={{ color: 'var(--text-muted)' }}>{error}</p>
       </div>
     );
   }
@@ -137,7 +137,7 @@ export default function StandaloneAppView() {
           justifyContent: 'center',
         }}
       >
-        <p style={{ color: 'var(--text-muted, #7a736c)' }}>Initializing app...</p>
+        <p style={{ color: 'var(--text-muted)' }}>Initializing app...</p>
       </div>
     );
   }
@@ -166,7 +166,7 @@ export default function StandaloneAppView() {
         justifyContent: 'center',
       }}
     >
-      <p style={{ color: 'var(--text-muted, #7a736c)' }}>Initializing app...</p>
+      <p style={{ color: 'var(--text-muted)' }}>Initializing app...</p>
     </div>
   );
 }

@@ -15,8 +15,8 @@ export function BaseModal({
 
   return (
     <div className="biorouter-modal-overlay fixed inset-0 z-[9999]">
-      <div className="biorouter-modal-surface fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[440px] bg-background-default overflow-hidden p-[16px] pt-[24px] pb-0">
-        <div className="px-8 pb-0 space-y-8">
+      <div className="biorouter-modal-surface fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[440px] bg-background-default overflow-hidden p-6">
+        <div className="space-y-8">
           {/* Header */}
           {title && (
             <div className="flex">
@@ -25,10 +25,10 @@ export function BaseModal({
           )}
 
           {/* Content */}
-          {children && <div className="px-8">{children}</div>}
+          {children && <div>{children}</div>}
 
           {/* Actions */}
-          <div className="mt-[8px] ml-[-24px] mr-[-24px] pt-[16px]">{actions}</div>
+          <div className="-mx-6 pt-4">{actions}</div>
         </div>
       </div>
     </div>

@@ -21,12 +21,15 @@ const TEXT_EXTENSIONS = new Set([
   'log',
   'md',
   'py',
+  'qmd',
   'r',
+  'rmd',
   'rs',
   'sh',
   'sql',
   'toml',
   'ts',
+  'tsv',
   'tsx',
   'txt',
   'xml',
@@ -57,21 +60,78 @@ export function extensionFromPath(value: string): string {
   return dot > -1 ? name.slice(dot + 1).toLowerCase() : '';
 }
 
+// Extension -> Prism language. Anything missing falls through to the extension
+// itself (Prism knows `r`, `sql`, `go`, `json`, …), then to plain text.
+const PRISM_LANGUAGES: Record<string, string> = {
+  bash: 'bash',
+  cc: 'cpp',
+  cs: 'csharp',
+  conf: 'ini',
+  h: 'c',
+  hpp: 'cpp',
+  htm: 'html',
+  js: 'javascript',
+  jsonl: 'json',
+  jsx: 'jsx',
+  log: 'text',
+  markdown: 'markdown',
+  md: 'markdown',
+  py: 'python',
+  // R Markdown / Quarto are markdown with fenced R chunks.
+  qmd: 'markdown',
+  rmd: 'markdown',
+  rs: 'rust',
+  sh: 'bash',
+  toml: 'toml',
+  ts: 'typescript',
+  tsx: 'tsx',
+  txt: 'text',
+  yml: 'yaml',
+};
+
 export function languageFromPath(value: string, mimeType?: string): string {
   const ext = extensionFromPath(value);
-  if (ext === 'md') return 'markdown';
-  if (ext === 'yml') return 'yaml';
-  if (ext === 'htm') return 'html';
-  if (ext === 'js' || ext === 'jsx') return 'javascript';
-  if (ext === 'ts' || ext === 'tsx') return 'typescript';
-  if (ext === 'py') return 'python';
-  if (ext === 'rs') return 'rust';
-  if (ext === 'sh' || ext === 'bash') return 'bash';
-  if (ext === 'txt' || ext === 'log') return 'text';
+  const mapped = PRISM_LANGUAGES[ext];
+  if (mapped) return mapped;
+  if (ext) return ext;
   if (mimeType?.includes('json')) return 'json';
   if (mimeType?.includes('html')) return 'html';
   if (mimeType?.includes('xml')) return 'xml';
-  return ext || 'text';
+  return 'text';
+}
+
+// Names that title-casing gets wrong: acronyms ("Csv") and camel-cased brands
+// ("Typescript"). Keyed by the Prism language, or by extension where it differs.
+const LANGUAGE_LABELS: Record<string, string> = {
+  bash: 'Shell',
+  cpp: 'C++',
+  csharp: 'C#',
+  css: 'CSS',
+  csv: 'CSV',
+  html: 'HTML',
+  ini: 'INI',
+  javascript: 'JavaScript',
+  json: 'JSON',
+  jsx: 'JSX',
+  markdown: 'Markdown',
+  sql: 'SQL',
+  text: 'Text',
+  toml: 'TOML',
+  tsv: 'TSV',
+  tsx: 'TSX',
+  typescript: 'TypeScript',
+  xml: 'XML',
+  yaml: 'YAML',
+};
+
+// Human label for the language chip above a code preview.
+export function languageLabel(value: string, mimeType?: string): string {
+  const ext = extensionFromPath(value);
+  if (ext === 'r') return 'R';
+  if (ext === 'rmd') return 'R Markdown';
+  if (ext === 'qmd') return 'Quarto';
+  const language = languageFromPath(value, mimeType);
+  return LANGUAGE_LABELS[language] ?? language.charAt(0).toUpperCase() + language.slice(1);
 }
 
 function titleCaseWords(value: string): string {
@@ -116,6 +176,65 @@ export function titleFromResourceUri(uri?: string): string | null {
   return parts.map(titleCaseWords).join(' ');
 }
 
+const MARKDOWN_EXTENSIONS = new Set(['markdown', 'md', 'qmd', 'rmd']);
+const DELIMITED_EXTENSIONS = new Set(['csv', 'tsv']);
+
+export function isMarkdownPath(value: string): boolean {
+  return MARKDOWN_EXTENSIONS.has(extensionFromPath(value));
+}
+
+export function isDelimitedPath(value: string): boolean {
+  return DELIMITED_EXTENSIONS.has(extensionFromPath(value));
+}
+
+// Parse a CSV/TSV table, honouring quoted fields (which may contain the
+// delimiter, escaped quotes, and newlines). Rows are capped by the caller.
+export function parseDelimitedTable(text: string, delimiter: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+
+    if (inQuotes) {
+      if (char === '"') {
+        if (text[i + 1] === '"') {
+          field += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        field += char;
+      }
+      continue;
+    }
+
+    if (char === '"' && field === '') {
+      inQuotes = true;
+    } else if (char === delimiter) {
+      row.push(field);
+      field = '';
+    } else if (char === '\n' || char === '\r') {
+      if (char === '\r' && text[i + 1] === '\n') i++;
+      row.push(field);
+      rows.push(row);
+      row = [];
+      field = '';
+    } else {
+      field += char;
+    }
+  }
+
+  if (field !== '' || row.length > 0) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows.filter((r) => r.length > 1 || r[0] !== '');
+}
+
 export function looksLikePreviewableFile(value: string): boolean {
   const href = value.trim();
   if (!href || /^(https?|mailto|tel):/i.test(href)) return false;
@@ -154,6 +273,123 @@ export function decodeResourceHtml(resource: { blob?: string; text?: string }): 
     }
   }
   return resource.text || '';
+}
+
+// ---------------------------------------------------------------------------
+// Files the agent creates
+//
+// A `ui://` resource announces itself, but a file the agent writes with the
+// developer extension leaves no trace in the panel unless the assistant happens
+// to mention its path in prose. These helpers read the tool call itself, so a
+// written report, R script, CSV or generated image opens in the preview the same
+// way a visualization does.
+// ---------------------------------------------------------------------------
+
+// Tools whose arguments name a file the agent is creating or rewriting.
+const FILE_WRITING_TOOLS = new Set([
+  'create_file',
+  'edit_file',
+  'multi_edit',
+  'notebook_edit',
+  'str_replace_editor',
+  'text_editor',
+  'write_file',
+]);
+
+// `text_editor`-style commands that leave a file changed on disk. `view` and
+// `undo_edit` do not produce something new to look at.
+const MUTATING_EDITOR_COMMANDS = new Set(['create', 'diff', 'insert', 'str_replace', 'write']);
+
+const PATH_ARGUMENT_KEYS = [
+  'path',
+  'file_path',
+  'filePath',
+  'filename',
+  'file_name',
+  'target_file',
+  'absolute_path',
+];
+
+// Shell redirections and the conventional output flags. Deliberately narrow:
+// scanning all of stdout for path-like text turns an `ls` into a dozen bogus
+// artifacts, and the panel auto-opens whatever arrived last.
+const SHELL_OUTPUT_RE =
+  /(?:>>?|(?:^|\s)(?:--outfile|--output|--out|-out|-o)[=\s]+)\s*(?:"([^"]+)"|'([^']+)'|([^\s;|&>]+))/g;
+
+// The tool name as the extension exposes it, e.g. `developer__text_editor`.
+export function baseToolName(toolName: string): string {
+  const delimiter = toolName.lastIndexOf('__');
+  return delimiter === -1 ? toolName : toolName.slice(delimiter + 2);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+// `C:\dir`, `C:/dir` or a `\\server\share` UNC path. Without this, a Windows
+// absolute path looks relative and gets glued onto the working directory.
+const WINDOWS_ABSOLUTE_RE = /^(?:[a-zA-Z]:[\\/]|\\\\)/;
+
+// Resolve a possibly-relative path against the session's working directory, so
+// `results/plot.png` from a shell command becomes something the viewer can read.
+export function resolveArtifactPath(rawPath: string, workingDir?: string): string | null {
+  const path = pathFromArtifactHref(rawPath.trim().replace(/^["']|["']$/g, ''));
+  if (!path) return null;
+  if (path.startsWith('/') || path.startsWith('~') || WINDOWS_ABSOLUTE_RE.test(path)) return path;
+  if (!workingDir) return null;
+  const cleaned = path.replace(/^\.[\\/]/, '');
+  if (/^\.\.[\\/]/.test(cleaned) || cleaned === '.' || cleaned === '..') return null;
+  const separator = WINDOWS_ABSOLUTE_RE.test(workingDir) ? '\\' : '/';
+  return `${workingDir.replace(/[\\/]+$/, '')}${separator}${cleaned}`;
+}
+
+function isPreviewableArtifactPath(path: string): boolean {
+  const ext = extensionFromPath(path);
+  return TEXT_EXTENSIONS.has(ext) || IMAGE_EXTENSIONS.has(ext) || HTML_EXTENSIONS.has(ext);
+}
+
+// File paths a tool call is about to create, read off its arguments.
+//
+// Returns absolute paths only — a relative one without a `workingDir` to anchor
+// it would resolve against the wrong directory in the viewer.
+export function fileArtifactPathsFromToolCall(
+  toolName: string,
+  args: unknown,
+  workingDir?: string
+): string[] {
+  const argRecord = asRecord(args);
+  if (!argRecord) return [];
+  const name = baseToolName(toolName);
+
+  if (name === 'shell' || name === 'bash') {
+    const command = argRecord.command;
+    if (typeof command !== 'string') return [];
+    const paths: string[] = [];
+    for (const match of command.matchAll(SHELL_OUTPUT_RE)) {
+      const candidate = match[1] ?? match[2] ?? match[3];
+      if (!candidate) continue;
+      const resolved = resolveArtifactPath(candidate, workingDir);
+      if (resolved && isPreviewableArtifactPath(resolved)) paths.push(resolved);
+    }
+    return paths;
+  }
+
+  if (!FILE_WRITING_TOOLS.has(name)) return [];
+
+  // `text_editor` multiplexes read and write behind a `command` argument, so a
+  // `view` must not open a preview of a file the agent only looked at.
+  const command = argRecord.command;
+  if (typeof command === 'string' && !MUTATING_EDITOR_COMMANDS.has(command)) return [];
+
+  for (const key of PATH_ARGUMENT_KEYS) {
+    const value = argRecord[key];
+    if (typeof value !== 'string' || !value.trim()) continue;
+    const resolved = resolveArtifactPath(value, workingDir);
+    return resolved ? [resolved] : [];
+  }
+  return [];
 }
 
 export function artifactSourceFromResource(

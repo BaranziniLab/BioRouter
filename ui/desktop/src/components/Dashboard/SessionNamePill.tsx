@@ -82,7 +82,7 @@ export const SessionNamePill: React.FC<Props> = ({
             }
           }}
           style={noDragStyle}
-          className="h-8 w-[min(360px,70vw)] min-w-[120px] bg-transparent px-1 text-sm font-medium outline-none border-b border-border-subtle"
+          className="h-8 w-[min(360px,70vw)] min-w-[120px] bg-transparent px-1 text-sm font-medium border-b border-border-subtle"
         />
       ) : (
         <>
@@ -108,10 +108,7 @@ export const SessionNamePill: React.FC<Props> = ({
             <DropdownMenuContent align="start" side="bottom" className="w-36">
               <DropdownMenuItem onSelect={startEditing}>Rename</DropdownMenuItem>
               {onDiverge && (
-                <DropdownMenuItem
-                  disabled={!canDiverge || diverging}
-                  onSelect={handleDiverge}
-                >
+                <DropdownMenuItem disabled={!canDiverge || diverging} onSelect={handleDiverge}>
                   {diverging ? 'Diverging...' : 'Diverge'}
                 </DropdownMenuItem>
               )}

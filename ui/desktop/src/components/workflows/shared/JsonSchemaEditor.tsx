@@ -53,30 +53,30 @@ export default function JsonSchemaEditor({
 
   const insertExample = () => {
     const example = `{
-  "type": "object",
-  "properties": {
-    "result": {
-      "type": "string",
-      "description": "The main result"
-    },
-    "status": {
-      "type": "string",
-      "enum": ["success", "error"],
-      "description": "Operation status"
-    },
-    "data": {
-      "type": "object",
-      "properties": {
-        "items": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          }
-        }
-      }
-    }
-  },
-  "required": ["result", "status"]
+ "type": "object",
+ "properties": {
+ "result": {
+ "type": "string",
+ "description": "The main result"
+ },
+ "status": {
+ "type": "string",
+ "enum": ["success", "error"],
+ "description": "Operation status"
+ },
+ "data": {
+ "type": "object",
+ "properties": {
+ "items": {
+ "type": "array",
+ "items": {
+ "type": "string"
+ }
+ }
+ }
+ }
+ },
+ "required": ["result", "status"]
 }`;
     setLocalValue(example);
   };
@@ -129,18 +129,16 @@ export default function JsonSchemaEditor({
                 setLocalValue(e.target.value);
                 setLocalError('');
               }}
-              className={`biorouter-modal-panel w-full h-full min-h-[400px] px-3 py-2 text-sm rounded-lg text-text-default placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-border-strong transition-colors duration-150 resize-none font-mono ${
-                localError || error ? '!border-border-danger' : ''
-              }`}
+              className={`biorouter-modal-panel w-full h-full min-h-[400px] px-3 py-2 text-sm rounded-lg text-text-default placeholder:text-text-muted transition-colors duration-150 resize-none font-mono ${localError || error ? '!border-border-danger' : ''}`}
               placeholder={`{
-  "type": "object",
-  "properties": {
-    "result": {
-      "type": "string",
-      "description": "The main result"
-    }
-  },
-  "required": ["result"]
+ "type": "object",
+ "properties": {
+ "result": {
+ "type": "string",
+ "description": "The main result"
+ }
+ },
+ "required": ["result"]
 }`}
             />
             {(localError || error) && (

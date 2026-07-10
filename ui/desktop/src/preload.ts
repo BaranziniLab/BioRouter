@@ -215,6 +215,7 @@ type ElectronAPI = {
     mode: string;
     useSystemTheme: boolean;
     theme: string;
+    themeFamily?: string;
   }) => void;
   // Functions for image pasting
   saveDataUrlToTemp: (dataUrl: string, uniqueId: string) => Promise<SaveDataUrlResponse>;
@@ -440,7 +441,12 @@ const electronAPI: ElectronAPI = {
   emit: (channel: string, ...args: unknown[]) => {
     ipcRenderer.emit(channel, ...args);
   },
-  broadcastThemeChange: (themeData: { mode: string; useSystemTheme: boolean; theme: string }) => {
+  broadcastThemeChange: (themeData: {
+    mode: string;
+    useSystemTheme: boolean;
+    theme: string;
+    themeFamily?: string;
+  }) => {
     ipcRenderer.send('broadcast-theme-change', themeData);
   },
   saveDataUrlToTemp: (dataUrl: string, uniqueId: string): Promise<SaveDataUrlResponse> => {

@@ -140,7 +140,7 @@ export default function CommercialSetupCard({
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
           placeholder="Paste your API key here…"
-          className="flex-1 h-9 px-3 text-sm border border-border-subtle rounded-md bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150"
+          className="flex-1 h-9 px-3 text-sm border border-border-subtle rounded-md bg-background-default text-text-default placeholder:text-text-muted focus:border-border-strong transition-colors duration-150"
           disabled={isLoading}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && canSubmit) testApiKey();

@@ -177,7 +177,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
             className={[
               'biorouter-modal-panel rounded-xl p-10 text-center cursor-pointer select-none transition-colors duration-150',
               isDragging
-                ? 'border-block-teal bg-block-teal/5'
+                ? 'border-border-accent bg-background-accent/5'
                 : error
                   ? 'border-border-danger bg-background-danger/10'
                   : 'border-border-subtle bg-background-muted hover:border-border-strong hover:bg-background-medium',
@@ -197,7 +197,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
           />
 
           {error && (
-            <div className="text-sm text-destructive bg-destructive/10 rounded-lg px-4 py-3">
+            <div className="text-sm text-text-danger bg-background-danger/10 rounded-lg px-4 py-3">
               {error}
             </div>
           )}

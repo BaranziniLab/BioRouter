@@ -1,0 +1,947 @@
+<title>BioRouter — Home page redesign</title>
+
+<style>
+:root {
+  --bg:#f7f5f1; --surface:#ffffff; --ink:#23201c; --muted:#635c54; --subtle:#6e6760;
+  --line:#e3ddd2; --line-soft:#eee9e0; --accent:#b85a32; --accent-soft:#f6e9e2;
+  --code-bg:#f1ede4; --ok:#1f7a3d; --bad:#b3261e; --warn:#8a5a00;
+  --shadow:0 1px 2px rgba(35,32,28,.04), 0 8px 24px -18px rgba(35,32,28,.18);
+  --font-ui: ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --font-mono: ui-monospace,"SF Mono",SFMono-Regular,"Cascadia Mono",Menlo,Consolas,monospace;
+  /* heatmap sequential ramp — warm, monotonic in luminance */
+  --h0:#ece5d6; --h1:#e9c9ab; --h2:#dda27a; --h3:#c6774c; --h4:#a04a27;
+  /* the app's own tokens, for the mockup */
+  --app-canvas:#faf8f3; --app-surface:#ffffff; --app-fill:#f4f0e6; --app-strong:#d4cab6;
+  --app-ink:#2a2520; --app-muted:#635c54; --app-subtle:#6e6760; --app-line:#e8e1d2;
+  --app-accent:#b85a32; --app-focus-fill:#e4dcc9;
+}
+@media (prefers-color-scheme: dark){ :root{
+  --bg:#12100c; --surface:#1a1712; --ink:#ece7dd; --muted:#a9a196; --subtle:#857e73;
+  --line:#2c281f; --line-soft:#241f19; --accent:#e8895f; --accent-soft:#2b1c14;
+  --code-bg:#211c15; --ok:#7ac87c; --bad:#f07575; --warn:#f0c84a;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -18px rgba(0,0,0,.7);
+  --h0:#241f16; --h1:#4a3524; --h2:#7a4d2e; --h3:#b0653a; --h4:#e8895f;
+  --app-canvas:#0d0a06; --app-surface:#16120c; --app-fill:#282217; --app-strong:#403928;
+  --app-ink:#f4f0e6; --app-muted:#b0a892; --app-subtle:#9c937b; --app-line:#282217;
+  --app-accent:#e8895f; --app-focus-fill:#4d4430;
+}}
+:root[data-theme="dark"]{
+  --bg:#12100c; --surface:#1a1712; --ink:#ece7dd; --muted:#a9a196; --subtle:#857e73;
+  --line:#2c281f; --line-soft:#241f19; --accent:#e8895f; --accent-soft:#2b1c14;
+  --code-bg:#211c15; --ok:#7ac87c; --bad:#f07575; --warn:#f0c84a;
+  --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -18px rgba(0,0,0,.7);
+  --h0:#241f16; --h1:#4a3524; --h2:#7a4d2e; --h3:#b0653a; --h4:#e8895f;
+  --app-canvas:#0d0a06; --app-surface:#16120c; --app-fill:#282217; --app-strong:#403928;
+  --app-ink:#f4f0e6; --app-muted:#b0a892; --app-subtle:#9c937b; --app-line:#282217;
+  --app-accent:#e8895f; --app-focus-fill:#4d4430;
+}
+:root[data-theme="light"]{
+  --bg:#f7f5f1; --surface:#ffffff; --ink:#23201c; --muted:#635c54; --subtle:#6e6760;
+  --line:#e3ddd2; --line-soft:#eee9e0; --accent:#b85a32; --accent-soft:#f6e9e2;
+  --code-bg:#f1ede4; --ok:#1f7a3d; --bad:#b3261e; --warn:#8a5a00;
+  --h0:#ece5d6; --h1:#e9c9ab; --h2:#dda27a; --h3:#c6774c; --h4:#a04a27;
+  --app-canvas:#faf8f3; --app-surface:#ffffff; --app-fill:#f4f0e6; --app-strong:#d4cab6;
+  --app-ink:#2a2520; --app-muted:#635c54; --app-subtle:#6e6760; --app-line:#e8e1d2;
+  --app-accent:#b85a32; --app-focus-fill:#e4dcc9;
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:400 15px/1.6 var(--font-ui);-webkit-font-smoothing:antialiased}
+h1,h2,h3,h4{margin:0;text-wrap:balance}
+code,pre{font-family:var(--font-mono)}
+code{background:var(--code-bg);padding:1.5px 5px;border-radius:4px;font-size:.875em}
+a{color:var(--accent)}
+main{max-width:1040px;margin:0 auto;padding:0 32px 200px}
+
+.masthead{padding:72px 0 36px;border-bottom:1px solid var(--line)}
+.kicker{font:500 11px/1 var(--font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin-bottom:16px}
+.masthead h1{font-size:clamp(30px,3.4vw,42px);font-weight:680;letter-spacing:-.025em;line-height:1.08}
+.lede{margin:18px 0 0;max-width:68ch;font-size:17px;color:var(--muted)}
+.statline{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:1px;margin:32px 0 0;background:var(--line);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.statline>div{background:var(--surface);padding:16px 18px}
+.statline .v{font:300 27px/1 var(--font-mono);letter-spacing:-.02em;font-variant-numeric:tabular-nums}
+.statline .v.bad{color:var(--bad)} .statline .v.ok{color:var(--ok)}
+.statline .k{font:500 10px/1.4 var(--font-ui);letter-spacing:.09em;text-transform:uppercase;color:var(--subtle);margin-top:8px}
+
+section{padding:60px 0;border-bottom:1px solid var(--line-soft);scroll-margin-top:20px}
+.num{font:500 11px/1 var(--font-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--subtle);margin-bottom:12px}
+h2.title{font-size:27px;font-weight:640;letter-spacing:-.02em}
+p.sub{margin:12px 0 0;max-width:72ch;color:var(--muted)}
+section h3{margin:36px 0 12px;font-size:16px;font-weight:620}
+section h4{margin:26px 0 10px;font-size:12px;font-weight:600;letter-spacing:.07em;text-transform:uppercase;color:var(--subtle)}
+section p{max-width:72ch}
+
+.note{border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:18px 0;background:var(--surface);font-size:14px}
+.note--bad{border-color:color-mix(in srgb,var(--bad) 34%,transparent);background:color-mix(in srgb,var(--bad) 5%,var(--surface))}
+.note--ok{border-color:color-mix(in srgb,var(--ok) 34%,transparent);background:color-mix(in srgb,var(--ok) 5%,var(--surface))}
+.note--warn{border-color:color-mix(in srgb,var(--warn) 34%,transparent);background:color-mix(in srgb,var(--warn) 6%,var(--surface))}
+.note p{margin:0;max-width:72ch} .note p+p{margin-top:8px}
+
+.tablewrap{overflow-x:auto;margin:18px 0;border:1px solid var(--line);border-radius:10px}
+table{width:100%;border-collapse:collapse;font-size:13.5px;background:var(--surface)}
+th{text-align:left;font:500 10px/1.4 var(--font-ui);letter-spacing:.09em;text-transform:uppercase;color:var(--subtle);padding:11px 14px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:11px 14px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+tr:last-child td{border-bottom:0}
+td.n{font-family:var(--font-mono);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+.pass{color:var(--ok);font-weight:600}.fail{color:var(--bad);font-weight:600}
+.sev{font:500 10px/1 var(--font-ui);letter-spacing:.06em;text-transform:uppercase;padding:3px 6px;border-radius:4px;white-space:nowrap}
+.sev--med{color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent)}
+.sev--low{color:var(--muted);background:color-mix(in srgb,var(--muted) 12%,transparent)}
+.sev--high{color:var(--bad);background:color-mix(in srgb,var(--bad) 12%,transparent)}
+
+pre.block{overflow-x:auto;background:var(--code-bg);border:1px solid var(--line);border-radius:10px;padding:14px;font:400 12.5px/1.7 var(--font-mono);margin:14px 0}
+
+/* ── width comparison ── */
+.widths{display:flex;flex-direction:column;gap:10px;margin:20px 0}
+.wrow{display:flex;align-items:center;gap:12px}
+.wlabel{width:150px;flex:none;font:500 11px var(--font-mono);color:var(--subtle);text-align:right}
+.wbar{height:34px;border-radius:6px;display:flex;align-items:center;padding-left:10px;font:500 11px var(--font-mono);color:var(--ink)}
+.wbar--bad{background:color-mix(in srgb,var(--bad) 12%,transparent);border:1px dashed color-mix(in srgb,var(--bad) 45%,transparent)}
+.wbar--good{background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 40%,transparent)}
+
+/* ── mockup ── */
+.mock{border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--app-canvas);margin:20px 0}
+.mock__bar{display:flex;align-items:center;justify-content:space-between;padding:7px 12px;border-bottom:1px solid var(--app-line);background:var(--app-surface);font:500 10px/1.4 var(--font-mono);letter-spacing:.1em;text-transform:uppercase;color:var(--app-muted)}
+.mock__body{padding:28px 0 22px;color:var(--app-ink)}
+.col{max-width:760px;margin:0 auto;padding:0 8px}
+.col--old{max-width:1000px}
+
+.hm-head{display:flex;align-items:baseline;justify-content:space-between;gap:16px;margin-bottom:4px}
+.hm-title{font:600 22px/1.25 var(--font-ui);letter-spacing:-.015em;color:var(--app-ink)}
+.hm-longest{font:500 10px/1 var(--font-ui);letter-spacing:.09em;text-transform:uppercase;color:var(--app-muted)}
+.hm-sub{font:400 13px/1.5 var(--font-ui);color:var(--app-muted);margin:0 0 18px}
+
+/* One source of truth for the grid metrics. 22 weeks x (24 + 6) - 6 = 654px,
+   which sits comfortably inside the 760px column with its 8px gutter. */
+.hm{--cell:24px;--gap:6px;--labels:34px}
+.hm-months{display:grid;grid-template-columns:var(--labels) 1fr;gap:var(--gap);margin-bottom:6px}
+.hm-monthrow{display:flex;gap:var(--gap);font:400 11px var(--font-ui);color:var(--app-muted)}
+.hm-monthrow span{width:var(--cell);flex:none;overflow:visible;white-space:nowrap}
+.hm-grid{display:grid;grid-template-columns:var(--labels) 1fr;gap:var(--gap)}
+.hm-daylabels{display:grid;grid-template-rows:repeat(7,var(--cell));gap:var(--gap);font:400 10px/1 var(--font-ui);color:var(--app-muted)}
+.hm-daylabels span{display:flex;align-items:center;height:var(--cell)}
+/* `auto` implicit columns STRETCH to fill a definite-width grid, which pulled the
+   cells apart from the month labels. Pin them to the cell size. */
+.hm-cells{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,var(--cell));grid-auto-columns:var(--cell);gap:var(--gap);justify-content:start}
+/* the cells are <button>s — strip the UA border/padding or every empty day draws an outline */
+.cell{width:var(--cell);height:var(--cell);padding:0;border:0;appearance:none;-webkit-appearance:none;border-radius:5px;background:var(--h0);cursor:pointer;transition:transform 90ms ease}
+.cell[data-l="1"]{background:var(--h1)} .cell[data-l="2"]{background:var(--h2)}
+.cell[data-l="3"]{background:var(--h3)} .cell[data-l="4"]{background:var(--h4)}
+.cell.is-streak{box-shadow:inset 0 0 0 2px var(--app-ink)}
+.cell:hover{transform:scale(1.12)}
+.cell:focus-visible{outline:none;background:var(--app-focus-fill)!important;box-shadow:inset 0 0 0 1.5px var(--app-ink)}
+.hm-foot{display:flex;align-items:center;justify-content:space-between;margin-top:16px;font:400 11px var(--font-ui);color:var(--app-muted)}
+.hm-legend{display:flex;align-items:center;gap:4px}
+.hm-legend i{width:13px;height:13px;border-radius:3px;display:block}
+
+.tip{position:fixed;z-index:50;pointer-events:none;opacity:0;transition:opacity 90ms;background:var(--app-surface);border:1px solid var(--app-line);border-radius:12px;box-shadow:var(--shadow);padding:12px 14px;min-width:230px}
+.tip.is-on{opacity:1}
+.tip__d{font:600 13px/1.4 var(--font-ui);color:var(--app-ink);margin-bottom:8px}
+.tip__r{display:flex;justify-content:space-between;gap:20px;font:400 12.5px/1.9 var(--font-ui);color:var(--app-muted)}
+.tip__r b{font-weight:500;color:var(--app-ink);font-family:var(--font-mono);font-variant-numeric:tabular-nums}
+.tip__note{margin-top:8px;padding-top:8px;border-top:1px solid var(--app-line);font:400 11px/1.4 var(--font-ui);color:var(--app-subtle)}
+
+.stat-row{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:20px 0 0}
+.stat{border:1px solid var(--app-line);border-radius:12px;background:var(--app-surface);padding:14px 16px}
+.stat .v{font:300 24px/1 var(--font-mono);letter-spacing:-.02em;font-variant-numeric:tabular-nums;color:var(--app-ink)}
+.stat .k{font:500 10px/1.4 var(--font-ui);letter-spacing:.08em;text-transform:uppercase;color:var(--app-muted);margin-top:7px}
+
+.composer{margin-top:26px;border:1px solid var(--app-line);border-radius:16px;background:var(--app-surface);padding:12px 12px 8px;box-shadow:0 2px 6px -1px rgba(32,25,15,.08)}
+.composer .ph{font:400 14px/21px var(--font-ui);color:var(--app-muted)}
+.composer .bar{display:flex;align-items:center;gap:8px;margin-top:10px;font:400 11px var(--font-mono);color:var(--app-subtle)}
+.composer .send{margin-left:auto;width:28px;height:28px;border-radius:999px;background:var(--app-accent);display:grid;place-items:center}
+
+.sesslist{margin-top:24px;border:1px solid var(--app-line);border-radius:12px;overflow:hidden;background:var(--app-surface)}
+.sessrow{display:flex;align-items:center;justify-content:space-between;min-height:40px;padding:8px 14px;border-bottom:1px solid var(--app-line);font:400 13px var(--font-ui);color:var(--app-ink)}
+.sessrow:last-child{border-bottom:0}
+.sessrow .meta{font:400 11.5px var(--font-mono);color:var(--app-muted);font-variant-numeric:tabular-nums}
+
+/* histogram */
+.hist{display:flex;gap:16px;flex-wrap:wrap;margin:16px 0}
+.histcol{flex:1;min-width:260px;border:1px solid var(--line);border-radius:10px;padding:14px;background:var(--surface)}
+.histcol h5{margin:0 0 12px;font:600 13px var(--font-ui)}
+.bar{display:flex;align-items:center;gap:8px;margin:5px 0;font:400 11px var(--font-mono);color:var(--muted)}
+.bar i{height:12px;border-radius:2px;display:block;background:var(--accent)}
+.bar .lv{width:26px;color:var(--subtle)}
+.bar .ct{width:34px;text-align:right;font-variant-numeric:tabular-nums}
+
+/* decisions */
+.decision{border:1px solid var(--line);border-radius:14px;background:var(--surface);margin:20px 0;overflow:hidden}
+.dhead{padding:18px 20px 16px;border-bottom:1px solid var(--line-soft)}
+.did{font:500 11px/1 var(--font-mono);letter-spacing:.1em;color:var(--accent)}
+.dq{font-size:18px;font-weight:620;letter-spacing:-.01em;margin-top:8px}
+.dwhy{font-size:14px;color:var(--muted);margin:8px 0 0;max-width:72ch}
+.dblast{margin-top:10px;font:400 12px var(--font-mono);color:var(--subtle)}
+.opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1px;background:var(--line-soft)}
+.opt{background:var(--surface);position:relative}
+.opt label{display:block;padding:16px 18px;cursor:pointer;height:100%}
+.opt input{position:absolute;inset:0 auto auto 0;width:1px;height:1px;opacity:0}
+.otop{display:flex;align-items:center;gap:9px}
+.oradio{width:16px;height:16px;border-radius:999px;border:1.5px solid var(--line);flex:none;display:grid;place-items:center}
+.opt input:checked + .otop .oradio{border-color:var(--accent)}
+.opt input:checked + .otop .oradio::after{content:"";width:8px;height:8px;border-radius:999px;background:var(--accent)}
+.opt input:focus-visible + .otop .oradio{outline:2px solid var(--accent);outline-offset:2px}
+.olabel{font:600 14px/1.3 var(--font-ui)}
+.orec{font:500 9.5px/1 var(--font-ui);letter-spacing:.08em;text-transform:uppercase;color:var(--accent);border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);background:var(--accent-soft);padding:3px 5px;border-radius:4px;margin-left:auto}
+.odetail{font-size:13px;color:var(--muted);margin:10px 0 0}
+.ovals{font:400 11.5px/1.7 var(--font-mono);color:var(--subtle);margin-top:10px;word-break:break-word}
+.opt:has(input:checked){background:color-mix(in srgb,var(--accent) 4%,var(--surface))}
+
+.exportbar{position:sticky;bottom:0;z-index:20;margin-top:36px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 18px;border:1px solid var(--line);border-radius:12px;background:color-mix(in srgb,var(--surface) 92%,transparent);backdrop-filter:blur(10px);box-shadow:var(--shadow)}
+.btn{border:1px solid var(--line);background:var(--surface);color:var(--ink);font:500 13px var(--font-ui);padding:8px 14px;border-radius:8px;cursor:pointer}
+.btn:hover{background:var(--line-soft)}
+.btn--p{background:var(--accent);border-color:var(--accent);color:#fff}
+:root[data-theme="dark"] .btn--p{color:#16120c}
+#out{width:100%;margin-top:12px;min-height:150px;display:none;font:400 12px/1.6 var(--font-mono);padding:12px;border-radius:8px;border:1px solid var(--line);background:var(--code-bg);color:var(--ink);resize:vertical}
+
+.themetoggle{position:fixed;top:16px;right:16px;z-index:40;display:flex;gap:2px;padding:3px;border:1px solid var(--line);border-radius:9px;background:var(--surface);box-shadow:var(--shadow)}
+.themetoggle button{border:0;background:transparent;color:var(--muted);font:500 12px var(--font-ui);padding:5px 9px;border-radius:6px;cursor:pointer}
+.themetoggle button[aria-pressed="true"]{background:var(--bg);color:var(--ink)}
+
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+@media (max-width:820px){ main{padding:0 18px 140px} .stat-row{grid-template-columns:1fr} .hm{--cell:15px;--gap:4px;--labels:28px} }
+</style>
+
+<div class="themetoggle" role="group" aria-label="Theme">
+  <button type="button" data-t="light" aria-pressed="false">Light</button>
+  <button type="button" data-t="dark" aria-pressed="false">Dark</button>
+  <button type="button" data-t="system" aria-pressed="true">Auto</button>
+</div>
+
+<div class="tip" id="tip" role="tooltip"></div>
+
+<main>
+<header class="masthead">
+  <div class="kicker">signed off 2026-07-08 · steps 1–7 implemented · shipped</div>
+  <h1>Home, realigned — and telling the truth.</h1>
+  <p class="lede">
+    Two asks: make the Home page share the chat column's edges, and replace the flat "tokens in the last
+    N days" tiles with a real usage heatmap. Doing the second honestly required auditing how BioRouter
+    counts tokens and sessions in the first place. It does not count them the way the tiles imply.
+  </p>
+  <div class="statline">
+    <div><div class="v bad">1120<span style="font-size:15px">px</span></div><div class="k">Home column before</div></div>
+    <div><div class="v ok">760<span style="font-size:15px">px</span></div><div class="k">Home column now</div></div>
+    <div><div class="v ok">7</div><div class="k">Accounting defects fixed</div></div>
+    <div><div class="v">4</div><div class="k">Refuted (don't "fix")</div></div>
+    <div><div class="v ok">816</div><div class="k">Per-day token rows seeded</div></div>
+    <div><div class="v ok">8/8</div><div class="k">Decisions signed off</div></div>
+  </div>
+</header>
+
+<!-- ═════ 1 · ALIGNMENT ═════ -->
+<section id="align">
+  <div class="num">01 — Problem</div>
+  <h2 class="title">The Home page is 47% wider than the rest of the app</h2>
+  <p class="sub">
+    <code>Hub.tsx</code> renders the composer inside <code>max-w-[760px]</code>, exactly matching the chat
+    column. But the content above it — <code>SessionsInsights.tsx</code> — is wrapped in
+    <code>&lt;ReadableContent&gt;</code>, whose default size is <code>max-w-[1120px]</code>, with a further
+    <code>px-8</code> of padding. So the statistics start 148px to the left of the box you type into.
+  </p>
+
+  <div class="widths">
+    <div class="wrow"><div class="wlabel">chat column</div><div class="wbar wbar--good" style="width:57%">760px — BaseChat, ChatInput, composer</div></div>
+    <div class="wrow"><div class="wlabel">Home content</div><div class="wbar wbar--bad" style="width:84%">1120px — ReadableContent size="text"</div></div>
+    <div class="wrow"><div class="wlabel">Knowledge graph</div><div class="wbar wbar--bad" style="width:100%">1440px — ReadableContent size="graph"</div></div>
+  </div>
+
+  <div class="note note--bad">
+    <p><strong>This is one instance of a broader defect</strong> already logged as <code>DR-52</code> in
+    <a href="design-system.html">design.md</a>: the content column is 1120 / 1280 / 1440 / uncapped depending on
+    the view, so switching tabs visibly reflows the page. Home is the most jarring case because the composer
+    sits right there for comparison.</p>
+  </div>
+
+  <h4>The fix</h4>
+  <p style="font-size:14px;color:var(--muted)">
+    Add a <code>chat</code> size to <code>ReadableContent</code> and use it for the six wrappers in
+    <code>SessionsInsights.tsx</code>. Drop the <code>px-8</code>, which would otherwise inset the content
+    <em>inside</em> the 760px column and misalign it again.
+  </p>
+<pre class="block">// ui/desktop/src/components/Layout/ReadableContent.tsx
+const WIDTH_BY_SIZE = {
+  chat:  'max-w-[760px]',   // NEW — the composer / chat column
+  text:  'max-w-[1120px]',
+  wide:  'max-w-[1280px]',
+  graph: 'max-w-[1440px]',
+};</pre>
+</section>
+
+<!-- ═════ 2 · THE AUDIT ═════ -->
+<section id="audit">
+  <div class="num">02 — Audit</div>
+  <h2 class="title">What the numbers on Home actually mean</h2>
+  <p class="sub">
+    Traced from the provider response, through the agent loop, into SQLite, out through the HTTP route, to
+    the JSX. Every candidate defect was then handed to an adversarial reviewer whose job was to refute it.
+    <strong>Four were refuted.</strong> Seven survived.
+  </p>
+
+  <h3>How a token becomes a number</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:150px">Stage</th><th>What happens</th></tr></thead>
+    <tbody>
+      <tr><td><strong>1. Provider</strong></td><td>Returns <code>Usage { input, output, total }</code>, all <code>Option&lt;i32&gt;</code>. Anthropic folds <code>cache_creation</code> + <code>cache_read</code> into <code>input</code>, which is <em>correct</em> — its plain <code>input_tokens</code> excludes cached tokens.</td></tr>
+      <tr><td><strong>2. Agent loop</strong></td><td>Per turn, <code>update_session_metrics</code> <em>overwrites</em> <code>total/input/output_tokens</code> with this turn's snapshot (the live context-window size) and <em>adds</em> the same values into <code>accumulated_*</code>.</td></tr>
+      <tr><td><strong>3. SQLite</strong></td><td>One row per session. <code>accumulated_total_tokens</code> = Σ(per-turn totals) = tokens actually processed and billed. <strong>No per-turn timestamp exists.</strong></td></tr>
+      <tr><td><strong>4. Insights SQL</strong></td><td>A single aggregate over <code>sessions</code>, windowed on <code>updated_at</code>.</td></tr>
+      <tr><td><strong>5. UI</strong></td><td>Six numbers in two grids of tiles.</td></tr>
+    </tbody>
+  </table></div>
+
+  <h3>The seven confirmed defects</h3>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:66px">Sev</th><th>Defect</th><th style="width:110px">Direction</th><th>Consequence</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><span class="sev sev--med">med</span></td>
+        <td><strong>Insights count every session type</strong><br><code>get_insights</code> has no <code>session_type</code> filter, but <code>list_sessions</code> does.</td>
+        <td class="fail">overcount</td>
+        <td>Every <code>SubAgent</code>, <code>Hidden</code> and <code>Terminal</code> session inflates <em>Total sessions</em> and <em>Total tokens</em>. One user task spawning three sub-agents shows as four sessions. The tile and the list below it disagree.</td>
+      </tr>
+      <tr>
+        <td><span class="sev sev--med">med</span></td>
+        <td><strong>"Tokens · past 7 days" is not a 7-day figure</strong><br>The window keys on <code>updated_at</code> and then sums the session's <em>entire lifetime</em> total.</td>
+        <td class="fail">overcount</td>
+        <td>A 60-day-old session holding 2,000,000 tokens that receives <em>one</em> reply today contributes all 2,000,000 to "past 7 days". The number is unbounded relative to the truth.</td>
+      </tr>
+      <tr>
+        <td><span class="sev sev--med">med</span></td>
+        <td><strong><code>messages.tokens</code> is declared but never written</strong><br>Both <code>INSERT INTO messages</code> statements omit the column.</td>
+        <td>—</td>
+        <td>The column is NULL for every row that has ever existed. <strong>There is no per-day token series anywhere in the database.</strong> This is what blocks the heatmap.</td>
+      </tr>
+      <tr>
+        <td><span class="sev sev--low">low</span></td>
+        <td><strong>Cancelled or errored streams drop the turn</strong><br>Usage is yielded only on the terminal chunk.</td>
+        <td class="pass">undercount</td>
+        <td>Stop a generation and the provider still billed you for the full input plus partial output. BioRouter records zero.</td>
+      </tr>
+      <tr>
+        <td><span class="sev sev--low">low</span></td>
+        <td><strong>Non-atomic <code>i32</code> read-modify-write</strong><br>Accumulation happens in Rust, not SQL.</td>
+        <td class="fail">both</td>
+        <td>A lost update drops a turn under concurrent writes. And <code>i32</code> overflows at ~2.147e9 accumulated tokens — in release that <em>wraps negative</em> and then <em>subtracts</em> from the insights <code>SUM</code>.</td>
+      </tr>
+      <tr>
+        <td><span class="sev sev--low">low</span></td>
+        <td><strong>A usage-less turn blanks the live gauge</strong><br><code>Usage::default()</code> writes <code>NULL</code> over the current-turn columns.</td>
+        <td>—</td>
+        <td>The context-window readout blanks for that turn. Home totals are unaffected (the SQL <code>COALESCE</code>s to <code>accumulated_*</code>).</td>
+      </tr>
+      <tr>
+        <td><span class="sev sev--low">low</span></td>
+        <td><strong>Multi-chunk usage would multiply</strong><br>Every usage-bearing chunk is added.</td>
+        <td class="fail">overcount</td>
+        <td>Zero effect on Anthropic / OpenAI / llama-server / Ollama, which emit usage exactly once per turn. A non-conformant proxy that emits cumulative usage per chunk would multiply the turn ~N×.</td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <h3>What was refuted — do <em>not</em> "fix" these</h3>
+  <div class="note note--ok">
+    <p><strong>1. <code>accumulated_total_tokens</code> grows super-linearly. That is correct.</strong>
+    Each turn resends the whole conversation, so turn <em>N</em>'s <code>input_tokens</code> already contains
+    turns 1…<em>N−1</em>. Summing per-turn totals therefore grows quadratically — and that is exactly what the
+    provider processed and billed. It is <em>tokens consumed</em>, not <em>tokens in the transcript</em>.
+    Changing it would make the number wrong.</p>
+    <p><strong>2. The 7/30-day windows are rolling UTC, not calendar days.</strong> True, and intentional —
+    documented in a comment. Not a defect, though a heatmap needs calendar days.</p>
+    <p><strong>3. <code>sessions_last_7_days</code> keys on <code>updated_at</code>.</strong> Also intentional:
+    "an active session counts toward the recent window even if it was started earlier." Defensible for a
+    <em>sessions active</em> tile. It is the <em>token</em> sum on the same key that is wrong.</p>
+    <p><strong>4. The <code>COALESCE</code> mixes cumulative and last-turn units.</strong> The triggering row
+    (NULL <code>accumulated_*</code> with a positive <code>total_tokens</code>) is not producible by any write path.</p>
+  </div>
+</section>
+
+<!-- ═════ 3 · DATA MODEL ═════ -->
+<section id="data">
+  <div class="num">03 — Data model</div>
+  <h2 class="title">Can the heatmap even be built?</h2>
+
+  <div class="tablewrap"><table>
+    <thead><tr><th>Dimension</th><th>Available today?</th><th>Source</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Sessions started per day</strong></td><td class="pass">Yes — exact</td><td><code>sessions.created_at</code>, a fixed UTC timestamp that never moves</td></tr>
+      <tr><td><strong>Messages per day</strong></td><td class="pass">Yes — exact</td><td><code>messages.created_timestamp</code> (unix <em>seconds</em>)</td></tr>
+      <tr><td><strong>Tokens per day</strong></td><td class="fail">No</td><td>Tokens exist only as one lifetime total per session. <code>messages.tokens</code> is always NULL.</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="note note--bad">
+    <p><strong>The honest position.</strong> A session that ran from Monday to Friday holds a single
+    <code>accumulated_total_tokens</code> and a single <code>created_at</code>. Its tokens cannot be spread
+    across those five days, because nothing records when they were spent.</p>
+  </div>
+
+  <h4>Two ways forward</h4>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:120px">Approach</th><th>What it gives</th><th>Cost</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Interim</strong><br>zero backend change</td>
+        <td>Attribute a session's whole token total to its <code>created_at</code> day. Computed client-side from the <code>listSessions</code> response the page already fetches. Sessions-per-day is exact; tokens-per-day is anchored, not distributed.</td>
+        <td>Ship today. Tooltip must say <em>"tokens are attributed to the day the session started."</em></td>
+      </tr>
+      <tr>
+        <td><strong>Correct</strong><br>new table</td>
+        <td>Append-only <code>token_events(session_id, ts, input, output, total)</code>, one row per turn, written from <code>update_session_metrics</code> where the per-turn delta is already in hand. True per-day tokens — <em>and</em> it fixes the "past 7 days" overcount at the same time.</td>
+        <td>A migration, one insert, one endpoint. Historical days seed from <code>created_at</code>.</td>
+      </tr>
+    </tbody>
+  </table></div>
+
+  <div class="note note--warn">
+    <p><strong>Do not repurpose <code>messages.tokens</code>, even after populating it.</strong>
+    <code>replace_conversation_inner</code> <code>DELETE</code>s and re-inserts the entire message list, which
+    would drop or re-stamp historical token rows on every edit. An append-only side table is the robust choice.</p>
+  </div>
+</section>
+
+<!-- ═════ 4 · FORMULA ═════ -->
+<section id="formula">
+  <div class="num">04 — Intensity</div>
+  <h2 class="title">The shading formula, decided by measurement</h2>
+  <p class="sub">
+    Token counts are heavy-tailed: one marathon day can be 30× a normal day. I simulated 150 days of
+    plausible usage — 63 idle, ordinary days of 20k–150k tokens, and one 1.8M-token outlier — and ran three
+    candidate formulas over it.
+  </p>
+
+  <div class="hist" id="hist"></div>
+
+  <div class="note note--bad">
+    <p><strong>Linear scaling is unusable.</strong> All 44 ordinary working days collapse into the faintest
+    shade; only the outlier is visible. This is the obvious first implementation and it must be avoided.</p>
+    <p><strong>Log-with-max-normalisation saturates.</strong> Because <code>ln(1+x)</code> compresses so hard,
+    every active day lands at 0.75–1.0 of the maximum: 56 of 81 active days become level 3, level 1 is
+    <em>empty</em>, and a 4,200-token day renders as dark as a 250,000-token day.</p>
+  </div>
+
+  <div class="note note--ok">
+    <p><strong>Log score + quartiles over active days</strong> spreads the shades evenly (21/20/20/20) and keeps
+    ordinary days distinguishable across three levels. It is also what GitHub does, so it will read correctly
+    to anyone who has seen a contribution graph. Absolute values live in the tooltip, where they belong.</p>
+  </div>
+
+<pre class="block">score(d) = ln(1 + tokens(d)) + 0.5 · ln(1 + sessions(d))     // 0 when the day is idle
+
+// thresholds = the 25th / 50th / 75th percentile of score over the
+// ACTIVE days in the visible window. Recomputed per window, server-side.
+level(d) = 0 if score == 0
+         | 1 if score <= q25 | 2 if score <= q50
+         | 3 if score <= q75 | 4 otherwise</pre>
+
+  <p style="font-size:14px;color:var(--muted)">
+    Tokens drive the shade; sessions act as a tiebreaker so a day with three short sessions still outranks a
+    day with one. The <code>0.5</code> weight is the one knob — see <a href="#d">H-04</a>.
+  </p>
+</section>
+
+<!-- ═════ 5 · THE REDESIGN ═════ -->
+<section id="mock">
+  <div class="num">05 — Proposal</div>
+  <h2 class="title">The new Home page</h2>
+  <p class="sub">Hover any cell. This is the real interaction, not a picture of it.</p>
+
+  <div class="mock">
+    <div class="mock__bar"><span>After — 760px column, aligned to the composer</span><span>hover a cell</span></div>
+    <div class="mock__body">
+      <div class="col">
+        <!-- The greeting panel stays: it is the page's only line of voice. -->
+        <div style="margin-bottom:34px">
+          <p style="font:500 11px/1 var(--font-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--muted);margin-bottom:12px">UCSF Biorouter</p>
+          <p style="font-size:24px;font-weight:600;letter-spacing:-.02em;line-height:1.25">Hello!<br>What insights will your data reveal today?</p>
+        </div>
+
+        <div class="hm-head">
+          <div class="hm-title" id="streakTitle">3 day streak</div>
+          <div class="hm-longest">Longest streak · <span id="longest">21</span> days</div>
+        </div>
+        <p class="hm-sub">Daily usage intensity — sessions started and tokens processed.</p>
+
+        <div class="hm"><div class="hm-months"><span></span><div class="hm-monthrow" id="months"></div></div>
+        <div class="hm-grid">
+          <div class="hm-daylabels">
+            <span>Sun</span><span></span><span>Tue</span><span></span><span>Thu</span><span></span><span>Sat</span>
+          </div>
+          <div class="hm-cells" id="cells" role="grid" aria-label="Daily usage heatmap"></div>
+        </div>
+        </div>
+
+        <div class="hm-foot">
+          <div class="hm-legend">
+            <span style="margin-right:4px">Less</span>
+            <i style="background:var(--h0)"></i><i style="background:var(--h1)"></i>
+            <i style="background:var(--h2)"></i><i style="background:var(--h3)"></i>
+            <i style="background:var(--h4)"></i>
+            <span style="margin-left:4px">More</span>
+          </div>
+          <div>Tokens attributed to the day each session started</div>
+        </div>
+
+        <div class="stat-row">
+          <div class="stat"><div class="v" id="tSess">—</div><div class="k">Sessions · 30 days</div></div>
+          <div class="stat"><div class="v" id="tTok">—</div><div class="k">Tokens · 30 days</div></div>
+          <div class="stat"><div class="v" id="tAll">—</div><div class="k">Tokens · all time</div></div>
+        </div>
+
+        <div class="sesslist">
+          <div class="sessrow"><span>BRCA1 cohort comparison</span><span class="meta">128,402 · 2h ago</span></div>
+          <div class="sessrow"><span>RNA-seq quality dashboard</span><span class="meta">64,110 · yesterday</span></div>
+          <div class="sessrow"><span>SPOKE pathway lookup</span><span class="meta">9,884 · 3d ago</span></div>
+        </div>
+
+        <div class="composer">
+          <div class="ph">Ask BioRouter anything…</div>
+          <div class="bar">
+            <span>~/Desktop/BioRouter</span><span>·</span><span>qwen3.5-4b</span>
+            <span class="send"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="m5 12 7-7 7 7M12 19V5"/></svg></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h4>Before, for comparison</h4>
+  <div class="mock">
+    <div class="mock__bar"><span>Before — 1120px content over a 760px composer</span><span>edges disagree</span></div>
+    <div class="mock__body">
+      <div class="col col--old">
+        <div class="hm-title" style="margin-bottom:14px">Session insights</div>
+        <div class="stat-row" style="grid-template-columns:repeat(4,1fr)">
+          <div class="stat"><div class="v">142</div><div class="k">Total sessions</div></div>
+          <div class="stat"><div class="v">18</div><div class="k">Past 7 days</div></div>
+          <div class="stat"><div class="v">4.2M</div><div class="k">Total tokens</div></div>
+          <div class="stat"><div class="v">2.9M</div><div class="k">Tokens · 7 days</div></div>
+        </div>
+        <div class="col" style="padding:0;margin-top:22px">
+          <div class="composer">
+            <div class="ph">Ask BioRouter anything…</div>
+            <div class="bar"><span>~/Desktop/BioRouter</span><span class="send"></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p style="font-size:14px;color:var(--muted)">
+    Note the two numbers on the right of the "before": <em>142 total sessions</em> counts sub-agent and hidden
+    sessions the list below never shows, and <em>2.9M tokens in 7 days</em> includes the whole lifetime of any
+    old session merely touched this week.
+  </p>
+</section>
+
+<!-- ═════ 6 · API ═════ -->
+<section id="api">
+  <div class="num">06 — Interface</div>
+  <h2 class="title">The endpoint</h2>
+<pre class="block">GET /sessions/activity?days=155        // ~5 months, server-clamped
+
+{
+  "range":       { "start": "2026-02-09", "end": "2026-07-09" },
+  "maxSessions": 9,
+  "maxTokens":   512000,
+  "currentStreak": 3,
+  "longestStreak": 21,
+  "days": [                            // only days WITH activity; client fills level-0
+    { "date": "2026-05-08", "sessions": 3, "tokens": 128402,
+      "inputTokens": 96000, "outputTokens": 32402, "level": 3 }
+  ]
+}</pre>
+  <p style="font-size:14px;color:var(--muted)">
+    <code>date</code> is a local calendar day. <code>level</code> is computed <strong>server-side</strong> —
+    the server holds the window's percentile thresholds, so every client agrees on the shading. Days without
+    activity are omitted to keep the payload small.
+  </p>
+  <div class="note note--warn">
+    <p><strong>Timezone.</strong> SQLite's <code>'localtime'</code> modifier resolves against the
+    <code>biorouterd</code> process's timezone, not the renderer's. For a desktop app they are the same machine,
+    so this is fine — but the client should pass its UTC offset if we ever run the daemon remotely.</p>
+  </div>
+</section>
+
+<!-- ═════ 7 · DECISIONS ═════ -->
+<section id="d">
+  <div class="num">07 — Sign-off</div>
+  <h2 class="title">Eight decisions</h2>
+  <p class="sub"><b>Signed off 2026-07-08 — every recommendation accepted, and all eight are implemented.</b>
+  The pickers below still work; they now record what was chosen rather than what might be.</p>
+
+  <div class="decision" id="h-01">
+    <div class="dhead"><div class="did">H-01 · the ask</div><div class="dq">Home column width</div>
+      <p class="dwhy">Match the composer exactly, or give the statistics a little more room?</p>
+      <div class="dblast">touches: ReadableContent.tsx · SessionsInsights.tsx (6 wrappers)</div></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="h-01" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">760px — exact match</span><span class="orec">Recommended</span></div>
+        <p class="odetail">Every edge on Home lines up with the box you type into, and with every chat message.</p>
+        <div class="ovals">new <code>ReadableContent size="chat"</code></div></label></div>
+      <div class="opt"><label><input type="radio" name="h-01" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">880px — a little wider</span></div>
+        <p class="odetail">The heatmap gets 22 weeks across comfortably; the composer stays 760px and is visibly narrower.</p></label></div>
+    </div>
+  </div>
+
+  <div class="decision" id="h-02">
+    <div class="dhead"><div class="did">H-02 · blocks everything</div><div class="dq">Where do per-day tokens come from?</div>
+      <p class="dwhy">There is no per-day token data in the database today. Either we ship an approximation now,
+      or we add the table first.</p>
+      <div class="dblast">touches: a migration + reply_parts.rs + a new route, or nothing at all</div></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="h-02" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">Both, in that order</span><span class="orec">Recommended</span></div>
+        <p class="odetail">Ship the interim heatmap client-side now (sessions exact, tokens anchored to the start day, stated in the tooltip). Land <code>token_events</code> next, which also fixes the "past 7 days" overcount. Swap the data source; the UI never changes.</p></label></div>
+      <div class="opt"><label><input type="radio" name="h-02" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Correct first</span></div>
+        <p class="odetail">Add <code>token_events</code> before any UI work. Slower, but the heatmap is never approximate. Historical days still seed from <code>created_at</code>.</p></label></div>
+      <div class="opt"><label><input type="radio" name="h-02" value="C">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Interim only</span></div>
+        <p class="odetail">Never add the table. Accept that tokens are attributed to the session's start day, forever.</p></label></div>
+    </div>
+  </div>
+
+  <div class="decision" id="h-03">
+    <div class="dhead"><div class="did">H-03</div><div class="dq">Intensity scale</div>
+      <p class="dwhy">Measured on 150 simulated days with one 1.8M-token outlier. See <a href="#formula">§04</a>.</p>
+      <div class="dblast">touches: the level computation (server-side)</div></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="h-03" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">Log score + quartiles</span><span class="orec">Recommended</span></div>
+        <p class="odetail">Even 21/20/20/20 spread. Ordinary days occupy three distinct levels. Shading is relative to your own window — the same convention as GitHub.</p></label></div>
+      <div class="opt"><label><input type="radio" name="h-03" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Log ÷ window max</span></div>
+        <p class="odetail">Preserves an absolute sense of volume, but saturates: 56/81 active days land on one level and level 1 goes unused. A 4k-token day looks like a 250k day.</p></label></div>
+      <div class="opt"><label><input type="radio" name="h-03" value="C">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Linear ÷ window max</span></div>
+        <p class="odetail">Every ordinary day collapses to the faintest shade. Shown only so the trap is on the record.</p></label></div>
+    </div>
+  </div>
+
+  <div class="decision" id="h-04">
+    <div class="dhead"><div class="did">H-04</div><div class="dq">What the shade actually weighs</div>
+      <p class="dwhy">Tokens are the work; sessions are the intent. The score blends them.</p>
+      <div class="dblast">touches: one constant</div></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="h-04" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">Tokens lead, sessions break ties</span><span class="orec">Recommended</span></div>
+        <p class="odetail">A day of deep work outranks a day of three trivial sessions.</p>
+        <div class="ovals">ln(1+tokens) + 0.5·ln(1+sessions)</div></label></div>
+      <div class="opt"><label><input type="radio" name="h-04" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Equal weight</span></div>
+        <div class="ovals">0.5·ln(1+tokens)ₙ + 0.5·ln(1+sessions)ₙ</div></label></div>
+      <div class="opt"><label><input type="radio" name="h-04" value="C">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Sessions only</span></div>
+        <p class="odetail">A pure "did you show up" graph. Exact today, with no backend change at all.</p></label></div>
+    </div>
+  </div>
+
+  <div class="decision" id="h-05">
+    <div class="dhead"><div class="did">H-05 · correctness</div><div class="dq">Which sessions count?</div>
+      <p class="dwhy"><code>get_insights</code> currently counts <code>SubAgent</code>, <code>Hidden</code> and
+      <code>Terminal</code> sessions; the list beneath it does not. The two disagree on screen.</p>
+      <div class="dblast">touches: one WHERE clause — changes the numbers users already see</div></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="h-05" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">User + Scheduled</span><span class="orec">Recommended</span></div>
+        <p class="odetail">Matches <code>list_sessions</code>. The tile and the list finally agree. <strong>Total sessions will drop</strong> — that is the bug being fixed, not a regression.</p></label></div>
+      <div class="opt"><label><input type="radio" name="h-05" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">User only</span></div>
+        <p class="odetail">Cron runs vanish from the graph. Cleaner, but a scheduled overnight run is real usage.</p></label></div>
+      <div class="opt"><label><input type="radio" name="h-05" value="C">
+        <div class="otop"><span class="oradio"></span><span class="olabel">All types (keep today's behaviour)</span></div>
+        <p class="odetail">Numbers stay big and stay wrong.</p></label></div>
+    </div>
+  </div>
+
+  <div class="decision" id="h-06">
+    <div class="dhead"><div class="did">H-06 · correctness</div><div class="dq">The "Tokens · past 7 days" tile</div>
+      <p class="dwhy">It sums the whole lifetime of every session touched this week.</p>
+      <div class="dblast">touches: the insights SQL, and possibly a label</div></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="h-06" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">Fix it with token_events</span><span class="orec">Recommended</span></div>
+        <p class="odetail">Sum real per-turn deltas inside the window. Requires H-02·A or B.</p></label></div>
+      <div class="opt"><label><input type="radio" name="h-06" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Relabel it honestly</span></div>
+        <p class="odetail">"Tokens in sessions active this week." Free, immediate, and no longer a lie.</p></label></div>
+      <div class="opt"><label><input type="radio" name="h-06" value="C">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Drop the tile</span></div>
+        <p class="odetail">The heatmap says it better anyway.</p></label></div>
+    </div>
+  </div>
+
+  <div class="decision" id="h-07">
+    <div class="dhead"><div class="did">H-07</div><div class="dq">Window &amp; streaks</div>
+      <p class="dwhy">Your reference shows five months and a streak counter.</p>
+      <div class="dblast">touches: the endpoint's default <code>days</code></div></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="h-07" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">~5 months + streaks</span><span class="orec">Recommended</span></div>
+        <p class="odetail">22 weeks fits a 760px column at 13px cells. Streak = consecutive days with any activity.</p></label></div>
+      <div class="opt"><label><input type="radio" name="h-07" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">12 months, scrollable</span></div>
+        <p class="odetail">Needs 8px cells or horizontal scroll inside 760px.</p></label></div>
+      <div class="opt"><label><input type="radio" name="h-07" value="C">
+        <div class="otop"><span class="oradio"></span><span class="olabel">5 months, no streak counter</span></div>
+        <p class="odetail">A streak is a gamification device. This app's thesis is "calm".</p></label></div>
+    </div>
+  </div>
+
+  <div class="decision" id="h-08">
+    <div class="dhead"><div class="did">H-08</div><div class="dq">The tiles beneath</div>
+      <p class="dwhy">Keep a compact stat row under the heatmap, or let it stand alone?</p>
+      <div class="dblast">touches: SessionsInsights.tsx layout</div></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="h-08" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">Three tiles + recent sessions</span><span class="orec">Recommended</span></div>
+        <p class="odetail">Sessions · 30d, Tokens · 30d, Tokens · all time. Then the recent-session rows, as today.</p></label></div>
+      <div class="opt"><label><input type="radio" name="h-08" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Heatmap + recent sessions only</span></div>
+        <p class="odetail">The heatmap already carries the volume story. Maximum calm.</p></label></div>
+    </div>
+  </div>
+
+  <div class="exportbar">
+    <span style="font:500 13px var(--font-ui)"><b id="done" style="font-family:var(--font-mono)">8</b> / 8 decided</span>
+    <button class="btn btn--p" type="button" id="exp">Export decisions</button>
+    <button class="btn" type="button" id="rst">Reset to recommended</button>
+    <button class="btn" type="button" id="cpy">Copy</button>
+    <span id="copied" style="font:500 12px var(--font-ui);color:var(--ok);display:none">Copied</span>
+    <textarea id="out" readonly spellcheck="false"></textarea>
+  </div>
+</section>
+
+<!-- ═════ 8 · PLAN ═════ -->
+<section id="plan" style="border-bottom:0">
+  <div class="num">08 — Execution</div>
+  <h2 class="title">What was done, in order</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th style="width:60px">Step</th><th>Change</th><th style="width:200px">Verified by</th><th style="width:64px">State</th></tr></thead>
+    <tbody>
+      <tr><td class="n">1</td><td>Add <code>size="chat"</code> (760px) to <code>ReadableContent</code>; switch the wrappers in <code>SessionsInsights.tsx</code>; drop <code>px-8</code>. The greeting panel stays.</td><td>Existing tests + a new width assertion</td><td class="n ok">✓</td></tr>
+      <tr><td class="n">2</td><td>Add <code>WHERE session_type IN ('user','scheduled')</code> to <code>get_insights</code> so the tiles match the list.</td><td><code>insights_exclude_internal_session_types</code></td><td class="n ok">✓</td></tr>
+      <tr><td class="n">3</td><td>Accumulate atomically in SQL (<code>COALESCE(col,0) + ?</code>) and widen the token columns to <code>i64</code>.</td><td><code>accumulate_tokens_is_additive_and_atomic</code>, <code>accumulated_tokens_exceed_i32</code></td><td class="n ok">✓</td></tr>
+      <tr><td class="n">4</td><td>New <code>token_events</code> table (schema&nbsp;v10) + one insert per turn; seed history from <code>created_at</code>.</td><td><code>token_events_drive_the_windowed_totals</code>; migration run against the live DB</td><td class="n ok">✓</td></tr>
+      <tr><td class="n">5</td><td><code>GET /sessions/activity</code>; regenerate the OpenAPI client.</td><td><code>cargo test -p biorouter-server</code> + 2 read-only route tests</td><td class="n ok">✓</td></tr>
+      <tr><td class="n">6</td><td>Replace the token tiles with the heatmap; tooltip on hover <em>and</em> on keyboard focus.</td><td>9 Vitest cases + the 64-assertion contrast guard</td><td class="n ok">✓</td></tr>
+      <tr><td class="n">7</td><td>Flush usage on cancelled/errored streams (accumulate once per turn, after the loop closes).</td><td>Anthropic format now yields a running usage snapshot</td><td class="n ok">✓</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note">
+    <p><b>Shipped.</b> 744 <code>biorouter</code> lib tests, 44 <code>biorouter-server</code> tests, 614 Vitest tests, 64 contrast
+    assertions; <code>cargo fmt</code>, clippy, <code>tsc</code> and eslint all clean.</p>
+    <p>Migration&nbsp;10 was verified against the real session database before shipping: schema&nbsp;9&nbsp;→&nbsp;10,
+    <b>816 historical events seeded</b> spanning 2026-01-27 to 2026-07-07, and the seeded sum
+    (<code>733,615,032</code>) matches the sessions' lifetime sum exactly. Days before the migration are
+    attributed to the day a session was <em>created</em>, because that is the only timestamp the old schema kept;
+    from here forward every turn is stamped when it is spent (H-02).</p>
+  </div>
+</section>
+</main>
+
+<script>
+(function () {
+  'use strict';
+  // ── deterministic synthetic usage (seeded; identical every load)
+  var seed = 20260709;
+  function rnd() { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; }
+  var WEEKS = 22, DAYS = WEEKS * 7;
+  var end = new Date(2026, 6, 9);                      // Jul 9 2026
+  end.setDate(end.getDate() - end.getDay() + 6);       // pad to Saturday
+  var start = new Date(end); start.setDate(start.getDate() - DAYS + 1);
+
+  var MODELS = ['claude-opus-4-8', 'qwen3.5-4b', 'claude-sonnet-5', 'gemma-4-2b'];
+  var data = [];
+  for (var i = 0; i < DAYS; i++) {
+    var d = new Date(start); d.setDate(start.getDate() + i);
+    var dow = d.getDay();
+    var idle = rnd() < (dow === 0 || dow === 6 ? 0.72 : 0.28);
+    if (idle) { data.push({ d: d, sessions: 0, tokens: 0, messages: 0, model: null }); continue; }
+    var s = 1 + Math.floor(rnd() * 3);
+    var t = Math.round(s * (12000 + rnd() * 120000));
+    data.push({ d: d, sessions: s, tokens: t, messages: s * (4 + Math.floor(rnd() * 22)), model: MODELS[Math.floor(rnd() * MODELS.length)] });
+  }
+  data[DAYS - 40] = { d: data[DAYS - 40].d, sessions: 6, tokens: 1804210, messages: 168, model: 'claude-opus-4-8' };
+
+  // ── H-03·A : log score + quartiles over ACTIVE days
+  function score(x) { return (!x.sessions && !x.tokens) ? 0 : Math.log1p(x.tokens) + 0.5 * Math.log1p(x.sessions); }
+  function quantile(a, q) { var s = a.slice().sort(function (x, y) { return x - y; }); var p = (s.length - 1) * q, lo = Math.floor(p), hi = Math.ceil(p); return s[lo] + (s[hi] - s[lo]) * (p - lo); }
+  var act = data.filter(function (x) { return score(x) > 0; }).map(score);
+  var q1 = quantile(act, 0.25), q2 = quantile(act, 0.5), q3 = quantile(act, 0.75);
+  function level(x) { var s = score(x); if (!s) return 0; return s <= q1 ? 1 : s <= q2 ? 2 : s <= q3 ? 3 : 4; }
+
+  // ── streaks
+  var cur = 0, best = 0, run = 0;
+  data.forEach(function (x) { if (x.sessions || x.tokens) { run++; best = Math.max(best, run); } else run = 0; });
+  for (var j = data.length - 1; j >= 0; j--) { if (data[j].sessions || data[j].tokens) cur++; else break; }
+  document.getElementById('streakTitle').textContent = cur + ' day streak';
+  document.getElementById('longest').textContent = best;
+
+  // ── grid
+  var cells = document.getElementById('cells');
+  var streakStart = data.length - cur;
+  var fmtD = function (d) { return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); };
+  var fmtN = function (n) { return n >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : String(n); };
+
+  data.forEach(function (x, idx) {
+    var c = document.createElement('button');
+    c.type = 'button';
+    c.className = 'cell' + (idx >= streakStart ? ' is-streak' : '');
+    c.dataset.l = String(level(x));
+    c.dataset.i = String(idx);
+    c.setAttribute('aria-label', fmtD(x.d) + ': ' + x.sessions + ' sessions, ' + x.tokens.toLocaleString() + ' tokens');
+    cells.appendChild(c);
+  });
+
+  // ── month labels
+  var months = document.getElementById('months');
+  var seen = {}, weekPx = 24;   // matches --cell; the 6px gap supplies the rest of the pitch
+  for (var w = 0; w < WEEKS; w++) {
+    var d0 = data[w * 7].d, key = d0.getFullYear() + '-' + d0.getMonth();
+    var span = document.createElement('span');
+    span.style.width = weekPx + 'px';
+    span.style.flex = 'none';
+    if (!seen[key] && d0.getDate() <= 7) { seen[key] = 1; span.textContent = d0.toLocaleDateString('en-US', { month: 'short' }); }
+    months.appendChild(span);
+  }
+
+  // ── totals
+  var last30 = data.slice(-30);
+  document.getElementById('tSess').textContent = last30.reduce(function (a, b) { return a + b.sessions; }, 0);
+  document.getElementById('tTok').textContent = fmtN(last30.reduce(function (a, b) { return a + b.tokens; }, 0));
+  document.getElementById('tAll').textContent = fmtN(data.reduce(function (a, b) { return a + b.tokens; }, 0));
+
+  // ── tooltip (hover AND keyboard focus)
+  var tip = document.getElementById('tip');
+  function show(el) {
+    var x = data[+el.dataset.i];
+    tip.innerHTML =
+      '<div class="tip__d">' + fmtD(x.d) + '</div>' +
+      (x.sessions || x.tokens
+        ? '<div class="tip__r"><span>Sessions started</span><b>' + x.sessions + '</b></div>' +
+          '<div class="tip__r"><span>Tokens processed</span><b>' + x.tokens.toLocaleString() + '</b></div>' +
+          '<div class="tip__r"><span>Messages</span><b>' + x.messages + '</b></div>' +
+          '<div class="tip__r"><span>Top model</span><b>' + x.model + '</b></div>' +
+          '<div class="tip__note">Tokens attributed to the day each session started.</div>'
+        : '<div class="tip__r"><span>No activity</span><b>—</b></div>');
+    var r = el.getBoundingClientRect();
+    tip.classList.add('is-on');
+    var tw = tip.offsetWidth, th = tip.offsetHeight;
+    var left = Math.min(Math.max(8, r.left + r.width / 2 - tw / 2), window.innerWidth - tw - 8);
+    var top = r.top - th - 10;
+    if (top < 8) top = r.bottom + 10;
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+  }
+  function hide() { tip.classList.remove('is-on'); }
+  cells.addEventListener('mouseover', function (e) { if (e.target.classList.contains('cell')) show(e.target); });
+  cells.addEventListener('mouseout', hide);
+  cells.addEventListener('focusin', function (e) { if (e.target.classList.contains('cell')) show(e.target); });
+  cells.addEventListener('focusout', hide);
+  window.addEventListener('scroll', hide, { passive: true });
+
+  // ── histogram (measured, from the simulation in §04)
+  var HIST = {
+    'Linear ÷ max': [69, 80, 0, 0, 1],
+    'Log ÷ max': [69, 0, 1, 56, 24],
+    'Log + quartiles': [69, 21, 20, 20, 20]
+  };
+  function paintHist() {
+    var host = document.getElementById('hist');
+    host.innerHTML = '';
+    Object.keys(HIST).forEach(function (name) {
+      var h = HIST[name], max = Math.max.apply(null, h.slice(1));
+      var col = document.createElement('div');
+      col.className = 'histcol';
+      var good = name === 'Log + quartiles';
+      col.innerHTML = '<h5>' + name + (good ? ' ✓' : '') + '</h5>' +
+        h.slice(1).map(function (n, k) {
+          var w = max ? Math.round((n / max) * 150) : 0;
+          return '<div class="bar"><span class="lv">L' + (k + 1) + '</span>' +
+            '<i style="width:' + Math.max(w, 2) + 'px;background:var(--h' + (k + 1) + ')"></i>' +
+            '<span class="ct">' + n + '</span></div>';
+        }).join('') +
+        '<div style="margin-top:8px;font:400 11px var(--font-ui);color:var(--subtle)">' +
+        (good ? 'even spread; ordinary days span L1–L3'
+              : name === 'Log ÷ max' ? 'saturated; L1 unused' : 'everything collapses to L1') + '</div>';
+      host.appendChild(col);
+    });
+  }
+  paintHist();
+
+  // ── theme. Registered LAST on purpose: setT() repaints the histogram, so HIST
+  // and paintHist must already be initialised. `var HIST` is hoisted; its value
+  // is not — calling setT() before the assignment threw and killed the script.
+  var root = document.documentElement;
+  var btns = [].slice.call(document.querySelectorAll('[data-t]'));
+  function setT(m) {
+    if (m === 'system') root.removeAttribute('data-theme'); else root.setAttribute('data-theme', m);
+    btns.forEach(function (b) { b.setAttribute('aria-pressed', String(b.dataset.t === m)); });
+    try { localStorage.setItem('br-hp-theme', m); } catch (e) {}
+    paintHist();
+  }
+  btns.forEach(function (b) { b.addEventListener('click', function () { setT(b.dataset.t); }); });
+  var savedTheme = 'system';
+  try { savedTheme = localStorage.getItem('br-hp-theme') || 'system'; } catch (e) {}
+  setT(savedTheme);
+
+  // ── decisions
+  var D = [
+    { id: 'H-01', t: 'Home column width', o: { A: '760px — exact match with the composer', B: '880px — a little wider' } },
+    { id: 'H-02', t: 'Where per-day tokens come from', o: { A: 'Interim now, token_events next', B: 'Correct first (token_events before UI)', C: 'Interim only, forever' } },
+    { id: 'H-03', t: 'Intensity scale', o: { A: 'Log score + quartiles over active days', B: 'Log ÷ window max', C: 'Linear ÷ window max' } },
+    { id: 'H-04', t: 'What the shade weighs', o: { A: 'ln(1+tokens) + 0.5·ln(1+sessions)', B: 'Equal weight', C: 'Sessions only' } },
+    { id: 'H-05', t: 'Which sessions count', o: { A: 'User + Scheduled (matches the list)', B: 'User only', C: 'All types (keep today’s behaviour)' } },
+    { id: 'H-06', t: 'The "Tokens · past 7 days" tile', o: { A: 'Fix it with token_events', B: 'Relabel it honestly', C: 'Drop the tile' } },
+    { id: 'H-07', t: 'Window & streaks', o: { A: '~5 months + streaks', B: '12 months, scrollable', C: '5 months, no streak counter' } },
+    { id: 'H-08', t: 'The tiles beneath', o: { A: 'Three tiles + recent sessions', B: 'Heatmap + recent sessions only' } }
+  ];
+  var REC = {}; D.forEach(function (d) { REC[d.id] = 'A'; });
+  function read() { var o = {}; D.forEach(function (d) { var el = document.querySelector('input[name="' + d.id.toLowerCase() + '"]:checked'); o[d.id] = el ? el.value : null; }); return o; }
+  function persist() { try { localStorage.setItem('br-hp-dec', JSON.stringify(read())); } catch (e) {} }
+  function restore() { var s; try { s = JSON.parse(localStorage.getItem('br-hp-dec') || 'null'); } catch (e) { s = null; } if (!s) return; Object.keys(s).forEach(function (id) { if (!s[id]) return; var el = document.querySelector('input[name="' + id.toLowerCase() + '"][value="' + s[id] + '"]'); if (el) el.checked = true; }); }
+  function count() { var c = read(); document.getElementById('done').textContent = D.filter(function (d) { return c[d.id]; }).length; }
+  function build() {
+    var c = read(), L = [];
+    L.push('BioRouter home-page redesign — decisions');
+    L.push('='.repeat(60)); L.push('');
+    D.forEach(function (d) {
+      var p = c[d.id];
+      L.push(d.id + '  ' + d.t);
+      L.push('    ' + (p || '(undecided)') + ': ' + (p ? d.o[p] : '—') + (p && p !== REC[d.id] ? '   <-- CHANGED' : ''));
+      L.push('');
+    });
+    var ch = D.filter(function (d) { return c[d.id] && c[d.id] !== REC[d.id]; });
+    L.push('-'.repeat(60));
+    L.push(ch.length ? 'Overrides: ' + ch.map(function (d) { return d.id + '=' + c[d.id]; }).join(', ') : 'All recommendations accepted.');
+    L.push(''); L.push('Next: implement steps 1-7 in §08.');
+    return L.join('\n');
+  }
+  document.addEventListener('change', function (e) {
+    if (e.target.matches && e.target.matches('.opt input[type="radio"]')) {
+      persist(); count();
+      var o = document.getElementById('out');
+      if (o.style.display === 'block') o.value = build();
+    }
+  });
+  var out = document.getElementById('out');
+  document.getElementById('exp').addEventListener('click', function () {
+    var open = out.style.display === 'block';
+    out.style.display = open ? 'none' : 'block';
+    this.textContent = open ? 'Export decisions' : 'Hide export';
+    if (!open) { out.value = build(); out.focus(); out.select(); }
+  });
+  document.getElementById('cpy').addEventListener('click', function () {
+    var t = build(), done = function () { var c = document.getElementById('copied'); c.style.display = 'inline'; setTimeout(function () { c.style.display = 'none'; }, 1600); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(t).then(done, function () {});
+    else { out.style.display = 'block'; out.value = t; out.focus(); out.select(); try { document.execCommand('copy'); done(); } catch (e) {} }
+  });
+  document.getElementById('rst').addEventListener('click', function () {
+    D.forEach(function (d) { var el = document.querySelector('input[name="' + d.id.toLowerCase() + '"][value="' + REC[d.id] + '"]'); if (el) el.checked = true; });
+    persist(); count(); if (out.style.display === 'block') out.value = build();
+  });
+  restore(); count();
+})();
+</script>

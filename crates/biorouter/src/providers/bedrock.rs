@@ -9,14 +9,14 @@ use crate::providers::utils::RequestLog;
 use anyhow::Result;
 use async_trait::async_trait;
 use aws_sdk_bedrockruntime::config::ProvideCredentials;
-use aws_sdk_bedrockruntime::operation::converse::ConverseError;
 use aws_sdk_bedrockruntime::{types as bedrock, Client};
 use rmcp::model::Tool;
 use serde_json::Value;
 
 // Import the migrated helper functions from providers/formats/bedrock.rs
 use super::formats::bedrock::{
-    from_bedrock_message, from_bedrock_usage, to_bedrock_message, to_bedrock_tool_config,
+    classify_bedrock_converse_error, from_bedrock_message, from_bedrock_usage, to_bedrock_message,
+    to_bedrock_tool_config,
 };
 
 pub const BEDROCK_DOC_LINK: &str =
@@ -105,6 +105,13 @@ impl BedrockProvider {
             }
         }
 
+        // Bound a hung/stalled endpoint so a turn can't wait forever (see
+        // `bedrock_timeout_config`). Without this, an endpoint that accepts the
+        // connection but never answers freezes the agent with no error.
+        if let Some(timeout_config) = super::formats::bedrock::bedrock_timeout_config(config) {
+            loader = loader.timeout_config(timeout_config);
+        }
+
         let sdk_config = loader.load().await;
 
         // Validate credentials or return error back up
@@ -180,32 +187,7 @@ impl BedrockProvider {
         let response = request
             .send()
             .await
-            .map_err(|err| match err.into_service_error() {
-                ConverseError::ThrottlingException(throttle_err) => {
-                    ProviderError::RateLimitExceeded {
-                        details: format!("Bedrock throttling error: {:?}", throttle_err),
-                        retry_delay: None,
-                    }
-                }
-                ConverseError::AccessDeniedException(err) => {
-                    ProviderError::Authentication(format!("Failed to call Bedrock: {:?}", err))
-                }
-                ConverseError::ValidationException(err)
-                    if err
-                        .message()
-                        .unwrap_or_default()
-                        .contains("Input is too long for requested model.") =>
-                {
-                    ProviderError::ContextLengthExceeded(format!(
-                        "Failed to call Bedrock: {:?}",
-                        err
-                    ))
-                }
-                ConverseError::ModelErrorException(err) => {
-                    ProviderError::ExecutionError(format!("Failed to call Bedrock: {:?}", err))
-                }
-                err => ProviderError::ServerError(format!("Failed to call Bedrock: {:?}", err)),
-            })?;
+            .map_err(classify_bedrock_converse_error)?;
 
         match response.output {
             Some(bedrock::ConverseOutput::Message(message)) => Ok((message, response.usage)),

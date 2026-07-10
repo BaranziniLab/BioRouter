@@ -18,6 +18,7 @@ use crate::providers::toolshim::{
 
 use crate::agents::code_execution_extension::EXTENSION_NAME as CODE_EXECUTION_EXTENSION;
 use crate::agents::subagent_tool::SUBAGENT_TOOL_NAME;
+use crate::session::session_manager::TokenDelta;
 #[cfg(test)]
 use crate::session::SessionType;
 use rmcp::model::Tool;
@@ -354,21 +355,12 @@ impl Agent {
     ) -> Result<()> {
         let session_id = session_config.id.as_str();
         let manager = self.config.session_manager.clone();
-        let session = manager.get_session(session_id, false).await?;
 
-        let accumulate = |a: Option<i32>, b: Option<i32>| -> Option<i32> {
-            match (a, b) {
-                (Some(x), Some(y)) => Some(x + y),
-                _ => a.or(b),
-            }
+        let delta = TokenDelta {
+            input: usage.usage.input_tokens,
+            output: usage.usage.output_tokens,
+            total: usage.usage.total_tokens,
         };
-
-        let accumulated_total =
-            accumulate(session.accumulated_total_tokens, usage.usage.total_tokens);
-        let accumulated_input =
-            accumulate(session.accumulated_input_tokens, usage.usage.input_tokens);
-        let accumulated_output =
-            accumulate(session.accumulated_output_tokens, usage.usage.output_tokens);
 
         let (current_total, current_input, current_output) = if is_compaction_usage {
             // After compaction: summary output becomes new input context
@@ -382,17 +374,37 @@ impl Agent {
             )
         };
 
-        manager
+        let mut update = manager
             .update(session_id)
             .schedule_id(session_config.schedule_id.clone())
-            .total_tokens(current_total)
-            .input_tokens(current_input)
-            .output_tokens(current_output)
-            .accumulated_total_tokens(accumulated_total)
-            .accumulated_input_tokens(accumulated_input)
-            .accumulated_output_tokens(accumulated_output)
-            .apply()
-            .await?;
+            // The lifetime counters accumulate atomically in SQL. Reading the row
+            // into Rust and writing back lost an update whenever two turns raced.
+            .accumulate_tokens(delta);
+
+        // A turn that reports no usage at all must not blank the live gauge — the
+        // session's context-window readout should keep the last real value.
+        if current_total.is_some() || current_input.is_some() || current_output.is_some() {
+            update = update
+                .total_tokens(current_total)
+                .input_tokens(current_input)
+                .output_tokens(current_output);
+        }
+
+        update.apply().await?;
+
+        // Append the per-turn event that makes a real per-day token series
+        // possible. Compaction is a genuine provider call and is billed, so it is
+        // recorded like any other turn.
+        if let Some(total) = usage.usage.total_tokens {
+            manager
+                .record_token_event(
+                    session_id,
+                    usage.usage.input_tokens,
+                    usage.usage.output_tokens,
+                    total,
+                )
+                .await?;
+        }
 
         Ok(())
     }

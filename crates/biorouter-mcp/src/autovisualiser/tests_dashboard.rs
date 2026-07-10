@@ -1,6 +1,7 @@
 // Tests for `render_dashboard` — combining several figures into one artifact.
 
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+// `STANDARD` and the `Engine` trait already reach here through `use super::*`.
+use base64::engine::general_purpose::STANDARD as B64;
 
 /// Decode the `ui://` HTML blob out of a tool result.
 fn dashboard_html(result: &CallToolResult) -> String {
@@ -14,17 +15,15 @@ fn dashboard_html(result: &CallToolResult) -> String {
 
 /// Decode every embedded panel document out of an assembled report.
 fn panel_documents(html: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut rest = html;
-    while let Some(start) = rest.find("<script type=\"text/plain\" id=\"autovis-panel-") {
-        let after_open = &rest[start..];
-        let body_start = after_open.find('>').unwrap() + 1;
-        let body_end = after_open.find("</script>").unwrap();
-        let b64 = &after_open[body_start..body_end];
-        out.push(String::from_utf8(B64.decode(b64.trim()).unwrap()).unwrap());
-        rest = &after_open[body_end..];
-    }
-    out
+    html.split("<script type=\"text/plain\" id=\"autovis-panel-")
+        .skip(1)
+        .filter_map(|chunk| {
+            // chunk == `0">BASE64</script>…`; take the text between the tags.
+            let (_attrs, rest) = chunk.split_once('>')?;
+            let (b64, _tail) = rest.split_once("</script>")?;
+            Some(String::from_utf8(B64.decode(b64.trim()).unwrap()).unwrap())
+        })
+        .collect()
 }
 
 fn count_occurrences(haystack: &str, needle: &str) -> usize {
@@ -33,8 +32,8 @@ fn count_occurrences(haystack: &str, needle: &str) -> usize {
 
 /// The `var DATA = {…};` payload the report's runtime reads.
 fn dashboard_data(html: &str) -> Value {
-    let start = html.find("var DATA = ").unwrap() + "var DATA = ".len();
-    let line = html[start..].lines().next().unwrap();
+    let (_, after) = html.split_once("var DATA = ").expect("report must embed DATA");
+    let line = after.lines().next().unwrap();
     serde_json::from_str(line.trim_end().trim_end_matches(';')).expect("DATA must be valid JSON")
 }
 
@@ -75,6 +74,32 @@ fn mermaid_figure() -> serde_json::Value {
         "tool": "render_mermaid",
         "params": { "mermaid_code": "graph TD; A-->B;" }
     })
+}
+
+// ---------------------------------------------------------------------------
+// Registration — the tool is useless if the model never sees it
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_dashboard_tool_is_registered_and_advertised() {
+    let router = AutoVisualiserRouter::new();
+    assert!(router.tool_router.has_route("render_dashboard"));
+
+    // Every figure the dashboard can dispatch to must also be a real tool.
+    for name in [
+        "show_chart",
+        "render_volcano",
+        "render_heatmap",
+        "render_mermaid",
+        "render_choropleth",
+    ] {
+        assert!(router.tool_router.has_route(name), "{name} is not registered");
+    }
+
+    // And the instructions must steer the model to combine figures.
+    let instructions = router.get_info().instructions.unwrap();
+    assert!(instructions.contains("render_dashboard"));
+    assert!(instructions.contains("call `render_dashboard` once"));
 }
 
 // ---------------------------------------------------------------------------
@@ -135,6 +160,95 @@ fn test_figure_accepts_stringified_object() {
 fn test_figure_requires_a_tool() {
     let err = serde_json::from_value::<DashboardFigure>(json!({"params": {}})).unwrap_err();
     assert!(err.to_string().contains("needs a `tool`"));
+}
+
+// ---------------------------------------------------------------------------
+// Argument shapes real models send
+//
+// Every other Auto Visualiser tool takes a single `data` argument, so models
+// generalise. GPT-5.5 wrapped the whole report in one and, when rejected,
+// retried with the same shape — two wasted turns and no figure.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn test_accepts_the_report_wrapped_in_a_data_envelope() {
+    let router = AutoVisualiserRouter::new();
+    let result = router
+        .render_dashboard(params_from(json!({
+            "data": {
+                "title": "RNA-seq quality and signal",
+                "summary": "Even depth; MYC up, TP53 down.",
+                "sections": [{
+                    "title": "Overview",
+                    "panels": [
+                        {"title": "Depth", "figure": bar_chart_figure()},
+                        {"title": "Volcano", "figure": volcano_figure()},
+                    ]
+                }]
+            }
+        })))
+        .await
+        .unwrap();
+
+    let html = dashboard_html(&result);
+    assert_eq!(panel_documents(&html).len(), 2);
+    assert_eq!(dashboard_data(&html)["title"], "RNA-seq quality and signal");
+}
+
+#[tokio::test]
+async fn test_accepts_a_stringified_data_envelope() {
+    let router = AutoVisualiserRouter::new();
+    let payload = json!({
+        "title": "Stringified",
+        "panels": [{"figure": bar_chart_figure()}]
+    })
+    .to_string();
+
+    let html = dashboard_html(
+        &router
+            .render_dashboard(params_from(json!({ "data": payload })))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(panel_documents(&html).len(), 1);
+    assert_eq!(dashboard_data(&html)["title"], "Stringified");
+}
+
+#[tokio::test]
+async fn test_accepts_stringified_sections() {
+    let router = AutoVisualiserRouter::new();
+    let sections = json!([{"panels": [{"figure": bar_chart_figure()}]}]).to_string();
+
+    let html = dashboard_html(
+        &router
+            .render_dashboard(params_from(json!({
+                "title": "Stringified sections",
+                "sections": sections
+            })))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(panel_documents(&html).len(), 1);
+}
+
+#[test]
+fn test_plain_shape_still_wins_over_a_data_field() {
+    // A report that legitimately has a `title` is never unwrapped, even if some
+    // stray `data` key rides along.
+    let params: RenderDashboardParams = serde_json::from_value(json!({
+        "title": "Real title",
+        "data": {"title": "Decoy"},
+        "panels": []
+    }))
+    .unwrap();
+    assert_eq!(params.title, "Real title");
+}
+
+#[test]
+fn test_missing_title_error_names_the_data_envelope() {
+    let err = serde_json::from_value::<RenderDashboardParams>(json!({"summary": "no title"}))
+        .unwrap_err();
+    assert!(err.to_string().contains("not wrapped in a `data` argument"));
 }
 
 // ---------------------------------------------------------------------------
@@ -560,9 +674,8 @@ async fn test_prose_cannot_break_out_of_the_data_script() {
     );
 
     // The payload survives only as an escaped JS string literal.
-    let data_start = html.find("var DATA = ").unwrap();
-    let data_end = html[data_start..].find("\n").unwrap() + data_start;
-    let data_line = &html[data_start..data_end];
+    let (_, after) = html.split_once("var DATA = ").unwrap();
+    let data_line = after.lines().next().unwrap();
     assert!(!data_line.contains("</script>"));
     assert!(!data_line.contains("<img"));
     assert!(data_line.contains("\\u003c"));

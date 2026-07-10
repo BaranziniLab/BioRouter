@@ -74,13 +74,13 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
             in BioRouter Skills with a <code>SKILL.md</code> inside.
           </p>
           <textarea
-            className="biorouter-modal-panel flex-1 min-h-[300px] font-mono text-sm rounded-lg p-3 resize-none outline-none focus:ring-1 focus:ring-ring"
+            className="biorouter-modal-panel flex-1 min-h-[300px] font-mono text-sm rounded-lg p-3 resize-none"
             value={content}
             onChange={(e) => setContent(e.target.value)}
             spellCheck={false}
           />
           {error && (
-            <div className="text-sm text-destructive bg-destructive/10 rounded-lg px-4 py-2">
+            <div className="text-sm text-text-danger bg-background-danger/10 rounded-lg px-4 py-2">
               {error}
             </div>
           )}

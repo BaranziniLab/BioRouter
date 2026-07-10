@@ -1,0 +1,705 @@
+<title>Alma Mater — UCSF theme for BioRouter</title>
+
+<style>
+/* ══════════════════════════════════════════════════════════════════
+   PAGE CHROME — the spec-sheet's own quiet skin (theme-aware).
+   The embedded "app frames" carry their OWN tokens, so they render
+   the real Alma Mater / Parchment palettes regardless of this skin.
+   ══════════════════════════════════════════════════════════════════ */
+:root {
+  --page-bg: #eef0f3;
+  --page-surface: #ffffff;
+  --page-ink: #12233c;
+  --page-muted: #566175;
+  --page-subtle: #7c8698;
+  --page-line: #dde1e7;
+  --page-accent: #6c247c;
+  --page-code: #f2f3f4;
+  --font-ui: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --measure: 1240px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page-bg: #0a1424;
+    --page-surface: #0f1c30;
+    --page-ink: #e7ebf1;
+    --page-muted: #9aa6b8;
+    --page-subtle: #6f7c90;
+    --page-line: #1e2c42;
+    --page-accent: #c58ad6;
+    --page-code: #0d1a2c;
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--page-bg);
+  color: var(--page-ink);
+  font-family: var(--font-ui);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+.wrap { max-width: var(--measure); margin: 0 auto; padding: 0 24px 96px; }
+
+/* ── Masthead ─────────────────────────────────────────────── */
+.masthead { padding: 56px 0 24px; }
+.eyebrow {
+  font-size: 12px; font-weight: 600; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--page-accent); margin: 0 0 12px;
+}
+h1.title { font-size: 40px; line-height: 1.05; letter-spacing: -.02em; margin: 0 0 10px; font-weight: 700; }
+.lede { font-size: 17px; color: var(--page-muted); max-width: 74ch; margin: 0; }
+.lede strong { color: var(--page-ink); font-weight: 600; }
+.pill-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 20px; }
+.pill {
+  font-size: 12.5px; font-weight: 500; padding: 5px 11px; border-radius: 999px;
+  border: 1px solid var(--page-line); color: var(--page-muted); background: var(--page-surface);
+}
+.pill b { color: var(--page-ink); font-weight: 600; }
+
+/* ── Controls bar ─────────────────────────────────────────── */
+.controls {
+  position: sticky; top: 0; z-index: 20; margin: 28px 0 8px;
+  background: color-mix(in srgb, var(--page-bg) 82%, transparent);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--page-line); border-radius: 14px;
+  padding: 12px 14px; display: flex; flex-wrap: wrap; gap: 18px 26px; align-items: center;
+}
+.ctl-group { display: flex; align-items: center; gap: 10px; }
+.ctl-label { font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--page-subtle); }
+.swatch-btns { display: flex; gap: 6px; }
+.acc-btn {
+  cursor: pointer; border: 1.5px solid var(--page-line); background: var(--page-surface);
+  border-radius: 9px; padding: 5px 6px 5px 5px; display: flex; align-items: center; gap: 7px;
+  font: inherit; font-size: 12.5px; color: var(--page-muted); transition: all .14s ease;
+}
+.acc-btn:hover { border-color: color-mix(in srgb, var(--page-ink) 26%, transparent); color: var(--page-ink); }
+.acc-btn .chip { width: 15px; height: 15px; border-radius: 5px; box-shadow: inset 0 0 0 1px rgba(0,0,0,.14); }
+.acc-btn[aria-pressed="true"] { border-color: var(--page-ink); color: var(--page-ink); font-weight: 600; }
+.seg { display: inline-flex; border: 1px solid var(--page-line); border-radius: 9px; overflow: hidden; background: var(--page-surface); }
+.seg button {
+  cursor: pointer; border: 0; background: transparent; font: inherit; font-size: 12.5px;
+  padding: 6px 12px; color: var(--page-muted); transition: all .14s ease;
+}
+.seg button + button { border-left: 1px solid var(--page-line); }
+.seg button[aria-pressed="true"] { background: var(--page-ink); color: var(--page-surface); font-weight: 600; }
+
+/* ── Section headings ─────────────────────────────────────── */
+.section { margin-top: 52px; }
+.section > h2 {
+  font-size: 13px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--page-subtle); margin: 0 0 4px;
+}
+.section > .sub { font-size: 14.5px; color: var(--page-muted); margin: 0 0 20px; max-width: 78ch; }
+
+.frame-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 22px; }
+@media (max-width: 1080px) { .frame-grid { grid-template-columns: 1fr; } }
+.frame-cap { display: flex; align-items: center; gap: 8px; margin: 0 0 9px; font-size: 12.5px; color: var(--page-muted); }
+.frame-cap .k { width: 9px; height: 9px; border-radius: 3px; }
+.frame-cap b { color: var(--page-ink); font-weight: 600; }
+
+/* ══════════════════════════════════════════════════════════════════
+   THE APP FRAME — every colour here is a var() fed by the token map
+   applied inline on `.app`. This is the actual BioRouter chrome.
+   ══════════════════════════════════════════════════════════════════ */
+.app {
+  border-radius: 14px; overflow: hidden; border: 1px solid var(--border-subtle);
+  background: var(--bg-app); color: var(--text-default);
+  font-family: var(--font-ui); box-shadow: var(--shadow);
+  --r-sm: 5px; --r-md: 8px; --r-lg: 12px; --r-xl: 14px;
+}
+.app .titlebar {
+  display: flex; align-items: center; gap: 7px; height: 34px; padding: 0 13px;
+  background: var(--sidebar); border-bottom: 1px solid var(--border-subtle);
+}
+.app .titlebar .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--border-strong); }
+.app .tb-title {
+  margin-left: 8px; font-size: 11.5px; color: var(--text-subtle); font-family: var(--font-mono);
+  letter-spacing: .01em;
+}
+.app .body { display: grid; grid-template-columns: 176px 1fr; min-height: 452px; }
+
+/* Sidebar */
+.app .sidebar {
+  background: var(--sidebar); color: var(--sidebar-fg);
+  border-right: 1px solid var(--sidebar-border); padding: 12px 9px; display: flex; flex-direction: column;
+}
+.app .brand { display: flex; align-items: center; gap: 9px; padding: 6px 8px 14px; }
+.app .brand-mark {
+  width: 22px; height: 22px; border-radius: 7px; background: var(--accent-bar);
+  position: relative; flex: none;
+}
+.app .brand-mark::after {
+  content: ""; position: absolute; inset: 6px; border-radius: 3px;
+  background: var(--sidebar); opacity: .82;
+}
+.app .brand-name { font-size: 14px; font-weight: 600; letter-spacing: -.01em; color: var(--sidebar-fg); }
+.app nav { display: flex; flex-direction: column; gap: 2px; }
+.app .nav-item {
+  display: flex; align-items: center; gap: 9px; height: 32px; padding: 0 9px;
+  border-radius: var(--r-md); font-size: 13px; color: var(--sidebar-fg); opacity: .8;
+  position: relative; cursor: default;
+}
+.app .nav-item svg { width: 15px; height: 15px; flex: none; opacity: .9; }
+.app .nav-item:hover { background: var(--sidebar-hover); opacity: 1; }
+.app .nav-item.active { background: var(--sidebar-active); opacity: 1; font-weight: 600; }
+.app .nav-item.active::before {
+  content: ""; position: absolute; left: -9px; top: 7px; bottom: 7px; width: 3px;
+  border-radius: 0 3px 3px 0; background: var(--accent-bar);
+}
+.app .side-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding-top: 10px; }
+.app .side-user {
+  display: flex; align-items: center; gap: 8px; padding: 7px 8px; border-radius: var(--r-md);
+  border: 1px solid var(--border-subtle);
+}
+.app .side-user .av {
+  width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: var(--on-accent);
+  display: grid; place-items: center; font-size: 10.5px; font-weight: 700; flex: none;
+}
+.app .side-user .u-meta { min-width: 0; }
+.app .side-user .u-name { font-size: 12px; font-weight: 600; color: var(--sidebar-fg); }
+.app .side-user .u-org { font-size: 10.5px; color: var(--text-subtle); }
+
+/* Main */
+.app .main { background: var(--bg-app); display: flex; flex-direction: column; min-width: 0; }
+.app .page-head { padding: 18px 20px 13px; border-bottom: 1px solid var(--border-subtle); }
+.app .page-head h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: -.01em; }
+.app .page-head p { margin: 3px 0 0; font-size: 12.5px; color: var(--text-muted); }
+.app .chat { padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; }
+
+.app .msg { display: flex; gap: 10px; }
+.app .msg .who {
+  width: 24px; height: 24px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  font-size: 10px; font-weight: 700;
+}
+.app .msg.user .who { background: var(--bg-medium); color: var(--text-muted); }
+.app .msg.ai .who { background: var(--accent); color: var(--on-accent); }
+.app .msg .content { min-width: 0; font-size: 13px; color: var(--text-default); }
+.app .msg.user .content { color: var(--text-muted); }
+.app code.inline {
+  font-family: var(--font-mono); font-size: 11.5px; padding: 1.5px 5px; border-radius: var(--r-sm);
+  background: var(--bg-medium); color: var(--text-default);
+}
+.app a.link { color: var(--text-accent); text-decoration: none; border-bottom: 1px solid color-mix(in srgb, var(--text-accent) 40%, transparent); }
+
+/* Code block */
+.app .code {
+  margin: 10px 0 2px; border-radius: var(--r-lg); border: 1px solid var(--border-subtle);
+  background: var(--code-bg); overflow: hidden;
+}
+.app .code .code-bar {
+  display: flex; align-items: center; justify-content: space-between; padding: 6px 11px;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.app .code .lang { font-size: 10.5px; font-family: var(--font-mono); color: var(--text-subtle); letter-spacing: .04em; }
+.app .code pre {
+  margin: 0; padding: 11px 13px; overflow-x: auto; font-family: var(--font-mono);
+  font-size: 11.5px; line-height: 1.65; color: var(--syn-plain); tab-size: 2;
+}
+.app .code .k { color: var(--syn-keyword); font-weight: 600; }
+.app .code .fn { color: var(--syn-func); }
+.app .code .ty { color: var(--syn-type); font-weight: 600; }
+.app .code .st { color: var(--syn-string); }
+.app .code .cm { color: var(--syn-comment); font-style: italic; }
+.app .code .op { color: var(--syn-op); }
+.app .code .nu { color: var(--syn-number); }
+
+/* Tool-call card */
+.app .tool {
+  display: flex; align-items: center; gap: 9px; padding: 9px 11px; border-radius: var(--r-lg);
+  border: 1px solid var(--border-subtle); background: var(--bg-default);
+}
+.app .tool .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); flex: none; }
+.app .tool .t-name { font-size: 12px; font-weight: 600; }
+.app .tool .t-name span { font-family: var(--font-mono); color: var(--text-muted); font-weight: 400; }
+.app .tool .t-chip {
+  margin-left: auto; font-size: 10.5px; font-family: var(--font-mono); padding: 2px 7px;
+  border-radius: var(--r-sm); background: var(--bg-medium); color: var(--text-muted);
+}
+
+/* Status badges + buttons */
+.app .badges { display: flex; flex-wrap: wrap; gap: 7px; }
+.app .badge {
+  font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 5px;
+}
+.app .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.app .badge.ok { color: var(--success); background: color-mix(in srgb, var(--success) 13%, transparent); }
+.app .badge.warn { color: var(--warning); background: color-mix(in srgb, var(--warning) 15%, transparent); }
+.app .badge.err { color: var(--danger); background: color-mix(in srgb, var(--danger) 13%, transparent); }
+.app .badge.info { color: var(--info); background: color-mix(in srgb, var(--info) 13%, transparent); }
+
+.app .btn-row { display: flex; gap: 8px; margin-top: 2px; }
+.app .btn {
+  font: inherit; font-size: 12.5px; font-weight: 600; padding: 7px 14px; border-radius: var(--r-md);
+  cursor: default; border: 1px solid transparent; transition: background .14s ease;
+}
+.app .btn.primary { background: var(--accent); color: var(--on-accent); }
+.app .btn.primary:hover { background: var(--accent-hover); }
+.app .btn.secondary { background: var(--bg-default); color: var(--text-default); border-color: var(--border-strong); }
+.app .btn.ghost { background: transparent; color: var(--text-muted); }
+
+/* Composer */
+.app .composer { margin-top: auto; padding: 12px 18px 16px; }
+.app .composer-box {
+  display: flex; align-items: center; gap: 10px; padding: 9px 10px 9px 14px;
+  border: 1px solid var(--border-strong); border-radius: var(--r-xl); background: var(--bg-default);
+  box-shadow: var(--shadow);
+}
+.app .composer-box .ph { flex: 1; font-size: 13px; color: var(--text-subtle); }
+.app .composer-box .send {
+  width: 30px; height: 30px; border-radius: var(--r-md); background: var(--accent); color: var(--on-accent);
+  display: grid; place-items: center; flex: none;
+}
+.app .composer-box .send svg { width: 15px; height: 15px; }
+
+/* ── Settings toggle preview ──────────────────────────────── */
+.settings-card {
+  border-radius: 14px; border: 1px solid var(--border-subtle); background: var(--bg-app);
+  color: var(--text-default); overflow: hidden; max-width: 560px; box-shadow: var(--shadow);
+}
+.settings-card .sc-head { padding: 15px 18px 12px; border-bottom: 1px solid var(--border-subtle); }
+.settings-card .sc-eyebrow { font-size: 10.5px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted); }
+.settings-card .sc-row { padding: 14px 18px; border-bottom: 1px solid var(--border-subtle); }
+.settings-card .sc-row:last-child { border-bottom: 0; }
+.settings-card .sc-row .lbl { font-size: 13px; font-weight: 600; }
+.settings-card .sc-row .hint { font-size: 12px; color: var(--text-muted); margin-top: 1px; }
+.settings-card .sc-seg { display: inline-flex; margin-top: 10px; border: 1px solid var(--border-strong); border-radius: var(--r-md); overflow: hidden; }
+.settings-card .sc-seg span {
+  font-size: 12px; padding: 6px 14px; color: var(--text-muted); display: inline-flex; align-items: center; gap: 6px;
+}
+.settings-card .sc-seg span + span { border-left: 1px solid var(--border-strong); }
+.settings-card .sc-seg span.on { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.settings-card .sc-seg span svg { width: 13px; height: 13px; }
+.settings-card .sc-badge-new {
+  font-size: 9.5px; font-weight: 700; letter-spacing: .06em; padding: 1px 6px; border-radius: 999px;
+  background: color-mix(in srgb, var(--accent-bar) 18%, transparent); color: var(--text-accent); margin-left: 8px; vertical-align: middle;
+}
+
+/* ── Component gallery / heatmap / swatches ───────────────── */
+.gallery { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 22px; }
+@media (max-width: 1080px) { .gallery { grid-template-columns: 1fr; } }
+.tile {
+  border-radius: 14px; border: 1px solid var(--border-subtle); background: var(--bg-app); color: var(--text-default);
+  padding: 18px; box-shadow: var(--shadow);
+}
+.tile h3 { margin: 0 0 14px; font-size: 11px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--text-muted); }
+.metric-row { display: flex; gap: 12px; }
+.metric {
+  flex: 1; padding: 13px 14px; border-radius: 12px; border: 1px solid var(--border-subtle); background: var(--bg-default);
+}
+.metric .v { font-size: 26px; font-weight: 300; font-family: var(--font-mono); letter-spacing: -.02em; }
+.metric .l { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-subtle); margin-top: 3px; }
+.heat { display: grid; grid-auto-flow: column; grid-template-rows: repeat(7, 12px); gap: 3px; margin-top: 4px; }
+.heat i { width: 12px; height: 12px; border-radius: 3px; }
+.heat-legend { display: flex; align-items: center; gap: 5px; margin-top: 12px; font-size: 11px; color: var(--text-subtle); }
+.heat-legend i { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+
+/* Swatch reference */
+.swatch-cols { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 22px; }
+@media (max-width: 1080px) { .swatch-cols { grid-template-columns: 1fr; } }
+.swatch-panel { border-radius: 14px; border: 1px solid var(--page-line); background: var(--page-surface); overflow: hidden; }
+.swatch-panel > header { padding: 12px 16px; border-bottom: 1px solid var(--page-line); font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.swatch-panel > header .k { width: 10px; height: 10px; border-radius: 3px; }
+.sw-group-title { padding: 11px 16px 3px; font-size: 10.5px; font-weight: 700; letter-spacing: .09em; text-transform: uppercase; color: var(--page-subtle); }
+.sw { display: flex; align-items: center; gap: 11px; padding: 5px 16px; }
+.sw .chip { width: 26px; height: 26px; border-radius: 7px; flex: none; box-shadow: inset 0 0 0 1px rgba(128,128,128,.28); }
+.sw .nm { font-size: 12.5px; flex: 1; min-width: 0; }
+.sw .hx { font-family: var(--font-mono); font-size: 11.5px; color: var(--page-muted); }
+.foot { margin-top: 56px; padding-top: 20px; border-top: 1px solid var(--page-line); font-size: 13px; color: var(--page-subtle); }
+.foot code { font-family: var(--font-mono); font-size: 12px; color: var(--page-muted); }
+</style>
+
+<div class="wrap">
+
+  <div class="masthead">
+    <p class="eyebrow">BioRouter · Theme proposal · Draft for approval</p>
+    <h1 class="title">Alma&nbsp;Mater</h1>
+    <p class="lede">
+      A second theme that dresses BioRouter in the official <strong>UCSF brand palette</strong> — navy-anchored,
+      cool-neutral, with a <strong>UCSF Violet / eggplant</strong> accent as the elegant twist. It is a
+      <strong>re-colouring only</strong>: same layout, same flat-surface discipline, same fonts, genuine
+      light <em>and</em> dark. The current look is renamed <strong>Parchment</strong> and stays the default.
+    </p>
+    <div class="pill-row">
+      <span class="pill"><b>Font:</b> unchanged</span>
+      <span class="pill"><b>Modes:</b> real light + dark</span>
+      <span class="pill"><b>Accent:</b> UCSF Violet (G-column)</span>
+      <span class="pill"><b>Contrast:</b> WCAG AA verified</span>
+      <span class="pill"><b>Layout change:</b> none</span>
+    </div>
+  </div>
+
+  <div class="controls" id="controls">
+    <div class="ctl-group">
+      <span class="ctl-label">Accent</span>
+      <div class="swatch-btns" id="accentBtns"></div>
+    </div>
+    <div class="ctl-group">
+      <span class="ctl-label">Light sidebar</span>
+      <div class="seg" id="sidebarSeg">
+        <button data-side="cool" aria-pressed="true">Cool gray</button>
+        <button data-side="navy" aria-pressed="false">UCSF Navy</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── HERO: Alma Mater in both modes ─────────────────────── -->
+  <div class="section">
+    <h2>Alma Mater · the app in both modes</h2>
+    <p class="sub">The real BioRouter chrome — sidebar, chat, code, tool call, status, composer — rendered live in the
+      selected accent. Change the accent above and both frames re-colour instantly.</p>
+    <div class="frame-grid">
+      <div>
+        <p class="frame-cap"><span class="k" style="background:#ffffff;border:1px solid #d1d3d3"></span> Alma Mater · <b>Light</b></p>
+        <div id="mount-alma-light"></div>
+      </div>
+      <div>
+        <p class="frame-cap"><span class="k" style="background:#04142e"></span> Alma Mater · <b>Dark</b></p>
+        <div id="mount-alma-dark"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Settings toggle preview ────────────────────────────── -->
+  <div class="section">
+    <h2>Where the toggle lives</h2>
+    <p class="sub">Step 2 adds one control to <b>Settings → Appearance</b>: a theme-family switch beside the existing
+      light/dark selector. Two orthogonal axes — family × mode — no other UI changes.</p>
+    <div id="mount-settings"></div>
+  </div>
+
+  <!-- ── Component gallery ──────────────────────────────────── -->
+  <div class="section">
+    <h2>Components &amp; data surfaces</h2>
+    <p class="sub">Buttons, status, a metric row, and the usage heatmap recoloured to UCSF's violet ladder — light and dark.</p>
+    <div class="gallery">
+      <div id="mount-gallery-light"></div>
+      <div id="mount-gallery-dark"></div>
+    </div>
+  </div>
+
+  <!-- ── Parchment comparison ───────────────────────────────── -->
+  <div class="section">
+    <h2>The twist, side by side</h2>
+    <p class="sub">The same chat surface in today's <b>Parchment</b> (warm paper + coral) and the new <b>Alma Mater</b>
+      (cool navy + eggplant). Same bones, different soul.</p>
+    <div class="frame-grid">
+      <div>
+        <p class="frame-cap"><span class="k" style="background:#faf8f3;border:1px solid #e8e1d2"></span> Parchment · <b>Light</b> <span style="color:var(--page-subtle)">(current default)</span></p>
+        <div id="mount-parch-light"></div>
+      </div>
+      <div>
+        <p class="frame-cap"><span class="k" style="background:#0d0a06"></span> Parchment · <b>Dark</b></p>
+        <div id="mount-parch-dark"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Swatch reference ───────────────────────────────────── -->
+  <div class="section">
+    <h2>Token reference</h2>
+    <p class="sub">Every Alma Mater colour token, light and dark. Accent tokens reflect the selected accent above; the rest is fixed.</p>
+    <div class="swatch-cols">
+      <div class="swatch-panel" id="sw-light"></div>
+      <div class="swatch-panel" id="sw-dark"></div>
+    </div>
+  </div>
+
+  <div class="foot">
+    Mockup for <code>docs/design/alma-mater-theme.md</code>. Palette sourced from
+    <code>identity.ucsf.edu/brand-guide</code>. All values contrast-checked to WCAG AA.
+    Nothing in the codebase changes until this is approved.
+  </div>
+</div>
+
+<script>
+/* ───────────────────────── ICONS ───────────────────────── */
+const I = {
+  home:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 4l9 6.5"/><path d="M5 9.5V20h14V9.5"/></svg>',
+  chat:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5h16v11H9l-5 4z"/></svg>',
+  sessions:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>',
+  ext:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6v3a2 2 0 1 0 0 4v3H9v-3a2 2 0 1 1 0-4z"/><path d="M15 7h4v4M15 18h4v-4"/></svg>',
+  know:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5a2 2 0 0 1 2-2h11v16H7a2 2 0 0 0-2 2z"/><path d="M18 3v18"/></svg>',
+  skills:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l2.2 5.3L20 9.2l-4 3.7 1 5.6-5-2.8-5 2.8 1-5.6-4-3.7 5.8-.9z"/></svg>',
+  gear:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg>',
+  sun:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M2 12h2M20 12h2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M19.1 4.9l-1.4 1.4M6.3 17.7l-1.4 1.4"/></svg>',
+  moon:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>',
+  send:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h13M12 5l7 7-7 7"/></svg>'
+};
+
+/* ───────────────────────── TOKEN MAPS ───────────────────────── */
+const shadowWarm = '0 1px 3px rgba(32,25,15,.08), 0 10px 26px -18px rgba(32,25,15,.22)';
+const shadowNavy = '0 1px 3px rgba(5,32,73,.10), 0 10px 26px -18px rgba(5,32,73,.28)';
+const shadowDark = '0 1px 3px rgba(0,0,0,.4), 0 12px 30px -18px rgba(0,0,0,.7)';
+
+const A_LIGHT = {
+  '--bg-app':'#ffffff','--bg-default':'#ffffff','--bg-muted':'#f2f3f4','--bg-medium':'#e1e3e5','--bg-strong':'#d1d3d3',
+  '--sidebar':'#eceef1','--sidebar-hover':'#e3e6ea','--sidebar-active':'#d7dbe0','--sidebar-fg':'#052049','--sidebar-border':'#e1e3e5',
+  '--text-default':'#052049','--text-muted':'#506380','--text-subtle':'#586780',
+  '--border-subtle':'#e1e3e5','--border-strong':'#cfd3d8',
+  '--accent':'#6c247c','--accent-hover':'#571c66','--on-accent':'#ffffff','--text-accent':'#6c247c','--accent-bar':'#a238ba',
+  '--danger':'#c40d3e','--success':'#007242','--warning':'#8a5a00','--info':'#0f388a','--on-status':'#ffffff',
+  '--code-bg':'#f2f3f4','--syn-plain':'#052049','--syn-comment':'#586780','--syn-keyword':'#0f388a','--syn-string':'#007242','--syn-number':'#8a5a00','--syn-func':'#0e5258','--syn-type':'#6c247c','--syn-op':'#506380',
+  '--heat0':'#ece6f1','--heat1':'#d9c2e8','--heat2':'#c48ed6','--heat3':'#9e44b4','--heat4':'#6c247c',
+  '--shadow':shadowNavy
+};
+const A_DARK = {
+  '--bg-app':'#04142e','--bg-default':'#08213f','--bg-muted':'#0d2a50','--bg-medium':'#143563','--bg-strong':'#1e477f',
+  '--sidebar':'#071b3a','--sidebar-hover':'#0e2a50','--sidebar-active':'#163864','--sidebar-fg':'#f2f3f4','--sidebar-border':'#1a3a66',
+  '--text-default':'#f2f3f4','--text-muted':'#b4b9bf','--text-subtle':'#909aa6',
+  '--border-subtle':'#17386a','--border-strong':'#24487f',
+  '--accent':'#c45ed8','--accent-hover':'#d07ee0','--on-accent':'#1a0a24','--text-accent':'#d7a5e8','--accent-bar':'#c45ed8',
+  '--danger':'#f5768a','--success':'#5fbf74','--warning':'#feb80a','--info':'#7fb3e6','--on-status':'#052049',
+  '--code-bg':'#08213f','--syn-plain':'#e1e3e5','--syn-comment':'#8a93a6','--syn-keyword':'#7fb3e6','--syn-string':'#6fc084','--syn-number':'#e0a44a','--syn-func':'#5cc6d0','--syn-type':'#c58ad6','--syn-op':'#b4b9bf',
+  '--heat0':'#10223f','--heat1':'#3a1e52','--heat2':'#6c247c','--heat3':'#a238ba','--heat4':'#c45ed8',
+  '--shadow':shadowDark
+};
+const P_LIGHT = {
+  '--bg-app':'#ffffff','--bg-default':'#ffffff','--bg-muted':'#faf8f3','--bg-medium':'#f4f0e6','--bg-strong':'#d4cab6',
+  '--sidebar':'#f3ede1','--sidebar-hover':'#ece4d4','--sidebar-active':'#e4d9c3','--sidebar-fg':'#2a2520','--sidebar-border':'#e9e1d0',
+  '--text-default':'#2a2520','--text-muted':'#635c54','--text-subtle':'#6e6760',
+  '--border-subtle':'#e8e1d2','--border-strong':'#d4cab6',
+  '--accent':'#b85a32','--accent-hover':'#a94f2a','--on-accent':'#ffffff','--text-accent':'#b85a32','--accent-bar':'#cf6d47',
+  '--danger':'#b3261e','--success':'#1f7a3d','--warning':'#8a5a00','--info':'#1e5fbf','--on-status':'#ffffff',
+  '--code-bg':'#faf8f3','--syn-plain':'#2a2520','--syn-comment':'#6f6659','--syn-keyword':'#a94f2a','--syn-string':'#22784f','--syn-number':'#8a5a00','--syn-func':'#255fb5','--syn-type':'#7847b8','--syn-op':'#6e6760',
+  '--heat0':'#ece5d6','--heat1':'#e9c9ab','--heat2':'#dda27a','--heat3':'#c6774c','--heat4':'#a04a27',
+  '--shadow':shadowWarm
+};
+const P_DARK = {
+  '--bg-app':'#0d0a06','--bg-default':'#16120c','--bg-muted':'#282217','--bg-medium':'#403928','--bg-strong':'#615a46',
+  '--sidebar':'#282217','--sidebar-hover':'#322b1d','--sidebar-active':'#3d3524','--sidebar-fg':'#f4f0e6','--sidebar-border':'#403928',
+  '--text-default':'#f4f0e6','--text-muted':'#b0a892','--text-subtle':'#9c937b',
+  '--border-subtle':'#282217','--border-strong':'#403928',
+  '--accent':'#e8895f','--accent-hover':'#f0a07c','--on-accent':'#16120c','--text-accent':'#e8895f','--accent-bar':'#e8895f',
+  '--danger':'#f07575','--success':'#7ac87c','--warning':'#f0c84a','--info':'#7aabf5','--on-status':'#16120c',
+  '--code-bg':'#16120c','--syn-plain':'#e8e1d2','--syn-comment':'#8d8266','--syn-keyword':'#e8895f','--syn-string':'#7fbf6a','--syn-number':'#d9a441','--syn-func':'#8fb8e8','--syn-type':'#b98ad6','--syn-op':'#b0a892',
+  '--heat0':'#241f16','--heat1':'#4a3524','--heat2':'#7a4d2e','--heat3':'#b0653a','--heat4':'#e8895f',
+  '--shadow':shadowDark
+};
+
+/* Accent options (per mode) — UCSF hue columns */
+const ACCENTS = {
+  eggplant:   { name:'Eggplant',  swatch:'#6c247c',
+    light:{'--accent':'#6c247c','--accent-hover':'#571c66','--on-accent':'#ffffff','--text-accent':'#6c247c','--accent-bar':'#a238ba'},
+    dark: {'--accent':'#c45ed8','--accent-hover':'#d07ee0','--on-accent':'#1a0a24','--text-accent':'#d7a5e8','--accent-bar':'#c45ed8'} },
+  violet:     { name:'Violet',    swatch:'#a238ba',
+    light:{'--accent':'#a238ba','--accent-hover':'#8a1fa0','--on-accent':'#ffffff','--text-accent':'#8a1fa0','--accent-bar':'#a238ba'},
+    dark: {'--accent':'#c45ed8','--accent-hover':'#d07ee0','--on-accent':'#1a0a24','--text-accent':'#d7a5e8','--accent-bar':'#c45ed8'} },
+  magenta:    { name:'Magenta',   swatch:'#c42882',
+    light:{'--accent':'#821a56','--accent-hover':'#6a1546','--on-accent':'#ffffff','--text-accent':'#821a56','--accent-bar':'#c42882'},
+    dark: {'--accent':'#e266ae','--accent-hover':'#ea82bf','--on-accent':'#2a0a1c','--text-accent':'#f0a8d2','--accent-bar':'#e266ae'} },
+  periwinkle: { name:'Periwinkle',swatch:'#6c62d0',
+    light:{'--accent':'#443e8c','--accent-hover':'#373070','--on-accent':'#ffffff','--text-accent':'#443e8c','--accent-bar':'#6c62d0'},
+    dark: {'--accent':'#8a8ce3','--accent-hover':'#a0a2ea','--on-accent':'#0a0a24','--text-accent':'#b9baf0','--accent-bar':'#8a8ce3'} },
+  cta:        { name:'CTA Blue',  swatch:'#006be9',
+    light:{'--accent':'#006be9','--accent-hover':'#0059c2','--on-accent':'#ffffff','--text-accent':'#0071ad','--accent-bar':'#006be9'},
+    dark: {'--accent':'#006be9','--accent-hover':'#2e8fd6','--on-accent':'#ffffff','--text-accent':'#5ab0e8','--accent-bar':'#3b9ae0'} }
+};
+const NAVY_SIDEBAR = {'--sidebar':'#052049','--sidebar-hover':'#0b2a56','--sidebar-active':'#123566','--sidebar-fg':'#ffffff','--sidebar-border':'#0b2a56'};
+
+let ACCENT = 'eggplant';
+let SIDEBAR = 'cool';
+
+/* ───────────────────────── APP FRAME MARKUP ───────────────────────── */
+function navItem(icon, label, active){
+  return `<div class="nav-item${active?' active':''}">${I[icon]}<span>${label}</span></div>`;
+}
+const APP_HTML = `
+  <div class="titlebar"><span class="dot"></span><span class="dot"></span><span class="dot"></span>
+    <span class="tb-title">biorouter · chat</span></div>
+  <div class="body">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark"></span><span class="brand-name">BioRouter</span></div>
+      <nav>
+        ${navItem('home','Home',false)}
+        ${navItem('chat','Chat',true)}
+        ${navItem('sessions','Sessions',false)}
+        ${navItem('ext','Extensions',false)}
+        ${navItem('know','Knowledge',false)}
+        ${navItem('skills','Skills',false)}
+      </nav>
+      <div class="side-foot">
+        ${navItem('gear','Settings',false)}
+        <div class="side-user"><span class="av">BL</span>
+          <div class="u-meta"><div class="u-name">Baranzini Lab</div><div class="u-org">UCSF</div></div></div>
+      </div>
+    </aside>
+    <main class="main">
+      <div class="page-head"><h1>Chat</h1><p>A calm clinical workspace — warm, precise, trustworthy.</p></div>
+      <div class="chat">
+        <div class="msg user"><span class="who">You</span>
+          <div class="content">How do I switch BioRouter into the UCSF theme?</div></div>
+        <div class="msg ai"><span class="who">BR</span>
+          <div class="content">
+            Open <a class="link">Settings → Appearance</a> and set the theme family to <code class="inline">Alma&nbsp;Mater</code>.
+            It re-colours the app from UCSF's palette and respects your light/dark choice:
+            <div class="code">
+              <div class="code-bar"><span class="lang">typescript</span></div>
+<pre><span class="k">function</span> <span class="fn">applyTheme</span>(family<span class="op">:</span> <span class="ty">ThemeFamily</span>, mode<span class="op">:</span> <span class="ty">Mode</span>) {
+  <span class="k">const</span> root <span class="op">=</span> document<span class="op">.</span><span class="fn">documentElement</span>;   <span class="cm">// &lt;html&gt;</span>
+  root<span class="op">.</span>dataset<span class="op">.</span>theme <span class="op">=</span> family;             <span class="cm">// 'alma-mater'</span>
+  root<span class="op">.</span>classList<span class="op">.</span><span class="fn">toggle</span>(<span class="st">'dark'</span>, mode <span class="op">===</span> <span class="st">'dark'</span>);
+  <span class="k">return</span> { family, mode };
+}</pre>
+            </div>
+            <div class="tool"><span class="status-dot"></span>
+              <span class="t-name">theme <span>· applyTheme('alma-mater','light')</span></span>
+              <span class="t-chip">ok · 12ms</span></div>
+            <div class="badges" style="margin-top:12px">
+              <span class="badge ok">Applied</span>
+              <span class="badge info">AA verified</span>
+              <span class="badge warn">Restart pending</span>
+              <span class="badge err">Contrast fail</span>
+            </div>
+            <div class="btn-row"><span class="btn primary">Use Alma Mater</span>
+              <span class="btn secondary">Preview</span><span class="btn ghost">Cancel</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="composer"><div class="composer-box">
+        <span class="ph">Ask about a gene, a cohort, a pathway…</span>
+        <span class="send">${I.send}</span></div></div>
+    </main>
+  </div>`;
+
+function styleStr(map){ return Object.entries(map).map(([k,v])=>`${k}:${v}`).join(';'); }
+
+function buildFrame(base, accentTokens, extra){
+  const tokens = Object.assign({}, base, accentTokens||{}, extra||{});
+  const el = document.createElement('div');
+  el.className = 'app';
+  el.setAttribute('style', styleStr(tokens));
+  el.innerHTML = APP_HTML;
+  return el;
+}
+
+/* ───────────────────────── GALLERY TILE ───────────────────────── */
+function buildGallery(base, accentTokens, extra){
+  const tokens = Object.assign({}, base, accentTokens||{}, extra||{});
+  const el = document.createElement('div');
+  el.className = 'tile';
+  el.setAttribute('style', styleStr(tokens));
+  const heatLevels = [1,0,2,3,1,4,2,0,1,3,2,4,1,0,2,1,3,0,4,2,1,0,3,2,1,4,0,2,3,1,2,0,1,3,4,2,1,0,2,3,1,0,4,2,1,3,0,2,1,2];
+  let heat = '<div class="heat">';
+  for(let i=0;i<heatLevels.length;i++){ heat += `<i style="background:var(--heat${heatLevels[i]})"></i>`; }
+  heat += '</div>';
+  el.innerHTML = `
+    <h3>Buttons &amp; status</h3>
+    <div class="btn-row" style="margin-bottom:14px">
+      <span class="btn primary">Primary</span><span class="btn secondary">Secondary</span><span class="btn ghost">Ghost</span></div>
+    <div class="badges" style="margin-bottom:20px">
+      <span class="badge ok">Connected</span><span class="badge info">Info</span>
+      <span class="badge warn">Warning</span><span class="badge err">Error</span></div>
+    <h3>Metrics</h3>
+    <div class="metric-row" style="margin-bottom:20px">
+      <div class="metric"><div class="v">128k</div><div class="l">Tokens</div></div>
+      <div class="metric"><div class="v">42</div><div class="l">Sessions</div></div>
+      <div class="metric"><div class="v" style="color:var(--text-accent)">7</div><div class="l">Active</div></div>
+    </div>
+    <h3>Usage heatmap</h3>
+    ${heat}
+    <div class="heat-legend">Less
+      <i style="background:var(--heat0)"></i><i style="background:var(--heat1)"></i>
+      <i style="background:var(--heat2)"></i><i style="background:var(--heat3)"></i>
+      <i style="background:var(--heat4)"></i>More</div>`;
+  return el;
+}
+
+/* ───────────────────────── SETTINGS PREVIEW ───────────────────────── */
+function buildSettings(){
+  const tokens = Object.assign({}, A_LIGHT, ACCENTS[ACCENT].light, SIDEBAR==='navy'?NAVY_SIDEBAR:{});
+  const el = document.createElement('div');
+  el.className = 'settings-card';
+  el.setAttribute('style', styleStr(tokens));
+  el.innerHTML = `
+    <div class="sc-head"><span class="sc-eyebrow">Appearance</span></div>
+    <div class="sc-row">
+      <div class="lbl">Theme <span class="sc-badge-new">NEW</span></div>
+      <div class="hint">Choose the colour system. Parchment is the warm default; Alma Mater is UCSF's palette.</div>
+      <div class="sc-seg"><span>Parchment</span><span class="on">Alma Mater</span></div>
+    </div>
+    <div class="sc-row">
+      <div class="lbl">Mode</div>
+      <div class="hint">Applies within either theme.</div>
+      <div class="sc-seg"><span class="on">${I.sun} Light</span><span>${I.moon} Dark</span><span>${I.gear} System</span></div>
+    </div>`;
+  return el;
+}
+
+/* ───────────────────────── SWATCH REFERENCE ───────────────────────── */
+const SW_GROUPS = [
+  ['Canvas', [['--bg-app','background-app'],['--bg-default','background-default'],['--bg-muted','background-muted'],['--bg-medium','background-medium'],['--bg-strong','background-strong']]],
+  ['Sidebar', [['--sidebar','sidebar'],['--sidebar-hover','sidebar-hover'],['--sidebar-active','sidebar-active'],['--sidebar-border','sidebar-border']]],
+  ['Accent', [['--accent','background-accent'],['--accent-hover','accent-hover'],['--text-accent','text-accent'],['--accent-bar','accent-bar'],['--on-accent','text-on-accent']]],
+  ['Text', [['--text-default','text-default'],['--text-muted','text-muted'],['--text-subtle','text-subtle']]],
+  ['Borders', [['--border-subtle','border-subtle'],['--border-strong','border-strong']]],
+  ['Status', [['--danger','danger'],['--success','success'],['--warning','warning'],['--info','info']]],
+  ['Code syntax', [['--syn-keyword','keyword'],['--syn-string','string'],['--syn-func','function'],['--syn-type','type'],['--syn-number','number'],['--syn-comment','comment']]],
+  ['Heatmap', [['--heat0','heat-0'],['--heat1','heat-1'],['--heat2','heat-2'],['--heat3','heat-3'],['--heat4','heat-4']]]
+];
+function buildSwatches(base, accentTokens, extra, label, keyColor){
+  const tokens = Object.assign({}, base, accentTokens||{}, extra||{});
+  let html = `<header><span class="k" style="background:${keyColor}"></span>${label}</header>`;
+  for(const [title, rows] of SW_GROUPS){
+    html += `<div class="sw-group-title">${title}</div>`;
+    for(const [tk, nm] of rows){
+      const hex = tokens[tk];
+      html += `<div class="sw"><span class="chip" style="background:${hex}"></span>
+        <span class="nm">${nm}</span><span class="hx">${hex.toUpperCase()}</span></div>`;
+    }
+  }
+  html += '<div style="height:12px"></div>';
+  return html;
+}
+
+/* ───────────────────────── RENDER ───────────────────────── */
+function mount(id, node){ const m = document.getElementById(id); m.innerHTML=''; m.appendChild(node); }
+
+function renderAll(){
+  const accL = ACCENTS[ACCENT].light, accD = ACCENTS[ACCENT].dark;
+  const sideExtra = SIDEBAR==='navy' ? NAVY_SIDEBAR : {};
+  // Hero frames
+  mount('mount-alma-light', buildFrame(A_LIGHT, accL, sideExtra));
+  mount('mount-alma-dark',  buildFrame(A_DARK, accD, {}));
+  // Settings
+  mount('mount-settings', buildSettings());
+  // Gallery
+  mount('mount-gallery-light', buildGallery(A_LIGHT, accL, {}));
+  mount('mount-gallery-dark',  buildGallery(A_DARK, accD, {}));
+  // Parchment comparison (fixed accent)
+  mount('mount-parch-light', buildFrame(P_LIGHT, {}, {}));
+  mount('mount-parch-dark',  buildFrame(P_DARK, {}, {}));
+  // Swatches
+  document.getElementById('sw-light').innerHTML = buildSwatches(A_LIGHT, accL, sideExtra, 'Alma Mater · Light', '#ffffff');
+  document.getElementById('sw-dark').innerHTML  = buildSwatches(A_DARK, accD, {}, 'Alma Mater · Dark', '#04142e');
+}
+
+/* ───────────────────────── CONTROLS ───────────────────────── */
+const accWrap = document.getElementById('accentBtns');
+Object.entries(ACCENTS).forEach(([key,val])=>{
+  const b = document.createElement('button');
+  b.className = 'acc-btn'; b.dataset.acc = key;
+  b.setAttribute('aria-pressed', key===ACCENT ? 'true':'false');
+  b.innerHTML = `<span class="chip" style="background:${val.swatch}"></span>${val.name}`;
+  b.addEventListener('click', ()=>{
+    ACCENT = key;
+    [...accWrap.children].forEach(c=>c.setAttribute('aria-pressed', c.dataset.acc===key?'true':'false'));
+    renderAll();
+  });
+  accWrap.appendChild(b);
+});
+document.getElementById('sidebarSeg').addEventListener('click', (e)=>{
+  const btn = e.target.closest('button'); if(!btn) return;
+  SIDEBAR = btn.dataset.side;
+  [...e.currentTarget.children].forEach(c=>c.setAttribute('aria-pressed', c.dataset.side===SIDEBAR?'true':'false'));
+  renderAll();
+});
+
+renderAll();
+</script>

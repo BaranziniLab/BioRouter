@@ -1,7 +1,8 @@
 // Edge-case tests for the expansion tools. Params are built with `from_value`
 // so these also exercise real deserialization (defaults, renames, lenient input).
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+// The `Engine` trait already reaches here through `use super::*`.
+use base64::engine::general_purpose::STANDARD;
 
 /// Decode the HTML blob from a successful render result.
 fn decode_html(result: &CallToolResult) -> String {

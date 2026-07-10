@@ -98,25 +98,19 @@ describe('MCPUIResourceRenderer', () => {
     });
   });
 
-  it('allows agent-drafter app resources to be deleted from chat after confirmation', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response('{"ok":true}', { status: 200 }));
-    vi.stubGlobal('fetch', fetchMock);
+  it('does not offer a delete control for agent-drafter apps in chat', () => {
+    // Deleting an app is destructive and belongs in the Applications tab, not on
+    // an in-chat artifact card where a stray click removes files from disk.
     renderSubject('ui://agent-drafter/researcher-impact-dashboard');
 
-    fireEvent.click(screen.getByRole('button', { name: /delete researcher-impact-dashboard/i }));
-    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith(
-        'http://localhost/apps/researcher-impact-dashboard',
-        expect.objectContaining({
-          method: 'DELETE',
-          headers: { 'X-Secret-Key': 'secret' },
-        })
-      );
-    });
-    expect(screen.getByText(/Application deleted:/)).toBeInTheDocument();
-    expect(screen.getByText('researcher-impact-dashboard')).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /delete researcher-impact-dashboard/i })
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTitle('Delete application')).not.toBeInTheDocument();
+    // The open/expand affordance is still there.
+    expect(
+      screen.getByRole('button', { name: /^Open .+ Researcher Impact Dashboard/i })
+    ).toBeInTheDocument();
   });
 
   it('opens MCP HTML artifacts in the side viewer when an artifact handler is provided', async () => {

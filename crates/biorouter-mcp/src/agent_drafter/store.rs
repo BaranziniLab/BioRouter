@@ -150,6 +150,13 @@ pub struct Manifest {
     /// the app has never been built (or its sources changed since).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub built_at: Option<u64>,
+    /// Fingerprint of the App SDK the current `dist/app.js` was bundled from
+    /// (`bundle::sdk_fingerprint`). Apps vendor their own `src/sdk.ts`, so a
+    /// bundle built before an SDK upgrade would silently ignore frames the
+    /// server now sends. When this doesn't match, the daemon rebuilds the app on
+    /// the next serve. `None` = built before this was tracked → rebuild.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sdk_hash: Option<String>,
     /// Id of the chat session this app was created in, when known. Lets the GUI
     /// reopen the originating conversation so the user can keep iterating on the
     /// app there. Apps created before this was recorded have `None`.
@@ -214,6 +221,7 @@ fn safe_relative(path: &str) -> io::Result<PathBuf> {
 }
 
 /// Filesystem-backed artifact store rooted at a single directory.
+#[derive(Debug, Clone)]
 pub struct ArtifactStore {
     root: PathBuf,
 }
@@ -283,6 +291,7 @@ impl ArtifactStore {
             width: None,
             height: None,
             built_at: None,
+            sdk_hash: None,
             session_id: None,
         };
         self.save_manifest(&manifest)?;
@@ -327,6 +336,7 @@ impl ArtifactStore {
             width: None,
             height: None,
             built_at: None,
+            sdk_hash: None,
             session_id: None,
         };
         self.save_manifest(&manifest)?;
@@ -498,8 +508,47 @@ mod tests {
         assert!(agent.orchestration.sub_agents.is_empty());
         // durable_session: absent → treated as ON (the recovery default).
         assert!(agent.durable_session(), "durable sessions default ON");
-        // Advertised capability list is empty for a legacy app (deny-by-default).
+        // Everything that reaches outside the page stays deny-by-default…
+        for denied in ["files", "data", "compute", "vault", "memory", "tracing"] {
+            assert!(
+                !agent
+                    .capabilities
+                    .advertised()
+                    .contains(&denied.to_string()),
+                "{denied} must stay denied for a legacy manifest"
+            );
+        }
+        // …but UI control is confined to the app's own page, so a pre-BRSDK app
+        // picks it up on the next connect rather than staying a chat box.
+        assert!(agent.capabilities.ui.enabled, "ui control defaults ON");
+        assert_eq!(agent.capabilities.advertised(), vec!["ui".to_string()]);
+    }
+
+    #[test]
+    fn ui_capability_can_be_switched_off_per_app() {
+        let json = r#"{
+            "id": "a", "title": "A", "description": "", "kind": "agentic",
+            "entry": "index.html", "created_at": 0, "updated_at": 0,
+            "agent": { "system_prompt": "p", "capabilities": { "ui": { "enabled": false } } }
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        let agent = m.agent.unwrap();
+        assert!(!agent.capabilities.ui.enabled);
         assert!(agent.capabilities.advertised().is_empty());
+    }
+
+    #[test]
+    fn ui_capability_sub_switches_default_on_and_are_individually_revocable() {
+        let json = r#"{
+            "id": "a", "title": "A", "description": "", "kind": "agentic",
+            "entry": "index.html", "created_at": 0, "updated_at": 0,
+            "agent": { "system_prompt": "p", "capabilities": { "ui": { "allow_theme": false } } }
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        let ui = m.agent.unwrap().capabilities.ui;
+        assert!(ui.enabled, "omitted `enabled` still defaults on");
+        assert!(!ui.allow_theme);
+        assert!(ui.allow_layout && ui.allow_ask, "other switches unaffected");
     }
 
     #[test]

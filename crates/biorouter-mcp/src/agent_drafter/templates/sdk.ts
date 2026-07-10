@@ -19,14 +19,22 @@ export interface AppConfig {
   appId: string;
   /**
    * Explicit agent WebSocket endpoint. When omitted, it is derived from the
-   * page location: `ws[s]://<host>/apps/<appId>/agent`. Standalone exports set
-   * this to the daemon they bundle/launch.
+   * page location: `ws[s]://<host>/apps/<appId>/agent`.
    */
   endpoint?: string;
+  /**
+   * Candidate endpoints, tried in order until one connects. Standalone exports
+   * set this so the app works whether it is served by the daemon itself, by the
+   * bundled `serve.mjs` proxy, or opened straight off disk while a daemon runs
+   * on some other port.
+   */
+  endpoints?: string[];
   /** Greeting shown when the default chat panel mounts. */
   greeting?: string;
   /** Auto-mount a chat panel into `[data-br-chat]` if the app has no custom UI. */
   autoChat?: boolean;
+  /** Mount the agent-driven UI runtime (panels, charts, highlights). Default on. */
+  ui?: boolean;
 }
 
 export interface ImageInput {
@@ -70,7 +78,10 @@ export type AgentEvent =
   | { type: "context"; used?: number; limit?: number; ratio?: number }
   | { type: "history"; messages?: Array<{ role: string; text: string }> }
   | { type: "model"; ok: boolean; provider?: string; model?: string }
-  | { type: "widget"; id: string; tree: unknown };
+  | { type: "widget"; id: string; tree: unknown }
+  // ── Agent-driven UI control (BRSDK v3) ──
+  // The agent's `ui_*` tools push these; the UI runtime below applies them.
+  | ({ type: "ui" } & UiCommand);
 
 type EventKind = AgentEvent["type"];
 type Listener = (ev: AgentEvent) => void;
@@ -84,6 +95,8 @@ declare global {
   interface Window {
     BIOROUTER_APP_CONFIG?: AppConfig;
     BioRouter?: BioRouterClient;
+    /** Not in older lib.dom typings; used by `cssEscape`'s feature check. */
+    CSS?: { escape?: (value: string) => string };
   }
 }
 
@@ -103,19 +116,63 @@ function getClientId(appId: string): string {
   }
 }
 
-function resolveEndpoint(cfg: AppConfig): string {
-  const cid = encodeURIComponent(getClientId(cfg.appId));
-  let base: string;
-  if (cfg.endpoint) {
-    base = cfg.endpoint;
-  } else {
-    const loc = window.location;
-    const proto = loc.protocol === "https:" ? "wss:" : "ws:";
-    // Served by biorouterd at /apps/<id>/ — the agent socket is a sibling.
-    base = `${proto}//${loc.host}/apps/${cfg.appId}/agent`;
-  }
+/**
+ * The endpoint the page's own origin implies. `null` under `file://`, where
+ * there is no host to derive one from.
+ */
+function sameOriginEndpoint(appId: string): string | null {
+  const loc = window.location;
+  if (loc.protocol !== "http:" && loc.protocol !== "https:") return null;
+  const proto = loc.protocol === "https:" ? "wss:" : "ws:";
+  return `${proto}//${loc.host}/apps/${appId}/agent`;
+}
+
+/**
+ * Candidate agent endpoints, most-likely first. Exports used to bake a single
+ * absolute `ws://127.0.0.1:3000/...`, which fails whenever the daemon isn't on
+ * that port (the desktop app starts it on an ephemeral one) — so we now try the
+ * page's own origin first, then any configured fallbacks.
+ */
+function resolveEndpoints(cfg: AppConfig): string[] {
+  const out: string[] = [];
+  const add = (e: string | null) => {
+    if (e && out.indexOf(e) < 0) out.push(e);
+  };
+  // An explicit single endpoint always wins (a remote daemon, a test harness).
+  if (cfg.endpoint) add(cfg.endpoint);
+  else add(sameOriginEndpoint(cfg.appId));
+  for (const e of cfg.endpoints || []) add(e);
+  if (!cfg.endpoint) add(sameOriginEndpoint(cfg.appId));
+  return out;
+}
+
+function withClientId(base: string, appId: string): string {
+  const cid = encodeURIComponent(getClientId(appId));
   const sep = base.indexOf("?") >= 0 ? "&" : "?";
   return `${base}${sep}client_id=${cid}`;
+}
+
+/** Open one WebSocket, resolving on `open` and rejecting on the first error. */
+function openSocket(url: string): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch (e) {
+      reject(e as Error);
+      return;
+    }
+    const onOpen = () => {
+      ws.removeEventListener("error", onErr);
+      resolve(ws);
+    };
+    const onErr = () => {
+      ws.removeEventListener("open", onOpen);
+      reject(new Error(`could not connect to ${url}`));
+    };
+    ws.addEventListener("open", onOpen, { once: true });
+    ws.addEventListener("error", onErr, { once: true });
+  });
 }
 
 export class BioRouterClient {
@@ -136,9 +193,14 @@ export class BioRouterClient {
   private historyWaiters: Array<(m: Array<{ role: string; text: string }>) => void> = [];
   // Last widget tree the server sent for each widget id.
   private widgetStore: Map<string, WidgetNode> = new Map();
+  /** The agent-driven UI runtime: applies `ui` frames to the page. */
+  readonly ui: UiRuntime;
+  /** The endpoint that actually connected (useful in diagnostics). */
+  activeEndpoint: string | null = null;
 
   constructor(config: AppConfig) {
     this.config = config;
+    this.ui = new UiRuntime(this);
   }
 
   /** Register a listener for an agent event. Returns `this` for chaining. */
@@ -157,34 +219,57 @@ export class BioRouterClient {
     }
   }
 
-  /** Open (or reuse) the WebSocket to the BioRouter agent backend. */
+  /**
+   * Open (or reuse) the WebSocket to the BioRouter agent backend, trying each
+   * candidate endpoint in turn. Rejects with an actionable message listing what
+   * was tried, rather than a bare "could not reach the backend".
+   */
   connect(): Promise<void> {
     if (this.readyPromise) return this.readyPromise;
-    this.readyPromise = new Promise((resolve, reject) => {
-      let opened = false;
-      try {
-        this.ws = new WebSocket(resolveEndpoint(this.config));
-      } catch (e) {
-        reject(e as Error);
-        return;
-      }
-      this.ws.onopen = () => {
-        opened = true;
-        resolve();
-      };
-      this.ws.onerror = (e) => {
-        if (!opened) reject(new Error("Could not reach the BioRouter backend."));
-        this.emit({ type: "error", message: "connection error" });
-        this.settleActive(new Error("connection error"));
-      };
-      this.ws.onclose = () => {
-        this.readyPromise = null;
-        this.ws = null;
-        this.settleActive(new Error("connection closed"));
-      };
-      this.ws.onmessage = (ev) => this.handleFrame(ev.data);
+    this.readyPromise = this.dial().catch((e: Error) => {
+      // Let a later call retry (e.g. after the user starts biorouterd).
+      this.readyPromise = null;
+      throw e;
     });
     return this.readyPromise;
+  }
+
+  private async dial(): Promise<void> {
+    const candidates = resolveEndpoints(this.config);
+    if (!candidates.length) {
+      throw new Error(
+        "No BioRouter endpoint to connect to. This page was opened from a file:// URL " +
+          "with no fallback configured — serve it with `npm start` instead."
+      );
+    }
+    const tried: string[] = [];
+    for (const base of candidates) {
+      const url = withClientId(base, this.config.appId);
+      try {
+        const ws = await openSocket(url);
+        this.ws = ws;
+        this.activeEndpoint = base;
+        ws.onerror = () => {
+          this.emit({ type: "error", message: "connection error" });
+          this.settleActive(new Error("connection error"));
+        };
+        ws.onclose = () => {
+          this.readyPromise = null;
+          this.ws = null;
+          this.settleActive(new Error("connection closed"));
+        };
+        ws.onmessage = (ev) => this.handleFrame(ev.data);
+        return;
+      } catch {
+        tried.push(base);
+      }
+    }
+    throw new Error(
+      "Could not reach the BioRouter backend. Tried: " +
+        tried.join(", ") +
+        ". Start it with `biorouterd agent`, or run this app's `run.sh` / `npm start`, " +
+        "which starts one for you."
+    );
   }
 
   private settleActive(err?: Error): void {
@@ -214,6 +299,13 @@ export class BioRouterClient {
       if (Array.isArray(msg.capabilities)) this.capabilities = msg.capabilities;
       if (typeof msg.sessionId === "string") this.sessionId = msg.sessionId;
       this.resumed = msg.resumed === true;
+      // Tell the agent what this page offers it (regions, ids) so `ui_describe`
+      // returns something real and `ui_render` can target the author's markup.
+      if (this.has("ui")) this.ui.reportSurface();
+    }
+    // Agent-driven UI: apply the command to the page.
+    if (msg.type === "ui") {
+      this.ui.apply(msg);
     }
     // Resolve any pending br.context.tokens() callers.
     if (msg.type === "context") {
@@ -285,13 +377,30 @@ export class BioRouterClient {
     };
   }
 
+  /**
+   * The HTTP origin of the daemon we are actually talking to. Derived from the
+   * connected WebSocket endpoint, NOT from `window.location` — an exported app
+   * can be served from one origin while its agent lives on another, and using
+   * the page origin silently 404s every REST call.
+   */
+  private httpBase(): string {
+    const ep = this.activeEndpoint;
+    const appPath = `/apps/${encodeURIComponent(this.config.appId)}`;
+    if (ep) {
+      const u = new URL(ep);
+      const proto = u.protocol === "wss:" ? "https:" : "http:";
+      return `${proto}//${u.host}${appPath}`;
+    }
+    const loc = window.location;
+    return `${loc.protocol}//${loc.host}${appPath}`;
+  }
+
   /** Provider/model catalog the user has available (the provider-agnostic
    *  headline). Returns `[]` on failure. */
   async listModels(): Promise<unknown[]> {
     try {
-      const loc = window.location;
-      const base = `${loc.protocol}//${loc.host}/apps/${encodeURIComponent(this.config.appId)}`;
-      const res = await fetch(`${base}/models`);
+      await this.connect();
+      const res = await fetch(`${this.httpBase()}/models`);
       if (!res.ok) return [];
       const data = await res.json();
       return Array.isArray(data.providers) ? data.providers : [];
@@ -366,6 +475,11 @@ export class BioRouterClient {
   /** Whether the server advertised a given BRSDK capability in `ready`. */
   has(capability: string): boolean {
     return this.capabilities.indexOf(capability) >= 0;
+  }
+
+  /** Send a raw client frame. Public so the UI runtime can answer `ui_ask`. */
+  sendRaw(frame: unknown): boolean {
+    return this.send(frame);
   }
 
   /** Send a raw client frame if the socket is open; returns whether it went. */
@@ -509,10 +623,17 @@ export class BioRouterClient {
 // ---------------------------------------------------------------------------
 
 function escapeHtml(s: string): string {
+  // Quotes are escaped too: the model's markdown is untrusted (prompt injection),
+  // and escaped text is interpolated into attributes downstream (notably a link
+  // href). Without escaping `"`, `[t](https://x" onmouseover="alert(1))` breaks
+  // out of the href and injects an event handler — XSS in the app's own origin,
+  // which is not a sandboxed iframe.
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function inline(s: string): string {
@@ -520,8 +641,11 @@ function inline(s: string): string {
   return s
     .replace(/`([^`]+)`/g, (_m, c) => `<code>${c}</code>`)
     .replace(
-      /\[([^\]]+)\]\((https?:[^)]+)\)/g,
-      (_m, t, u) => `<a href="${u}" target="_blank" rel="noopener">${t}</a>`
+      /\[([^\]]+)\]\((https?:[^)\s]+)\)/g,
+      // Belt-and-suspenders with escapeHtml: the URL is `http(s)` only, and any
+      // residual quote/angle/space is stripped so it cannot escape the attribute.
+      (_m, t, u) =>
+        `<a href="${String(u).replace(/["'<>`\s]/g, "")}" target="_blank" rel="noopener">${t}</a>`
     )
     .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
     .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>");
@@ -1076,8 +1200,12 @@ export type WidgetNode =
   | { t: "badge"; value: string }
   | { t: "table"; columns: string[]; rows: Array<Array<string | number>> }
   | { t: "chart"; spec: unknown }
+  | { t: "graph"; spec: unknown }
+  | { t: "stat"; label?: string; value: string | number; unit?: string; delta?: string }
+  | { t: "divider" }
+  | { t: "progress"; value: number; label?: string }
   | { t: "input"; name: string; label?: string; value?: string; placeholder?: string; inputType?: string }
-  | { t: "select"; name: string; label?: string; value?: string; options: Array<{ value: string; label: string }> }
+  | { t: "select"; name: string; label?: string; value?: string; options: Array<string | { value: string; label?: string }> }
   | { t: "checkbox"; name: string; label?: string; checked?: boolean }
   | { t: "button"; label: string; action: string; variant?: string; submit?: boolean }
   | { t: "form"; children: WidgetNode[] };
@@ -1155,6 +1283,52 @@ export function renderWidget(node: WidgetNode, ctx: WidgetContext): HTMLElement 
       w.innerHTML = renderChart(JSON.stringify(node.spec));
       return w;
     }
+    case "graph": {
+      const w = wEl("div", "br-visual");
+      w.innerHTML = renderGraph(JSON.stringify(node.spec));
+      return w;
+    }
+    case "stat": {
+      const s = wEl("div", "br-stat");
+      if (node.label) {
+        const l = wEl("div", "br-stat__label");
+        l.textContent = node.label;
+        s.appendChild(l);
+      }
+      const v = wEl("div", "br-stat__value");
+      v.textContent = String(node.value);
+      if (node.unit) {
+        const u = wEl("span", "br-stat__unit");
+        u.textContent = " " + node.unit;
+        v.appendChild(u);
+      }
+      s.appendChild(v);
+      if (node.delta) {
+        // A leading "-" reads as a decrease; everything else is neutral/up.
+        const down = node.delta.trim().indexOf("-") === 0;
+        const d = wEl("div", down ? "br-stat__delta br-stat__delta--down" : "br-stat__delta");
+        d.textContent = node.delta;
+        s.appendChild(d);
+      }
+      return s;
+    }
+    case "divider":
+      return wEl("hr", "br-divider");
+    case "progress": {
+      const p = wEl("div", "br-progress");
+      if (node.label) {
+        const l = wEl("div", "br-progress__label");
+        l.textContent = node.label;
+        p.appendChild(l);
+      }
+      const track = wEl("div", "br-progress__track");
+      const bar = wEl("div", "br-progress__bar");
+      const pct = Math.max(0, Math.min(1, Number(node.value) || 0)) * 100;
+      bar.style.width = pct.toFixed(1) + "%";
+      track.appendChild(bar);
+      p.appendChild(track);
+      return p;
+    }
     case "input": {
       const wrap = wEl("label", "br-field");
       if (node.label) {
@@ -1182,9 +1356,17 @@ export function renderWidget(node: WidgetNode, ctx: WidgetContext): HTMLElement 
       s.className = "br-select";
       for (const opt of node.options) {
         const o = document.createElement("option");
-        o.value = opt.value;
-        o.textContent = opt.label;
-        if (node.value === opt.value) o.selected = true;
+        // Accept both {value,label} objects and bare strings. The server-side
+        // validator (and `ui_ask`) allow plain-string options, so a
+        // string-options select must render its choices, not blank entries.
+        if (typeof opt === "string") {
+          o.value = opt;
+          o.textContent = opt;
+        } else {
+          o.value = opt.value;
+          o.textContent = opt.label ?? opt.value;
+        }
+        if (node.value === o.value) o.selected = true;
         s.appendChild(o);
       }
       ctx.fields.set(node.name, () => s.value);
@@ -1240,6 +1422,639 @@ export function renderWidget(node: WidgetNode, ctx: WidgetContext): HTMLElement 
       return d;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Agent-driven UI runtime
+// ---------------------------------------------------------------------------
+// The agent's `ui_*` tools emit `{type:"ui", cmd:…}` frames; this applies them to
+// the page. Everything it creates is confined to elements it owns (`.br-dock`,
+// `.br-panel`, `.br-toasts`, `.br-modal-host`) plus the CSS custom properties on
+// `:root` — an app's own markup is only ever *targeted*, never rewritten, unless
+// the agent explicitly names it.
+
+export interface UiCommand {
+  type?: string;
+  cmd: string;
+  id?: string;
+  title?: string | null;
+  place?: string;
+  body?: WidgetNode[];
+  collapsible?: boolean;
+  remove?: boolean;
+  target?: string;
+  mode?: string;
+  note?: string | null;
+  scroll?: boolean;
+  accent?: string | null;
+  density?: string | null;
+  preset?: string;
+  sidebarWidth?: number | null;
+  message?: string;
+  level?: string;
+  timeoutMs?: number;
+  state?: Record<string, unknown>;
+  requestId?: string;
+  prompt?: string;
+  submitLabel?: string;
+  fields?: AskFieldSpec[];
+}
+
+export interface AskFieldSpec {
+  name: string;
+  label?: string;
+  type?: string;
+  options?: string[];
+  value?: string;
+  placeholder?: string;
+}
+
+// Named aliases (see the note near `Listener`): the no-esbuild fallback stripper
+// keys off an uppercase/primitive leading type token, so a bare
+// `(cmd: UiCommand) => void` annotation would survive into the emitted JS.
+type StateListener = (state: Record<string, unknown>) => void;
+type CommandListener = (cmd: UiCommand) => void;
+type FieldGetters = Map<string, () => string | boolean>;
+
+/** Where a `place` maps in the DOM. `dock` is the always-available drawer. */
+const DOCK_PLACES: Record<string, string> = {
+  dock: "br-dock--right",
+  right: "br-dock--right",
+  left: "br-dock--left",
+  bottom: "br-dock--bottom",
+};
+
+export class UiRuntime {
+  private client: BioRouterClient;
+  /** The agent's shared state bag (mirrors `ui_state` on the server). */
+  state: Record<string, unknown> = {};
+  private stateListeners: StateListener[] = [];
+  private commandListeners: CommandListener[] = [];
+  private docks: Map<string, HTMLElement> = new Map();
+  private panels: Map<string, HTMLElement> = new Map();
+  private toastHost: HTMLElement | null = null;
+  private modalHost: HTMLElement | null = null;
+  private openAsk: string | null = null;
+
+  constructor(client: BioRouterClient) {
+    this.client = client;
+  }
+
+  /** Subscribe to state changes the agent makes (`ui_state`). */
+  onState(fn: StateListener): this {
+    this.stateListeners.push(fn);
+    return this;
+  }
+
+  /** Observe every UI command (for logging, or to override handling). */
+  onCommand(fn: CommandListener): this {
+    this.commandListeners.push(fn);
+    return this;
+  }
+
+  /** The author-declared regions the agent may render into. */
+  regions(): string[] {
+    const out: string[] = [];
+    const nodes = document.querySelectorAll("[data-br-region]");
+    for (let i = 0; i < nodes.length; i++) {
+      const name = (nodes[i] as HTMLElement).dataset.brRegion;
+      if (name) out.push(name);
+    }
+    return out;
+  }
+
+  /**
+   * Tell the backend what this page offers, so `ui_describe` returns real
+   * targets instead of the agent guessing selectors.
+   */
+  reportSurface(): void {
+    const ids: string[] = [];
+    const withId = document.querySelectorAll("[id]");
+    for (let i = 0; i < withId.length && ids.length < 200; i++) {
+      const id = withId[i].id;
+      // Skip our own scaffolding (including the injected theme <style>) — the
+      // agent addresses those via @panel:/@region:, not by id.
+      if (!id || id.indexOf("br-") === 0 || id === "biorouter-theme") continue;
+      ids.push(id);
+    }
+    this.client.sendRaw({
+      type: "ui_surface",
+      surface: {
+        title: document.title,
+        regions: this.regions(),
+        ids,
+        hasChat: !!document.querySelector("[data-br-chat]"),
+        panels: Array.from(this.panels.keys()),
+      },
+    });
+  }
+
+  /** Apply one agent command. Unknown commands are ignored, not fatal. */
+  apply(cmd: UiCommand): void {
+    for (const fn of this.commandListeners) {
+      try {
+        fn(cmd);
+      } catch {
+        /* listener errors are non-fatal */
+      }
+    }
+    try {
+      switch (cmd.cmd) {
+        case "panel":
+          this.applyPanel(cmd);
+          break;
+        case "render":
+          this.applyRender(cmd);
+          break;
+        case "highlight":
+          this.applyHighlight(cmd);
+          break;
+        case "theme":
+          this.applyTheme(cmd);
+          break;
+        case "layout":
+          this.applyLayout(cmd);
+          break;
+        case "notify":
+          this.applyNotify(cmd);
+          break;
+        case "state":
+          this.applyState(cmd);
+          break;
+        case "ask":
+          this.applyAsk(cmd);
+          break;
+        case "ask_close":
+          this.closeAsk(cmd.requestId || "", false);
+          break;
+        default:
+          break;
+      }
+    } catch (e) {
+      // A malformed command must never take the app down.
+      this.applyNotify({
+        cmd: "notify",
+        message: "The agent sent a UI update this app could not apply.",
+        level: "warn",
+      });
+    }
+  }
+
+  // ── targets ──────────────────────────────────────────────────────────────
+
+  /**
+   * Resolve a tool's `target` string. `@region:x` / `@panel:x` / `@chat` /
+   * `@main` are aliases; anything else is a CSS selector.
+   */
+  resolveTarget(target: string): HTMLElement | null {
+    const t = (target || "").trim();
+    if (t.indexOf("@region:") === 0) {
+      const name = t.slice("@region:".length);
+      return document.querySelector<HTMLElement>(
+        `[data-br-region="${cssEscape(name)}"]`
+      );
+    }
+    if (t.indexOf("@panel:") === 0) {
+      const panel = this.panels.get(t.slice("@panel:".length));
+      return panel ? panel.querySelector<HTMLElement>(".br-panel__body") : null;
+    }
+    if (t === "@chat") return document.querySelector<HTMLElement>("[data-br-chat]");
+    if (t === "@main") return this.mainHost();
+    return document.querySelector<HTMLElement>(t);
+  }
+
+  private mainHost(): HTMLElement {
+    return (
+      document.querySelector<HTMLElement>("[data-br-main]") ||
+      document.querySelector<HTMLElement>("main") ||
+      document.querySelector<HTMLElement>(".br-container") ||
+      document.body
+    );
+  }
+
+  private dock(place: string): HTMLElement {
+    const cls = DOCK_PLACES[place] || DOCK_PLACES.dock;
+    let el = this.docks.get(cls);
+    if (el) return el;
+    el = document.createElement("aside");
+    el.className = "br-dock " + cls;
+    el.setAttribute("data-br-dock", place);
+    document.body.appendChild(el);
+    this.docks.set(cls, el);
+    document.body.classList.add("br-has-" + cls.replace("br-dock--", "dock-"));
+    return el;
+  }
+
+  private syncDockVisibility(): void {
+    this.docks.forEach((el, cls) => {
+      const bodyCls = "br-has-" + cls.replace("br-dock--", "dock-");
+      document.body.classList.toggle(bodyCls, el.childElementCount > 0);
+    });
+  }
+
+  // ── commands ─────────────────────────────────────────────────────────────
+
+  private applyPanel(cmd: UiCommand): void {
+    const id = cmd.id || "";
+    if (!id) return;
+    if (cmd.remove) {
+      const existing = this.panels.get(id);
+      if (existing) existing.remove();
+      this.panels.delete(id);
+      this.syncDockVisibility();
+      return;
+    }
+
+    const place = cmd.place || "dock";
+    const panel = document.createElement("section");
+    panel.className = "br-panel";
+    panel.setAttribute("data-br-panel", id);
+
+    if (cmd.title) {
+      const head = document.createElement("header");
+      head.className = "br-panel__head";
+      const h = document.createElement("h3");
+      h.className = "br-panel__title";
+      h.textContent = cmd.title;
+      head.appendChild(h);
+      if (cmd.collapsible !== false) {
+        const toggle = document.createElement("button");
+        toggle.className = "br-panel__toggle";
+        toggle.type = "button";
+        toggle.setAttribute("aria-label", "Collapse panel");
+        toggle.textContent = "–";
+        toggle.addEventListener("click", () => {
+          const collapsed = panel.classList.toggle("br-panel--collapsed");
+          toggle.textContent = collapsed ? "+" : "–";
+        });
+        head.appendChild(toggle);
+      }
+      panel.appendChild(head);
+    }
+
+    const body = document.createElement("div");
+    body.className = "br-panel__body";
+    this.renderInto(body, cmd.body || [], id);
+    panel.appendChild(body);
+
+    // Replace in place so a refreshed dashboard doesn't jump to the bottom.
+    const prev = this.panels.get(id);
+    if (prev && prev.parentElement) {
+      prev.parentElement.replaceChild(panel, prev);
+    } else if (place === "modal") {
+      this.modal().appendChild(panel);
+    } else if (place === "main") {
+      this.mainHost().appendChild(panel);
+    } else {
+      this.dock(place).appendChild(panel);
+    }
+    this.panels.set(id, panel);
+    this.syncDockVisibility();
+  }
+
+  private applyRender(cmd: UiCommand): void {
+    const host = this.resolveTarget(cmd.target || "");
+    if (!host) {
+      // Say so out loud: a silently-dropped render looks like a broken agent.
+      this.applyNotify({
+        cmd: "notify",
+        message: `The agent tried to render into "${cmd.target}", which this app does not have.`,
+        level: "warn",
+      });
+      return;
+    }
+    if (cmd.mode !== "append") host.innerHTML = "";
+    this.renderInto(host, cmd.body || [], cmd.target || "render", cmd.mode === "append");
+  }
+
+  /** Render widget nodes, wiring their buttons back into the agent loop. */
+  private renderInto(
+    host: HTMLElement,
+    nodes: WidgetNode[],
+    widgetId: string,
+    append?: boolean
+  ): void {
+    const ctx: WidgetContext = {
+      fields: new Map(),
+      onAction: (action, payload) =>
+        this.client.sendRaw({ type: "widget_action", widgetId, action, payload }),
+    };
+    if (!append) host.innerHTML = "";
+    for (const node of nodes) {
+      host.appendChild(renderWidget(node, ctx));
+    }
+  }
+
+  private applyHighlight(cmd: UiCommand): void {
+    if (cmd.mode === "clear") {
+      this.clearHighlights();
+      return;
+    }
+    this.clearHighlights();
+    const el = this.resolveTarget(cmd.target || "");
+    if (!el) {
+      // The tool reported success, so tell the user something happened rather
+      // than leaving them staring at an unchanged page.
+      this.applyNotify({
+        cmd: "notify",
+        message: `The agent tried to highlight "${cmd.target}", which this app does not have.`,
+        level: "warn",
+      });
+      return;
+    }
+    el.classList.add("br-highlight", "br-highlight--" + (cmd.mode || "outline"));
+    // Focus mode dims via a fixed backdrop the target is raised above — NOT via
+    // ancestor opacity, which would drag the nested target down with it.
+    if (cmd.mode === "focus") this.focusBackdrop();
+    if (cmd.note) {
+      const note = document.createElement("div");
+      note.className = "br-callout";
+      note.setAttribute("data-br-callout", "1");
+      note.textContent = cmd.note;
+      el.insertAdjacentElement("afterend", note);
+    }
+    if (cmd.scroll !== false && typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }
+
+  private focusBackdrop(): HTMLElement {
+    let bd = document.querySelector<HTMLElement>(".br-focus-backdrop");
+    if (!bd) {
+      bd = document.createElement("div");
+      bd.className = "br-focus-backdrop";
+      document.body.appendChild(bd);
+    }
+    return bd;
+  }
+
+  private clearHighlights(): void {
+    const marked = document.querySelectorAll(".br-highlight");
+    for (let i = 0; i < marked.length; i++) {
+      marked[i].classList.remove(
+        "br-highlight",
+        "br-highlight--outline",
+        "br-highlight--pulse",
+        "br-highlight--focus"
+      );
+    }
+    const notes = document.querySelectorAll("[data-br-callout]");
+    for (let i = 0; i < notes.length; i++) notes[i].remove();
+    const bd = document.querySelector(".br-focus-backdrop");
+    if (bd) bd.remove();
+  }
+
+  private applyTheme(cmd: UiCommand): void {
+    const root = document.documentElement;
+    if (cmd.accent) root.style.setProperty("--br-accent", cmd.accent);
+    if (cmd.mode) {
+      if (cmd.mode === "auto") root.removeAttribute("data-br-theme");
+      else root.setAttribute("data-br-theme", cmd.mode);
+    }
+    if (cmd.density) root.setAttribute("data-br-density", cmd.density);
+  }
+
+  private applyLayout(cmd: UiCommand): void {
+    const preset = cmd.preset || "single";
+    document.body.setAttribute("data-br-layout", preset);
+
+    // Dock width is a single custom property so an explicit `sidebarWidth`
+    // always wins over the preset's default (a CSS rule per preset would beat
+    // the inline var and silently ignore the caller).
+    const root = document.documentElement;
+    const presetWidth: Record<string, string> = {
+      dashboard: "min(62vw, 900px)",
+      split: "50vw",
+    };
+    if (cmd.sidebarWidth) {
+      root.style.setProperty(
+        "--br-dock-w",
+        Math.max(200, Math.min(1200, cmd.sidebarWidth)) + "px"
+      );
+    } else if (presetWidth[preset]) {
+      root.style.setProperty("--br-dock-w", presetWidth[preset]);
+    } else {
+      root.style.removeProperty("--br-dock-w"); // back to the stylesheet default
+    }
+
+    // "sidebar-left" has to actually move the panels, or the preset is a lie.
+    const side = preset === "sidebar-left" ? "left" : "right";
+    const from = this.docks.get(DOCK_PLACES[side === "left" ? "right" : "left"]);
+    if (from && from.childElementCount) {
+      const to = this.dock(side);
+      while (from.firstElementChild) to.appendChild(from.firstElementChild);
+    }
+
+    // The dashboard preset lays the dock out as a grid rather than a column.
+    for (const [, el] of this.docks) {
+      el.classList.toggle("br-dock--grid", preset === "dashboard");
+    }
+    this.syncDockVisibility();
+  }
+
+  private toasts(): HTMLElement {
+    if (this.toastHost && this.toastHost.isConnected) return this.toastHost;
+    const el = document.createElement("div");
+    el.className = "br-toasts";
+    document.body.appendChild(el);
+    this.toastHost = el;
+    return el;
+  }
+
+  private applyNotify(cmd: UiCommand): void {
+    const t = document.createElement("div");
+    t.className = "br-toast br-toast--" + (cmd.level || "info");
+    t.setAttribute("role", "status");
+    t.textContent = cmd.message || "";
+    this.toasts().appendChild(t);
+    const ms = cmd.timeoutMs === undefined ? 4000 : cmd.timeoutMs;
+    if (ms > 0) window.setTimeout(() => t.remove(), ms);
+    else {
+      t.classList.add("br-toast--sticky");
+      t.addEventListener("click", () => t.remove());
+    }
+  }
+
+  private applyState(cmd: UiCommand): void {
+    this.state = cmd.state || {};
+    for (const fn of this.stateListeners) {
+      try {
+        fn(this.state);
+      } catch {
+        /* listener errors are non-fatal */
+      }
+    }
+  }
+
+  private modal(): HTMLElement {
+    if (this.modalHost && this.modalHost.isConnected) return this.modalHost;
+    const el = document.createElement("div");
+    el.className = "br-modal-host";
+    document.body.appendChild(el);
+    this.modalHost = el;
+    return el;
+  }
+
+  /**
+   * Render a blocking question from `ui_ask`. The tool call on the server is
+   * parked until we send `ui_reply` — so *every* exit path from this form must
+   * send one, including dismissal.
+   */
+  private applyAsk(cmd: UiCommand): void {
+    const requestId = cmd.requestId || "";
+    if (!requestId) return;
+    // Only one question at a time; a second supersedes (and cancels) the first.
+    if (this.openAsk) this.closeAsk(this.openAsk, true);
+    this.openAsk = requestId;
+
+    const host = this.modal();
+    const backdrop = document.createElement("div");
+    backdrop.className = "br-modal";
+    backdrop.setAttribute("data-br-ask", requestId);
+
+    const card = document.createElement("div");
+    card.className = "br-modal__card br-card";
+    card.setAttribute("role", "dialog");
+    card.setAttribute("aria-modal", "true");
+
+    if (cmd.title) {
+      const h = document.createElement("h3");
+      h.className = "br-card__title";
+      h.textContent = cmd.title;
+      card.appendChild(h);
+    }
+    if (cmd.prompt) {
+      const p = document.createElement("div");
+      p.className = "br-text";
+      p.innerHTML = renderMarkdown(cmd.prompt);
+      card.appendChild(p);
+    }
+
+    const getters: FieldGetters = new Map();
+    const form = document.createElement("div");
+    form.className = "br-form";
+    for (const f of cmd.fields || []) {
+      form.appendChild(buildAskField(f, getters));
+    }
+    card.appendChild(form);
+
+    const actions = document.createElement("div");
+    actions.className = "br-modal__actions";
+    const cancel = document.createElement("button");
+    cancel.className = "br-btn br-btn--ghost";
+    cancel.type = "button";
+    cancel.textContent = "Skip";
+    cancel.addEventListener("click", () => this.closeAsk(requestId, true));
+    const submit = document.createElement("button");
+    submit.className = "br-btn";
+    submit.type = "button";
+    submit.textContent = cmd.submitLabel || "Submit";
+    submit.addEventListener("click", () => {
+      const payload: Record<string, string | boolean> = {};
+      getters.forEach((get, name) => {
+        payload[name] = get();
+      });
+      this.client.sendRaw({ type: "ui_reply", requestId, payload });
+      this.dismissAsk(requestId);
+    });
+    actions.appendChild(cancel);
+    actions.appendChild(submit);
+    card.appendChild(actions);
+
+    backdrop.appendChild(card);
+    host.appendChild(backdrop);
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") this.closeAsk(requestId, true);
+    };
+    document.addEventListener("keydown", onKey);
+    backdrop.addEventListener("br:teardown", () =>
+      document.removeEventListener("keydown", onKey)
+    );
+
+    const first = card.querySelector<HTMLElement>("input, select, textarea");
+    if (first) first.focus();
+  }
+
+  /** Remove the form. When `answer` is true, tell the parked tool it was skipped. */
+  private closeAsk(requestId: string, answer: boolean): void {
+    if (answer) {
+      this.client.sendRaw({
+        type: "ui_reply",
+        requestId,
+        payload: { cancelled: true },
+      });
+    }
+    this.dismissAsk(requestId);
+  }
+
+  private dismissAsk(requestId: string): void {
+    const el = document.querySelector(`[data-br-ask="${cssEscape(requestId)}"]`);
+    if (el) {
+      el.dispatchEvent(new CustomEvent("br:teardown"));
+      el.remove();
+    }
+    if (this.openAsk === requestId) this.openAsk = null;
+  }
+}
+
+/** Minimal `CSS.escape` shim for the attribute selectors we build. */
+function cssEscape(value: string): string {
+  if (window.CSS && typeof window.CSS.escape === "function") {
+    return window.CSS.escape(value);
+  }
+  return String(value).replace(/["\\\]]/g, "\\$&");
+}
+
+function buildAskField(f: AskFieldSpec, getters: FieldGetters): HTMLElement {
+  const kind = f.type || "text";
+  if (kind === "checkbox") {
+    const wrap = wEl("label", "br-check");
+    const c = document.createElement("input");
+    c.type = "checkbox";
+    c.checked = f.value === "true";
+    getters.set(f.name, () => c.checked);
+    wrap.appendChild(c);
+    const l = wEl("span");
+    l.textContent = f.label || f.name;
+    wrap.appendChild(l);
+    return wrap;
+  }
+  const wrap = wEl("label", "br-field");
+  const label = wEl("span", "br-field__label");
+  label.textContent = f.label || f.name;
+  wrap.appendChild(label);
+  if (kind === "select") {
+    const s = document.createElement("select");
+    s.className = "br-select";
+    for (const opt of f.options || []) {
+      const o = document.createElement("option");
+      o.value = opt;
+      o.textContent = opt;
+      if (f.value === opt) o.selected = true;
+      s.appendChild(o);
+    }
+    getters.set(f.name, () => s.value);
+    wrap.appendChild(s);
+    return wrap;
+  }
+  if (kind === "textarea") {
+    const ta = document.createElement("textarea");
+    ta.className = "br-textarea";
+    if (f.value) ta.value = f.value;
+    if (f.placeholder) ta.placeholder = f.placeholder;
+    getters.set(f.name, () => ta.value);
+    wrap.appendChild(ta);
+    return wrap;
+  }
+  const i = document.createElement("input");
+  i.className = "br-input";
+  i.type = kind === "number" ? "number" : "text";
+  if (f.value) i.value = f.value;
+  if (f.placeholder) i.placeholder = f.placeholder;
+  getters.set(f.name, () => i.value);
+  wrap.appendChild(i);
+  return wrap;
 }
 
 export function mountChat(client: BioRouterClient, host: HTMLElement): void {
@@ -1322,9 +2137,11 @@ export function mountChat(client: BioRouterClient, host: HTMLElement): void {
     showTyping();
     try {
       await client.prompt(text);
-    } catch {
+    } catch (e) {
       clearTyping();
-      add("agent", false, "Failed to get a response.");
+      // Show why. "Failed to get a response" told the user nothing actionable —
+      // the message from `dial()` names the endpoints tried and the fix.
+      add("agent", false, (e as Error).message || "Failed to get a response.");
     }
   };
   send.addEventListener("click", submit);
@@ -1344,22 +2161,48 @@ export function createApp(overrides: Partial<AppConfig> = {}): BioRouterClient {
   const cfg: AppConfig = {
     appId: "app",
     autoChat: true,
+    ui: true,
     ...(window.BIOROUTER_APP_CONFIG || {}),
     ...overrides,
   };
   const client = new BioRouterClient(cfg);
   window.BioRouter = client;
-  if (cfg.autoChat) {
-    const mount = () => {
+
+  // Connect eagerly so agent-driven UI works in apps that never call prompt()
+  // (a dashboard the agent populates on load), and so a dead backend surfaces
+  // immediately as a banner instead of on the user's first click.
+  const start = () => {
+    if (cfg.autoChat) {
       const host = document.querySelector<HTMLElement>("[data-br-chat]");
       if (host && !host.dataset.brMounted) {
         host.dataset.brMounted = "1";
         mountChat(client, host);
       }
-    };
-    if (document.readyState === "loading")
-      document.addEventListener("DOMContentLoaded", mount);
-    else mount();
-  }
+    }
+    client.connect().catch((e: Error) => mountBackendError(e.message));
+  };
+  if (document.readyState === "loading")
+    document.addEventListener("DOMContentLoaded", start);
+  else start();
   return client;
+}
+
+/**
+ * A visible, actionable banner when no BioRouter daemon could be reached. This
+ * is the failure an exported app used to show as a bare console error, leaving
+ * the user with a UI that silently did nothing.
+ */
+export function mountBackendError(message: string): void {
+  if (document.querySelector("[data-br-backend-error]")) return;
+  const bar = document.createElement("div");
+  bar.className = "br-backend-error";
+  bar.setAttribute("data-br-backend-error", "1");
+  bar.setAttribute("role", "alert");
+  const title = document.createElement("strong");
+  title.textContent = "No BioRouter backend";
+  const body = document.createElement("div");
+  body.textContent = message;
+  bar.appendChild(title);
+  bar.appendChild(body);
+  document.body.insertBefore(bar, document.body.firstChild);
 }
