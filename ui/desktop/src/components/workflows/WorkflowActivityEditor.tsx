@@ -69,7 +69,10 @@ export default function WorkflowActivityEditor({
 
       {/* Message Field */}
       <div className="mb-4">
-        <label htmlFor="message" className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+        <label
+          htmlFor="message"
+          className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1"
+        >
           Message
         </label>
         <p className="text-xs text-text-muted mb-2">
@@ -80,7 +83,7 @@ export default function WorkflowActivityEditor({
           value={messageContent}
           onChange={(e) => handleMessageChange(e.target.value)}
           onBlur={onBlur}
-          className="w-full px-3 py-2 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150 resize-none"
+          className="w-full px-3 py-2 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:border-border-strong transition-colors duration-150 resize-none"
           placeholder="Enter a user facing introduction message for your workflow (supports **bold**, *italic*, `code`, etc.)"
           rows={3}
           autoCorrect="off"
@@ -96,7 +99,8 @@ export default function WorkflowActivityEditor({
             Activity Buttons
           </label>
           <p className="text-xs text-text-muted mb-3">
-            Clickable buttons that appear below the message to help users interact with your workflow.
+            Clickable buttons that appear below the message to help users interact with your
+            workflow.
           </p>
         </div>
 
@@ -129,7 +133,7 @@ export default function WorkflowActivityEditor({
             onChange={(e) => setNewActivity(e.target.value)}
             onKeyPress={(e) => e.key === 'Enter' && handleAddActivity()}
             onBlur={onBlur}
-            className="flex-1 h-9 px-3 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150"
+            className="flex-1 h-9 px-3 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:border-border-strong transition-colors duration-150"
             placeholder="Add activity button label…"
           />
           <Button

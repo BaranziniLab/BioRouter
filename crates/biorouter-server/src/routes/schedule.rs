@@ -66,9 +66,9 @@ pub struct SessionDisplayInfo {
     total_tokens: Option<i32>,
     input_tokens: Option<i32>,
     output_tokens: Option<i32>,
-    accumulated_total_tokens: Option<i32>,
-    accumulated_input_tokens: Option<i32>,
-    accumulated_output_tokens: Option<i32>,
+    accumulated_total_tokens: Option<i64>,
+    accumulated_input_tokens: Option<i64>,
+    accumulated_output_tokens: Option<i64>,
 }
 
 #[utoipa::path(

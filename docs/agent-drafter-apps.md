@@ -52,28 +52,118 @@ not embedded in a chat iframe.
 ## WebSocket protocol (browser ⇄ backend)
 
 Client → server: `{"type":"prompt","text":"…","images":[{"mimeType","data"}]}`,
-`{"type":"cancel"}`.
-Server → client: `{"type":"ready"}`, `{"type":"message","delta"}`,
+`{"type":"cancel"}`, `{"type":"tokens"}`, `{"type":"history"}`,
+`{"type":"modelselect",…}`, `{"type":"approve"|"reject",…}`,
+`{"type":"widget_action",…}`, and — for agent-driven UI —
+`{"type":"ui_surface","surface":{…}}` and
+`{"type":"ui_reply","requestId":"…","payload":{…}}`.
+
+Server → client: `{"type":"ready","capabilities":[…]}`, `{"type":"message","delta"}`,
 `{"type":"thought","delta"}`, `{"type":"tool","name","status"}`,
-`{"type":"done"}`, `{"type":"error","message"}`.
+`{"type":"context"|"history"|"model"|"guardrail"|"approval"}`,
+`{"type":"ui","cmd":"panel"|"render"|"chart"…}`, `{"type":"done"}`,
+`{"type":"error","message"}`.
+
+## Agent-driven UI (the `ui_*` tools)
+
+An app's agent **drives the app**, it doesn't just answer inside it. A per-session
+in-process MCP server (`agent_drafter/control.rs`, injected by `configure_agent`
+exactly like `datasql`/`files`/`compute`) gives the agent tools whose effect is a
+command pushed down that app's own WebSocket:
+
+| Tool | Effect |
+|---|---|
+| `ui_describe` | Report the page's regions, element ids, mounted panels, state |
+| `ui_panel` | Mount / replace / remove a panel or dashboard (widget tree) |
+| `ui_render` | Render into `@region:<name>`, `@panel:<id>`, `@chat`, `@main`, or a CSS selector |
+| `ui_chart` / `ui_graph` | Draw a bar/line/pie chart, or a node/edge graph |
+| `ui_highlight` | Outline / pulse / focus part of the app, with a note |
+| `ui_theme` / `ui_layout` | Restyle (accent, light/dark, density); switch to sidebar/split/dashboard |
+| `ui_notify` | Transient toast |
+| `ui_state` | A shared key/value bag mirrored into `br.ui.state` (`br.ui.onState`) |
+| `ui_ask` | Render a form and **block the tool call** until the user submits — the tool result *is* their answers, so the agent branches on them inside one turn |
+
+Design notes:
+
+- **On by default.** `capabilities.ui` (`manifest.rs`) defaults to enabled, unlike
+  the deny-by-default `files`/`data`/`compute`/`vault` grants: its blast radius is
+  the app's own page. Set `{"ui":{"enabled":false}}` for a deliberately text-only
+  app. Sub-switches `allow_theme` / `allow_layout` / `allow_ask` also default on.
+- **Authors expose targets** with `<section data-br-region="results">`; the agent
+  finds them via `ui_describe` and writes to `@region:results`. Panels need no
+  region — the SDK always provides a dock (`.br-dock`), which shifts the page
+  rather than covering it.
+- **The bridge is rebindable.** `AppState::get_agent` caches one agent per session
+  and `add_inprocess_server` is idempotent by name, so a reconnecting browser
+  reuses the *same* `AppControlServer`. `UiBridge::attach()` re-points it at the
+  new socket (and replays `ui_state`); `detach()` unblocks any parked `ui_ask`.
+  Without this, every reload would leave the `ui_*` tools writing into a dead
+  channel.
+- **The socket is split.** `handle_agent_socket` `select!`s over three sources:
+  agent events, agent-issued UI commands, and inbound client frames. That is what
+  lets a `ui_ask` — parked *inside* `agent.reply` — be answered mid-turn, and it
+  makes `cancel` work mid-turn for the first time. Frames that would start new
+  work (`prompt`, `widget_action`) are queued (bounded) rather than dropped.
+- **Model-robustness.** `spec`/`body` are `serde_json::Value`, so schemars would
+  emit a permissive `true` schema; we attach concrete inlined schemas
+  (`#[schemars(with = …, inline)]` — no `$ref`/`$defs`, which several providers
+  mishandle) *and* accept a stringified object (`unstringify`), because models
+  observably JSON-encode nested objects into strings.
+
+Examples live in `scripts/agent-drafter-apps/examples/ui/` (install with
+`scripts/agent-drafter-apps/install-examples.sh`). Gates:
+`cargo test -p biorouter-mcp --test ui_example_apps` (deterministic) and
+`ui/desktop/scripts/appcheck/check-ui-app.mjs` (drives a real agent and asserts
+`ui` command frames arrive).
 
 ## Verification
 
-- `cargo check -p biorouter-mcp` / `-p biorouter-server` — clean.
-- `cargo test -p biorouter-mcp --lib agent_drafter::` — **28 pass** (store, tools,
-  render, bundler incl. real esbuild bundling).
-- `cargo test -p biorouter-mcp --test agent_drafter_registered` — **2 pass**
-  (builtin registered; tools advertised over a real MCP transport).
-- Live `biorouterd` (debug build, MiMo provider):
-  - `GET /apps` lists apps; `GET /apps/<id>/` serves assembled HTML; on-demand
-    esbuild build produces `dist/app.js` (10 KB IIFE).
-  - **Per-app agent WebSocket streams real MiMo responses** (verified with a
-    direct `ws` probe and Playwright):
-    - `ask-mimo` → "*Drosophila melanogaster* (the fruit fly) is a classic model
-      organism…"
-    - `gene-explainer` (genomics persona) → structured TP53 breakdown
-    - `biostats-helper` (biostats persona) → decision tree + comparison table
-  - Per-app **system prompt** clearly shapes the output; per-app **model** applied.
+Unit + integration (deterministic, no daemon, no LLM):
+
+```bash
+cargo test -p biorouter-mcp --lib agent_drafter::       # 91 pass (store, tools, render,
+                                                        #   bundler, control.rs ui_* tools)
+cargo test -p biorouter-mcp --test ui_example_apps      #  5 pass (the 10 example apps)
+cargo test -p biorouter-mcp --test agent_drafter_registered
+cargo test -p biorouter-server --lib routes::apps       # 26 pass (frames, mid-turn dispatch,
+                                                        #   bridge rebind, parked ui_ask)
+```
+
+The two that matter most, because they pin the design rather than the code:
+
+- `a_parked_ui_ask_is_unparked_by_a_midturn_ui_reply` — drives the real `ui_ask`
+  tool against the real mid-turn dispatcher. Without the split socket it hangs.
+- `rebinding_the_bridge_keeps_a_reused_server_working` — a reload reuses the
+  cached agent's `AppControlServer`; if `attach()` didn't re-point it, every
+  `ui_*` call after the first reload would fail forever.
+
+Browser, against the real `sdk.ts` bundle (`scripts/agent-drafter/ui-control-harness.mjs`
+stands in for the daemon and speaks the wire protocol):
+
+- every `ui` command applied — panels, dock, stat/progress/table/chart/graph nodes,
+  `@region:` render, highlight + focus dimming + callout, theme (accent/mode/density),
+  layout presets and `sidebar_width`, sticky and auto-dismiss toasts, state bag;
+- `ui_ask` round-trip: form renders all five field kinds, submit sends
+  `ui_reply` with typed values, **Escape sends `{"cancelled":true}`** so a parked
+  tool can never hang;
+- a widget `button` with `submit` posts `widget_action` back into the agent loop;
+- a render at a missing target raises a visible warning toast instead of vanishing.
+
+Live, with a real LLM (local Ollama `qwen3.6`, no API key):
+
+- all 10 tools reach the model as `appcontrol__ui_*`;
+- given one prompt, the agent called `ui_chart` + `ui_panel` and the page changed;
+- all **10/10 example apps** emit `ui` command frames under
+  `check-ui-app.mjs` (one needs >180 s on a small local model).
+
+Export, on a **fresh `$HOME`** with no app installed and no daemon on :3000:
+
+- `bash run.sh` installs the app, starts `biorouterd` on the requested port,
+  verifies `GET /apps/<id>/` → 200, and opens it; the browser connects to
+  `ws://127.0.0.1:<that port>/…` derived from the page origin;
+- `node serve.mjs` serves the folder on loopback, starts/reuses a daemon, and
+  proxies `/apps/**` including the WebSocket — `br.model.list()` returns 25
+  providers through the proxy (it silently returned `[]` before, wrong origin).
 
 ## Iteration log (bugs found via testing → fixed)
 
@@ -190,10 +280,44 @@ handler applies the app's model or falls back to the global provider.
 ### Export = directly runnable + portable
 
 `export_app <id> <target_dir>` (e.g. "export this app to my Desktop") writes a
-self-contained folder. `run.command`/`run.sh` self-installs the app into the
-local BioRouter store, starts `biorouterd`, and opens it — auth is wired through
-the user's existing BioRouter provider config (no per-app prompt). `GET
-/apps/{id}/export` returns the same scaffold as JSON (for the GUI / tooling).
+self-contained folder. Double-click `run.command` (macOS) or `bash run.sh`: it
+installs the app into the local store, reuses or starts a `biorouterd`, verifies
+the daemon actually serves the app, and opens it. No Node, no `npm install`, no
+build step — `dist/app.js` ships prebuilt. `GET /apps/{id}/export` returns the
+same scaffold as JSON (for the GUI / tooling).
+
+**This was broken until v1.87.3**, in four independent ways. Recorded here because
+each one is easy to reintroduce:
+
+1. **`manifest.json` was never exported** (`collect_files` skipped it and nothing
+   re-added it). The manifest *is* the app's registration — `serve_index` and
+   `agent_ws` both `load_manifest` and 404 without it. So `run.sh`'s self-install
+   copied files into the store that the daemon could not see, and its
+   `[ ! -f "$STORE/manifest.json" ]` guard could never become false: it re-copied
+   and re-failed on every run. `scaffold_standalone` now emits a canonical
+   manifest serialized from the parsed `Manifest`.
+2. **The agent endpoint was hard-coded to `ws://127.0.0.1:3000`.** The desktop app
+   starts its daemon on an **ephemeral port**, so an exported app failed with
+   "Could not reach the BioRouter backend" even while BioRouter was running. The
+   export now leaves `endpoint` unset so the SDK derives it from the page's own
+   origin (`sameOriginEndpoint`), with `:3000` kept only as a fallback for someone
+   opening `index.html` off disk. Both launch paths serve the page from an origin
+   that also answers `/apps/<id>/agent`.
+3. **`serve.mjs` was a bare static file server.** `npm start` produced a UI with no
+   backend at all; the README told the user to start `biorouterd` in another
+   terminal, which nobody does. It now locates/starts a daemon and transparently
+   proxies `/apps/**` — including the WebSocket upgrade — so page and agent share
+   an origin. (`br.model.list()` also stopped 404ing, since it derives its HTTP
+   base from the connected endpoint rather than `window.location`.)
+4. **The launcher failed silently.** It backgrounded a bare `biorouterd` inside
+   `( … & )`, which returns 0 even when the binary is missing, so `set -e` never
+   caught it; the health loop then timed out for 40s and it opened a dead URL.
+   `biorouter-launch.sh` now searches `BIOROUTERD_BIN` → PATH → `~/.local/bin` →
+   `/usr/local/bin` → `/opt/homebrew/bin` → the app bundle, sets `BIOROUTER_PORT`
+   (**not** `BIOROUTER_SERVER__PORT` — `Settings` is flat; only the secret key uses
+   the `__` form), falls forward through ports, and `die`s with an actionable
+   message. `export_app` chmods the launchers +x, and `.vault/` is excluded from
+   exports so sealed secrets never leave the author's machine.
 
 ### Workflow-style agentic loops + guardrails
 

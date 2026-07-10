@@ -30,6 +30,22 @@ export type ActiveKbResponse = {
     hidden_kbs: Array<string>;
 };
 
+/**
+ * The Home heatmap payload.
+ */
+export type ActivityWindow = {
+    currentStreak: number;
+    /**
+     * Only days with activity. The client fills the rest of the grid with level 0.
+     */
+    days: Array<DailyActivity>;
+    end: string;
+    longestStreak: number;
+    maxSessions: number;
+    maxTokens: number;
+    start: string;
+};
+
 export type AddExtensionRequest = {
     config: ExtensionConfig;
     session_id: string;
@@ -201,6 +217,34 @@ export type CspMetadata = {
      * Domains allowed for resource loading (scripts, styles, images, fonts, media)
      */
     resourceDomains?: Array<string> | null;
+};
+
+/**
+ * One calendar day of usage, for the Home heatmap.
+ */
+export type DailyActivity = {
+    /**
+     * Local calendar day, `YYYY-MM-DD`.
+     */
+    date: string;
+    inputTokens: number;
+    /**
+     * 1–4. Level 0 days are omitted from the response entirely.
+     */
+    level: number;
+    /**
+     * Assistant + user messages exchanged that day.
+     */
+    messages: number;
+    outputTokens: number;
+    /**
+     * Sessions *started* that day (exact; keyed on the immutable `created_at`).
+     */
+    sessions: number;
+    /**
+     * Tokens processed that day, summed from per-turn `token_events`.
+     */
+    tokens: number;
 };
 
 export type DeclarativeProviderConfig = {
@@ -1222,6 +1266,12 @@ export type ScheduledJob = {
 export type Session = {
     accumulated_input_tokens?: number | null;
     accumulated_output_tokens?: number | null;
+    /**
+     * Lifetime totals: the sum of every turn's usage, i.e. tokens actually
+     * processed and billed. They grow without bound and overflowed `i32` at
+     * ~2.1e9 — in release that wraps *negative* and then subtracts from the
+     * insights `SUM`. SQLite's INTEGER is already 64-bit.
+     */
     accumulated_total_tokens?: number | null;
     conversation?: Conversation | null;
     created_at: string;
@@ -1241,6 +1291,10 @@ export type Session = {
     provider_name?: string | null;
     schedule_id?: string | null;
     session_type?: SessionType;
+    /**
+     * The *current* turn's usage — the live context-window occupancy. Bounded by
+     * the model's context limit, so `i32` is safe.
+     */
     total_tokens?: number | null;
     updated_at: string;
     user_set_name?: boolean;
@@ -1468,6 +1522,10 @@ export type ThinkingContent = {
 };
 
 export type TokenState = {
+    /**
+     * Lifetime totals. `i64` because they grow without bound over a long
+     * session; `i32` wrapped negative at ~2.1e9.
+     */
     accumulatedInputTokens: number;
     accumulatedOutputTokens: number;
     accumulatedTotalTokens: number;
@@ -3927,6 +3985,38 @@ export type ListSessionsResponses = {
 };
 
 export type ListSessionsResponse = ListSessionsResponses[keyof ListSessionsResponses];
+
+export type GetSessionActivityData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Calendar days to report (default 155, clamped to 1..=371)
+         */
+        days?: number | null;
+    };
+    url: '/sessions/activity';
+};
+
+export type GetSessionActivityErrors = {
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type GetSessionActivityResponses = {
+    /**
+     * Per-day usage for the Home heatmap
+     */
+    200: ActivityWindow;
+};
+
+export type GetSessionActivityResponse = GetSessionActivityResponses[keyof GetSessionActivityResponses];
 
 export type ImportSessionData = {
     body: ImportSessionRequest;

@@ -1,0 +1,15 @@
+{
+  "id": "omics-dashboard",
+  "title": "Omics Dashboard",
+  "description": "Paste a differential-expression result summary; the agent builds a live dashboard of key metrics and the top gene hits.",
+  "kind": "agentic",
+  "entry": "index.html",
+  "created_at": 0,
+  "updated_at": 0,
+  "agent": {
+    "system_prompt": "You turn a pasted differential-expression (DE) result summary — a table, a tool log, or prose — into a live dashboard. Call ui_describe first, then immediately ui_layout(\"dashboard\") so the results grid opens. Read the summary and derive: genes tested, genes passing significance, and the median log2FC across the significant genes. Treat adjusted p < 0.05 and |log2FC| >= 1 as significant unless the text states thresholds. Render three stat nodes into @region:metrics with ui_render — genes tested; significant (delta = the percent of tested); median log2FC. Then draw the strongest hits by |log2FC| (up to 10, keep the sign) as a bar chart into @region:tophits with ui_chart. Use ui_notify while parsing a long table. If the summary names no significance threshold and gives no counts you can derive one from, call ui_ask (fields 'padj' number, 'lfc' number) instead of guessing in prose. Keep your written reply to one or two sentences on what stood out — the panels carry the detail.",
+    "greeting": "Paste a DE result summary and I'll build the dashboard.",
+    "max_turns": 12,
+    "capabilities": { "ui": { "enabled": true } }
+  }
+}

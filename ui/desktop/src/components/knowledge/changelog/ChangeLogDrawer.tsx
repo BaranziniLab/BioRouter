@@ -13,15 +13,7 @@ interface Props {
   onRestored: () => void;
 }
 
-const ALL_KINDS: ChangeKind[] = [
-  'ingest',
-  'link',
-  'flag',
-  'query',
-  'lint',
-  'restore',
-  'manual',
-];
+const ALL_KINDS: ChangeKind[] = ['ingest', 'link', 'flag', 'query', 'lint', 'restore', 'manual'];
 
 function relativeTime(iso: string): string {
   const t = new Date(iso).getTime();
@@ -89,10 +81,10 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
             <button
               key={k}
               onClick={() => toggleKind(k)}
-              className={`text-[11px] uppercase tracking-wider rounded px-1.5 py-0.5 border ${
+              className={`rounded-sm px-1.5 py-0.5 text-[11px] uppercase tracking-wider transition-colors ${
                 activeKinds.has(k)
-                  ? 'border-border-default text-text-default'
-                  : 'border-border-subtle text-text-muted opacity-50'
+                  ? 'bg-background-medium text-text-default'
+                  : 'text-text-muted hover:text-text-default'
               }`}
             >
               {k}
@@ -111,7 +103,7 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
             filtered.map((entry) => (
               <div
                 key={entry.commit_sha}
-                className="px-5 py-3 border-b border-border-subtle hover:bg-background-muted/40"
+                className="px-5 py-3 border-b border-border-subtle hover:bg-background-muted"
               >
                 <div className="flex items-center gap-2 mb-1">
                   <ChangeKindChip kind={entry.kind} />
@@ -124,20 +116,14 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
                 </div>
                 <div className="text-xs text-text-default mb-2">{entry.summary}</div>
                 <div className="flex items-center gap-2">
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => onPreview(entry.commit_sha)}
-                    className="text-[11px] h-6 px-2"
-                  >
+                  <Button variant="ghost" size="xs" onClick={() => onPreview(entry.commit_sha)}>
                     Preview
                   </Button>
                   <Button
                     variant="outline"
-                    size="sm"
+                    size="xs"
                     onClick={() => void handleRestore(entry)}
                     disabled={restoring !== null}
-                    className="text-[11px] h-6 px-2"
                   >
                     {restoring === entry.commit_sha ? 'Restoring…' : 'Restore'}
                   </Button>

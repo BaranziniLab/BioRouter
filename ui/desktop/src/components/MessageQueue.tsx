@@ -102,18 +102,18 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
   const messageLabel = (message: QueuedMessage) => {
     const attachmentCount = message.attachments?.length ?? 0;
     const text = message.content.trim();
-    if (text && attachmentCount > 0) return `${text} (${attachmentCount} attachment${attachmentCount === 1 ? '' : 's'})`;
+    if (text && attachmentCount > 0)
+      return `${text} (${attachmentCount} attachment${attachmentCount === 1 ? '' : 's'})`;
     if (text) return text;
-    if (attachmentCount > 0) return `${attachmentCount} attachment${attachmentCount === 1 ? '' : 's'}`;
+    if (attachmentCount > 0)
+      return `${attachmentCount} attachment${attachmentCount === 1 ? '' : 's'}`;
     return 'Queued message';
   };
 
   // Status dot: accent when active/next, muted when paused.
   const statusDot = (
     <span
-      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${
-        isPaused ? 'bg-text-muted' : 'bg-background-accent animate-pulse'
-      }`}
+      className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${isPaused ? 'bg-text-muted' : 'bg-background-accent animate-pulse'}`}
       aria-hidden="true"
     />
   );
@@ -200,7 +200,7 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
             variant="ghost"
             size="sm"
             onClick={onClearQueue}
-            className="h-6 px-2 text-[11px] text-text-muted hover:text-destructive"
+            className="h-6 px-2 text-[11px] text-text-muted hover:text-text-danger"
             title="Clear all queued messages"
           >
             Clear
@@ -223,13 +223,7 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
         {queuedMessages.map((message, index) => (
           <div
             key={message.id}
-            className={`group relative flex items-center gap-2 rounded-md px-2 py-1.5 border transition-colors ${
-              draggedItem === message.id
-                ? 'opacity-60 border-border-strong bg-background-medium'
-                : dragOverItem === message.id
-                  ? 'border-border-strong bg-background-medium'
-                  : 'border-border-subtle bg-background-muted hover:bg-background-medium'
-            }`}
+            className={`group relative flex items-center gap-2 rounded-md px-2 py-1.5 border transition-colors ${draggedItem === message.id ? 'opacity-60 border-border-strong bg-background-medium' : dragOverItem === message.id ? 'border-border-strong bg-background-medium' : 'border-border-subtle bg-background-muted hover:bg-background-medium'}`}
             draggable={onReorderMessages ? true : false}
             onDragStart={(e) => handleDragStart(e, message.id)}
             onDragOver={(e) => handleDragOver(e, message.id)}
@@ -249,11 +243,7 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
 
             {/* Position indicator */}
             <span
-              className={`flex items-center justify-center w-4 h-4 flex-shrink-0 rounded-full text-[11px] font-semibold ${
-                index === 0 && !isPaused
-                  ? 'bg-background-accent text-text-on-accent'
-                  : 'bg-background-strong text-text-muted'
-              }`}
+              className={`flex items-center justify-center w-4 h-4 flex-shrink-0 rounded-full text-[11px] font-semibold ${index === 0 && !isPaused ? 'bg-background-accent text-text-on-accent' : 'bg-background-strong text-text-muted'}`}
             >
               {index + 1}
             </span>
@@ -265,7 +255,7 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
                   <textarea
                     value={editContent}
                     onChange={(e) => setEditContent(e.target.value)}
-                    className="w-full text-xs bg-background-default border border-border-subtle rounded-md px-2 py-1 resize-none focus:outline-none focus:border-border-strong"
+                    className="w-full text-xs bg-background-default border border-border-subtle rounded-md px-2 py-1 resize-none focus:border-border-strong"
                     rows={Math.min(Math.ceil(editContent.length / 60), 4)}
                     autoFocus
                   />
@@ -332,9 +322,7 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
                   size="sm"
                   onClick={() => onStopAndSend(message.id)}
                   disabled={editingMessage === message.id}
-                  className={`h-6 w-6 p-0 text-text-muted hover:text-text-default ${
-                    editingMessage === message.id ? 'opacity-30 cursor-not-allowed' : ''
-                  }`}
+                  className={`h-6 w-6 p-0 text-text-muted hover:text-text-default ${editingMessage === message.id ? 'opacity-30 cursor-not-allowed' : ''}`}
                   title={
                     editingMessage === message.id
                       ? 'Cannot send while editing'
@@ -349,7 +337,7 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
                 variant="ghost"
                 size="sm"
                 onClick={() => onRemoveMessage(message.id)}
-                className="h-6 w-6 p-0 text-text-muted hover:text-destructive opacity-0 group-hover:opacity-100 transition-opacity"
+                className="h-6 w-6 p-0 text-text-muted hover:text-text-danger opacity-0 group-hover:opacity-100 transition-opacity"
                 title="Remove this message from queue"
               >
                 <X className="w-3 h-3" />

@@ -860,9 +860,11 @@ pub struct TokenState {
     pub input_tokens: i32,
     pub output_tokens: i32,
     pub total_tokens: i32,
-    pub accumulated_input_tokens: i32,
-    pub accumulated_output_tokens: i32,
-    pub accumulated_total_tokens: i32,
+    /// Lifetime totals. `i64` because they grow without bound over a long
+    /// session; `i32` wrapped negative at ~2.1e9.
+    pub accumulated_input_tokens: i64,
+    pub accumulated_output_tokens: i64,
+    pub accumulated_total_tokens: i64,
 }
 
 #[cfg(test)]

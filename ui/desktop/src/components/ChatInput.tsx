@@ -1405,15 +1405,7 @@ export default function ChatInput({
 
   return (
     <div
-      className={`flex flex-col relative h-auto px-4 pt-3 pb-3 transition-colors ${
-        disableAnimation ? '' : 'page-transition'
-      } ${
-        isDraggingOver
-          ? 'border-border-strong bg-background-medium/80 shadow-[var(--shadow-composer)] ring-2 ring-border-strong/30'
-          : isFocused
-            ? 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)] bg-background-default'
-            : 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)] bg-background-default'
-      } z-10 rounded-2xl border`}
+      className={`flex flex-col relative h-auto px-4 pt-3 pb-3 transition-colors ${disableAnimation ? '' : 'page-transition'} ${isDraggingOver ? 'border-border-strong bg-background-medium/80 shadow-[var(--shadow-composer)] ring-2 ring-border-strong/30' : isFocused ? 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)] bg-background-default' : 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)] bg-background-default'} z-10 rounded-2xl border`}
       data-drop-zone="true"
       data-drag-active={isDraggingOver ? 'true' : 'false'}
       onDrop={handleLocalDrop}
@@ -1437,7 +1429,7 @@ export default function ChatInput({
         />
       )}
       {/* Vision-mismatch banner: shown when the user has images attached but the
-          current model does not support vision. Blocks Send until resolved. */}
+ current model does not support vision. Blocks Send until resolved. */}
       {visionMismatch && (
         <div className="flex items-start gap-2 px-3 py-2 mb-2 bg-background-medium/60 border border-border-subtle rounded-lg text-xs text-text-muted">
           <svg
@@ -1462,8 +1454,8 @@ export default function ChatInput({
         </div>
       )}
       {/* Input row — textarea only. Send/Stop button moved to the right end of
-          the picker row below so the input width can shrink to the picker row's
-          natural width (no extra space stolen by the Send button on this line). */}
+ the picker row below so the input width can shrink to the picker row's
+ natural width (no extra space stolen by the Send button on this line). */}
       <form id="bior-chat-form" onSubmit={onFormSubmit} className="relative flex items-end">
         <div className="relative flex-1">
           <textarea
@@ -1485,7 +1477,7 @@ export default function ChatInput({
               maxHeight: `${maxHeight}px`,
               overflowY: 'auto',
             }}
-            className="w-full outline-none border-none focus:ring-0 bg-transparent px-3 pt-3 pb-1.5 pr-3 text-sm resize-none text-text-default placeholder:text-text-muted"
+            className="w-full border-none bg-transparent px-3 pt-3 pb-1.5 pr-3 text-sm resize-none text-text-default placeholder:text-text-muted"
           />
         </div>
       </form>

@@ -245,6 +245,81 @@ settings provider grid, `biorouter configure`).
   (real server + tiny Qwen3.5 0.8B, ~0.5 GB one-time download):
   `BIOROUTER_LLAMACPP_BIN=ui/desktop/src/bin/llamacpp/llama-server cargo test -p biorouter --test llamacpp_integration -- --ignored --test-threads=1`
 
+### Artifact side panel (desktop)
+
+The right-hand panel in chat previews **anything the agent creates**, not just
+visualizations. It opens automatically on the newest artifact.
+
+- **Components:** `ui/desktop/src/components/artifacts/` — `ArtifactViewer.tsx`
+  (the panel), `artifactUtils.ts` (detection + parsing helpers), `artifactTypes.ts`.
+  Collection lives in `collectArtifactsFromMessages` in `components/BaseChat.tsx`.
+- **What reaches the panel:**
+  1. `ui://` embedded resources from tool responses — Auto Visualiser figures and
+     reports, and Agent Drafter app preview cards (`create_app`, `configure_app`,
+     `update_app`, `build_app`, `launch_app`, `preview_app` all return one).
+  2. Files a tool call created, read off the call's **arguments** —
+     `text_editor` (`write`/`create`/`str_replace`/`insert`/`diff`, never `view`),
+     `write_file`/`create_file`/`edit_file`/…, and `shell` redirect / `-o`
+     `--output` targets. Relative paths resolve against the session working dir.
+     Only successful tool responses count. See `fileArtifactPathsFromToolCall`.
+  3. File paths the assistant mentions in its prose (the original behaviour).
+- **How each kind renders:** HTML → sandboxed `srcdoc` iframe; images → inline;
+  directories → a clickable listing; `.md`/`.Rmd`/`.qmd` → rendered prose with a
+  Preview/Raw toggle; `.csv`/`.tsv` → a real table (quoted fields honoured,
+  capped at 500 rows) with a Table/Raw toggle; everything else → syntax-
+  highlighted, line-numbered code with a language chip and Copy.
+- **Syntax highlighting** follows the app theme. The one palette lives in
+  `ui/desktop/src/styles/codeTheme.ts` (`codeThemes.light` / `codeThemes.dark`) and
+  is shared by the panel's code view and chat's markdown code blocks, so they can
+  never drift. Leaf components read the theme with `useResolvedTheme()` from
+  `contexts/ThemeContext` — it falls back to `light` outside a provider instead of
+  throwing like `useTheme()`.
+  - **Never combine `wrapLongLines` with `showLineNumbers`** in
+    `react-syntax-highlighter`: it then sets `display: flex` on every line
+    (`highlight.js:106`), turning each token into a flex item and shredding long
+    lines across the panel. The panel keeps line numbers and lets long lines scroll
+    horizontally. Guarded by a test in `ArtifactViewer.test.tsx` — a short-line
+    fixture will not catch this.
+  - **Prism token classes are unprefixed and collide with Tailwind utilities.**
+    A markdown table in a code block emits `<span class="token table">`, which
+    Tailwind's `.table { display: table }` turned into a table box — one source
+    line became a vertical stack of cells, orphaning the line numbers. `main.css`
+    ends with an unlayered `code [class~='token'] { display: inline; }` that wins
+    over Tailwind's `utilities` layer. jsdom does not apply Tailwind, so only a
+    real browser catches this class of bug; sweep the panel with the harness
+    (`.artifact-harness`) across md / csv / json / yaml / xml / R / py / sql /
+    css / sh / toml / rs / ts after touching the code view.
+- **No delete control on in-chat artifact cards.** Deleting an Agent Drafter app
+  is destructive (removes files from disk) and lives only in the **Applications**
+  tab (`ApplicationsView.tsx`) — never on the in-chat card in `MCPUIResourceRenderer`,
+  where a stray click would nuke an app. The card offers open/expand only.
+- **Auto-repair of a broken artifact only resumes a *live* conversation.** When an
+  artifact iframe posts `biorouter-viz-render-error`, `handleArtifactRenderError`
+  in `BaseChat.tsx` feeds it back to the agent to fix — but only if
+  `shouldAutoRepairArtifact(chatState, lastAgentActiveAt, now)` is true: a turn is
+  running, or one finished within `ARTIFACT_REPAIR_ACTIVE_GRACE_MS` (15 s). Once the
+  chat has been idle longer than that (or is merely reloading a saved session), a
+  failure surfacing now was introduced by the user managing the artifact afterwards
+  — reopening an old figure, editing an app's code, deleting it — and must NOT
+  silently resume a finished conversation. Pure and unit-tested in
+  `BaseChat.artifacts.test.ts`.
+- **Browser harness:** `ui/desktop/.artifact-harness/` mounts the real
+  `ArtifactViewer` in a plain browser against fixtures produced by the real Rust
+  tools, so the panel can be checked without launching Electron:
+
+  ```bash
+  PREVIEW_FIXTURE_DIR=/tmp/fx cargo test -p biorouter-mcp --test preview_fixture_dump -- --ignored
+  AUTOVIS_DUMP=/tmp/fx/dashboard.html cargo test -p biorouter-mcp --lib \
+    autovisualiser::tests::dump_sample_dashboard -- --ignored
+  cd ui/desktop && PREVIEW_FIXTURE_DIR=/tmp/fx npx vite --config .artifact-harness/vite.config.mts --port 5199
+  ```
+
+- **Driving the real dev GUI:** `BIOROUTER_NO_HMR=1` freezes the renderer (no vite
+  watching, no hot reload). Without it, any save anywhere under `ui/desktop/src/`
+  full-reloads the page and destroys the chat session under test — which makes
+  agent-browser/Playwright runs fail in ways that look like app bugs. Combine with
+  the sandboxing and CDP port from `just agent-browser-ui`.
+
 ### Auto Visualiser feature
 
 The Auto Visualiser (`autovisualiser`) built-in MCP server turns structured data
@@ -254,7 +329,8 @@ rendered inline in chat (sandboxed iframe via `@mcp-ui` + the `/mcp-ui-proxy`).
 - **Module:** `crates/biorouter-mcp/src/autovisualiser/` — `mod.rs` (router +
   the 8 original tools), `common.rs` (shared infra), `tools_extra.rs` (Mermaid
   wrappers), `tools_charts.rs` (Chart.js), `tools_d3.rs` (D3), `tools_geo.rs`
-  (Leaflet), `tests.rs` + `tests_extra.rs`. The `tools_*.rs` files are
+  (Leaflet), `tools_dashboard.rs` (the composite report), `tests.rs` +
+  `tests_extra.rs` + `tests_dashboard.rs`. The `tools_*.rs` files are
   `include!`d into `mod.rs`; each defines a `#[tool_router(router = …)]` impl
   block, combined in `new()` via `ToolRouter` `+`.
 - **Shared pipeline (`common.rs`):** validate → JSON-encode safely (`js_data`
@@ -263,7 +339,7 @@ rendered inline in chat (sandboxed iframe via `@mcp-ui` + the `/mcp-ui-proxy`).
   global error card) → base64 `ui://` blob (`finish`). Every tool also enforces
   size limits + semantic checks and returns a friendly `INVALID_PARAMS` message
   instead of producing a broken figure.
-- **Tools (33):** charts (`show_chart`, `render_histogram`, `render_boxplot`,
+- **Tools (34):** charts (`show_chart`, `render_histogram`, `render_boxplot`,
   `render_bubble`, `render_area`, `render_radar`, `render_donut`, `render_gauge`);
   scientific (`render_volcano`, `render_manhattan`, `render_kaplan_meier`,
   `render_forest`); relationships/hierarchies (`render_network`, `render_sankey`,
@@ -271,7 +347,46 @@ rendered inline in chat (sandboxed iframe via `@mcp-ui` + the `/mcp-ui-proxy`).
   `render_dendrogram`, `render_wordcloud`, `render_calendar_heatmap`); diagrams
   (`render_mermaid` + typed wrappers `render_flowchart`/`gantt`/`sequence`/
   `mindmap`/`timeline`/`er_diagram`/`state_diagram`/`class_diagram`); geo
-  (`render_map`, `render_choropleth`).
+  (`render_map`, `render_choropleth`); composite (`render_dashboard`).
+- **`render_dashboard` (combining figures):** takes `title`, `subtitle`,
+  `summary`, `footer` and either `panels` or grouped `sections`, where each panel
+  names any other Auto Visualiser tool plus that tool's exact arguments, with a
+  `title`/`caption`/`notes` and `width: full|half`. It renders one scrollable
+  report artifact — masthead, contents, section prose, numbered figure captions,
+  collapsible notes — instead of N separate artifacts the user must open one at a
+  time. The server instructions tell the model to reach for it whenever an answer
+  needs more than one figure.
+  - Panels are rendered by calling the real single-figure tools inside
+    `common::render_fragment`, which swaps `asset_html` for an
+    `<!--AUTOVIS_ASSETS-->` sentinel and records which libraries the figure asked
+    for (a `tokio::task_local` sink). The report stores each library's source
+    **once** and its own JS splices it into every panel's `srcdoc` at render
+    time; panels hydrate lazily via `IntersectionObserver`. Without this, three
+    Mermaid panels would carry three 3.3 MB copies of Mermaid.
+  - A panel whose arguments are invalid becomes an error card inside the report
+    (naming the tool and the problem) rather than failing the whole call; the
+    assistant-audience text lists every failed figure so the model can fix it.
+    All panels failing *is* a tool error.
+  - Panels post `ui-size-change` to the report (which grows that iframe) and the
+    report reports a **capped** height to the host, so a long report scrolls
+    internally instead of adding thousands of pixels to the chat transcript.
+  - An embed stylesheet strips each figure's standalone chrome (its own card,
+    background and title banner) so panels sit flush in the report's cards.
+  - **A report always inlines its libraries, ignoring `BIOROUTER_AUTOVIS_CDN`.**
+    The desktop app sets that flag to `1` by default (`ui/desktop/src/biorouterd.ts`),
+    so CDN mode is the normal GUI path. A *standalone* figure survives it only
+    because the Electron main process rewrites the figure's `<script src=…>` back
+    into an inline script before display — the renderer's CSP is
+    `script-src 'self' 'unsafe-inline'`, so a remote script never loads. A report
+    keeps its library tags inside base64 asset/panel blobs, where that rewriter
+    cannot reach them, so a CDN report rendered blank figures ("Chart is not
+    defined"). Dedup already caps the cost at one copy per library.
+    Guarded by `crates/biorouter-mcp/tests/autovis_dashboard_cdn.rs`.
+  - Models generalise from the other 32 tools, which all take a single `data`
+    argument, and wrap the whole report in one (`{"data": {"title": …}}`) — GPT-5.5
+    does, then retries identically after a rejection. `normalize_dashboard_args`
+    unwraps a `data`/`dashboard`/`report` envelope and parses stringified
+    `sections`/`panels`, in the same spirit as `common::de_flexible`.
 - **Assets:** libraries (D3, Chart.js, Leaflet, Mermaid) are inlined by default
   for offline use. `BIOROUTER_AUTOVIS_CDN=1` switches to pinned CDN tags, which
   shrinks the persisted/reloaded blob from megabytes to a few KB (recommended if
@@ -280,6 +395,58 @@ rendered inline in chat (sandboxed iframe via `@mcp-ui` + the `/mcp-ui-proxy`).
   cache dir (`<cache>/autovisualiser/<name>-<pid>.html`).
 - **Tests:** `cargo test -p biorouter-mcp --lib autovisualiser` (happy paths,
   edge cases, escaping, lenient enum parsing).
+
+### Agent Drafter (BioRouter apps) — agent-driven UI + export
+
+`agent_drafter` builds **BioRouter apps**: a TypeScript front-end wired to a real
+per-app agent over `GET /apps/<id>/agent`. Full design in
+[`docs/agent-drafter-apps.md`](docs/agent-drafter-apps.md).
+
+- **The agent drives the app, it doesn't just answer in it.** A per-session
+  in-process MCP server (`agent_drafter/control.rs`, injected as `appcontrol` by
+  `configure_agent` exactly like `datasql`/`files`/`compute`) exposes `ui_*`
+  tools — `ui_describe`, `ui_panel`, `ui_render`, `ui_chart`, `ui_graph`,
+  `ui_highlight`, `ui_theme`, `ui_layout`, `ui_notify`, `ui_state`, `ui_ask`.
+  Each pushes a `{"type":"ui","cmd":…}` frame down the app's own WebSocket, which
+  `templates/sdk.ts` (`class UiRuntime`) applies to the DOM.
+- **`ui_ask` blocks the tool call** until the browser sends `ui_reply`, so the
+  agent branches on the user's answer inside one turn. That is why
+  `handle_agent_socket` **splits the socket** and `select!`s over three sources
+  (agent events / UI commands / inbound frames). It also made `cancel` work
+  mid-turn for the first time.
+- **`UiBridge` is rebindable.** `get_agent` caches one agent per session and
+  `add_inprocess_server` is idempotent by name, so a reconnecting browser reuses
+  the same `AppControlServer`. The `UI_BRIDGES` registry (keyed by session id)
+  hands back the same bridge; `attach()` re-points it at the new socket and
+  replays `ui_state`, `detach()` unblocks any parked `ui_ask`. Without this every
+  reload would leave the `ui_*` tools writing into a dead channel.
+- **`capabilities.ui` defaults to ON** (unlike the deny-by-default
+  `files`/`data`/`compute`/`vault`): its blast radius is the app's own page.
+  `{"ui":{"enabled":false}}` for a text-only app; `allow_theme`/`allow_layout`/
+  `allow_ask` are individually revocable.
+- **Authors expose render targets** with `<section data-br-region="results">`;
+  the agent finds them via `ui_describe` and writes to `@region:results`. Panels
+  need no region — the SDK always provides a `.br-dock` drawer.
+- **Apps vendor their own `src/sdk.ts`**, so `manifest.sdk_hash` fingerprints the
+  SDK a bundle was built from. `build_app` refreshes the vendored copy and stamps
+  it; `serve_index` rebuilds on drift. Otherwise an app built before a protocol
+  addition silently ignores the new frames forever.
+- **Export is directly runnable.** `export_app` writes `manifest.json` (without
+  it the daemon 404s the app), leaves the endpoint unset so the SDK derives it
+  from the page origin (the desktop app starts `biorouterd` on an *ephemeral*
+  port, so the old hardcoded `:3000` never worked), ships `biorouter-launch.sh` +
+  `run.sh`/`run.command` (locate `biorouterd`, install, start, verify, open — no
+  Node needed) and a `serve.mjs` that proxies `/apps/**` incl. the WS upgrade and
+  binds loopback only. `.vault/` is excluded. The daemon's port env var is
+  **`BIOROUTER_PORT`**, not `BIOROUTER_SERVER__PORT` (only the secret key uses
+  the `__` form — `Settings` is a flat struct).
+- **Tests:** `cargo test -p biorouter-mcp --lib agent_drafter::`,
+  `cargo test -p biorouter-mcp --test ui_example_apps`,
+  `cargo test -p biorouter-server --lib routes::apps`. Browser-level:
+  `scripts/agent-drafter/ui-control-harness.mjs` (mock daemon, real SDK) and
+  `ui/desktop/scripts/appcheck/check-ui-app.mjs` (real agent; asserts `ui` frames
+  arrive). Examples: `scripts/agent-drafter-apps/examples/ui/` +
+  `install-examples.sh`.
 
 ### Communication Flow
 

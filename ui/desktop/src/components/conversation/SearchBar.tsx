@@ -146,13 +146,11 @@ export const SearchBar: React.FC<SearchBarProps> = ({
 
   return (
     <div
-      className={`pointer-events-none sticky top-0 z-[60] mb-4 flex justify-center px-3 pt-2 ${
-        isExiting ? 'search-bar-exit' : 'search-bar-enter'
-      }`}
+      className={`pointer-events-none sticky top-0 z-[60] mb-4 flex justify-center px-3 pt-2 ${isExiting ? 'search-bar-exit' : 'search-bar-enter'}`}
     >
       <div
         data-testid="conversation-search-bar"
-        className="pointer-events-auto flex w-full max-w-[720px] items-center overflow-hidden rounded-xl bg-background-default/90 shadow-[0_18px_44px_-34px_rgba(32,25,15,0.42),0_1px_0_rgba(32,25,15,0.04)] backdrop-blur-md"
+        className="pointer-events-auto flex w-full max-w-[720px] items-center overflow-hidden rounded-2xl border border-border-subtle bg-background-default shadow-popover"
       >
         <div className="relative flex flex-1 items-center h-full min-w-0">
           <SearchIcon className="no-drag h-4 w-4 text-text-muted absolute left-3" />
@@ -165,8 +163,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
               onChange={handleSearch}
               onKeyDown={handleKeyDown}
               placeholder={placeholder}
-              className="no-drag w-full text-sm pl-9 pr-24 py-3 bg-background-default text-text-default
-                      placeholder:text-text-muted focus:outline-none"
+              className="no-drag w-full text-sm pl-9 pr-24 py-3 bg-background-default text-text-default placeholder:text-text-muted"
             />
           </div>
 
@@ -187,11 +184,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
           <Button
             onClick={toggleCaseSensitive}
             variant="ghost"
-            className={`no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-all duration-150 ${
-              caseSensitive
-                ? 'bg-background-medium text-text-default hover:bg-background-strong'
-                : 'text-text-muted hover:text-text-default hover:bg-background-medium'
-            }`}
+            className={`no-drag flex items-center justify-center min-w-[32px] h-[28px] rounded transition-all duration-150 ${caseSensitive ? 'bg-background-medium text-text-default hover:bg-background-strong' : 'text-text-muted hover:text-text-default hover:bg-background-medium'}`}
             title="Case Sensitive"
           >
             <span className="text-sm font-normal">Aa</span>

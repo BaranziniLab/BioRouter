@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Protocol Coach</title>
+</head>
+<body>
+  <main class="br-container" data-br-main>
+    <span class="br-badge">BioRouter App</span>
+    <h1>Protocol Coach</h1>
+    <p style="color: var(--br-text-muted); margin-top: 2px;">
+      Heat-shock transformation of a plasmid into competent <em>E. coli</em>.
+      The coach focuses each step in turn, docks the reagent checklist, and calls
+      out the timing and temperatures.
+    </p>
+
+    <div class="br-card">
+      <div class="br-row">
+        <button id="coach" class="br-btn" style="flex:2; max-width:200px">Coach me</button>
+        <button id="back" class="br-btn br-btn--secondary" style="flex:1; max-width:120px">◂ Back</button>
+        <button id="next" class="br-btn br-btn--secondary" style="flex:1; max-width:140px">Next step ▸</button>
+        <button id="reset" class="br-btn br-btn--ghost" style="flex:1; max-width:110px">Reset</button>
+      </div>
+      <div id="stepline" style="color: var(--br-text-muted); font-size: 0.85rem; margin: 10px 2px 0;">Not started</div>
+    </div>
+
+    <h2>Protocol</h2>
+    <div class="br-card">
+      <ol style="margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 12px;">
+        <li id="step-1" data-br-step data-title="Thaw competent cells on ice">
+          <strong>Thaw competent cells on ice.</strong>
+          <div class="br-text--muted">Move a 50 µL aliquot of competent <em>E. coli</em> from −80 °C onto wet ice; let it thaw ~10 min. Never warm by hand — heat kills competence.</div>
+        </li>
+        <li id="step-2" data-br-step data-title="Add plasmid DNA and rest on ice">
+          <strong>Add plasmid DNA and rest on ice.</strong>
+          <div class="br-text--muted">Pipette 1–5 µL (1–10 ng) plasmid into the cells. Flick gently to mix; do not vortex. Incubate on ice 30 min.</div>
+        </li>
+        <li id="step-3" data-br-step data-title="Heat-shock at 42 °C">
+          <strong>Heat-shock at 42 °C.</strong>
+          <div class="br-text--muted">Transfer the tube to a 42 °C water bath for exactly 45 s, then return it to ice for 2 min. Timing is critical.</div>
+        </li>
+        <li id="step-4" data-br-step data-title="Recover in SOC at 37 °C">
+          <strong>Recover in SOC at 37 °C.</strong>
+          <div class="br-text--muted">Add 950 µL room-temperature SOC. Shake at 37 °C, 200 rpm, for 60 min to let resistance express.</div>
+        </li>
+        <li id="step-5" data-br-step data-title="Plate on selective agar">
+          <strong>Plate on selective agar.</strong>
+          <div class="br-text--muted">Spread 50–100 µL onto a pre-warmed LB plate with the correct antibiotic. Incubate at 37 °C overnight (12–16 h).</div>
+        </li>
+        <li id="step-6" data-br-step data-title="Count and screen colonies">
+          <strong>Count and screen colonies.</strong>
+          <div class="br-text--muted">Count colonies to gauge efficiency, then pick well-isolated colonies for colony PCR or miniprep.</div>
+        </li>
+      </ol>
+    </div>
+
+    <h2>Step notes</h2>
+    <aside class="br-card" data-br-region="notes">
+      <div class="br-text--muted">The coach drops this step's key parameters here once you start.</div>
+    </aside>
+
+    <div class="br-output" id="out" data-placeholder="Press Coach me to begin the guided walkthrough."></div>
+
+    <p class="br-footer">Powered by BioRouter · built with Agent Drafter</p>
+  </main>
+</body>
+</html>

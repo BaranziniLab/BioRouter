@@ -1,15 +1,27 @@
-/* Search highlight styles */
+/* Search highlight. Previously a hardcoded saturated yellow with no dark
+   variant, referencing `--text-standard` / `--text-prominent` — two tokens that
+   are defined nowhere, so the text colour silently fell through (DR-55). */
 .search-highlight {
-  background-color: rgba(255, 213, 0, 0.5);
-  color: var(--text-standard);
+  background-color: color-mix(in srgb, var(--color-yellow-200) 42%, transparent);
+  color: var(--text-default);
   padding: 0;
-  border-radius: 2px;
+  border-radius: var(--radius-sm);
 }
 
 .search-highlight.current {
-  background-color: rgba(252, 213, 3, 0.6);
-  box-shadow: inset 0 0 0 1px var(--text-prominent);
+  background-color: color-mix(in srgb, var(--color-yellow-200) 68%, transparent);
+  box-shadow: inset 0 0 0 1px var(--border-strong);
   z-index: 2;
+}
+
+.dark .search-highlight {
+  background-color: color-mix(in srgb, var(--color-yellow-100) 26%, transparent);
+  color: var(--text-default);
+}
+
+.dark .search-highlight.current {
+  background-color: color-mix(in srgb, var(--color-yellow-100) 46%, transparent);
+  box-shadow: inset 0 0 0 1px var(--color-yellow-100);
 }
 
 @keyframes expandDown {

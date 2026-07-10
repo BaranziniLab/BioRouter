@@ -77,8 +77,8 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
   }
 
   return (
-    <div className="biorouter-modal-overlay fixed inset-0 z-50 flex items-center justify-center">
-      <div className="biorouter-modal-surface bg-background-default w-[720px] max-w-[92vw] max-h-[86vh] flex flex-col overflow-hidden">
+    <div className="biorouter-modal-overlay fixed inset-0 z-[var(--z-overlay)] flex items-center justify-center">
+      <div className="biorouter-modal-surface bg-background-default z-[var(--z-modal)] w-[720px] max-w-[92vw] max-h-[86vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="px-6 pt-5 pb-4 border-b border-border-subtle flex items-start justify-between gap-4">
           <div>
@@ -104,7 +104,7 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search extensions by name, description, or tag…"
-            className="biorouter-modal-panel w-full rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+            className="biorouter-modal-panel w-full rounded-lg px-3 py-2 text-sm"
           />
         </div>
 
@@ -134,7 +134,7 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
                   key={ext.id}
                   className="biorouter-modal-row flex items-start gap-3 rounded-lg px-3 py-3 hover:bg-background-default transition-colors"
                 >
-                  <div className="flex-shrink-0 mt-0.5 w-9 h-9 rounded-lg bg-background-default/80 flex items-center justify-center shadow-sm">
+                  <div className="flex-shrink-0 mt-0.5 w-9 h-9 rounded-lg bg-background-default/80 flex items-center justify-center">
                     <Package className="w-5 h-5 text-text-muted" />
                   </div>
                   <div className="min-w-0 flex-1">

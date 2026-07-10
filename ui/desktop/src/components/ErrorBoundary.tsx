@@ -23,23 +23,21 @@ export function ErrorUI({ error }: { error: string }) {
   return (
     <div className="fixed inset-0 w-full h-full flex flex-col items-center justify-center gap-6 bg-background">
       <div className="flex flex-col items-center gap-4 max-w-[600px] text-center px-6">
-        <div className="w-16 h-16 rounded-lg bg-destructive/10 flex items-center justify-center mb-2">
-          <AlertTriangle className="w-8 h-8 text-destructive" />
+        <div className="w-16 h-16 rounded-lg bg-background-danger/10 flex items-center justify-center mb-2">
+          <AlertTriangle className="w-8 h-8 text-text-danger" />
         </div>
 
         <h1 className="text-2xl font-semibold tracking-tight text-text-default">Honk!</h1>
 
         {window?.appConfig?.get('BIOROUTER_VERSION') !== undefined ? (
-          <p className="text-base text-text-muted dark:text-muted-foreground mb-2">
+          <p className="text-base text-text-muted mb-2">
             An error occurred in BioRouter v{window?.appConfig?.get('BIOROUTER_VERSION') as string}.
           </p>
         ) : (
-          <p className="text-base text-text-muted dark:text-muted-foreground mb-2">
-            An error occurred.
-          </p>
+          <p className="text-base text-text-muted mb-2">An error occurred.</p>
         )}
 
-        <pre className="text-destructive text-sm dark:text-white p-4 bg-muted rounded-lg w-full overflow-auto border border-border whitespace-pre-wrap">
+        <pre className="text-text-danger text-sm dark:text-white p-4 bg-muted rounded-lg w-full overflow-auto border border-border whitespace-pre-wrap">
           {error}
         </pre>
 

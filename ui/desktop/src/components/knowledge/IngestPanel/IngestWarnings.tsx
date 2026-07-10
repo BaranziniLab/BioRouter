@@ -21,9 +21,9 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
       <div className="flex items-center justify-between gap-3 px-3 py-2.5">
         <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-2 text-left">
           {open ? (
-            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" strokeWidth={1.5} />
           ) : (
-            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-muted" strokeWidth={1.5} />
           )}
           <div className="min-w-0">
             <div className="text-sm font-medium">Curation warnings</div>
@@ -62,9 +62,9 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
               >
                 <div className="flex items-start gap-2">
                   {isError ? (
-                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+                    <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.5} />
                   ) : (
-                    <Info className="mt-0.5 h-4 w-4 shrink-0" />
+                    <Info className="mt-0.5 h-4 w-4 shrink-0" strokeWidth={1.5} />
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="text-xs font-medium">{warning.title}</div>
@@ -78,7 +78,7 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
                     className="shrink-0 opacity-70 transition-opacity hover:opacity-100"
                     aria-label="Dismiss warning"
                   >
-                    <X className="h-3.5 w-3.5" />
+                    <X className="h-3.5 w-3.5" strokeWidth={1.5} />
                   </button>
                 </div>
               </div>

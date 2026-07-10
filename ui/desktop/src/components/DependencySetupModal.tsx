@@ -255,8 +255,8 @@ export default function DependencySetupModal() {
     deps.length > 0 && deps.every((d) => d.installState === 'done' || d.info.installed);
 
   return (
-    <div className="biorouter-modal-overlay fixed inset-0 z-[200] flex items-center justify-center">
-      <div className="biorouter-modal-surface bg-background-default w-[560px] max-h-[85vh] flex flex-col overflow-hidden">
+    <div className="biorouter-modal-overlay fixed inset-0 z-[var(--z-overlay)] flex items-center justify-center">
+      <div className="biorouter-modal-surface bg-background-default z-[var(--z-modal)] w-[560px] max-h-[85vh] flex flex-col overflow-hidden">
         {/* Header */}
         <div className="px-6 pt-5 pb-4 border-b border-border-subtle flex items-start justify-between">
           <div>
@@ -301,11 +301,11 @@ export default function DependencySetupModal() {
           {/* Biorouter CLI install card */}
           {(showCli || cliState === 'done') && (
             <div
-              className={`rounded-xl border px-4 py-3 shadow-sm ${
+              className={`rounded-xl border px-4 py-3 ${
                 cliState === 'done'
                   ? 'border-border-success/40 bg-background-success/10'
                   : cliState === 'error'
-                    ? 'border-destructive/30 bg-destructive/5'
+                    ? 'border-border-danger/30 bg-background-danger/5'
                     : 'biorouter-modal-panel bg-background-medium/20'
               }`}
             >
@@ -313,7 +313,7 @@ export default function DependencySetupModal() {
                 <div>
                   <p className="text-sm font-semibold flex items-center gap-1.5">
                     {cliState === 'done' && <span className="text-text-success">✓</span>}
-                    {cliState === 'error' && <span className="text-destructive">✗</span>}
+                    {cliState === 'error' && <span className="text-text-danger">✗</span>}
                     {cliState === 'running' && (
                       <span className="inline-block w-3 h-3 rounded-full border-2 border-text-muted border-t-transparent animate-spin" />
                     )}
@@ -349,7 +349,7 @@ export default function DependencySetupModal() {
                 </div>
               )}
               {cliState === 'error' && cliError && (
-                <p className="mt-2 text-xs text-destructive">{cliError}</p>
+                <p className="mt-2 text-xs text-text-danger">{cliError}</p>
               )}
             </div>
           )}
@@ -363,7 +363,7 @@ export default function DependencySetupModal() {
                   installed
                     ? 'border-border-success/40 bg-background-success/10'
                     : installState === 'error'
-                      ? 'border-destructive/30 bg-destructive/5'
+                      ? 'border-border-danger/30 bg-background-danger/5'
                       : 'border-border-subtle bg-background-medium/20'
                 }`}
               >
@@ -371,7 +371,7 @@ export default function DependencySetupModal() {
                   <div>
                     <p className="text-sm font-semibold flex items-center gap-1.5">
                       {installed && <span className="text-text-success">✓</span>}
-                      {installState === 'error' && <span className="text-destructive">✗</span>}
+                      {installState === 'error' && <span className="text-text-danger">✗</span>}
                       {installState === 'running' && (
                         <span className="inline-block w-3 h-3 rounded-full border-2 border-text-muted border-t-transparent animate-spin" />
                       )}
@@ -428,7 +428,7 @@ export default function DependencySetupModal() {
 
                 {/* Error */}
                 {installState === 'error' && errorMsg && (
-                  <p className="mt-2 text-xs text-destructive">{errorMsg}</p>
+                  <p className="mt-2 text-xs text-text-danger">{errorMsg}</p>
                 )}
 
                 {/* Linux sudo note */}

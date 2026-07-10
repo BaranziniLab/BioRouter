@@ -7,10 +7,10 @@ export const Harddrive = ({ className }: { className?: string }) => (
     xmlns="http://www.w3.org/2000/svg"
     className={className}
   >
-    <rect width="11" height="11" rx="2" fill="#1E1E20" />
+    <rect width="11" height="11" rx="2" fill="currentColor" fillOpacity={0.2} />
     <path
       d="M5 3.5C5 4.32843 4.32843 5 3.5 5C2.67157 5 2 4.32843 2 3.5C2 2.67157 2.67157 2 3.5 2C4.32843 2 5 2.67157 5 3.5Z"
-      fill="white"
+      fill="currentColor"
     />
   </svg>
 );

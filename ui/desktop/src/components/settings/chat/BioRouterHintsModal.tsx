@@ -109,7 +109,7 @@ export const BioRouterHintsModal = ({
               <FileInfo filePath={biorouterHintsFilePath} found={biorouterHintsFileFound} />
               <textarea
                 value={biorouterHintsFile}
-                className="w-full h-72 border border-border-subtle rounded-lg p-3 text-sm font-mono resize-none bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150"
+                className="w-full h-72 border border-border-subtle rounded-lg p-3 text-sm font-mono resize-none bg-background-default text-text-default placeholder:text-text-muted focus:border-border-strong transition-colors duration-150"
                 onChange={(event) => setBioRouterHintsFile(event.target.value)}
                 placeholder="# Project context for BioRouter&#10;# e.g. language, frameworks, coding style, important files..."
               />

@@ -41,7 +41,7 @@ export function BottomMenuKnowledgeSelection() {
           title={labelForVisibleCount(visibleBases.length)}
           aria-label={labelForVisibleCount(visibleBases.length)}
         >
-          <BookOpen className="mr-0.5 h-4 w-4" />
+          <BookOpen className="mr-0.5 h-4 w-4" strokeWidth={1.5} />
           <span>{visibleBases.length}</span>
         </button>
       </PopoverTrigger>

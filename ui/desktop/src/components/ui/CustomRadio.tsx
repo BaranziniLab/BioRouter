@@ -39,25 +39,32 @@ const CustomRadio = ({
   return (
     <label
       htmlFor={id}
-      className={`flex justify-between items-center py-2 cursor-pointer ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${className}`}
+      className={`flex min-h-8 justify-between items-center py-2 cursor-pointer ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${className}`}
     >
-      <div className="relative flex items-center">
-        <input
-          type="radio"
-          id={id}
-          name={name}
-          value={value}
-          checked={checked}
-          onChange={onChange}
-          disabled={disabled}
-          className="peer sr-only"
-        />
-        <div
-          className="h-4 w-4 rounded-full border border-text-muted mr-4
-                    peer-checked:border-[6px] peer-checked:border-text-default
-                    peer-checked:bg-background-default
-                    transition-all duration-200 ease-in-out"
-        ></div>
+      <div className="flex items-center">
+        {/* 16px control. input, ring and dot share this box so both siblings react to peer-checked. */}
+        <span className="relative mr-2 inline-flex h-4 w-4 shrink-0 items-center justify-center">
+          <input
+            type="radio"
+            id={id}
+            name={name}
+            value={value}
+            checked={checked}
+            onChange={onChange}
+            disabled={disabled}
+            className="peer sr-only"
+          />
+          <span
+            className="pointer-events-none absolute inset-0 rounded-full border-[1.5px] border-border-strong
+                      transition-colors duration-[var(--motion-fast)] ease-[var(--ease-out)]
+                      peer-checked:border-border-accent"
+          />
+          <span
+            className="pointer-events-none h-1.5 w-1.5 rounded-full bg-background-accent opacity-0
+                      transition-opacity duration-[var(--motion-fast)] ease-[var(--ease-out)]
+                      peer-checked:opacity-100"
+          />
+        </span>
 
         {(label || secondaryLabel) && (
           <div>

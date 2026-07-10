@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Omics Dashboard</title>
+</head>
+<body>
+  <main class="br-container" data-br-main>
+    <span class="br-badge">BioRouter App</span>
+    <h1>Differential Expression Dashboard</h1>
+    <p class="br-text br-text--muted">
+      Paste a DE result summary — a DESeq2 / edgeR / limma table, a tool log, or a
+      few sentences — and the agent builds a dashboard: the headline counts, the
+      median effect size, and a ranked chart of the strongest movers.
+    </p>
+
+    <div class="br-card">
+      <label class="br-label" for="summary">Result summary</label>
+      <textarea id="summary" class="br-textarea" rows="9"
+        placeholder="e.g.  gene    log2FC    padj&#10;IL6     4.1       2e-14&#10;ALB    -3.0       8e-10  …"></textarea>
+      <div class="br-row" style="margin-top: 12px;">
+        <button id="build" class="br-btn">Build dashboard</button>
+        <button id="example" class="br-btn br-btn--ghost" style="flex: 0 0 auto; max-width: 160px;">Load example</button>
+      </div>
+    </div>
+
+    <!-- br.run streams the agent's short written read-out here while its ui_*
+         tools populate the two dashboard regions below. -->
+    <div class="br-output" id="out" data-placeholder="The agent's read on your data appears here."></div>
+
+    <section class="br-card">
+      <div class="br-label">Overview</div>
+      <div data-br-region="metrics">
+        <p class="br-text br-text--muted">Stat tiles land here once you build a dashboard.</p>
+      </div>
+    </section>
+
+    <section class="br-card">
+      <div class="br-label">Top hits by effect size</div>
+      <div data-br-region="tophits">
+        <p class="br-text br-text--muted">A ranked bar chart of the strongest log2FC values lands here.</p>
+      </div>
+    </section>
+
+    <p class="br-footer">Powered by BioRouter · built with Agent Drafter</p>
+  </main>
+</body>
+</html>

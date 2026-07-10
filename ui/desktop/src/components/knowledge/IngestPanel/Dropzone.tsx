@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import { FileStack, FolderTree, Upload } from 'lucide-react';
+import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import {
   Dialog,
@@ -108,11 +109,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
           if (dragCounterRef.current === 0) setDragging(false);
         }}
         onDrop={onDrop}
-        className={`relative cursor-pointer rounded-xl border px-4 py-5 text-center transition-all focus:outline-none focus:ring-1 focus:ring-ring ${
-          dragging
-            ? 'border-block-teal bg-background-medium'
-            : 'border-border-subtle bg-[color-mix(in_srgb,var(--background-default)_60%,var(--background-medium))] hover:bg-background-default/72'
-        }`}
+        className={`relative cursor-pointer rounded-xl border px-4 py-5 text-center transition-colors duration-[var(--motion-fast)] ${dragging ? 'border-border-strong bg-background-medium' : 'border-border-subtle bg-background-muted hover:bg-background-medium'}`}
       >
         <input
           data-testid="knowledge-ingest-file-input"
@@ -129,20 +126,16 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
           }}
         />
         <div
-          className={`mx-auto flex h-10 w-10 items-center justify-center rounded-full transition-colors ${
-            dragging
-              ? 'bg-background-strong text-text-default'
-              : 'bg-background-muted text-text-muted'
-          }`}
+          className={`mx-auto flex h-10 w-10 items-center justify-center rounded-full transition-colors ${dragging ? 'bg-background-strong text-text-default' : 'bg-background-medium text-text-muted'}`}
         >
-          <Upload className="h-5 w-5" />
+          <Upload className="h-5 w-5" strokeWidth={1.5} />
         </div>
         <div className="mt-2 text-sm font-medium">Drag and drop to stage</div>
         <div className="mt-1 text-xs leading-5 text-text-muted">
           Drop readable files directly, or click to choose files, folders, and archives for backend
           staging.
         </div>
-        <div className="mt-3 flex flex-wrap justify-center gap-1.5 text-[11px] font-mono text-text-muted">
+        <div className="mt-3 flex flex-wrap justify-center gap-1.5">
           {[
             '.pdf',
             '.pptx',
@@ -155,12 +148,9 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
             'folders',
             'archives',
           ].map((label) => (
-            <span
-              key={label}
-              className="rounded-md bg-background-medium/74 px-1.5 py-0.5 text-text-default/80"
-            >
+            <Badge key={label} className="font-mono">
               {label}
-            </span>
+            </Badge>
           ))}
         </div>
         <div className="mt-2 text-[11px] leading-5 text-text-muted">
@@ -188,9 +178,9 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
                 setChooserOpen(false);
                 inputRef.current?.click();
               }}
-              className="biorouter-modal-row rounded-2xl px-4 py-4 text-left transition-colors hover:!border-border-default hover:bg-background-default"
+              className="biorouter-modal-row rounded-md px-4 py-4 text-left transition-colors hover:bg-background-default"
             >
-              <FileStack className="h-5 w-5 text-text-muted" />
+              <FileStack className="h-5 w-5 text-text-muted" strokeWidth={1.5} />
               <div className="mt-3 text-sm font-medium">Choose files</div>
               <p className="mt-1 text-xs leading-5 text-text-muted">
                 Stage PDFs, Markdown, HTML, DOCX, CSV, plain text, and similar readable files.
@@ -204,9 +194,9 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
                 setChooserOpen(false);
                 void onPathPickRequested();
               }}
-              className="biorouter-modal-row rounded-2xl px-4 py-4 text-left transition-colors hover:!border-border-default hover:bg-background-default"
+              className="biorouter-modal-row rounded-md px-4 py-4 text-left transition-colors hover:bg-background-default"
             >
-              <FolderTree className="h-5 w-5 text-text-muted" />
+              <FolderTree className="h-5 w-5 text-text-muted" strokeWidth={1.5} />
               <div className="mt-3 text-sm font-medium">Choose folder or archive</div>
               <p className="mt-1 text-xs leading-5 text-text-muted">
                 Let BioRouter unpack archives, skip binaries, and stage readable children one by one

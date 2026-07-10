@@ -61,7 +61,9 @@ export async function decodeWorkflow(deeplink: string): Promise<Workflow> {
   }
 }
 
-export async function scanWorkflow(workflow: Workflow): Promise<{ has_security_warnings: boolean }> {
+export async function scanWorkflow(
+  workflow: Workflow
+): Promise<{ has_security_warnings: boolean }> {
   try {
     const response = await apiScanWorkflow({
       body: { workflow },
@@ -78,7 +80,25 @@ export async function scanWorkflow(workflow: Workflow): Promise<{ has_security_w
   }
 }
 
+/**
+ * A deep link carries the whole workflow as base64 in a URL that gets pasted
+ * into chats and browsers. Literal `envs` values on an extension are secrets
+ * (API keys, passcodes), so they must never travel with it — only `env_keys`,
+ * which the recipient resolves from their own keyring.
+ */
+export function stripExtensionSecrets(workflow: Workflow): Workflow {
+  if (!workflow.extensions?.length) {
+    return workflow;
+  }
+  return {
+    ...workflow,
+    extensions: workflow.extensions.map((extension) =>
+      'envs' in extension && extension.envs ? { ...extension, envs: undefined } : extension
+    ) as Workflow['extensions'],
+  };
+}
+
 export async function generateDeepLink(workflow: Workflow): Promise<string> {
-  const encoded = await encodeWorkflow(workflow);
+  const encoded = await encodeWorkflow(stripExtensionSecrets(workflow));
   return `biorouter://workflow?config=${encoded}`;
 }

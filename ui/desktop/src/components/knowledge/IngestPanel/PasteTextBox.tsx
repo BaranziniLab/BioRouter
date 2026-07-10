@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { Button } from '../../ui/button';
 
 interface Props {
   onStage: (text: string, title: string, urls: string[]) => void;
@@ -26,37 +27,33 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
   }
 
   return (
-    <div className="overflow-hidden rounded-xl border border-border-subtle bg-[color-mix(in_srgb,var(--background-default)_82%,var(--background-medium))] transition-colors focus-within:border-border-default">
+    <div className="overflow-hidden rounded-xl border border-border-subtle bg-background-default transition-colors focus-within:border-border-strong">
       <div className="overflow-hidden">
         <input
           type="text"
           value={title}
           onChange={(e) => setTitle(e.target.value)}
           placeholder="Optional title…"
-          className="w-full bg-background-default/82 px-3 py-2 text-xs text-text-default outline-none placeholder:text-textPlaceholder"
+          className="w-full bg-transparent px-3 py-2 text-xs text-text-default placeholder:text-text-muted"
         />
-        <div className="h-px bg-[color-mix(in_srgb,var(--border-subtle)_38%,transparent)]" />
+        <div className="h-px bg-border-subtle" />
         <textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
           placeholder="Paste knowledge, snippets, or a chunk of prose. URLs will be extracted and offered for ingestion."
-          className="w-full min-h-[100px] resize-y bg-background-default/56 px-3 py-2 text-xs text-text-default outline-none placeholder:text-textPlaceholder"
+          className="w-full min-h-[100px] resize-y bg-transparent px-3 py-2 text-xs text-text-default placeholder:text-text-muted"
         />
       </div>
       {detectedUrls.length > 0 && (
-        <div className="mx-3 mt-2 flex flex-wrap gap-1.5 rounded-xl bg-background-medium/56 px-3 py-2">
-          <span className="text-[11px] text-text-muted self-center mr-1">Will fetch:</span>
+        <div className="mx-3 mt-2 flex flex-wrap gap-1.5 rounded-md bg-background-muted px-3 py-2">
+          <span className="mr-1 self-center text-[11px] text-text-muted">Will fetch:</span>
           {detectedUrls.map((u) => {
             const on = includeUrls[u] !== false;
             return (
               <button
                 key={u}
                 onClick={() => toggleUrl(u)}
-                className={`text-[11px] font-mono px-2 py-0.5 rounded-md border ${
-                  on
-                    ? 'border-border-default bg-background-muted'
-                    : 'border-border-subtle text-text-muted line-through'
-                }`}
+                className={`rounded-sm px-2 py-0.5 font-mono text-[11px] transition-colors ${on ? 'bg-background-medium text-text-default' : 'text-text-muted line-through hover:text-text-default'}`}
               >
                 {u.length > 36 ? u.substring(0, 33) + '…' : u}
               </button>
@@ -64,22 +61,20 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
           })}
         </div>
       )}
-      <div className="px-3 py-2 flex justify-between items-center">
+      <div className="flex items-center justify-between px-3 py-2">
         <span className="text-[11px] text-text-muted">{text.length} chars</span>
         <div className="flex gap-1.5">
-          <button
-            onClick={onCancel}
-            className="text-xs px-2.5 py-1 rounded text-text-muted hover:text-text-default"
-          >
+          <Button type="button" variant="ghost" size="sm" onClick={onCancel}>
             Cancel
-          </button>
-          <button
+          </Button>
+          <Button
+            type="button"
+            size="sm"
             disabled={!text.trim()}
             onClick={() => onStage(text.trim(), title.trim() || 'Pasted knowledge', urlsToFetch)}
-            className="text-xs px-2.5 py-1 rounded bg-text-default text-white font-medium disabled:opacity-50 disabled:text-white"
           >
             Stage
-          </button>
+          </Button>
         </div>
       </div>
     </div>

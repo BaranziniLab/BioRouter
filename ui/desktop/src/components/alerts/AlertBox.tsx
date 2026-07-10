@@ -157,7 +157,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
                     // Prevent issues with text selection
                     e.stopPropagation();
                   }}
-                  className="w-12 px-1 text-[11px] bg-white/10 border border-current/30 rounded outline-none text-center focus:bg-white/20 focus:border-current/50 transition-colors"
+                  className="w-12 px-1 text-[11px] bg-white/10 border border-current/30 rounded text-center focus:bg-white/20 focus:border-current/50 transition-colors"
                   disabled={isSaving}
                   autoFocus
                 />
@@ -271,7 +271,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
               }}
               disabled={alert.compactButtonDisabled}
               className={cn(
-                'flex items-center gap-1.5 text-[11px] outline-none mt-1',
+                'flex items-center gap-1.5 text-[11px]  mt-1',
                 alert.compactButtonDisabled
                   ? 'opacity-50 cursor-not-allowed'
                   : 'hover:opacity-80 cursor-pointer'
@@ -296,7 +296,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
                     e.stopPropagation();
                     alert.action?.onClick();
                   }}
-                  className="text-[11px] text-left underline hover:opacity-80 cursor-pointer outline-none"
+                  className="text-[11px] text-left underline hover:opacity-80 cursor-pointer"
                 >
                   {alert.action.text}
                 </a>

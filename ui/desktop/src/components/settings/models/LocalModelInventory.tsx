@@ -379,7 +379,7 @@ export default function LocalModelInventory() {
               type="button"
               size="xs"
               variant="ghost"
-              className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+              className="text-text-danger hover:bg-background-danger/10 hover:text-text-danger"
               onClick={() => void runDelete(model)}
               disabled={!!activeAction}
               title="Delete local model"
@@ -487,9 +487,8 @@ export default function LocalModelInventory() {
                       </span>
                     </div>
                     <p className="mt-1 truncate text-xs text-text-muted">
-                      {model.family} · {model.download_size} ·{' '}
-                      {formatContext(model.context_limit)} context ·{' '}
-                      {model.ollama_name ?? model.hf_spec}
+                      {model.family} · {model.download_size} · {formatContext(model.context_limit)}{' '}
+                      context · {model.ollama_name ?? model.hf_spec}
                     </p>
                   </div>
                   {renderAction(model)}
@@ -536,9 +535,7 @@ export default function LocalModelInventory() {
                     )}`
                   : acceleratorMemoryLabel(snapshot?.system.accelerator_memory_kind)}
               </DetailRow>
-              <DetailRow label="Recommendation">
-                {selectedModel.suitability_message}
-              </DetailRow>
+              <DetailRow label="Recommendation">{selectedModel.suitability_message}</DetailRow>
               <DetailRow label="Ollama model" mono>
                 {selectedModel.ollama_name ?? 'none'}
               </DetailRow>

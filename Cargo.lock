@@ -947,6 +947,7 @@ dependencies = [
  "aws-config",
  "aws-sdk-bedrockruntime",
  "aws-sdk-sagemakerruntime",
+ "aws-smithy-runtime-api",
  "aws-smithy-types",
  "axum",
  "base64 0.21.7",

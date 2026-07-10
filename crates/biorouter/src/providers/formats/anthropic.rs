@@ -668,6 +668,15 @@ where
                             final_usage = Some(crate::providers::base::ProviderUsage::new(model, delta_usage));
                             tracing::debug!("🔍 Anthropic no existing usage, using delta usage");
                         }
+
+                        // Emit a running snapshot. Anthropic reports usage only on
+                        // the terminal chunk, so a cancelled turn used to record
+                        // nothing at all even though the full input and the partial
+                        // output were billed. The agent keeps the LAST snapshot per
+                        // turn, so re-yielding here cannot double count.
+                        if let Some(snapshot) = final_usage.clone() {
+                            yield (None, Some(snapshot));
+                        }
                     } else {
                         tracing::debug!("🔍 Anthropic message_delta event has no usage field");
                     }

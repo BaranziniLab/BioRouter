@@ -15,6 +15,7 @@
 //! `export_app` produces a standalone runnable TypeScript project.
 
 pub mod bundle;
+pub mod control;
 pub mod manifest;
 pub mod render;
 pub mod store;
@@ -341,8 +342,15 @@ fn now_secs() -> u64 {
         .unwrap_or(0)
 }
 
-/// Recursively collect an app's files (relative path → contents), skipping
-/// `manifest.json`.
+/// Directories inside an app that must never leave the author's machine. The
+/// vault holds AES-sealed secrets whose key lives in the author's OS keyring —
+/// worthless to a recipient, and not ours to copy around.
+const EXPORT_EXCLUDED_DIRS: &[&str] = &[".vault/", ".git/"];
+
+/// Recursively collect an app's files (relative path → contents).
+///
+/// `manifest.json` is skipped here and re-emitted by `scaffold_standalone` from
+/// the parsed [`Manifest`], so the export always carries a canonical one.
 fn collect_files(base: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String)>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -353,7 +361,7 @@ fn collect_files(base: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(S
             collect_files(base, &path, out);
         } else if let Ok(rel) = path.strip_prefix(base) {
             let rel = rel.to_string_lossy().replace('\\', "/");
-            if rel == "manifest.json" {
+            if rel == "manifest.json" || EXPORT_EXCLUDED_DIRS.iter().any(|d| rel.starts_with(d)) {
                 continue;
             }
             if let Ok(content) = std::fs::read_to_string(&path) {
@@ -363,10 +371,58 @@ fn collect_files(base: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(S
     }
 }
 
+/// Whether `id`'s bundle needs rebuilding before it can be served: it has never
+/// been built, or it was built against an older App SDK than this binary ships.
+///
+/// The second case matters because each app vendors its own `src/sdk.ts`. Without
+/// this, an app authored before a protocol addition keeps running the old runtime
+/// forever and silently drops frames the server now sends (e.g. the `ui` commands
+/// that let the agent drive the page).
+pub fn bundle_is_stale(store: &ArtifactStore, id: &str, manifest: &Manifest) -> bool {
+    if manifest.kind != ArtifactKind::Agentic {
+        return false;
+    }
+    if !store.file_exists(id, "dist/app.js") {
+        return true;
+    }
+    manifest.sdk_hash.as_deref() != Some(&bundle::sdk_fingerprint())
+}
+
+/// Rebuild `id` and stamp the manifest with the build time + SDK fingerprint.
+/// Blocking (runs esbuild); callers on an async runtime must `spawn_blocking`.
+///
+pub fn rebuild_and_stamp(store: &ArtifactStore, id: &str) -> std::io::Result<bundle::BuildReport> {
+    // `build_app` refreshes the vendored `src/sdk.ts` before bundling, so the
+    // fingerprint we stamp below always describes what actually went into
+    // `dist/app.js` — never a current hash over a stale runtime.
+    let report = bundle::build_app(&store.artifact_dir(id))?;
+    if report.ok {
+        if let Ok(mut m) = store.load_manifest(id) {
+            m.built_at = Some(now_secs());
+            m.sdk_hash = Some(bundle::sdk_fingerprint());
+            let _ = store.save_manifest(&m);
+        }
+    }
+    Ok(report)
+}
+
+/// Give a written export file the exec bit (owner+group+other rx, owner w).
+/// No-op on Windows, where executability isn't a file mode.
+fn make_executable(path: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755));
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 /// Gather an app's files and produce the standalone export scaffold (a file map
 /// of relative-path → contents). Shared by the `export_app` tool and the
 /// server's `GET /apps/{id}/export` route. `endpoint` overrides the agent
-/// WebSocket the exported app connects to (None → a local biorouterd).
+/// WebSocket the exported app connects to (None → derived from the page origin,
+/// with a loopback fallback).
 pub fn export_scaffold(
     root: &std::path::Path,
     id: &str,
@@ -397,8 +453,10 @@ pub fn export_scaffold(
     // Ship a prebuilt bundle so the export is directly runnable with no build
     // step (the launcher / a static server can serve it as-is). Build on demand.
     if manifest.kind == ArtifactKind::Agentic {
-        if !store.file_exists(id, "dist/app.js") {
-            let _ = bundle::build_app(&dir);
+        // Ship a bundle built from the CURRENT SDK, not a stale one the app
+        // happens to have on disk — an export is the copy that leaves the machine.
+        if bundle_is_stale(&store, id, &manifest) {
+            let _ = rebuild_and_stamp(&store, id);
         }
         if let Ok(js) = store.read_file(id, "dist/app.js") {
             scaffold.push(("dist/app.js".to_string(), js));
@@ -555,6 +613,37 @@ impl AgentDrafterServer {
             put the required fence format directly in the agent system prompt and
             in the UI-built run prompt. Tables are useful evidence, but they do
             not satisfy the visualization requirement by themselves.
+
+            AGENT-DRIVEN UI — the app's agent does not only *answer inside* the
+            app, it can *change* the app. Every agentic app is granted `ui_*`
+            tools (`capabilities.ui`, on by default) that push commands down its
+            own WebSocket:
+            - `ui_panel` — mount/replace/remove a panel or dashboard (widget
+              nodes: card/row/col/text/badge/stat/divider/progress/table/chart/
+              graph/input/select/checkbox/button/form).
+            - `ui_render` — render into a region the AUTHOR declared, a panel, or
+              a CSS selector.
+            - `ui_chart` / `ui_graph` — draw a figure straight into the page.
+            - `ui_highlight` — outline/pulse/focus part of the app, with a note.
+            - `ui_theme` / `ui_layout` — restyle, or switch to a sidebar/dashboard.
+            - `ui_notify` — progress toasts. `ui_state` — a shared state bag the
+              app's own code can subscribe to via `br.ui.onState(...)`.
+            - `ui_ask` — render a form and BLOCK until the user submits; the tool
+              result is their answers, so the agent branches on them mid-turn.
+            - `ui_describe` — list the regions/ids/panels the page actually has.
+
+            To let the agent fill parts of YOUR markup, mark them:
+              <section data-br-region="results"></section>
+            and it can target `@region:results`. Panels need no region — the SDK
+            always provides a dock. From the app side, `br.ui.onCommand(fn)` and
+            `br.ui.onState(fn)` observe what the agent does.
+
+            Design apps around this. A good agentic app's system_prompt says WHEN
+            to reach for a `ui_*` tool ("after ranking the genes, call ui_chart
+            with the top 10; highlight @region:cohort while you explain it"),
+            rather than describing results in prose. Prefer `ui_ask` over asking
+            a question in text and waiting for the next message. Set
+            `capabilities.ui.enabled = false` only for deliberately text-only apps.
 
             BUILD HARNESS / guardrails: `build_app` (and `lint_app`) run a
             validation harness on whatever you generate and report findings. It
@@ -925,17 +1014,19 @@ impl AgentDrafterServer {
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
         let store = self.store();
-        let mut manifest = store
-            .load_manifest(&p.id)
-            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
-        let dir = store.artifact_dir(&p.id);
-        let report = tokio::task::spawn_blocking(move || bundle::build_app(&dir))
+        if !store.exists(&p.id) {
+            return Err(err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)));
+        }
+        let store2 = store.clone();
+        let id2 = p.id.clone();
+        let report = tokio::task::spawn_blocking(move || rebuild_and_stamp(&store2, &id2))
             .await
             .map_err(internal)?
             .map_err(internal)?;
         if report.ok {
-            manifest.built_at = Some(now_secs());
-            store.save_manifest(&manifest).map_err(internal)?;
+            // `rebuild_and_stamp` already persisted built_at + sdk_hash; reload so
+            // the preview card reflects them.
+            let manifest = store.load_manifest(&p.id).map_err(internal)?;
             // Run the guardrail harness and surface findings so the agent can
             // self-correct (SDK-wired, self-contained, on-theme).
             let lint = bundle::lint_app(&store.artifact_dir(&p.id));
@@ -1144,7 +1235,12 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "export_app",
-        description = "Export an app as a standalone, runnable TypeScript project (esbuild build + a tiny static server) that talks to a BioRouter daemon."
+        description = "Export an app as a standalone folder the user can just run: double-click \
+                       `run.command` (macOS) or `bash run.sh`. The launcher installs the app into \
+                       the local BioRouter store, starts or reuses a `biorouterd`, and opens it — \
+                       no npm install and no build step (`dist/app.js` ships prebuilt). \
+                       `npm start` additionally serves the folder and proxies the agent, for \
+                       editing `src/`."
     )]
     pub async fn export_app(
         &self,
@@ -1176,10 +1272,17 @@ impl AgentDrafterServer {
                 std::fs::create_dir_all(parent).map_err(internal)?;
             }
             std::fs::write(&full, content).map_err(internal)?;
+            // The whole point of `run.command` is that a user can double-click
+            // it. Written without the exec bit, it opens in a text editor.
+            if render::EXECUTABLE_EXPORT_FILES.contains(&rel.as_str()) {
+                make_executable(&full);
+            }
         }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Exported '{}' as a standalone TypeScript project to {} ({} files). README.md: npm install && npm run build && npm start (with a biorouterd running).",
+            "Exported '{}' to {} ({} files). To run it: double-click run.command (macOS) or `bash run.sh`. \
+             That installs the app, starts a biorouterd if one isn't already up, and opens it in the browser — \
+             no npm install, no build step.",
             p.id,
             target.display(),
             scaffold.len()
@@ -1585,6 +1688,12 @@ run.addEventListener("click", async () => {
         let build_text = text_of(&build);
         assert!(build_text.contains("dist/app.js"));
         assert!(build_text.contains("passes all guardrails"));
+        // Building leaves the app in a new visible state, so the GUI's artifact
+        // panel must get the app itself, not just the build log.
+        assert!(
+            has_ui_resource(&build),
+            "build_app must return a preview card"
+        );
 
         let launch = s
             .launch_app(Parameters(AppIdParams {
@@ -1593,6 +1702,10 @@ run.addEventListener("click", async () => {
             .await
             .unwrap();
         assert!(text_of(&launch).contains("/apps/cohort-review-console/"));
+        assert!(
+            has_ui_resource(&launch),
+            "launch_app must return a preview card"
+        );
 
         let manifest = s.store().load_manifest("cohort-review-console").unwrap();
         let agent = manifest.agent.unwrap();
@@ -1935,15 +2048,72 @@ br.run("hello", "#missing");
             }))
             .await
             .unwrap();
-        assert!(text_of(&res).contains("standalone"));
-        assert!(out.path().join("index.html").exists());
-        assert!(out.path().join("package.json").exists());
-        assert!(out.path().join("serve.mjs").exists());
-        assert!(out.path().join("src/main.ts").exists());
-        assert!(out.path().join("src/sdk.ts").exists());
+        assert!(text_of(&res).contains("run.command"));
+        for f in [
+            "index.html",
+            "manifest.json",
+            "package.json",
+            "serve.mjs",
+            "run.sh",
+            "run.command",
+            "biorouter-launch.sh",
+            "src/main.ts",
+            "src/sdk.ts",
+        ] {
+            assert!(out.path().join(f).exists(), "export is missing {f}");
+        }
         let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
         assert!(index.contains("dist/app.js"));
         assert!(index.contains("BIOROUTER_APP_CONFIG"));
+
+        // The exported manifest is what registers the app with a daemon.
+        let m: Manifest = serde_json::from_str(
+            &std::fs::read_to_string(out.path().join("manifest.json")).unwrap(),
+        )
+        .expect("exported manifest must parse");
+        assert_eq!(m.id, "exporter");
+
+        // A launcher that isn't executable isn't double-clickable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for f in ["run.command", "run.sh", "biorouter-launch.sh"] {
+                let mode = std::fs::metadata(out.path().join(f))
+                    .unwrap()
+                    .permissions()
+                    .mode();
+                assert_eq!(
+                    mode & 0o111,
+                    0o111,
+                    "{f} must be executable (mode {mode:o})"
+                );
+            }
+        }
+    }
+
+    /// An export must never carry the author's sealed secrets off their machine.
+    #[tokio::test]
+    async fn export_excludes_the_vault() {
+        let (_d, s) = server();
+        let mut p = create("Vaulted", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        s.create_app_inner(p, None).await.unwrap();
+        let vault_dir = s.store().artifact_dir("vaulted").join(".vault");
+        std::fs::create_dir_all(&vault_dir).unwrap();
+        std::fs::write(vault_dir.join("API_KEY.enc"), "sealed-bytes").unwrap();
+
+        let out = TempDir::new().unwrap();
+        s.export_app(Parameters(ExportAppParams {
+            id: "vaulted".into(),
+            target_dir: out.path().to_string_lossy().to_string(),
+            endpoint: None,
+        }))
+        .await
+        .unwrap();
+        assert!(
+            !out.path().join(".vault").exists(),
+            "the vault must not be exported"
+        );
     }
 
     #[tokio::test]

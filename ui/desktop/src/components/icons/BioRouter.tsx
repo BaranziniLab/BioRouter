@@ -9,13 +9,22 @@ export function BioRouter({ className = '' }) {
       <path d="M -1 150 C -1 67.16 66.16 0 149 0 C 188.78 0 226.94 15.8 255.07 43.93 C 283.2 72.06 299 110.22 299 150 C 299 189.78 283.2 227.94 255.07 256.07 C 226.94 284.2 188.78 300 149 300 C 109.22 300 71.06 284.2 42.93 256.07 C 14.8 227.94 -1 189.78 -1 150 Z M 149 27.87 C 81.55 27.87 26.87 82.55 26.87 150 C 26.87 217.45 81.55 272.13 149 272.13 C 216.45 272.13 271.13 217.45 271.13 150 C 271.13 82.55 216.45 27.87 149 27.87 Z" />
       <path d="M 64 190 C 64 156.86 90.86 130 124 130 C 139.91 130 155.17 136.32 166.43 147.57 C 177.68 158.83 184 174.09 184 190 C 184 205.91 177.68 221.17 166.43 232.43 C 155.17 243.68 139.91 250 124 250 C 90.86 250 64 223.14 64 190 Z M 124 162.43 C 108.77 162.43 96.43 174.77 96.43 190 C 96.43 205.23 108.77 217.57 124 217.57 C 131.31 217.57 138.32 214.67 143.49 209.49 C 148.67 204.32 151.57 197.31 151.57 190 C 151.57 174.77 139.23 162.43 124 162.43 Z" />
       <path d="M 289 140 L 324 140 Q 339 140 339 155 Q 339 170 324 170 L 289 170 Z" />
-      <path d="M 249 70 L 389 70 Q 399 70 399 80 Q 399 90 389 90 L 249 90 Z" transform="rotate(-90,324,80)" />
+      <path
+        d="M 249 70 L 389 70 Q 399 70 399 80 Q 399 90 389 90 L 249 90 Z"
+        transform="rotate(-90,324,80)"
+      />
       <ellipse cx="184" cy="91" rx="25" ry="25" transform="rotate(45,184,91)" />
       <ellipse cx="233" cy="140" rx="25" ry="25" transform="rotate(45,233,140)" />
-      <path d="M 171 87 Q 206 112 241 87 Q 206 112 241 137 Q 206 112 171 137 Q 206 112 171 87" transform="rotate(45,206,112)" />
+      <path
+        d="M 171 87 Q 206 112 241 87 Q 206 112 241 137 Q 206 112 171 137 Q 206 112 171 87"
+        transform="rotate(45,206,112)"
+      />
       <path d="M 114 69.99 Q 149 83.24 184 69.99 Q 149 83.24 184 96.49 Q 149 83.24 114 96.49 Q 149 83.24 114 69.99" />
       <ellipse cx="119" cy="86" rx="20" ry="20" />
-      <path d="M 304 120 L 329 120 Q 344 120 344 135 Q 344 150 329 150 L 304 150 Z" transform="rotate(-90,324,135)" />
+      <path
+        d="M 304 120 L 329 120 Q 344 120 344 135 Q 344 150 329 150 L 304 150 Z"
+        transform="rotate(-90,324,135)"
+      />
     </svg>
   );
 }
@@ -165,8 +174,8 @@ export function Rain({ className = '' }) {
           y2="37.0563"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint1_linear_2096_5587"
@@ -176,8 +185,8 @@ export function Rain({ className = '' }) {
           y2="45.0281"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint2_linear_2096_5587"
@@ -187,8 +196,8 @@ export function Rain({ className = '' }) {
           y2="35.0141"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint3_linear_2096_5587"
@@ -198,8 +207,8 @@ export function Rain({ className = '' }) {
           y2="51.0563"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint4_linear_2096_5587"
@@ -209,8 +218,8 @@ export function Rain({ className = '' }) {
           y2="5.05625"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint5_linear_2096_5587"
@@ -220,8 +229,8 @@ export function Rain({ className = '' }) {
           y2="13.0281"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint6_linear_2096_5587"
@@ -231,8 +240,8 @@ export function Rain({ className = '' }) {
           y2="19.0563"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint7_linear_2096_5587"
@@ -242,8 +251,8 @@ export function Rain({ className = '' }) {
           y2="30.0563"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint8_linear_2096_5587"
@@ -253,8 +262,8 @@ export function Rain({ className = '' }) {
           y2="32.0563"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint9_linear_2096_5587"
@@ -264,8 +273,8 @@ export function Rain({ className = '' }) {
           y2="36.0281"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint10_linear_2096_5587"
@@ -275,8 +284,8 @@ export function Rain({ className = '' }) {
           y2="37.0563"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint11_linear_2096_5587"
@@ -286,8 +295,8 @@ export function Rain({ className = '' }) {
           y2="45.0281"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint12_linear_2096_5587"
@@ -297,8 +306,8 @@ export function Rain({ className = '' }) {
           y2="35.0141"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint13_linear_2096_5587"
@@ -308,8 +317,8 @@ export function Rain({ className = '' }) {
           y2="51.0563"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint14_linear_2096_5587"
@@ -319,8 +328,8 @@ export function Rain({ className = '' }) {
           y2="5.05625"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint15_linear_2096_5587"
@@ -330,8 +339,8 @@ export function Rain({ className = '' }) {
           y2="13.0281"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint16_linear_2096_5587"
@@ -341,8 +350,8 @@ export function Rain({ className = '' }) {
           y2="19.0563"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint17_linear_2096_5587"
@@ -352,8 +361,8 @@ export function Rain({ className = '' }) {
           y2="30.0563"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint18_linear_2096_5587"
@@ -363,8 +372,8 @@ export function Rain({ className = '' }) {
           y2="32.0563"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
         <linearGradient
           id="paint19_linear_2096_5587"
@@ -374,8 +383,8 @@ export function Rain({ className = '' }) {
           y2="36.0281"
           gradientUnits="userSpaceOnUse"
         >
-          <stop stopColor="#EC5D2A" />
-          <stop offset="1" stopColor="#57B9AF" />
+          <stop style={{ stopColor: 'var(--color-coral-500)' }} />
+          <stop offset="1" style={{ stopColor: 'var(--color-coral-600)' }} />
         </linearGradient>
       </defs>
     </svg>

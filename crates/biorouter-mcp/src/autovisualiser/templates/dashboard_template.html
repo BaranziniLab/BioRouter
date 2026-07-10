@@ -266,6 +266,8 @@
       '</style>\n';
   }
 
+  // Library sources are always inlined: the host renderer's CSP blocks remote
+  // scripts, so a `<script src>` panel would render an empty figure.
   function assetTagsFor(keys, hideOwnTitle) {
     var out = '';
     (keys || []).forEach(function (key) {

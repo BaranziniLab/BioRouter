@@ -4,7 +4,7 @@ interface WorkflowHeaderProps {
 
 export function WorkflowHeader({ title }: WorkflowHeaderProps) {
   return (
-    <div className="flex items-center px-4 py-1 border-b border-border-subtle/50">
+    <div className="flex items-center px-4 py-1 border-b border-border-subtle">
       <div className="flex items-center ml-6">
         <span className="text-sm">
           <span className="text-text-muted">Workflow</span>{' '}

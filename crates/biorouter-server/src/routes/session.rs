@@ -3,7 +3,7 @@ use crate::routes::workflow_utils::{
     apply_workflow_to_agent, build_workflow_with_parameter_values,
 };
 use crate::state::AppState;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::routing::post;
 use axum::{
     extract::Path,
@@ -13,7 +13,7 @@ use axum::{
 };
 use biorouter::agents::ExtensionConfig;
 use biorouter::session::extension_data::ExtensionState;
-use biorouter::session::session_manager::SessionInsights;
+use biorouter::session::session_manager::{ActivityWindow, SessionInsights};
 use biorouter::session::{EnabledExtensionsState, Session};
 use biorouter::workflow::Workflow;
 use serde::{Deserialize, Serialize};
@@ -199,6 +199,47 @@ async fn get_session_insights(
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(Json(insights))
+}
+
+/// Query for `GET /sessions/activity`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ActivityQuery {
+    /// How many calendar days back to report. Clamped to 1..=371 server-side.
+    /// ~155 covers the five months the Home heatmap renders.
+    #[serde(default = "default_activity_days")]
+    pub days: i64,
+}
+
+fn default_activity_days() -> i64 {
+    155
+}
+
+#[utoipa::path(
+    get,
+    path = "/sessions/activity",
+    params(
+        ("days" = Option<i64>, Query, description = "Calendar days to report (default 155, clamped to 1..=371)")
+    ),
+    responses(
+        (status = 200, description = "Per-day usage for the Home heatmap", body = ActivityWindow),
+        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("api_key" = [])
+    ),
+    tag = "Session Management"
+)]
+async fn get_session_activity(
+    State(state): State<Arc<AppState>>,
+    Query(query): Query<ActivityQuery>,
+) -> Result<Json<ActivityWindow>, StatusCode> {
+    let activity = state
+        .session_manager()
+        .get_activity(query.days)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(activity))
 }
 
 #[utoipa::path(
@@ -613,6 +654,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/sessions/{session_id}/export", get(export_session))
         .route("/sessions/import", post(import_session))
         .route("/sessions/insights", get(get_session_insights))
+        .route("/sessions/activity", get(get_session_activity))
         .route("/sessions/{session_id}/name", put(update_session_name))
         .route(
             "/sessions/{session_id}/user_workflow_values",
@@ -659,6 +701,56 @@ mod diverge_tests {
 
     fn user_msg(text: &str) -> Message {
         Message::user().with_text(text)
+    }
+
+    async fn get_activity(
+        state: Arc<AppState>,
+        query: &str,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        let app = routes(state);
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/sessions/activity{query}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    /// `/sessions/activity` must not be swallowed by the `/sessions/{session_id}`
+    /// wildcard registered next to it, and the payload must be camelCase.
+    ///
+    /// NOTE: `AppState::new()` opens the REAL user session database, so a route
+    /// test here must be READ-ONLY. The behaviour of the activity aggregation is
+    /// covered by `session_manager`'s unit tests, which use a `TempDir`.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn activity_route_is_not_shadowed_by_the_session_id_wildcard() {
+        let state = AppState::new().await.unwrap();
+        let (status, body) = get_activity(state, "?days=30").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(body.get("days").is_some(), "got {body}");
+        assert!(body.get("currentStreak").is_some(), "camelCase payload");
+        assert!(body.get("longestStreak").is_some());
+        assert!(body.get("maxTokens").is_some());
+    }
+
+    /// `days` is attacker-controlled; the server clamps it rather than building a
+    /// SQL modifier from an arbitrary integer.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn activity_clamps_an_absurd_window() {
+        let state = AppState::new().await.unwrap();
+        let (status, body) = get_activity(state, "?days=100000").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert!(body.get("start").is_some());
+
+        let state = AppState::new().await.unwrap();
+        let (status, _) = get_activity(state, "?days=-5").await;
+        assert_eq!(status, axum::http::StatusCode::OK);
     }
 
     #[tokio::test(flavor = "multi_thread")]

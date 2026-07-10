@@ -1607,6 +1607,15 @@ impl Agent {
                 // finish_reason of this turn's response (from the provider usage),
                 // used below to auto-continue a length-truncated turn.
                 let mut last_finish_reason: Option<String> = None;
+                // The turn's usage, recorded ONCE when the stream ends.
+                //
+                // It used to be written on every usage-bearing chunk, which (a) lost
+                // the whole turn when the user cancelled — the terminal chunk that
+                // carries usage never arrives — and (b) would multiply the count
+                // against any OpenAI-compatible host that emits `usage` on more than
+                // one chunk. Last snapshot wins; a cancelled turn keeps whatever the
+                // provider had reported so far.
+                let mut turn_usage: Option<crate::providers::base::ProviderUsage> = None;
 
                 while let Some(next) = stream.next().await {
                     if is_token_cancelled(&cancel_token) {
@@ -1642,7 +1651,7 @@ impl Agent {
                                 if usage.finish_reason.is_some() {
                                     last_finish_reason = usage.finish_reason.clone();
                                 }
-                                self.update_session_metrics(&session_config, usage, false).await?;
+                                turn_usage = Some(usage.clone());
                             }
 
                             if let Some(response) = response {
@@ -2011,6 +2020,14 @@ impl Agent {
                         }
                     }
                 }
+
+                // Record the turn exactly once, whether the stream finished, was
+                // cancelled, or errored out. The provider still processed (and
+                // billed) whatever it reported.
+                if let Some(usage) = turn_usage.take() {
+                    self.update_session_metrics(&session_config, &usage, false).await?;
+                }
+
                 if tools_updated {
                     (tools, toolshim_tools, system_prompt) =
                         self.prepare_tools_and_prompt(&session_config.id, &session.working_dir).await?;

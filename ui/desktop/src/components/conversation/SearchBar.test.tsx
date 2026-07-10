@@ -8,11 +8,12 @@ describe('SearchBar', () => {
 
     const surface = screen.getByTestId('conversation-search-bar');
 
+    // A floating search panel is a popover: 16px radius, --shadow-popover, and an
+    // opaque fill (no backdrop blur). See design.md §3.4, §3.5 and the anti-patterns.
     expect(surface).toHaveClass('max-w-[720px]');
-    expect(surface).toHaveClass('rounded-xl');
-    expect(surface).toHaveClass(
-      'shadow-[0_18px_44px_-34px_rgba(32,25,15,0.42),0_1px_0_rgba(32,25,15,0.04)]'
-    );
+    expect(surface).toHaveClass('rounded-2xl');
+    expect(surface).toHaveClass('shadow-popover');
+    expect(surface).not.toHaveClass('backdrop-blur-md');
   });
 
   it('keeps search behavior while using the compact surface', () => {

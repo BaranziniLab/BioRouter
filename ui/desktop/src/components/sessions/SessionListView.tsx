@@ -150,7 +150,7 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
                 type="text"
                 value={description}
                 onChange={handleInputChange}
-                className="biorouter-modal-panel w-full p-3 rounded-lg text-text-default focus:outline-none focus:ring-1 focus:ring-border-strong"
+                className="biorouter-modal-panel w-full p-3 rounded-lg text-text-default "
                 placeholder="Enter session description"
                 autoFocus
                 maxLength={200}
@@ -607,7 +607,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       return (
         <div
           onClick={handleCardClick}
-          className="biorouter-list-row session-item flex items-center gap-3 py-3 px-3 cursor-pointer relative group"
+          className="biorouter-list-row session-item flex items-center gap-3 py-2 px-4 cursor-pointer relative group"
           ref={(el) => setSessionRefs(session.id, el)}
         >
           {/* Title + metadata */}
@@ -615,7 +615,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
             <h3 className="text-sm font-medium truncate">{session.name}</h3>
             {session.diverged_from && (
               <div className="flex items-center gap-1 mt-0.5 text-text-muted text-xs min-w-0">
-                <GitBranch className="w-3 h-3 flex-shrink-0" />
+                <GitBranch className="w-3 h-3 flex-shrink-0" strokeWidth={1.5} />
                 <span className="truncate max-w-[320px]">
                   branched from{' '}
                   {sessionNameById.get(session.diverged_from) ?? session.diverged_from}
@@ -728,7 +728,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       const tokenWidths = ['w-12', 'w-10', 'w-14', 'w-8'];
 
       return (
-        <div className="session-skeleton flex items-center gap-3 py-3 px-3">
+        <div className="session-skeleton flex items-center gap-3 py-2 px-4">
           <div className="flex-1 min-w-0">
             <Skeleton className={`h-4 ${titleWidths[variant % titleWidths.length]} mb-1.5`} />
             <div className="flex items-center gap-3">
@@ -784,7 +784,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         <div className="space-y-8">
           {visibleDateGroups.map((group) => (
             <div key={group.label} className="space-y-4">
-              <div className="sticky top-0 z-10 bg-background-muted/95 backdrop-blur-sm pt-2 pb-2">
+              <div className="sticky top-0 z-10 bg-background-muted pt-2 pb-2">
                 <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider">
                   {group.label}
                 </h2>
@@ -859,11 +859,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                   >
                     {/* Skeleton layer - always rendered but conditionally visible */}
                     <div
-                      className={`absolute inset-0 transition-opacity duration-300 ${
-                        isLoading || showSkeleton
-                          ? 'opacity-100 z-10'
-                          : 'opacity-0 z-0 pointer-events-none'
-                      }`}
+                      className={`absolute inset-0 transition-opacity duration-300 ${isLoading || showSkeleton ? 'opacity-100 z-10' : 'opacity-0 z-0 pointer-events-none'}`}
                     >
                       <div className="space-y-8">
                         {/* Today section */}
@@ -905,9 +901,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
                     {/* Content layer - always rendered but conditionally visible */}
                     <div
-                      className={`relative transition-opacity duration-300 ${
-                        showContent ? 'opacity-100 z-10' : 'opacity-0 z-0'
-                      }`}
+                      className={`relative transition-opacity duration-300 ${showContent ? 'opacity-100 z-10' : 'opacity-0 z-0'}`}
                     >
                       {renderActualContent()}
                     </div>

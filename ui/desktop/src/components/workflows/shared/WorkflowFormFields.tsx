@@ -86,9 +86,9 @@ export function WorkflowFormFields({
   const [expandedParameters, setExpandedParameters] = useState<Set<string>>(new Set());
   const [availableExtensions, setAvailableExtensions] = useState<ExtensionConfig[]>([]);
   const inputClass =
-    'w-full h-9 rounded-md border-0 bg-background-default px-3 text-sm text-text-default placeholder:text-text-muted ring-1 ring-border-input transition-colors hover:bg-background-muted focus:bg-background-default focus:outline-none focus:ring-2 focus:ring-border-strong';
+    'w-full h-9 rounded-md border-0 bg-background-default px-3 text-sm text-text-default placeholder:text-text-muted ring-1 ring-border-input transition-colors hover:bg-background-muted focus:bg-background-default ';
   const textareaClass =
-    'w-full rounded-md border-0 bg-background-default px-3 py-2 text-sm text-text-default placeholder:text-text-muted ring-1 ring-border-input transition-colors hover:bg-background-muted focus:bg-background-default focus:outline-none focus:ring-2 focus:ring-border-strong resize-none';
+    'w-full rounded-md border-0 bg-background-default px-3 py-2 text-sm text-text-default placeholder:text-text-muted ring-1 ring-border-input transition-colors hover:bg-background-muted focus:bg-background-default resize-none';
 
   useEffect(() => {
     getExtensions({ throwOnError: false }).then((res) => {
@@ -191,8 +191,8 @@ export function WorkflowFormFields({
       const hasJsonSchema = Boolean(values.jsonSchema && values.jsonSchema.trim());
       const hasSettings = Boolean(
         values.settings?.biorouter_provider ||
-          values.settings?.biorouter_model ||
-          values.settings?.temperature !== undefined
+        values.settings?.biorouter_model ||
+        values.settings?.temperature !== undefined
       );
       const hasExtensions = extensions.length > 0;
       const hasKnowledgeBases = selectedKnowledgeBaseIds.length > 0;
@@ -216,7 +216,9 @@ export function WorkflowFormFields({
   // Auto-open Advanced Options when pre-loaded extensions arrive (e.g. from session)
   useEffect(() => {
     if (
-      (extensions.length > 0 || selectedKnowledgeBaseIds.length > 0 || selectedSkillIds.length > 0) &&
+      (extensions.length > 0 ||
+        selectedKnowledgeBaseIds.length > 0 ||
+        selectedSkillIds.length > 0) &&
       !hasAutoOpenedForExtensions.current
     ) {
       hasAutoOpenedForExtensions.current = true;
@@ -272,9 +274,7 @@ export function WorkflowFormFields({
                 onTitleChange?.(e.target.value);
               }}
               onBlur={field.handleBlur}
-              className={`${inputClass} ${
-                field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''
-              }`}
+              className={`${inputClass} ${field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''}`}
               placeholder="Workflow title"
               data-testid="title-input"
             />
@@ -304,9 +304,7 @@ export function WorkflowFormFields({
                 onDescriptionChange?.(e.target.value);
               }}
               onBlur={field.handleBlur}
-              className={`${inputClass} ${
-                field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''
-              }`}
+              className={`${inputClass} ${field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''}`}
               placeholder="Brief description of what this workflow does"
               data-testid="description-input"
             />
@@ -349,9 +347,7 @@ export function WorkflowFormFields({
                 field.handleBlur();
                 updateParametersFromFields();
               }}
-              className={`${textareaClass} ${
-                field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''
-              }`}
+              className={`${textareaClass} ${field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''}`}
               placeholder="Detailed instructions for the AI, hidden from the user"
               rows={8}
               data-testid="instructions-input"
@@ -417,9 +413,7 @@ export function WorkflowFormFields({
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen} className="mt-6">
         <CollapsibleTrigger className="flex w-full items-baseline gap-2 rounded-md bg-background-medium px-3 py-2.5 transition-colors hover:bg-background-muted">
           <ChevronDown
-            className={`w-4 h-4 text-text-muted transition-transform duration-200 flex-shrink-0 relative top-0.5 ${
-              advancedOpen ? 'rotate-0' : '-rotate-90'
-            }`}
+            className={`w-4 h-4 text-text-muted transition-transform duration-200 flex-shrink-0 relative top-0.5 ${advancedOpen ? 'rotate-0' : '-rotate-90'}`}
           />
           <span className="text-sm font-medium text-text-default">Advanced Options</span>
           <span className="text-xs text-text-muted">Activities, parameters, model, resources</span>
@@ -583,9 +577,7 @@ export function WorkflowFormFields({
 
                 {field.state.value && field.state.value.trim() && (
                   <div
-                    className={`rounded-md bg-background-medium p-3 ${
-                      field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''
-                    }`}
+                    className={`rounded-md bg-background-medium p-3 ${field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''}`}
                   >
                     <pre className="text-xs font-mono text-text-default whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
                       {field.state.value}

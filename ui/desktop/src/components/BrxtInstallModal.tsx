@@ -312,7 +312,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
                     </label>
                     <input
                       type={entry.secret ? 'password' : 'text'}
-                      className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                      className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm "
                       placeholder={entry.description}
                       value={entry.value}
                       onChange={(e) => setEnvValue(entry.key, e.target.value)}
@@ -345,7 +345,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
                         </label>
                         <input
                           type={entry.secret ? 'password' : 'text'}
-                          className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+                          className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm "
                           placeholder={entry.description}
                           value={entry.value}
                           onChange={(e) => setEnvValue(entry.key, e.target.value)}

@@ -1,0 +1,19 @@
+{
+  "id": "literature-triage",
+  "title": "Literature Triage",
+  "description": "Paste abstracts and let the agent build a screening queue — one card per abstract with include/exclude buttons that feed each decision straight back into the loop.",
+  "kind": "agentic",
+  "entry": "index.html",
+  "created_at": 0,
+  "updated_at": 0,
+  "agent": {
+    "system_prompt": "You triage scientific abstracts for a systematic review.\n\nSplit whatever the user pastes into individual abstracts (blank lines or numbered markers separate them). Judge each against the user's review question and write a one-line relevance rationale.\n\nBuild the queue with ui_panel (id \"triage\", place \"dock\", title \"Triage queue\"): one card per abstract, in order. Each card holds a short title, the rationale as muted text, a badge showing its decision (undecided | included | excluded), and a row of two buttons — Include (action \"include:N\", submit true) and Exclude (action \"exclude:N\", submit true), where N is the 1-based index.\n\nWhen a button action comes back to you, flip that abstract's decision and re-emit ui_panel with the SAME id \"triage\" so the panel updates in place — never open a second panel.\n\nAfter any change, render the tally into @region:summary with ui_render: three stat widgets (Included, Excluded, Undecided).\n\nIf no review question was given, call ui_ask (field \"question\") before triaging rather than asking in prose. Keep replies to one short line — the panel carries the detail.",
+    "greeting": "Paste one or more abstracts and I'll screen each for your review — include or exclude with a click.",
+    "max_turns": 12,
+    "capabilities": {
+      "ui": {
+        "enabled": true
+      }
+    }
+  }
+}

@@ -103,7 +103,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
 
   return (
     <div className="biorouter-modal-overlay fixed inset-0 z-40 flex items-center justify-center p-4">
-      <div className="biorouter-modal-surface w-full max-w-md bg-background-default z-50 flex flex-col max-h-[90vh] overflow-hidden">
+      <div className="biorouter-modal-surface w-full max-w-md bg-background-default z-[var(--z-modal)] flex flex-col max-h-[90vh] overflow-hidden">
         <div className="px-6 pt-5 pb-4 flex-shrink-0 border-b border-border-subtle">
           <div className="flex items-center gap-3">
             <img src={ClockIcon} alt="Clock" className="w-7 h-7" />
@@ -150,7 +150,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
 
               <div>
                 <label className={modalLabelClassName}>Workflow File</label>
-                <div className="biorouter-modal-panel flex items-center rounded-lg focus-within:ring-1 focus-within:ring-border-strong transition-colors duration-150">
+                <div className="biorouter-modal-panel flex items-center rounded-lg transition-colors duration-150">
                   <input
                     type="text"
                     value={workflowSourcePath}
@@ -159,7 +159,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                       setInternalValidationError(null);
                     }}
                     placeholder="/path/to/workflow.yaml"
-                    className="flex-1 px-3 py-2 text-sm bg-transparent text-text-default placeholder:text-text-muted focus:outline-none"
+                    className="flex-1 px-3 py-2 text-sm bg-transparent text-text-default placeholder:text-text-muted"
                   />
                   <button
                     type="button"

@@ -7,12 +7,12 @@ use crate::providers::utils::RequestLog;
 use anyhow::Result;
 use async_trait::async_trait;
 use aws_sdk_bedrockruntime::config::{Credentials, ProvideCredentials};
-use aws_sdk_bedrockruntime::operation::converse::ConverseError;
 use aws_sdk_bedrockruntime::{types as bedrock, Client};
 use rmcp::model::Tool;
 
 use super::formats::bedrock::{
-    from_bedrock_message, from_bedrock_usage, to_bedrock_message, to_bedrock_tool_config,
+    classify_bedrock_converse_error, from_bedrock_message, from_bedrock_usage, to_bedrock_message,
+    to_bedrock_tool_config,
 };
 
 pub const VERSA_BEDROCK_DOC_LINK: &str = "http://biorouter.ucsf.edu/docs";
@@ -124,12 +124,17 @@ impl VersaBedrockProvider {
         let credentials =
             Credentials::new(access_key_id, secret_access_key, None, None, "VersaBedrock");
 
-        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .credentials_provider(credentials)
             .region(aws_config::Region::new(region))
-            .endpoint_url(endpoint_url)
-            .load()
-            .await;
+            .endpoint_url(endpoint_url);
+        // Bound a hung/stalled endpoint so a turn can't wait forever (see
+        // `bedrock_timeout_config`). Without this, a proxy that accepts the
+        // connection but never answers freezes the agent with no error.
+        if let Some(timeout_config) = super::formats::bedrock::bedrock_timeout_config(config) {
+            loader = loader.timeout_config(timeout_config);
+        }
+        let sdk_config = loader.load().await;
 
         sdk_config
             .credentials_provider()
@@ -198,26 +203,7 @@ impl VersaBedrockProvider {
         let response = request
             .send()
             .await
-            .map_err(|err| match err.into_service_error() {
-                ConverseError::ThrottlingException(e) => ProviderError::RateLimitExceeded {
-                    details: format!("Bedrock throttling error: {:?}", e),
-                    retry_delay: None,
-                },
-                ConverseError::AccessDeniedException(e) => {
-                    ProviderError::Authentication(format!("Failed to call Bedrock: {:?}", e))
-                }
-                ConverseError::ValidationException(e)
-                    if e.message()
-                        .unwrap_or_default()
-                        .contains("Input is too long for requested model.") =>
-                {
-                    ProviderError::ContextLengthExceeded(format!("Failed to call Bedrock: {:?}", e))
-                }
-                ConverseError::ModelErrorException(e) => {
-                    ProviderError::ExecutionError(format!("Failed to call Bedrock: {:?}", e))
-                }
-                err => ProviderError::ServerError(format!("Failed to call Bedrock: {:?}", err)),
-            })?;
+            .map_err(classify_bedrock_converse_error)?;
 
         match response.output {
             Some(bedrock::ConverseOutput::Message(message)) => Ok((message, response.usage)),

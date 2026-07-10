@@ -6,41 +6,14 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import 'katex/dist/katex.min.css';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
-
-// Warm-palette light theme — background matches bg-background-medium (#f4f0e6)
-const warmLightTheme = {
-  ...oneLight,
-  'code[class*="language-"]': {
-    ...oneLight['code[class*="language-"]'],
-    color: '#2a2520',
-    background: 'transparent',
-    fontSize: '14px',
-    lineHeight: '1.6',
-  },
-  'pre[class*="language-"]': {
-    ...oneLight['pre[class*="language-"]'],
-    color: '#2a2520',
-    background: 'transparent',
-    fontSize: '14px',
-    lineHeight: '1.6',
-    margin: 0,
-    padding: 0,
-  },
-  comment: { color: '#8a8078', fontStyle: 'italic' },
-  prolog: { color: '#8a8078' },
-  punctuation: { color: '#5a5248' },
-  keyword: { color: '#7c5c2e', fontWeight: '600' },
-  'keyword.module': { color: '#7c5c2e', fontWeight: '600' },
-  builtin: { color: '#7c5c2e' },
-  string: { color: '#4a7c59' },
-  number: { color: '#8b4513' },
-  boolean: { color: '#8b4513' },
-  function: { color: '#3d5a8a' },
-  'class-name': { color: '#3d5a8a', fontWeight: '600' },
-  operator: { color: '#5a5248' },
-  variable: { color: '#2a2520' },
-};
+import { useResolvedTheme, useThemeFamily } from '../contexts/ThemeContext';
+import {
+  CODE_FONT_FAMILY,
+  CODE_FONT_SIZE,
+  CODE_LINE_HEIGHT,
+  codeThemesByFamily,
+} from '../styles/codeTheme';
+import { Button } from './ui/button';
 
 import { Check, Copy } from './icons';
 import { wrapHTMLInCodeBlock } from '../utils/htmlSecurity';
@@ -89,15 +62,17 @@ const CodeBlock = memo(function CodeBlock({
     };
   }, []);
 
+  const codeStyle = codeThemesByFamily[useThemeFamily()][useResolvedTheme()];
+
   const memoizedSyntaxHighlighter = useMemo(() => {
     return (
       <SyntaxHighlighter
-        style={warmLightTheme}
+        style={codeStyle}
         language={language}
         PreTag="div"
         customStyle={{
           margin: 0,
-          padding: '8px 12px',
+          padding: '12px',
           background: 'transparent',
           width: '100%',
           maxWidth: '100%',
@@ -107,9 +82,9 @@ const CodeBlock = memo(function CodeBlock({
             whiteSpace: 'pre-wrap',
             wordBreak: 'break-word',
             overflowWrap: 'break-word',
-            fontFamily: 'var(--font-sans)',
-            fontSize: '14px',
-            lineHeight: '1.6',
+            fontFamily: CODE_FONT_FAMILY,
+            fontSize: CODE_FONT_SIZE,
+            lineHeight: CODE_LINE_HEIGHT,
           },
         }}
         showLineNumbers={false}
@@ -119,26 +94,28 @@ const CodeBlock = memo(function CodeBlock({
         {children}
       </SyntaxHighlighter>
     );
-  }, [language, children]);
+  }, [codeStyle, language, children]);
 
   return (
-    <div className="w-full border border-border-subtle rounded-md overflow-hidden my-2 font-sans">
+    <div className="w-full border border-border-subtle rounded-xl overflow-hidden my-2 bg-background-muted">
       {/* Header bar */}
-      <div className="flex items-center justify-between px-3 py-1 bg-background-medium border-b border-border-subtle">
-        <span className="text-[11px] text-text-muted uppercase tracking-wider select-none">
+      <div className="flex items-center justify-between h-8 px-3 bg-background-default border-b border-border-subtle">
+        <span className="text-[11px] font-medium text-text-subtle uppercase tracking-wider select-none">
           {language || 'code'}
         </span>
-        <button
+        <Button
+          variant="ghost"
+          size="xs"
           onClick={handleCopy}
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] text-text-muted hover:text-text-default hover:bg-background-strong transition-colors duration-150"
+          className="gap-1 text-[11px] text-text-muted hover:text-text-default"
           title="Copy code"
         >
           {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
           <span>{copied ? 'Copied' : 'Copy'}</span>
-        </button>
+        </Button>
       </div>
       {/* Code body */}
-      <div className="w-full overflow-x-auto bg-background-medium">{memoizedSyntaxHighlighter}</div>
+      <div className="w-full overflow-x-auto">{memoizedSyntaxHighlighter}</div>
     </div>
   );
 });
@@ -152,7 +129,7 @@ const MarkdownCode = memo(
     return !inline && match ? (
       <CodeBlock language={match[1]}>{String(children).replace(/\n$/, '')}</CodeBlock>
     ) : (
-      <code ref={ref} {...props} className="break-all bg-inline-code whitespace-pre-wrap font-sans">
+      <code ref={ref} {...props} className="break-all bg-inline-code whitespace-pre-wrap font-mono">
         {children}
       </code>
     );
@@ -206,9 +183,9 @@ const MarkdownContent = memo(function MarkdownContent({
     <div
       className={`w-full overflow-x-hidden prose prose-sm text-text-default dark:prose-invert max-w-full word-break font-sans
       prose-pre:p-0 prose-pre:m-0 prose-pre:bg-transparent prose-pre:rounded-none !p-0
-      prose-code:break-words prose-code:whitespace-pre-wrap prose-code:font-sans
+      prose-code:break-words prose-code:whitespace-pre-wrap prose-code:font-mono
       prose-code:text-text-default prose-code:bg-background-medium
-      prose-code:rounded prose-code:px-1 prose-code:py-0.5 prose-code:text-[1em]
+      prose-code:rounded-sm prose-code:px-1 prose-code:py-0.5 prose-code:text-[0.9em]
       prose-code:before:content-none prose-code:after:content-none
       prose-a:break-all prose-a:overflow-wrap-anywhere
       prose-table:table prose-table:w-full
@@ -231,7 +208,9 @@ const MarkdownContent = memo(function MarkdownContent({
             rehypeKatex,
             {
               throwOnError: false,
-              errorColor: '#cc0000',
+              // KaTeX takes a raw colour string, not a CSS var. Keep it in step
+              // with --text-danger (light).
+              errorColor: '#b3261e',
               strict: false,
             },
           ],

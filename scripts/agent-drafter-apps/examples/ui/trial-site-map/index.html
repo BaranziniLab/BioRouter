@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trial Site Map</title>
+</head>
+<body>
+  <main class="br-container" data-br-main>
+    <span class="br-badge">BioRouter App</span>
+    <h1>Trial Site Map</h1>
+    <p class="br-text br-text--muted">
+      Pick a region to load clinical-trial activity across its sites. The agent
+      fills in the panel below and outlines the region you chose.
+    </p>
+
+    <div class="br-card">
+      <div class="br-mapgrid" id="map" role="group" aria-label="Trial regions">
+        <div class="br-region" id="cell-us-west" role="button" tabindex="0"
+             data-region="us-west" data-label="US-West">US-West</div>
+        <div class="br-region" id="cell-us-east" role="button" tabindex="0"
+             data-region="us-east" data-label="US-East">US-East</div>
+        <div class="br-region" id="cell-eu" role="button" tabindex="0"
+             data-region="eu" data-label="Europe">Europe</div>
+        <div class="br-region" id="cell-apac" role="button" tabindex="0"
+             data-region="apac" data-label="Asia-Pacific">Asia-Pacific</div>
+      </div>
+    </div>
+
+    <!-- Agent render target: ui_render(target="@region:detail") replaces this. -->
+    <section class="br-card" data-br-region="detail">
+      <p class="br-text br-text--muted" id="detail-empty">
+        No region selected yet — choose one above and its site breakdown appears here.
+      </p>
+    </section>
+
+    <div class="br-output" id="out" data-placeholder="Agent activity streams here once you pick a region."></div>
+
+    <p class="br-footer">Powered by BioRouter · built with Agent Drafter</p>
+  </main>
+</body>
+</html>

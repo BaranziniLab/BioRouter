@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Download, EyeOff, FolderInput, FolderPlus, Pencil, Search, Trash2 } from 'lucide-react';
 import type { Manifest } from '../../../api/types.gen';
+import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import {
   Dialog,
@@ -10,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../../ui/dialog';
+import { Input } from '../../ui/input';
 import { Switch } from '../../ui/switch';
 import BuiltInBadge from '../../ui/BuiltInBadge';
 import { BUILTIN_RECREATED_TITLE, isBuiltinKnowledgeBase } from '../../../utils/builtins';
@@ -185,8 +187,8 @@ export function KBSelectorPalette({ onClose }: Props) {
         </DialogHeader>
 
         <div className="px-6 py-4 border-b border-border-subtle">
-          <div className="biorouter-modal-panel flex items-center gap-2 rounded-xl px-3 py-2">
-            <Search className="h-4 w-4 text-text-muted" />
+          <div className="flex h-9 items-center gap-2 rounded-md border border-border-input bg-background-default px-3 transition-colors hover:border-border-strong focus-within:border-border-strong">
+            <Search className="h-4 w-4 text-text-muted" strokeWidth={1.5} />
             <input
               data-testid="knowledge-kb-search"
               ref={searchRef}
@@ -194,7 +196,7 @@ export function KBSelectorPalette({ onClose }: Props) {
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="Search knowledge bases"
-              className="flex-1 bg-transparent text-sm outline-none"
+              className="flex-1 bg-transparent text-sm outline-none placeholder:text-text-muted"
             />
           </div>
 
@@ -206,7 +208,7 @@ export function KBSelectorPalette({ onClose }: Props) {
               size="sm"
               onClick={startCreate}
             >
-              <FolderPlus className="mr-1.5 h-4 w-4" />
+              <FolderPlus className="mr-1.5 h-4 w-4" strokeWidth={1.5} />
               Create Knowledge Base
             </Button>
             <Button
@@ -217,7 +219,7 @@ export function KBSelectorPalette({ onClose }: Props) {
               onClick={() => importRef.current?.click()}
               disabled={busyId === '__import'}
             >
-              <FolderInput className="mr-1.5 h-4 w-4" />
+              <FolderInput className="mr-1.5 h-4 w-4" strokeWidth={1.5} />
               {busyId === '__import' ? 'Importing…' : 'Import from .brkb'}
             </Button>
             <input
@@ -241,7 +243,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                   : `Rename "${draftMode.base.name}"`}
               </div>
               <div className="flex flex-col gap-2 sm:flex-row">
-                <input
+                <Input
                   data-testid="knowledge-kb-name-input"
                   type="text"
                   value={draft}
@@ -253,7 +255,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                     }
                   }}
                   placeholder="Knowledge base name"
-                  className="flex-1 rounded-lg border border-border-subtle bg-background-default px-3 py-2 text-sm outline-none transition-colors focus:border-border-default"
+                  className="flex-1"
                 />
                 <div className="flex gap-2">
                   <Button type="button" variant="outline" size="sm" onClick={resetDraft}>
@@ -281,7 +283,7 @@ export function KBSelectorPalette({ onClose }: Props) {
               No knowledge bases match this search.
             </div>
           ) : (
-            <div className="flex flex-col gap-2">
+            <div className="biorouter-list-shell">
               {filtered.map((base) => {
                 const isActive = activeKbId === base.id;
                 const isBusy = busyId === base.id;
@@ -290,11 +292,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                 return (
                   <div
                     key={base.id}
-                    className={`biorouter-modal-row flex items-center gap-3 rounded-xl px-3 py-3 transition-all ${
-                      isActive
-                        ? '!border-border-default bg-background-muted'
-                        : 'hover:!border-border-default hover:bg-background-muted/50'
-                    }`}
+                    className={`biorouter-list-row flex items-center gap-3 px-3 py-2 transition-colors ${isActive ? 'bg-background-medium' : ''}`}
                   >
                     <button
                       type="button"
@@ -317,9 +315,9 @@ export function KBSelectorPalette({ onClose }: Props) {
                             <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
                           )}
                           {hidden && (
-                            <span className="rounded-md bg-background-default px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-text-muted">
+                            <Badge uppercase className="text-[10px]">
                               Hidden from chat
-                            </span>
+                            </Badge>
                           )}
                         </div>
                         <div className="truncate text-[11px] font-mono text-text-muted">
@@ -327,15 +325,15 @@ export function KBSelectorPalette({ onClose }: Props) {
                         </div>
                       </div>
                       {isActive && (
-                        <span className="rounded-md bg-background-default px-2 py-0.5 text-[11px] font-medium uppercase tracking-wider text-text-muted">
+                        <Badge uppercase tone="accent" className="text-[10px]">
                           Focused
-                        </span>
+                        </Badge>
                       )}
                     </button>
 
                     <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-2 rounded-md border border-border-subtle bg-background-default/70 px-2 py-1">
-                        <EyeOff className="h-3.5 w-3.5 text-text-muted" />
+                      <div className="flex items-center gap-2 rounded-md border border-border-subtle bg-background-default px-2 py-1">
+                        <EyeOff className="h-3.5 w-3.5 text-text-muted" strokeWidth={1.5} />
                         <Switch
                           checked={!hidden}
                           onCheckedChange={() => toggleKbHidden(base.id)}
@@ -352,7 +350,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                         disabled={isBusy}
                         title="Export as .brkb"
                       >
-                        <Download className="h-4 w-4" />
+                        <Download className="h-4 w-4" strokeWidth={1.5} />
                       </Button>
                       <Button
                         type="button"
@@ -363,7 +361,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                         disabled={isBusy}
                         title="Rename knowledge base"
                       >
-                        <Pencil className="h-4 w-4" />
+                        <Pencil className="h-4 w-4" strokeWidth={1.5} />
                       </Button>
                       <Button
                         type="button"
@@ -374,7 +372,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                         disabled={isBusy}
                         title="Delete knowledge base"
                       >
-                        <Trash2 className="h-4 w-4" />
+                        <Trash2 className="h-4 w-4" strokeWidth={1.5} />
                       </Button>
                     </div>
                   </div>

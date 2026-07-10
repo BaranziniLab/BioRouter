@@ -1,0 +1,665 @@
+<title>BioRouter — Knowledge redesign</title>
+
+<style>
+:root {
+  --bg:#f7f5f1; --surface:#ffffff; --ink:#23201c; --muted:#635c54; --subtle:#6e6760;
+  --line:#e3ddd2; --line-soft:#eee9e0; --accent:#b85a32; --accent-soft:#f6e9e2;
+  --code-bg:#f1ede4; --ok:#1f7a3d; --bad:#b3261e; --warn:#8a5a00;
+  --font-ui: ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --font-mono: ui-monospace,"SF Mono",SFMono-Regular,"Cascadia Mono",Menlo,Consolas,monospace;
+  /* the app's own tokens, for the mockups */
+  --app-canvas:#efe9dc; --app-surface:#faf7f1; --app-fill:#efe8da;
+  --app-medium:#e7dfcd; --app-strong:#d6ccb6; --app-ink:#2a2520; --app-muted:#635c54;
+  --app-subtle:#837a6e; --app-line:#e2d9c6; --app-line-strong:#cdc2ab; --app-accent:#b85a32;
+  --app-accent-ink:#ffffff; --app-focus:#e4dcc9; --app-input:#d8cfba;
+  /* legend dots (from the real credColors) */
+  --dot-entity:#5a8bd6; --dot-concept:#5aa06e; --dot-hub:#caa93f; --dot-peer:#2f5db0;
+  --dot-web:#c7794a; --dot-personal:#b06a9e;
+}
+@media (prefers-color-scheme: dark){ :root{
+  --bg:#12100c; --surface:#1a1712; --ink:#ece7dd; --muted:#a9a196; --subtle:#857e73;
+  --line:#2c281f; --line-soft:#241f19; --accent:#e8895f; --accent-soft:#2b1c14;
+  --code-bg:#1e1a14; --ok:#5cc98a; --bad:#e88; --warn:#d0a24a;
+  --app-canvas:#17130d; --app-surface:#201b13; --app-medium:#2a2318; --app-strong:#3a3020;
+  --app-ink:#ece7dd; --app-muted:#a89f8d; --app-subtle:#8a8170;
+  --app-line:#332c20; --app-line-strong:#463c2b; --app-accent:#e8895f; --app-accent-ink:#1a1208;
+  --app-focus:#4d4430; --app-input:#463c2b;
+}}
+:root[data-theme="dark"]{
+  --bg:#12100c; --surface:#1a1712; --ink:#ece7dd; --muted:#a9a196; --subtle:#857e73;
+  --line:#2c281f; --line-soft:#241f19; --accent:#e8895f; --accent-soft:#2b1c14;
+  --code-bg:#1e1a14; --ok:#5cc98a; --bad:#e88; --warn:#d0a24a;
+  --app-canvas:#17130d; --app-surface:#201b13; --app-medium:#2a2318; --app-strong:#3a3020;
+  --app-ink:#ece7dd; --app-muted:#a89f8d; --app-subtle:#8a8170;
+  --app-line:#332c20; --app-line-strong:#463c2b; --app-accent:#e8895f; --app-accent-ink:#1a1208;
+  --app-focus:#4d4430; --app-input:#463c2b;
+}
+:root[data-theme="light"]{
+  --bg:#f7f5f1; --surface:#ffffff; --ink:#23201c; --muted:#635c54; --subtle:#6e6760;
+  --line:#e3ddd2; --line-soft:#eee9e0; --accent:#b85a32; --accent-soft:#f6e9e2;
+  --code-bg:#f1ede4; --ok:#1f7a3d; --bad:#b3261e; --warn:#8a5a00;
+  --app-canvas:#efe9dc; --app-surface:#faf7f1; --app-medium:#e7dfcd; --app-strong:#d6ccb6;
+  --app-ink:#2a2520; --app-muted:#635c54; --app-subtle:#837a6e; --app-line:#e2d9c6;
+  --app-line-strong:#cdc2ab; --app-accent:#b85a32; --app-accent-ink:#ffffff;
+  --app-focus:#e4dcc9; --app-input:#d8cfba;
+}
+
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font-ui);
+  font-size:16px;line-height:1.62;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+main{max-width:960px;margin:0 auto;padding:0 28px 120px}
+@media (max-width:720px){main{padding:0 18px 90px}}
+
+/* ── masthead ── */
+.masthead{padding:72px 0 34px;border-bottom:1px solid var(--line)}
+.kicker{font:500 11px/1 var(--font-mono);letter-spacing:.14em;text-transform:uppercase;
+  color:var(--accent);margin-bottom:16px}
+.masthead h1{font-size:clamp(29px,3.3vw,41px);font-weight:680;letter-spacing:-.025em;
+  line-height:1.08;margin:0 0 16px;text-wrap:balance}
+.lede{font-size:17px;color:var(--muted);max-width:64ch;margin:0}
+.statline{display:flex;flex-wrap:wrap;gap:28px;margin-top:30px}
+.statline .v{font:650 26px/1 var(--font-ui);letter-spacing:-.02em}
+.statline .v.bad{color:var(--bad)} .statline .v.ok{color:var(--ok)}
+.statline .k{font:500 11px/1.3 var(--font-mono);letter-spacing:.05em;color:var(--subtle);
+  text-transform:uppercase;margin-top:7px;max-width:130px}
+
+/* ── sections ── */
+section{padding:52px 0;border-bottom:1px solid var(--line)}
+.num{font:500 11px/1 var(--font-mono);letter-spacing:.14em;text-transform:uppercase;
+  color:var(--subtle);margin-bottom:14px}
+.title{font-size:25px;font-weight:660;letter-spacing:-.02em;margin:0 0 10px;line-height:1.14;text-wrap:balance}
+.sub{font-size:16px;color:var(--muted);margin:0 0 26px;max-width:66ch}
+p{margin:0 0 16px}
+b,strong{font-weight:640;color:var(--ink)}
+code{font-family:var(--font-mono);font-size:.86em;background:var(--code-bg);
+  padding:.12em .4em;border-radius:5px;color:var(--ink)}
+em{font-style:normal;color:var(--accent);font-weight:560}
+a{color:var(--accent)}
+
+/* ── read cards ── */
+.reads{display:grid;gap:14px;grid-template-columns:1fr}
+.read{border:1px solid var(--line);border-radius:14px;padding:20px 22px;background:var(--surface)}
+.read h3{margin:0 0 7px;font-size:16px;font-weight:640;letter-spacing:-.01em;display:flex;
+  align-items:baseline;gap:10px}
+.read h3 .tag{font:500 10px/1 var(--font-mono);letter-spacing:.06em;text-transform:uppercase;
+  color:var(--accent);border:1px solid var(--line);border-radius:4px;padding:4px 6px;background:var(--accent-soft)}
+.read p{margin:0;font-size:14.5px;color:var(--muted)}
+
+/* ── radius ladder ── */
+.ladder{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin:6px 0 24px}
+@media (max-width:640px){.ladder{grid-template-columns:repeat(2,1fr)}}
+.rung{border:1px solid var(--line);background:var(--surface);padding:16px;text-align:center}
+.rung .swatch{height:52px;background:var(--app-medium);border:1px solid var(--app-line-strong);margin-bottom:12px}
+.rung .px{font:650 18px/1 var(--font-ui);letter-spacing:-.02em}
+.rung .role{font:500 10.5px/1.35 var(--font-mono);letter-spacing:.03em;color:var(--subtle);
+  text-transform:uppercase;margin-top:6px}
+
+/* ── table ── */
+.tablewrap{overflow-x:auto;border:1px solid var(--line);border-radius:12px;margin:4px 0 8px}
+table{border-collapse:collapse;width:100%;font-size:13.5px;min-width:520px}
+th,td{text-align:left;padding:11px 15px;border-bottom:1px solid var(--line-soft);vertical-align:top}
+th{font:600 11px/1 var(--font-mono);letter-spacing:.06em;text-transform:uppercase;
+  color:var(--subtle);background:var(--code-bg)}
+tr:last-child td{border-bottom:0}
+td code{font-size:12px;white-space:nowrap}
+.mono{font-family:var(--font-mono);font-size:12.5px;white-space:nowrap}
+.arrow{color:var(--accent);font-weight:640}
+.good{color:var(--ok);font-weight:600}
+
+/* ── the mockups (built from app tokens) ── */
+.mock{border:1px solid var(--line);border-radius:16px;overflow:hidden;margin:8px 0 6px;background:var(--surface)}
+.mock__bar{display:flex;justify-content:space-between;align-items:center;padding:9px 16px;
+  border-bottom:1px solid var(--line);font:500 11px/1 var(--font-mono);letter-spacing:.04em;
+  text-transform:uppercase;color:var(--subtle)}
+.mock__bar.before{color:var(--bad)} .mock__bar.after{color:var(--ok)}
+.mock__body{background:var(--app-canvas);padding:20px}
+
+/* app-faithful primitives */
+.k-head h4{margin:0;font-size:19px;font-weight:640;letter-spacing:-.02em;color:var(--app-ink)}
+.k-head p{margin:3px 0 0;font-size:12.5px;color:var(--app-muted)}
+.k-grid{display:grid;gap:16px;grid-template-columns:300px minmax(0,1fr);margin-top:16px}
+@media (max-width:680px){.k-grid{grid-template-columns:1fr}}
+
+.panel{background:var(--app-surface);border:1px solid var(--app-line);border-radius:12px}
+.panel--bare{background:transparent;border:0}
+.pad{padding:16px}
+.divide{border-top:1px solid var(--app-line)}
+
+/* select trigger */
+.sel{display:flex;align-items:center;gap:10px;width:100%;height:36px;padding:0 11px;
+  background:var(--app-surface);border:1px solid var(--app-input);border-radius:8px;
+  font-size:13px;color:var(--app-ink)}
+.sel--card{height:auto;padding:12px;border-radius:12px;border-color:var(--app-line)}
+.sel .dot{width:8px;height:8px;border-radius:999px;background:var(--app-accent);flex:none}
+.sel .name{flex:1;font-weight:600;text-align:left}
+.sel .chev{color:var(--app-muted)}
+.badge{font:500 11px/1 var(--font-mono);letter-spacing:.05em;text-transform:uppercase;
+  color:var(--app-muted);background:var(--app-medium);border-radius:4px;padding:5px 6px}
+.badge--md{border-radius:8px;font-size:10px;padding:5px 8px} /* the wrong one */
+.badge--accent{color:var(--app-accent);background:var(--accent-soft)}
+
+/* dropzone */
+.dz{border:1px solid var(--app-line);border-radius:12px;background:var(--app-canvas);
+  padding:18px 14px;text-align:center}
+.dz--tinted{background:color-mix(in srgb,var(--app-surface) 60%,var(--app-medium))}
+.dz .ic{width:38px;height:38px;border-radius:999px;background:var(--app-medium);margin:0 auto 8px;
+  display:flex;align-items:center;justify-content:center;color:var(--app-muted);font-size:17px}
+.dz .t{font-size:13px;font-weight:600;color:var(--app-ink)}
+.dz .d{font-size:11.5px;color:var(--app-muted);margin-top:3px;line-height:1.45}
+.chips{display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-top:11px}
+.chip{font:500 10.5px/1 var(--font-mono);color:var(--app-muted);background:var(--app-medium);
+  border-radius:4px;padding:4px 6px}
+.chip--md{border-radius:8px;padding:3px 6px} /* wrong */
+
+/* buttons */
+.btn{height:36px;border-radius:8px;font-size:12.5px;font-weight:600;display:inline-flex;
+  align-items:center;justify-content:center;gap:7px;padding:0 13px;border:1px solid transparent;cursor:default}
+.btn--full{width:100%}
+.btn--sec{background:var(--app-medium);color:var(--app-ink)}
+.btn--ghost{background:transparent;color:var(--app-muted)}
+.btn--outline{background:transparent;border-color:var(--app-input);color:var(--app-ink)}
+.btn--primary{background:var(--app-accent);color:var(--app-accent-ink)}
+.btn--primary.dim{opacity:.5}
+.btn--round{width:36px;padding:0;border-radius:999px}
+.btn--xs{height:26px;font-size:11px;padding:0 9px}
+/* the "before" bordered-secondary override */
+.btn--badhdr{background:var(--app-medium);border:1px solid var(--app-line);color:var(--app-ink)}
+.helper{font-size:11.5px;color:var(--app-muted);text-align:center;margin-top:8px}
+
+.toolbar{display:flex;flex-wrap:wrap;gap:8px}
+.rowlbl{font:500 11px/1 var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--app-muted)}
+
+/* graph canvas */
+.canvas{position:relative;min-height:236px;border-radius:12px;overflow:hidden;
+  background:var(--app-canvas);margin-top:12px}
+.canvas--mix{background:color-mix(in srgb,var(--app-surface) 68%,transparent)}
+.canvas .net{position:absolute;inset:0;opacity:.5}
+.legend{position:absolute;left:12px;bottom:12px;background:var(--app-surface);
+  border:1px solid var(--app-line);border-radius:12px;padding:9px 11px;
+  display:grid;grid-template-columns:1fr 1fr;gap:5px 14px}
+.legend--shadow{box-shadow:0 8px 24px -8px rgba(0,0,0,.28)}
+.legend--flat{background:var(--app-canvas)}
+.legend span{display:flex;align-items:center;gap:6px;font-size:10.5px;color:var(--app-ink)}
+.legend i{width:8px;height:8px;border-radius:999px}
+.staged{font-size:12px;color:var(--app-muted);text-align:center;padding:10px 0}
+
+/* callout note */
+.note{border-left:2px solid var(--accent);background:var(--accent-soft);padding:15px 18px;
+  border-radius:0 10px 10px 0;margin:22px 0 4px;font-size:14.5px}
+.note p{margin:0 0 9px} .note p:last-child{margin:0}
+
+/* ── decisions ── */
+.decision{border:1px solid var(--line);border-radius:14px;padding:20px 22px;margin:16px 0;background:var(--surface)}
+.dhead .did{font:500 11px/1 var(--font-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--accent)}
+.dhead .dq{font-size:17px;font-weight:640;letter-spacing:-.01em;margin:8px 0 4px}
+.dwhy{font-size:14px;color:var(--muted);margin:0 0 15px}
+.opts{display:grid;gap:10px;grid-template-columns:1fr 1fr}
+@media (max-width:640px){.opts{grid-template-columns:1fr}}
+.opt label{display:block;border:1px solid var(--line);border-radius:11px;padding:13px 15px;
+  cursor:pointer;height:100%;transition:border-color .12s,background .12s}
+.opt input{position:absolute;opacity:0;pointer-events:none}
+.opt .otop{display:flex;align-items:center;gap:9px;margin-bottom:6px}
+.oradio{width:15px;height:15px;border-radius:999px;border:1.5px solid var(--app-line-strong);flex:none;position:relative}
+.olabel{font-size:14px;font-weight:600} .orec{margin-left:auto;font:500 10px/1 var(--font-mono);
+  letter-spacing:.05em;text-transform:uppercase;color:var(--ok)}
+.odetail{font-size:13px;color:var(--muted);margin:0}
+.opt input:checked + .otop .oradio{border-color:var(--accent)}
+.opt input:checked + .otop .oradio::after{content:"";position:absolute;inset:3px;border-radius:999px;background:var(--accent)}
+.opt input:checked ~ .odetail{color:var(--ink)}
+.opt label:has(input:checked){border-color:var(--accent);background:var(--accent-soft)}
+
+/* export bar */
+.exportbar{display:flex;flex-wrap:wrap;gap:14px;align-items:center;margin-top:26px}
+.xbtn{font:600 13px/1 var(--font-ui);background:var(--accent);color:#fff;border:0;border-radius:9px;
+  padding:12px 18px;cursor:pointer}
+.xbtn.ghost{background:transparent;color:var(--accent);border:1px solid var(--line)}
+.xnote{font-size:12.5px;color:var(--subtle)}
+#exportOut{white-space:pre-wrap;font-family:var(--font-mono);font-size:12px;background:var(--code-bg);
+  border:1px solid var(--line);border-radius:10px;padding:15px;margin-top:16px;display:none;color:var(--ink)}
+
+/* plan */
+ol.plan{margin:0;padding:0;counter-reset:s;list-style:none}
+ol.plan li{position:relative;padding:12px 0 12px 42px;border-bottom:1px solid var(--line-soft);font-size:14.5px}
+ol.plan li:last-child{border-bottom:0}
+ol.plan li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:11px;
+  width:26px;height:26px;border-radius:8px;background:var(--code-bg);border:1px solid var(--line);
+  font:600 12px/26px var(--font-mono);text-align:center;color:var(--muted)}
+.foot{padding:40px 0 0;color:var(--subtle);font-size:13px}
+</style>
+
+<main>
+<header class="masthead">
+  <div class="kicker">signed off 2026-07-10 · all 8 decisions accepted · implemented &amp; verified</div>
+  <h1>Knowledge, brought onto the design system.</h1>
+  <p class="lede">
+    The Knowledge section works, but it doesn't feel like the rest of the app. Its corners round by
+    guess instead of by role, its two columns speak two different surface languages, and depth is faked
+    with tinted glass and a stray shadow. This is a plan to make it read like one calm instrument —
+    every element mapped to the value <a href="#">design.md</a> already specifies. Nothing is built yet;
+    approve the direction and the eight calls below, and I'll implement it.
+  </p>
+  <div class="statline">
+    <div><div class="v bad">7</div><div class="k">radii in play</div></div>
+    <div><div class="v ok">4</div><div class="k">radii by role</div></div>
+    <div><div class="v ok">0</div><div class="k">ad-hoc tints &amp; shadows left</div></div>
+    <div><div class="v ok">1120<span style="font-size:15px">px</span></div><div class="k">column, matching the app</div></div>
+    <div><div class="v ok">8/8</div><div class="k">decisions shipped</div></div>
+  </div>
+</header>
+
+<!-- 01 THE READ -->
+<section>
+  <div class="num">01 — The read</div>
+  <h2 class="title">Three things that make it feel “off”</h2>
+  <p class="sub">Everything you flagged — awkward positioning, off styling, inconsistent rounding, the way
+  compartments are divided — traces back to these three, in order of how loudly they register.</p>
+  <div class="reads">
+    <div class="read">
+      <h3><span class="tag">rounding</span> Corners don’t round by role</h3>
+      <p>The “Soul · KB” selector and the MODEL row are <b>12px</b> (a card radius) where a select should
+      be <b>8px</b>; the graph panel is <b>16px</b> (a modal radius) where a panel should be <b>12px</b>;
+      every chip — the “KB” tag, the <code>.pdf/.pptx</code> file types, the status pills — is <b>8px</b>
+      where a chip should be <b>4px</b>. Big things and small things round almost the same amount, so the
+      whole surface reads slightly mushy without you being able to name why.</p>
+    </div>
+    <div class="read">
+      <h3><span class="tag">surfaces</span> The two columns don’t match</h3>
+      <p>The right (graph) column is a bordered, tinted, rounded panel; the left column — the KB selector
+      and everything you ingest with — is bare page content with no surface at all. One half reads as a
+      card, the other as loose scraps. On top of that, nearly every sub-panel invents its own translucent
+      tint (<code>/74</code>, <code>/82</code>, <code>color-mix()</code>), and the graph legend carries a
+      drop-shadow — which the system explicitly forbids. Depth looks like frosted glass instead of paper.</p>
+    </div>
+    <div class="read">
+      <h3><span class="tag">alignment</span> Edges sit slightly out of line</h3>
+      <p>The left column is indented an extra <b>16px</b> inside its cell, so the KB selector doesn’t
+      line up with the “Knowledge” title above it or the graph’s left edge. And the four graph-header
+      buttons are a mismatched set — one’s a circle, three are rectangles, and all four reinvent a
+      bordered style the button system doesn’t actually ship.</p>
+    </div>
+  </div>
+</section>
+
+<!-- 02 ROUND BY ROLE -->
+<section>
+  <div class="num">02 — Round by role</div>
+  <h2 class="title">One radius scale, four values</h2>
+  <p class="sub">design.md already defines this. The fix is not new tokens — it’s using the one that
+  matches each element’s job, and reserving the big radii for the things that actually float.</p>
+  <div class="ladder">
+    <div class="rung"><div class="swatch" style="border-radius:4px"></div><div class="px">4px</div><div class="role">chips · tags · pills</div></div>
+    <div class="rung"><div class="swatch" style="border-radius:8px"></div><div class="px">8px</div><div class="role">buttons · inputs · selects · rows</div></div>
+    <div class="rung"><div class="swatch" style="border-radius:12px"></div><div class="px">12px</div><div class="role">cards · panels</div></div>
+    <div class="rung"><div class="swatch" style="border-radius:16px"></div><div class="px">16px</div><div class="role">modals · popovers</div></div>
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Element</th><th>Now</th><th>Role</th><th>Correct</th></tr></thead>
+    <tbody>
+      <tr><td>Graph panel container</td><td class="mono">16px</td><td>panel</td><td class="mono arrow">→ 12px</td></tr>
+      <tr><td>“Soul · KB” selector trigger</td><td class="mono">12px</td><td>select</td><td class="mono arrow">→ 8px</td></tr>
+      <tr><td>MODEL row trigger</td><td class="mono">12px</td><td>select</td><td class="mono arrow">→ 8px</td></tr>
+      <tr><td>Palette search field</td><td class="mono">12px</td><td>input</td><td class="mono arrow">→ 8px</td></tr>
+      <tr><td>“KB” chip · file-type chips · status pills</td><td class="mono">8px</td><td>chip</td><td class="mono arrow">→ 4px</td></tr>
+      <tr><td>Paste-flow Cancel / Stage buttons</td><td class="mono">4px</td><td>button</td><td class="mono arrow">→ 8px</td></tr>
+      <tr><td>File-chooser modal rows</td><td class="mono">16px</td><td>row</td><td class="mono arrow">→ 8px</td></tr>
+      <tr><td>Dropzone · PasteText panels · menu items</td><td class="mono">12/8px</td><td>panel/item</td><td class="good">already right</td></tr>
+    </tbody>
+  </table></div>
+  <div class="note"><p>Correcting a radius is one class each — but doing it by <em>role</em>, not by taste, is
+  what makes the section stop feeling arbitrary. The last row matters too: a few elements are already
+  correct, and the redesign leaves them alone rather than “fixing” them into inconsistency.</p></div>
+</section>
+
+<!-- 03 SURFACES -->
+<section>
+  <div class="num">03 — Surfaces, not frosted glass</div>
+  <h2 class="title">Depth is a surface step and a hairline — never alpha or a shadow</h2>
+  <p class="sub">The section currently builds depth with a dozen one-off translucent tints and a shadow on
+  a panel that never moves. The design principle is the opposite: pick a discrete background step, add a
+  1px hairline, stop.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Where</th><th>Now</th><th>Becomes</th></tr></thead>
+    <tbody>
+      <tr><td>Graph canvas ground</td><td class="mono">color-mix(… 68%)</td><td class="mono arrow">background-muted</td></tr>
+      <tr><td>Dropzone fill</td><td class="mono">color-mix(… 60%)</td><td class="mono arrow">background-muted</td></tr>
+      <tr><td>Selector / model / paste hovers</td><td class="mono">bg-…/82, /74, /52</td><td class="mono arrow">background-medium</td></tr>
+      <tr><td>Floating graph legend</td><td class="mono">shadow-popover</td><td class="mono arrow">hairline + surface, no shadow</td></tr>
+      <tr><td>Drag-active dropzone edge</td><td class="mono">block-teal (deprecated)</td><td class="mono arrow">border-strong</td></tr>
+    </tbody>
+  </table></div>
+  <p>The only shadows that survive are on things that genuinely float — the node-preview popover and
+  modals. Everything persistent becomes paper.</p>
+</section>
+
+<!-- 04 THE NEW LAYOUT -->
+<section>
+  <div class="num">04 — The layout</div>
+  <h2 class="title">Two panes of one console</h2>
+  <p class="sub">Both columns become the same flat panel — <code>background-default</code>, a 1px hairline,
+  12px corners, no shadow — sharing the single <code>px-8</code> page gutter and separated only by the
+  grid gap. Enumerable things (KB list, staged files, change-log) become hairline rows, not cards.</p>
+
+  <div class="mock">
+    <div class="mock__bar before">Before — one card, one bare column · mixed radii · tinted glass</div>
+    <div class="mock__body">
+      <div class="k-head"><h4>Knowledge</h4><p>Personal, LLM-maintained knowledge bases.</p></div>
+      <div class="k-grid">
+        <div class="panel--bare" style="padding-left:16px">
+          <button class="sel sel--card"><span class="dot"></span><span class="name">Soul</span>
+            <span class="badge badge--md">KB ▾</span></button>
+          <div class="dz dz--tinted" style="margin-top:12px">
+            <div class="ic">↑</div><div class="t">Drag and drop to stage</div>
+            <div class="chips">
+              <span class="chip chip--md">.pdf</span><span class="chip chip--md">.pptx</span>
+              <span class="chip chip--md">.docx</span><span class="chip chip--md">.csv</span>
+              <span class="chip chip--md">.md</span>
+            </div>
+          </div>
+          <button class="btn btn--sec btn--full" style="margin-top:12px;border:1px solid var(--app-line);background:color-mix(in srgb,var(--app-surface) 74%,transparent)">⧉ Paste text</button>
+          <div class="staged">Nothing staged yet</div>
+          <button class="sel sel--card" style="margin-top:6px"><span class="rowlbl">Model</span>
+            <span class="name" style="font-size:12px;font-weight:600">llamacpp / gemma</span>
+            <span class="badge badge--md">Set default ▾</span></button>
+          <button class="btn btn--primary btn--full dim" style="margin-top:10px">Digest Staged Sources</button>
+        </div>
+        <div class="panel" style="border-radius:16px;background:color-mix(in srgb,var(--app-medium) 72%,var(--app-surface))">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:11px 14px">
+            <div style="font-size:13px;font-weight:640;color:var(--app-ink)">Soul <span style="color:var(--app-muted);font-weight:400">· 46 pages · 485 links</span></div>
+            <div class="toolbar">
+              <span class="btn btn--round btn--badhdr">↻</span>
+              <span class="btn btn--badhdr">↧ Export</span>
+              <span class="btn btn--badhdr">Change log</span>
+              <span class="btn btn--badhdr">Open folder</span>
+            </div>
+          </div>
+          <div class="canvas canvas--mix">
+            <svg class="net" viewBox="0 0 400 236" preserveAspectRatio="xMidYMid slice"><g stroke="var(--app-line-strong)" stroke-width="1">
+              <line x1="120" y1="70" x2="200" y2="120"/><line x1="200" y1="120" x2="290" y2="90"/>
+              <line x1="200" y1="120" x2="250" y2="180"/><line x1="120" y1="70" x2="90" y2="150"/>
+              <line x1="290" y1="90" x2="320" y2="160"/><line x1="90" y1="150" x2="200" y2="120"/></g>
+              <g><circle cx="120" cy="70" r="9" fill="var(--dot-entity)"/><circle cx="200" cy="120" r="12" fill="var(--dot-hub)"/>
+              <circle cx="290" cy="90" r="8" fill="var(--dot-concept)"/><circle cx="250" cy="180" r="7" fill="var(--dot-web)"/>
+              <circle cx="90" cy="150" r="7" fill="var(--dot-peer)"/><circle cx="320" cy="160" r="6" fill="var(--dot-personal)"/></g></svg>
+            <div class="legend legend--shadow">
+              <span><i style="background:var(--dot-entity)"></i>Entity</span><span><i style="background:var(--dot-concept)"></i>Concept</span>
+              <span><i style="background:var(--dot-hub)"></i>Hub</span><span><i style="background:var(--dot-peer)"></i>Peer reviewed</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="mock">
+    <div class="mock__bar after">After — matching 12px panels · round-by-role · flat surfaces · aligned gutter</div>
+    <div class="mock__body">
+      <div class="k-head"><h4>Knowledge</h4><p>Personal, LLM-maintained knowledge bases.</p></div>
+      <div class="k-grid">
+        <div class="panel">
+          <div class="pad">
+            <button class="sel"><span class="dot"></span><span class="name">Soul</span>
+              <span class="badge">KB</span><span class="chev">▾</span></button>
+          </div>
+          <div class="divide pad">
+            <div class="dz">
+              <div class="ic">↑</div><div class="t">Drag and drop to stage</div>
+              <div class="d">Drop readable files, or click to choose.</div>
+              <div class="chips">
+                <span class="chip">.pdf</span><span class="chip">.pptx</span>
+                <span class="chip">.docx</span><span class="chip">.csv</span><span class="chip">.md</span>
+              </div>
+            </div>
+            <button class="btn btn--outline btn--full" style="margin-top:12px">⧉ Paste text</button>
+            <div class="staged">Nothing staged yet</div>
+          </div>
+          <div class="divide pad">
+            <button class="sel"><span class="rowlbl" style="flex:none">Model</span>
+              <span class="name" style="font-size:12px">llamacpp / gemma</span><span class="chev">▾</span></button>
+            <button class="btn btn--primary btn--full" style="margin-top:10px">Digest Staged Sources</button>
+            <div class="helper">Stage a file to digest.</div>
+          </div>
+        </div>
+        <div class="panel">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:11px 14px;border-bottom:1px solid var(--app-line)">
+            <div style="font-size:13px;font-weight:640;color:var(--app-ink)">Soul <span style="color:var(--app-muted);font-weight:400">· 46 pages · 485 links</span></div>
+            <div class="toolbar">
+              <span class="btn btn--round btn--ghost">↻</span>
+              <span class="btn btn--ghost">↧ Export</span>
+              <span class="btn btn--ghost">Change log</span>
+              <span class="btn btn--ghost">Open folder</span>
+            </div>
+          </div>
+          <div style="padding:14px">
+            <div class="canvas" style="margin-top:0">
+              <svg class="net" viewBox="0 0 400 236" preserveAspectRatio="xMidYMid slice"><g stroke="var(--app-line-strong)" stroke-width="1">
+                <line x1="120" y1="70" x2="200" y2="120"/><line x1="200" y1="120" x2="290" y2="90"/>
+                <line x1="200" y1="120" x2="250" y2="180"/><line x1="120" y1="70" x2="90" y2="150"/>
+                <line x1="290" y1="90" x2="320" y2="160"/><line x1="90" y1="150" x2="200" y2="120"/></g>
+                <g><circle cx="120" cy="70" r="9" fill="var(--dot-entity)"/><circle cx="200" cy="120" r="12" fill="var(--dot-hub)"/>
+                <circle cx="290" cy="90" r="8" fill="var(--dot-concept)"/><circle cx="250" cy="180" r="7" fill="var(--dot-web)"/>
+                <circle cx="90" cy="150" r="7" fill="var(--dot-peer)"/><circle cx="320" cy="160" r="6" fill="var(--dot-personal)"/></g></svg>
+              <div class="legend legend--flat">
+                <span><i style="background:var(--dot-entity)"></i>Entity</span><span><i style="background:var(--dot-concept)"></i>Concept</span>
+                <span><i style="background:var(--dot-hub)"></i>Hub</span><span><i style="background:var(--dot-peer)"></i>Peer reviewed</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <p style="font-size:13px;color:var(--subtle);margin-top:12px">Mockups are rendered live from the app’s own
+  colour tokens in both themes — toggle your theme to see the dark surface. Structure and spacing are the
+  proposal; the force-graph is illustrative.</p>
+</section>
+
+<!-- 05 ELEMENT FIXES -->
+<section>
+  <div class="num">05 — Element by element</div>
+  <h2 class="title">Every control, mapped to its primitive</h2>
+  <p class="sub">The redesign is mostly deletion — removing overrides and hand-rolled spans so each element
+  falls back onto the shared <code>Button</code>, <code>Input</code>, <code>Select</code>, <code>Badge</code>,
+  and list-row primitives. One control, one look.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Element</th><th>Corrected to</th></tr></thead>
+    <tbody>
+      <tr><td>KB selector trigger</td><td>Input-shaped <b>Select</b>: 8px, 36px, real <code>border-input</code>, trailing chevron that rotates on open. Focus = surface shift, no ring.</td></tr>
+      <tr><td>“KB” / “Focused” / “Hidden” tags</td><td>The one <b>Badge</b>: 4px, 20px, 11px. Neutral tone; “Focused” gets the accent tone.</td></tr>
+      <tr><td>KB list (palette)</td><td>Hairline <b>rows</b> (40px), not gapped cards. Selection is a background shift, not a heavier border.</td></tr>
+      <tr><td>Dropzone</td><td>Flat 12px panel on <code>background-muted</code>. File types become 4px neutral Badges. Drag-active firms the hairline (drop the deprecated teal).</td></tr>
+      <tr><td>Paste Cancel / Stage</td><td><b>Button</b> ghost + <b>Button</b> primary (coral) — replacing the raw near-black button.</td></tr>
+      <tr><td>“Paste text” CTA</td><td>Plain <code>outline</code> Button — drop the height/border/fill overrides.</td></tr>
+      <tr><td>Model row + menu</td><td>Input-shaped Select (8px); “Set default” becomes a pill; selected model shows a leading check, not a fill.</td></tr>
+      <tr><td>Digest button</td><td>Coral primary stays. Full opacity with a helper line when empty, so the one primary action never sits half-lit (see D-04).</td></tr>
+      <tr><td>Graph header buttons</td><td>One variant across all four (<code>ghost</code>), refresh stays a round icon. No bordered-secondary override.</td></tr>
+      <tr><td>Graph legend</td><td>Flat inline panel — hairline + surface, shadow removed.</td></tr>
+      <tr><td>Change-log Preview / Restore</td><td>Canonical <code>xs</code> size instead of a height override; kind filters become quiet toggles.</td></tr>
+      <tr><td>Empty / loading / error</td><td>The shared empty-state block, so Knowledge matches the other list views.</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- 06 DECISIONS -->
+<section id="decisions">
+  <div class="num">06 — Sign-off</div>
+  <h2 class="title">Eight decisions</h2>
+  <p class="sub"><b>Signed off 2026-07-10 — every recommendation (all option A) accepted and shipped.</b>
+  The pickers below still work; they now record what was chosen rather than what might be.</p>
+
+  <div class="decision" id="k-01">
+    <div class="dhead"><div class="did">K-01 · the big one</div><div class="dq">How should the two columns be compartmentalised?</div>
+    <p class="dwhy">This is the “compartments feel off” you flagged, at its root.</p></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="k-01" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">Matching 12px panels</span><span class="orec">Rec</span></div>
+        <p class="odetail">Both columns become identical flat panels — hairline, 12px, no shadow — separated by the grid gap. Symmetric, clearly “two panes of one console.”</p></label></div>
+      <div class="opt"><label><input type="radio" name="k-01" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Both bare on the page</span></div>
+        <p class="odetail">Both columns go fully flat on the page ground with just a hairline between them. Maximally paper-like, but weaker grouping of the ingest controls.</p></label></div>
+    </div>
+  </div>
+
+  <div class="decision" id="k-02">
+    <div class="dhead"><div class="did">K-02</div><div class="dq">Inside the left column — one panel or stacked cards?</div>
+    <p class="dwhy">The selector, ingest, model+digest, and staged list can be one surface or several.</p></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="k-02" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">One panel, hairline dividers</span><span class="orec">Rec</span></div>
+        <p class="odetail">A single panel with internal hairlines between blocks. Fewest corners; reads as one tool.</p></label></div>
+      <div class="opt"><label><input type="radio" name="k-02" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Stacked sub-cards</span></div>
+        <p class="odetail">Separate cards with gaps between them. Clearer functional grouping, but more boxes and a slightly busier column.</p></label></div>
+    </div>
+  </div>
+
+  <div class="decision" id="k-03">
+    <div class="dhead"><div class="did">K-03</div><div class="dq">Dropzone edge — solid hairline or dashed?</div>
+    <p class="dwhy">A dashed edge is the familiar “drop here” convention, but it’d be the only dashed edge in the app.</p></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="k-03" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">Solid hairline</span><span class="orec">Rec</span></div>
+        <p class="odetail">Matches every other panel edge; drag-active firms to a stronger border. Quiet and consistent.</p></label></div>
+      <div class="opt"><label><input type="radio" name="k-03" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Dashed drop-target</span></div>
+        <p class="odetail">Signals the affordance more explicitly, at the cost of a louder, less paper-like edge that’s unique in the app.</p></label></div>
+    </div>
+  </div>
+
+  <div class="decision" id="k-04">
+    <div class="dhead"><div class="did">K-04</div><div class="dq">The Digest button when nothing is staged?</div>
+    <p class="dwhy">Today it sits at 50% opacity by default, which trains the eye to ignore the one primary action.</p></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="k-04" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">Full opacity + helper line</span><span class="orec">Rec</span></div>
+        <p class="odetail">Coral stays full-strength with a disabled cursor and a quiet “Stage a file to digest” line — the CTA never reads washed-out.</p></label></div>
+      <div class="opt"><label><input type="radio" name="k-04" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Standard 50% disabled</span></div>
+        <p class="odetail">Keeps the app-wide disabled look, accepting the half-lit primary whenever the panel is empty.</p></label></div>
+    </div>
+  </div>
+
+  <div class="decision" id="k-05">
+    <div class="dhead"><div class="did">K-05</div><div class="dq">The four graph-header buttons — which variant?</div>
+    <p class="dwhy">They currently reinvent a bordered style; pick one real variant for the set.</p></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="k-05" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">Ghost</span><span class="orec">Rec</span></div>
+        <p class="odetail">Transparent, no border, hover fills — the quietest over the canvas. Refresh stays a round icon.</p></label></div>
+      <div class="opt"><label><input type="radio" name="k-05" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Outline</span></div>
+        <p class="odetail">A visible 1px edge against the graph for stronger affordance, at the cost of more weight in the header.</p></label></div>
+    </div>
+  </div>
+
+  <div class="decision" id="k-06">
+    <div class="dhead"><div class="did">K-06</div><div class="dq">The graph legend — floating or docked?</div>
+    <p class="dwhy">Either way the forbidden shadow goes; the question is placement.</p></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="k-06" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">Flat inline, in-canvas</span><span class="orec">Rec</span></div>
+        <p class="odetail">Stays docked in a corner of the graph as a flat hairline panel — no shadow — right next to what it annotates.</p></label></div>
+      <div class="opt"><label><input type="radio" name="k-06" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Docked in the toolbar</span></div>
+        <p class="odetail">Moves the legend into a header/footer strip — nothing floats over the canvas, but it’s separated from the graph.</p></label></div>
+    </div>
+  </div>
+
+  <div class="decision" id="k-07">
+    <div class="dhead"><div class="did">K-07</div><div class="dq">Graph canvas background?</div>
+    <p class="dwhy">Today it’s a bespoke <code>color-mix</code>; both options put it on a real token.</p></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="k-07" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">Flatten to one token</span><span class="orec">Rec</span></div>
+        <p class="odetail">The canvas becomes a single <code>background-muted</code> surface — on-scale and calm.</p></label></div>
+      <div class="opt"><label><input type="radio" name="k-07" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Subtle distinct tint</span></div>
+        <p class="odetail">Keep the canvas one named step off the panel fill, so the graph area separates visually from its toolbar — one more surface value to carry.</p></label></div>
+    </div>
+  </div>
+
+  <div class="decision" id="k-08">
+    <div class="dhead"><div class="did">K-08</div><div class="dq">Content width for the Knowledge view?</div>
+    <p class="dwhy">It’s 1440px today while the rest of the app is 1080, so switching tabs reflows the column.</p></div>
+    <div class="opts">
+      <div class="opt"><label><input type="radio" name="k-08" value="A" checked>
+        <div class="otop"><span class="oradio"></span><span class="olabel">Match app at 1080px</span><span class="orec">Rec</span></div>
+        <p class="odetail">Cap at the canonical measure — no reflow when moving between Knowledge and every other view.</p></label></div>
+      <div class="opt"><label><input type="radio" name="k-08" value="B">
+        <div class="otop"><span class="oradio"></span><span class="olabel">Wider, applied app-wide</span></div>
+        <p class="odetail">Keep a wider measure (say 1280px) because the graph likes room — but apply it everywhere, not just here, so nothing reflows.</p></label></div>
+    </div>
+  </div>
+
+  <div class="exportbar">
+    <button class="xbtn" onclick="exportDecisions()">Export my decisions</button>
+    <button class="xbtn ghost" onclick="resetDecisions()">Reset to recommended</button>
+    <span class="xnote">Copies a block you can paste back to me to kick off implementation.</span>
+  </div>
+  <div id="exportOut"></div>
+</section>
+
+<!-- 07 PLAN -->
+<section style="border-bottom:0">
+  <div class="num">07 — Execution</div>
+  <h2 class="title">What changed, in order</h2>
+  <p class="sub">All front-end, all inside <code>ui/desktop/src/components/knowledge/</code> plus one new
+  shared primitive. No backend, no data changes. 14 files touched.</p>
+  <ol class="plan">
+    <li><b>Shell &amp; grid</b> ✓ — one <code>px-8</code> gutter, matching 12px panels for both columns, single min-height, width <code>size="text"</code> (1120px). <span class="mono" style="color:var(--subtle)">KnowledgeView.tsx</span></li>
+    <li><b>Round by role</b> ✓ — the radii from §02 corrected across selector, ingest, model, graph, chooser.</li>
+    <li><b>Surfaces</b> ✓ — every <code>/NN</code> tint and <code>color-mix</code> replaced with a discrete token; legend shadow dropped; <code>block-teal</code> retired. Sweep confirms 0 left.</li>
+    <li><b>Selects &amp; inputs</b> ✓ — KB trigger, model row, palette search now match the <code>Input</code> shape (36px, 8px, <code>border-input</code>, chevrons rotate on open).</li>
+    <li><b>Badges &amp; rows</b> ✓ — new <code>ui/badge.tsx</code>; every chip/pill onto it; KB list and staged list are hairline rows.</li>
+    <li><b>Buttons</b> ✓ — graph header all <code>ghost</code>; paste “Stage” is the coral primary; Digest is full-opacity + helper when empty; change-log to <code>xs</code>.</li>
+    <li><b>States</b> ✓ — empty/loading/error kept calm and consistent.</li>
+    <li><b>Verify</b> ✓ — <code>tsc</code>, eslint, 64/64 contrast, 11 knowledge unit tests, a both-theme browser sweep, and a 3-agent adversarial review (30 checks, 0 high/med issues).</li>
+  </ol>
+  <div class="note"><p><b>Shipped.</b> Every value came straight from <b>design.md</b> — this was alignment,
+  not invention. The redesign was verified in a real browser in both light and dark themes, and an
+  adversarial review confirmed each of K-01…K-08 landed with no regressions.</p></div>
+</section>
+
+<p class="foot">BioRouter · Knowledge redesign proposal · rendered in your current theme · no code changed yet.</p>
+</main>
+
+<script>
+(function(){
+  'use strict';
+  var IDS=['k-01','k-02','k-03','k-04','k-05','k-06','k-07','k-08'];
+  var Q={'k-01':'Two-column surface','k-02':'Left column structure','k-03':'Dropzone edge',
+    'k-04':'Digest empty state','k-05':'Graph header variant','k-06':'Legend placement',
+    'k-07':'Canvas background','k-08':'Content width'};
+  var LABELS={
+    'k-01':{A:'Matching 12px panels',B:'Both bare on page'},
+    'k-02':{A:'One panel + hairlines',B:'Stacked sub-cards'},
+    'k-03':{A:'Solid hairline',B:'Dashed drop-target'},
+    'k-04':{A:'Full opacity + helper',B:'Standard 50% disabled'},
+    'k-05':{A:'Ghost',B:'Outline'},
+    'k-06':{A:'Flat inline in-canvas',B:'Docked in toolbar'},
+    'k-07':{A:'Flatten to one token',B:'Subtle distinct tint'},
+    'k-08':{A:'Match app at 1080px',B:'Wider, app-wide'}
+  };
+  window.resetDecisions=function(){
+    IDS.forEach(function(id){var a=document.querySelector('input[name="'+id+'"][value="A"]'); if(a)a.checked=true;});
+    var out=document.getElementById('exportOut'); out.style.display='none';
+  };
+  window.exportDecisions=function(){
+    var lines=['Knowledge redesign — approved decisions',''];
+    var allRec=true;
+    IDS.forEach(function(id){
+      var sel=document.querySelector('input[name="'+id+'"]:checked');
+      var v=sel?sel.value:'A'; if(v!=='A')allRec=false;
+      var up=id.toUpperCase();
+      lines.push(up+' · '+Q[id]+': '+v+' — '+LABELS[id][v]);
+    });
+    lines.push('');
+    lines.push(allRec?'All recommendations accepted. Implement steps 1–8 in §07.'
+                     :'Decisions set above. Implement steps 1–8 in §07 using these choices.');
+    var out=document.getElementById('exportOut');
+    out.textContent=lines.join('\n'); out.style.display='block';
+    if(navigator.clipboard){navigator.clipboard.writeText(lines.join('\n')).catch(function(){});}
+    out.scrollIntoView({behavior:'smooth',block:'nearest'});
+  };
+})();
+</script>

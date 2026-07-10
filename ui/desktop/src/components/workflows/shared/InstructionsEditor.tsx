@@ -105,9 +105,7 @@ Use {{parameter_name}} syntax for any user-provided values.`;
             <textarea
               value={localValue}
               onChange={(e) => setLocalValue(e.target.value)}
-              className={`biorouter-modal-panel w-full h-full min-h-[500px] px-3 py-2 text-sm rounded-lg text-text-default placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-border-strong transition-colors duration-150 resize-none font-mono ${
-                error ? '!border-border-danger' : ''
-              }`}
+              className={`biorouter-modal-panel w-full h-full min-h-[500px] px-3 py-2 text-sm rounded-lg text-text-default placeholder:text-text-muted transition-colors duration-150 resize-none font-mono ${error ? '!border-border-danger' : ''}`}
               placeholder="Detailed instructions for the AI, hidden from the user"
             />
             {error && <p className="text-text-danger text-sm mt-2">{error}</p>}

@@ -24,7 +24,7 @@ export default function LauncherView() {
     <div className="h-screen w-screen flex bg-transparent overflow-hidden">
       <form
         onSubmit={handleSubmit}
-        className="w-full h-full bg-background-default/95 backdrop-blur-lg shadow-2xl border border-border-default"
+        className="w-full h-full bg-background-default shadow-modal border border-border-subtle"
       >
         <input
           ref={inputRef}
@@ -32,7 +32,7 @@ export default function LauncherView() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
-          className="w-full h-full bg-transparent text-text-default text-xl px-6 outline-none placeholder-text-muted"
+          className="w-full h-full bg-transparent text-text-default text-xl px-6 placeholder-text-muted"
           placeholder="Ask biorouter anything..."
           autoFocus
         />

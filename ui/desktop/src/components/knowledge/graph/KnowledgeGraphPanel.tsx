@@ -65,54 +65,50 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button
-            variant="secondary"
+            variant="ghost"
             size="sm"
             shape="round"
-            className="border border-border-subtle bg-background-muted/82 hover:bg-background-strong"
             onClick={() => void refresh()}
             disabled={!activeKbId || loading}
             title="Refresh graph"
           >
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} strokeWidth={1.5} />
           </Button>
           <Button
-            variant="secondary"
+            variant="ghost"
             size="sm"
-            className="border border-border-subtle bg-background-muted/82 font-medium hover:bg-background-strong"
             onClick={() => activeKb && void exportArchive(activeKb.id, activeKb.name)}
             disabled={!activeKb}
             title="Export current knowledge base as .brkb"
           >
-            <Download className="mr-1 h-4 w-4" />
+            <Download className="mr-1 h-4 w-4" strokeWidth={1.5} />
             Export as .brkb
           </Button>
           <Button
-            variant="secondary"
+            variant="ghost"
             size="sm"
-            className="border border-border-subtle bg-background-muted/82 font-medium hover:bg-background-strong"
             onClick={onOpenChangeLog}
             disabled={!activeKbId}
             title="Open change log"
           >
-            <History className="h-4 w-4 mr-1" />
+            <History className="h-4 w-4 mr-1" strokeWidth={1.5} />
             Change log
           </Button>
           <Button
-            variant="secondary"
+            variant="ghost"
             size="sm"
-            className="border border-border-subtle bg-background-muted/82 font-medium hover:bg-background-strong"
             onClick={() => void openKbFolder()}
             disabled={!activeKbId}
             title="Open the knowledge base folder (raw sources + markdown) in your file explorer"
           >
-            <FolderOpen className="h-4 w-4 mr-1" />
+            <FolderOpen className="h-4 w-4 mr-1" strokeWidth={1.5} />
             Open folder
           </Button>
         </div>
       </div>
 
       {previewSha && (
-        <div className="mx-4 mt-1 rounded-xl bg-background-warning/10 px-4 py-2 text-xs text-text-warning flex items-center justify-between">
+        <div className="mx-4 mt-2 flex items-center justify-between rounded-md border border-border-warning/40 bg-background-warning/10 px-4 py-2 text-xs text-text-warning">
           <span>Previewing commit {previewSha.slice(0, 7)} — read-only</span>
           <button onClick={onClearPreview} className="underline">
             Exit preview
@@ -120,7 +116,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
         </div>
       )}
 
-      <div className="relative min-h-0 flex-1 overflow-hidden bg-[color-mix(in_srgb,var(--background-default)_68%,transparent)]">
+      <div className="relative min-h-0 flex-1 overflow-hidden border-t border-border-subtle bg-background-muted">
         {!activeKbId && (
           <div className="absolute inset-0 flex items-center justify-center text-sm text-text-muted">
             Focus a knowledge base to see its graph.
@@ -155,7 +151,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
           />
         )}
         {activeKbId && graph && graph.nodes.length > 0 && (
-          <div className="biorouter-popover-surface absolute bottom-4 left-4 rounded-xl bg-background-default/80 px-3 py-2.5 backdrop-blur-sm">
+          <div className="absolute bottom-4 left-4 rounded-xl border border-border-subtle bg-background-default px-3 py-2.5">
             <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-text-default">
               <div className="flex items-center gap-2">
                 <span

@@ -345,3 +345,185 @@ tbody tr:nth-child(even) { background: var(--br-muted); }
 }
 .br-chart svg, .br-visual svg { display: block; max-width: 100%; height: auto; }
 .br-chart--pending, .br-visual--pending { min-height: 44px; background: var(--br-muted); }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Agent-driven UI (the `ui_*` tools)
+   The agent owns everything below: docks, panels, toasts, modals, highlights.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* Explicit theme override from `ui_theme`. These must beat the
+   prefers-color-scheme block above in BOTH directions, so a "light" request
+   still reads light on a dark OS. */
+:root[data-br-theme="dark"] {
+  --br-bg: #0d0a06;
+  --br-surface: #16120c;
+  --br-muted: #282217;
+  --br-medium: #403928;
+  --br-strong: #615a46;
+  --br-accent: #ffffff;
+  --br-accent-hover: #f4f0e6;
+  --br-on-accent: #16120c;
+  --br-text: #ffffff;
+  --br-text-muted: #b0a892;
+  --br-border: #282217;
+  --br-border-subtle: #282217;
+}
+:root[data-br-theme="light"] {
+  --br-bg: #ffffff;
+  --br-surface: #ffffff;
+  --br-muted: #faf8f3;
+  --br-medium: #f4f0e6;
+  --br-strong: #d4cab6;
+  --br-accent: #16120c;
+  --br-accent-hover: #2a2520;
+  --br-on-accent: #ffffff;
+  --br-text: #2a2520;
+  --br-text-muted: #7a736c;
+  --br-border: #ece6d8;
+  --br-border-subtle: #e8e1d2;
+}
+:root[data-br-density="compact"] { --br-gap: 6px; --br-pad: 8px; }
+:root { --br-gap: 10px; --br-pad: 14px; --br-dock-w: 380px; --br-dock-h: 280px; }
+
+/* ── Widget primitives the SDK renders (previously unstyled) ───────────── */
+.br-col { display: flex; flex-direction: column; gap: var(--br-gap); }
+.br-text { font-size: 0.9rem; line-height: 1.55; }
+.br-text--muted { color: var(--br-text-muted); }
+.br-form { display: flex; flex-direction: column; gap: var(--br-gap); }
+.br-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+.br-table th, .br-table td { border: 1px solid var(--br-border); padding: 5px 9px; text-align: left; }
+.br-table thead th { background: var(--br-muted); font-weight: 600; }
+.br-divider { border: none; border-top: 1px solid var(--br-border); margin: 8px 0; }
+
+.br-stat {
+  flex: 1 1 120px; min-width: 110px; padding: 10px 12px;
+  background: var(--br-muted); border: 1px solid var(--br-border-subtle);
+  border-radius: var(--br-radius-ctl);
+}
+.br-stat__label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--br-text-muted); }
+.br-stat__value { font-size: 1.5rem; font-weight: 650; line-height: 1.2; margin-top: 2px; }
+.br-stat__unit { font-size: 0.8rem; font-weight: 400; color: var(--br-text-muted); }
+.br-stat__delta { font-size: 0.75rem; color: var(--br-green); margin-top: 2px; }
+.br-stat__delta--down { color: var(--br-coral); }
+
+.br-progress { margin: 6px 0; }
+.br-progress__label { font-size: 0.75rem; color: var(--br-text-muted); margin-bottom: 4px; }
+.br-progress__track { height: 6px; background: var(--br-medium); border-radius: 999px; overflow: hidden; }
+.br-progress__bar { height: 100%; background: var(--br-coral); border-radius: 999px; transition: width 240ms ease; }
+
+/* ── Docks: agent-owned drawers that never rewrite the author's layout ── */
+.br-dock {
+  position: fixed; z-index: 40; overflow-y: auto;
+  background: var(--br-bg); border-color: var(--br-border);
+  padding: var(--br-pad); display: flex; flex-direction: column; gap: var(--br-gap);
+}
+.br-dock--right { top: 0; right: 0; bottom: 0; width: var(--br-dock-w); border-left: 1px solid var(--br-border); }
+.br-dock--left  { top: 0; left: 0; bottom: 0; width: var(--br-dock-w); border-right: 1px solid var(--br-border); }
+.br-dock--bottom { left: 0; right: 0; bottom: 0; height: var(--br-dock-h); border-top: 1px solid var(--br-border); }
+.br-dock--grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); align-content: start; }
+.br-dock:empty { display: none; }
+
+/* Shift the page instead of covering it, so nothing the author built is lost.
+   Dock width lives ONLY in `--br-dock-w`, which `ui_layout` sets per preset: a
+   per-preset width rule here would beat the inline variable and silently ignore
+   an explicit `sidebar_width`. */
+body.br-has-dock-right { padding-right: var(--br-dock-w); }
+body.br-has-dock-left { padding-left: var(--br-dock-w); }
+body.br-has-dock-bottom { padding-bottom: var(--br-dock-h); }
+
+@media (max-width: 900px) {
+  .br-dock--right, .br-dock--left { position: static; width: auto; border: none; border-top: 1px solid var(--br-border); }
+  body.br-has-dock-right, body.br-has-dock-left { padding-right: 0; padding-left: 0; }
+}
+
+/* ── Panels ────────────────────────────────────────────────────────────── */
+.br-panel {
+  background: var(--br-surface);
+  border: 1px solid color-mix(in srgb, var(--br-border) 62%, transparent);
+  border-radius: var(--br-radius);
+  box-shadow: var(--br-shadow);
+  padding: var(--br-pad);
+  animation: br-panel-in 180ms ease-out;
+}
+@keyframes br-panel-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .br-panel { animation: none; } }
+.br-panel__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.br-panel__title { margin: 0; font-size: 0.9rem; font-weight: 650; }
+.br-panel__toggle {
+  border: none; background: transparent; color: var(--br-text-muted);
+  cursor: pointer; font-size: 1rem; line-height: 1; padding: 2px 6px; border-radius: 4px;
+}
+.br-panel__toggle:hover { background: var(--br-muted); }
+.br-panel--collapsed .br-panel__body { display: none; }
+.br-panel__body { display: flex; flex-direction: column; gap: var(--br-gap); }
+
+/* ── Highlight / focus / callout ───────────────────────────────────────── */
+.br-highlight { position: relative; z-index: 2; border-radius: var(--br-radius-ctl); }
+.br-highlight--outline { outline: 2px solid var(--br-coral); outline-offset: 3px; }
+.br-highlight--pulse { animation: br-pulse 1.1s ease-out 3; }
+@keyframes br-pulse {
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--br-coral) 55%, transparent); }
+  100% { box-shadow: 0 0 0 14px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .br-highlight--pulse { animation: none; outline: 2px solid var(--br-coral); outline-offset: 3px; }
+}
+
+/* Focus mode: a full-viewport dimming BACKDROP (a fixed sibling the SDK inserts),
+   with the highlighted element raised above it. This deliberately avoids dimming
+   the page via ancestor `opacity` — opacity forms a stacking context the child
+   can't escape, so a highlighted element nested inside a dimmed wrapper (the
+   normal case: content lives inside <main>) would be dimmed with it. Raising the
+   target above a translucent overlay has no such inheritance trap. */
+.br-focus-backdrop {
+  position: fixed; inset: 0; z-index: 30; pointer-events: none;
+  background: color-mix(in srgb, var(--br-n950) 46%, transparent);
+  transition: opacity 200ms ease;
+}
+.br-highlight--focus {
+  position: relative; z-index: 31;
+  outline: 2px solid var(--br-coral); outline-offset: 3px;
+  border-radius: var(--br-radius-ctl);
+  box-shadow: 0 8px 30px color-mix(in srgb, var(--br-n950) 35%, transparent);
+}
+.br-callout {
+  margin-top: 6px; padding: 6px 10px; font-size: 0.8rem;
+  background: color-mix(in srgb, var(--br-coral) 12%, var(--br-surface));
+  border-left: 3px solid var(--br-coral); border-radius: 0 4px 4px 0;
+}
+
+/* ── Toasts ────────────────────────────────────────────────────────────── */
+.br-toasts { position: fixed; z-index: 60; bottom: 16px; left: 16px; display: flex; flex-direction: column; gap: 8px; max-width: 380px; }
+.br-toast {
+  padding: 9px 13px; font-size: 0.83rem; border-radius: var(--br-radius-ctl);
+  background: var(--br-surface); color: var(--br-text);
+  border: 1px solid var(--br-border); border-left: 3px solid var(--br-n400);
+  box-shadow: var(--br-shadow-pop); animation: br-panel-in 160ms ease-out;
+}
+.br-toast--success { border-left-color: var(--br-green); }
+.br-toast--warn { border-left-color: var(--br-coral); }
+.br-toast--error { border-left-color: var(--br-danger); }
+.br-toast--sticky { cursor: pointer; }
+
+/* ── Modal (ui_ask, and place:"modal" panels) ──────────────────────────── */
+.br-modal-host { position: fixed; inset: 0; z-index: 70; pointer-events: none; }
+.br-modal-host:empty { display: none; }
+.br-modal {
+  position: absolute; inset: 0; pointer-events: auto;
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+  background: color-mix(in srgb, var(--br-n950) 42%, transparent);
+}
+.br-modal__card { width: min(520px, 100%); max-height: 82vh; overflow-y: auto; box-shadow: var(--br-shadow-pop); }
+.br-modal__actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+.br-modal-host > .br-panel {
+  pointer-events: auto; position: absolute; top: 50%; left: 50%;
+  transform: translate(-50%, -50%); width: min(560px, 92vw); max-height: 82vh; overflow-y: auto;
+}
+
+/* ── Backend-unreachable banner (exported apps with no daemon) ─────────── */
+.br-backend-error {
+  padding: 10px 16px; font-size: 0.85rem; line-height: 1.5;
+  background: color-mix(in srgb, var(--br-danger) 12%, var(--br-surface));
+  border-bottom: 1px solid var(--br-danger); color: var(--br-text);
+}
+.br-backend-error strong { display: block; margin-bottom: 2px; }

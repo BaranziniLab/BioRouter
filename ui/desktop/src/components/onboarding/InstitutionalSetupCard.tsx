@@ -31,10 +31,10 @@ const TABS: { id: VersaFlavor; label: string }[] = [
 ];
 
 const inputClass =
-  'w-full h-9 px-3 text-sm border border-border-subtle rounded-md bg-background-default text-text-default placeholder:text-text-muted focus:outline-none focus:border-border-strong transition-colors duration-150';
+  'w-full h-9 px-3 text-sm border border-border-subtle rounded-md bg-background-default text-text-default placeholder:text-text-muted  focus:border-border-strong transition-colors duration-150';
 
 const advancedInputClass =
-  'w-full h-8 px-3 text-xs border border-border-subtle rounded-md bg-background-default text-text-default focus:outline-none focus:border-border-strong';
+  'w-full h-8 px-3 text-xs border border-border-subtle rounded-md bg-background-default text-text-default  focus:border-border-strong';
 
 export default function InstitutionalSetupCard({
   onSuccess,
@@ -120,11 +120,7 @@ export default function InstitutionalSetupCard({
               setFlavor(tab.id);
               setError(null);
             }}
-            className={`px-3 h-7 text-xs rounded transition-colors duration-150 ${
-              flavor === tab.id
-                ? 'bg-background-default text-text-default'
-                : 'text-text-muted hover:text-text-default'
-            }`}
+            className={`px-3 h-7 text-xs rounded transition-colors duration-150 ${flavor === tab.id ? 'bg-background-default text-text-default' : 'text-text-muted hover:text-text-default'}`}
           >
             {tab.label}
           </button>

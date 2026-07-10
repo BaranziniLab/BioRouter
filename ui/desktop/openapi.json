@@ -2912,6 +2912,50 @@
         ]
       }
     },
+    "/sessions/activity": {
+      "get": {
+        "tags": [
+          "Session Management"
+        ],
+        "operationId": "get_session_activity",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "description": "Calendar days to report (default 155, clamped to 1..=371)",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "nullable": true
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Per-day usage for the Home heatmap",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityWindow"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
     "/sessions/import": {
       "post": {
         "tags": [
@@ -4036,6 +4080,50 @@
           }
         }
       },
+      "ActivityWindow": {
+        "type": "object",
+        "description": "The Home heatmap payload.",
+        "required": [
+          "start",
+          "end",
+          "maxSessions",
+          "maxTokens",
+          "currentStreak",
+          "longestStreak",
+          "days"
+        ],
+        "properties": {
+          "currentStreak": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "days": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DailyActivity"
+            },
+            "description": "Only days with activity. The client fills the rest of the grid with level 0."
+          },
+          "end": {
+            "type": "string"
+          },
+          "longestStreak": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "maxSessions": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "maxTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "start": {
+            "type": "string"
+          }
+        }
+      },
       "AddExtensionRequest": {
         "type": "object",
         "required": [
@@ -4541,6 +4629,54 @@
             },
             "description": "Domains allowed for resource loading (scripts, styles, images, fonts, media)",
             "nullable": true
+          }
+        }
+      },
+      "DailyActivity": {
+        "type": "object",
+        "description": "One calendar day of usage, for the Home heatmap.",
+        "required": [
+          "date",
+          "sessions",
+          "tokens",
+          "inputTokens",
+          "outputTokens",
+          "messages",
+          "level"
+        ],
+        "properties": {
+          "date": {
+            "type": "string",
+            "description": "Local calendar day, `YYYY-MM-DD`."
+          },
+          "inputTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "level": {
+            "type": "integer",
+            "format": "int32",
+            "description": "1–4. Level 0 days are omitted from the response entirely.",
+            "minimum": 0
+          },
+          "messages": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Assistant + user messages exchanged that day."
+          },
+          "outputTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "sessions": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Sessions *started* that day (exact; keyed on the immutable `created_at`)."
+          },
+          "tokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Tokens processed that day, summed from per-turn `token_events`."
           }
         }
       },
@@ -7355,17 +7491,18 @@
         "properties": {
           "accumulated_input_tokens": {
             "type": "integer",
-            "format": "int32",
+            "format": "int64",
             "nullable": true
           },
           "accumulated_output_tokens": {
             "type": "integer",
-            "format": "int32",
+            "format": "int64",
             "nullable": true
           },
           "accumulated_total_tokens": {
             "type": "integer",
-            "format": "int32",
+            "format": "int64",
+            "description": "Lifetime totals: the sum of every turn's usage, i.e. tokens actually\nprocessed and billed. They grow without bound and overflowed `i32` at\n~2.1e9 — in release that wraps *negative* and then subtracts from the\ninsights `SUM`. SQLite's INTEGER is already 64-bit.",
             "nullable": true
           },
           "conversation": {
@@ -7430,6 +7567,7 @@
           "total_tokens": {
             "type": "integer",
             "format": "int32",
+            "description": "The *current* turn's usage — the live context-window occupancy. Bounded by\nthe model's context limit, so `i32` is safe.",
             "nullable": true
           },
           "updated_at": {
@@ -7471,17 +7609,17 @@
         "properties": {
           "accumulatedInputTokens": {
             "type": "integer",
-            "format": "int32",
+            "format": "int64",
             "nullable": true
           },
           "accumulatedOutputTokens": {
             "type": "integer",
-            "format": "int32",
+            "format": "int64",
             "nullable": true
           },
           "accumulatedTotalTokens": {
             "type": "integer",
-            "format": "int32",
+            "format": "int64",
             "nullable": true
           },
           "createdAt": {
@@ -8072,15 +8210,16 @@
         "properties": {
           "accumulatedInputTokens": {
             "type": "integer",
-            "format": "int32"
+            "format": "int64",
+            "description": "Lifetime totals. `i64` because they grow without bound over a long\nsession; `i32` wrapped negative at ~2.1e9."
           },
           "accumulatedOutputTokens": {
             "type": "integer",
-            "format": "int32"
+            "format": "int64"
           },
           "accumulatedTotalTokens": {
             "type": "integer",
-            "format": "int32"
+            "format": "int64"
           },
           "inputTokens": {
             "type": "integer",

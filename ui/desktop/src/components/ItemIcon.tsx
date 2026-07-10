@@ -28,86 +28,92 @@ interface IconInfo {
   color: string;
 }
 
+// Icons are monochrome and inherit their colour from the surrounding text via
+// `currentColor` (design.md §3.9 — "Colour: currentColor, always. Never a hex").
+// The item *type* is conveyed by the glyph, not by a per-type tint. `color` is
+// kept on the return shape so the public API is unchanged.
+const CURRENT = 'currentColor';
+
 export const getItemIcon = (item: DisplayItem): IconInfo => {
   switch (item.itemType) {
     case 'Builtin':
-      return { Icon: Zap, color: '#3b82f6' }; // Blue
+      return { Icon: Zap, color: CURRENT };
     case 'Workflow':
-      return { Icon: BookOpen, color: '#10b981' }; // Green
+      return { Icon: BookOpen, color: CURRENT };
     case 'KnowledgeBase':
-      return { Icon: Database, color: '#0f766e' };
+      return { Icon: Database, color: CURRENT };
     case 'Skill':
-      return { Icon: Layers, color: '#7c3aed' };
+      return { Icon: Layers, color: CURRENT };
     case 'Extension':
-      return { Icon: Wrench, color: '#2563eb' };
+      return { Icon: Wrench, color: CURRENT };
     case 'Directory':
-      return { Icon: Folder, color: '#f59e0b' }; // Amber
+      return { Icon: Folder, color: CURRENT };
     default: {
       const ext = item.name.split('.').pop()?.toLowerCase() || '';
 
       // Image files
       if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'ico', 'webp', 'bmp', 'tiff', 'tif'].includes(ext)) {
-        return { Icon: Image, color: '#8b5cf6' }; // Purple
+        return { Icon: Image, color: CURRENT };
       }
 
       // Video files
       if (['mp4', 'mov', 'avi', 'mkv', 'webm', 'flv', 'wmv'].includes(ext)) {
-        return { Icon: Video, color: '#ef4444' }; // Red
+        return { Icon: Video, color: CURRENT };
       }
 
       // Audio files
       if (['mp3', 'wav', 'flac', 'aac', 'ogg', 'm4a'].includes(ext)) {
-        return { Icon: Music, color: '#f97316' }; // Orange
+        return { Icon: Music, color: CURRENT };
       }
 
       // Archive/compressed files
       if (['zip', 'tar', 'gz', 'rar', '7z', 'bz2'].includes(ext)) {
-        return { Icon: Archive, color: '#6b7280' }; // Gray
+        return { Icon: Archive, color: CURRENT };
       }
 
       // PDF files
       if (ext === 'pdf') {
-        return { Icon: FileText, color: '#dc2626' }; // Red
+        return { Icon: FileText, color: CURRENT };
       }
 
       // Design files
       if (['ai', 'eps', 'sketch', 'fig', 'xd', 'psd'].includes(ext)) {
-        return { Icon: Palette, color: '#ec4899' }; // Pink
+        return { Icon: Palette, color: CURRENT };
       }
 
       // JavaScript/TypeScript files
       if (['js', 'jsx', 'ts', 'tsx', 'mjs', 'cjs'].includes(ext)) {
-        return { Icon: Code, color: '#eab308' }; // Yellow
+        return { Icon: Code, color: CURRENT };
       }
 
       // Python files
       if (['py', 'pyw', 'pyc'].includes(ext)) {
-        return { Icon: Code, color: '#3b82f6' }; // Blue
+        return { Icon: Code, color: CURRENT };
       }
 
       // HTML files
       if (['html', 'htm', 'xhtml'].includes(ext)) {
-        return { Icon: Code, color: '#f97316' }; // Orange
+        return { Icon: Code, color: CURRENT };
       }
 
       // CSS files
       if (['css', 'scss', 'sass', 'less', 'stylus'].includes(ext)) {
-        return { Icon: Code, color: '#06b6d4' }; // Cyan
+        return { Icon: Code, color: CURRENT };
       }
 
       // JSON/Data files
       if (['json', 'xml', 'yaml', 'yml', 'toml', 'csv'].includes(ext)) {
-        return { Icon: FileText, color: '#10b981' }; // Green
+        return { Icon: FileText, color: CURRENT };
       }
 
       // Markdown files
       if (['md', 'markdown', 'mdx'].includes(ext)) {
-        return { Icon: FileText, color: '#6366f1' }; // Indigo
+        return { Icon: FileText, color: CURRENT };
       }
 
       // Database files
       if (['sql', 'db', 'sqlite', 'sqlite3'].includes(ext)) {
-        return { Icon: Database, color: '#059669' }; // Emerald
+        return { Icon: Database, color: CURRENT };
       }
 
       // Configuration files
@@ -126,7 +132,7 @@ export const getItemIcon = (item: DisplayItem): IconInfo => {
         ].includes(ext || '') ||
         ['dockerfile', 'makefile', 'rakefile', 'gemfile'].includes(item.name.toLowerCase())
       ) {
-        return { Icon: Settings, color: '#6b7280' }; // Gray
+        return { Icon: Settings, color: CURRENT };
       }
 
       // Text files
@@ -134,23 +140,23 @@ export const getItemIcon = (item: DisplayItem): IconInfo => {
         ['txt', 'log', 'readme', 'license', 'changelog', 'contributing'].includes(ext || '') ||
         ['readme', 'license', 'changelog', 'contributing'].includes(item.name.toLowerCase())
       ) {
-        return { Icon: FileText, color: '#374151' }; // Dark gray
+        return { Icon: FileText, color: CURRENT };
       }
 
       // Executable files
       if (['exe', 'app', 'deb', 'rpm', 'dmg', 'pkg', 'msi'].includes(ext || '')) {
-        return { Icon: Wrench, color: '#7c3aed' }; // Purple
+        return { Icon: Wrench, color: CURRENT };
       }
 
       // Script files
       if (
         ['sh', 'bash', 'zsh', 'fish', 'bat', 'cmd', 'ps1', 'rb', 'pl', 'php'].includes(ext || '')
       ) {
-        return { Icon: Terminal, color: '#059669' }; // Emerald
+        return { Icon: Terminal, color: CURRENT };
       }
 
       // Default file icon
-      return { Icon: File, color: '#6b7280' }; // Gray
+      return { Icon: File, color: CURRENT };
     }
   }
 };

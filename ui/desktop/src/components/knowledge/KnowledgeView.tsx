@@ -44,27 +44,31 @@ function KnowledgeViewInner() {
         data-search-scroll-area
       >
         <ReadableContent
-          size="graph"
+          size="text"
           className="px-8 pt-12 pb-6 border-b border-border-subtle flex-shrink-0"
         >
-          <div className="flex flex-col page-transition">
-            <h1 className="text-2xl font-semibold tracking-tight mb-1">Knowledge</h1>
-            <p className="text-sm text-text-muted mb-0">
+          <div className="page-transition">
+            <h1 className="text-2xl font-semibold tracking-tight">Knowledge</h1>
+            <p className="mt-1 text-sm text-text-muted">
               Personal, LLM-maintained knowledge bases.
             </p>
           </div>
         </ReadableContent>
         <ReadableContent
-          size="graph"
-          className="mb-6 mt-2 grid min-h-[640px] flex-1 grid-cols-1 items-stretch gap-4 overflow-y-auto px-8 lg:min-h-0 lg:grid-cols-[340px_minmax(0,1fr)] lg:overflow-hidden"
+          size="text"
+          className="mb-6 mt-2 grid min-h-[560px] flex-1 grid-cols-1 items-start gap-4 overflow-y-auto px-8 lg:min-h-0 lg:grid-cols-[360px_minmax(0,1fr)] lg:overflow-hidden"
         >
-          <div className="flex min-h-0 flex-col overflow-visible px-4 pb-4 pt-0 lg:h-full lg:overflow-y-auto">
-            <div className="pb-1">
+          {/* Left column — one flat panel; internal hairlines separate the blocks. */}
+          <div className="flex min-h-0 flex-col overflow-hidden rounded-xl border border-border-subtle bg-background-default lg:h-full">
+            <div className="p-4">
               <KBSelectorTrigger open={paletteOpen} onOpenChange={setPaletteOpen} />
             </div>
-            <IngestPanel />
+            <div className="min-h-0 flex-1 overflow-y-auto border-t border-border-subtle">
+              <IngestPanel />
+            </div>
           </div>
-          <div className="flex min-h-[520px] min-w-0 overflow-hidden rounded-2xl border border-border-subtle bg-[color-mix(in_srgb,var(--background-muted)_72%,var(--background-default))] lg:h-full lg:min-h-0">
+          {/* Right column — the same flat panel, holding the graph. */}
+          <div className="flex min-h-[520px] min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-default lg:h-full lg:min-h-0">
             <KnowledgeGraphPanel
               onOpenChangeLog={() => setChangeLogOpen(true)}
               previewSha={previewSha}

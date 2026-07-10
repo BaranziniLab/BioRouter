@@ -16,7 +16,8 @@
 //!   POST   /apps/{id}/build           → (re)bundle the TypeScript (secret-key)
 //!   DELETE /apps/{id}                 → delete the app (secret-key)
 
-use std::sync::Arc;
+use std::collections::VecDeque;
+use std::sync::{Arc, LazyLock, Mutex};
 
 use axum::{
     extract::{
@@ -28,7 +29,8 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use futures::StreamExt;
+use futures::stream::{SplitSink, SplitStream};
+use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
@@ -44,9 +46,12 @@ use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::permission::{Permission, PermissionConfirmation};
 use biorouter::providers::create as create_provider;
 use biorouter::session::SessionType;
+use biorouter_mcp::agent_drafter::control::UiBridge;
 use biorouter_mcp::agent_drafter::manifest::PiiMode;
-use biorouter_mcp::agent_drafter::store::{ArtifactKind, ArtifactStore, Manifest};
-use biorouter_mcp::agent_drafter::{bundle, default_root, export_scaffold};
+use biorouter_mcp::agent_drafter::store::{ArtifactStore, Manifest};
+use biorouter_mcp::agent_drafter::{
+    bundle_is_stale, default_root, export_scaffold, rebuild_and_stamp,
+};
 
 use crate::state::AppState;
 
@@ -94,10 +99,15 @@ async fn serve_index(Path(id): Path<String>) -> Response {
         Ok(m) => m,
         Err(_) => return (StatusCode::NOT_FOUND, "no such app").into_response(),
     };
-    // Ensure a bundle exists for agentic apps (build on demand).
-    if manifest.kind == ArtifactKind::Agentic && !st.file_exists(&id, "dist/app.js") {
-        let dir = st.artifact_dir(&id);
-        if let Ok(Ok(r)) = tokio::task::spawn_blocking(move || bundle::build_app(&dir)).await {
+    // Build on demand when the app has no bundle — or when its bundle predates
+    // the App SDK this daemon ships. Apps vendor their own `src/sdk.ts`, so
+    // without the second check an app authored before a protocol addition keeps
+    // running the old runtime and silently ignores frames we now send.
+    if bundle_is_stale(&st, &id, &manifest) {
+        let st2 = st.clone();
+        let id2 = id.clone();
+        if let Ok(Ok(r)) = tokio::task::spawn_blocking(move || rebuild_and_stamp(&st2, &id2)).await
+        {
             if !r.ok {
                 warn!(app = %id, "on-demand build failed: {}", r.log);
             }
@@ -140,20 +150,10 @@ async fn build_app_route(Path(id): Path<String>) -> Response {
     if !st.exists(&id) {
         return (StatusCode::NOT_FOUND, "no such app").into_response();
     }
-    let dir = st.artifact_dir(&id);
-    match tokio::task::spawn_blocking(move || bundle::build_app(&dir)).await {
+    let st2 = st.clone();
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || rebuild_and_stamp(&st2, &id2)).await {
         Ok(Ok(report)) => {
-            if report.ok {
-                if let Ok(mut m) = st.load_manifest(&id) {
-                    m.built_at = Some(
-                        std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .map(|d| d.as_secs())
-                            .unwrap_or(0),
-                    );
-                    let _ = st.save_manifest(&m);
-                }
-            }
             Json(json!({ "ok": report.ok, "used": report.used, "log": report.log })).into_response()
         }
         _ => (StatusCode::INTERNAL_SERVER_ERROR, "build error").into_response(),
@@ -265,13 +265,58 @@ enum ClientFrame {
         #[serde(default)]
         payload: serde_json::Value,
     },
+    /// UI control: the answer to a `ui_ask`, resolving the tool call that is
+    /// currently parked inside the agent's turn.
+    #[serde(rename = "ui_reply")]
+    UiReply {
+        #[serde(rename = "requestId", default)]
+        request_id: String,
+        #[serde(default)]
+        payload: serde_json::Value,
+    },
+    /// UI control: the browser's report of what it can be told to change —
+    /// author-declared regions, element ids, mounted panels. Answers `ui_describe`.
+    #[serde(rename = "ui_surface")]
+    UiSurface {
+        #[serde(default)]
+        surface: serde_json::Value,
+    },
 }
 
-async fn send_json(socket: &mut WebSocket, value: serde_json::Value) -> bool {
-    socket
-        .send(WsMessage::Text(value.to_string().into()))
+/// The write half of an app's WebSocket. Split from the read half so the loop can
+/// stream agent events, drain agent-issued UI commands, and read client frames
+/// (a `ui_ask` answer, a `cancel`) *concurrently* — a `ui_ask` tool parks inside
+/// `agent.reply`, so its answer must arrive while the reply stream is pending.
+type WsSink = SplitSink<WebSocket, WsMessage>;
+type WsSource = SplitStream<WebSocket>;
+
+async fn send_json(sink: &mut WsSink, value: serde_json::Value) -> bool {
+    sink.send(WsMessage::Text(value.to_string().into()))
         .await
         .is_ok()
+}
+
+/// Live [`UiBridge`]s keyed by session id.
+///
+/// `AppState::get_agent` caches one agent per session and `add_inprocess_server`
+/// is idempotent by name, so a reconnecting browser reuses the `AppControlServer`
+/// injected by the first connection. We must therefore hand that *same* bridge
+/// back and rebind it to the new socket (`UiBridge::attach`), or the `ui_*` tools
+/// would keep writing into the closed connection's channel. Entries are retained
+/// for the life of the process, mirroring the agent cache they shadow.
+static UI_BRIDGES: LazyLock<Mutex<std::collections::HashMap<String, UiBridge>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+fn ui_bridge_for(session_id: &str) -> UiBridge {
+    let mut map = match UI_BRIDGES.lock() {
+        Ok(m) => m,
+        // A poisoned lock only means some other task panicked mid-update; the
+        // map itself is still coherent enough to hand out a bridge.
+        Err(p) => p.into_inner(),
+    };
+    map.entry(session_id.to_string())
+        .or_insert_with(UiBridge::new)
+        .clone()
 }
 
 /// User-controlled opt-in for the BRSDK safety frameworks. **Default ALL OFF.**
@@ -460,6 +505,7 @@ async fn configure_agent(
     state: &AppState,
     session_id: &str,
     manifest: &Manifest,
+    ui_bridge: &UiBridge,
 ) {
     let Some(cfg) = manifest.agent.as_ref() else {
         return;
@@ -600,6 +646,27 @@ async fn configure_agent(
         }
     }
 
+    // BRSDK ui capability: inject the app-control server so the agent can DRIVE
+    // the app (panels, dashboards, charts, highlights, theme, and `ui_ask`), not
+    // just answer inside it. Unlike files/data/compute this is on by default —
+    // its blast radius is the app's own page, and it is what makes an app an app
+    // instead of a chat box. `add_inprocess_server` is idempotent, so on a
+    // reconnect the *existing* server is kept and the bridge is simply rebound to
+    // the new socket by the caller (see `ui_bridge_for`).
+    if cfg.capabilities.ui.enabled {
+        let server = biorouter_mcp::agent_drafter::control::AppControlServer::new(
+            ui_bridge.clone(),
+            cfg.capabilities.ui.clone(),
+        );
+        if let Err(e) = agent
+            .extension_manager
+            .add_inprocess_server("appcontrol", server)
+            .await
+        {
+            warn!(app = %manifest.id, "appcontrol injection failed: {e}");
+        }
+    }
+
     // BRSDK encryption capability: decrypt the app's allow-listed secrets and
     // install them on the agent so `{{vault:NAME}}` resolves at tool-dispatch
     // (plaintext never reaches the model). Opt-in: only when the user enabled
@@ -702,6 +769,13 @@ async fn configure_agent(
             cfg.skills.join(", ")
         ));
     }
+    // Tell the model the `ui_*` tools exist and, more importantly, when to reach
+    // for them instead of writing another paragraph.
+    if cfg.capabilities.ui.enabled {
+        prompt.push_str(&biorouter_mcp::agent_drafter::control::ui_system_prompt(
+            &cfg.capabilities.ui,
+        ));
+    }
     agent.extend_system_prompt(prompt).await;
 
     // BRSDK guardrails: a one-line `goal` auto-installs the goal Stop-hook so the
@@ -720,13 +794,79 @@ async fn configure_agent(
     }
 }
 
+/// Cap on client frames buffered while a turn is running. A well-behaved app
+/// sends at most a couple (an impatient click); anything beyond this is a
+/// runaway loop, and dropping is safer than growing without bound.
+const MAX_QUEUED_FRAMES: usize = 32;
+
+/// What the turn loop is woken by. Modelled as one enum so the `select!` branches
+/// only *bind* values — nothing in a branch body borrows the socket or the agent
+/// stream, which is what lets the handler below use both afterwards.
+enum TurnWake {
+    /// A `ui_*` tool wants to change the page.
+    Ui(serde_json::Value),
+    /// A frame arrived from the browser mid-turn.
+    Client(Option<Result<WsMessage, axum::Error>>),
+    /// The agent produced an event (or finished).
+    Agent(Option<anyhow::Result<AgentEvent>>),
+}
+
+/// Handle a client frame that arrived *during* a turn.
+///
+/// `ui_reply` and `ui_surface` are consumed here (a parked `ui_ask` is waiting on
+/// the former). `cancel` now actually cancels — before the socket was split the
+/// loop couldn't read while the reply stream was pending, so it never could.
+/// Anything that starts new work (`prompt`, `widget_action`) is queued for after
+/// the turn instead of being dropped.
+fn handle_midturn_frame(
+    text: &str,
+    ui_bridge: &UiBridge,
+    cancel: &CancellationToken,
+    queued: &mut VecDeque<ClientFrame>,
+) {
+    let Ok(frame) = serde_json::from_str::<ClientFrame>(text) else {
+        return;
+    };
+    match frame {
+        ClientFrame::UiReply {
+            request_id,
+            payload,
+        } => {
+            if !ui_bridge.resolve(&request_id, payload) {
+                warn!(request = %request_id, "ui_reply for an unknown or expired request");
+            }
+        }
+        ClientFrame::UiSurface { surface } => ui_bridge.set_surface(surface),
+        ClientFrame::Cancel => {
+            cancel.cancel();
+            // A parked `ui_ask` must not survive the turn it belongs to.
+            ui_bridge.cancel_all();
+        }
+        // Consumed inline by `handle_action_required` during an approval pause;
+        // arriving here they are stray.
+        ClientFrame::Approve { .. } | ClientFrame::Reject { .. } => {}
+        // Read-only requests are cheap but need the sink, so defer them too.
+        other => {
+            if queued.len() < MAX_QUEUED_FRAMES {
+                queued.push_back(other);
+            } else {
+                warn!("dropping a client frame: more than {MAX_QUEUED_FRAMES} queued mid-turn");
+            }
+        }
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 async fn handle_agent_socket(
-    mut socket: WebSocket,
+    socket: WebSocket,
     state: Arc<AppState>,
     manifest: Manifest,
     client_id: Option<String>,
 ) {
+    // Split so the loop can await agent events, agent-issued UI commands, and
+    // inbound client frames at the same time. A `ui_ask` tool call parks *inside*
+    // `agent.reply`, so its answer has to be readable while that stream is pending.
+    let (mut socket_tx, mut socket_rx) = socket.split();
     // BRSDK durable sessions: when the app opts in (default) and the client sent
     // a stable client_id, bind the session to "app:<id>:<client-id>" so a reload
     // RESUMES the same conversation. Otherwise fall back to a fresh per-connection
@@ -750,7 +890,7 @@ async fn handle_agent_socket(
                 Ok(pair) => pair,
                 Err(e) => {
                     let _ = send_json(
-                        &mut socket,
+                        &mut socket_tx,
                         json!({"type":"error","message": format!("session: {e}")}),
                     )
                     .await;
@@ -766,7 +906,7 @@ async fn handle_agent_socket(
             Ok(s) => (s, false),
             Err(e) => {
                 let _ = send_json(
-                    &mut socket,
+                    &mut socket_tx,
                     json!({"type":"error","message": format!("session: {e}")}),
                 )
                 .await;
@@ -781,7 +921,7 @@ async fn handle_agent_socket(
         Ok(a) => a,
         Err(e) => {
             let _ = send_json(
-                &mut socket,
+                &mut socket_tx,
                 json!({"type":"error","message": format!("agent: {e}")}),
             )
             .await;
@@ -789,14 +929,21 @@ async fn handle_agent_socket(
         }
     };
 
-    configure_agent(&agent, &state, &session_id, &manifest).await;
+    // Rebind this session's UI bridge to *this* socket, then configure the agent
+    // (which injects the app-control server the first time round, and reuses it
+    // afterwards). `attach` must precede `configure_agent` so a replayed state
+    // command lands in the new channel.
+    let ui_bridge = ui_bridge_for(&session_id);
+    let (mut ui_rx, conn_token) = ui_bridge.attach();
+
+    configure_agent(&agent, &state, &session_id, &manifest, &ui_bridge).await;
     info!(app = %manifest.id, session = %session_id, "app agent session ready");
     // BRSDK protocol v2: advertise capabilities so old apps ignore frames they
     // don't understand and new apps can feature-detect. Deny-by-default — only
     // capabilities the manifest declared are advertised.
     let capabilities = advertised_app_capabilities(&manifest, BrsdkSettings::current());
     if !send_json(
-        &mut socket,
+        &mut socket_tx,
         json!({
             "type": "ready",
             "protocol": 2,
@@ -808,19 +955,57 @@ async fn handle_agent_socket(
     )
     .await
     {
+        ui_bridge.detach(conn_token);
         return;
     }
 
-    while let Some(Ok(msg)) = socket.next().await {
-        let text = match msg {
-            WsMessage::Text(t) => t.to_string(),
-            WsMessage::Close(_) => break,
-            _ => continue,
+    // Frames the browser sent while a turn was still running.
+    let mut queued: VecDeque<ClientFrame> = VecDeque::new();
+
+    loop {
+        // Between turns, still forward UI commands (a previous turn's tool may
+        // have queued one) and wait for the next client frame.
+        let frame = match queued.pop_front() {
+            Some(f) => f,
+            None => {
+                let next = loop {
+                    let woken = tokio::select! {
+                        biased;
+                        Some(cmd) = ui_rx.recv() => TurnWake::Ui(cmd),
+                        inbound = socket_rx.next() => TurnWake::Client(inbound),
+                    };
+                    match woken {
+                        TurnWake::Ui(cmd) => {
+                            if !send_json(&mut socket_tx, cmd).await {
+                                ui_bridge.detach(conn_token);
+                                return;
+                            }
+                        }
+                        TurnWake::Client(Some(Ok(WsMessage::Text(t)))) => {
+                            match serde_json::from_str::<ClientFrame>(&t) {
+                                Ok(ClientFrame::UiSurface { surface }) => {
+                                    ui_bridge.set_surface(surface);
+                                }
+                                // Outside a turn nothing is parked on it.
+                                Ok(ClientFrame::UiReply { .. }) => {}
+                                Ok(f) => break f,
+                                Err(_) => {}
+                            }
+                        }
+                        TurnWake::Client(Some(Ok(WsMessage::Close(_))))
+                        | TurnWake::Client(Some(Err(_)))
+                        | TurnWake::Client(None) => {
+                            ui_bridge.detach(conn_token);
+                            return;
+                        }
+                        TurnWake::Client(Some(Ok(_))) => {}
+                        TurnWake::Agent(_) => unreachable!("no agent stream between turns"),
+                    }
+                };
+                next
+            }
         };
-        let frame: ClientFrame = match serde_json::from_str(&text) {
-            Ok(f) => f,
-            Err(_) => continue,
-        };
+
         let (prompt_text, images) = match frame {
             ClientFrame::Prompt { text, images } => (text, images),
             ClientFrame::Cancel => continue,
@@ -844,7 +1029,7 @@ async fn handle_agent_socket(
                     0.0
                 };
                 let _ = send_json(
-                    &mut socket,
+                    &mut socket_tx,
                     json!({"type":"context","used":used,"limit":limit,"ratio":ratio}),
                 )
                 .await;
@@ -855,8 +1040,17 @@ async fn handle_agent_socket(
                 // already bound to the resolved session, so there's no id to
                 // guess and no cross-session access.
                 let messages = backlog_for(&state, &session_id).await;
-                let _ =
-                    send_json(&mut socket, json!({"type":"history","messages": messages})).await;
+                let _ = send_json(
+                    &mut socket_tx,
+                    json!({"type":"history","messages": messages}),
+                )
+                .await;
+                continue;
+            }
+            // Consumed by the mid-turn reader; between turns they are no-ops.
+            ClientFrame::UiReply { .. } => continue,
+            ClientFrame::UiSurface { surface } => {
+                ui_bridge.set_surface(surface);
                 continue;
             }
             ClientFrame::ModelSelect { provider, model } => {
@@ -875,7 +1069,7 @@ async fn handle_agent_socket(
                     }
                 };
                 let _ = send_json(
-                    &mut socket,
+                    &mut socket_tx,
                     json!({"type":"model","ok": ok, "provider": provider_name, "model": model_name}),
                 )
                 .await;
@@ -923,7 +1117,7 @@ async fn handle_agent_socket(
             PiiOutcome::Pass(text) => text,
             PiiOutcome::Masked { text, reason } => {
                 let _ = send_json(
-                    &mut socket,
+                    &mut socket_tx,
                     json!({"type":"guardrail","stage":"input","name":"pii","blocked":false,"reason":reason}),
                 )
                 .await;
@@ -931,12 +1125,13 @@ async fn handle_agent_socket(
             }
             PiiOutcome::Blocked { reason } => {
                 let _ = send_json(
-                    &mut socket,
+                    &mut socket_tx,
                     json!({"type":"guardrail","stage":"input","name":"pii","blocked":true,"reason":reason}),
                 )
                 .await;
                 // End the turn cleanly without running the agent.
-                if !send_json(&mut socket, json!({"type":"done"})).await {
+                if !send_json(&mut socket_tx, json!({"type":"done"})).await {
+                    ui_bridge.detach(conn_token);
                     return;
                 }
                 continue;
@@ -970,7 +1165,7 @@ async fn handle_agent_socket(
             Ok(s) => s,
             Err(e) => {
                 let _ = send_json(
-                    &mut socket,
+                    &mut socket_tx,
                     json!({"type":"error","message": e.to_string()}),
                 )
                 .await;
@@ -979,7 +1174,47 @@ async fn handle_agent_socket(
         };
 
         let mut errored = false;
-        while let Some(event) = stream.next().await {
+        // call id → tool name, so a ToolResponse can be reported by name.
+        let mut tool_names: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        loop {
+            // Three sources, biased so a UI command a tool just issued reaches the
+            // page before the `tool completed` frame that follows it. Every branch
+            // only binds — the bodies below are outside the `select!`, so they may
+            // borrow the socket and the stream freely.
+            let woken = tokio::select! {
+                biased;
+                Some(cmd) = ui_rx.recv() => TurnWake::Ui(cmd),
+                inbound = socket_rx.next() => TurnWake::Client(inbound),
+                event = stream.next() => TurnWake::Agent(event),
+            };
+
+            let event = match woken {
+                TurnWake::Ui(cmd) => {
+                    if !send_json(&mut socket_tx, cmd).await {
+                        ui_bridge.detach(conn_token);
+                        return;
+                    }
+                    continue;
+                }
+                TurnWake::Client(Some(Ok(WsMessage::Text(t)))) => {
+                    handle_midturn_frame(&t, &ui_bridge, &cancel, &mut queued);
+                    continue;
+                }
+                TurnWake::Client(Some(Ok(WsMessage::Close(_))))
+                | TurnWake::Client(Some(Err(_)))
+                | TurnWake::Client(None) => {
+                    // The page went away mid-turn: stop the agent and unblock any
+                    // `ui_ask` it left parked, rather than leaking a live turn.
+                    cancel.cancel();
+                    ui_bridge.detach(conn_token);
+                    return;
+                }
+                TurnWake::Client(Some(Ok(_))) => continue,
+                TurnWake::Agent(Some(e)) => e,
+                TurnWake::Agent(None) => break,
+            };
+
             match event {
                 Ok(AgentEvent::Message(message)) => {
                     for content in &message.content {
@@ -996,7 +1231,14 @@ async fn handle_agent_socket(
                                     .as_ref()
                                     .map(|c| c.name.to_string())
                                     .unwrap_or_else(|_| "tool".to_string());
-                                Some(json!({"type":"tool","name": name, "status":"pending"}))
+                                // Remember the name against the call id so the
+                                // response frame can report it too. A timeline of
+                                // "tool completed" rows says nothing about what ran
+                                // — which matters now that tools redraw the page.
+                                tool_names.insert(tr.id.clone(), name.clone());
+                                Some(
+                                    json!({"type":"tool","name": name, "id": tr.id, "status":"pending"}),
+                                )
                             }
                             MessageContent::ToolResponse(resp) => {
                                 let status = match &resp.tool_result {
@@ -1004,17 +1246,25 @@ async fn handle_agent_socket(
                                     Ok(_) => "completed",
                                     Err(_) => "failed",
                                 };
-                                Some(json!({"type":"tool","name":"tool","status": status}))
+                                let name = tool_names
+                                    .remove(&resp.id)
+                                    .unwrap_or_else(|| "tool".to_string());
+                                Some(
+                                    json!({"type":"tool","name": name, "id": resp.id, "status": status}),
+                                )
                             }
                             MessageContent::ActionRequired(ar) => {
                                 // HITL: pause for human approval over this socket,
                                 // then resume. Returns no frame (it sends its own).
                                 handle_action_required(
-                                    &mut socket,
+                                    &mut socket_tx,
+                                    &mut socket_rx,
                                     &state,
                                     &agent,
                                     &session_id,
                                     &manifest.id,
+                                    &ui_bridge,
+                                    conn_token,
                                     ar,
                                 )
                                 .await;
@@ -1023,7 +1273,8 @@ async fn handle_agent_socket(
                             _ => None,
                         };
                         if let Some(f) = frame {
-                            if !send_json(&mut socket, f).await {
+                            if !send_json(&mut socket_tx, f).await {
+                                ui_bridge.detach(conn_token);
                                 return;
                             }
                         }
@@ -1032,13 +1283,23 @@ async fn handle_agent_socket(
                 Ok(_) => {}
                 Err(e) => {
                     let _ = send_json(
-                        &mut socket,
+                        &mut socket_tx,
                         json!({"type":"error","message": e.to_string()}),
                     )
                     .await;
                     errored = true;
                     break;
                 }
+            }
+        }
+
+        // The reply stream is done, but a tool's last UI command may still be in
+        // flight. Flush before `done` so the page is settled when the app's
+        // `prompt()` promise resolves (tests and app code both rely on that).
+        while let Ok(cmd) = ui_rx.try_recv() {
+            if !send_json(&mut socket_tx, cmd).await {
+                ui_bridge.detach(conn_token);
+                return;
             }
         }
 
@@ -1055,7 +1316,8 @@ async fn handle_agent_socket(
             });
         }
 
-        if !errored && !send_json(&mut socket, json!({"type":"done"})).await {
+        if !errored && !send_json(&mut socket_tx, json!({"type":"done"})).await {
+            ui_bridge.detach(conn_token);
             return;
         }
     }
@@ -1147,12 +1409,16 @@ async fn load_run_state(state: &AppState, session_id: &str) -> Option<RunState> 
 /// (3) read the user's decision from the SAME socket, (4) feed it back via
 /// `handle_confirmation`, and (5) clear the snapshot. No separate route and no
 /// reply-loop concurrency change — the decision rides the app's own authed WS.
+#[allow(clippy::too_many_arguments)]
 async fn handle_action_required(
-    socket: &mut WebSocket,
+    socket_tx: &mut WsSink,
+    socket_rx: &mut WsSource,
     state: &AppState,
     agent: &Arc<biorouter::agents::Agent>,
     session_id: &str,
     app_id: &str,
+    ui_bridge: &UiBridge,
+    conn_token: biorouter_mcp::agent_drafter::control::ConnToken,
     ar: &biorouter::conversation::message::ActionRequired,
 ) {
     let ActionRequiredData::ToolConfirmation {
@@ -1180,7 +1446,7 @@ async fn handle_action_required(
     save_run_state(state, session_id, &rs).await;
 
     let _ = send_json(
-        socket,
+        socket_tx,
         json!({"type":"approval","requestId": id, "tool": tool_name, "args": arguments, "prompt": prompt}),
     )
     .await;
@@ -1188,7 +1454,7 @@ async fn handle_action_required(
     // Read the decision from this socket (the reply stream is parked, consuming
     // nothing). Default to deny if the client vanishes, so the agent never hangs.
     let permission = loop {
-        match socket.next().await {
+        match socket_rx.next().await {
             Some(Ok(WsMessage::Text(t))) => match serde_json::from_str::<ClientFrame>(&t) {
                 Ok(ClientFrame::Approve { request, .. }) if request == *id => {
                     break Permission::AllowOnce;
@@ -1196,10 +1462,30 @@ async fn handle_action_required(
                 Ok(ClientFrame::Reject { request, .. }) if request == *id => {
                     break Permission::DenyOnce;
                 }
-                Ok(ClientFrame::Cancel) => break Permission::DenyOnce,
+                Ok(ClientFrame::Cancel) => {
+                    ui_bridge.cancel_all();
+                    break Permission::DenyOnce;
+                }
+                // A `ui_ask` can be parked *behind* this approval (the agent
+                // asked, then a later tool needed consent). Answering it here
+                // rather than ignoring the frame keeps that ask from timing out.
+                Ok(ClientFrame::UiReply {
+                    request_id,
+                    payload,
+                }) => {
+                    ui_bridge.resolve(&request_id, payload);
+                    continue;
+                }
+                Ok(ClientFrame::UiSurface { surface }) => {
+                    ui_bridge.set_surface(surface);
+                    continue;
+                }
                 _ => continue, // ignore unrelated frames while awaiting a decision
             },
-            Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => break Permission::DenyOnce,
+            Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => {
+                ui_bridge.detach(conn_token);
+                break Permission::DenyOnce;
+            }
             _ => continue,
         }
     };
@@ -1539,6 +1825,7 @@ mod tests {
             width: None,
             height: None,
             built_at: None,
+            sdk_hash: None,
             session_id: None,
         }
     }
@@ -1678,6 +1965,22 @@ mod tests {
             .unwrap(),
             ClientFrame::WidgetAction { .. }
         ));
+        // Agent-driven UI: the answer to a parked `ui_ask`, and the browser's
+        // surface report. Both use the underscore form too.
+        assert!(matches!(
+            serde_json::from_str::<ClientFrame>(
+                r#"{"type":"ui_reply","requestId":"ask-1","payload":{"pvalue":"0.01"}}"#
+            )
+            .unwrap(),
+            ClientFrame::UiReply { .. }
+        ));
+        assert!(matches!(
+            serde_json::from_str::<ClientFrame>(
+                r#"{"type":"ui_surface","surface":{"regions":["results"],"ids":["out"]}}"#
+            )
+            .unwrap(),
+            ClientFrame::UiSurface { .. }
+        ));
         // HITL approve/reject frames.
         assert!(matches!(
             serde_json::from_str::<ClientFrame>(
@@ -1706,5 +2009,280 @@ mod tests {
             assert!(p["name"].as_str().is_some(), "provider has a name: {p}");
             assert!(p["models"].is_array(), "provider has a models array: {p}");
         }
+    }
+
+    // --- mid-turn client frames (the split-socket path) -------------------
+    //
+    // Before the socket was split, the loop could not read while `agent.reply`
+    // was pending, so a `ui_ask` answer could never arrive and `cancel` never
+    // landed mid-turn. These pin the dispatch that replaced it.
+
+    use super::{handle_midturn_frame, MAX_QUEUED_FRAMES};
+    use biorouter_mcp::agent_drafter::control::UiBridge;
+    use std::collections::VecDeque;
+    use tokio_util::sync::CancellationToken;
+
+    fn midturn_ctx() -> (UiBridge, CancellationToken, VecDeque<ClientFrame>) {
+        let bridge = UiBridge::new();
+        let _ = bridge.attach();
+        (bridge, CancellationToken::new(), VecDeque::new())
+    }
+
+    #[test]
+    fn midturn_ui_reply_resolves_the_parked_ask() {
+        let (bridge, cancel, mut queued) = midturn_ctx();
+        // Nothing is parked yet, so the resolve is a no-op — but it must not be
+        // queued as a new turn either.
+        handle_midturn_frame(
+            r#"{"type":"ui_reply","requestId":"ask-0","payload":{"x":1}}"#,
+            &bridge,
+            &cancel,
+            &mut queued,
+        );
+        assert!(queued.is_empty(), "ui_reply must never become a new prompt");
+        assert!(!cancel.is_cancelled());
+    }
+
+    #[test]
+    fn midturn_ui_surface_is_recorded_not_queued() {
+        let (bridge, cancel, mut queued) = midturn_ctx();
+        handle_midturn_frame(
+            r#"{"type":"ui_surface","surface":{"regions":["results"]}}"#,
+            &bridge,
+            &cancel,
+            &mut queued,
+        );
+        assert!(queued.is_empty());
+        assert!(!cancel.is_cancelled());
+    }
+
+    #[test]
+    fn midturn_cancel_stops_the_turn() {
+        let (bridge, cancel, mut queued) = midturn_ctx();
+        handle_midturn_frame(r#"{"type":"cancel"}"#, &bridge, &cancel, &mut queued);
+        assert!(
+            cancel.is_cancelled(),
+            "cancel must reach the agent mid-turn"
+        );
+        assert!(queued.is_empty());
+    }
+
+    #[test]
+    fn midturn_prompt_is_queued_for_after_the_turn_not_dropped() {
+        let (bridge, cancel, mut queued) = midturn_ctx();
+        handle_midturn_frame(
+            r#"{"type":"prompt","text":"next"}"#,
+            &bridge,
+            &cancel,
+            &mut queued,
+        );
+        assert_eq!(queued.len(), 1);
+        assert!(matches!(queued[0], ClientFrame::Prompt { .. }));
+    }
+
+    #[test]
+    fn midturn_approvals_are_left_to_the_approval_pause() {
+        let (bridge, cancel, mut queued) = midturn_ctx();
+        handle_midturn_frame(
+            r#"{"type":"approve","request":"tr_1","action":"allow_once"}"#,
+            &bridge,
+            &cancel,
+            &mut queued,
+        );
+        handle_midturn_frame(
+            r#"{"type":"reject","request":"tr_1","reason":"no"}"#,
+            &bridge,
+            &cancel,
+            &mut queued,
+        );
+        assert!(queued.is_empty(), "stray approvals are dropped, not queued");
+    }
+
+    #[test]
+    fn midturn_queue_is_bounded_against_a_runaway_client() {
+        let (bridge, cancel, mut queued) = midturn_ctx();
+        for _ in 0..(MAX_QUEUED_FRAMES + 10) {
+            handle_midturn_frame(
+                r#"{"type":"prompt","text":"x"}"#,
+                &bridge,
+                &cancel,
+                &mut queued,
+            );
+        }
+        assert_eq!(queued.len(), MAX_QUEUED_FRAMES);
+    }
+
+    #[test]
+    fn midturn_garbage_is_ignored() {
+        let (bridge, cancel, mut queued) = midturn_ctx();
+        handle_midturn_frame("not json", &bridge, &cancel, &mut queued);
+        handle_midturn_frame(r#"{"type":"bogus"}"#, &bridge, &cancel, &mut queued);
+        assert!(queued.is_empty());
+        assert!(!cancel.is_cancelled());
+    }
+
+    /// A reconnect reuses the cached agent's already-injected `AppControlServer`,
+    /// so the registry must hand the SAME bridge back for a session id — that is
+    /// what lets `attach` re-point the old server's tools at the new socket.
+    #[tokio::test]
+    async fn ui_bridge_registry_returns_one_bridge_per_session() {
+        use biorouter_mcp::agent_drafter::control::{AppControlServer, NotifyParams};
+        use biorouter_mcp::agent_drafter::manifest::UiCapability;
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let first = super::ui_bridge_for("sess-a");
+        // A server injected on the first connection holds `first`.
+        let server = AppControlServer::new(first.clone(), UiCapability::default());
+
+        // Second connection: same session id → same bridge → rebind its channel.
+        let again = super::ui_bridge_for("sess-a");
+        let (mut rx, _tok) = again.attach();
+
+        // The OLD server's tool must now write into the NEW connection's channel.
+        server
+            .ui_notify(Parameters(NotifyParams {
+                message: "reconnected".into(),
+                level: None,
+                timeout_ms: None,
+            }))
+            .await
+            .expect("a reused server must still reach the reattached socket");
+        assert_eq!(rx.try_recv().unwrap()["message"], "reconnected");
+
+        // A different session gets its own bridge, unaffected by the above.
+        let other = super::ui_bridge_for("sess-b");
+        let (mut rx_other, _tok) = other.attach();
+        assert!(rx_other.try_recv().is_err(), "no cross-session bleed");
+    }
+
+    #[test]
+    fn advertised_capabilities_include_ui_by_default() {
+        let m = manifest_with_brsdk_capabilities();
+        let caps = super::advertised_app_capabilities(&m, super::BrsdkSettings::default());
+        assert!(
+            caps.contains(&"ui".to_string()),
+            "apps drive their own UI by default: {caps:?}"
+        );
+    }
+
+    /// The whole reason the socket is split: a `ui_ask` tool parks *inside*
+    /// `agent.reply`, so its answer has to be read while the reply stream is
+    /// still pending. This drives the real tool against the real mid-turn
+    /// dispatcher and asserts it unparks — if it didn't, the turn would hang
+    /// until the ask timeout.
+    #[tokio::test]
+    async fn a_parked_ui_ask_is_unparked_by_a_midturn_ui_reply() {
+        use biorouter_mcp::agent_drafter::control::{AppControlServer, AskField, AskParams};
+        use biorouter_mcp::agent_drafter::manifest::UiCapability;
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let bridge = UiBridge::new();
+        let (mut ui_rx, _tok) = bridge.attach();
+        let server = AppControlServer::new(bridge.clone(), UiCapability::default());
+
+        // The agent calls ui_ask; it blocks until the browser answers.
+        let asking = tokio::spawn(async move {
+            server
+                .ui_ask(Parameters(AskParams {
+                    prompt: "threshold?".into(),
+                    fields: vec![AskField {
+                        name: "p".into(),
+                        label: None,
+                        r#type: Some("number".into()),
+                        options: None,
+                        value: None,
+                        placeholder: None,
+                    }],
+                    title: None,
+                    submit_label: None,
+                }))
+                .await
+        });
+
+        // The socket loop drains the `ask` command and learns its requestId.
+        let cmd = tokio::time::timeout(std::time::Duration::from_secs(2), ui_rx.recv())
+            .await
+            .expect("the ask command must reach the socket")
+            .expect("channel open");
+        assert_eq!(cmd["cmd"], "ask");
+        let request_id = cmd["requestId"].as_str().unwrap().to_string();
+
+        // The browser replies mid-turn; the dispatcher must route it to the tool.
+        let cancel = CancellationToken::new();
+        let mut queued = VecDeque::new();
+        handle_midturn_frame(
+            &format!(
+                r#"{{"type":"ui_reply","requestId":"{request_id}","payload":{{"p":"0.01"}}}}"#
+            ),
+            &bridge,
+            &cancel,
+            &mut queued,
+        );
+        assert!(queued.is_empty(), "a ui_reply is not a new turn");
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), asking)
+            .await
+            .expect("ui_ask must not hang once its reply arrives")
+            .unwrap()
+            .unwrap();
+        let text: String = result
+            .content
+            .iter()
+            .flat_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect();
+        assert!(
+            text.contains("0.01"),
+            "the tool returns the user's answer: {text}"
+        );
+    }
+
+    /// `cancel` mid-turn must also release a parked ask, or the agent keeps
+    /// waiting on a form the user has already abandoned.
+    #[tokio::test]
+    async fn midturn_cancel_releases_a_parked_ui_ask() {
+        use biorouter_mcp::agent_drafter::control::{AppControlServer, AskField, AskParams};
+        use biorouter_mcp::agent_drafter::manifest::UiCapability;
+        use rmcp::handler::server::wrapper::Parameters;
+
+        let bridge = UiBridge::new();
+        let (mut ui_rx, _tok) = bridge.attach();
+        let server = AppControlServer::new(bridge.clone(), UiCapability::default());
+        let asking = tokio::spawn(async move {
+            server
+                .ui_ask(Parameters(AskParams {
+                    prompt: "?".into(),
+                    fields: vec![AskField {
+                        name: "x".into(),
+                        label: None,
+                        r#type: None,
+                        options: None,
+                        value: None,
+                        placeholder: None,
+                    }],
+                    title: None,
+                    submit_label: None,
+                }))
+                .await
+        });
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), ui_rx.recv())
+            .await
+            .expect("ask command emitted");
+
+        let cancel = CancellationToken::new();
+        let mut queued = VecDeque::new();
+        handle_midturn_frame(r#"{"type":"cancel"}"#, &bridge, &cancel, &mut queued);
+        assert!(cancel.is_cancelled());
+
+        let result = tokio::time::timeout(std::time::Duration::from_secs(2), asking)
+            .await
+            .expect("cancel must unpark ui_ask")
+            .unwrap()
+            .unwrap();
+        let text: String = result
+            .content
+            .iter()
+            .flat_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect();
+        assert!(text.contains("dismissed"), "{text}");
     }
 }

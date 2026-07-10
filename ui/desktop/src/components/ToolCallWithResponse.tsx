@@ -174,12 +174,18 @@ export default function ToolCallWithResponse({
   const hasMcpAppResourceURI = Boolean(
     requestWithMeta._meta?.ui?.resourceUri || resultWithMeta?.value?._meta?.ui?.resourceUri
   );
+  const isError = resultWithMeta?.status === 'error';
 
   return (
     <>
+      {/* D-17: a tool call is a LINE in the transcript, not a card. An outline
+          around every one of them reads as a focus ring and turns a quiet
+          transcript into a stack of boxes. Failure is signalled by colour — the
+          status icon and label — plus a faint danger wash, never by an outline. */}
       <div
         className={cn(
-          'w-full text-sm font-sans rounded-lg overflow-hidden border border-transparent bg-transparent'
+          'w-full overflow-hidden rounded-md text-sm font-sans transition-colors',
+          isError && 'bg-background-danger/5'
         )}
       >
         <ToolCallView
@@ -855,11 +861,11 @@ const ProgressBar = ({ progress, total, message }: Omit<Progress, 'progressToken
       <div className="w-full bg-background-muted rounded-md h-4 overflow-hidden relative">
         {isDeterminate ? (
           <div
-            className="bg-primary h-full transition-all duration-300"
+            className="bg-background-accent h-full transition-all duration-300"
             style={{ width: `${percent}%` }}
           />
         ) : (
-          <div className="absolute inset-0 animate-indeterminate bg-primary" />
+          <div className="absolute inset-0 animate-pulse bg-background-accent" />
         )}
       </div>
     </div>

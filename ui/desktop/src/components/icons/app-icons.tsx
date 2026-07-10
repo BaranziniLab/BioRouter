@@ -102,12 +102,28 @@ import {
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
-// Light wrapper — sets strokeWidth=1.5 as the default; caller can override.
+// Light wrapper — enforces the canonical icon contract (design.md §3.9):
+// every icon renders at strokeWidth=1.5 and is monochrome via `currentColor`.
+// Both are pinned *after* the prop spread so a caller can never reintroduce a
+// second stroke weight (DR-53) or a hardcoded fill. `currentColor` still lets
+// callers tint an icon through CSS `color` (className/style) — it only blocks a
+// hex being injected via the `color` prop.
 // ---------------------------------------------------------------------------
 const light =
   (Icon: LucideIcon): React.FC<LucideProps> =>
-  ({ strokeWidth = 1.5, ...props }) =>
-    <Icon strokeWidth={strokeWidth} {...props} />;
+  (props) => <Icon {...props} strokeWidth={1.5} color="currentColor" />;
+
+// ---------------------------------------------------------------------------
+// Canonical icon sizes (design.md §3.9). Pass as the `size` prop, e.g.
+// <Search size={ICON_SIZE.dense} />.
+// ---------------------------------------------------------------------------
+export const ICON_SIZE = {
+  dense: 16, // inline / dense rows
+  default: 20, // default
+  page: 24, // page-level / empty-state
+} as const;
+
+export type IconSizeName = keyof typeof ICON_SIZE;
 
 // ---------------------------------------------------------------------------
 // Named exports — same names as the original file so no consumer changes.
@@ -221,10 +237,7 @@ export const Zap = light(_Zap);
 // ---------------------------------------------------------------------------
 
 /** Central node with rays — represents a knowledge graph / KB. */
-export const KnowledgeIcon: React.FC<LucideProps> = ({
-  strokeWidth = 1.6,
-  ...props
-}) => (
+export const KnowledgeIcon: React.FC<LucideProps> = ({ strokeWidth = 1.5, ...props }) => (
   <svg
     viewBox="0 0 24 24"
     fill="none"

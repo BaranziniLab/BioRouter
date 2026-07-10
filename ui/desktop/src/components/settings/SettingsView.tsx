@@ -86,10 +86,10 @@ export default function SettingsView({
               className="h-full flex flex-col"
             >
               <ReadableContent className="px-8 pt-4">
-                <TabsList className="biorouter-settings-tabs justify-start gap-1 rounded-xl p-1 h-auto w-fit">
+                <TabsList className="biorouter-settings-tabs justify-start w-fit">
                   <TabsTrigger
                     value="models"
-                    className="flex gap-2 rounded-lg bg-transparent px-3 py-2 text-sm data-[state=active]:bg-background-medium data-[state=active]:shadow-none"
+                    className="flex gap-2 text-sm"
                     data-testid="settings-models-tab"
                   >
                     <Brain className="h-4 w-4" />
@@ -97,7 +97,7 @@ export default function SettingsView({
                   </TabsTrigger>
                   <TabsTrigger
                     value="chat"
-                    className="flex gap-2 rounded-lg bg-transparent px-3 py-2 text-sm data-[state=active]:bg-background-medium data-[state=active]:shadow-none"
+                    className="flex gap-2 text-sm"
                     data-testid="settings-chat-tab"
                   >
                     <MessageSquare className="h-4 w-4" />
@@ -105,7 +105,7 @@ export default function SettingsView({
                   </TabsTrigger>
                   <TabsTrigger
                     value="app"
-                    className="flex gap-2 rounded-lg bg-transparent px-3 py-2 text-sm data-[state=active]:bg-background-medium data-[state=active]:shadow-none"
+                    className="flex gap-2 text-sm"
                     data-testid="settings-app-tab"
                   >
                     <Monitor className="h-4 w-4" />
@@ -116,13 +116,13 @@ export default function SettingsView({
 
               <ScrollArea className="flex-1" paddingX={1}>
                 <ReadableContent className="px-8 py-5">
-                  <TabsContent value="models" className="mt-0 focus-visible:outline-none">
+                  <TabsContent value="models" className="mt-0">
                     <ModelsSection setView={setView} />
                   </TabsContent>
-                  <TabsContent value="chat" className="mt-0 focus-visible:outline-none">
+                  <TabsContent value="chat" className="mt-0">
                     <ChatSettingsSection />
                   </TabsContent>
-                  <TabsContent value="app" className="mt-0 focus-visible:outline-none">
+                  <TabsContent value="app" className="mt-0">
                     <div>
                       {CONFIGURATION_ENABLED && <ConfigSettings />}
                       <AppSettingsSection scrollToSection={viewOptions.section} />

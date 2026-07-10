@@ -247,7 +247,11 @@ where
 pub fn asset_html(assets: &[Asset]) -> String {
     // Fragment mode: record what was asked for, emit a placeholder instead.
     if ASSET_SINK
-        .try_with(|sink| sink.lock().expect("asset sink poisoned").extend_from_slice(assets))
+        .try_with(|sink| {
+            sink.lock()
+                .expect("asset sink poisoned")
+                .extend_from_slice(assets)
+        })
         .is_ok()
     {
         return ASSET_PLACEHOLDER.to_string();

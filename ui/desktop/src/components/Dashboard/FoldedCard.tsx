@@ -35,11 +35,10 @@ export const FoldedCard: React.FC<Props> = ({
   onClose,
   onPointerDownDrag,
 }) => {
-  // Mid-tone solid fill at ~12% alpha — falls between the gradient's old
-  // 18%/6% endpoints. Hex "1F" = 31/255 ≈ 12%. No colored border; the card
-  // sits on a subtle neutral border that matches the chat window chrome.
-  const bg = `${accentColor}1F`;
-
+  // Neutral opaque card fill. The design language forbids accent-tinted card
+  // backgrounds, so the per-window accent shows only through the status dot
+  // below — never the surface. The card sits on a subtle neutral border that
+  // matches the chat window chrome.
   const [hovered, setHovered] = useState(false);
   const downRef = useRef<{ x: number; y: number; t: number } | null>(null);
 
@@ -72,9 +71,8 @@ export const FoldedCard: React.FC<Props> = ({
       onMouseLeave={() => setHovered(false)}
     >
       <div
-        className="h-full w-full rounded-2xl overflow-hidden select-none cursor-grab active:cursor-grabbing flex flex-col border border-border-subtle transition-transform duration-200 ease-out"
+        className="h-full w-full rounded-2xl overflow-hidden select-none cursor-grab active:cursor-grabbing flex flex-col bg-background-default border border-border-subtle transition-transform duration-200 ease-out"
         style={{
-          background: bg,
           transform: hovered ? 'translateY(-1px)' : 'translateY(0)',
         }}
         onPointerDown={(e) => {
@@ -171,7 +169,7 @@ export const FoldedCard: React.FC<Props> = ({
           transition: 'opacity 140ms ease-out, transform 140ms ease-out',
         }}
       >
-        <div className="rounded-lg border border-border-subtle bg-background-default/95 backdrop-blur-sm shadow-[var(--shadow-popover)] px-3 py-2 text-[11px] leading-snug text-text-default/90 max-h-32 overflow-hidden">
+        <div className="rounded-lg border border-border-subtle bg-background-default shadow-popover px-3 py-2 text-[11px] leading-snug text-text-default/90 max-h-32 overflow-hidden">
           {previewTail && previewTail.trim().length > 0 ? (
             <div className="whitespace-pre-wrap break-words">
               {isBusy ? <span className="text-text-muted/80">… </span> : null}

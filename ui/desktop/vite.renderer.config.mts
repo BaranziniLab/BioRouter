@@ -11,6 +11,14 @@ export default defineConfig({
 
   plugins: [tailwindcss()],
 
+  // BIOROUTER_NO_HMR=1 freezes the renderer: no watching, no hot reload. Set it
+  // when driving the dev GUI (agent-browser / Playwright) while the tree is
+  // being edited, otherwise every save full-reloads the page and destroys the
+  // chat session under test.
+  server: process.env.BIOROUTER_NO_HMR
+    ? { hmr: false, watch: { ignored: ['**'] } }
+    : undefined,
+
   optimizeDeps: {
     entries: ['index.html'],
   },

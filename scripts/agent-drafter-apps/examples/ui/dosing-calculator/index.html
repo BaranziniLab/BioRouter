@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Renal Dosing Assistant</title>
+</head>
+<body>
+  <main class="br-container" data-br-main>
+    <span class="br-badge">BioRouter Clinical App</span>
+    <h1>Renal Dosing Assistant</h1>
+    <p class="br-text br-text--muted">
+      Weight- and kidney-function-adjusted starting regimens. Decision support only —
+      verify every dose against your local formulary and a pharmacist before prescribing.
+    </p>
+
+    <div class="br-card">
+      <div class="br-label">Common renally-cleared drugs (optional starting point)</div>
+      <div class="br-chips" id="drug-chips">
+        <button type="button" class="br-chip" data-drug="vancomycin">Vancomycin</button>
+        <button type="button" class="br-chip" data-drug="enoxaparin">Enoxaparin</button>
+        <button type="button" class="br-chip" data-drug="gabapentin">Gabapentin</button>
+        <button type="button" class="br-chip" data-drug="metformin">Metformin</button>
+        <button type="button" class="br-chip" data-drug="ciprofloxacin">Ciprofloxacin</button>
+        <button type="button" class="br-chip" data-drug="digoxin">Digoxin</button>
+      </div>
+      <div class="br-row">
+        <button id="start" class="br-btn">Start dosing check</button>
+        <button id="reset" class="br-btn br-btn--secondary">Reset</button>
+      </div>
+    </div>
+
+    <!-- The agent renders a row of stat tiles here via ui_render(@region:recommendation). -->
+    <section data-br-region="recommendation">
+      <p class="br-text br-text--muted">The adjusted regimen will appear here after the consult.</p>
+    </section>
+
+    <!-- The agent renders a cautions card here via ui_render(@region:cautions). -->
+    <section data-br-region="cautions"></section>
+
+    <h3>Consult notes &amp; activity</h3>
+    <div class="br-output" id="out" data-placeholder="Agent steps and a short summary appear here."></div>
+
+    <p class="br-footer">Powered by BioRouter · built with Agent Drafter · not a substitute for clinical judgment</p>
+  </main>
+</body>
+</html>

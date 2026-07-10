@@ -139,6 +139,10 @@ test-case = "3.3"
 pdf-writer = "0.15"
 env-lock = { workspace = true }
 rmcp = { workspace = true, features = ["transport-streamable-http-server"] }
+# Test-only: construct synthetic `SdkError` values (HTTP status + body) to unit-test
+# the Bedrock error classifier without a live endpoint. Already a transitive dep of
+# aws-sdk-bedrockruntime; pinned to the same resolved version.
+aws-smithy-runtime-api = "=1.9.3"
 
 [[example]]
 name = "agent"

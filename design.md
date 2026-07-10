@@ -1,10 +1,18 @@
 # BioRouter Design System
 
-**Status:** Draft for sign-off · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
+**Status:** ✅ **Signed off 2026-07-09** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
+
+> All 14 open decisions are settled — see [Part 6](#part-6--open-decisions). Recommendations were accepted for
+> D-01 … D-11, D-13, D-14; **D-12 was overridden to option B (40px rows everywhere, no compact mode).**
+> The [drift register](#part-7--drift-register) is now the active work backlog.
 
 This is the single source of truth for how BioRouter looks and feels. It reconciles the design language *as documented*, *as implemented*, and *as it should be*. Where those three disagree — and they disagree often — this document names the winner.
 
-> **Companion artifact:** [`docs/design-system.html`](docs/design-system.html) renders every token, element, and state described here, and lets you pick between the open options in [Part 6](#part-6--open-decisions). Open it in a browser, make your choices, hit **Export decisions**, and paste the result back. Nothing in the codebase changes until you do.
+> **Companion artifact:** [`docs/design-system.html`](docs/design-system.html) — also hosted at
+> **<https://claude.ai/code/artifact/0726814d-a317-4dd2-bf34-a447e5c6ae6d>** — renders every token, element, and state
+> described here, in **both themes side by side**, and lets you pick between the open options in
+> [Part 6](#part-6--open-decisions). Open it, make your choices, hit **Export decisions**, and paste the result back.
+> Nothing in the codebase changes until you do.
 
 ---
 
@@ -151,19 +159,51 @@ BioRouter has exactly one brand hue: a terracotta coral.
 
 **Canonical.** Split each status into two tokens — a **fill** (for badge/banner backgrounds, where the text on top is what must pass) and a **text/icon** colour (which must itself pass 4.5:1 on the page ground). Conflating them is the root cause. `DR-03`.
 
+#### The usage-heatmap ramp
+
+The Home page's usage heatmap is the one place a **sequential** scale is correct — it encodes a
+quantity, not a category. It is derived from the warm ramp and the accent, monotonic in luminance so
+the five steps read in order even in greyscale.
+
+| Level | Light | Dark | Adjacent step |
+|---|---|---|---|
+| 0 (idle) | `#ece5d6` | `#241f16` | — *(1.18:1 / 1.21:1 vs the canvas, so the grid is visible when idle)* |
+| 1 | `#e9c9ab` | `#4a3524` | 1.25 / 1.42 |
+| 2 | `#dda27a` | `#7a4d2e` | 1.41 / 1.60 |
+| 3 | `#c6774c` | `#b0653a` | 1.55 / 1.63 |
+| 4 | `#a04a27` | `#e8895f` | 1.75 / 1.71 |
+
+Shading is **relative to the visible window** — the quartiles of its active days — not to the window
+maximum. Dividing by the maximum saturates: `ln` compresses so hard that nearly every active day lands
+at 0.75–1.0 of the max, so a 4k-token day renders as dark as a 250k-token day and level 1 goes unused.
+This is the same convention GitHub's contribution graph uses. Absolute values live in the tooltip.
+
 #### Text colours
 
-| Role | Today | On white | On sidebar `#f3ede1` | Canonical | Verdict |
+**Light**
+
+| Role | Was | On white | On sidebar `#f3ede1` | **Canonical** | Min ratio |
 |---|---|---|---|---|---|
-| `--text-default` | `#2a2520` | 15.17 ✓ | — | unchanged | ✓ |
-| `--text-muted` | `#7a736c` | 4.67 ✓ | **4.01 ✗** | `#6e6760` (5.57 / 4.78) | fix |
-| `--text-subtle` | `#948d83` | **3.28 ✗** | **2.82 ✗** | `#6b645c` (5.83 / 5.00) | fix |
+| `--text-default` | `#2a2520` | 15.17 ✓ | 9.34 ✓ | `#2a2520` *(unchanged)* | 9.34 |
+| `--text-muted` | `#7a736c` | 4.67 ✓ | **4.01 ✗** | **`#635c54`** | 5.65 |
+| `--text-subtle` | `#948d83` | **3.28 ✗** | **2.82 ✗** | **`#6e6760`** | 4.78 |
 
-`--text-muted` passes on white but **fails on the two-tone sidebar** introduced in the warm-beige reskin — the sidebar darkened the ground without re-checking the text on it. `DR-04`.
+**Dark**
 
-`--text-subtle` fails everywhere in light mode. Either darken it as above, or restrict it to non-text use (icons ≥24px, decorative rules). `DR-05`.
+| Role | Was | On sidebar `#282217` | **Canonical** | Min ratio |
+|---|---|---|---|---|
+| `--text-default` | `#ffffff` | 15.77 ✓ | **`#f4f0e6`** *(warm bone; pure white is harsh)* | 13.86 |
+| `--text-muted` | `#b0a892` | 6.66 ✓ | `#b0a892` *(unchanged)* | 6.66 |
+| `--text-subtle` | `#88806a` | **4.01 ✗** | **`#9c937b`** | 5.16 |
 
-Dark-mode text all passes: `#b0a892` at 8.34:1, `#88806a` at 5.03:1.
+Three findings the arithmetic forced, none of which the original audit caught:
+
+1. `--text-muted` passed on white but **failed on the two-tone sidebar** — the warm-beige reskin darkened the ground without re-checking the text on it. `DR-04`
+2. `--text-subtle` failed *everywhere* in light mode, and also failed on the dark sidebar. `DR-05`
+3. **The first draft of this document had `subtle` darker than `muted`** — an inverted hierarchy. The values above restore the correct order: `default` → `muted` → `subtle`, each step lighter, all clearing 4.5:1 on the darkest ground either can land on.
+
+All of these are asserted by [`ui/desktop/scripts/check-contrast.mjs`](ui/desktop/scripts/check-contrast.mjs), which parses the real
+token file, resolves the `var()` chains and fails `npm run lint:check` on any regression. It currently makes **58 assertions**.
 
 #### Border tokens
 
@@ -254,8 +294,7 @@ Six steps. Nothing between them.
 | Header bottom padding | 24px (`pb-6`) |
 | Header separator | 1px `--border-subtle` |
 | Max content measure | 1080px, centred |
-| Row height (default) | 44px |
-| Row height (compact) | 36px |
+| Row height | 40px (D-12·B — one value, no compact mode) |
 | Sidebar width | 240px expanded / 60px collapsed |
 
 **Today:** the documented flat header (`px-8 pt-12 pb-6 border-b`) is contradicted by `.biorouter-page-header`, which sets `border-bottom-color: transparent !important` and replaces the hairline with a gradient wash plus `box-shadow: var(--shadow-modal-chrome-bottom)` ([`main.css:519`](ui/desktop/src/styles/main.css#L519)). So the "flat header with a bottom border" is actually a shadowed, gradient header with no border. `DR-09`. See **[Decision D-05](#d-05--elevation-policy)**.
@@ -360,22 +399,72 @@ This is the most serious defect in the current system.
 
 Compounding it: **six different focus treatments** are in use across the codebase — `focus:outline` (44×), `focus:ring` (34×), `focus:border` (32×), `focus-visible:ring` (12×), `focus-visible:outline` (8×), `focus-visible:border` (1×). `DR-16`.
 
-**Canonical.** One treatment, everywhere:
+**Canonical — focus is a surface shift, never a ring.** *(D-15, superseding the original D-03 answer.)*
+
+A 2px coral outline drawn around every focused control reads as an alarm on a surface whose entire
+thesis is calm. Worse, **browsers treat text fields as permanently `:focus-visible`**, so the outline
+fired on an ordinary mouse click, wrapping the chat composer in a bright orange rectangle. The
+indicator was correct by the letter of WCAG and wrong for this product.
+
+The focused control instead **deepens its own fill by one step** and firms its existing edge. Nothing
+is added around it.
 
 ```css
-:where(a, button, input, textarea, select, [tabindex]):focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-  border-radius: inherit;
+/* Controls: the fill steps past hover, and the label firms up. */
+:where(a, button, summary, [role='button'], [role='tab'], [role='menuitem'],
+       [role='option'], input[type='checkbox'], input[type='radio'],
+       [tabindex]:not([tabindex='-1'])):focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  color: var(--text-default);
+}
+
+/* Text fields already own a border, so they shift fill AND firm that edge.
+   No new strip is introduced. */
+:where(input:not([type='checkbox']):not([type='radio']):not([type='range']),
+       textarea, select):focus,
+:where(…):focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+  border-color: var(--border-focus);
+}
+
+/* A container holding a focused field takes the shift, so the inner control
+   never draws a box of its own. */
+:where(.biorouter-chat-composer, .biorouter-list-row,
+       .biorouter-settings-row):focus-within {
+  border-color: var(--border-focus);
 }
 ```
 
-| | `--focus-ring` | Min contrast on any ground |
-|---|---|---|
-| Light | `#b85a32` | 3.96:1 (sidebar) ✓ |
-| Dark | `#e8895f` | 7.26:1 (surface) ✓ |
+| Token | Light | Dark | Checked |
+|---|---|---|---|
+| `--background-focus` | `#e4dcc9` | `#4d4430` | text-default on it: 11.11:1 / 8.45:1 ✓ |
+| `--border-focus` | `#6e6760` (`--text-subtle`) | `#9c937b` | 4.51:1 / 3.15:1 against the focused fill ✓ |
+| `--ring` *(escape hatch only)* | `#615a46` | `#d4cab6` | ≥5.89:1 / ≥7.05:1 on every ground ✓ |
 
-Using the accent as the focus colour ties keyboard navigation to the brand and guarantees it is never mistaken for a border. `#cf6d47` also clears 3:1 (3.04:1 on the sidebar) but with almost no margin; `#b85a32` is the safe choice. See **[Decision D-03](#d-03--focus-ring)**.
+Focus must also be distinguishable from **hover**: the focused fill sits one step past the hover fill
+(1.20:1 light, 1.19:1 dark) — perceptible without being loud.
+
+> **An honest trade-off, deliberately taken.** A colour shift of this softness cannot meet WCAG's 3:1
+> non-text-contrast floor for a state indicator (SC 1.4.11). The calm is worth it for the default
+> experience, but users who have asked their operating system for a stronger signal get the ring back:
+>
+> ```css
+> @media (prefers-contrast: more), (forced-colors: active) {
+>   :where(a, button, input, textarea, select, summary,
+>          [tabindex]:not([tabindex='-1'])):focus-visible {
+>     outline: 2px solid var(--ring);
+>     outline-offset: 2px;
+>   }
+> }
+> ```
+>
+> This is a product decision, not an oversight. Revisit it if the app is ever procured under a strict
+> Section 508 / EN 301 549 review.
+
+**Never** write `outline-none`, `outline-hidden`, `focus:ring-*`, or `focus-visible:ring-*` at a call
+site. All 68 such classes and all 54 focus-scoped ring utilities were removed; the treatment is global.
 
 ---
 
@@ -456,7 +545,7 @@ Icon-only buttons are square at the same heights, radius `--radius-md`.
 | Padding | 24px |
 | Header | Title 18/26 600, description 13/18 `--text-muted`, 8px gap |
 | Footer | Right-aligned, 8px gap, `secondary` then `primary`; stacks reversed on narrow |
-| Close | 32px ghost icon button, top-right, 16px inset |
+| Close | 32px ghost icon button, top-right, **16px inset** (`absolute right-4 top-4`), 16px icon centred |
 | Enter | 180ms `--ease-out`, `opacity 0→1`, `scale .96→1` |
 | Exit | 120ms `--ease-in` |
 | Dismiss | Escape ✓, backdrop click ✓ (except when a form is dirty), focus trap ✓, focus restored on close |
@@ -471,6 +560,27 @@ Their z-indices span `z-40` → `z-[9999]` with no scale, so stacking order cont
 `Diagnostics.tsx` uses its own `.biorouter-diagnostics-surface` — hardcoded `background: var(--color-white); color: var(--color-black)` with **no dark override**, and a `.dark .biorouter-diagnostics-overlay` that keeps the *cream* `rgba(246,243,237,0.7)` scrim ([`main.css:447–466`](ui/desktop/src/styles/main.css#L447)). In dark mode the diagnostics panel is a white card behind a cream haze. `DR-25`
 
 The dialog close button focuses to `focus:ring-ring focus:ring-2 focus:ring-offset-2` where `ring-offset-background` is undefined and `--ring` is invisible. `DR-15`, `DR-26`
+
+---
+
+#### The close affordance — one geometry, everywhere
+
+A dismiss control is the same object regardless of what it dismisses. Seven different insets were in
+use (`top-5 right-4`, `top-4 right-4`, `top-3.5 right-3`, `top-1.5 right-1`, `right-2 top-2`,
+`right-2 top-1`, `top-12 right-4`).
+
+| Context | Button | Inset | Icon |
+|---|---|---|---|
+| Modal, sheet, drawer, full popover | 32px ghost, `rounded-md` | `right-4 top-4` (16px) | 16px |
+| Toast, inline banner, compact popover | 20px ghost, `rounded-sm` | `right-2.5`, vertically centred | 14px |
+| Chip / tag / attachment | 14px, inline (not absolute) | — | 11px |
+
+The icon is **optically centred** in its button, never flush to a corner. An absolutely-positioned
+close button must not overlap its own content: the container reserves `button width + 2 × inset` of
+padding on that side. (`react-toastify` needed `padding-inline-end: 38px` for exactly this reason.)
+
+**Overlay action clusters** (the copy/expand controls that fade in over an artifact or an image) sit at
+`right-2 top-2` (8px), are 28px square, and reveal on `:hover` *and* `:focus-within` — never hover alone.
 
 ---
 
@@ -658,7 +768,7 @@ Flat. A hairline. No gradient, no shadow, no card wrapper. Primary action, if an
 
 ### 4.14 · List rows
 
-Full-bleed inside a `--radius-lg` shell. 44px tall, 12px×16px. Bottom hairline `--border-subtle`; last child none. Hover `--background-medium` at 42%. Focus-within: same, plus the standard outline. Right-side actions fade in on hover **but remain in the tab order and visible on focus-within** — a hover-only affordance is a keyboard trap.
+Full-bleed inside a `--radius-lg` shell. **40px tall** (D-12·B), 8px×16px. Bottom hairline `--border-subtle`; last child none. Hover `--background-medium` at 42%. Focus-within: same, plus the standard outline. Right-side actions fade in on hover **but remain in the tab order and visible on focus-within** — a hover-only affordance is a keyboard trap.
 
 **Today.** `.biorouter-list-row` is `border-radius: 8px` with a bottom border; the design doc says `rounded-xl` (12px). Both patterns exist in the codebase. `DR-34` → **[Decision D-04](#d-04--radius-scale)**.
 
@@ -694,11 +804,17 @@ The chat surface is an instrument readout, not a messaging app.
 
 | | User | Assistant |
 |---|---|---|
-| Alignment | Left | Left |
-| Container | `--background-muted` fill, `--radius-lg`, 12px×16px | **Bare** — no bubble, no fill |
+| Alignment | Right, `max-w-[85%]` | Left, full measure |
+| Container | `--background-medium` fill, 1px `--border-subtle`, `--radius-xl`, 10px×16px | **Bare** — no bubble, no fill |
+| Text | `--text-default` | `--text-default` |
 | Measure | 68ch | 68ch |
 | Avatar | none | none |
 | Actions | copy / edit, revealed on hover, kept in tab order | copy / retry / branch |
+
+> **D-16.** The user's turn is **never** an accent surface. It shipped as
+> `bg-background-accent text-text-on-accent`, so the moment D-01 made the accent coral, every user
+> message became a solid orange block — the single loudest thing on a canvas whose thesis is calm.
+> The tint exists only so the eye can find the turn boundary when scrolling.
 
 Assistant prose is the page. Wrapping it in a bubble would halve the effective measure and add visual noise to the app's most-read surface. The user's turn is tinted only so the eye can find the boundary when scrolling.
 
@@ -706,11 +822,28 @@ Streaming: a 2px × 1em caret in `--text-muted`, blinking at 1s; removed on comp
 
 ---
 
-### 4.19 · Tool-call cards
+### 4.19 · Tool-call lines
 
-Collapsed: 36px row, `--radius-md`, 1px `--border-subtle`, 16px status icon + monospace tool name + a `--text-muted` summary + duration in `tabular-nums`. Expanded: adds a `--background-muted` body with the arguments and result as [code blocks](#51--code-blocks).
+> **D-17.** A tool call is a **line in the transcript, not a card.** An outline around every one of them
+> turns a quiet conversation into a stack of boxes, and — because the app's focus treatment is now a
+> surface shift — a persistent 1px rectangle around a row is read by users as a *stuck focus ring*.
 
-States — `running` (spinner, `--text-info`), `ok` (check, `--text-success`), `error` (triangle, `--text-danger`, and the card border turns `--border-danger`).
+**Collapsed.** No border. A 36px row, `--radius-md`, transparent fill, `hover:--background-muted`:
+a 16px status icon, the tool name in mono, a `--text-muted` summary, and the duration in `tabular-nums`.
+
+**Expanded.** The body appears beneath, separated by a `border-t` hairline. Arguments and results render
+as [code blocks](#51--code-blocks) on `--background-muted`. Still no surrounding outline.
+
+**States.**
+
+| State | Icon | Colour | Surface |
+|---|---|---|---|
+| running | spinner | `--text-info` | — |
+| ok | check | `--text-success` | — |
+| error | triangle | `--text-danger` | `--background-danger` @ 5% wash |
+
+Failure is signalled by **colour** — the icon, the label, and a faint wash — never by an outline.
+This is the same rule as P3: colour is evidence.
 
 ---
 
@@ -811,7 +944,38 @@ Foreground `#e8e1d2` (14.33:1). See **[Decision D-11](#d-11--terminal-ground)**.
 
 ## Part 6 · Open decisions
 
-**These are yours.** Each is rendered side-by-side in [`docs/design-system.html`](docs/design-system.html); pick there and export, or just reply with the IDs.
+> ## ✅ Signed off — 2026-07-09
+>
+> | ID | Decision | Resolved value |
+> |---|---|---|
+> | D-01 | Primary CTA colour | **Coral** — light `#b85a32`, dark `#e8895f` (ink `#16120c`) |
+> | D-02 | Brand-mark palette | **Retune gradient** `#cf6d47` → `#b85a32` |
+> | D-03 | Focus ring | **Accent ring** `#b85a32` / `#e8895f`, 2px @ 2px offset |
+> | D-04 | Radius scale | **Rows 8px · cards 12px · modals 16px** (+ 4px chips, `full`) |
+> | D-05 | Elevation | **Hairline only** — delete header gradient + `Card` shadow |
+> | D-06 | Typeface | **System stack** — `ui-sans-serif` / `ui-monospace` |
+> | D-07 | Tab indicator | **Underline**; left bar retained for *vertical* lists only |
+> | D-08 | Select | **Migrate to Radix `Select`** (+ `Command` for searchable) — *staged, see note* |
+> | D-09 | Sidebar | **Keep two-tone**; `--text-muted` → `#6e6760` |
+> | D-10 | Code theme | **Custom warm theme**, light + dark, token-derived |
+> | D-11 | Terminal ground | **`--background-muted`** — `#faf8f3` / `#16120c` |
+> | D-12 | Row density | **40px everywhere** — no compact mode ⚠️ *override* |
+> | D-13 | Status colours | **Split `--fill-{s}` from `--text-{s}`**, per theme |
+> | D-14 | Decorative motion | **Delete** sidebar entrance + `Bird1–6` |
+>
+> **Added 2026-07-09, after seeing the accent land in the running app:**
+>
+> | ID | Decision | Resolved value |
+> |---|---|---|
+> | D-15 | Focus indication | **A surface shift, not a ring.** No outline anywhere. Focused fill `#e4dcc9` / `#4d4430`; the ring returns only under `prefers-contrast: more`. *Supersedes the D-03 answer.* |
+> | D-16 | The user's turn | **Tinted, not accent.** `--background-medium` + hairline + `--text-default`. A solid coral block shouted. |
+> | D-17 | Tool calls | **Lines, not cards.** No outline, collapsed or expanded. Failure = colour + a 5% wash. A persistent rectangle reads as a stuck focus ring. |
+> | D-18 | Hairlines | **One value.** `border-border-subtle` at full strength. Eight alpha-diluted variants (`/35`…`/70`) made adjacent panels' edges read at different weights, so they never visually aligned. |
+>
+> The [drift register](#part-7--drift-register) is now the active backlog. The options below are retained as
+> the rationale record.
+
+Each was rendered side-by-side in [`docs/design-system.html`](docs/design-system.html).
 
 Ordered by blast radius.
 
@@ -915,7 +1079,19 @@ Three implementations exist. One must win.
 | **A** ★ | Migrate to Radix `Select` + `Command` for searchable cases | One surface spec for dropdowns, popovers and selects. Removes a 30 KB dep and the z-index conflict. Real work: ~15 call sites. |
 | B | Keep `react-select`, normalize its `classNames` | Cheap. The Emotion specificity problem stays. |
 
-★ **A**, but it is the largest item here. Ship **B** as an interim if the timeline is tight.
+✅ **A** chosen, and it is being delivered in two stages.
+
+**Stage 1 — done.** The visual and layering defects are fixed in place: the trigger now matches `<Input>`
+exactly (36px, real 1px border, accent focus edge), the menu is the 16px popover surface, the selected
+option is *emphasised* rather than inverted to a near-black block, and the menu z-index moved from
+`z-[9999]` to `--z-modal-dropdown` (500) so it can no longer paint over a dialog's own close button.
+
+**Stage 2 — not started.** The library swap itself. Of the four call sites, three are plain selects that
+Radix `Select` covers directly. The fourth — the model picker in `SwitchModelModal.tsx` — is a **typeahead
+combobox** (`onInputChange` + `inputValue` + live filtering) that Radix `Select` cannot express; it needs
+`cmdk`, which is not a dependency. Swapping it blind, without being able to launch the GUI, would risk a
+core flow for no visual gain, since Stage 1 already delivers the cohesion. Stage 2 should add `cmdk`, port
+the three simple selects to Radix `Select`, and port the model picker to `Command`.
 
 ---
 
@@ -954,10 +1130,11 @@ The warm two-tone sidebar shipped in v1.87.1.
 #### D-12 · Row density
 | | Option | Consequence |
 |---|---|---|
-| **A** ★ | 44px default, 36px compact (user-togglable) | Comfortable default, dense on request. |
-| B | 40px everywhere | One value, no setting. |
+| A | 44px default, 36px compact (user-togglable) | Comfortable default, dense on request. |
+| **B** ✅ | **40px everywhere** | One value, no setting. **← chosen (override)** |
 
-★ **A**.
+✅ **B.** Rows are 40px. There is no compact mode and no density setting. Table body rows, list rows,
+and settings rows all share the single 40px rhythm.
 
 ---
 
@@ -983,7 +1160,39 @@ The warm two-tone sidebar shipped in v1.87.1.
 
 ## Part 7 · Drift register
 
-The fix backlog for the **next** phase. Do not start it until Part 6 is signed off.
+> ### Implementation status — 2026-07-09
+>
+> The decisions in Part 6 are signed off and the fix pass has run. Everything below is **verified on
+> disk**, not asserted:
+>
+> | Check | Command | Result |
+> |---|---|---|
+> | Dead Tailwind classes (`shadow-sm/md/lg/xl/2xl/inner`) | `rg -oI '\bshadow-(sm\|md\|lg\|xl\|2xl\|inner)\b' src` | **0** |
+> | Undefined tokens (`destructive`, `muted-foreground`, `bg-primary`, `bg-app`, `animate-indeterminate`, `textPlaceholder`, `ring-offset-background`) | `rg -oI …` | **0** |
+> | Classes that defeat the focus ring (`outline-none`, `outline-hidden`) | `rg -oI 'outline-none\|outline-hidden' src` | **0** *(was 68 across 40 files)* |
+> | Undefined CSS variables in the stylesheets | var-vs-`var()` diff | **0** *(was 4)* |
+> | Legacy brand hex (`#EC5D2A` / `#57B9AF`) | `rg -oI` | **0** |
+> | WCAG contrast assertions | `npm run check:contrast` | **58 / 58 pass** |
+> | Code-palette contrast | `vitest src/styles/codeTheme.test.ts` | **7 / 7 pass** |
+> | TypeScript | `npx tsc --noEmit` | **clean** |
+> | Unit tests | `npx vitest run` | **600 pass**, 1 pre-existing failure (`dashboardStorage`, unrelated) |
+> | ESLint | `npx eslint src` | **no new errors** (43 → 43; the +1 is pre-existing uncommitted test code) |
+>
+> A permanent guard, [`ui/desktop/scripts/check-contrast.mjs`](ui/desktop/scripts/check-contrast.mjs),
+> parses the real token file, resolves the `var()` chains, and fails `npm run lint:check` if any
+> contrast pair regresses.
+>
+> **Still open (deliberately):**
+> - `DR-24` — 104 raw `<button>` elements in 58 files still bypass `<Button>`. Bulk conversion changes
+>   layout and cannot be verified without launching the GUI; the dead classes and focus rings on those
+>   elements *are* fixed.
+> - **D-08 stage 2** — the `react-select` → Radix + `cmdk` swap. See the note under
+>   [D-08](#d-08--select-implementation).
+> - `DR-49` — the ~17 hand-rolled modals now have correct surfaces and z-indices, but still lack a
+>   focus trap and `role="dialog"`.
+> - `DR-52` — content max-width still varies (1120 / 1280 / 1440 / uncapped).
+
+The original backlog, as audited:
 
 | ID | Sev | What | Evidence |
 |---|---|---|---|

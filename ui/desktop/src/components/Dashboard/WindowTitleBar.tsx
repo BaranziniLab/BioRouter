@@ -66,7 +66,7 @@ export const WindowTitleBar: React.FC<Props> = ({
 
   return (
     <div
-      className="flex items-center gap-1.5 px-3 h-9 select-none cursor-grab active:cursor-grabbing border-b border-border-subtle/30 bg-background-default/80 backdrop-blur-sm rounded-t-2xl"
+      className="flex items-center gap-1.5 px-3 h-9 select-none cursor-grab active:cursor-grabbing border-b border-border-subtle bg-background-default rounded-t-2xl"
       onPointerDown={(e) => {
         if ((e.target as HTMLElement).closest('button, input')) return;
         onPointerDownDrag(e);
@@ -91,7 +91,7 @@ export const WindowTitleBar: React.FC<Props> = ({
             }
           }}
           style={noDragStyle}
-          className="h-8 w-[min(360px,calc(100vw-180px))] min-w-[120px] bg-transparent px-1 text-sm font-medium outline-none border-b border-border-subtle"
+          className="h-8 w-[min(360px,calc(100vw-180px))] min-w-[120px] bg-transparent px-1 text-sm font-medium border-b border-border-subtle"
         />
       ) : (
         <span className="inline-flex h-8 min-w-0 max-w-[min(420px,calc(100vw-220px))] items-center rounded py-0 pl-1 pr-0 text-sm font-medium leading-none text-text-default">

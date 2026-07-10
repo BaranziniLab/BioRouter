@@ -57,6 +57,7 @@ import {
 } from './utils/autoUpdater';
 import { UPDATES_ENABLED } from './updates';
 import './utils/workflowHash';
+import { parseWorkflowDeeplink, type WorkflowDeeplinkData } from './utils/workflowDeeplink';
 import {
   registerDependencyIpcHandlers,
   setupDependencyChecker,
@@ -294,6 +295,14 @@ if (process.platform === 'darwin') {
   app.setAsDefaultProtocolClient('biorouter', process.execPath, [path.resolve(process.argv[1])]);
 }
 
+// Set as soon as we know a deep link is driving this launch, so appMain() does
+// not also open an empty window. Declared here because the Windows/Linux argv
+// path below claims the launch synchronously.
+let openUrlHandledLaunch = false;
+
+/** Deep links that open their own window rather than reusing an existing one. */
+const WINDOW_OWNING_DEEPLINK_HOSTS = ['bot', 'workflow', 'diverge'];
+
 // Apply single instance lock on Windows and Linux where it's needed for deep links
 // macOS uses the 'open-url' event instead
 let gotTheLock = true;
@@ -306,7 +315,13 @@ if (process.platform !== 'darwin') {
     app.on('second-instance', (_event, commandLine) => {
       const protocolUrl = commandLine.find((arg) => arg.startsWith('biorouter://'));
       if (protocolUrl) {
-        const parsedUrl = new URL(protocolUrl);
+        let parsedUrl: URL;
+        try {
+          parsedUrl = new URL(protocolUrl);
+        } catch (error) {
+          log.error('[Main] Ignoring malformed deep link:', protocolUrl, error);
+          return;
+        }
         // Diverge: always open the branch in a fresh, focused window.
         if (parsedUrl.hostname === 'diverge') {
           app.whenReady().then(() => openDivergedWindow(parsedUrl));
@@ -356,6 +371,13 @@ if (process.platform !== 'darwin') {
   // Handle protocol URLs on Windows and Linux startup
   const protocolUrl = process.argv.find((arg) => arg.startsWith('biorouter://'));
   if (protocolUrl) {
+    try {
+      if (WINDOW_OWNING_DEEPLINK_HOSTS.includes(new URL(protocolUrl).hostname)) {
+        openUrlHandledLaunch = true;
+      }
+    } catch (error) {
+      log.error('[Main] Ignoring malformed deep link argument:', protocolUrl, error);
+    }
     app.whenReady().then(() => {
       handleProtocolUrl(protocolUrl);
     });
@@ -370,33 +392,59 @@ if (process.platform !== 'darwin') {
 
 let firstOpenWindow: BrowserWindow;
 let pendingDeepLink: string | null = null;
-let openUrlHandledLaunch = false;
 let pendingBrxtFilePath: string | null = null;
+
+/**
+ * A window-owning deep link claims the launch, so appMain() will not open its
+ * own window. If the link then fails to produce one — a malformed URL, a
+ * backend that won't start — the app would sit running with nothing on screen,
+ * which is indistinguishable from "clicking the link quit BioRouter". Always
+ * leave the user with a window.
+ */
+async function ensureWindowAfterDeepLink(openDir?: string | null) {
+  if (BrowserWindow.getAllWindows().length > 0) return;
+  log.warn('[Main] Deep link produced no window; opening a plain one instead');
+  await createNewWindow(app, openDir || undefined);
+}
 
 async function handleProtocolUrl(url: string) {
   if (!url) return;
 
   pendingDeepLink = url;
 
-  const parsedUrl = new URL(url);
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch (error) {
+    log.error('[Main] Ignoring malformed deep link:', url, error);
+    pendingDeepLink = null;
+    await ensureWindowAfterDeepLink();
+    return;
+  }
   const recentDirs = loadRecentDirs();
   const openDir = recentDirs.length > 0 ? recentDirs[0] : null;
 
   // Diverge: always open the branch in a fresh, focused window.
   if (parsedUrl.hostname === 'diverge') {
     pendingDeepLink = null;
-    await openDivergedWindow(parsedUrl);
+    try {
+      await openDivergedWindow(parsedUrl);
+    } catch (error) {
+      log.error('[Main] Failed to open diverge deep link:', error);
+    }
+    await ensureWindowAfterDeepLink(openDir);
     return;
   }
 
   if (parsedUrl.hostname === 'bot' || parsedUrl.hostname === 'workflow') {
-    // For bot/workflow URLs, get existing window or create new one
-    const existingWindows = BrowserWindow.getAllWindows();
-    const targetWindow =
-      existingWindows.length > 0
-        ? existingWindows[0]
-        : await createChat(app, undefined, openDir || undefined);
-    await processProtocolUrl(parsedUrl, targetWindow);
+    // processProtocolUrl always opens its own window for these, so don't create
+    // a throwaway one first — that left a stray empty window on cold launches.
+    try {
+      await processProtocolUrl(parsedUrl, null);
+    } catch (error) {
+      log.error('[Main] Failed to open workflow deep link:', error);
+    }
+    await ensureWindowAfterDeepLink(openDir);
   } else {
     // For other URL types, reuse existing window if available
     const existingWindows = BrowserWindow.getAllWindows();
@@ -423,20 +471,22 @@ async function handleProtocolUrl(url: string) {
   }
 }
 
-async function processProtocolUrl(parsedUrl: URL, window: BrowserWindow) {
+// `window` is null for bot/workflow URLs, which always open a window of their own.
+async function processProtocolUrl(parsedUrl: URL, window: BrowserWindow | null) {
   const recentDirs = loadRecentDirs();
   const openDir = recentDirs.length > 0 ? recentDirs[0] : null;
 
   if (parsedUrl.hostname === 'extension') {
-    window.webContents.send('add-extension', pendingDeepLink);
+    window?.webContents.send('add-extension', pendingDeepLink);
   } else if (parsedUrl.hostname === 'sessions') {
-    window.webContents.send('open-shared-session', pendingDeepLink);
+    window?.webContents.send('open-shared-session', pendingDeepLink);
   } else if (parsedUrl.hostname === 'bot' || parsedUrl.hostname === 'workflow') {
     const deeplinkData = parseWorkflowDeeplink(pendingDeepLink ?? parsedUrl.toString());
     const scheduledJobId = parsedUrl.searchParams.get('scheduledJob');
 
-    // Create a new window and ignore the passed-in window
-    createChat(
+    // Opens its own window; the `window` argument is deliberately unused here.
+    // Awaited so callers can tell whether a window actually appeared.
+    await createChat(
       app,
       undefined,
       openDir || undefined,
@@ -471,7 +521,7 @@ app.on('open-url', async (_event, url) => {
     // continuation was queued first. Claim the launch *now*, synchronously,
     // otherwise appMain sees the flag still false and opens a redundant empty
     // window alongside the one this handler is about to create.
-    if (!app.isReady() && ['diverge', 'bot', 'workflow'].includes(parsedUrl.hostname)) {
+    if (!app.isReady() && WINDOW_OWNING_DEEPLINK_HOSTS.includes(parsedUrl.hostname)) {
       openUrlHandledLaunch = true;
     }
 
@@ -484,7 +534,12 @@ app.on('open-url', async (_event, url) => {
     if (parsedUrl.hostname === 'diverge') {
       log.info('[Main] Detected diverge URL, opening branch in a new window');
       openUrlHandledLaunch = true;
-      await openDivergedWindow(parsedUrl);
+      try {
+        await openDivergedWindow(parsedUrl);
+      } catch (error) {
+        log.error('[Main] Failed to open diverge deep link:', error);
+      }
+      await ensureWindowAfterDeepLink(openDir);
       return;
     }
 
@@ -498,19 +553,25 @@ app.on('open-url', async (_event, url) => {
       }
       const scheduledJobId = parsedUrl.searchParams.get('scheduledJob');
 
-      await createChat(
-        app,
-        undefined,
-        openDir || undefined,
-        undefined,
-        undefined,
-        undefined,
-        deeplinkData?.config,
-        scheduledJobId || undefined,
-        undefined,
-        deeplinkData?.parameters
-      );
-      windowDeeplinkURL = null;
+      try {
+        await createChat(
+          app,
+          undefined,
+          openDir || undefined,
+          undefined,
+          undefined,
+          undefined,
+          deeplinkData?.config,
+          scheduledJobId || undefined,
+          undefined,
+          deeplinkData?.parameters
+        );
+      } catch (error) {
+        log.error('[Main] Failed to open workflow deep link:', error);
+      } finally {
+        windowDeeplinkURL = null;
+      }
+      await ensureWindowAfterDeepLink(openDir);
       return;
     }
 
@@ -1359,60 +1420,6 @@ const openDirectoryDialog = async (): Promise<OpenDialogReturnValue> => {
   }
   return result;
 };
-
-interface WorkflowDeeplinkData {
-  config: string;
-  parameters?: Record<string, string>;
-}
-
-function parseWorkflowDeeplink(url: string): WorkflowDeeplinkData | undefined {
-  const parsedUrl = new URL(url);
-  let workflowDeeplink = parsedUrl.searchParams.get('config');
-  if (workflowDeeplink && !url.includes(workflowDeeplink)) {
-    // URLSearchParams decodes + as space, which can break encoded configs
-    // Parse raw query to preserve "+" characters in values like config
-    const search = parsedUrl.search || '';
-    const configMatch = search.match(/(?:[?&])config=([^&]*)/);
-    let workflowDeeplinkTmp = configMatch ? configMatch[1] : null;
-    if (workflowDeeplinkTmp) {
-      try {
-        workflowDeeplink = decodeURIComponent(workflowDeeplinkTmp);
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : String(error);
-        console.error('[Main] parseWorkflowDeeplink - Failed to decode:', errorMessage);
-        return undefined;
-      }
-    }
-  }
-  if (!workflowDeeplink) {
-    return undefined;
-  }
-
-  // Extract all query parameters except 'config' and 'scheduledJob' as workflow parameters
-  // Use raw query string parsing to preserve '+' characters (consistent with config handling)
-  const parameters: Record<string, string> = {};
-  const search = parsedUrl.search || '';
-  const paramMatches = search.matchAll(/[?&]([^=&]+)=([^&]*)/g);
-
-  for (const match of paramMatches) {
-    const key = match[1];
-    const rawValue = match[2];
-
-    if (key !== 'config' && key !== 'scheduledJob') {
-      try {
-        parameters[key] = decodeURIComponent(rawValue);
-      } catch {
-        // If decoding fails, use raw value
-        parameters[key] = rawValue;
-      }
-    }
-  }
-
-  return {
-    config: workflowDeeplink,
-    parameters: Object.keys(parameters).length > 0 ? parameters : undefined,
-  };
-}
 
 // Global error handler
 const handleFatalError = (error: Error) => {
@@ -3139,12 +3146,15 @@ function registerCliInstallHandlers() {
     return { success: true };
   });
 
-  ipcMain.handle('terminal:resize', async (_event, sessionId: string, cols: number, rows: number) => {
-    const session = terminalSessions.get(sessionId);
-    if (!session) return { success: false, error: 'Terminal session is no longer running.' };
-    session.resize(cols, rows);
-    return { success: true };
-  });
+  ipcMain.handle(
+    'terminal:resize',
+    async (_event, sessionId: string, cols: number, rows: number) => {
+      const session = terminalSessions.get(sessionId);
+      if (!session) return { success: false, error: 'Terminal session is no longer running.' };
+      session.resize(cols, rows);
+      return { success: true };
+    }
+  );
 
   ipcMain.handle('terminal:dispose', async (_event, sessionId: string) => {
     disposeTerminalSession(sessionId);
@@ -3645,7 +3655,9 @@ function ensureDeepLinkHandler() {
   try {
     if (app.isDefaultProtocolClient('biorouter')) return;
     const reclaimed = app.setAsDefaultProtocolClient('biorouter');
-    log.info(`[Main] biorouter:// was claimed by another app; reclaim ${reclaimed ? 'ok' : 'failed'}`);
+    log.info(
+      `[Main] biorouter:// was claimed by another app; reclaim ${reclaimed ? 'ok' : 'failed'}`
+    );
   } catch (error) {
     log.warn('[Main] Could not verify biorouter:// handler registration:', error);
   }

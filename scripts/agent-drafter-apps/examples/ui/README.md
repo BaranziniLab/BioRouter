@@ -1,0 +1,28 @@
+# Agent-driven UI example apps
+
+Each folder is a BioRouter app whose **agent drives the interface** with the
+`ui_*` tools (see `crates/biorouter-mcp/src/agent_drafter/control.rs`) instead of
+only writing text into a chat log.
+
+Layout (per app):
+
+    <id>/
+      manifest.json     # agent config; `capabilities.ui` on, system_prompt says WHEN to call ui_*
+      index.html        # the shell, declaring `data-br-region="…"` render targets
+      src/main.ts       # app logic; `src/sdk.ts` is copied in at install time
+
+## Install + run
+
+    scripts/agent-drafter-apps/install-examples.sh          # copy into the local store
+    biorouterd agent                                        # then open /apps/<id>/
+
+## Verify
+
+Deterministic (no LLM) — runs in CI:
+
+    cargo test -p biorouter-mcp --test ui_example_apps
+
+Live (drives a real agent and asserts it emitted `ui` command frames):
+
+    node ui/desktop/scripts/appcheck/check-ui-app.mjs http://127.0.0.1:3000 <id> \
+      "<prompt>" --expect=panel,chart
