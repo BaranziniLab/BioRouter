@@ -85,6 +85,16 @@ type PreviewState =
 // a second, divergent one. Both come from styles/codeTheme.ts (design.md §5.1),
 // selected by the active theme family + mode via codeThemesByFamily.
 
+/// A render-error field is forwarded into an agent prompt, so bound its length
+/// rather than letting a figure paste an arbitrarily long payload into context.
+const RENDER_ERROR_TEXT_LIMIT = 2000;
+
+function clampRenderErrorText(value: string) {
+  return value.length > RENDER_ERROR_TEXT_LIMIT
+    ? `${value.slice(0, RENDER_ERROR_TEXT_LIMIT)}…`
+    : value;
+}
+
 function iconForArtifact(artifact: ArtifactSource | null) {
   if (!artifact) return File;
   if (artifact.kind === 'externalUrl') return Globe;
@@ -121,6 +131,7 @@ export default function ArtifactViewer({
   const { resolvedTheme } = useTheme();
   const [preview, setPreview] = useState<PreviewState>({ kind: 'loading' });
   const lastRenderErrorKeyRef = useRef<string | null>(null);
+  const trustedFrameRef = useRef<HTMLIFrameElement | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -184,6 +195,13 @@ export default function ArtifactViewer({
     if (!artifact || !onRenderError) return;
 
     const handleMessage = (event: MessageEvent) => {
+      // A render-error report becomes a hidden, agent-visible prompt. Only the
+      // srcDoc frame we generated may send one: an externalUrl artifact, an
+      // mcp-ui frame, or any other window would otherwise be able to inject
+      // instructions into a session that holds shell and file tools.
+      const trustedSource = trustedFrameRef.current?.contentWindow;
+      if (!trustedSource || event.source !== trustedSource) return;
+
       const data = event.data as
         | {
             type?: string;
@@ -199,10 +217,16 @@ export default function ArtifactViewer({
 
       const message =
         typeof data.payload?.message === 'string'
-          ? data.payload.message
+          ? clampRenderErrorText(data.payload.message)
           : 'This visualization could not be rendered.';
-      const detail = typeof data.payload?.detail === 'string' ? data.payload.detail : undefined;
-      const href = typeof data.payload?.href === 'string' ? data.payload.href : undefined;
+      const detail =
+        typeof data.payload?.detail === 'string'
+          ? clampRenderErrorText(data.payload.detail)
+          : undefined;
+      const href =
+        typeof data.payload?.href === 'string'
+          ? clampRenderErrorText(data.payload.href)
+          : undefined;
       const key = `${artifact.title}\n${message}\n${detail ?? ''}`;
       if (lastRenderErrorKeyRef.current === key) return;
       lastRenderErrorKeyRef.current = key;
@@ -316,6 +340,7 @@ export default function ArtifactViewer({
             onOpenArtifact={onOpenArtifact}
             resolvedTheme={resolvedTheme}
             isResizing={isResizing}
+            trustedFrameRef={trustedFrameRef}
           />
         </div>
       </div>
@@ -329,12 +354,14 @@ function ArtifactPreviewBody({
   onOpenArtifact,
   resolvedTheme,
   isResizing,
+  trustedFrameRef,
 }: {
   preview: PreviewState;
   artifact: ArtifactSource;
   onOpenArtifact: (artifact: ArtifactSource) => void;
   resolvedTheme: 'light' | 'dark';
   isResizing: boolean;
+  trustedFrameRef: React.RefObject<HTMLIFrameElement | null>;
 }) {
   if (preview.kind === 'loading') {
     return (
@@ -347,11 +374,15 @@ function ArtifactPreviewBody({
   }
 
   if (preview.kind === 'html') {
+    // `allow-popups` is withheld: with it, figure HTML can window.open() a
+    // `data:` URL, which the main window's open handler turns into a real
+    // BrowserWindow that inherits the preload IPC bridge.
     return (
       <iframe
+        ref={trustedFrameRef}
         title={artifact.title}
         srcDoc={preview.html}
-        sandbox="allow-scripts allow-forms allow-popups allow-modals"
+        sandbox="allow-scripts allow-forms allow-modals"
         className={cn('h-full w-full bg-white', isResizing && 'pointer-events-none')}
       />
     );
@@ -362,7 +393,7 @@ function ArtifactPreviewBody({
       <iframe
         title={artifact.title}
         src={preview.url}
-        sandbox="allow-scripts allow-forms allow-popups allow-modals"
+        sandbox="allow-scripts allow-forms allow-modals"
         className={cn('h-full w-full bg-white', isResizing && 'pointer-events-none')}
       />
     );
