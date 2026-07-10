@@ -45,11 +45,7 @@ pub async fn run() -> Result<()> {
 
     let cors = CorsLayer::new()
         .allow_origin(AllowOrigin::predicate(|origin: &HeaderValue, _| {
-            let origin_str = origin.to_str().unwrap_or("");
-            origin_str.starts_with("http://localhost:")
-                || origin_str.starts_with("http://127.0.0.1:")
-                || origin_str == "http://localhost"
-                || origin_str == "http://127.0.0.1"
+            biorouter_server::routes::is_local_origin(origin.to_str().unwrap_or(""))
         }))
         .allow_methods(Any)
         .allow_headers(Any);
@@ -77,9 +73,15 @@ pub async fn run() -> Result<()> {
         tunnel_manager.check_auto_start().await;
     });
 
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    // `into_make_service_with_connect_info` is what puts the real peer address
+    // in request extensions, so the auth throttle can key on it instead of the
+    // client-supplied `x-forwarded-for` header.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
     info!("server shutdown complete");
     Ok(())
 }

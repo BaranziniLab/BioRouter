@@ -1,12 +1,27 @@
 use axum::{
-    extract::{Request, State},
+    extract::{ConnectInfo, Request, State},
     http::StatusCode,
     middleware::Next,
     response::Response,
 };
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
+
+/// Compare secrets without an early return, so a caller cannot recover the key
+/// one byte at a time by timing the response.
+fn secret_matches(candidate: &str, expected: &str) -> bool {
+    let (a, b) = (candidate.as_bytes(), expected.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
 
 static FAILED_ATTEMPTS: OnceLock<Mutex<HashMap<String, Vec<Instant>>>> = OnceLock::new();
 
@@ -45,23 +60,25 @@ pub async fn check_token(
     }
     // BioRouter apps are opened directly in the browser (and connect a WebSocket),
     // so they can't send the secret-key header. Allow browser-facing GET reads
-    // under /apps (serving the bundle + the per-app agent socket); management
-    // verbs (POST/DELETE) still require the secret. The daemon binds localhost
-    // only, matching the unauthenticated MCP UI proxy.
-    if request.method() == axum::http::Method::GET
-        && (path == "/apps" || path.starts_with("/apps/"))
-    {
+    // of a *specific* app (serving the bundle + the per-app agent socket);
+    // management verbs (POST/DELETE) still require the secret.
+    //
+    // `GET /apps` -- the list -- is deliberately NOT exempt: it enumerates app
+    // ids, and an id is all `/apps/{id}/agent` needs. That socket runs agent
+    // turns and carries its own tool-approval frames, so it additionally
+    // validates `Origin` (see `apps::agent_ws`).
+    if request.method() == axum::http::Method::GET && path.starts_with("/apps/") {
         return Ok(next.run(request).await);
     }
 
+    // Key the throttle on the real peer. `x-forwarded-for` is client-supplied
+    // and there is no reverse proxy in front of this daemon, so an attacker
+    // could rotate it and defeat the limit entirely.
     let client_ip = request
-        .headers()
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .unwrap_or("unknown")
-        .trim()
-        .to_string();
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ConnectInfo(addr)| addr.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
 
     if !check_rate_limit(&client_ip) {
         return Err(StatusCode::TOO_MANY_REQUESTS);
@@ -73,10 +90,23 @@ pub async fn check_token(
         .and_then(|value| value.to_str().ok());
 
     match secret_key {
-        Some(key) if key == state => Ok(next.run(request).await),
+        Some(key) if secret_matches(key, &state) => Ok(next.run(request).await),
         _ => {
             record_failed_attempt(&client_ip);
             Err(StatusCode::UNAUTHORIZED)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::secret_matches;
+
+    #[test]
+    fn secret_compare_is_exact() {
+        assert!(secret_matches("abc", "abc"));
+        assert!(!secret_matches("abc", "abd"));
+        assert!(!secret_matches("ab", "abc"));
+        assert!(!secret_matches("", "abc"));
     }
 }

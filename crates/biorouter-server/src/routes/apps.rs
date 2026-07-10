@@ -197,9 +197,24 @@ async fn delete_app_route(Path(id): Path<String>) -> Response {
 async fn agent_ws(
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
+    headers: axum::http::HeaderMap,
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    // This socket runs full agent turns and carries its own tool-approval
+    // frames, so whoever reaches it can prompt the agent and then approve the
+    // agent's own tool calls. It is exempt from the secret-key middleware (a
+    // browser-opened app cannot set request headers), and CORS does not govern
+    // WebSocket handshakes -- so the origin has to be checked right here, or a
+    // page on any web origin can drive it against the loopback port.
+    if let Some(origin) = headers.get(axum::http::header::ORIGIN) {
+        let origin = origin.to_str().unwrap_or_default();
+        if !super::is_local_origin(origin) {
+            tracing::warn!(%origin, app = %id, "rejected cross-origin app agent WebSocket");
+            return (StatusCode::FORBIDDEN, "cross-origin connect rejected").into_response();
+        }
+    }
+
     let manifest = match store().load_manifest(&id) {
         Ok(m) => m,
         Err(_) => return (StatusCode::NOT_FOUND, "no such app").into_response(),
