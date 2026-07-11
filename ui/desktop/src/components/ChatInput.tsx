@@ -375,6 +375,26 @@ export default function ChatInput({
     return () => window.removeEventListener('focus-chat-input', handler);
   }, [sessionId]);
 
+  // Re-populate the composer when a submit failed before the backend accepted it
+  // (e.g. backend unreachable): BaseChat.handleCreateSessionError dispatches
+  // 'restore-chat-input' with the text that performSubmit had already cleared, so
+  // the user does not silently lose what they typed. Match by sessionId — with
+  // `null === null` for the pre-session Home composer — so a broadcast can only
+  // restore the input that actually submitted, never a sibling.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ sessionId?: string | null; value?: string }>).detail;
+      if ((detail?.sessionId ?? null) !== (sessionId ?? null)) return;
+      if (typeof detail?.value !== 'string' || !detail.value) return;
+      setDisplayValue(detail.value);
+      setValue(detail.value);
+      setHasUserTyped(true);
+      textAreaRef.current?.focus();
+    };
+    window.addEventListener('restore-chat-input', handler);
+    return () => window.removeEventListener('restore-chat-input', handler);
+  }, [sessionId]);
+
   // Use shared file drop hook for ChatInput
   const {
     droppedFiles: localDroppedFiles,

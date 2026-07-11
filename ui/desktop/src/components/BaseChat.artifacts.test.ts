@@ -171,6 +171,92 @@ describe('collectArtifactsFromMessages', () => {
 
     expect(collectArtifactsFromMessages(messages, '/work')).toHaveLength(1);
   });
+
+  const dashboardRequest = (id: string): Message =>
+    visibleMessage([
+      {
+        type: 'toolRequest',
+        id,
+        toolCall: {
+          status: 'success',
+          value: { name: 'autovisualiser__render_dashboard', arguments: {} },
+        },
+      },
+    ]);
+
+  const dashboardResponse = (id: string, uri: string, html: string): Message => ({
+    id: crypto.randomUUID(),
+    role: 'tool',
+    created: 2,
+    metadata: { userVisible: false, agentVisible: true },
+    content: [
+      {
+        type: 'toolResponse',
+        id,
+        toolResult: {
+          status: 'success',
+          value: {
+            is_error: false,
+            content: [{ resource: { uri, mimeType: 'text/html', text: html } }],
+          },
+        },
+      },
+    ],
+  });
+
+  const userTurn = (text: string): Message => ({
+    id: crypto.randomUUID(),
+    role: 'user',
+    created: 3,
+    metadata: { userVisible: true, agentVisible: true },
+    content: [{ type: 'text', text }],
+  });
+
+  it('collapses a report re-rendered within one turn down to its final version', () => {
+    // The model called render_dashboard twice in one turn (a refine): same
+    // ui://dashboard/<slug> URI, different bytes. Only the last should surface.
+    const messages: Message[] = [
+      dashboardRequest('d1'),
+      dashboardResponse('d1', 'ui://dashboard/orbit-report', '<html><body>DRAFT</body></html>'),
+      dashboardRequest('d2'),
+      dashboardResponse(
+        'd2',
+        'ui://dashboard/orbit-report',
+        '<html><body>FINAL — longer, refined report body</body></html>'
+      ),
+    ];
+
+    const artifacts = collectArtifactsFromMessages(messages);
+
+    expect(artifacts).toHaveLength(1);
+    expect(artifacts[0]).toMatchObject({
+      kind: 'html',
+      html: '<html><body>FINAL — longer, refined report body</body></html>',
+    });
+  });
+
+  it('keeps a dashboard the user refines in a LATER turn as its own entry', () => {
+    const messages: Message[] = [
+      dashboardRequest('d1'),
+      dashboardResponse('d1', 'ui://dashboard/orbit-report', '<html><body>version one</body></html>'),
+      userTurn('make the title bigger'),
+      dashboardRequest('d2'),
+      dashboardResponse('d2', 'ui://dashboard/orbit-report', '<html><body>version two</body></html>'),
+    ];
+
+    expect(collectArtifactsFromMessages(messages)).toHaveLength(2);
+  });
+
+  it('keeps two genuinely different dashboards produced in the same turn', () => {
+    const messages: Message[] = [
+      dashboardRequest('d1'),
+      dashboardResponse('d1', 'ui://dashboard/orbit-report', '<html><body>orbit</body></html>'),
+      dashboardRequest('d2'),
+      dashboardResponse('d2', 'ui://dashboard/thermal-report', '<html><body>thermal</body></html>'),
+    ];
+
+    expect(collectArtifactsFromMessages(messages)).toHaveLength(2);
+  });
 });
 
 describe('getArtifactPanelExpansionContentWidth', () => {

@@ -737,8 +737,10 @@ async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bo
             help_into(app);
             true
         }
-        "/diverge" => {
-            match session.diverge_and_open(|url| open::that(url)).await {
+        s if s == "/diverge" || s.starts_with("/diverge ") => {
+            let name = s.strip_prefix("/diverge").unwrap_or("").trim().to_string();
+            let name = (!name.is_empty()).then_some(name);
+            match session.diverge_and_open(|url| open::that(url), name).await {
                 Ok(outcome) => match outcome.open_error {
                     None => app.push_note(&format!(
                         "Diverged into a new window (session {}). This conversation is unchanged.",
@@ -753,11 +755,40 @@ async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bo
             }
             true
         }
+        s if s == "/rename" || s.starts_with("/rename ") => {
+            let name = s.strip_prefix("/rename").unwrap_or("").trim();
+            if name.is_empty() {
+                app.push_note("Usage: /rename <new name>");
+            } else {
+                match session
+                    .agent
+                    .config
+                    .session_manager
+                    .update(session.session_id())
+                    .user_provided_name(name)
+                    .apply()
+                    .await
+                {
+                    Ok(()) => app.push_note(&format!("Renamed this session to \"{name}\".")),
+                    Err(e) => app.push_error(&format!("Couldn't rename session: {e}")),
+                }
+            }
+            true
+        }
         // Agent-serviced commands: let submit() send them through the normal
-        // reply flow, where Agent::execute_command handles them.
+        // reply flow, where Agent::execute_command handles them. This includes
+        // the deterministic resource-reference markers (/skill: /ext: /kb:, and
+        // their function-call forms) — the agent's reply path extracts them, so
+        // they must NOT be swallowed here.
         s if ["/goal", "/loop", "/schedule"]
             .iter()
             .any(|cmd| s == *cmd || s.starts_with(&format!("{cmd} "))) =>
+        {
+            false
+        }
+        s if ["/skill:", "/ext:", "/kb:", "/skill(", "/ext(", "/kb("]
+            .iter()
+            .any(|prefix| s.starts_with(prefix)) =>
         {
             false
         }

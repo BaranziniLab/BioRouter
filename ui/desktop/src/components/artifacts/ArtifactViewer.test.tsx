@@ -20,6 +20,7 @@ function installElectronMock() {
         found: true,
       })),
       openArtifactWindow: vi.fn(),
+      openArtifactInBrowser: vi.fn(),
       openExternal: vi.fn(),
       broadcastThemeChange: vi.fn(),
       on: vi.fn().mockReturnValue(() => undefined),
@@ -444,12 +445,11 @@ describe('ArtifactViewer', () => {
     expect(closeButton).toHaveClass('no-drag');
 
     await user.click(expandButton);
-    expect(window.electron.openArtifactWindow).toHaveBeenCalledWith({
+    // Expand opens the artifact in the user's default browser, not a new window.
+    expect(window.electron.openArtifactInBrowser).toHaveBeenCalledWith({
       html: '<!doctype html><html><body><button>Inside frame</button></body></html>',
       title: 'interactive.html',
       theme: 'light',
-      width: undefined,
-      height: undefined,
     });
 
     await user.click(closeButton);

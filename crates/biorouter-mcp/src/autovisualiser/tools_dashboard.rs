@@ -115,6 +115,47 @@ pub struct DashboardSection {
     pub panels: Vec<DashboardPanel>,
 }
 
+/// Report colour theme. `Auto` (default) follows the desktop app's light/dark
+/// setting so the report matches the rest of the UI (and stays identical in the
+/// side-panel preview and the expanded view); `Light`/`Dark` force a look
+/// regardless of the host — set one when the user asks for a specific background.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, rmcp::schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum DashboardTheme {
+    #[default]
+    Auto,
+    Light,
+    Dark,
+}
+
+impl DashboardTheme {
+    /// The value to bake into `window.__BR_VIZ_THEME__`, or `None` to follow the host.
+    fn forced(self) -> Option<&'static str> {
+        match self {
+            DashboardTheme::Auto => None,
+            DashboardTheme::Light => Some("light"),
+            DashboardTheme::Dark => Some("dark"),
+        }
+    }
+}
+
+/// Bake a locked theme into an assembled report: `window.__BR_VIZ_THEME__` runs
+/// before the report's `{{COMMON}}` (right after `<head>`), so `resolveTheme`
+/// honours it and the report propagates it down to every panel.
+fn inject_forced_theme(html: String, theme: &str) -> String {
+    let tag = format!("<script>window.__BR_VIZ_THEME__=\"{theme}\";</script>");
+    match html.find("<head>") {
+        Some(idx) => {
+            let mut out = String::with_capacity(html.len() + tag.len());
+            out.push_str(&html[..idx + "<head>".len()]);
+            out.push_str(&tag);
+            out.push_str(&html[idx + "<head>".len()..]);
+            out
+        }
+        None => format!("{tag}{html}"),
+    }
+}
+
 /// Parameters for `render_dashboard`.
 #[derive(Debug, Serialize, rmcp::schemars::JsonSchema)]
 pub struct RenderDashboardParams {
@@ -136,6 +177,11 @@ pub struct RenderDashboardParams {
     /// Closing prose: caveats, data provenance, next steps.
     #[serde(default)]
     pub footer: Option<String>,
+    /// Report colour theme: `auto` (default, follows the app's light/dark setting),
+    /// `light`, or `dark`. Set `light` or `dark` when the user asks for a specific
+    /// background; leave it `auto` to match whatever theme the app is in.
+    #[serde(default)]
+    pub theme: DashboardTheme,
 }
 
 /// The exact shape, deserialized once [`normalize_dashboard_args`] has coaxed the
@@ -153,6 +199,8 @@ struct RenderDashboardParamsRaw {
     panels: Option<Vec<DashboardPanel>>,
     #[serde(default)]
     footer: Option<String>,
+    #[serde(default)]
+    theme: DashboardTheme,
 }
 
 /// Parse a value that may have arrived as a JSON string instead of JSON.
@@ -216,6 +264,7 @@ impl<'de> Deserialize<'de> for RenderDashboardParams {
             sections: raw.sections,
             panels: raw.panels,
             footer: raw.footer,
+            theme: raw.theme,
         })
     }
 }
@@ -431,13 +480,19 @@ Example:
   "footer": "Counts from GENCODE v44."
 }
 
-Panel width is `full` (default) or `half` (two per row). Use `sections` for grouped reports, or the flat `panels` shorthand for a simple one."#
+Panel width is `full` (default) or `half` (two per row). Use `sections` for grouped reports, or the flat `panels` shorthand for a simple one.
+
+Set `theme` to `light` or `dark` if the user asks for a specific background; the default `auto` follows the app's own light/dark setting.
+
+Call this ONCE per report: the report appears in the side panel the moment the call returns — you do not need a second call to display, finalise or confirm it. Call it again only if the user asks to change the report, or to re-render figures that failed."#
     )]
     pub async fn render_dashboard(
         &self,
         params: Parameters<RenderDashboardParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
+        // Copy out the theme before `p`'s other fields are moved below.
+        let forced_theme = p.theme.forced();
 
         if p.title.trim().is_empty() {
             return Err(invalid("Dashboard requires a non-empty `title`."));
@@ -614,16 +669,38 @@ Panel width is `full` (default) or `half` (two per row). Use `sections` for grou
             ],
         );
 
+        // When the user asked for a specific look, lock it in so both the preview
+        // and the expanded view honour it; otherwise the report follows the host.
+        let html = match forced_theme {
+            Some(theme) => inject_forced_theme(html, theme),
+            None => html,
+        };
+
         let rendered = total_panels - failures.len();
         let mut label = format!(
             "Combined report '{}' rendered inline for the user with {rendered} figure{}.",
             p.title,
             if rendered == 1 { "" } else { "s" }
         );
-        if !failures.is_empty() {
+        if failures.is_empty() {
+            // The report is done and already on screen. Say so plainly, and disclaim
+            // the "finalise/confirm" motivation the model invents, so it does not
+            // re-issue an identical render_dashboard call to "finalise" it (an
+            // observed ~20% duplicate-call rate that just burns tokens and drops a
+            // second, redundant card into the chat).
+            label.push_str(
+                " The report is complete and already displayed in the side panel — you do \
+                 not need to call render_dashboard again to display, finalise or confirm it. \
+                 Call it again only if the user asks to change the report.",
+            );
+        } else {
+            // render_dashboard is stateless and re-renders the WHOLE report, so tell
+            // the model to re-send every panel (not just the failed ones) — otherwise
+            // it drops the panels that rendered fine on the retry.
             label.push_str(&format!(
                 "\n\n{} figure(s) could not be rendered and show an error card in the report. \
-                 Fix the arguments and call render_dashboard again:\n{}",
+                 Re-send the whole report with these figures' arguments fixed (keep the panels \
+                 that rendered):\n{}",
                 failures.len(),
                 failures.join("\n")
             ));

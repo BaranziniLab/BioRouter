@@ -59,7 +59,7 @@ import { useConfig } from './ConfigContext';
 import { SessionNamePill } from './Dashboard/SessionNamePill';
 import { announceSessionName, renameSession } from '../utils/sessionNameSync';
 import { toastError } from '../toasts';
-import { errorMessage } from '../utils/conversionUtils';
+import { errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { Greeting } from './common/Greeting';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
 import ArtifactViewer from './artifacts/ArtifactViewer';
@@ -200,6 +200,11 @@ function isSuccessfulToolResult(toolResult: Record<string, unknown>): boolean {
   return wrapped.value?.is_error !== true;
 }
 
+// Auto Visualiser combined reports are served as `ui://dashboard/<slug>` resources
+// (slug derived from the report title). Used to collapse a report the agent
+// re-renders within one turn down to its final version.
+const DASHBOARD_URI_PREFIX = 'ui://dashboard/';
+
 export function collectArtifactsFromMessages(
   messages: Message[],
   workingDir?: string
@@ -227,7 +232,19 @@ export function collectArtifactsFromMessages(
     }
   }
 
+  // A report the agent re-renders within one turn — a double `render_dashboard`
+  // call, or an in-turn refine — must surface as ONE card (its final version), not
+  // a stack of superseded drafts. `addArtifact` only dedupes byte-identical content
+  // (artifactKey is content-based), so a refined re-render — same `ui://dashboard/`
+  // URI, different bytes — slips through as a second artifact, inflating the
+  // Artifacts count and flipping the panel from the draft to the final. Collapse
+  // per (turn, dashboard URI), last render wins. Scoped to the same turn so a
+  // dashboard the user deliberately refines in a LATER turn stays its own entry.
+  let turnIndex = 0;
+  const dashboardSlotByKey = new Map<string, number>();
+
   for (const message of messages) {
+    if (message.role === 'user' && message.metadata?.userVisible !== false) turnIndex += 1;
     for (const content of message.content) {
       if (content.type !== 'toolResponse') continue;
       const call = visibleToolCalls.get(content.id);
@@ -243,14 +260,70 @@ export function collectArtifactsFromMessages(
 
       for (const resultContent of getToolResultContent(content.toolResult)) {
         if (!isEmbeddedResource(resultContent)) continue;
-        addArtifact(
-          artifactSourceFromResource({ ...resultContent, type: 'resource' as const }, 'Artifact')
+        const artifact = artifactSourceFromResource(
+          { ...resultContent, type: 'resource' as const },
+          'Artifact'
         );
+        if (!artifact) continue;
+
+        const uri = (resultContent.resource as { uri?: string } | undefined)?.uri;
+        if (uri?.startsWith(DASHBOARD_URI_PREFIX)) {
+          const slotKey = `${turnIndex}:${uri}`;
+          const slot = dashboardSlotByKey.get(slotKey);
+          if (slot !== undefined) {
+            // Same report, re-rendered this turn: replace the earlier draft in place.
+            seen.delete(artifactKey(artifacts[slot]));
+            artifacts[slot] = artifact;
+            seen.add(artifactKey(artifact));
+            continue;
+          }
+          const before = artifacts.length;
+          addArtifact(artifact);
+          // Only claim the slot if it actually landed (a cross-turn byte-identical
+          // copy is dropped by `seen`, and must not shadow a later real render).
+          if (artifacts.length > before) dashboardSlotByKey.set(slotKey, artifacts.length - 1);
+          continue;
+        }
+
+        addArtifact(artifact);
       }
     }
   }
 
   return artifacts;
+}
+
+/**
+ * Failure handling for the pre-session `createSession` submit. The composer wipes
+ * its text synchronously on submit (ChatInput.performSubmit), so when the backend
+ * is unreachable the awaited createSession rejects *after* the text is already
+ * gone — and the bare catch used to show nothing, so the message silently
+ * vanished. Restore the typed text (via a `restore-chat-input` event the composer
+ * listens for) and surface a visible toast. Connection detection only picks the
+ * wording; the toast + restore fire on ANY rejection, so no silent path remains.
+ * Exported so it can be unit-tested without Electron.
+ */
+export function handleCreateSessionError(
+  err: unknown,
+  ctx: { textValue: string; attachments: UserAttachment[]; sessionId?: string | null }
+): void {
+  // Put the user's text back so it is not lost when the backend is down.
+  window.dispatchEvent(
+    new CustomEvent('restore-chat-input', {
+      detail: {
+        sessionId: ctx.sessionId ?? null,
+        value: ctx.textValue,
+        attachments: ctx.attachments,
+      },
+    })
+  );
+  const connection = isConnectionError(err);
+  toastError({
+    title: connection ? 'Backend disconnected' : 'Failed to start session',
+    msg: connection
+      ? 'Biorouter could not reach its backend. Your message was kept - try again in a moment.'
+      : errorMessage(err),
+  });
 }
 
 function formatCompactNumber(value: number) {
@@ -925,8 +998,9 @@ function BaseChatContent({
           },
           { replace: true }
         );
-      } catch {
+      } catch (err) {
         setIsCreatingSession(false);
+        handleCreateSessionError(err, { textValue, attachments, sessionId });
       }
       return;
     }

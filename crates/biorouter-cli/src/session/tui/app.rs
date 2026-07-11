@@ -383,6 +383,30 @@ impl App {
                     if let Ok(result) = &resp.tool_result {
                         let start = self.scrollback.len();
                         for c in &result.content {
+                            // A `ui://` figure/report/app artifact. The TUI can't
+                            // render the inline HTML the desktop shows, so surface
+                            // a titled signal plus a saved copy to open.
+                            if let Some(note) =
+                                crate::session::output::artifact_note_from_content(c)
+                            {
+                                self.push_line(Line::from(vec![
+                                    Span::styled(
+                                        "◆ ",
+                                        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(
+                                        format!("Artifact: {}", note.title),
+                                        Style::new().add_modifier(Modifier::BOLD),
+                                    ),
+                                ]));
+                                if let Some(path) = &note.saved_path {
+                                    self.push_line(Line::from(Span::styled(
+                                        format!("    open in a browser: {}", path.display()),
+                                        DIM,
+                                    )));
+                                }
+                                continue;
+                            }
                             if let Some(text) = c.as_text() {
                                 let preview = if debug {
                                     text.text.clone()

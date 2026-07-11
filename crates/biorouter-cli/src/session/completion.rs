@@ -18,6 +18,7 @@ pub(crate) const SLASH_COMMANDS: &[&str] = &[
     "/clear",
     "/compact",
     "/diverge",
+    "/rename",
     "/goal",
     "/loop",
     "/schedule",
@@ -228,6 +229,42 @@ where
     pairs
 }
 
+/// Completion pairs for `/kb:<id>` knowledge-base references, matching how the
+/// TUI sources them: list bases, drop hidden ones, and fuzzy-match on id + name.
+/// Degrades to no completions if the knowledge store is missing or unreadable.
+fn kb_reference_pairs(line: &str) -> Vec<Pair> {
+    use biorouter::knowledge::service::KnowledgeService;
+
+    let query = line.trim_start_matches('/').to_lowercase();
+    let mut pairs = Vec::new();
+
+    let Ok(service) = KnowledgeService::new_default() else {
+        return pairs;
+    };
+    let Ok(bases) = service.list_bases() else {
+        return pairs;
+    };
+    let hidden = service.get_hidden_persisted().unwrap_or_default();
+
+    for base in bases.into_iter().filter(|b| !hidden.contains(&b.id)) {
+        let key = format!("kb:{}", base.id);
+        let searchable_name = format!("{} {}", base.id, base.name);
+        if reference_matches_query(
+            &query,
+            &key.to_lowercase(),
+            &searchable_name.to_lowercase(),
+            "knowledge",
+        ) {
+            pairs.push(Pair {
+                display: format!("/{key}"),
+                replacement: format!("/kb:{} ", base.id),
+            });
+        }
+    }
+
+    pairs
+}
+
 /// Completer for biorouter CLI commands
 pub struct BioRouterCompleter {
     _completion_cache: Arc<std::sync::RwLock<CompletionCache>>,
@@ -307,6 +344,7 @@ impl BioRouterCompleter {
             list_skill_reference_names(),
             enabled_extension_reference_names(),
         ));
+        matching_commands.extend(kb_reference_pairs(line));
 
         if !matching_commands.is_empty() {
             return Ok((0, matching_commands));

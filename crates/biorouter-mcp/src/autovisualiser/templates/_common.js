@@ -15,10 +15,33 @@
  */
 (function () {
   function resolveTheme() {
+    var valid = function (v) {
+      return v === 'dark' || v === 'light' ? v : null;
+    };
+    // Precedence, highest first:
+    //  1. `window.__BR_VIZ_THEME__` — a theme the render tool baked in (the agent
+    //     was asked for a specific look), or the report propagating its own theme
+    //     down to a panel. A locked choice; beats everything else.
+    //  2. `?theme=` — the standalone-window / file:// host passes the app theme here.
+    //  3. `window.__BR_VIZ_HOST_THEME__` — the desktop host's app theme, injected by
+    //     the in-chat renderer into the srcdoc preview (which has no query string).
+    //     This is what keeps the side-panel preview and the expanded view identical.
+    //  4. OS `prefers-color-scheme`, then a light default.
     try {
-      var p = new URLSearchParams(window.location.search);
-      var t = p.get('theme');
-      if (t === 'dark' || t === 'light') return t;
+      var forced = valid(window.__BR_VIZ_THEME__);
+      if (forced) return forced;
+    } catch (e) {
+      /* ignore */
+    }
+    try {
+      var t = valid(new URLSearchParams(window.location.search).get('theme'));
+      if (t) return t;
+    } catch (e) {
+      /* ignore */
+    }
+    try {
+      var host = valid(window.__BR_VIZ_HOST_THEME__);
+      if (host) return host;
     } catch (e) {
       /* ignore */
     }

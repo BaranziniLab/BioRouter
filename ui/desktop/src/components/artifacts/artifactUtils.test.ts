@@ -6,6 +6,7 @@ import {
   languageLabel,
   parseDelimitedTable,
   resolveArtifactPath,
+  withHostTheme,
 } from './artifactUtils';
 
 const WORKING_DIR = '/home/ada/project';
@@ -270,5 +271,24 @@ describe('fileArtifactPathsFromToolCall — shell', () => {
       '/home/ada/project/one.csv',
       '/home/ada/project/two.csv',
     ]);
+  });
+});
+
+describe('withHostTheme', () => {
+  it('injects the host theme right after <head> so it runs before the figure runtime', () => {
+    const html = '<!doctype html><html><head><script>/*common*/</script></head><body></body></html>';
+    const out = withHostTheme(html, 'light');
+    expect(out).toContain('<head><script>window.__BR_VIZ_HOST_THEME__="light";</script>');
+    // ...and it precedes the figure's own runtime script.
+    expect(out.indexOf('__BR_VIZ_HOST_THEME__')).toBeLessThan(out.indexOf('/*common*/'));
+  });
+
+  it('carries dark through and falls back to a prefix when there is no <head>', () => {
+    expect(withHostTheme('<html><head></head></html>', 'dark')).toContain(
+      '__BR_VIZ_HOST_THEME__="dark"'
+    );
+    expect(withHostTheme('<div>no head</div>', 'light')).toBe(
+      '<script>window.__BR_VIZ_HOST_THEME__="light";</script><div>no head</div>'
+    );
   });
 });
