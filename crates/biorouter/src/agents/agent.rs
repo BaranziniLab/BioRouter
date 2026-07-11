@@ -1036,6 +1036,14 @@ impl Agent {
         self: &Arc<Self>,
         session: &Session,
     ) -> Vec<ExtensionLoadResult> {
+        // Bind extensions to the session's working directory so the shell tool
+        // (and child-process extensions) run where the user is working. The GUI
+        // folder picker persists the new dir and restarts the agent, which
+        // re-enters this path, so the change takes effect on the next load.
+        self.extension_manager
+            .set_working_dir(session.working_dir.clone())
+            .await;
+
         let session_extensions =
             EnabledExtensionsState::from_extension_data(&session.extension_data);
         let enabled_configs = match session_extensions {

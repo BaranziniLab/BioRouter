@@ -11,6 +11,7 @@
 //! so the agent can keep watching while the job stays alive.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -103,7 +104,12 @@ impl BackgroundJobs {
     /// Spawn `command` as a background job in its own process group, wire up
     /// output capture and a supervisor that records the terminal status, and
     /// register the job. Returns the new job id.
-    pub async fn spawn(&self, command: &str, label: Option<String>) -> Result<String, String> {
+    pub async fn spawn(
+        &self,
+        command: &str,
+        label: Option<String>,
+        working_dir: Option<PathBuf>,
+    ) -> Result<String, String> {
         let id = format!("job-{}", self.next_id.fetch_add(1, Ordering::SeqCst));
         let label = label.unwrap_or_else(|| command.chars().take(40).collect());
 
@@ -111,7 +117,7 @@ impl BackgroundJobs {
         // sanitized git/editor env, own process group) but override
         // kill_on_drop: a background job must survive the tool call returning.
         let shell_config = ShellConfig::default();
-        let mut cmd = configure_shell_command(&shell_config, command, None);
+        let mut cmd = configure_shell_command(&shell_config, command, working_dir.as_deref());
         cmd.kill_on_drop(false);
 
         let mut child = cmd
@@ -323,7 +329,7 @@ mod tests {
     #[tokio::test]
     async fn start_lists_and_completes_with_output() {
         let jobs = BackgroundJobs::new();
-        let id = jobs.spawn("echo hello-bg", None).await.unwrap();
+        let id = jobs.spawn("echo hello-bg", None, None).await.unwrap();
         assert!(jobs.list().await.contains(&id));
         assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Exited(0));
         let snap = jobs.snapshot(&id).await.unwrap();
@@ -333,7 +339,7 @@ mod tests {
     #[tokio::test]
     async fn nonzero_exit_code_is_surfaced() {
         let jobs = BackgroundJobs::new();
-        let id = jobs.spawn("exit 3", None).await.unwrap();
+        let id = jobs.spawn("exit 3", None, None).await.unwrap();
         assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Exited(3));
     }
 
@@ -341,7 +347,7 @@ mod tests {
     async fn output_is_incremental() {
         let jobs = BackgroundJobs::new();
         let id = jobs
-            .spawn("echo first; sleep 0.3; echo second", None)
+            .spawn("echo first; sleep 0.3; echo second", None, None)
             .await
             .unwrap();
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -357,7 +363,7 @@ mod tests {
     #[tokio::test]
     async fn wait_returns_early_on_completion() {
         let jobs = BackgroundJobs::new();
-        let id = jobs.spawn("echo done", None).await.unwrap();
+        let id = jobs.spawn("echo done", None, None).await.unwrap();
         let started = Instant::now();
         let out = jobs.wait(&id, 30).await.unwrap();
         assert!(out.contains("finished"), "wait result: {out}");
@@ -367,7 +373,7 @@ mod tests {
     #[tokio::test]
     async fn wait_times_out_without_killing_then_kill_works() {
         let jobs = BackgroundJobs::new();
-        let id = jobs.spawn("sleep 30", None).await.unwrap();
+        let id = jobs.spawn("sleep 30", None, None).await.unwrap();
         let out = jobs.wait(&id, 1).await.unwrap();
         assert!(out.contains("Still running"), "wait result: {out}");
         assert_eq!(
