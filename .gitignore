@@ -55,6 +55,10 @@ debug_*.txt
 # Error log artifacts from mcp replay tests
 crates/biorouter/tests/mcp_replays/*errors.txt
 
+# Artifact written by the ACP builtin-and-mcp integration test (runs in the
+# crate dir, so the sandbox's result.txt lands here)
+crates/biorouter-acp/result.txt
+
 # Nix build output
 result
 /node_modules/

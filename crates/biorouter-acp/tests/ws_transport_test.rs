@@ -62,6 +62,7 @@ fn ws_acp_basic_completion() {
             data_dir: temp_dir.path().to_path_buf(),
             config_dir: temp_dir.path().to_path_buf(),
             biorouter_mode: BioRouterMode::Auto,
+            extensions: vec![],
         };
         let agent = Arc::new(BioRouterAcpAgent::with_config(config).await.unwrap());
 
