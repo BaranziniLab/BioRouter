@@ -20,10 +20,7 @@ use axum::{
 use clap::{Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use tokio::{net::TcpListener, process::Command, time::sleep};
-use tower_http::{
-    services::{ServeDir, ServeFile},
-    trace::TraceLayer,
-};
+use tower_http::{services::ServeDir, trace::TraceLayer};
 use tracing::{info, warn};
 
 const DEFAULT_PUBLIC_PORT: u16 = 8080;
@@ -280,7 +277,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             .join(".config/biorouter/headless/settings.json"),
     });
 
-    let app = router(state, web_dir);
+    let base_path = base_path_from_public_url(&args.public_url);
+    if !base_path.is_empty() {
+        info!("serving under path prefix {base_path} (assets and API calls are prefixed)");
+    }
+
+    let app = router(state, web_dir, base_path);
     let bind_addr: SocketAddr = format!("{}:{}", args.host, args.port)
         .parse()
         .with_context(|| format!("invalid bind address {}:{}", args.host, args.port))?;
@@ -299,8 +301,17 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     result
 }
 
-fn router(state: Arc<AppState>, web_dir: PathBuf) -> Router {
-    let index = web_dir.join("index.html");
+fn router(state: Arc<AppState>, web_dir: PathBuf, base_path: String) -> Router {
+    let index_path = web_dir.join("index.html");
+    // Precompute the app-shell HTML once. When served behind a path prefix, the
+    // baked-in root-absolute asset URLs are rewritten and the headless runtime
+    // config (API + headless base URLs) is injected, so the SPA resolves its
+    // assets and API calls under the prefix rather than at the server root.
+    let index_html = build_index_html(&index_path, &base_path);
+    let index_service = get(move || {
+        let html = index_html.clone();
+        async move { axum::response::Html(html) }
+    });
     Router::new()
         .route("/headless/health", get(health))
         .route(
@@ -324,9 +335,84 @@ fn router(state: Arc<AppState>, web_dir: PathBuf) -> Router {
         .route("/api", any(proxy_api_root))
         .route("/api/", any(proxy_api_root))
         .route("/api/{*path}", any(proxy_api))
-        .fallback_service(ServeDir::new(web_dir).fallback(ServeFile::new(index)))
+        // Serve real files (the hashed /assets/*, etc.) from disk. Disable
+        // directory auto-indexing so a request for "/" falls through to the
+        // rewritten app shell instead of the raw, un-rewritten index.html.
+        .fallback_service(
+            ServeDir::new(web_dir)
+                .append_index_html_on_directories(false)
+                .fallback(index_service),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// The URL path prefix a reverse proxy serves this app under, derived from the
+/// configured public URL. `https://host/biorouter/` → `/biorouter`; a root URL
+/// (`https://host/`) or no configured URL → `""` (served unchanged, as before).
+///
+/// This assumes a prefix-stripping proxy (e.g. jupyter-server-proxy): the proxy
+/// removes `/biorouter` before forwarding, so the backend keeps serving routes
+/// at the root while the emitted URLs carry the prefix for the browser.
+fn base_path_from_public_url(public_url: &Option<String>) -> String {
+    let Some(raw) = public_url else {
+        return String::new();
+    };
+    let raw = raw.trim();
+    // Drop the scheme, then take everything after the first '/' (the host's path).
+    let after_scheme = raw.split_once("://").map_or(raw, |(_, rest)| rest);
+    let path = after_scheme.split_once('/').map_or("", |(_, rest)| rest);
+    // Ignore any query/fragment. `normalize_base_path` restores the leading '/'.
+    let path = path.split(['?', '#']).next().unwrap_or("");
+    normalize_base_path(path)
+}
+
+/// Normalize a path prefix to a leading slash and no trailing slash. `/` or an
+/// empty path normalize to `""` (no prefix).
+fn normalize_base_path(path: &str) -> String {
+    let trimmed = path.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+    if let Some(stripped) = trimmed.strip_prefix('/') {
+        format!("/{stripped}")
+    } else {
+        format!("/{trimmed}")
+    }
+}
+
+/// Read the built `index.html` and, when a non-empty `base_path` is given,
+/// rewrite the root-absolute asset URLs to include the prefix and inject the
+/// headless runtime config (API + headless base URLs). With an empty prefix the
+/// file is returned unchanged.
+fn build_index_html(index_path: &Path, base_path: &str) -> String {
+    let raw = std::fs::read_to_string(index_path).unwrap_or_default();
+    rewrite_index_html(&raw, base_path)
+}
+
+/// Pure core of [`build_index_html`]: rewrite asset URLs and inject the runtime
+/// config in `raw` for the given prefix. Returns `raw` unchanged when the prefix
+/// is empty.
+fn rewrite_index_html(raw: &str, base_path: &str) -> String {
+    if base_path.is_empty() {
+        return raw.to_string();
+    }
+
+    // Vite emits root-absolute asset URLs (`src="/assets/…"`, `href="/assets/…"`).
+    // Prefix them so they resolve under the proxy path.
+    let rewritten = raw
+        .replace("\"/assets/", &format!("\"{base_path}/assets/"))
+        .replace("'/assets/", &format!("'{base_path}/assets/"));
+
+    // Populate the config the renderer reads before it derives API/headless base
+    // URLs from window.location.origin (which drops the path prefix).
+    let inject = format!(
+        "<script>window.__BIOROUTER_HEADLESS_CONFIG__={{\"apiBaseUrl\":\"{base_path}/api\",\"headlessBaseUrl\":\"{base_path}/headless\"}};</script>"
+    );
+    match rewritten.split_once("</head>") {
+        Some((head, rest)) => format!("{head}{inject}</head>{rest}"),
+        None => format!("{inject}{rewritten}"),
+    }
 }
 
 fn spawn_biorouterd(
@@ -1391,5 +1477,73 @@ async fn shutdown_signal() {
     tokio::select! {
         _ = ctrl_c => {},
         _ = terminate => {},
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{base_path_from_public_url, normalize_base_path, rewrite_index_html};
+
+    #[test]
+    fn base_path_derives_prefix_from_public_url() {
+        let cases = [
+            (Some("https://host/biorouter/"), "/biorouter"),
+            (Some("https://host/biorouter"), "/biorouter"),
+            (Some("http://host:8080/a/b/"), "/a/b"),
+            (Some("https://host/"), ""),
+            (Some("http://host:8080"), ""),
+            (Some("host:8080/prefix"), "/prefix"),
+            (Some("https://host/p/?x=1#frag"), "/p"),
+            (None, ""),
+        ];
+        for (input, expected) in cases {
+            let got = base_path_from_public_url(&input.map(str::to_string));
+            assert_eq!(got, expected, "input: {input:?}");
+        }
+    }
+
+    #[test]
+    fn normalize_base_path_forces_leading_slash_and_no_trailing() {
+        assert_eq!(normalize_base_path("/biorouter/"), "/biorouter");
+        assert_eq!(normalize_base_path("biorouter"), "/biorouter");
+        assert_eq!(normalize_base_path("/"), "");
+        assert_eq!(normalize_base_path(""), "");
+        assert_eq!(normalize_base_path("/a/b/"), "/a/b");
+    }
+
+    const SAMPLE_INDEX: &str = r#"<!doctype html><html><head>
+<script type="module" crossorigin src="/assets/index-abc.js"></script>
+<link rel="stylesheet" href="/assets/index-def.css">
+</head><body><div id="root"></div></body></html>"#;
+
+    #[test]
+    fn rewrite_prefixes_assets_and_injects_config() {
+        let out = rewrite_index_html(SAMPLE_INDEX, "/biorouter");
+        assert!(
+            out.contains("src=\"/biorouter/assets/index-abc.js\""),
+            "js asset not prefixed: {out}"
+        );
+        assert!(
+            out.contains("href=\"/biorouter/assets/index-def.css\""),
+            "css asset not prefixed: {out}"
+        );
+        assert!(
+            out.contains(r#"window.__BIOROUTER_HEADLESS_CONFIG__={"apiBaseUrl":"/biorouter/api","headlessBaseUrl":"/biorouter/headless"}"#),
+            "runtime config not injected: {out}"
+        );
+        // Config must be injected inside <head> so it runs before the module.
+        let head_end = out.find("</head>").unwrap();
+        let config_at = out.find("__BIOROUTER_HEADLESS_CONFIG__").unwrap();
+        assert!(config_at < head_end, "config injected after </head>");
+        // No un-prefixed asset URLs remain.
+        assert!(
+            !out.contains("\"/assets/"),
+            "stray root-absolute asset: {out}"
+        );
+    }
+
+    #[test]
+    fn rewrite_is_identity_without_prefix() {
+        assert_eq!(rewrite_index_html(SAMPLE_INDEX, ""), SAMPLE_INDEX);
     }
 }
