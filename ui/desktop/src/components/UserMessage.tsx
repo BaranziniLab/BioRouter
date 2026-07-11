@@ -216,15 +216,21 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
         ) : (
           // Normal message display
           <div className="message flex justify-end w-full">
-            <div className="flex-col max-w-[85%] w-fit">
-              <div className="flex flex-col group">
+            <div className="flex-col max-w-[85%] w-fit min-w-0">
+              <div className="flex flex-col group min-w-0">
                 {/* The user's turn is tinted only so the eye can find the boundary
                     when scrolling. It is NOT an accent surface — a solid coral block
                     shouts on a canvas whose whole thesis is calm (design.md §4.18). */}
-                <div className="flex rounded-xl border border-border-subtle bg-background-medium px-4 py-2.5">
+                <div className="flex min-w-0 rounded-xl border border-border-subtle bg-background-medium px-4 py-2.5">
+                  {/* min-w-0 is required on this flex item: overflow-wrap:break-word
+                      (break-words) prevents *visual* overflow but does NOT reduce the
+                      element's intrinsic min-content width, so a long unbroken token
+                      (e.g. a comma-separated number list with no spaces) keeps the
+                      flex item at full-token width and bleeds past the bubble. min-w-0
+                      lets the item shrink so the break can happen. */}
                   <div
                     ref={contentRef}
-                    className="text-sm text-text-default whitespace-pre-wrap break-words leading-relaxed"
+                    className="min-w-0 text-sm text-text-default whitespace-pre-wrap break-words leading-relaxed"
                   >
                     {displayText}
                   </div>

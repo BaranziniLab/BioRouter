@@ -31,7 +31,7 @@ export function ToolCallArguments({ args }: ToolCallArgumentsProps) {
           <div className="font-sans text-sm mb-2">
             <div className="flex flex-row">
               <span className="text-text-muted min-w-[140px]">{key}</span>
-              <span className="text-text-muted">{value}</span>
+              <span className="min-w-0 break-words text-text-muted">{value}</span>
             </div>
           </div>
         );

@@ -149,10 +149,10 @@ export default function AppsView() {
               {apps.map((app) => (
                 <div
                   key={`${app.uri}-${app.mcpServer}`}
-                  className="flex flex-col p-4 border border-border-subtle rounded-xl bg-background-default transition-colors duration-150 hover:bg-background-medium/40 hover:border-border-strong"
+                  className="flex min-w-0 flex-col p-4 border border-border-subtle rounded-xl bg-background-default transition-colors duration-150 hover:bg-background-medium/40 hover:border-border-strong"
                 >
-                  <div className="flex-1 mb-4">
-                    <h3 className="font-medium text-text-default mb-2">{app.name}</h3>
+                  <div className="flex-1 min-w-0 mb-4">
+                    <h3 className="font-medium text-text-default mb-2 break-words">{app.name}</h3>
                     {app.description && (
                       <p className="text-sm text-text-muted mb-2">{app.description}</p>
                     )}

@@ -82,7 +82,7 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
         )}
         {!loading && !error && !content && <span className="text-text-muted">No content.</span>}
       </div>
-      <div className="border-t border-border-subtle bg-background-muted px-4 py-2 text-xs text-text-muted">
+      <div className="border-t border-border-subtle bg-background-muted px-4 py-2 text-xs text-text-muted break-all">
         {node.path}
       </div>
     </div>
