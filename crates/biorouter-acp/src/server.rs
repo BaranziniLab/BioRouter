@@ -58,6 +58,11 @@ pub struct BioRouterAcpConfig {
     pub data_dir: std::path::PathBuf,
     pub config_dir: std::path::PathBuf,
     pub biorouter_mode: biorouter::config::BioRouterMode,
+    /// Extensions resolved from the user's config to load onto the shared agent,
+    /// so an ACP session exposes the same tools as the CLI/GUI. Resolved by the
+    /// caller (`new`): populated from `get_enabled_extensions()` for the trusted
+    /// stdio transport, left empty for the untrusted WebSocket transport.
+    pub extensions: Vec<ExtensionConfig>,
 }
 
 fn mcp_server_to_extension_config(mcp_server: McpServer) -> Result<ExtensionConfig, String> {
@@ -284,7 +289,15 @@ async fn add_builtins(agent: &Agent, builtins: Vec<String>) {
 }
 
 impl BioRouterAcpAgent {
-    pub async fn new(builtins: Vec<String>) -> Result<Self> {
+    /// Build an ACP agent from the user's global config.
+    ///
+    /// When `load_config_extensions` is true, the extensions the user has
+    /// enabled in `config.yaml` (via `get_enabled_extensions`) are loaded onto
+    /// the shared agent, so an ACP session exposes the same tools — and the
+    /// runtime extension-manager — as the CLI/GUI. It is set false for the
+    /// WebSocket transport, whose peer is untrusted artifact content that must
+    /// never be handed the user's (possibly process-spawning) stdio MCP tools.
+    pub async fn new(builtins: Vec<String>, load_config_extensions: bool) -> Result<Self> {
         let config = Config::global();
 
         let provider_name: String = config
@@ -310,6 +323,12 @@ impl BioRouterAcpAgent {
             .get_biorouter_mode()
             .unwrap_or(biorouter::config::BioRouterMode::Auto);
 
+        let extensions = if load_config_extensions {
+            biorouter::config::get_enabled_extensions()
+        } else {
+            Vec::new()
+        };
+
         Self::with_config(BioRouterAcpConfig {
             provider,
             builtins,
@@ -317,6 +336,7 @@ impl BioRouterAcpAgent {
             data_dir: Paths::data_dir(),
             config_dir: Paths::config_dir(),
             biorouter_mode,
+            extensions,
         })
         .await
     }
@@ -336,6 +356,21 @@ impl BioRouterAcpAgent {
 
         add_builtins(&agent_ptr, config.builtins).await;
 
+        // Load the user's configured extensions onto the shared agent (loaded
+        // once; the Agent/ExtensionManager is shared across all ACP sessions,
+        // so new and resumed sessions both see these tools). `builtins` are
+        // loaded first, so an explicit `--with-builtin` wins on any name clash
+        // (`add_extension` dedups by normalized key). A single broken extension
+        // is logged and skipped rather than aborting the agent, matching the
+        // CLI/web loader.
+        for extension in config.extensions {
+            let name = extension.name();
+            match agent_ptr.add_extension(extension).await {
+                Ok(_) => info!(extension = %name, "config extension loaded"),
+                Err(e) => warn!(extension = %name, error = %e, "config extension load failed"),
+            }
+        }
+
         Ok(Self {
             provider: config.provider.clone(),
             sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -349,6 +384,12 @@ impl BioRouterAcpAgent {
     pub fn deny_stdio_mcp(mut self) -> Self {
         self.allow_stdio_mcp = false;
         self
+    }
+
+    /// Names of all extensions registered on the shared agent. Exposed for
+    /// diagnostics and tests.
+    pub async fn list_extensions(&self) -> Vec<String> {
+        self.agent.list_extensions().await
     }
 
     fn convert_acp_prompt_to_message(&self, prompt: Vec<ContentBlock>) -> Message {
@@ -716,9 +757,8 @@ impl BioRouterAcpAgent {
         // Add MCP servers specified in the session request
         for mcp_server in args.mcp_servers {
             if !self.allow_stdio_mcp && matches!(mcp_server, McpServer::Stdio(_)) {
-                return Err(sacp::Error::invalid_params().data(
-                    "stdio MCP servers are not permitted over this transport".to_string(),
-                ));
+                return Err(sacp::Error::invalid_params()
+                    .data("stdio MCP servers are not permitted over this transport".to_string()));
             }
             let config = match mcp_server_to_extension_config(mcp_server) {
                 Ok(c) => c,
@@ -1059,7 +1099,10 @@ pub async fn run(builtins: Vec<String>) -> Result<()> {
     let outgoing = tokio::io::stdout().compat_write();
     let incoming = tokio::io::stdin().compat();
 
-    let agent = Arc::new(BioRouterAcpAgent::new(builtins).await?);
+    // stdio transport: the peer is the local process that launched us (an
+    // editor / Jupyter AI), running with the user's own privileges, so load the
+    // user's enabled config extensions — matching the CLI and GUI.
+    let agent = Arc::new(BioRouterAcpAgent::new(builtins, true).await?);
     serve(agent, incoming, outgoing).await
 }
 
@@ -1190,7 +1233,14 @@ pub async fn run_ws(builtins: Vec<String>, addr: String) -> Result<()> {
     let local = listener.local_addr()?;
     info!(address = %local, "ACP WebSocket server listening (authenticated)");
 
-    let agent = Arc::new(BioRouterAcpAgent::new(builtins).await?.deny_stdio_mcp());
+    // WebSocket transport: the peer is untrusted artifact content, so do NOT
+    // auto-load the user's config extensions (they may spawn processes) — pass
+    // `false` — and additionally deny client-registered stdio MCP servers.
+    let agent = Arc::new(
+        BioRouterAcpAgent::new(builtins, false)
+            .await?
+            .deny_stdio_mcp(),
+    );
 
     loop {
         let (stream, peer) = listener.accept().await?;
@@ -1210,7 +1260,10 @@ pub async fn run_ws(builtins: Vec<String>, addr: String) -> Result<()> {
                 if let Some(origin) = req.headers().get("origin") {
                     let origin = origin.to_str().unwrap_or("<invalid>");
                     if !origin.eq_ignore_ascii_case("null") {
-                        return Err(reject(StatusCode::FORBIDDEN, "cross-origin connect rejected"));
+                        return Err(reject(
+                            StatusCode::FORBIDDEN,
+                            "cross-origin connect rejected",
+                        ));
                     }
                 }
                 let authorized = req

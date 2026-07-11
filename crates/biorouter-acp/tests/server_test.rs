@@ -1,5 +1,6 @@
 mod common;
 
+use biorouter::agents::ExtensionConfig;
 use biorouter::config::BioRouterMode;
 use biorouter::model::ModelConfig;
 use biorouter::providers::api_client::{ApiClient, AuthMethod};
@@ -125,6 +126,80 @@ fn test_acp_with_mcp_http_server() {
     });
 }
 
+/// A cheap provider for tests that only build the agent (no LLM turn is run).
+/// Construction makes no network call.
+fn dummy_provider() -> Arc<dyn biorouter::providers::base::Provider> {
+    let api_client = ApiClient::new(
+        "http://127.0.0.1:1".to_string(),
+        AuthMethod::BearerToken("test-key".to_string()),
+    )
+    .unwrap();
+    Arc::new(OpenAiProvider::new(
+        api_client,
+        ModelConfig::new("gpt-5-nano").unwrap(),
+    ))
+}
+
+/// Regression test for #10 (extensions disabled in acp sessions): extensions
+/// resolved from the user's config (the list `biorouter acp` now passes to
+/// `new(_, true)`) must be registered on the shared ACP agent. Before the fix,
+/// `with_config` only loaded `--with-builtin` extensions, so a plain
+/// `biorouter acp` had none — including the `extensionmanager` tool needed to
+/// enable others at runtime.
+#[test]
+fn test_acp_loads_config_extensions() {
+    run_async_test(async {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = BioRouterAcpConfig {
+            provider: dummy_provider(),
+            builtins: vec![],
+            work_dir: temp_dir.path().to_path_buf(),
+            data_dir: temp_dir.path().to_path_buf(),
+            config_dir: temp_dir.path().to_path_buf(),
+            biorouter_mode: BioRouterMode::Auto,
+            extensions: vec![ExtensionConfig::Platform {
+                name: "extensionmanager".to_string(),
+                bundled: None,
+                description: "extensionmanager".to_string(),
+                available_tools: vec![],
+            }],
+        };
+
+        let agent = BioRouterAcpAgent::with_config(config).await.unwrap();
+        let names = agent.list_extensions().await;
+        assert!(
+            names.iter().any(|n| n == "extensionmanager"),
+            "config extension was not loaded onto the ACP agent: {names:?}"
+        );
+    });
+}
+
+/// The WebSocket transport passes an empty `extensions` list (its peer is
+/// untrusted artifact content), so no config extensions are registered. Guards
+/// the security gate that keeps the user's stdio MCP tools off the WS transport.
+#[test]
+fn test_acp_no_config_extensions_when_empty() {
+    run_async_test(async {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let config = BioRouterAcpConfig {
+            provider: dummy_provider(),
+            builtins: vec![],
+            work_dir: temp_dir.path().to_path_buf(),
+            data_dir: temp_dir.path().to_path_buf(),
+            config_dir: temp_dir.path().to_path_buf(),
+            biorouter_mode: BioRouterMode::Auto,
+            extensions: vec![],
+        };
+
+        let agent = BioRouterAcpAgent::with_config(config).await.unwrap();
+        let names = agent.list_extensions().await;
+        assert!(
+            !names.iter().any(|n| n == "extensionmanager"),
+            "unexpected extension registered on empty-config ACP agent: {names:?}"
+        );
+    });
+}
+
 #[test]
 fn test_acp_with_builtin_and_mcp() {
     run_async_test(async {
@@ -147,7 +222,10 @@ fn test_acp_with_builtin_and_mcp() {
                 include_str!("./test_data/openai_builtin_execute.txt"),
             ),
             (
-                r#"Successfully wrote to result.txt"#.into(),
+                // The text_editor write reports the *resolved absolute path*
+                // ("Successfully wrote to /…/result.txt"), so match the stable
+                // message prefix rather than a bare filename.
+                r#"Successfully wrote to"#.into(),
                 include_str!("./test_data/openai_builtin_final.txt"),
             ),
         ])
@@ -379,6 +457,7 @@ async fn spawn_server_in_process(
         data_dir: data_root.to_path_buf(),
         config_dir: data_root.to_path_buf(),
         biorouter_mode,
+        extensions: vec![],
     };
 
     let (client_read, server_write) = tokio::io::duplex(64 * 1024);
