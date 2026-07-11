@@ -6,7 +6,7 @@ type ScrollBehavior = 'auto' | 'smooth';
 import { cn } from '../../utils';
 
 export interface ScrollAreaHandle {
-  scrollToBottom: () => void;
+  scrollToBottom: (behavior?: ScrollBehavior) => void;
   scrollToPosition: (options: { top: number; behavior?: ScrollBehavior }) => void;
   isAtBottom: () => boolean;
   isFollowing: boolean;
@@ -58,11 +58,11 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       return distanceFromBottom <= BOTTOM_SCROLL_THRESHOLD;
     }, []);
 
-    const scrollToBottom = React.useCallback(() => {
+    const scrollToBottom = React.useCallback((behavior: ScrollBehavior = 'smooth') => {
       if (viewportRef.current) {
         viewportRef.current.scrollTo({
           top: viewportRef.current.scrollHeight,
-          behavior: 'smooth',
+          behavior,
         });
         // When explicitly scrolling to bottom, reset the following state
         setIsFollowing(true);
@@ -164,12 +164,16 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
         !userScrolledUpRef.current &&
         !isActivelyScrollingRef.current
       ) {
-        // Use requestAnimationFrame to ensure DOM has updated
+        // Use requestAnimationFrame to ensure DOM has updated.
+        // Follow streaming content with an INSTANT scroll: a smooth scroll is
+        // re-issued on every content chunk and never settles, so it fights the
+        // growing transcript and janks. Smooth is reserved for the explicit
+        // jump-to-bottom button (scrollToBottom).
         requestAnimationFrame(() => {
           if (viewportRef.current && !isActivelyScrollingRef.current) {
             viewportRef.current.scrollTo({
               top: viewportRef.current.scrollHeight,
-              behavior: 'smooth',
+              behavior: 'auto',
             });
           }
         });
@@ -199,7 +203,7 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
         data-scrolled={isScrolled}
         {...props}
       >
-        <div className={cn('absolute top-0 left-0 right-0 z-10 transition-all duration-200')} />
+        <div className={cn('absolute top-0 left-0 right-0 z-10 transition-opacity duration-[var(--motion-base)]')} />
         <ScrollAreaPrimitive.Viewport
           ref={viewportRef}
           className="h-full w-full rounded-[inherit] [&>div]:!block"

@@ -18,8 +18,8 @@ export const DashboardToolbar: React.FC = () => {
     'relative inline-block w-[22px] h-[12px] rounded-full transition-colors ' +
     (foldMode ? 'bg-text-default/70' : 'bg-background-medium');
   const switchThumb =
-    'absolute top-[2px] w-[8px] h-[8px] rounded-full bg-background-default transition-all ' +
-    (foldMode ? 'left-[12px]' : 'left-[2px]');
+    'absolute top-[2px] left-[2px] w-[8px] h-[8px] rounded-full bg-background-default transition-transform duration-[var(--motion-fast)] ease-[var(--ease-out)] ' +
+    (foldMode ? 'translate-x-[10px]' : 'translate-x-0');
 
   return (
     <div className="relative z-[100] no-drag flex items-center gap-2 px-4 py-1.5 border border-border-subtle bg-background-default shadow-popover">

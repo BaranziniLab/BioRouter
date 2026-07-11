@@ -241,8 +241,10 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
                   : `${cell.key}: no activity`
               }
               className={[
-                'h-[var(--heat-cell)] w-[var(--heat-cell)] appearance-none rounded-[5px] border-0 p-0',
-                'transition-transform duration-[var(--motion-fast)] hover:scale-110',
+                'relative h-[var(--heat-cell)] w-[var(--heat-cell)] appearance-none rounded-[5px] border-0 p-0',
+                // hover:z-10 lifts the grown cell above its neighbors so scaling
+                // up doesn't get clipped by later-painted cells.
+                'transition-transform duration-[var(--motion-fast)] hover:z-10 hover:scale-110',
                 LEVEL_CLASS[cell.day?.level ?? 0],
                 cell.inStreak ? 'shadow-[inset_0_0_0_2px_var(--text-default)]' : '',
               ].join(' ')}

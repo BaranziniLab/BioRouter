@@ -749,9 +749,11 @@ const MentionPopover = forwardRef<
       if (listRef.current && selectedIndex >= 0 && selectedIndex < displayItems.length) {
         const selectedElement = listRef.current.children[selectedIndex] as HTMLElement;
         if (selectedElement) {
+          // Instant, not smooth: this fires on every arrow-key press, and
+          // animated scrolls queue up and lag behind rapid keyboard navigation.
           selectedElement.scrollIntoView({
             block: 'nearest',
-            behavior: 'smooth',
+            behavior: 'auto',
           });
         }
       }
