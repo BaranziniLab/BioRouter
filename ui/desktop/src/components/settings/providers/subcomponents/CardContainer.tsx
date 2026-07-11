@@ -19,12 +19,12 @@ export default function CardContainer({
     <div
       data-testid={testId}
       className={[
-        'rounded-xl p-3 flex flex-col transition-all duration-200 h-[160px]',
+        'rounded-xl p-3 flex flex-col transition-[background-color,border-color,transform,scale] duration-[var(--motion-base)] ease-[var(--ease-out)] h-[160px]',
         'bg-background-card text-text-default border border-border-subtle',
         header ? 'justify-between' : 'justify-center',
         grayedOut
           ? 'opacity-50 cursor-default'
-          : 'cursor-pointer hover:bg-background-muted hover:border-border-strong',
+          : 'cursor-pointer hover:bg-background-muted hover:border-border-strong active:scale-[0.99]',
       ]
         .filter(Boolean)
         .join(' ')}

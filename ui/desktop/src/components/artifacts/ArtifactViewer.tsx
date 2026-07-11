@@ -269,13 +269,20 @@ export default function ArtifactViewer({
       style={{
         ...style,
         contain: 'layout paint',
-        willChange: 'width, flex-basis, transform, opacity',
+        // Only transform + opacity are GPU-composited. width/flex-basis are layout
+        // props the compositor cannot promote — hinting them was ineffective and
+        // held speculative layer state permanently.
+        willChange: 'transform, opacity',
       }}
       className={cn(
         'no-drag relative isolate flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-border-subtle bg-background-muted',
+        // Animate only transform + opacity — width tracks instantly (drag is
+        // transition-none; window-resize should snap, not lag the edge by 180ms).
+        // Exit is a tier faster than entrance (--motion-fast vs --motion-base).
         isResizing
           ? 'transition-none'
-          : 'transition-[width,flex-basis,opacity,transform] duration-[var(--motion-base)] ease-[var(--ease-out)]',
+          : 'transition-[opacity,transform] ease-[var(--ease-out)]',
+        !isResizing && (isOpen ? 'duration-[var(--motion-base)]' : 'duration-[var(--motion-fast)]'),
         isOpen ? 'translate-x-0 opacity-100' : 'translate-x-3 opacity-0',
         className
       )}
@@ -310,7 +317,7 @@ export default function ArtifactViewer({
           <button
             type="button"
             onClick={openStandalone}
-            className="no-drag relative z-50 inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+            className="no-drag relative z-50 inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-[background-color,color,transform,scale] duration-[var(--motion-fast)] active:scale-[0.97] hover:bg-background-medium hover:text-text-default"
             aria-label="Open artifact outside side viewer"
             title="Open outside side viewer"
           >
@@ -324,7 +331,7 @@ export default function ArtifactViewer({
         <button
           type="button"
           onClick={onClose}
-          className="no-drag relative z-50 inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+          className="no-drag relative z-50 inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-[background-color,color,transform,scale] duration-[var(--motion-fast)] active:scale-[0.97] hover:bg-background-medium hover:text-text-default"
           aria-label="Close artifact viewer"
           title="Close"
         >

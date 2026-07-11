@@ -204,7 +204,7 @@ function Sidebar({
       <div
         data-slot="sidebar-gap"
         className={cn(
-          'relative w-(--sidebar-width) bg-transparent transition-[width] duration-300 ease-out will-change-[width]',
+          'relative w-(--sidebar-width) bg-transparent transition-[width] duration-[var(--motion-slow)] ease-[var(--ease-out)]',
           'group-data-[collapsible=offcanvas]:w-0',
           'group-data-[side=right]:rotate-180',
           variant === 'floating' || variant === 'inset'
@@ -215,7 +215,7 @@ function Sidebar({
       <div
         data-slot="sidebar-container"
         className={cn(
-          'biorouter-sidebar-shell bg-sidebar fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-transform duration-300 ease-out will-change-transform md:flex',
+          'biorouter-sidebar-shell bg-sidebar fixed inset-y-0 z-10 hidden h-svh w-(--sidebar-width) transition-transform duration-[var(--motion-slow)] ease-[var(--ease-out)] will-change-transform md:flex',
           side === 'left'
             ? 'left-0 group-data-[collapsible=offcanvas]:translate-x-[-100%]'
             : 'right-0 group-data-[collapsible=offcanvas]:translate-x-[100%]',
@@ -225,9 +225,6 @@ function Sidebar({
             : 'group-data-[collapsible=icon]:w-(--sidebar-width-icon) group-data-[side=left]:border-r group-data-[side=right]:border-l',
           className
         )}
-        style={{
-          willChange: state === 'collapsed' || state === 'expanded' ? 'transform' : 'auto',
-        }}
         {...props}
       >
         <div
@@ -303,7 +300,7 @@ function SidebarInset({ className, ...props }: React.ComponentProps<'main'>) {
         'md:peer-data-[collapsible=offcanvas]:peer-data-[state=expanded]:ml-[var(--sidebar-width)]',
         'md:peer-data-[collapsible=offcanvas]:peer-data-[state=collapsed]:ml-0',
         // Smooth transition when sidebar state changes
-        'transition-[margin-left] duration-300 ease-out',
+        'transition-[margin-left] duration-[var(--motion-slow)] ease-[var(--ease-out)]',
         className
       )}
       {...props}
