@@ -503,6 +503,35 @@ enum SessionCommand {
         #[arg(short = 'o', long)]
         output: Option<PathBuf>,
     },
+    #[command(about = "Rename a saved session")]
+    Rename {
+        #[command(flatten)]
+        identifier: Option<Identifier>,
+
+        /// The new name for the session
+        #[arg(
+            long = "new-name",
+            value_name = "NAME",
+            help = "The new name for the session"
+        )]
+        new_name: String,
+    },
+    #[command(
+        about = "Diverge (fork) a saved session into a new one, preserving full history",
+        long_about = "Branch a stored conversation into a brand-new session. The original is left untouched. Prints the new session id to stdout (resume it with `biorouter session --resume --session-id <ID>`)."
+    )]
+    Diverge {
+        #[command(flatten)]
+        identifier: Option<Identifier>,
+
+        /// Optional name for the new branched session
+        #[arg(
+            long = "branch-name",
+            value_name = "NAME",
+            help = "Name for the new (branched) session"
+        )]
+        branch_name: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -741,6 +770,45 @@ enum ModelsCommand {
         provider: String,
 
         #[arg(long = "model", value_name = "MODEL")]
+        model: String,
+    },
+
+    /// Manage on-disk local models (Llama Server)
+    #[command(about = "Inspect and manage downloaded local models (Llama Server)")]
+    Local {
+        #[command(subcommand)]
+        command: LocalModelCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum LocalModelCommand {
+    /// List the local model catalog and what is already downloaded
+    #[command(
+        about = "List local models and their download state",
+        visible_alias = "ls"
+    )]
+    List {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+    },
+
+    /// Download a local model into the shared cache without starting a chat
+    #[command(about = "Download (pre-cache) a local model")]
+    Pull {
+        #[arg(help = "Catalog model name (e.g. qwen3.5-4b) or a raw owner/repo:QUANT HF spec")]
+        model: String,
+    },
+
+    /// Delete a downloaded local model to reclaim disk space
+    #[command(about = "Delete a downloaded local model", visible_alias = "delete")]
+    Rm {
+        #[arg(help = "Catalog model name (e.g. gemma4) or a raw owner/repo:QUANT HF spec")]
         model: String,
     },
 }
@@ -1389,6 +1457,50 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             };
             crate::commands::session::handle_diagnostics(&session_id, output).await?;
         }
+        SessionCommand::Rename {
+            identifier,
+            new_name,
+        } => {
+            let session_manager = SessionManager::instance();
+            let session_id = if let Some(id) = identifier {
+                lookup_session_id(id).await?
+            } else {
+                match crate::commands::session::prompt_interactive_session_selection(
+                    &session_manager,
+                )
+                .await
+                {
+                    Ok(id) => id,
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        return Ok(());
+                    }
+                }
+            };
+            crate::commands::session::handle_session_rename(&session_id, new_name).await?;
+        }
+        SessionCommand::Diverge {
+            identifier,
+            branch_name,
+        } => {
+            let session_manager = SessionManager::instance();
+            let session_id = if let Some(id) = identifier {
+                lookup_session_id(id).await?
+            } else {
+                match crate::commands::session::prompt_interactive_session_selection(
+                    &session_manager,
+                )
+                .await
+                {
+                    Ok(id) => id,
+                    Err(e) => {
+                        eprintln!("Error: {}", e);
+                        return Ok(());
+                    }
+                }
+            };
+            crate::commands::session::handle_session_diverge(&session_id, branch_name).await?;
+        }
     }
     Ok(())
 }
@@ -1734,6 +1846,17 @@ async fn handle_models_subcommand(command: ModelsCommand) -> Result<()> {
         ModelsCommand::Providers { format } => handle_models_providers(&format).await,
         ModelsCommand::List { provider, format } => handle_models_list(provider, &format).await,
         ModelsCommand::Set { provider, model } => handle_models_set(provider, model).await,
+        ModelsCommand::Local { command } => match command {
+            LocalModelCommand::List { format } => {
+                crate::commands::models::handle_models_local_list(&format).await
+            }
+            LocalModelCommand::Pull { model } => {
+                crate::commands::models::handle_models_local_pull(model).await
+            }
+            LocalModelCommand::Rm { model } => {
+                crate::commands::models::handle_models_local_rm(model).await
+            }
+        },
     }
 }
 

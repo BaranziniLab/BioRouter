@@ -543,10 +543,40 @@ impl CliSession {
                 history.save(editor);
                 self.handle_compact().await?;
             }
-            InputResult::Diverge => {
+            InputResult::Diverge(name) => {
                 history.save(editor);
-                self.handle_diverge().await?;
+                self.handle_diverge(name).await?;
             }
+            InputResult::Rename(name) => {
+                history.save(editor);
+                self.handle_rename(name).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Rename the current session from the classic REPL (`/rename <name>`).
+    async fn handle_rename(&self, name: String) -> Result<()> {
+        let name = name.trim();
+        if name.is_empty() {
+            output::render_error("A session name cannot be empty.");
+            return Ok(());
+        }
+        match self
+            .agent
+            .config
+            .session_manager
+            .update(&self.session_id)
+            .user_provided_name(name)
+            .apply()
+            .await
+        {
+            Ok(()) => output::render_text(
+                &format!("Renamed this session to \"{name}\""),
+                Some(output::ACCENT),
+                false,
+            ),
+            Err(e) => output::render_error(&format!("Couldn't rename session: {e}")),
         }
         Ok(())
     }
@@ -554,8 +584,8 @@ impl CliSession {
     /// Branch the current conversation into a brand-new session (full history
     /// preserved, original untouched) and open it in a fresh BioRouter desktop
     /// window via the `biorouter://diverge` deeplink. Used by the classic CLI.
-    async fn handle_diverge(&self) -> Result<()> {
-        let outcome = self.diverge_and_open(|url| open::that(url)).await?;
+    async fn handle_diverge(&self, name: Option<String>) -> Result<()> {
+        let outcome = self.diverge_and_open(|url| open::that(url), name).await?;
         match outcome.open_error {
             None => output::render_diverge_success(&outcome.new_session_id),
             Some(err) => {
@@ -571,7 +601,11 @@ impl CliSession {
     /// unit-tested without actually launching the GUI. A failure to open the
     /// window is *not* an error — the branch is still persisted — so it is
     /// reported via `DivergeOutcome::open_error` for the caller to surface.
-    pub(crate) async fn diverge_and_open<F>(&self, opener: F) -> Result<DivergeOutcome>
+    pub(crate) async fn diverge_and_open<F>(
+        &self,
+        opener: F,
+        name: Option<String>,
+    ) -> Result<DivergeOutcome>
     where
         F: FnOnce(&str) -> std::io::Result<()>,
     {
@@ -579,9 +613,10 @@ impl CliSession {
 
         // diverge_session branches the conversation with a placeholder-aware,
         // sibling-numbered name (e.g. "Foo (branch 2)") and records lineage.
-        // anchor=None → the branch ends at the most recent complete answer.
+        // A caller-provided `name` overrides that default. anchor=None → the
+        // branch ends at the most recent complete answer.
         let new_session = manager
-            .diverge_session(&self.session_id, None, None)
+            .diverge_session(&self.session_id, name, None)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to diverge session: {}", e))?;
 

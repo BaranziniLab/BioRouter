@@ -25,6 +25,7 @@ import {
   languageFromPath,
   languageLabel,
   parseDelimitedTable,
+  withHostTheme,
 } from './artifactUtils';
 
 // Enough rows to see the shape of the data; a 200k-row CSV must not lock up the
@@ -249,11 +250,12 @@ export default function ArtifactViewer({
 
   const openStandalone = async () => {
     if (preview.kind === 'html') {
-      await window.electron.openArtifactWindow({
+      // Expand opens the artifact in the user's default browser (agentic
+      // artifacts fall back to a managed window in the main process). The theme
+      // is passed so the browser view matches this preview.
+      await window.electron.openArtifactInBrowser({
         html: preview.html,
         title: artifact.title,
-        width: artifact.kind === 'html' ? artifact.preferredWidth : undefined,
-        height: artifact.kind === 'html' ? artifact.preferredHeight : undefined,
         theme: resolvedTheme,
       });
       return;
@@ -381,7 +383,9 @@ function ArtifactPreviewBody({
       <iframe
         ref={trustedFrameRef}
         title={artifact.title}
-        srcDoc={preview.html}
+        // Inject the app theme so this preview matches the expanded/opened view,
+        // which loads with an explicit `?theme=`; a srcdoc iframe has no query.
+        srcDoc={withHostTheme(preview.html, resolvedTheme)}
         sandbox="allow-scripts allow-forms allow-modals"
         className={cn('h-full w-full bg-white', isResizing && 'pointer-events-none')}
       />

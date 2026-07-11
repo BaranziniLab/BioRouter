@@ -361,6 +361,11 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
         const blob = new Blob([html], { type: 'text/html' });
         window.open(URL.createObjectURL(blob), '_blank', 'noopener,noreferrer');
       },
+      openArtifactInBrowser: async (payload: { html: string } | string) => {
+        const html = typeof payload === 'string' ? payload : payload.html;
+        const blob = new Blob([html], { type: 'text/html' });
+        window.open(URL.createObjectURL(blob), '_blank', 'noopener,noreferrer');
+      },
       prepareArtifactHtml: async ({ html }: { html: string }) => ({ html }),
       recordWorkflowHash: async () => {},
       hasAcceptedWorkflowBefore: async () => false,

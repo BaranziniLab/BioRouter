@@ -262,6 +262,11 @@ type ElectronAPI = {
     height?: number;
     theme?: 'light' | 'dark';
   }) => Promise<{ ok: boolean }>;
+  openArtifactInBrowser: (payload: {
+    html: string;
+    title?: string;
+    theme?: 'light' | 'dark';
+  }) => Promise<{ ok: boolean }>;
   prepareArtifactHtml: (payload: { html: string }) => Promise<{ html: string }>;
   addRecentDir: (dir: string) => Promise<boolean>;
   openBrxtFilePicker: () => Promise<string | null>;
@@ -506,6 +511,8 @@ const electronAPI: ElectronAPI = {
     height?: number;
     theme?: 'light' | 'dark';
   }) => ipcRenderer.invoke('open-artifact-window', payload),
+  openArtifactInBrowser: (payload: { html: string; title?: string; theme?: 'light' | 'dark' }) =>
+    ipcRenderer.invoke('open-artifact-in-browser', payload),
   prepareArtifactHtml: (payload: { html: string }) =>
     ipcRenderer.invoke('prepare-artifact-html', payload),
   addRecentDir: (dir: string) => ipcRenderer.invoke('add-recent-dir', dir),

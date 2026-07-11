@@ -21,3 +21,20 @@ export function errorMessage(err: Error | unknown, default_value?: string) {
     return default_value || String(err);
   }
 }
+
+// A fetch to a down/unreachable backend rejects with `TypeError: Failed to fetch`
+// (Chromium/Electron) *before* any HTTP response exists — distinct from a real
+// HTTP error (a 4xx/5xx throws with a parsed response body, not a TypeError).
+// Used to give backend-disconnected UX its own copy without swallowing the
+// message. A real HTTP failure returns false so it keeps its own error text.
+export function isConnectionError(err: Error | unknown): boolean {
+  if (err instanceof TypeError) return true;
+  const msg = errorMessage(err).toLowerCase();
+  return (
+    msg.includes('failed to fetch') ||
+    msg.includes('fetch failed') ||
+    msg.includes('networkerror') ||
+    msg.includes('load failed') || // WebKit wording
+    msg.includes('err_connection')
+  );
+}

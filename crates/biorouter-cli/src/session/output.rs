@@ -251,7 +251,18 @@ pub fn render_message(message: &Message, debug: bool) {
             MessageContent::ToolRequest(req) => render_tool_request(req, theme, debug),
             MessageContent::ToolResponse(resp) => render_tool_response(resp, theme, debug),
             MessageContent::Image(image) => {
-                println!("Image: [data: {}, type: {}]", image.data, image.mime_type);
+                // Show a compact placeholder, not the full base64 blob (which can
+                // be megabytes and floods the terminal). `data` is base64, so the
+                // decoded size is ~3/4 of its length.
+                let approx_bytes = image.data.len() * 3 / 4;
+                println!(
+                    "{}",
+                    style(format!(
+                        "[Image: {}, ~{} bytes]",
+                        image.mime_type, approx_bytes
+                    ))
+                    .dim()
+                );
             }
             MessageContent::Thinking(thinking) => {
                 if std::env::var("BIOROUTER_CLI_SHOW_THINKING").is_ok()
@@ -352,6 +363,17 @@ fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
     match &resp.tool_result {
         Ok(result) => {
             for content in &result.content {
+                // A `ui://` artifact (Auto Visualiser figure/report, Agent
+                // Drafter app preview). A terminal can't render the inline HTML
+                // the desktop shows, so surface a titled signal — and, for HTML,
+                // a saved copy the user can open in a browser. This is handled
+                // before the audience/priority filters below, which would
+                // otherwise silently drop the resource.
+                if let Some(note) = artifact_note_from_content(content) {
+                    render_artifact_note(&note);
+                    continue;
+                }
+
                 if let Some(audience) = content.audience() {
                     if !audience.contains(&rmcp::model::Role::User) {
                         continue;
@@ -379,6 +401,133 @@ fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
             }
         }
         Err(e) => print_markdown_source(&e.to_string(), theme),
+    }
+}
+
+/// A user-facing summary of a `ui://` artifact resource emitted by a tool.
+pub struct ArtifactNote {
+    /// Human title derived from the `ui://` URI (e.g. "Volcano Plot").
+    pub title: String,
+    /// Where a standalone HTML copy was saved, if the artifact was HTML.
+    pub saved_path: Option<std::path::PathBuf>,
+}
+
+/// Extract an [`ArtifactNote`] from a tool-response content item, if it is a
+/// `ui://` resource. Shared by the classic renderer and the TUI so both surface
+/// artifacts identically.
+pub fn artifact_note_from_content(content: &rmcp::model::Content) -> Option<ArtifactNote> {
+    use rmcp::model::ResourceContents;
+
+    let resource = content.as_resource()?;
+    let (uri, html) = match &resource.resource {
+        ResourceContents::BlobResourceContents {
+            uri,
+            mime_type,
+            blob,
+            ..
+        } => {
+            let html = if mime_type.as_deref() == Some("text/html") {
+                use base64::Engine;
+                base64::engine::general_purpose::STANDARD
+                    .decode(blob)
+                    .ok()
+                    .and_then(|bytes| String::from_utf8(bytes).ok())
+            } else {
+                None
+            };
+            (uri.clone(), html)
+        }
+        ResourceContents::TextResourceContents {
+            uri,
+            mime_type,
+            text,
+            ..
+        } => {
+            let html = (mime_type.as_deref() == Some("text/html")).then(|| text.clone());
+            (uri.clone(), html)
+        }
+    };
+
+    if !uri.starts_with("ui://") {
+        return None;
+    }
+
+    let title = title_from_ui_uri(&uri).unwrap_or_else(|| "Artifact".to_string());
+    let saved_path = html.and_then(|h| save_artifact_html(&uri, &h));
+    Some(ArtifactNote { title, saved_path })
+}
+
+/// Derive a human title from a `ui://host/path` URI, mirroring the desktop's
+/// `titleFromResourceUri`: title-case the path segments (e.g. `ui://volcano/plot`
+/// → "Volcano Plot", `ui://dashboard/omics-summary` → "Dashboard Omics Summary").
+fn title_from_ui_uri(uri: &str) -> Option<String> {
+    let rest = uri.strip_prefix("ui://")?;
+    // Drop any query string / fragment before splitting the path.
+    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
+    let parts: Vec<String> = rest
+        .split('/')
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .map(|p| p.replace(['-', '_'], " "))
+        .collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let title = parts
+        .iter()
+        .flat_map(|p| p.split_whitespace())
+        .map(|w| {
+            let mut chars = w.chars();
+            match chars.next() {
+                Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!title.is_empty()).then_some(title)
+}
+
+/// Save a standalone HTML artifact to a temp dir so a terminal user can open it
+/// in a browser. Best-effort: returns None on any IO error.
+fn save_artifact_html(uri: &str, html: &str) -> Option<std::path::PathBuf> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    let dir = std::env::temp_dir().join("biorouter-artifacts");
+    std::fs::create_dir_all(&dir).ok()?;
+
+    let slug: String = uri
+        .strip_prefix("ui://")
+        .unwrap_or(uri)
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let slug = slug.trim_matches('-');
+    let slug = if slug.is_empty() { "artifact" } else { slug };
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let file = dir.join(format!("{}-{}-{}.html", slug, std::process::id(), n));
+    std::fs::write(&file, html).ok()?;
+    Some(file)
+}
+
+/// Print the titled artifact signal (classic path).
+fn render_artifact_note(note: &ArtifactNote) {
+    println!(
+        "\n  {} {}",
+        style("◆").fg(ACCENT),
+        style(format!("Artifact: {}", note.title)).bold()
+    );
+    match &note.saved_path {
+        Some(path) => println!(
+            "    {} {}",
+            style("open in a browser:").dim(),
+            style(path.display()).fg(ACCENT)
+        ),
+        None => println!(
+            "    {}",
+            style("(rendered inline in the BioRouter desktop app)").dim()
+        ),
     }
 }
 
@@ -989,6 +1138,16 @@ fn estimate_cost_usd(
     input_tokens: usize,
     output_tokens: usize,
 ) -> Option<f64> {
+    // Mirror the server's `/config/pricing` precedence so the CLI shows the same
+    // cost the desktop does: provider-specific overrides first, then the
+    // canonical model catalog. Both cost fields are already per-token.
+    if let Some(pricing) = biorouter::providers::pricing::provider_model_pricing(provider, model) {
+        return Some(
+            pricing.input_token_cost * input_tokens as f64
+                + pricing.output_token_cost * output_tokens as f64,
+        );
+    }
+
     let canonical_model = maybe_get_canonical_model(provider, model)?;
 
     let input_cost_per_token = canonical_model.pricing.prompt?;
@@ -1126,6 +1285,36 @@ pub fn preview() {
 mod tests {
     use super::*;
     use std::env;
+
+    #[test]
+    fn test_title_from_ui_uri() {
+        // Auto Visualiser chart URIs → titled artifacts (mirrors the desktop).
+        assert_eq!(
+            title_from_ui_uri("ui://volcano/plot").as_deref(),
+            Some("Volcano Plot")
+        );
+        assert_eq!(
+            title_from_ui_uri("ui://line/chart").as_deref(),
+            Some("Line Chart")
+        );
+        // Dashboard slugs are hyphen/underscore separated and title-cased.
+        assert_eq!(
+            title_from_ui_uri("ui://dashboard/omics-summary").as_deref(),
+            Some("Dashboard Omics Summary")
+        );
+        assert_eq!(
+            title_from_ui_uri("ui://report/qc_report").as_deref(),
+            Some("Report Qc Report")
+        );
+        // Query/fragment segments are ignored.
+        assert_eq!(
+            title_from_ui_uri("ui://bar/chart?v=2#top").as_deref(),
+            Some("Bar Chart")
+        );
+        // Not a ui:// URI, or empty → None.
+        assert_eq!(title_from_ui_uri("file:///tmp/x.html"), None);
+        assert_eq!(title_from_ui_uri("ui://"), None);
+    }
 
     #[test]
     fn test_short_paths_unchanged() {

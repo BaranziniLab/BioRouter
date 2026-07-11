@@ -98,7 +98,7 @@ async fn auth_middleware(
     if let Some(auth_header) = req.headers().get("authorization") {
         if let Ok(auth_str) = auth_header.to_str() {
             if let Some(token) = auth_str.strip_prefix("Bearer ") {
-                if token == expected_token {
+                if token_matches(token, expected_token) {
                     return Ok(next.run(req).await);
                 }
             }
@@ -106,7 +106,14 @@ async fn auth_middleware(
             if let Some(basic_token) = auth_str.strip_prefix("Basic ") {
                 if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(basic_token) {
                     if let Ok(credentials) = String::from_utf8(decoded) {
-                        if credentials.ends_with(expected_token) {
+                        // Basic auth is `username:password`; the token is the
+                        // password. Compare that field in constant time rather
+                        // than a `ends_with` substring check.
+                        let password = credentials
+                            .split_once(':')
+                            .map(|(_, pw)| pw)
+                            .unwrap_or(&credentials);
+                        if token_matches(password, expected_token) {
                             return Ok(next.run(req).await);
                         }
                     }
@@ -129,6 +136,22 @@ fn is_loopback_address(host: &str) -> bool {
         .to_socket_addrs()
         .map(|mut addrs| addrs.any(|addr| addr.ip().is_loopback()))
         .unwrap_or(false)
+}
+
+/// Compare a candidate token to the expected one in constant time, so a network
+/// peer can't recover the secret one byte at a time by timing the reply. Mirrors
+/// the daemon's `secret_matches` (biorouter-server auth.rs). Length is not
+/// secret — the tokens are fixed-width — so an early length check is fine.
+fn token_matches(candidate: &str, expected: &str) -> bool {
+    let (a, b) = (candidate.as_bytes(), expected.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
 }
 
 fn validate_network_auth(host: &str, auth_token: &Option<String>) {
@@ -415,7 +438,7 @@ async fn websocket_handler(
 ) -> Result<impl IntoResponse, StatusCode> {
     if state.auth_token.is_none() {
         let provided_token = query.token.as_deref().unwrap_or("");
-        if provided_token != state.ws_token {
+        if !token_matches(provided_token, &state.ws_token) {
             tracing::warn!("WebSocket connection rejected: invalid token");
             return Err(StatusCode::FORBIDDEN);
         }
@@ -717,4 +740,20 @@ async fn send_error(
             .into(),
         ))
         .await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::token_matches;
+
+    #[test]
+    fn token_match_is_exact_and_length_checked() {
+        assert!(token_matches("abc123", "abc123"));
+        assert!(!token_matches("abc123", "abc124"));
+        // Differing lengths never match (no false positive on a prefix).
+        assert!(!token_matches("abc", "abc123"));
+        assert!(!token_matches("abc123", "abc"));
+        assert!(!token_matches("", "abc123"));
+        assert!(token_matches("", ""));
+    }
 }

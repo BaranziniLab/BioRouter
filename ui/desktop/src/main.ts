@@ -29,7 +29,7 @@ import fsSync from 'node:fs';
 import started from 'electron-squirrel-startup';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn, spawnSync } from 'child_process';
+import { spawn, spawnSync, type ChildProcess } from 'child_process';
 import AdmZip from 'adm-zip';
 import { safeExtractZip, safeZipEntryTarget } from './utils/safeZip';
 import 'dotenv/config';
@@ -841,6 +841,37 @@ let appConfig = {
 const windowMap = new Map<number, BrowserWindow>();
 const biorouterdClients = new Map<number, Client>();
 
+// A chat window and every Agent Drafter app window it launches share ONE
+// biorouterd (launch-app reuses the launching window's client). The backend
+// must outlive any single dependent window, so it is ref-counted and killed
+// only when the LAST window using it closes. Without this, closing the chat
+// window tore down the backend an app window it launched was still using, and
+// nothing respawned it — the app window then silently failed every call.
+// `app.on('will-quit')` in biorouterd.ts still sweeps every backend on quit,
+// so nothing leaks when the app exits.
+const windowBackends = new Map<number, ChildProcess>(); // windowId -> its backend
+const backendRefCounts = new Map<ChildProcess, number>(); // backend -> live windows
+
+const retainBackend = (windowId: number, proc: ChildProcess) => {
+  windowBackends.set(windowId, proc);
+  backendRefCounts.set(proc, (backendRefCounts.get(proc) ?? 0) + 1);
+};
+
+const releaseBackend = (windowId: number) => {
+  const proc = windowBackends.get(windowId);
+  if (!proc) return;
+  windowBackends.delete(windowId);
+  const remaining = (backendRefCounts.get(proc) ?? 1) - 1;
+  if (remaining > 0) {
+    backendRefCounts.set(proc, remaining);
+    return; // other windows still depend on this backend
+  }
+  backendRefCounts.delete(proc);
+  if (typeof proc === 'object' && 'kill' in proc) {
+    proc.kill(); // last dependent window closed -> safe to terminate
+  }
+};
+
 // Track power save blockers per window
 const windowPowerSaveBlockers = new Map<number, number>(); // windowId -> blockerId
 // Track pending initial messages per window
@@ -948,6 +979,7 @@ const createChat = async (
     })
   );
   biorouterdClients.set(mainWindow.id, biorouterdClient);
+  retainBackend(mainWindow.id, biorouterdProcess);
 
   const serverReady = await checkServerStatus(biorouterdClient, errorLog);
   if (!serverReady) {
@@ -1208,9 +1240,9 @@ const createChat = async (
       windowPowerSaveBlockers.delete(windowId);
     }
 
-    if (biorouterdProcess && typeof biorouterdProcess === 'object' && 'kill' in biorouterdProcess) {
-      biorouterdProcess.kill();
-    }
+    // Kill this window's backend only if no other window (e.g. an Agent Drafter
+    // app window this chat launched) still shares it.
+    releaseBackend(windowId);
   });
   return mainWindow;
 };
@@ -4375,74 +4407,126 @@ async function appMain() {
     html: await prepareArtifactHtml(payload.html),
   }));
 
-  // Open an Agent Drafter artifact's HTML in a large standalone window so the
-  // user can view/interact with it full-size without exporting. The HTML is
-  // self-contained; it runs sandboxed (no node, isolated context). For agentic
-  // artifacts we start the ACP WebSocket sidecar and rewrite the runtime to use
-  // it, so the embedded agent actually responds inside the window.
-  ipcMain.handle(
-    'open-artifact-window',
-    async (
-      _event,
-      payload: {
-        html: string;
-        title?: string;
-        width?: number;
-        height?: number;
-        theme?: 'light' | 'dark';
+  // Auto Visualiser figures/reports resolve their theme from a query string OR
+  // `window.__BR_VIZ_HOST_THEME__`. A file:// page keeps its query, but we inject
+  // the global too so the browser-opened artifact matches the app theme even if a
+  // browser drops the file:// query. A tool-baked `window.__BR_VIZ_THEME__` still wins.
+  const injectHostTheme = (html: string, theme: 'light' | 'dark'): string => {
+    const tag = `<script>window.__BR_VIZ_HOST_THEME__=${JSON.stringify(theme)};</script>`;
+    const marker = '<head>';
+    const idx = html.indexOf(marker);
+    return idx === -1 ? tag + html : html.slice(0, idx + marker.length) + tag + html.slice(idx + marker.length);
+  };
+
+  const writeArtifactTempFile = async (html: string): Promise<string> => {
+    const artifactDir = path.join(os.tmpdir(), 'biorouter-artifacts');
+    await fs.mkdir(artifactDir, { recursive: true });
+    // No window 'closed' event fires for a browser-opened artifact, so sweep old
+    // temp files (>1h) on each open instead of leaking them into tmp forever.
+    try {
+      const cutoff = Date.now() - 3_600_000;
+      for (const name of await fs.readdir(artifactDir)) {
+        const fp = path.join(artifactDir, name);
+        const st = await fs.stat(fp).catch(() => null);
+        if (st && st.mtimeMs < cutoff) await fs.unlink(fp).catch(() => {});
       }
-    ) => {
-      try {
-        const html = await prepareArtifactHtml(payload.html);
-
-        const isDark = payload.theme === 'dark';
-        const win = new BrowserWindow({
-          title: payload.title || 'BioRouter Artifact',
-          width: Math.min(Math.max(payload.width || 1000, 480), 1600),
-          height: Math.min(Math.max(payload.height || 760, 360), 1200),
-          resizable: true,
-          // Match the figure's own background so there is no flash before scripts run.
-          backgroundColor: isDark ? '#1c1f26' : '#ffffff',
-          webPreferences: {
-            nodeIntegration: false,
-            contextIsolation: true,
-            sandbox: true,
-            webSecurity: true,
-            backgroundThrottling: true,
-          },
-        });
-        // Route external links to the system browser; keep the artifact in-window.
-        win.webContents.setWindowOpenHandler(({ url }) => {
-          if (/^https?:\/\//.test(url)) {
-            shell.openExternal(url);
-          }
-          return { action: 'deny' };
-        });
-
-        // Self-contained artifact HTML can be several megabytes — Auto Visualiser
-        // figures inline D3/Chart.js/Leaflet/Mermaid (a Mermaid diagram is ~3.3 MB,
-        // ~4.6 MB once percent-encoded). A `data:` URL would exceed Chromium's ~2 MB
-        // URL ceiling and silently abort the navigation (net::ERR_ABORTED), leaving a
-        // blank window with only the static markup. Write the HTML to a temp file and
-        // load it instead: no length limit, and a stable file:// origin so the figure's
-        // inline scripts run exactly as they do in the in-chat iframe. The `theme`
-        // query mirrors what the in-chat renderer passes so light/dark match.
-        const artifactDir = path.join(os.tmpdir(), 'biorouter-artifacts');
-        await fs.mkdir(artifactDir, { recursive: true });
-        const artifactFile = path.join(artifactDir, `artifact-${crypto.randomUUID()}.html`);
-        await fs.writeFile(artifactFile, html, 'utf-8');
-        // Remove the temp file once the window is gone (keeps it available across reloads).
-        win.on('closed', () => {
-          fs.unlink(artifactFile).catch(() => {});
-        });
-
-        await win.loadFile(artifactFile, { query: { theme: isDark ? 'dark' : 'light' } });
-        return { ok: true };
-      } catch (error) {
-        console.error('Error opening artifact window:', error);
-        return { ok: false };
-      }
+    } catch {
+      /* best effort */
     }
+    const artifactFile = path.join(artifactDir, `artifact-${crypto.randomUUID()}.html`);
+    await fs.writeFile(artifactFile, html, 'utf-8');
+    return artifactFile;
+  };
+
+  type OpenArtifactPayload = {
+    html: string;
+    title?: string;
+    width?: number;
+    height?: number;
+    theme?: 'light' | 'dark';
+  };
+
+  // Open an artifact's HTML in a large standalone Electron window. The HTML is
+  // self-contained; it runs sandboxed (no node, isolated context). For agentic
+  // artifacts we start the ACP WebSocket sidecar (in prepareArtifactHtml) and
+  // rewrite the runtime to use it, so the embedded agent responds inside the window.
+  const openArtifactInWindow = async (payload: OpenArtifactPayload) => {
+    try {
+      const html = await prepareArtifactHtml(payload.html);
+
+      const isDark = payload.theme === 'dark';
+      const win = new BrowserWindow({
+        title: payload.title || 'BioRouter Artifact',
+        width: Math.min(Math.max(payload.width || 1000, 480), 1600),
+        height: Math.min(Math.max(payload.height || 760, 360), 1200),
+        resizable: true,
+        // Match the figure's own background so there is no flash before scripts run.
+        backgroundColor: isDark ? '#1c1f26' : '#ffffff',
+        webPreferences: {
+          nodeIntegration: false,
+          contextIsolation: true,
+          sandbox: true,
+          webSecurity: true,
+          backgroundThrottling: true,
+        },
+      });
+      // Route external links to the system browser; keep the artifact in-window.
+      win.webContents.setWindowOpenHandler(({ url }) => {
+        if (/^https?:\/\//.test(url)) {
+          shell.openExternal(url);
+        }
+        return { action: 'deny' };
+      });
+
+      // Self-contained artifact HTML can be several megabytes — Auto Visualiser
+      // figures inline D3/Chart.js/Leaflet/Mermaid (a Mermaid diagram is ~3.3 MB,
+      // ~4.6 MB once percent-encoded). A `data:` URL would exceed Chromium's ~2 MB
+      // URL ceiling and silently abort the navigation (net::ERR_ABORTED), leaving a
+      // blank window with only the static markup. Write the HTML to a temp file and
+      // load it instead: no length limit, and a stable file:// origin so the figure's
+      // inline scripts run exactly as they do in the in-chat iframe. The `theme`
+      // query mirrors what the in-chat renderer passes so light/dark match.
+      const artifactFile = await writeArtifactTempFile(html);
+      // Remove the temp file once the window is gone (keeps it available across reloads).
+      win.on('closed', () => {
+        fs.unlink(artifactFile).catch(() => {});
+      });
+
+      await win.loadFile(artifactFile, { query: { theme: isDark ? 'dark' : 'light' } });
+      return { ok: true };
+    } catch (error) {
+      console.error('Error opening artifact window:', error);
+      return { ok: false };
+    }
+  };
+
+  // Open a self-contained artifact in the user's default browser instead of an
+  // Electron window (the artifact preview's "expand" uses this). An AGENTIC
+  // artifact needs the managed window's context for the ACP bridge, so those fall
+  // back to a window rather than break silently in a plain browser tab.
+  const openArtifactInBrowser = async (payload: OpenArtifactPayload) => {
+    if (payload.html.includes('"transport":"bridge"')) {
+      return openArtifactInWindow(payload);
+    }
+    try {
+      const html = injectHostTheme(
+        await prepareArtifactHtml(payload.html),
+        payload.theme === 'dark' ? 'dark' : 'light'
+      );
+      const artifactFile = await writeArtifactTempFile(html);
+      await shell.openExternal(pathToFileURL(artifactFile).href);
+      return { ok: true };
+    } catch (error) {
+      console.error('Error opening artifact in browser:', error);
+      return { ok: false };
+    }
+  };
+
+  ipcMain.handle('open-artifact-window', (_event, payload: OpenArtifactPayload) =>
+    openArtifactInWindow(payload)
+  );
+  ipcMain.handle('open-artifact-in-browser', (_event, payload: OpenArtifactPayload) =>
+    openArtifactInBrowser(payload)
   );
 
   ipcMain.handle('launch-app', async (event, biorouterApp: BioRouterApp) => {
@@ -4477,9 +4561,16 @@ async function appMain() {
       });
 
       biorouterdClients.set(appWindow.id, launchingClient);
+      // The app window uses the launcher's backend; retain it so closing the
+      // launcher window doesn't kill the backend out from under this app.
+      const launcherBackend = windowBackends.get(launchingWindowId);
+      if (launcherBackend) retainBackend(appWindow.id, launcherBackend);
 
-      appWindow.on('close', () => {
+      // `closed` (definitive), not `close` (cancelable): a prevented close must
+      // not decrement the refcount and tear down a backend still in use.
+      appWindow.on('closed', () => {
         biorouterdClients.delete(appWindow.id);
+        releaseBackend(appWindow.id);
       });
 
       const workingDir = app.getPath('home');

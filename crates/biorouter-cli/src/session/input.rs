@@ -20,8 +20,11 @@ pub enum InputResult {
     Compact,
     ToggleFullToolOutput,
     /// Branch the current conversation into a brand-new session (full history
-    /// preserved) and open it in a fresh BioRouter desktop window.
-    Diverge,
+    /// preserved) and open it in a fresh BioRouter desktop window. An optional
+    /// name is given to the new branch.
+    Diverge(Option<String>),
+    /// Rename the current session.
+    Rename(String),
 }
 
 #[derive(Debug)]
@@ -164,7 +167,22 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
         }
         s if s == CMD_ENDPLAN => Some(InputResult::EndPlan),
         s if s == CMD_CLEAR => Some(InputResult::Clear),
-        "/diverge" => Some(InputResult::Diverge),
+        "/diverge" => Some(InputResult::Diverge(None)),
+        s if s.starts_with("/diverge ") => {
+            let name = s.strip_prefix("/diverge ").unwrap_or("").trim();
+            Some(InputResult::Diverge(
+                (!name.is_empty()).then(|| name.to_string()),
+            ))
+        }
+        s if s == "/rename" || s.starts_with("/rename ") => {
+            let name = s.strip_prefix("/rename").unwrap_or("").trim();
+            if name.is_empty() {
+                println!("{}", console::style("Usage: /rename <new name>").yellow());
+                Some(InputResult::Retry)
+            } else {
+                Some(InputResult::Rename(name.to_string()))
+            }
+        }
         s if s.starts_with(CMD_WORKFLOW) => parse_workflow_command(s),
         s if s == CMD_COMPACT => Some(InputResult::Compact),
         s if s == CMD_SUMMARIZE_DEPRECATED => {
@@ -258,9 +276,10 @@ fn print_help() {
         ("/compact", "Compact the conversation to reclaim context"),
         ("/clear", "Clear the current chat history"),
         (
-            "/diverge",
+            "/diverge [name]",
             "Branch this conversation into a new BioRouter window (keeps full history)",
         ),
+        ("/rename <name>", "Rename the current session"),
         (
             "/goal <condition>",
             "Keep working until the condition is met (/goal clear to stop)",
@@ -407,14 +426,30 @@ mod tests {
         // Test diverge command
         assert!(matches!(
             handle_slash_command("/diverge"),
-            Some(InputResult::Diverge)
+            Some(InputResult::Diverge(None))
         ));
         assert!(matches!(
             handle_slash_command("  /diverge  "),
-            Some(InputResult::Diverge)
+            Some(InputResult::Diverge(None))
         ));
         assert!(handle_slash_command("/divergent").is_none());
-        assert!(handle_slash_command("/diverge now").is_none());
+        // A trailing argument names the new branch.
+        if let Some(InputResult::Diverge(name)) = handle_slash_command("/diverge now") {
+            assert_eq!(name, Some("now".to_string()));
+        } else {
+            panic!("Expected Diverge with a name");
+        }
+
+        // Test rename command
+        if let Some(InputResult::Rename(name)) = handle_slash_command("/rename my chat") {
+            assert_eq!(name, "my chat");
+        } else {
+            panic!("Expected Rename");
+        }
+        assert!(matches!(
+            handle_slash_command("/rename   "),
+            Some(InputResult::Retry)
+        ));
 
         // Test unknown commands
         assert!(handle_slash_command("/unknown").is_none());

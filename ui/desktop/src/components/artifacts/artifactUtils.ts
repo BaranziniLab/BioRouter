@@ -144,6 +144,21 @@ function titleCaseWords(value: string): string {
     .join(' ');
 }
 
+// Inject the desktop app's resolved theme as `window.__BR_VIZ_HOST_THEME__` so an
+// Auto Visualiser figure/report rendered in a `srcdoc` iframe — which has no query
+// string — follows the BioRouter app theme instead of the OS `prefers-color-scheme`.
+// This is what keeps the side-panel preview identical to the expanded/opened view
+// (both then resolve the same theme). The script must run before the figure's own
+// runtime (`{{COMMON}}`), which sits right after `<head>`; a baked tool theme
+// (`window.__BR_VIZ_THEME__`) still wins over this host default.
+export function withHostTheme(html: string, theme: 'light' | 'dark'): string {
+  const tag = `<script>window.__BR_VIZ_HOST_THEME__=${JSON.stringify(theme)};</script>`;
+  const marker = '<head>';
+  const idx = html.indexOf(marker);
+  if (idx === -1) return tag + html;
+  return html.slice(0, idx + marker.length) + tag + html.slice(idx + marker.length);
+}
+
 export function titleFromResourceUri(uri?: string): string | null {
   if (!uri || !uri.startsWith('ui://')) return null;
   let parts: string[];

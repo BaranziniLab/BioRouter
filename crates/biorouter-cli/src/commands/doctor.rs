@@ -3,6 +3,7 @@
 //! `biorouter::system`, so prerequisites are defined in exactly one place.
 
 use anyhow::Result;
+use biorouter::providers::llamacpp_sidecar::{self, SidecarState, SidecarStatus};
 use biorouter::system::{self, DependencyStatus};
 use console::{style, Color};
 
@@ -16,6 +17,12 @@ fn section(title: &str) {
 pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
     let deps = system::check_all();
     let cli_path = system::biorouter_on_path();
+    // Snapshot the local-model sidecar. `status()` health-probes the configured
+    // port, so this also detects a llama-server started by the desktop app or a
+    // standalone `biorouterd` — useful for "the local model works in the app but
+    // my CLI says nothing".
+    let llama = llamacpp_sidecar::global().status().await;
+    let model_cache_dir = llamacpp_sidecar::model_cache_dir().display().to_string();
     // Best-effort, networked (offline → None); skipped for fast callers (GUI).
     let update = if check_update {
         system::check_for_update().await
@@ -29,6 +36,10 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
             serde_json::json!({
                 "dependencies": deps,
                 "cli_on_path": cli_path,
+                "local_models": {
+                    "sidecar": llama,
+                    "model_cache_dir": model_cache_dir,
+                },
                 "update": update,
             })
         );
@@ -58,6 +69,12 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
             );
         }
     }
+
+    // Local model (Llama Server) status — the terminal equivalent of the
+    // desktop onboarding/settings local-model card.
+    println!();
+    section("Local models (Llama Server)");
+    print_llama_status(&llama, &model_cache_dir);
 
     // Actionable next steps for anything missing.
     let missing_required: Vec<&DependencyStatus> =
@@ -118,6 +135,62 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
         ),
     }
     Ok(())
+}
+
+fn print_llama_status(status: &SidecarStatus, model_cache_dir: &str) {
+    let (marker, label) = match status.state {
+        SidecarState::Ready => (style("●").green().to_string(), "ready".to_string()),
+        SidecarState::Starting => (
+            style("◐").yellow().to_string(),
+            "starting (downloading or loading)".to_string(),
+        ),
+        SidecarState::Stopped => (style("○").dim().to_string(), "stopped".to_string()),
+        SidecarState::Error => (style("✗").red().to_string(), "error".to_string()),
+        SidecarState::NoBinary => (
+            style("○").dim().to_string(),
+            "no llama-server binary found".to_string(),
+        ),
+    };
+    println!("    {} server {}", marker, style(label).dim());
+
+    if let Some(model) = &status.model {
+        let ctx = status
+            .context_size
+            .map(|c| format!(" ({} ctx)", c))
+            .unwrap_or_default();
+        println!(
+            "    {} model  {}{}",
+            style("·").dim(),
+            style(model).bold(),
+            style(ctx).dim()
+        );
+    }
+    match &status.binary_path {
+        Some(path) => println!("    {} binary {}", style("·").dim(), style(path).dim()),
+        None => println!(
+            "    {} binary {}",
+            style("·").dim(),
+            style(
+                "not found — set BIOROUTER_LLAMACPP_BIN, or use the desktop app which bundles it"
+            )
+            .dim()
+        ),
+    }
+    println!(
+        "    {} build  {}",
+        style("·").dim(),
+        style(&status.build).dim()
+    );
+    println!(
+        "    {} cache  {}",
+        style("·").dim(),
+        style(model_cache_dir).dim()
+    );
+    if let Some(detail) = &status.detail {
+        if !detail.trim().is_empty() {
+            println!("    {} {}", style("·").dim(), style(detail).dim());
+        }
+    }
 }
 
 fn print_dep(d: &DependencyStatus, width: usize) {

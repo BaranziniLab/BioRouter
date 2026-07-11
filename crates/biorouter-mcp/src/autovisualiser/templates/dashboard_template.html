@@ -471,15 +471,29 @@
 
   if (totalPanels > 2) document.getElementById('toc').hidden = false;
 
+  // A panel is its own srcdoc document, so it has no query string and its
+  // shared runtime would otherwise fall back to the OS prefers-color-scheme —
+  // making a panel's chart colours drift from the report that contains it.
+  // Lock every panel to the report's own resolved theme so the whole report
+  // reads as one coherent light (or dark) surface. This tag runs before the
+  // panel's shared runtime, which sits right after its head.
+  function withReportTheme(docHtml) {
+    var tag = '<script>window.__BR_VIZ_THEME__=' + JSON.stringify(BioRouterViz.theme) + ';<\/script>';
+    var idx = docHtml.indexOf('<head>');
+    return idx === -1 ? tag + docHtml : docHtml.slice(0, idx + 6) + tag + docHtml.slice(idx + 6);
+  }
+
   // -- panel hydration (lazy: only build the srcdoc when it nears the viewport)
   function hydrate(entry) {
     if (entry.loaded) return;
     entry.loaded = true;
     var html = panelHtml(entry.index);
     if (html == null) return;
-    entry.el.srcdoc = html.replace('{{ASSET_PLACEHOLDER}}', function () {
-      return assetTagsFor(entry.assets, entry.hideOwnTitle);
-    });
+    entry.el.srcdoc = withReportTheme(
+      html.replace('{{ASSET_PLACEHOLDER}}', function () {
+        return assetTagsFor(entry.assets, entry.hideOwnTitle);
+      })
+    );
     entry.el.addEventListener('load', function () {
       entry.skeleton.classList.add('hidden');
       window.setTimeout(function () { entry.skeleton.remove(); }, 300);

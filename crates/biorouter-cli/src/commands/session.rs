@@ -219,6 +219,58 @@ pub async fn handle_session_export(
     Ok(())
 }
 
+/// Maximum session name length, mirroring the server route
+/// (`routes/session.rs` MAX_NAME_LENGTH) so the CLI and daemon agree.
+const MAX_SESSION_NAME_LENGTH: usize = 200;
+
+pub async fn handle_session_rename(session_id: &str, new_name: String) -> Result<()> {
+    let trimmed = new_name.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow::anyhow!("A session name cannot be empty."));
+    }
+    if trimmed.chars().count() > MAX_SESSION_NAME_LENGTH {
+        return Err(anyhow::anyhow!(
+            "Session name is too long ({} chars); the maximum is {}.",
+            trimmed.chars().count(),
+            MAX_SESSION_NAME_LENGTH
+        ));
+    }
+
+    let session_manager = SessionManager::instance();
+    // Confirm the session exists so we report a clear error rather than silently
+    // creating/updating a non-existent record.
+    session_manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|e| anyhow::anyhow!("Session '{}' not found: {}", session_id, e))?;
+
+    session_manager
+        .update(session_id)
+        .user_provided_name(trimmed)
+        .apply()
+        .await
+        .with_context(|| format!("Failed to rename session '{}'", session_id))?;
+
+    println!("Renamed session {} → {}", session_id, trimmed);
+    Ok(())
+}
+
+pub async fn handle_session_diverge(session_id: &str, name: Option<String>) -> Result<()> {
+    let session_manager = SessionManager::instance();
+    let branched = session_manager
+        .diverge_session(session_id, name, None)
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to diverge session '{}': {}", session_id, e))?;
+
+    // Machine-readable id on stdout (scriptable), human hint on stderr.
+    println!("{}", branched.id);
+    eprintln!(
+        "Diverged '{}' → new session '{}' (\"{}\"). Resume it with: biorouter session --resume --session-id {}",
+        session_id, branched.id, branched.name, branched.id
+    );
+    Ok(())
+}
+
 pub async fn handle_diagnostics(session_id: &str, output_path: Option<PathBuf>) -> Result<()> {
     println!(
         "Generating diagnostics bundle for session '{}'...",

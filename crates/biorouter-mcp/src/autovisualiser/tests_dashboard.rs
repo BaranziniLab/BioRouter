@@ -100,6 +100,19 @@ fn test_dashboard_tool_is_registered_and_advertised() {
     let instructions = router.get_info().instructions.unwrap();
     assert!(instructions.contains("render_dashboard"));
     assert!(instructions.contains("call `render_dashboard` once"));
+
+    // The tool DESCRIPTION (not just the server instructions) must carry the
+    // call-once guidance, so the model reads it before the FIRST call — this is
+    // the only lever that can curb the ~20% same-turn duplicate-call rate before
+    // the model emits the second call.
+    let tools = router.tool_router.list_all();
+    let dash = tools
+        .iter()
+        .find(|t| t.name.as_ref() == "render_dashboard")
+        .expect("render_dashboard must be listed");
+    let desc = dash.description.as_deref().unwrap_or_default();
+    assert!(desc.to_lowercase().contains("once"), "description must say call it once");
+    assert!(desc.contains("finalise or confirm"));
 }
 
 // ---------------------------------------------------------------------------
@@ -291,9 +304,12 @@ async fn test_dashboard_combines_multiple_figures() {
     assert!(html.contains("Wald test."));
     assert!(html.contains("GENCODE v44."));
 
-    // The assistant is told what happened.
+    // The assistant is told what happened, and told not to re-render on success.
     if let RawContent::Text(text) = &*result.content[1] {
         assert!(text.text.contains("2 figures"));
+        assert!(text.text.contains("The report is complete"));
+        assert!(text.text.contains("already displayed"));
+        assert!(text.text.contains("finalise or confirm"));
     } else {
         panic!("expected an assistant-audience text note");
     }
@@ -625,6 +641,41 @@ async fn test_all_panels_failing_is_a_tool_error() {
         .unwrap_err();
     assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     assert!(err.message.contains("Every figure in the dashboard failed"));
+}
+
+#[tokio::test]
+async fn test_dashboard_theme_param_bakes_a_locked_theme() {
+    let router = AutoVisualiserRouter::new();
+
+    // Explicit light/dark lock `window.__BR_VIZ_THEME__` into the report so the
+    // preview and the expanded view render identically regardless of the host.
+    for theme in ["light", "dark"] {
+        let result = router
+            .render_dashboard(params_from(json!({
+                "title": "Themed report",
+                "theme": theme,
+                "panels": [{"title": "A", "figure": bar_chart_figure()}],
+            })))
+            .await
+            .unwrap();
+        let html = dashboard_html(&result);
+        assert!(
+            html.contains(&format!("window.__BR_VIZ_THEME__=\"{theme}\"")),
+            "theme={theme} must bake a locked __BR_VIZ_THEME__"
+        );
+    }
+
+    // Default (auto) bakes NO locked theme — the report follows the app's theme.
+    let auto = router
+        .render_dashboard(params_from(json!({
+            "title": "Themed report",
+            "panels": [{"title": "A", "figure": bar_chart_figure()}],
+        })))
+        .await
+        .unwrap();
+    // The runtime's panel-propagation helper contains `__BR_VIZ_THEME__=' +` (JS
+    // concatenation); a *baked* literal is the double-quoted form, which must be absent.
+    assert!(!dashboard_html(&auto).contains("__BR_VIZ_THEME__=\""));
 }
 
 #[tokio::test]
