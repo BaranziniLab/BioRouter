@@ -103,6 +103,12 @@ pub struct ExtensionManager {
     provider: SharedProvider,
     tools_cache: Mutex<Option<Arc<Vec<Tool>>>>,
     tools_cache_version: AtomicU64,
+    /// The session's working directory, when known. Extensions loaded from a
+    /// session (`Agent::load_extensions_from_session`) set this so the shell
+    /// tool and child-process extensions run in the directory the user selected
+    /// (e.g. via the GUI folder picker) rather than the daemon's process cwd.
+    /// `None` on non-session paths (CLI), which fall back to the process cwd.
+    working_dir: Mutex<Option<PathBuf>>,
 }
 
 /// A flattened representation of a resource used by the agent to prepare inference
@@ -468,6 +474,7 @@ impl ExtensionManager {
             provider,
             tools_cache: Mutex::new(None),
             tools_cache_version: AtomicU64::new(0),
+            working_dir: Mutex::new(None),
         }
     }
 
@@ -481,10 +488,21 @@ impl ExtensionManager {
         &self.context
     }
 
+    /// Set the session working directory that newly-loaded extensions should run
+    /// in. Called before (re)loading a session's extensions, so a change made via
+    /// the GUI folder picker — which restarts the agent and reloads extensions —
+    /// takes effect for the shell tool and child-process extensions.
+    pub async fn set_working_dir(&self, dir: PathBuf) {
+        *self.working_dir.lock().await = Some(dir);
+    }
+
     /// Resolve the working directory for an extension.
-    /// Falls back to current_dir when working_dir is not available.
+    /// Prefers the session working directory (set via `set_working_dir`), and
+    /// falls back to the process cwd when it is not available (e.g. the CLI).
     async fn resolve_working_dir(&self) -> PathBuf {
-        // Fall back to current_dir - working_dir is passed through the call chain from session
+        if let Some(dir) = self.working_dir.lock().await.clone() {
+            return dir;
+        }
         std::env::current_dir().unwrap_or_default()
     }
 
@@ -573,7 +591,14 @@ impl ExtensionManager {
                     })?;
                 let (server_read, client_write) = tokio::io::duplex(65536);
                 let (client_read, server_write) = tokio::io::duplex(65536);
-                (def.spawn_server)(server_read, server_write);
+                // Pass the resolved working directory so in-process builtins that
+                // run shell commands (the developer extension) execute in the
+                // session's directory instead of the daemon's process cwd.
+                (def.spawn_server)(
+                    server_read,
+                    server_write,
+                    Some(effective_working_dir.clone()),
+                );
                 Box::new(
                     McpClient::connect(
                         (client_read, client_write),

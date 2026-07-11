@@ -29,7 +29,11 @@ pub use knowledge::KnowledgeServer;
 pub use memory::MemoryServer;
 pub use tutorial::TutorialServer;
 
-pub type SpawnServerFn = fn(tokio::io::DuplexStream, tokio::io::DuplexStream);
+/// Spawns a builtin MCP server onto the given duplex transport. The optional
+/// `working_dir` is the session's working directory; builtins that run shell
+/// commands (the developer extension) use it, and the rest ignore it.
+pub type SpawnServerFn =
+    fn(tokio::io::DuplexStream, tokio::io::DuplexStream, Option<std::path::PathBuf>);
 
 pub struct BuiltinDef {
     pub name: &'static str,
@@ -55,7 +59,11 @@ fn spawn_and_serve<S>(
 
 macro_rules! builtin {
     ($name:ident, $server_ty:ty) => {{
-        fn spawn(r: tokio::io::DuplexStream, w: tokio::io::DuplexStream) {
+        fn spawn(
+            r: tokio::io::DuplexStream,
+            w: tokio::io::DuplexStream,
+            _working_dir: Option<std::path::PathBuf>,
+        ) {
             spawn_and_serve(stringify!($name), <$server_ty>::new(), (r, w));
         }
         (
@@ -70,7 +78,28 @@ macro_rules! builtin {
 
 pub static BUILTIN_EXTENSIONS: Lazy<HashMap<&'static str, BuiltinDef>> = Lazy::new(|| {
     HashMap::from([
-        builtin!(developer, DeveloperServer),
+        (
+            "developer",
+            BuiltinDef {
+                name: "developer",
+                // Not built via `builtin!`: the developer server runs shell
+                // commands, so it honors the session working directory.
+                spawn_server: {
+                    fn spawn(
+                        r: tokio::io::DuplexStream,
+                        w: tokio::io::DuplexStream,
+                        working_dir: Option<std::path::PathBuf>,
+                    ) {
+                        let mut server = DeveloperServer::new();
+                        if let Some(dir) = working_dir {
+                            server = server.with_working_dir(dir);
+                        }
+                        spawn_and_serve("developer", server, (r, w));
+                    }
+                    spawn
+                },
+            },
+        ),
         builtin!(autovisualiser, AutoVisualiserRouter),
         builtin!(computercontroller, ComputerControllerServer),
         builtin!(memory, MemoryServer),
@@ -81,7 +110,11 @@ pub static BUILTIN_EXTENSIONS: Lazy<HashMap<&'static str, BuiltinDef>> = Lazy::n
             BuiltinDef {
                 name: "knowledge",
                 spawn_server: {
-                    fn spawn(r: tokio::io::DuplexStream, w: tokio::io::DuplexStream) {
+                    fn spawn(
+                        r: tokio::io::DuplexStream,
+                        w: tokio::io::DuplexStream,
+                        _working_dir: Option<std::path::PathBuf>,
+                    ) {
                         spawn_and_serve(
                             "knowledge",
                             KnowledgeServer::new().expect("init knowledge server"),

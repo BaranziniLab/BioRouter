@@ -184,6 +184,13 @@ pub struct TextEditorParams {
 pub struct ShellParams {
     /// The command string to execute in the shell
     pub command: String,
+    /// Optional directory to run this command in, overriding the session's
+    /// working directory for this call only. An absolute path is recommended; a
+    /// relative path resolves against the session working directory. Note that a
+    /// `cd` inside `command` does not persist to later calls (each call runs in
+    /// its own process) — use this field, or chain with `&&`, instead.
+    #[serde(default)]
+    pub working_directory: Option<String>,
     /// Run the command in the background instead of waiting for it to finish.
     /// Use this for long-lived commands (dev servers, builds, test suites,
     /// training runs) you need to keep running and observe. Returns a job_id
@@ -308,6 +315,11 @@ pub struct DeveloperServer {
     background_jobs: Arc<super::background::BackgroundJobs>,
     bash_env_file: Option<PathBuf>,
     extend_path_with_shell: bool,
+    /// The session's working directory, when known. Shell commands run here
+    /// (unless a per-call `working_directory` overrides it). When `None`, the
+    /// shell falls back to `BIOROUTER_WORKING_DIR` / the process cwd. Set at
+    /// construction from the session so the tool follows the GUI folder picker.
+    working_dir: Option<PathBuf>,
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -692,12 +704,42 @@ impl DeveloperServer {
             background_jobs: Arc::new(super::background::BackgroundJobs::new()),
             extend_path_with_shell: false,
             bash_env_file: None,
+            working_dir: None,
         }
     }
 
     pub fn extend_path_with_shell(mut self, value: bool) -> Self {
         self.extend_path_with_shell = value;
         self
+    }
+
+    /// Set the session working directory that shell commands run in. When unset,
+    /// the shell falls back to `BIOROUTER_WORKING_DIR` / the process cwd.
+    pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
+        self.working_dir = Some(dir);
+        self
+    }
+
+    /// Resolve the directory a shell command should run in: an explicit per-call
+    /// `working_directory` wins (resolved against the session dir if relative),
+    /// then the session working directory, then `BIOROUTER_WORKING_DIR`. `None`
+    /// means inherit the process cwd (the pre-existing behavior).
+    fn resolve_shell_cwd(&self, override_dir: Option<&str>) -> Option<PathBuf> {
+        if let Some(s) = override_dir.map(str::trim).filter(|s| !s.is_empty()) {
+            let p = PathBuf::from(s);
+            return Some(if p.is_absolute() {
+                p
+            } else if let Some(base) = &self.working_dir {
+                base.join(p)
+            } else {
+                p
+            });
+        }
+        self.working_dir.clone().or_else(|| {
+            std::env::var("BIOROUTER_WORKING_DIR")
+                .ok()
+                .map(PathBuf::from)
+        })
     }
 
     pub fn bash_env_file(mut self, value: Option<PathBuf>) -> Self {
@@ -1071,12 +1113,16 @@ impl DeveloperServer {
         // Validate the shell command
         self.validate_shell_command(command)?;
 
+        // Resolve the directory this command runs in: a per-call override, else
+        // the session working directory, else the process cwd.
+        let working_dir = self.resolve_shell_cwd(params.working_directory.as_deref());
+
         // Background mode: start the command in its own process group, register
         // it, and return a job_id immediately instead of waiting for it.
         if params.background.unwrap_or(false) {
             let id = self
                 .background_jobs
-                .spawn(command, params.label.clone())
+                .spawn(command, params.label.clone(), working_dir)
                 .await
                 .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e, None))?;
             return Ok(CallToolResult::success(vec![Content::text(format!(
@@ -1094,7 +1140,7 @@ impl DeveloperServer {
 
         // Execute the command and capture output
         let output_result = self
-            .execute_shell_command(command, &peer, cancellation_token.clone())
+            .execute_shell_command(command, working_dir, &peer, cancellation_token.clone())
             .await;
 
         // Clean up the process from tracking
@@ -1229,6 +1275,7 @@ impl DeveloperServer {
     async fn execute_shell_command(
         &self,
         command: &str,
+        working_dir: Option<PathBuf>,
         peer: &rmcp::service::Peer<RoleServer>,
         cancellation_token: CancellationToken,
     ) -> Result<String, ErrorData> {
@@ -1237,10 +1284,6 @@ impl DeveloperServer {
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("bash");
-
-        let working_dir = std::env::var("BIOROUTER_WORKING_DIR")
-            .ok()
-            .map(std::path::PathBuf::from);
 
         if let Some(ref env_file) = self.bash_env_file {
             if shell_name == "bash" {
@@ -1542,8 +1585,17 @@ impl DeveloperServer {
     }
 
     // Helper method to resolve and validate file paths
+    /// The base directory file operations resolve against and are jailed to.
+    /// Prefers the session working directory (so the text_editor jail tracks the
+    /// same directory the shell runs in), falling back to the process cwd.
+    fn effective_cwd(&self) -> PathBuf {
+        self.working_dir
+            .clone()
+            .unwrap_or_else(|| std::env::current_dir().expect("should have a current working dir"))
+    }
+
     fn resolve_path(&self, path_str: &str) -> Result<PathBuf, ErrorData> {
-        let cwd = std::env::current_dir().expect("should have a current working dir");
+        let cwd = self.effective_cwd();
         let expanded = expand_path(path_str);
         let path = Path::new(&expanded);
 
@@ -1852,6 +1904,49 @@ mod tests {
         DeveloperServer::new()
     }
 
+    /// #2: the shell runs in the session working directory, an absolute
+    /// `working_directory` overrides it, and a relative one resolves against it.
+    #[test]
+    fn shell_cwd_prefers_session_dir_and_override() {
+        let server = DeveloperServer::new().with_working_dir(PathBuf::from("/session/dir"));
+        assert_eq!(
+            server.resolve_shell_cwd(None),
+            Some(PathBuf::from("/session/dir"))
+        );
+        assert_eq!(
+            server.resolve_shell_cwd(Some("/other")),
+            Some(PathBuf::from("/other"))
+        );
+        assert_eq!(
+            server.resolve_shell_cwd(Some("sub/dir")),
+            Some(PathBuf::from("/session/dir/sub/dir"))
+        );
+        // Blank override is ignored.
+        assert_eq!(
+            server.resolve_shell_cwd(Some("   ")),
+            Some(PathBuf::from("/session/dir"))
+        );
+        // An absolute override still works with no session dir.
+        assert_eq!(
+            DeveloperServer::new().resolve_shell_cwd(Some("/abs")),
+            Some(PathBuf::from("/abs"))
+        );
+    }
+
+    /// #2: the text_editor path jail follows the session working directory too,
+    /// so file edits and shell commands agree on where "here" is.
+    #[test]
+    fn editor_path_jail_uses_session_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let server = DeveloperServer::new().with_working_dir(tmp.path().to_path_buf());
+        // A (not-yet-existing) path inside the session dir resolves.
+        assert!(server
+            .resolve_path(tmp.path().join("new.txt").to_str().unwrap())
+            .is_ok());
+        // A path outside the session dir is rejected by the jail.
+        assert!(server.resolve_path("/etc/hosts").is_err());
+    }
+
     /// Creates a test transport using in-memory streams instead of stdio
     /// This avoids the hanging issues caused by multiple tests competing for stdio
     fn create_test_transport() -> impl rmcp::transport::IntoTransport<
@@ -1906,6 +2001,7 @@ mod tests {
             let result = server
                 .shell(
                     Parameters(ShellParams {
+                        working_directory: None,
                         command: "".to_string(),
                         background: None,
                         label: None,
@@ -1943,6 +2039,7 @@ mod tests {
 
             // Test PowerShell command
             let shell_params = Parameters(ShellParams {
+                working_directory: None,
                 command: "Get-ChildItem".to_string(),
                 background: None,
                 label: None,
@@ -2328,6 +2425,7 @@ mod tests {
             let result = server
                 .shell(
                     Parameters(ShellParams {
+                        working_directory: None,
                         command: format!("cat {}", secret_file_path.to_str().unwrap()),
                         background: None,
                         label: None,
@@ -2352,6 +2450,7 @@ mod tests {
             let result = server
                 .shell(
                     Parameters(ShellParams {
+                        working_directory: None,
                         command: format!("cat {}", allowed_file_path.to_str().unwrap()),
                         background: None,
                         label: None,
@@ -3398,6 +3497,7 @@ mod tests {
             let result = server
                 .shell(
                     Parameters(ShellParams {
+                        working_directory: None,
                         command: command.to_string(),
                         background: None,
                         label: None,
@@ -3549,6 +3649,7 @@ mod tests {
             let result = server
                 .shell(
                     Parameters(ShellParams {
+                        working_directory: None,
                         command: command.to_string(),
                         background: None,
                         label: None,
@@ -3761,6 +3862,7 @@ mod tests {
                 server_clone
                     .shell(
                         Parameters(ShellParams {
+                            working_directory: None,
                             command: "sleep 30".to_string(),
                             background: None,
                             label: None,
@@ -3851,6 +3953,7 @@ mod tests {
                 server_clone
                     .shell(
                         Parameters(ShellParams {
+                            working_directory: None,
                             command: "bash -c 'sleep 60 & wait'".to_string(),
                             background: None,
                             label: None,
@@ -3950,6 +4053,7 @@ mod tests {
             let result = server
                 .shell(
                     Parameters(ShellParams {
+                        working_directory: None,
                         command: "echo 'Hello, World!'".to_string(),
                         background: None,
                         label: None,
