@@ -23,7 +23,7 @@ import {
   SidebarSeparator,
 } from '../ui/sidebar';
 import { BioRouter } from '../icons/BioRouter';
-import { ViewOptions, View } from '../../utils/navigationUtils';
+import { ViewOptions, View, navigateWithViewTransition } from '../../utils/navigationUtils';
 import { useChatContext } from '../../contexts/ChatContext';
 import { DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
 import EnvironmentBadge from './EnvironmentBadge';
@@ -148,7 +148,7 @@ function RunningChatItem({
     <button
       type="button"
       onClick={() => onOpen(entry.sessionId)}
-      className={`w-full min-w-0 flex items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-all duration-500 hover:bg-sidebar-hover ${
+      className={`w-full min-w-0 flex items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-[background-color,opacity,transform] duration-[var(--motion-base)] ease-[var(--ease-out)] hover:bg-sidebar-hover ${
         completed ? 'opacity-0 translate-y-1' : 'opacity-100 translate-y-0'
       }`}
       title={entry.title}
@@ -228,16 +228,19 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     // For /pair, preserve the current session if one exists
     // Priority: current URL param > last known session > context
     const sessionId = currentSessionId || lastSessionIdRef.current || chatContext?.chat?.sessionId;
+    // Route through the View Transitions crossfade (same path Hub/useNavigation
+    // uses) so a top-level view switch orients the user instead of hard-cutting.
+    // The helper falls back to a plain navigate under reduced-motion / no support.
     if (path === '/pair' && sessionId && sessionId.length > 0) {
-      navigate(`/pair?resumeSessionId=${sessionId}`);
+      navigateWithViewTransition(navigate, `/pair?resumeSessionId=${sessionId}`);
     } else {
-      navigate(path);
+      navigateWithViewTransition(navigate, path);
     }
   };
 
   const handleOpenRunningChat = (sessionId: string) => {
     lastSessionIdRef.current = sessionId;
-    navigate(`/pair?resumeSessionId=${sessionId}`);
+    navigateWithViewTransition(navigate, `/pair?resumeSessionId=${sessionId}`);
   };
 
   const renderMenuItem = (entry: NavigationEntry, index: number) => {

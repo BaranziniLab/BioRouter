@@ -32,7 +32,7 @@ export default function WorkflowInfoModal({
   };
   if (!isOpen) return null;
   return (
-    <div className="biorouter-modal-overlay fixed inset-0 transition-colors animate-[fadein_200ms_ease-in_forwards] z-[1000]">
+    <div className="biorouter-modal-overlay fixed inset-0 transition-colors animate-[appear_180ms_var(--ease-out)_forwards] z-[1000]">
       <div className="biorouter-modal-surface fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col min-w-[80%] min-h-[80%] bg-background-default overflow-hidden px-8 pt-[24px] pb-0">
         <div className="flex mb-6">
           <h2 className="text-base font-semibold text-text-default">Edit {infoLabel}</h2>

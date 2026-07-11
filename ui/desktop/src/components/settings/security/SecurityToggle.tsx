@@ -113,7 +113,7 @@ export const SecurityToggle = () => {
       </div>
 
       <div
-        className={`overflow-hidden transition-all duration-300 ease-in-out ${
+        className={`overflow-hidden transition-[max-height,opacity] duration-[var(--motion-slow)] ease-[var(--ease-out)] ${
           enabled ? 'max-h-[36rem] opacity-100' : 'max-h-0 opacity-0'
         }`}
       >
@@ -181,7 +181,7 @@ export const SecurityToggle = () => {
 
             {/* Configuration Section */}
             <div
-              className={`overflow-hidden transition-all duration-300 ease-in-out ${
+              className={`overflow-hidden transition-[max-height,opacity] duration-[var(--motion-slow)] ease-[var(--ease-out)] ${
                 enabled && mlEnabled ? 'max-h-[32rem] opacity-100 mt-3' : 'max-h-0 opacity-0'
               }`}
             >

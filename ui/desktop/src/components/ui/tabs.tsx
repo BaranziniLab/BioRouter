@@ -36,7 +36,7 @@ const TabsTrigger = React.forwardRef<
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
-      "relative inline-flex items-center h-9 whitespace-nowrap text-sm font-medium text-text-muted transition-colors duration-[var(--motion-fast)] hover:text-text-default data-[state=active]:text-text-default disabled:pointer-events-none disabled:opacity-50 after:content-[''] after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-transparent data-[state=active]:after:bg-accent-bar",
+      "relative inline-flex items-center h-9 whitespace-nowrap text-sm font-medium text-text-muted transition-colors duration-[var(--motion-fast)] hover:text-text-default data-[state=active]:text-text-default disabled:pointer-events-none disabled:opacity-50 after:content-[''] after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-transparent after:transition-[background-color] after:duration-[var(--motion-base)] after:ease-[var(--ease-out)] data-[state=active]:after:bg-accent-bar",
       className
     )}
     {...props}
@@ -51,7 +51,7 @@ const TabsContent = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <TabsPrimitive.Content
     ref={ref}
-    className={cn('mt-2  animate-in fade-in duration-300', className)}
+    className={cn('mt-2 animate-in fade-in duration-[var(--motion-base)] ease-out', className)}
     {...props}
   />
 ));

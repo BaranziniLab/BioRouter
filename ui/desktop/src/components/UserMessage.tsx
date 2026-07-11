@@ -151,7 +151,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
   }, [editContent, isEditing]);
 
   return (
-    <div className="w-full mt-[16px] opacity-0 animate-[appear_150ms_ease-in_forwards]">
+    <div className="w-full mt-[16px] opacity-0 animate-[appear_150ms_var(--ease-out)_forwards]">
       <div className="flex flex-col group">
         {isEditing ? (
           // Truly wide, centered, in-place edit box replacing the bubble
@@ -216,15 +216,21 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
         ) : (
           // Normal message display
           <div className="message flex justify-end w-full">
-            <div className="flex-col max-w-[85%] w-fit">
-              <div className="flex flex-col group">
+            <div className="flex-col max-w-[85%] w-fit min-w-0">
+              <div className="flex flex-col group min-w-0">
                 {/* The user's turn is tinted only so the eye can find the boundary
                     when scrolling. It is NOT an accent surface — a solid coral block
                     shouts on a canvas whose whole thesis is calm (design.md §4.18). */}
-                <div className="flex rounded-xl border border-border-subtle bg-background-medium px-4 py-2.5">
+                <div className="flex min-w-0 rounded-xl border border-border-subtle bg-background-medium px-4 py-2.5">
+                  {/* min-w-0 is required on this flex item: overflow-wrap:break-word
+                      (break-words) prevents *visual* overflow but does NOT reduce the
+                      element's intrinsic min-content width, so a long unbroken token
+                      (e.g. a comma-separated number list with no spaces) keeps the
+                      flex item at full-token width and bleeds past the bubble. min-w-0
+                      lets the item shrink so the break can happen. */}
                   <div
                     ref={contentRef}
-                    className="text-sm text-text-default whitespace-pre-wrap break-words leading-relaxed"
+                    className="min-w-0 text-sm text-text-default whitespace-pre-wrap break-words leading-relaxed"
                   >
                     {displayText}
                   </div>
@@ -256,7 +262,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                 )}
 
                 <div className="relative h-[22px] flex justify-end text-right">
-                  <div className="absolute w-40 font-sans right-0 text-sm text-text-muted pt-1 transition-all duration-200 group-hover:-translate-y-4 group-hover:opacity-0">
+                  <div className="absolute w-40 font-sans right-0 text-sm text-text-muted pt-1 transition-[transform,opacity] duration-150 group-hover:-translate-y-4 group-hover:opacity-0">
                     {timestamp}
                   </div>
                   <div className="absolute right-0 pt-1 flex items-center gap-2">
@@ -268,7 +274,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                           handleEditClick();
                         }
                       }}
-                      className="flex items-center gap-1 font-sans text-sm text-text-muted hover:cursor-pointer hover:text-text-default transition-all duration-200 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 rounded"
+                      className="flex items-center gap-1 font-sans text-sm text-text-muted hover:cursor-pointer hover:text-text-default transition-[transform,opacity,color] duration-150 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 rounded"
                       aria-label={`Edit message: ${displayText.substring(0, 50)}${displayText.length > 50 ? '...' : ''}`}
                       aria-expanded={isEditing}
                       title="Edit message"

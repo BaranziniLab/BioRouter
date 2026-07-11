@@ -673,7 +673,20 @@
 @keyframes fade-slide-up {
   from {
     opacity: 0;
-    transform: translateY(20px);
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Subtle entrance for tool-call cards appearing mid-stream. Kept short + small
+   (frequency-of-use rule) and transform/opacity only. */
+@keyframes biorouter-tool-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
   }
   to {
     opacity: 1;
@@ -683,14 +696,12 @@
 
 @keyframes biorouter-route-morph-in {
   from {
-    opacity: 0.82;
-    transform: translate3d(0, 8px, 0) scale(0.996);
-    filter: saturate(0.98);
+    opacity: 0;
+    transform: translate3d(0, 8px, 0) scale(0.98);
   }
   to {
     opacity: 1;
     transform: translate3d(0, 0, 0) scale(1);
-    filter: saturate(1);
   }
 }
 
@@ -798,7 +809,15 @@
 }
 
 .animate-fade-slide-up {
-  animation: fade-slide-up 0.15s ease-out forwards;
+  animation: fade-slide-up var(--motion-base) var(--ease-out) forwards;
+}
+
+/* Tool-call cards otherwise pop into the transcript with zero motion when a tool
+   is invoked mid-stream. A short, small, opacity-forward entrance settles them in
+   without drawing attention (they appear very frequently). Reduced-motion is
+   handled globally by the prefers-reduced-motion reset above. */
+.biorouter-message-tool {
+  animation: biorouter-tool-enter 160ms var(--ease-out) both;
 }
 
 .biorouter-modal-overlay {
@@ -1273,16 +1292,16 @@ em > code.bg-inline-code {
 @keyframes biorouter-icon-entrance {
   from {
     opacity: 0;
-    transform: scale(0.25) translate(-5px, 5px) rotate(-20deg);
+    transform: scale(0.92) translateY(2px);
   }
   to {
     opacity: 1;
-    transform: scale(1) translate(0, 0) rotate(0deg);
+    transform: scale(1) translateY(0);
   }
 }
 
 .biorouter-icon-animation {
-  animation: biorouter-icon-entrance 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+  animation: biorouter-icon-entrance var(--motion-slow) var(--ease-out) forwards;
   transform-origin: bottom left;
 }
 
@@ -1352,7 +1371,7 @@ em > code.bg-inline-code {
 }
 
 .biorouter-route-surface {
-  animation: biorouter-route-morph-in 220ms cubic-bezier(0.22, 1, 0.36, 1);
+  animation: biorouter-route-morph-in var(--motion-slow) var(--ease-out);
   view-transition-name: biorouter-route-surface;
 }
 
@@ -1366,13 +1385,13 @@ em > code.bg-inline-code {
 }
 
 ::view-transition-group(biorouter-route-surface) {
-  animation-duration: 260ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  animation-duration: var(--motion-slow);
+  animation-timing-function: var(--ease-out);
 }
 
 ::view-transition-group(biorouter-composer) {
-  animation-duration: 420ms;
-  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  animation-duration: var(--motion-slow);
+  animation-timing-function: var(--ease-out);
 }
 
 ::view-transition-old(biorouter-route-surface),
@@ -1396,7 +1415,7 @@ em > code.bg-inline-code {
 .page-transition {
   /* Start with proper initial state to prevent flicker */
   opacity: 0;
-  animation: page-fade-in 0.08s ease-out forwards;
+  animation: page-fade-in var(--motion-base) var(--ease-out) forwards;
   /* Don't block interactions during animation */
   pointer-events: auto;
 }
@@ -1421,32 +1440,11 @@ em > code.bg-inline-code {
   will-change: transform;
 }
 
-[data-slot='sidebar-gap'] {
-  /* Optimize for width animations */
-  will-change: width;
-}
-
-/* Remove will-change when not transitioning to save memory */
-[data-state='expanded'] [data-slot='sidebar-container'],
-[data-state='collapsed'] [data-slot='sidebar-container'] {
-  will-change: auto;
-}
-
-[data-state='expanded'] [data-slot='sidebar-gap'],
-[data-state='collapsed'] [data-slot='sidebar-gap'] {
-  will-change: auto;
-}
-
-/* Ensure smooth transitions during state changes */
-[data-state='expanded'] [data-slot='sidebar-container'],
-[data-state='collapsed'] [data-slot='sidebar-container'] {
-  will-change: transform;
-}
-
-[data-state='expanded'] [data-slot='sidebar-gap'],
-[data-state='collapsed'] [data-slot='sidebar-gap'] {
-  will-change: width;
-}
+/* will-change stays only on the transform-driven container above (a single,
+   always-present element — cheap). The sidebar-gap animates `width`, which the
+   compositor cannot promote, so a will-change hint there is ineffective; and the
+   previous per-state reset blocks cancelled each other out (data-state is always
+   expanded|collapsed), leaving the hint on permanently. Both are removed. */
 
 /* Subtle back-and-forth shimmer animation for onboarding card */
 @keyframes shimmer {
@@ -1471,7 +1469,8 @@ em > code.bg-inline-code {
 }
 
 .animate-shimmer {
-  animation: shimmer 6s ease-in-out infinite;
+  /* A sweeping translate (marquee-like) reads best at constant speed. */
+  animation: shimmer 6s linear infinite;
 }
 
 /* KaTeX Math Rendering */

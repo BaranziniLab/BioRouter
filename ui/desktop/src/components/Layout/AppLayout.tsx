@@ -2,6 +2,7 @@ import React from 'react';
 import { Outlet, useNavigate, useLocation } from 'react-router-dom';
 import AppSidebar from '../BioRouterSidebar/AppSidebar';
 import { View, ViewOptions } from '../../utils/navigationUtils';
+import { useNavigation } from '../../hooks/useNavigation';
 import { Plus, LayoutDashboard } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { Sidebar, SidebarInset, SidebarProvider, SidebarTrigger, useSidebar } from '../ui/sidebar';
@@ -78,46 +79,11 @@ const AppLayoutContent: React.FC = () => {
     };
   }, []);
 
-  const setView = (view: View, viewOptions?: ViewOptions) => {
-    // Convert view-based navigation to route-based navigation
-    switch (view) {
-      case 'chat':
-        navigate('/');
-        break;
-      case 'pair':
-        navigate('/pair');
-        break;
-      case 'settings':
-        navigate('/settings', { state: viewOptions });
-        break;
-      case 'extensions':
-        navigate('/extensions', { state: viewOptions });
-        break;
-      case 'sessions':
-        navigate('/sessions');
-        break;
-      case 'schedules':
-        navigate('/schedules');
-        break;
-      case 'workflows':
-        navigate('/workflows');
-        break;
-      case 'permission':
-        navigate('/permission', { state: viewOptions });
-        break;
-      case 'ConfigureProviders':
-        navigate('/configure-providers');
-        break;
-      case 'sharedSession':
-        navigate('/shared-session', { state: viewOptions });
-        break;
-      case 'welcome':
-        navigate('/welcome');
-        break;
-      default:
-        navigate('/');
-    }
-  };
+  // Delegate to the shared, view-transition-aware handler so top-bar navigation
+  // crossfades like the sidebar and Hub. This used to be a raw-navigate duplicate
+  // of createNavigationHandler that hard-cut between views (no view transition).
+  const navigateToView = useNavigation();
+  const setView = (view: View, viewOptions?: ViewOptions) => navigateToView(view, viewOptions);
 
   const handleSelectSession = async (sessionId: string) => {
     // Navigate to chat with session data

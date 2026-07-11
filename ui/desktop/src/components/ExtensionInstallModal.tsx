@@ -311,7 +311,7 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
       <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle className={getTitleClassName()}>{config.title}</DialogTitle>
-          <DialogDescription className="text-left whitespace-pre-wrap">
+          <DialogDescription className="text-left whitespace-pre-wrap min-w-0 [overflow-wrap:anywhere]">
             {config.message}
           </DialogDescription>
         </DialogHeader>

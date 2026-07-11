@@ -66,7 +66,7 @@ export const FoldedCard: React.FC<Props> = ({
 
   return (
     <div
-      className="relative h-full w-full animate-[fadein_180ms_ease-out_forwards]"
+      className="relative h-full w-full animate-[appear_180ms_var(--ease-out)_forwards]"
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
