@@ -520,7 +520,9 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
       tabIndex={-1}
       className={cn(
         'no-drag flex min-h-[220px] flex-shrink-0 flex-col overflow-hidden border-t border-border-subtle bg-background-default text-text-default ',
-        open ? 'animate-in slide-in-from-bottom-2 fade-in duration-200' : 'hidden'
+        open
+          ? 'animate-in slide-in-from-bottom-2 fade-in duration-[var(--motion-base)] ease-out'
+          : 'hidden'
       )}
       style={{ height: 'min(42vh, 380px)' }}
     >
@@ -536,7 +538,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
               <div
                 key={pane.id}
                 className={cn(
-                  'relative flex h-7 min-w-0 max-w-[190px] items-center overflow-hidden rounded-md text-xs transition-colors',
+                  'relative flex h-7 min-w-0 max-w-[190px] items-center overflow-hidden rounded-md text-xs transition-colors before:transition-[background-color] before:duration-[var(--motion-base)] before:ease-[var(--ease-out)]',
                   active
                     ? 'bg-background-default text-text-default before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-accent-bar'
                     : 'text-text-muted hover:bg-background-default/70 hover:text-text-default'

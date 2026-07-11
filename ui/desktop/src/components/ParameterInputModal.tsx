@@ -87,7 +87,7 @@ const ParameterInputModal: React.FC<ParameterInputModalProps> = ({
   };
 
   return (
-    <div className="biorouter-modal-overlay fixed inset-0 z-50 flex justify-center items-center animate-[fadein_200ms_ease-in]">
+    <div className="biorouter-modal-overlay fixed inset-0 z-50 flex justify-center items-center animate-[appear_180ms_var(--ease-out)]">
       {showCancelOptions ? (
         // Cancel options modal
         <div className="biorouter-modal-surface bg-background-default p-8 w-full max-w-md">

@@ -31,7 +31,7 @@ export default function WorkflowActivities({
     return (
       <div className="flex flex-col px-6">
         {messagePill && (
-          <div className="mb-4 p-3 rounded-lg border border-border-subtle animate-[fadein_500ms_ease-in_forwards]">
+          <div className="mb-4 p-3 rounded-lg border border-border-subtle animate-[appear_180ms_var(--ease-out)_forwards]">
             <MarkdownContent
               content={substituteParameters(
                 messagePill.replace(/^message:/i, '').trim(),
@@ -42,7 +42,7 @@ export default function WorkflowActivities({
           </div>
         )}
 
-        <div className="flex flex-wrap gap-2 animate-[fadein_500ms_ease-in_forwards]">
+        <div className="flex flex-wrap gap-2 animate-[appear_180ms_var(--ease-out)_forwards]">
           {remainingPills.map((content, index) => {
             const substitutedContent = substituteParameters(content, parameterValues);
             return (

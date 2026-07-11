@@ -50,7 +50,7 @@ export default function MessageCopyLink({ text, contentRef }: MessageCopyLinkPro
   return (
     <button
       onClick={handleCopy}
-      className="flex font-sans items-center gap-1 text-sm text-text-muted hover:cursor-pointer hover:text-text-default transition-all duration-200 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0"
+      className="flex font-sans items-center gap-1 text-sm text-text-muted hover:cursor-pointer hover:text-text-default transition-[transform,opacity,color] duration-150 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0"
     >
       <Copy className="h-3 w-3" />
       <span>{copied ? 'Copied!' : 'Copy'}</span>

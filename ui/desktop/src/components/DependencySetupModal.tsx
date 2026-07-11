@@ -344,7 +344,7 @@ export default function DependencySetupModal() {
                 )}
               </div>
               {cliOutput && (
-                <div className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap">
+                <div className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all">
                   {cliOutput}
                 </div>
               )}
@@ -420,7 +420,7 @@ export default function DependencySetupModal() {
                     ref={(el) => {
                       outputRefs.current[info.name] = el;
                     }}
-                    className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap"
+                    className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all"
                   >
                     {output}
                   </div>

@@ -267,7 +267,7 @@ function ToolCallExpandable({
         </span>
         <ChevronRight
           className={cn(
-            'opacity-0 group-hover:opacity-70 group-focus-visible:opacity-70 transition-all size-3.5 ml-1.5 text-text-muted',
+            'opacity-0 group-hover:opacity-70 group-focus-visible:opacity-70 transition-[opacity,transform] duration-[var(--motion-fast)] size-3.5 ml-1.5 text-text-muted',
             isExpanded && 'opacity-70',
             isExpanded && 'rotate-90'
           )}
@@ -726,7 +726,7 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
 
   return (
     <div className="px-4 py-2">
-      <pre className="font-sans text-sm text-text-muted whitespace-pre-wrap">{renderGraph()}</pre>
+      <pre className="font-sans text-sm text-text-muted whitespace-pre-wrap overflow-x-auto">{renderGraph()}</pre>
       {code && (
         <div className="border-t border-border-subtle -mx-4 mt-2">
           <ToolCallExpandable
@@ -786,7 +786,7 @@ function ToolResultView({ result, isStartExpanded }: ToolResultViewProps) {
           />
         )}
         {hasResource(result) && (
-          <pre className="font-sans text-sm">{JSON.stringify(result, null, 2)}</pre>
+          <pre className="font-sans text-sm whitespace-pre-wrap break-all overflow-x-auto max-w-full">{JSON.stringify(result, null, 2)}</pre>
         )}
       </div>
     </ToolCallExpandable>
@@ -841,7 +841,7 @@ function ToolLogsView({
         className={`flex flex-col items-start space-y-2 overflow-y-auto p-4 ${working ? 'max-h-[4rem]' : 'max-h-[20rem]'}`}
       >
         {logs.map((log, i) => (
-          <span key={i} className="font-sans text-sm text-text-muted">
+          <span key={i} className="w-full whitespace-pre-wrap break-words font-sans text-sm text-text-muted">
             {log}
           </span>
         ))}
@@ -861,8 +861,8 @@ const ProgressBar = ({ progress, total, message }: Omit<Progress, 'progressToken
       <div className="w-full bg-background-muted rounded-md h-4 overflow-hidden relative">
         {isDeterminate ? (
           <div
-            className="bg-background-accent h-full transition-all duration-300"
-            style={{ width: `${percent}%` }}
+            className="bg-background-accent h-full w-full origin-left transition-transform duration-[var(--motion-base)] ease-[var(--ease-out)]"
+            style={{ transform: `scaleX(${Math.min(Math.max(percent / 100, 0), 1)})` }}
           />
         ) : (
           <div className="absolute inset-0 animate-pulse bg-background-accent" />

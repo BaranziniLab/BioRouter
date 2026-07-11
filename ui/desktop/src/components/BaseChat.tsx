@@ -85,7 +85,9 @@ const ARTIFACT_PANEL_MIN_CHAT_WIDTH = 640;
 const ARTIFACT_PANEL_AUTO_TUCK_WIDTH =
   ARTIFACT_PANEL_MIN_WIDTH + ARTIFACT_PANEL_MIN_CHAT_WIDTH + 48;
 const ARTIFACT_PANEL_AUTO_EXPAND_PADDING = 24;
-const ARTIFACT_PANEL_EXIT_MS = 180;
+// Matches the panel's close transition (--motion-fast); exit is a tier faster
+// than the --motion-base entrance so the panel unmounts as the slide completes.
+const ARTIFACT_PANEL_EXIT_MS = 120;
 const SIDEBAR_COMPACT_TITLE_WIDTH = 1120;
 // How long after the agent last worked a render failure is still treated as part
 // of the current exchange (and worth auto-fixing). A figure the agent just made
@@ -1053,7 +1055,9 @@ function BaseChatContent({
     if (initialRenderRef.current && messages.length > 0) {
       initialRenderRef.current = false;
       if (scrollRef.current?.scrollToBottom) {
-        scrollRef.current.scrollToBottom();
+        // Land instantly on resume — a smooth scroll across a full transcript is
+        // a multi-second animation that makes the session feel slow to open.
+        scrollRef.current.scrollToBottom('auto');
       }
     } else if (scrollRef.current?.isFollowing) {
       if (scrollRef.current?.scrollToBottom) {
@@ -1636,7 +1640,7 @@ function BaseChatContent({
                 className={
                   coherent
                     ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-muted'
-                    : `px-4 sm:px-6 pb-6 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[fadein_400ms_ease-in_forwards]'}`
+                    : `px-4 sm:px-6 pb-6 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[appear_200ms_var(--ease-out)_forwards]'}`
                 }
               >
                 {renderWorkingStatus()}

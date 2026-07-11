@@ -177,7 +177,7 @@ export default function BioRouterMessage({
             {toolRequests.length === 0 && (
               <div className="relative flex justify-start">
                 {!isStreaming && (
-                  <div className="font-sans text-sm text-text-muted pt-1 transition-all duration-200 group-hover:-translate-y-4 group-hover:opacity-0">
+                  <div className="font-sans text-sm text-text-muted pt-1 transition-[transform,opacity] duration-150 group-hover:-translate-y-4 group-hover:opacity-0">
                     {timestamp}
                   </div>
                 )}
@@ -211,7 +211,7 @@ export default function BioRouterMessage({
                   </div>
                 ))}
               </div>
-              <div className="font-sans text-sm text-text-muted transition-all duration-200 group-hover:-translate-y-4 group-hover:opacity-0 pt-1">
+              <div className="font-sans text-sm text-text-muted transition-[transform,opacity] duration-150 group-hover:-translate-y-4 group-hover:opacity-0 pt-1">
                 {!isStreaming && !hideTimestamp && timestamp}
               </div>
             </div>

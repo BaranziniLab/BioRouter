@@ -5,15 +5,19 @@ import { cn } from '../../utils';
 
 const buttonVariants = cva(
   // Focus is handled globally in main.css (:focus-visible ring); no per-component ring here.
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-colors duration-[var(--motion-fast)] cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0",
+  // transform is in the transition list so the shared active:scale press eases on
+  // release (and any hover:scale on a call site animates instead of snapping).
+  // NB: Tailwind v4 maps scale-*/hover:scale-*/active:scale-* to the standalone
+  // `scale` property (not `transform`), so `scale` must be in the transition list
+  // for the press/hover scale to ease rather than snap.
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-[color,background-color,border-color,transform,scale,opacity] duration-[var(--motion-fast)] ease-[var(--ease-out)] active:scale-[0.97] cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
-        default:
-          'bg-background-accent text-text-on-accent hover:bg-background-accent-hover active:translate-y-px',
+        default: 'bg-background-accent text-text-on-accent hover:bg-background-accent-hover',
         destructive: 'bg-background-danger text-text-on-status hover:opacity-90',
         outline:
-          'bg-transparent border border-border-strong text-text-default hover:bg-background-medium active:translate-y-px',
+          'bg-transparent border border-border-strong text-text-default hover:bg-background-medium',
         secondary: 'bg-background-medium text-text-default hover:bg-background-strong',
         ghost: 'bg-transparent text-text-default hover:bg-background-medium',
         link: 'text-text-accent underline-offset-4 hover:underline',
