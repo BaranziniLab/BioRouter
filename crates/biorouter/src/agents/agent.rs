@@ -85,6 +85,15 @@ const MAX_TRUNCATION_CONTINUATIONS: u32 = 12;
 /// Injected when auto-continuing a length-truncated turn, so the model resumes
 /// instead of the agent ending the turn on a half-finished response.
 const TRUNCATION_CONTINUATION_MESSAGE: &str = "Your previous response was cut off because it reached the output length limit (finish_reason=\"length\"). Continue exactly where you left off — do not repeat what you already wrote.";
+
+/// Injected in place of a selected skill's full body on any turn after the first
+/// it was loaded (BR-8), so a skill-heavy session doesn't re-inline the whole
+/// body every turn.
+fn skill_already_loaded_pointer() -> &'static str {
+    "This skill's full instructions were already loaded earlier in this session, so they are not \
+     repeated here to save context. They remain in effect; call the `skills__loadSkill` tool to \
+     re-read the full text if you need it again."
+}
 // NOTE: the "continue when the agent stops with unchecked todos" behavior used to
 // live here as a hard-coded agent-loop completion gate that fabricated a *visible*
 // `user` message every turn. That over-reached: when the agent was genuinely stuck
@@ -178,6 +187,12 @@ pub struct Agent {
     /// cancelling the turn (no lost work, no full context re-send). A plain
     /// `std::Mutex` so callers can push without awaiting the agent's async locks.
     pub(super) soft_interrupts: Arc<std::sync::Mutex<Vec<String>>>,
+    /// Per-session set of skill names whose full body has already been inlined
+    /// into an earlier turn's `<explicit-resource-context>` (BR-8). A skill's
+    /// body is inlined in full the first turn it is selected, then replaced by a
+    /// short pointer on later turns so a skill-heavy session doesn't re-pay the
+    /// multi-KB body cost every turn. Keyed by session id.
+    pub(super) injected_skills: Mutex<HashMap<String, std::collections::HashSet<String>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -273,6 +288,7 @@ impl Agent {
             fallback_scheduler: tokio::sync::OnceCell::new(),
             vault: Mutex::new(None),
             soft_interrupts: Arc::new(std::sync::Mutex::new(Vec::new())),
+            injected_skills: Mutex::new(HashMap::new()),
         }
     }
 
@@ -524,6 +540,16 @@ impl Agent {
 
         for skill in &refs.skills {
             output.push_str(&format!("\n\n## Loaded skill: {skill}\n"));
+
+            // BR-8: a skill body is inlined in full only the first turn it is
+            // selected. On later turns the full text (megabytes across a
+            // skill-heavy session) is replaced by a short pointer — the skill
+            // stays mandatory and the model can re-read it on demand.
+            if self.skill_already_injected(session_id, skill).await {
+                output.push_str(skill_already_loaded_pointer());
+                continue;
+            }
+
             match self
                 .call_prefetch_tool(
                     session_id,
@@ -532,7 +558,16 @@ impl Agent {
                 )
                 .await
             {
-                Ok(text) => output.push_str(&text),
+                Ok(text) => {
+                    // Cap a single body against the BR-2 injection budget so a
+                    // pathological SKILL.md can't blow the window on its own.
+                    output.push_str(&crate::context_budget::truncate_to_tokens(
+                        &text,
+                        crate::context_budget::max_skill_body_tokens(),
+                        &format!("selected skill `{skill}`"),
+                    ));
+                    self.mark_skill_injected(session_id, skill).await;
+                }
                 Err(error) => output.push_str(&format!(
                     "Could not load this selected skill: {error}. Tell the user instead of silently substituting another skill."
                 )),
@@ -540,6 +575,27 @@ impl Agent {
         }
 
         output
+    }
+
+    /// Whether `skill`'s full body was already inlined earlier in this session
+    /// (BR-8 cache).
+    async fn skill_already_injected(&self, session_id: &str, skill: &str) -> bool {
+        self.injected_skills
+            .lock()
+            .await
+            .get(session_id)
+            .is_some_and(|injected| injected.contains(skill))
+    }
+
+    /// Record that `skill`'s full body has now been inlined for this session, so
+    /// later turns inject only a pointer (BR-8).
+    async fn mark_skill_injected(&self, session_id: &str, skill: &str) {
+        self.injected_skills
+            .lock()
+            .await
+            .entry(session_id.to_string())
+            .or_default()
+            .insert(skill.to_string());
     }
 
     async fn extension_resource_context(&self, session_id: &str, extensions: &[String]) -> String {
@@ -2830,6 +2886,64 @@ mod tests {
             serde_json::json!("Bearer sk-live-xyz"),
             "the installed vault resolves the secret into the args"
         );
+    }
+
+    #[tokio::test]
+    async fn injected_skills_cache_is_per_session() {
+        // BR-8: marking a skill injected is scoped to its session id, so a
+        // different session (or a different skill) still gets the full body.
+        let agent = Agent::new();
+
+        assert!(!agent.skill_already_injected("s1", "demo").await);
+        agent.mark_skill_injected("s1", "demo").await;
+
+        assert!(agent.skill_already_injected("s1", "demo").await);
+        // Same skill, different session → not yet injected.
+        assert!(!agent.skill_already_injected("s2", "demo").await);
+        // Different skill, same session → not yet injected.
+        assert!(!agent.skill_already_injected("s1", "other").await);
+    }
+
+    #[tokio::test]
+    async fn skill_resource_context_reinjects_on_load_failure() {
+        // BR-8: a failed load must NOT be cached as "already injected" — the
+        // next turn has to try again, and never silently emits the pointer in
+        // place of a body that was never delivered.
+        let agent = Agent::new();
+        let refs = ResourceRefs {
+            skills: vec!["nonexistent-skill".to_string()],
+            ..Default::default()
+        };
+
+        let first = agent.skill_resource_context("sess", &refs).await;
+        assert!(first.contains("Could not load this selected skill"));
+        assert!(!first.contains("already loaded earlier in this session"));
+        assert!(
+            !agent
+                .skill_already_injected("sess", "nonexistent-skill")
+                .await
+        );
+
+        let second = agent.skill_resource_context("sess", &refs).await;
+        assert!(second.contains("Could not load this selected skill"));
+        assert!(!second.contains("already loaded earlier in this session"));
+    }
+
+    #[tokio::test]
+    async fn skill_resource_context_pointer_after_injection() {
+        // BR-8: once a skill is marked injected, later turns get the short
+        // pointer instead of re-inlining the (potentially multi-KB) body.
+        let agent = Agent::new();
+        agent.mark_skill_injected("sess", "demo").await;
+
+        let refs = ResourceRefs {
+            skills: vec!["demo".to_string()],
+            ..Default::default()
+        };
+        let out = agent.skill_resource_context("sess", &refs).await;
+        assert!(out.contains("already loaded earlier in this session"));
+        assert!(out.contains("skills__loadSkill"));
+        assert!(!out.contains("Could not load this selected skill"));
     }
 
     #[tokio::test]

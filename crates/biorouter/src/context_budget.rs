@@ -40,6 +40,12 @@ pub const DEFAULT_MAX_HINTS_FILE_TOKENS: usize = 24_000;
 /// message array each action.
 pub const DEFAULT_MAX_MOIM_TOKENS: usize = 8_000;
 
+/// Estimated-token cap for a single explicitly-selected skill body inlined into
+/// a turn's `<explicit-resource-context>` (BR-8). Skill bodies are usually a few
+/// hundred to a couple thousand tokens, so this is generous; it only clamps a
+/// pathological `SKILL.md` (the body is inlined at most once per session).
+pub const DEFAULT_MAX_SKILL_BODY_TOKENS: usize = 16_000;
+
 /// A block truncated to fewer than this many tokens carries almost no signal, so
 /// the fitter drops it entirely rather than leaving a stub.
 const MIN_USEFUL_TRUNCATION_TOKENS: usize = 128;
@@ -73,6 +79,11 @@ pub fn max_hints_file_tokens() -> usize {
 /// MOIM block cap (estimated tokens), from `MAX_MOIM_TOKENS`.
 pub fn max_moim_tokens() -> usize {
     config_usize("MAX_MOIM_TOKENS", DEFAULT_MAX_MOIM_TOKENS)
+}
+
+/// Per-skill-body cap (estimated tokens), from `MAX_SKILL_BODY_TOKENS`.
+pub fn max_skill_body_tokens() -> usize {
+    config_usize("MAX_SKILL_BODY_TOKENS", DEFAULT_MAX_SKILL_BODY_TOKENS)
 }
 
 /// Head-truncate `text` to at most `max_tokens` (estimated), appending a
@@ -251,6 +262,26 @@ mod tests {
         // Whole assembly stays within budget.
         let total: usize = out.iter().map(|b| estimate_tokens(&b.content)).sum();
         assert!(total <= 1_000);
+    }
+
+    #[test]
+    fn test_max_skill_body_tokens_default() {
+        // With no override configured, the getter returns the generous default.
+        assert_eq!(max_skill_body_tokens(), DEFAULT_MAX_SKILL_BODY_TOKENS);
+    }
+
+    #[test]
+    fn test_skill_body_cap_truncates_runaway_body() {
+        // A pathological SKILL.md is clamped to the per-skill cap, with a marker.
+        let body = "x".repeat(DEFAULT_MAX_SKILL_BODY_TOKENS * CHARS_PER_TOKEN * 4);
+        let out = truncate_to_tokens(
+            &body,
+            DEFAULT_MAX_SKILL_BODY_TOKENS,
+            "selected skill `demo`",
+        );
+        assert!(out.len() < body.len());
+        assert!(out.contains("selected skill `demo`"));
+        assert!(estimate_tokens(&out) <= DEFAULT_MAX_SKILL_BODY_TOKENS);
     }
 
     #[test]
