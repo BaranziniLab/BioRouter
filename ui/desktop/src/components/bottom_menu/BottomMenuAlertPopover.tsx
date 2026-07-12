@@ -260,7 +260,7 @@ export default function BottomMenuAlertPopover({ alerts }: AlertPopoverProps) {
         >
           <div className="flex flex-col">
             {alerts.map((alert, index) => (
-              <div key={index} className={cn(index > 0 && 'border-t border-white/20')}>
+              <div key={index} className={cn(index > 0 && 'border-t border-border-subtle')}>
                 <AlertBox alert={alert} />
               </div>
             ))}

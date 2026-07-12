@@ -30,29 +30,29 @@ describe('AlertBox', () => {
       expect(screen.getByText('Test info message')).toBeInTheDocument();
     });
 
-    it('should render warning alert with correct styling', () => {
+    it('should render a warning message on a neutral surface with a warning chip', () => {
       const alert: Alert = {
         type: AlertType.Warning,
         message: 'Test warning message',
       };
 
       const { container } = render(<AlertBox alert={alert} />);
-      const alertElement = container.querySelector('.bg-background-warning');
-
-      expect(alertElement).toBeInTheDocument();
+      // Redesign: status lives on the tinted chip, not a solid-fill surface.
+      const surface = container.querySelector('[data-testid="notification-surface"]');
+      expect(surface).toBeInTheDocument();
+      expect(surface!.className).toContain('bg-background-default');
+      expect(container.querySelector('[data-status="warning"]')).toBeInTheDocument();
       expect(screen.getByText('Test warning message')).toBeInTheDocument();
     });
 
-    it('should render error alert with correct styling', () => {
+    it('should render an error message on a neutral surface with an error chip', () => {
       const alert: Alert = {
         type: AlertType.Error,
         message: 'Test error message',
       };
 
       const { container } = render(<AlertBox alert={alert} />);
-      const alertElement = container.querySelector('.bg-background-danger');
-
-      expect(alertElement).toBeInTheDocument();
+      expect(container.querySelector('[data-status="error"]')).toBeInTheDocument();
       expect(screen.getByText('Test error message')).toBeInTheDocument();
     });
 
@@ -315,8 +315,8 @@ describe('AlertBox', () => {
 
       const { container } = render(<AlertBox alert={alert} />);
 
-      // Should still render the alert container
-      const alertElement = container.querySelector('.flex.flex-col.gap-2');
+      // Should still render the alert surface even with an empty message.
+      const alertElement = container.querySelector('[data-testid="notification-surface"]');
       expect(alertElement).toBeInTheDocument();
     });
 
