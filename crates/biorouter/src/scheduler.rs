@@ -509,7 +509,27 @@ impl Scheduler {
             }
         };
 
-        for job_to_load in list {
+        for mut job_to_load in list {
+            // BR-38: a scheduled run lives only in memory — no process or turn
+            // survives a daemon restart. A job persisted as `currently_running`
+            // was mid-run when we crashed, so its run is already gone. Reconcile
+            // the stale flag on load; otherwise the overlap guard in
+            // `claim_run_slot` would treat the ghost run as still in progress and
+            // skip this job forever.
+            if job_to_load.currently_running
+                || job_to_load.current_session_id.is_some()
+                || job_to_load.process_start_time.is_some()
+            {
+                tracing::warn!(
+                    "Resetting stale running state for scheduled job '{}' on load (session {:?} did not survive restart)",
+                    job_to_load.id,
+                    job_to_load.current_session_id
+                );
+                job_to_load.currently_running = false;
+                job_to_load.current_session_id = None;
+                job_to_load.process_start_time = None;
+            }
+
             if !Path::new(&job_to_load.source).exists() {
                 tracing::warn!(
                     "Workflow file {} not found, skipping job '{}'",
@@ -1065,5 +1085,48 @@ mod tests {
 
         let jobs = scheduler.list_scheduled_jobs().await;
         assert!(jobs[0].last_run.is_none(), "Paused job should not run");
+    }
+
+    // BR-38: a job persisted mid-run (crash while running) must reload with its
+    // running state cleared, or `claim_run_slot`'s overlap guard skips it forever.
+    #[tokio::test]
+    async fn test_stale_running_flag_reconciled_on_load() {
+        let temp_dir = tempdir().unwrap();
+        let storage_path = temp_dir.path().join("schedule.json");
+        let workflow_path = create_test_workflow(temp_dir.path(), "stale_job");
+
+        // Simulate a job that was mid-run at crash time. Use a cron that will not
+        // fire during the test so the reset can only come from load-time reconcile.
+        let stored = vec![ScheduledJob {
+            id: "stale_job".to_string(),
+            source: workflow_path.to_string_lossy().to_string(),
+            cron: "0 0 0 1 1 *".to_string(),
+            last_run: None,
+            currently_running: true,
+            paused: false,
+            current_session_id: Some("ghost-session".to_string()),
+            process_start_time: Some(Utc::now()),
+            run_count: 0,
+            max_runs: None,
+        }];
+        fs::write(&storage_path, serde_json::to_string(&stored).unwrap()).unwrap();
+
+        let session_manager = Arc::new(SessionManager::new(temp_dir.path().to_path_buf()));
+        let scheduler = Scheduler::new(storage_path, session_manager).await.unwrap();
+
+        let jobs = scheduler.list_scheduled_jobs().await;
+        assert_eq!(jobs.len(), 1);
+        assert!(
+            !jobs[0].currently_running,
+            "stale currently_running flag should be reset on load"
+        );
+        assert!(
+            jobs[0].current_session_id.is_none(),
+            "stale session id should be cleared on load"
+        );
+        assert!(
+            jobs[0].process_start_time.is_none(),
+            "stale process_start_time should be cleared on load"
+        );
     }
 }
