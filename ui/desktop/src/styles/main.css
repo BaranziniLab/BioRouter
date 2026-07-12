@@ -1398,7 +1398,11 @@ em > code.bg-inline-code {
    the live DOM, which starts a new transition — the browser auto-skips the
    in-flight one, so the second tab always wins. The user can stop and re-pick a
    tab at any moment. */
-::view-transition {
+::view-transition,
+::view-transition-group(*),
+::view-transition-image-pair(*),
+::view-transition-old(*),
+::view-transition-new(*) {
   pointer-events: none;
 }
 
