@@ -458,10 +458,9 @@ fn validate_chart(spec: &Value) -> Result<(), String> {
             let so = s
                 .as_object()
                 .ok_or_else(|| format!("chart series[{si}] must be an object with \"data\""))?;
-            let data = so
-                .get("data")
-                .and_then(Value::as_array)
-                .ok_or_else(|| format!("chart series[{si}] needs a \"data\" array of {{label, value}}"))?;
+            let data = so.get("data").and_then(Value::as_array).ok_or_else(|| {
+                format!("chart series[{si}] needs a \"data\" array of {{label, value}}")
+            })?;
             check_data(data, &format!("series[{si}].data"))?;
         }
         return Ok(());
@@ -1564,7 +1563,9 @@ mod tests {
                 id: "sentiment-dashboard".into(),
                 title: Some("Sentiment".into()),
                 place: Some("@region:dashboard".into()),
-                body: Some(json!([{"t":"row","children":[{"t":"stat","label":"Positive","value":2}]}])),
+                body: Some(
+                    json!([{"t":"row","children":[{"t":"stat","label":"Positive","value":2}]}]),
+                ),
                 markdown: None,
                 collapsible: Some(false),
                 remove: None,
@@ -1715,23 +1716,39 @@ mod tests {
     #[tokio::test]
     async fn state_noop_when_unchanged_emits_nothing() {
         let (s, mut rx) = server();
-        s.ui_state(Parameters(StateParams { set: Some(json!({"dose": 1000})), remove: None }))
-            .await
-            .unwrap();
+        s.ui_state(Parameters(StateParams {
+            set: Some(json!({"dose": 1000})),
+            remove: None,
+        }))
+        .await
+        .unwrap();
         assert_eq!(rx.try_recv().unwrap()["cmd"], "state"); // first change emits
 
         // identical re-send: no frame, "no change" message
         let r = s
-            .ui_state(Parameters(StateParams { set: Some(json!({"dose": 1000})), remove: None }))
+            .ui_state(Parameters(StateParams {
+                set: Some(json!({"dose": 1000})),
+                remove: None,
+            }))
             .await
             .unwrap();
-        assert!(text_of(&r).to_lowercase().contains("no change"), "{}", text_of(&r));
-        assert!(rx.try_recv().is_err(), "an unchanged ui_state must emit no frame");
+        assert!(
+            text_of(&r).to_lowercase().contains("no change"),
+            "{}",
+            text_of(&r)
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "an unchanged ui_state must emit no frame"
+        );
 
         // a real change emits again
-        s.ui_state(Parameters(StateParams { set: Some(json!({"dose": 1250})), remove: None }))
-            .await
-            .unwrap();
+        s.ui_state(Parameters(StateParams {
+            set: Some(json!({"dose": 1250})),
+            remove: None,
+        }))
+        .await
+        .unwrap();
         assert_eq!(rx.try_recv().unwrap()["state"]["dose"], 1250);
     }
 

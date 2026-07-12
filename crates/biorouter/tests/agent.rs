@@ -429,6 +429,7 @@ mod tests {
                 id: session.id,
                 schedule_id: None,
                 max_turns: Some(1),
+                max_tool_calls: None,
                 retry_config: None,
             };
 
@@ -481,6 +482,172 @@ mod tests {
             } else {
                 panic!("Expected text content in last message");
             }
+            Ok(())
+        }
+    }
+
+    #[cfg(test)]
+    mod max_tool_calls_tests {
+        use super::*;
+        use async_trait::async_trait;
+        use biorouter::agents::SessionConfig;
+        use biorouter::conversation::message::{Message, MessageContent};
+        use biorouter::model::ModelConfig;
+        use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+        use biorouter::providers::errors::ProviderError;
+        use biorouter::session::session_manager::SessionType;
+        use rmcp::model::{CallToolRequestParams, Tool};
+        use rmcp::object;
+        use std::path::PathBuf;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Fans out two *distinct* tool calls per response (unique args each time),
+        // so the cumulative tool-call count grows twice as fast as the iteration
+        // count and never trips the exact-duplicate repetition guard — the exact
+        // "ever-changing args" runaway the per-turn tool-call cap is meant to bound.
+        struct MockFanoutProvider {
+            counter: AtomicUsize,
+        }
+
+        impl MockFanoutProvider {
+            fn new() -> Self {
+                Self {
+                    counter: AtomicUsize::new(0),
+                }
+            }
+        }
+
+        #[async_trait]
+        impl Provider for MockFanoutProvider {
+            async fn complete(
+                &self,
+                _system_prompt: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<(Message, ProviderUsage), ProviderError> {
+                let base = self.counter.fetch_add(2, Ordering::SeqCst);
+                let call_a = CallToolRequestParams {
+                    task: None,
+                    meta: None,
+                    name: "test_tool".into(),
+                    arguments: Some(object!({ "param": format!("value-{base}") })),
+                };
+                let call_b = CallToolRequestParams {
+                    task: None,
+                    meta: None,
+                    name: "test_tool".into(),
+                    arguments: Some(object!({ "param": format!("value-{}", base + 1) })),
+                };
+                let message = Message::assistant()
+                    .with_tool_request(format!("call_{base}"), Ok(call_a))
+                    .with_tool_request(format!("call_{}", base + 1), Ok(call_b));
+
+                let usage = ProviderUsage::new(
+                    "mock-model".to_string(),
+                    Usage::new(Some(10), Some(5), Some(15)),
+                );
+                Ok((message, usage))
+            }
+
+            async fn complete_with_model(
+                &self,
+                _model_config: &ModelConfig,
+                system_prompt: &str,
+                messages: &[Message],
+                tools: &[Tool],
+            ) -> anyhow::Result<(Message, ProviderUsage), ProviderError> {
+                self.complete(system_prompt, messages, tools).await
+            }
+
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new("mock-model").unwrap()
+            }
+
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata {
+                    name: "mock".to_string(),
+                    display_name: "Mock Provider".to_string(),
+                    description: "Mock provider for testing".to_string(),
+                    default_model: "mock-model".to_string(),
+                    known_models: vec![],
+                    model_doc_link: "".to_string(),
+                    config_keys: vec![],
+                    allows_unlisted_models: false,
+                }
+            }
+
+            fn get_name(&self) -> &str {
+                "mock-fanout"
+            }
+        }
+
+        #[tokio::test]
+        async fn test_max_tool_calls_limit() -> Result<()> {
+            let agent = Agent::new();
+            let provider = Arc::new(MockFanoutProvider::new());
+            let user_message = Message::user().with_text("Hello");
+
+            let session = agent
+                .config
+                .session_manager
+                .create_session(
+                    PathBuf::default(),
+                    "max-tool-calls-test".to_string(),
+                    SessionType::Hidden,
+                )
+                .await?;
+
+            agent.update_provider(provider, &session.id).await?;
+
+            let session_config = SessionConfig {
+                id: session.id,
+                schedule_id: None,
+                // High turn cap so the tool-call cap — not the iteration cap — is
+                // what stops the reply. With 2 calls/iteration it trips at iter 3.
+                max_turns: Some(100),
+                max_tool_calls: Some(3),
+                retry_config: None,
+            };
+
+            let reply_stream = agent.reply(user_message, session_config, None).await?;
+            tokio::pin!(reply_stream);
+
+            let mut responses = Vec::new();
+            while let Some(response_result) = reply_stream.next().await {
+                match response_result {
+                    Ok(AgentEvent::Message(response)) => {
+                        if let Some(MessageContent::ActionRequired(action)) =
+                            response.content.first()
+                        {
+                            if let biorouter::conversation::message::ActionRequiredData::ToolConfirmation { id, .. } = &action.data {
+                                agent.handle_confirmation(
+                                    id.clone(),
+                                    biorouter::permission::PermissionConfirmation {
+                                        principal_type: biorouter::permission::permission_confirmation::PrincipalType::Tool,
+                                        permission: biorouter::permission::Permission::AllowOnce,
+                                    }
+                                ).await;
+                            }
+                        }
+                        responses.push(response);
+                    }
+                    Ok(AgentEvent::McpNotification(_)) => {}
+                    Ok(AgentEvent::ModelChange { .. }) => {}
+                    Ok(AgentEvent::HistoryReplaced(_)) => {}
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+            }
+
+            let stopped = responses.iter().any(|m| {
+                matches!(m.content.first(), Some(MessageContent::Text(t)) if
+                    t.text.contains("past my per-turn limit of 3"))
+            });
+            assert!(
+                stopped,
+                "expected the per-turn tool-call limit message; responses did not contain it"
+            );
             Ok(())
         }
     }

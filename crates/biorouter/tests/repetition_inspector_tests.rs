@@ -1,51 +1,9 @@
 use biorouter::config::BioRouterMode;
-use biorouter::conversation::message::Message;
+use biorouter::conversation::message::{Message, ToolRequest};
 use biorouter::tool_inspection::{InspectionAction, ToolInspector};
 use biorouter::tool_monitor::RepetitionInspector;
 use rmcp::model::CallToolRequestParams;
 use rmcp::object;
-
-// This test targets RepetitionInspector::check_tool_call
-// It verifies that:
-// - consecutive identical tool calls are allowed up to max_repetitions times
-// - the (max_repetitions + 1)th identical call is denied (returns false)
-// - changing the parameters resets the repetition count and allows the call
-#[test]
-fn test_repetition_inspector_denies_after_exceeding_and_resets_on_param_change() {
-    // Allow at most 2 consecutive identical calls
-    let mut inspector = RepetitionInspector::new(Some(2));
-
-    // First identical call → allowed
-    let call_v1 = CallToolRequestParams {
-        task: None,
-        meta: None,
-        name: "fetch_user".into(),
-        arguments: Some(object!({"id": 123})),
-    };
-    assert!(inspector.check_tool_call(call_v1.clone()));
-
-    // Second identical call → still allowed (at limit)
-    assert!(inspector.check_tool_call(call_v1.clone()));
-
-    // Third identical call → should be denied (exceeds limit)
-    assert!(!inspector.check_tool_call(call_v1.clone()));
-
-    // Change parameters; this should reset the consecutive counter
-    let call_v2 = CallToolRequestParams {
-        task: None,
-        meta: None,
-        name: "fetch_user".into(),
-        arguments: Some(object!({"id": 456})),
-    };
-
-    assert!(inspector.check_tool_call(call_v2.clone()));
-
-    // Another identical call with new params → allowed (second in a row for this variant)
-    assert!(inspector.check_tool_call(call_v2.clone()));
-
-    // One more identical call with new params → denied again
-    assert!(!inspector.check_tool_call(call_v2));
-}
 
 fn tool_call(name: &str, id: i32) -> CallToolRequestParams {
     CallToolRequestParams {
@@ -54,6 +12,58 @@ fn tool_call(name: &str, id: i32) -> CallToolRequestParams {
         name: name.to_string().into(),
         arguments: Some(object!({"id": id})),
     }
+}
+
+fn tool_request(id: &str, call: CallToolRequestParams) -> ToolRequest {
+    let message = Message::assistant().with_tool_request(id, Ok(call));
+    message
+        .content
+        .first()
+        .and_then(|content| content.as_tool_request())
+        .expect("request message should contain a tool request")
+        .clone()
+}
+
+// This test targets the production RepetitionInspector::inspect path.
+// It verifies that within a single batch of tool requests:
+// - consecutive identical tool calls are allowed up to max_repetitions times
+// - the (max_repetitions + 1)th identical call is denied
+// - changing the parameters resets the repetition count and allows the call
+#[tokio::test]
+async fn test_repetition_inspector_denies_after_exceeding_and_resets_on_param_change() {
+    // Allow at most 2 consecutive identical calls
+    let inspector = RepetitionInspector::new(Some(2));
+
+    let call_v1 = tool_call("fetch_user", 123);
+    let call_v2 = tool_call("fetch_user", 456);
+
+    let requests = vec![
+        tool_request("call_1", call_v1.clone()), // 1st identical → allowed
+        tool_request("call_2", call_v1.clone()), // 2nd identical → allowed (at limit)
+        tool_request("call_3", call_v1),         // 3rd identical → denied
+        tool_request("call_4", call_v2.clone()), // param change → resets, allowed
+        tool_request("call_5", call_v2.clone()), // 2nd with new params → allowed (at limit)
+        tool_request("call_6", call_v2),         // 3rd with new params → denied
+    ];
+
+    let results = inspector
+        .inspect(
+            &requests,
+            &[],
+            BioRouterMode::Approve,
+            &biorouter::session::Session::default(),
+        )
+        .await
+        .expect("inspection should succeed");
+
+    // Only the calls that exceed the consecutive limit are denied.
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].tool_request_id, "call_3");
+    assert_eq!(results[0].action, InspectionAction::Deny);
+    assert_eq!(results[0].finding_id.as_deref(), Some("REP-001"));
+    assert_eq!(results[1].tool_request_id, "call_6");
+    assert_eq!(results[1].action, InspectionAction::Deny);
+    assert_eq!(results[1].finding_id.as_deref(), Some("REP-001"));
 }
 
 #[tokio::test]

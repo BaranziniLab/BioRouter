@@ -46,6 +46,7 @@ async fn main() -> anyhow::Result<()> {
         id: session.id,
         schedule_id: None,
         max_turns: None,
+        max_tool_calls: None,
         retry_config: None,
     };
 

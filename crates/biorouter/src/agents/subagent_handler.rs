@@ -209,6 +209,7 @@ fn get_agent_messages(
             id: session_id.clone(),
             schedule_id: None,
             max_turns: task_config.max_turns.map(|v| v as u32),
+            max_tool_calls: None,
             retry_config: workflow.retry,
         };
 

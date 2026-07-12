@@ -89,6 +89,11 @@ pub struct SessionConfig {
     pub schedule_id: Option<String>,
     /// Maximum number of turns (iterations) allowed without user input
     pub max_turns: Option<u32>,
+    /// Maximum number of tool calls allowed in a single reply, across all
+    /// iterations. Bounds runaway fan-out that the per-iteration `max_turns`
+    /// cap misses (one iteration can dispatch many parallel tool calls).
+    #[serde(default)]
+    pub max_tool_calls: Option<u32>,
     /// Retry configuration for automated validation and recovery
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_config: Option<RetryConfig>,

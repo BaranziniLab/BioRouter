@@ -1170,6 +1170,7 @@ async fn handle_agent_socket(
             id: session_id.clone(),
             schedule_id: None,
             max_turns: Some(max_turns),
+            max_tool_calls: None,
             retry_config: None,
         };
         let cancel = CancellationToken::new();
