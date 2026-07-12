@@ -1494,11 +1494,10 @@ mod tests {
             out.contains("characters elided"),
             "an elision marker should be present"
         );
-        assert!(out.starts_with(&text[..100]), "head should be preserved");
-        assert!(
-            out.ends_with(&text[text.len() - 100..]),
-            "tail should be preserved"
-        );
+        let head: String = text.chars().take(100).collect();
+        assert!(out.starts_with(&head), "head should be preserved");
+        let tail: String = text.chars().skip(text.chars().count() - 100).collect();
+        assert!(out.ends_with(&tail), "tail should be preserved");
 
         // Under-budget text is returned verbatim.
         assert_eq!(truncate_middle_out("small", 1000), "small");
