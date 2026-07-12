@@ -1026,6 +1026,18 @@ function BaseChatContent({
   useEffect(() => {
     if (!workflow) return;
 
+    // Only prompt to trust a workflow when it is about to run for the FIRST
+    // time — not when merely opening/browsing a scheduled-job's past
+    // conversation. Scheduled-job sessions always carry a `workflow` and, once
+    // they have run, have a non-zero message_count; re-popping the click-eating
+    // "Trust and Execute" modal over a completed transcript is what made viewing
+    // that history feel like the whole app had frozen. A resumed conversation
+    // has already executed, so treat it as accepted for viewing.
+    if ((session?.message_count ?? 0) > 0) {
+      setHasNotAcceptedWorkflow(false);
+      return;
+    }
+
     (async () => {
       const accepted = await window.electron.hasAcceptedWorkflowBefore(workflow);
       setHasNotAcceptedWorkflow(!accepted);
@@ -1035,7 +1047,7 @@ function BaseChatContent({
         setHasWorkflowSecurityWarnings(scanResult.has_security_warnings);
       }
     })();
-  }, [workflow]);
+  }, [workflow, session?.message_count]);
 
   const handleWorkflowAccept = async (accept: boolean) => {
     if (workflow && accept) {

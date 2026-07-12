@@ -143,6 +143,14 @@ cmd_linux-backend() {
   log "cross-compiling linux-gnu backend (docker, $LINUX_RUST_IMG)"
   rm -rf "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter" \
          "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd"
+  # The docker build compiles build.rs scripts for the container's host arch
+  # (aarch64-linux) into the shared target/release/build. A prior release built
+  # under a newer-glibc image leaves those ELF binaries behind, and reusing them
+  # under the pinned bullseye fails at build time with "GLIBC_2.3x not found".
+  # Drop only the Linux (ELF) build scripts so they recompile against bullseye's
+  # glibc; the mac (Mach-O) build scripts and final mac binaries are left intact.
+  find "$ROOT/target/release/build" -name 'build-script-build' -type f 2>/dev/null \
+    | while read -r f; do file "$f" 2>/dev/null | grep -q ELF && rm -rf "$(dirname "$f")"; done
   docker volume create biorouter-linux-bullseye-cache >/dev/null 2>&1 || true
   docker run --rm -v "$ROOT":/usr/src/myapp -v biorouter-linux-bullseye-cache:/usr/local/cargo/registry \
     -w /usr/src/myapp "$LINUX_RUST_IMG" sh -c '
