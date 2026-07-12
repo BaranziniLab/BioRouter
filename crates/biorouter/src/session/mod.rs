@@ -1,3 +1,4 @@
+pub(crate) mod chat_fts;
 mod chat_history_search;
 mod diagnostics;
 pub mod extension_data;

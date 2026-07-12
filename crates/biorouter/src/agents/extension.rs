@@ -60,7 +60,9 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 name: chatrecall_extension::EXTENSION_NAME,
                 description:
                     "Search past conversations and load session summaries for contextual memory",
-                default_enabled: false,
+                // Default-on since recall is now FTS5 relevance-ranked (BR-17),
+                // making it worth always having rather than an opt-in.
+                default_enabled: true,
                 client_factory: |ctx| {
                     Box::new(chatrecall_extension::ChatRecallClient::new(ctx).unwrap())
                 },
