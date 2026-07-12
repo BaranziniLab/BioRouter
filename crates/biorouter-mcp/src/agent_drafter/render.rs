@@ -68,10 +68,16 @@ fn theme_block() -> String {
 /// the SDK derives one from the page's own origin, which is what makes an app
 /// work no matter which port its daemon landed on. `endpoints` are additional
 /// fallbacks tried in order — exports use them to cover a `file://` open.
+///
+/// `ws_token` is the per-app socket token the SDK must present on the agent
+/// WebSocket (`?token=…`) — `serve_index` mints one per daemon run and injects
+/// it here so any page this daemon serves can authenticate. Exports pass `None`
+/// (their proxy mints its own token in a later phase).
 pub fn app_config_script(
     manifest: &Manifest,
     endpoint: Option<&str>,
     endpoints: &[String],
+    ws_token: Option<&str>,
 ) -> String {
     let greeting = manifest.agent.as_ref().and_then(|a| a.greeting.clone());
     let mut cfg = serde_json::json!({
@@ -81,6 +87,9 @@ pub fn app_config_script(
     });
     if !endpoints.is_empty() {
         cfg["endpoints"] = serde_json::json!(endpoints);
+    }
+    if let Some(token) = ws_token {
+        cfg["wsToken"] = serde_json::json!(token);
     }
     let json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
     // JSON is valid JS; neutralise any `</script>` breakout from string fields.
@@ -98,8 +107,9 @@ pub fn assemble_app(
     index_html: &str,
     base_href: Option<&str>,
     endpoint: Option<&str>,
+    ws_token: Option<&str>,
 ) -> String {
-    assemble_app_with_endpoints(manifest, index_html, base_href, endpoint, &[])
+    assemble_app_with_endpoints(manifest, index_html, base_href, endpoint, &[], ws_token)
 }
 
 /// [`assemble_app`], plus fallback endpoints the SDK tries when the primary one
@@ -110,6 +120,7 @@ pub fn assemble_app_with_endpoints(
     base_href: Option<&str>,
     endpoint: Option<&str>,
     endpoints: &[String],
+    ws_token: Option<&str>,
 ) -> String {
     let mut head = String::new();
     if let Some(base) = base_href {
@@ -123,7 +134,7 @@ pub fn assemble_app_with_endpoints(
         html = format!("{}{html}", theme_block());
     }
 
-    let mut tail = app_config_script(manifest, endpoint, endpoints);
+    let mut tail = app_config_script(manifest, endpoint, endpoints, ws_token);
     tail.push_str("<script src=\"dist/app.js\"></script>\n");
     inject_before(&html, "</body>", &tail, true)
 }
@@ -569,10 +580,13 @@ pub fn scaffold_standalone(
     //
     // An explicit `endpoint` (a remote daemon) still wins.
     let fallbacks = vec![format!("ws://127.0.0.1:3000/apps/{}/agent", manifest.id)];
+    // No `ws_token` in an export: the exported page is served by `serve.mjs` /
+    // the launcher's proxy, which mints and injects its own token in a later
+    // phase — this daemon's per-run token would be meaningless there.
     let assembled = if endpoint.is_some() {
-        assemble_app(manifest, index_html, None, endpoint)
+        assemble_app(manifest, index_html, None, endpoint, None)
     } else {
-        assemble_app_with_endpoints(manifest, index_html, None, None, &fallbacks)
+        assemble_app_with_endpoints(manifest, index_html, None, None, &fallbacks, None)
     };
 
     // The manifest IS the app's registration: `serve_index` and `agent_ws` both
@@ -648,6 +662,7 @@ mod tests {
             built_at: None,
             sdk_hash: None,
             session_id: None,
+            surface: crate::agent_drafter::manifest::SurfaceDecl::default(),
         }
     }
 
@@ -667,6 +682,7 @@ mod tests {
             "<html><head></head><body>hi</body></html>",
             Some("/apps/demo/"),
             None,
+            None,
         );
         assert!(out.contains("biorouter-theme"));
         assert!(out.contains("<base href=\"/apps/demo/\">"));
@@ -678,9 +694,29 @@ mod tests {
     }
 
     #[test]
+    fn app_config_script_embeds_ws_token_when_given() {
+        let m = manifest(ArtifactKind::Agentic);
+        // No token → no wsToken key at all (exports, previews).
+        let none = app_config_script(&m, None, &[], None);
+        assert!(!none.contains("wsToken"), "absent token must not appear");
+        // A token → surfaced verbatim in the config JSON the SDK reads.
+        let with = app_config_script(&m, None, &[], Some("deadbeefcafef00d0123456789abcdef"));
+        assert!(with.contains("\"wsToken\":\"deadbeefcafef00d0123456789abcdef\""));
+        // And it flows through the full assemble path.
+        let out = assemble_app(
+            &m,
+            "<html><head></head><body></body></html>",
+            None,
+            None,
+            Some("deadbeefcafef00d0123456789abcdef"),
+        );
+        assert!(out.contains("\"wsToken\":\"deadbeefcafef00d0123456789abcdef\""));
+    }
+
+    #[test]
     fn assemble_app_handles_missing_head_and_body() {
         let m = manifest(ArtifactKind::Agentic);
-        let out = assemble_app(&m, "<div>bare</div>", None, None);
+        let out = assemble_app(&m, "<div>bare</div>", None, None, None);
         assert!(out.contains("biorouter-theme"));
         assert!(out.contains("dist/app.js"));
     }
@@ -689,7 +725,13 @@ mod tests {
     fn config_neutralizes_script_breakout() {
         let mut m = manifest(ArtifactKind::Agentic);
         m.agent.as_mut().unwrap().greeting = Some("</script><script>alert(1)</script>".into());
-        let out = assemble_app(&m, "<html><head></head><body></body></html>", None, None);
+        let out = assemble_app(
+            &m,
+            "<html><head></head><body></body></html>",
+            None,
+            None,
+            None,
+        );
         assert!(!out.contains("</script><script>alert(1)"));
         assert!(out.contains("\\u003c"));
     }

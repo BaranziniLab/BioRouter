@@ -127,10 +127,15 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     // text tokens are --br-text / --br-text-muted.
     let surface_as_text = {
         let hay = index.replace(' ', "").to_lowercase();
-        ["color:var(--br-muted)", "color:var(--br-bg)", "color:var(--br-surface)",
-         "color:var(--br-medium)", "color:var(--br-strong)"]
-            .iter()
-            .any(|p| hay.contains(p))
+        [
+            "color:var(--br-muted)",
+            "color:var(--br-bg)",
+            "color:var(--br-surface)",
+            "color:var(--br-medium)",
+            "color:var(--br-strong)",
+        ]
+        .iter()
+        .any(|p| hay.contains(p))
     };
     if surface_as_text {
         warning(&mut out, "index.html uses a SURFACE token as a text color (e.g. color: var(--br-muted)). Surface tokens are near-background in both themes, so the text is invisible. Use color: var(--br-text) or var(--br-text-muted).");
@@ -1163,16 +1168,15 @@ br.run("go", "#missing");
         );
         assert!(unicode.contains("hardcodes a text color"), "{unicode}");
         // Theme token → NOT warned; and background-color hardcodes are not text.
-        let good = mk(
-            r#"<html><body><p style="color:var(--br-text)">hi</p>
-               <div style="background-color:#fff">x</div></body></html>"#,
-        );
+        let good = mk(r#"<html><body><p style="color:var(--br-text)">hi</p>
+               <div style="background-color:#fff">x</div></body></html>"#);
         assert!(!good.contains("hardcodes a text color"), "{good}");
         // A SURFACE token used as text color → its own warning.
         let surf = mk(r#"<html><body><p style="color: var(--br-muted)">hi</p></body></html>"#);
         assert!(surf.contains("SURFACE token as a text color"), "{surf}");
         // …but a surface token as a *background* is fine.
-        let okbg = mk(r#"<html><body><div style="background: var(--br-muted)">x</div></body></html>"#);
+        let okbg =
+            mk(r#"<html><body><div style="background: var(--br-muted)">x</div></body></html>"#);
         assert!(!okbg.contains("SURFACE token as a text color"), "{okbg}");
     }
 

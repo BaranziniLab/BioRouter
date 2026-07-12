@@ -39,6 +39,13 @@ export interface AppConfig {
    *  (follow the viewer's OS). Left unset → light, so authored colors render as
    *  intended regardless of the viewer's OS. The agent's `ui_theme` overrides. */
   theme?: "light" | "dark" | "auto";
+  /**
+   * Per-app WebSocket auth token minted into the served page (same-origin
+   * readable only). When present, `connect()` appends `token=<wsToken>` to the
+   * agent WebSocket URL query, alongside `client_id`. The server requires it on
+   * upgrade (SDK v2 socket authority); v1 pages simply omit it.
+   */
+  wsToken?: string;
 }
 
 export interface ImageInput {
@@ -150,10 +157,14 @@ function resolveEndpoints(cfg: AppConfig): string[] {
   return out;
 }
 
-function withClientId(base: string, appId: string): string {
+function withClientId(base: string, appId: string, token?: string): string {
   const cid = encodeURIComponent(getClientId(appId));
   const sep = base.indexOf("?") >= 0 ? "&" : "?";
-  return `${base}${sep}client_id=${cid}`;
+  let url = `${base}${sep}client_id=${cid}`;
+  // SDK v2 socket authority: carry the per-app token when the served page
+  // supplied one, so the daemon can authorize the upgrade (same-origin only).
+  if (token) url += `&token=${encodeURIComponent(token)}`;
+  return url;
 }
 
 /** Open one WebSocket, resolving on `open` and rejecting on the first error. */
@@ -248,7 +259,7 @@ export class BioRouterClient {
     }
     const tried: string[] = [];
     for (const base of candidates) {
-      const url = withClientId(base, this.config.appId);
+      const url = withClientId(base, this.config.appId, this.config.wsToken);
       try {
         const ws = await openSocket(url);
         this.ws = ws;
@@ -427,6 +438,32 @@ export class BioRouterClient {
     return {
       list: () => this.listModels(),
       select: (provider: string, model: string) => this.selectModel(provider, model),
+    };
+  }
+
+  /**
+   * Shared reactive state document (`br.state`). The doc is a single JSON value
+   * both sides write: the agent via `ui_state`/`ui_patch_state`, author code via
+   * these methods. Every mutation re-evaluates declarative `data-br-bind*`
+   * bindings and notifies `subscribe`rs. Reads return deep clones so a caller
+   * cannot mutate the live doc out from under the binding layer.
+   *
+   * - `get(path?)` — the value at a JSON Pointer, or the whole doc when omitted.
+   * - `set(path, value)` — optimistically apply locally, then send a
+   *   `state_write` carrying the pre-write `baseVersion` (server is the ordering
+   *   authority; on conflict it replies with a fresh snapshot we simply apply).
+   * - `remove(path)` — delete the value at a pointer, same version discipline.
+   * - `update(fn)` — replace the whole doc with `fn(clone)`'s return value.
+   * - `subscribe(path, fn)` — fire `fn(value)` whenever the value at `path`
+   *   changes (compared by JSON.stringify); returns an unsubscribe function.
+   */
+  get state() {
+    return {
+      get: (path?: string) => this.ui.stateGet(path),
+      set: (path: string, value: unknown) => this.ui.stateSet(path, value),
+      remove: (path: string) => this.ui.stateRemove(path),
+      update: (fn: DocUpdater) => this.ui.stateUpdate(fn),
+      subscribe: (path: string, fn: ValueSub) => this.ui.stateSubscribe(path, fn),
     };
   }
 
@@ -1285,8 +1322,17 @@ function wEl(tag: string, cls?: string): HTMLElement {
   return e;
 }
 
+// A widget node whose `t` is not one we render. Named so the no-esbuild
+// fallback stripper removes the `as UnknownWidget` cast cleanly (an inline
+// `as { t?: string }` object-type cast would confuse its line scanner).
+type UnknownWidget = { t?: string };
+// Warn at most once per unknown widget kind, so a forward-compatible frame full
+// of a new kind doesn't flood the console.
+const warnedWidgetKinds: Set<string> = new Set();
+
 /** Build a detached DOM subtree from a widget node. Recursive; unknown node
- *  types render a muted placeholder rather than throwing. */
+ *  types render a neutral labeled placeholder rather than throwing, so a
+ *  newer agent emitting a not-yet-supported kind degrades gracefully. */
 export function renderWidget(node: WidgetNode, ctx: WidgetContext): HTMLElement {
   switch (node.t) {
     case "card": {
@@ -1479,8 +1525,17 @@ export function renderWidget(node: WidgetNode, ctx: WidgetContext): HTMLElement 
       return f;
     }
     default: {
-      const d = wEl("div", "br-msg br-msg--tool");
-      d.textContent = "unsupported widget";
+      const kind = String((node as UnknownWidget).t || "unknown");
+      if (!warnedWidgetKinds.has(kind)) {
+        warnedWidgetKinds.add(kind);
+        try {
+          console.warn("[BioRouter] unsupported widget kind: " + kind);
+        } catch {
+          /* console may be unavailable */
+        }
+      }
+      const d = wEl("div", "br-unknown-widget");
+      d.textContent = "[unsupported: " + kind + "]";
       return d;
     }
   }
@@ -1516,6 +1571,14 @@ export interface UiCommand {
   level?: string;
   timeoutMs?: number;
   state?: Record<string, unknown>;
+  // ── shared reactive state document (SDK v2) ──
+  // Frame version stamp (`"v": 1`), tolerated on every ui frame.
+  v?: number;
+  // `state` frame modes: "snapshot" replaces the doc; "patch" applies RFC-6902
+  // ops; absent `mode` (legacy) treats `state` as a snapshot of unknown version.
+  doc?: unknown;
+  version?: number;
+  patch?: unknown;
   requestId?: string;
   prompt?: string;
   submitLabel?: string;
@@ -1537,6 +1600,12 @@ export interface AskFieldSpec {
 type StateListener = (state: Record<string, unknown>) => void;
 type CommandListener = (cmd: UiCommand) => void;
 type FieldGetters = Map<string, () => string | boolean>;
+// Same reason: `br.state` callback/return types go through named aliases so the
+// fallback stripper drops the annotation (an inline `(v: unknown) => void` has
+// no leading uppercase/primitive token and would survive into the JS).
+type ValueSub = (value: unknown) => void;
+type DocUpdater = (doc: unknown) => unknown;
+type Unsub = () => void;
 
 /** Where a `place` maps in the DOM. `dock` is the always-available drawer. */
 const DOCK_PLACES: Record<string, string> = {
@@ -1546,10 +1615,266 @@ const DOCK_PLACES: Record<string, string> = {
   bottom: "br-dock--bottom",
 };
 
+// ── Shared reactive state: JSON Pointer + RFC-6902 (dependency-free) ─────────
+// A small, self-contained slice of RFC-6901 (pointers) and RFC-6902 (patch)
+// sufficient for the state channel: the binding index needs only pointer
+// resolution, and the client mirrors the server's doc by applying add/replace/
+// remove/move/copy/test ops. Not a general JSON-Patch library — deliberately
+// minimal and side-effect-contained.
+
+// Named aliases so the fallback stripper drops `as AnyRecord` / `as AnyArray`
+// casts (generic/bracketed casts like `as Record<string, unknown>` trip its
+// comma/`]`-terminated scanner).
+type AnyRecord = Record<string, unknown>;
+type AnyArray = unknown[];
+
+/** One declarative binding: an element + how it consumes a pointer value. */
+interface BindEntry {
+  el: Element;
+  kind: string; // "text" | "attr" | "show"
+  pointer: string;
+  attr: string; // attribute name for kind "attr"
+}
+
+/** One `state.subscribe` registration. `last` is the JSON of the pointer's
+ *  value at the previous fire, so we only notify on real change. */
+interface StateSub {
+  pointer: string;
+  fn: ValueSub;
+  last: string;
+}
+
+/** RFC-6901: parse a JSON Pointer into its (unescaped) reference tokens.
+ *  "" → whole document ([]); "/a/b" → ["a","b"]; "/" → [""]. */
+function parsePointer(pointer: string): string[] {
+  if (!pointer) return [];
+  const parts = pointer.split("/");
+  parts.shift(); // drop the empty segment before the leading "/"
+  const out: string[] = [];
+  for (const p of parts) out.push(p.replace(/~1/g, "/").replace(/~0/g, "~"));
+  return out;
+}
+
+/** Resolve a JSON Pointer against `doc`; `undefined` if any step is missing. */
+function pointerGet(doc: unknown, pointer: string): unknown {
+  const tokens = parsePointer(pointer);
+  let cur = doc;
+  for (const tok of tokens) {
+    if (cur == null) return undefined;
+    if (Array.isArray(cur)) {
+      const arr = cur as AnyArray;
+      const idx = tok === "-" ? arr.length : parseInt(tok, 10);
+      cur = arr[idx];
+    } else if (typeof cur === "object") {
+      cur = (cur as AnyRecord)[tok];
+    } else {
+      return undefined;
+    }
+  }
+  return cur;
+}
+
+/** The container that holds a pointer's last token (its parent). */
+function pointerParent(root: unknown, tokens: string[]): unknown {
+  let cur = root;
+  for (let i = 0; i < tokens.length - 1; i++) {
+    if (cur == null) return null;
+    if (Array.isArray(cur)) {
+      cur = (cur as AnyArray)[parseInt(tokens[i], 10)];
+    } else if (typeof cur === "object") {
+      cur = (cur as AnyRecord)[tokens[i]];
+    } else {
+      return null;
+    }
+  }
+  return cur;
+}
+
+function ptrAdd(root: unknown, path: string, value: unknown): unknown {
+  const tokens = parsePointer(path);
+  if (tokens.length === 0) return value; // replace whole doc
+  const parent = pointerParent(root, tokens);
+  const key = tokens[tokens.length - 1];
+  if (parent == null || typeof parent !== "object") return root;
+  if (Array.isArray(parent)) {
+    const arr = parent as AnyArray;
+    const idx = key === "-" ? arr.length : parseInt(key, 10);
+    if (isFinite(idx)) arr.splice(idx, 0, value);
+  } else {
+    (parent as AnyRecord)[key] = value;
+  }
+  return root;
+}
+
+function ptrReplace(root: unknown, path: string, value: unknown): unknown {
+  const tokens = parsePointer(path);
+  if (tokens.length === 0) return value;
+  const parent = pointerParent(root, tokens);
+  const key = tokens[tokens.length - 1];
+  if (parent == null || typeof parent !== "object") return root;
+  if (Array.isArray(parent)) {
+    const arr = parent as AnyArray;
+    const idx = parseInt(key, 10);
+    if (idx >= 0 && idx < arr.length) arr[idx] = value;
+  } else {
+    (parent as AnyRecord)[key] = value;
+  }
+  return root;
+}
+
+function ptrRemove(root: unknown, path: string): unknown {
+  const tokens = parsePointer(path);
+  if (tokens.length === 0) return null;
+  const parent = pointerParent(root, tokens);
+  const key = tokens[tokens.length - 1];
+  if (parent == null || typeof parent !== "object") return root;
+  if (Array.isArray(parent)) {
+    const arr = parent as AnyArray;
+    const idx = parseInt(key, 10);
+    if (idx >= 0 && idx < arr.length) arr.splice(idx, 1);
+  } else {
+    delete (parent as AnyRecord)[key];
+  }
+  return root;
+}
+
+function deepClone(v: unknown): unknown {
+  if (v == null || typeof v !== "object") return v;
+  try {
+    return JSON.parse(JSON.stringify(v));
+  } catch {
+    return v;
+  }
+}
+
+function jsonEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** Apply RFC-6902 ops to a *clone* of `doc`, returning the new doc. A failed
+ *  `test` (or a throwing op) aborts by propagating, so the caller keeps the
+ *  pre-patch doc. */
+function applyPatch(doc: unknown, ops: unknown): unknown {
+  let root = deepClone(doc);
+  const list = Array.isArray(ops) ? ops : [];
+  for (const raw of list) {
+    if (!raw || typeof raw !== "object") continue;
+    const op = raw as AnyRecord;
+    const kind = String(op.op || "");
+    const path = typeof op.path === "string" ? op.path : "";
+    if (kind === "add") {
+      root = ptrAdd(root, path, deepClone(op.value));
+    } else if (kind === "replace") {
+      root = ptrReplace(root, path, deepClone(op.value));
+    } else if (kind === "remove") {
+      root = ptrRemove(root, path);
+    } else if (kind === "move") {
+      const from = typeof op.from === "string" ? op.from : "";
+      const moved = deepClone(pointerGet(root, from));
+      root = ptrRemove(root, from);
+      root = ptrAdd(root, path, moved);
+    } else if (kind === "copy") {
+      const src = typeof op.from === "string" ? op.from : "";
+      const copied = deepClone(pointerGet(root, src));
+      root = ptrAdd(root, path, copied);
+    } else if (kind === "test") {
+      if (!jsonEqual(pointerGet(root, path), op.value)) {
+        throw new Error("json-patch test failed at " + path);
+      }
+    }
+  }
+  return root;
+}
+
+/** The set of pointers a patch touched (its `path`s and any `from`s). */
+function patchedPaths(patch: unknown): string[] {
+  const out: string[] = [];
+  const list = Array.isArray(patch) ? patch : [];
+  for (const raw of list) {
+    if (!raw || typeof raw !== "object") continue;
+    const op = raw as AnyRecord;
+    if (typeof op.path === "string") out.push(op.path);
+    if (typeof op.from === "string") out.push(op.from);
+  }
+  return out;
+}
+
+/** Whether a binding pointer is affected by a set of patched paths: it equals,
+ *  is a prefix of (ancestor), or is prefixed by (descendant) some path. Root
+ *  ("") on either side touches everything. */
+function pointerAffected(bindPointer: string, paths: string[]): boolean {
+  for (const p of paths) {
+    if (bindPointer === p) return true;
+    if (bindPointer === "" || p === "") return true;
+    if (bindPointer.indexOf(p + "/") === 0) return true;
+    if (p.indexOf(bindPointer + "/") === 0) return true;
+  }
+  return false;
+}
+
+/** Text rendering for a bound value: null/undefined → "", objects → JSON,
+ *  everything else → String(value). Never HTML. */
+function bindText(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "object") {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+  return String(value);
+}
+
+/** JSON of a value, with a stable sentinel for `undefined` so a subscriber's
+ *  change comparison never confuses "absent" with a real string. */
+function stateStringify(value: unknown): string {
+  const s = JSON.stringify(value);
+  return s === undefined ? " undef" : s;
+}
+
+function asRecord(v: unknown): AnyRecord {
+  if (v && typeof v === "object" && !Array.isArray(v)) return v as AnyRecord;
+  return {};
+}
+
+// Attributes an author may bind via `data-br-bind-attr`. `style` and any `on*`
+// handler are FORBIDDEN (they execute); `aria-*`/`data-*` are allowed too.
+const BIND_ATTR_ALLOW: Record<string, boolean> = {
+  href: true,
+  src: true,
+  title: true,
+  alt: true,
+  value: true,
+  placeholder: true,
+  disabled: true,
+  hidden: true,
+  class: true,
+};
+
+/** A non-executing URL for `href`/`src`: relative paths, fragments, `https:` or
+ *  `mailto:`. `javascript:`, `data:`, and other schemes are refused. */
+function isSafeBindUrl(u: string): boolean {
+  const s = (u || "").trim();
+  if (s === "") return true;
+  if (s.charAt(0) === "#" || s.charAt(0) === "/") return true;
+  // No scheme (`word:`) before a path separator → a relative reference.
+  if (!/^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(s)) return true;
+  return /^https:/i.test(s) || /^mailto:/i.test(s);
+}
+
 export class UiRuntime {
   private client: BioRouterClient;
-  /** The agent's shared state bag (mirrors `ui_state` on the server). */
+  /** The agent's shared state bag (mirrors the state doc when it is an object;
+   *  `{}` when the doc is an array/primitive). Kept for back-compat with apps
+   *  that read `ui.state` directly. */
   state: Record<string, unknown> = {};
+  /** The full shared state document (any JSON value) and its server version. */
+  private doc: unknown = {};
+  private version = 0;
+  private bindings: BindEntry[] = [];
+  private scanned = false;
+  private stateSubs: StateSub[] = [];
   private stateListeners: StateListener[] = [];
   private commandListeners: CommandListener[] = [];
   private docks: Map<string, HTMLElement> = new Map();
@@ -1609,6 +1934,10 @@ export class UiRuntime {
         panels: Array.from(this.panels.keys()),
       },
     });
+    // Index the author's static bindings now that the DOM (and the connection)
+    // is ready, and paint them with the current (possibly empty) doc.
+    this.scanBindings();
+    this.evalAllBindings();
   }
 
   /** Apply one agent command. Unknown commands are ignored, not fatal. */
@@ -1724,6 +2053,7 @@ export class UiRuntime {
       if (existing) existing.remove();
       this.panels.delete(id);
       this.syncDockVisibility();
+      this.refreshBindings();
       return;
     }
 
@@ -1790,6 +2120,8 @@ export class UiRuntime {
     }
     this.panels.set(id, panel);
     this.syncDockVisibility();
+    // The panel body may carry author bindings — index and paint them.
+    this.refreshBindings();
   }
 
   private applyRender(cmd: UiCommand): void {
@@ -1805,6 +2137,8 @@ export class UiRuntime {
     }
     if (cmd.mode !== "append") host.innerHTML = "";
     this.renderInto(host, cmd.body || [], cmd.target || "render", cmd.mode === "append");
+    // Rendered markup may contain author bindings — re-index and paint.
+    this.refreshBindings();
   }
 
   /** Render widget nodes, wiring their buttons back into the agent loop. */
@@ -1955,8 +2289,47 @@ export class UiRuntime {
     }
   }
 
+  /**
+   * Apply a `state` frame. Three shapes:
+   *   - `mode:"snapshot"` → replace the whole doc, adopt its version.
+   *   - `mode:"patch"`    → apply RFC-6902 ops, adopt the new version.
+   *   - no mode (legacy)  → treat `state` as a snapshot of unknown version.
+   * A patch that fails to apply leaves the prior doc untouched.
+   */
   private applyState(cmd: UiCommand): void {
-    this.state = cmd.state || {};
+    if (!this.scanned) this.scanBindings();
+    const mode = cmd.mode;
+    if (mode === "snapshot") {
+      this.doc = cmd.doc === undefined ? {} : cmd.doc;
+      if (typeof cmd.version === "number") this.version = cmd.version;
+      this.afterStateChange(null);
+    } else if (mode === "patch") {
+      const before = this.doc;
+      try {
+        this.doc = applyPatch(this.doc, cmd.patch);
+      } catch {
+        this.doc = before;
+      }
+      if (typeof cmd.version === "number") this.version = cmd.version;
+      this.afterStateChange(patchedPaths(cmd.patch));
+    } else {
+      // Legacy `{cmd:"state", state:{…}}` — a full snapshot, version unknown.
+      this.doc = cmd.state || {};
+      this.afterStateChange(null);
+    }
+  }
+
+  /** Re-mirror `state`, re-evaluate bindings (all on snapshot, only affected on
+   *  patch), then notify `onState` listeners and `subscribe`rs. */
+  private afterStateChange(affected: string[] | null): void {
+    this.state = asRecord(this.doc);
+    if (affected === null) {
+      this.evalAllBindings();
+    } else {
+      for (const b of this.bindings) {
+        if (pointerAffected(b.pointer, affected)) this.applyBinding(b);
+      }
+    }
     for (const fn of this.stateListeners) {
       try {
         fn(this.state);
@@ -1964,6 +2337,206 @@ export class UiRuntime {
         /* listener errors are non-fatal */
       }
     }
+    for (const sub of this.stateSubs) {
+      const val = pointerGet(this.doc, sub.pointer);
+      const enc = stateStringify(val);
+      if (enc !== sub.last) {
+        sub.last = enc;
+        try {
+          sub.fn(deepClone(val));
+        } catch {
+          /* subscriber errors are non-fatal */
+        }
+      }
+    }
+  }
+
+  // ── declarative bindings ───────────────────────────────────────────────────
+
+  /** Rebuild the pointer→element binding index from the current DOM. Called at
+   *  start and after any render that could add/remove bound nodes. */
+  private scanBindings(): void {
+    this.scanned = true;
+    const list: BindEntry[] = [];
+    const texts = document.querySelectorAll("[data-br-bind]");
+    for (let i = 0; i < texts.length; i++) {
+      const el = texts[i];
+      const p = el.getAttribute("data-br-bind") || "";
+      if (p) list.push({ el: el, kind: "text", pointer: p, attr: "" });
+    }
+    const shows = document.querySelectorAll("[data-br-bind-show]");
+    for (let i = 0; i < shows.length; i++) {
+      const el = shows[i];
+      const p = el.getAttribute("data-br-bind-show") || "";
+      if (p) list.push({ el: el, kind: "show", pointer: p, attr: "" });
+    }
+    const attrs = document.querySelectorAll("[data-br-bind-attr]");
+    for (let i = 0; i < attrs.length; i++) {
+      const el = attrs[i];
+      const spec = el.getAttribute("data-br-bind-attr") || "";
+      // One or more `attrName:/pointer` pairs, comma-separated.
+      for (const one of spec.split(",")) {
+        const idx = one.indexOf(":");
+        if (idx < 0) continue;
+        const attr = one.slice(0, idx).trim();
+        const p = one.slice(idx + 1).trim();
+        if (attr && p) list.push({ el: el, kind: "attr", pointer: p, attr: attr });
+      }
+    }
+    this.bindings = list;
+  }
+
+  /** Rescan + repaint after the DOM structure changed (a render/panel). */
+  private refreshBindings(): void {
+    this.scanBindings();
+    this.evalAllBindings();
+  }
+
+  private evalAllBindings(): void {
+    for (const b of this.bindings) this.applyBinding(b);
+  }
+
+  /** Push one binding's current pointer value into its element. Non-executing
+   *  sinks only: `textContent`, an allowlisted attribute, or the `hidden`
+   *  property. Never `innerHTML`. */
+  private applyBinding(b: BindEntry): void {
+    const value = pointerGet(this.doc, b.pointer);
+    if (b.kind === "text") {
+      b.el.textContent = bindText(value);
+    } else if (b.kind === "show") {
+      const he = b.el as HTMLElement;
+      he.hidden = !value;
+    } else if (b.kind === "attr") {
+      this.applyBindAttr(b.el, b.attr, value);
+    }
+  }
+
+  private applyBindAttr(el: Element, attr: string, value: unknown): void {
+    const name = attr.toLowerCase();
+    // Executable sinks are refused outright.
+    if (name.indexOf("on") === 0 || name === "style") {
+      try {
+        console.warn("[BioRouter] refused data-br-bind-attr on forbidden attribute: " + name);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    const allowed =
+      BIND_ATTR_ALLOW[name] === true ||
+      name.indexOf("aria-") === 0 ||
+      name.indexOf("data-") === 0;
+    if (!allowed) {
+      try {
+        console.warn("[BioRouter] refused data-br-bind-attr on unlisted attribute: " + name);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
+    // `value` on a form control is a property, not an attribute — and we never
+    // clobber an element the user is actively editing.
+    if (name === "value") {
+      const tag = el.tagName.toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select") {
+        if (document.activeElement === el) return;
+        const field = el as HTMLInputElement;
+        field.value = value == null ? "" : String(value);
+        return;
+      }
+    }
+    if (name === "href" || name === "src") {
+      const url = value == null ? "" : String(value);
+      if (!isSafeBindUrl(url)) {
+        try {
+          console.warn("[BioRouter] refused unsafe " + name + " value: " + url);
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+      el.setAttribute(name, url);
+      return;
+    }
+    // Boolean-ish / plain attributes: absence for falsy, else the string value.
+    if (value === false || value == null) {
+      el.removeAttribute(name);
+      return;
+    }
+    el.setAttribute(name, String(value));
+  }
+
+  // ── public state API (surfaced as `br.state`) ─────────────────────────────
+
+  /** The value at a JSON Pointer (deep-cloned), or the whole doc when omitted. */
+  stateGet(path?: string): unknown {
+    if (path === undefined || path === null || path === "") return deepClone(this.doc);
+    return deepClone(pointerGet(this.doc, path));
+  }
+
+  /** Optimistically set the value at `path`, then send a `state_write` carrying
+   *  the pre-write `baseVersion`. */
+  stateSet(path: string, value: unknown): void {
+    const baseVersion = this.version;
+    try {
+      this.doc = applyPatch(this.doc, [{ op: "add", path: path, value: value }]);
+    } catch {
+      /* keep the prior doc on failure */
+    }
+    this.afterStateChange([path]);
+    this.client.sendRaw({
+      type: "state_write",
+      set: { path: path, value: value },
+      baseVersion: baseVersion,
+    });
+  }
+
+  /** Optimistically remove the value at `path`, then send a `state_write`. */
+  stateRemove(path: string): void {
+    const baseVersion = this.version;
+    const op = { op: "remove", path: path };
+    try {
+      this.doc = applyPatch(this.doc, [op]);
+    } catch {
+      /* keep the prior doc on failure */
+    }
+    this.afterStateChange([path]);
+    this.client.sendRaw({ type: "state_write", patch: [op], baseVersion: baseVersion });
+  }
+
+  /** Replace the whole doc with `fn(clone)`'s return value, then send it. */
+  stateUpdate(fn: DocUpdater): void {
+    const baseVersion = this.version;
+    const draft = deepClone(this.doc);
+    let next: unknown;
+    try {
+      next = fn(draft);
+    } catch {
+      next = draft;
+    }
+    if (next === undefined) next = draft;
+    this.doc = next;
+    this.afterStateChange(null);
+    this.client.sendRaw({
+      type: "state_write",
+      set: { path: "", value: next },
+      baseVersion: baseVersion,
+    });
+  }
+
+  /** Fire `fn(value)` whenever the value at `path` changes (JSON-compared).
+   *  Returns an unsubscribe function. */
+  stateSubscribe(path: string, fn: ValueSub): Unsub {
+    const sub: StateSub = {
+      pointer: path || "",
+      fn: fn,
+      last: stateStringify(pointerGet(this.doc, path || "")),
+    };
+    this.stateSubs.push(sub);
+    return () => {
+      const i = this.stateSubs.indexOf(sub);
+      if (i >= 0) this.stateSubs.splice(i, 1);
+    };
   }
 
   private modal(): HTMLElement {
