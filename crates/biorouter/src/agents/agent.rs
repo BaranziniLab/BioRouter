@@ -1422,12 +1422,27 @@ impl Agent {
                         .submit_response(id.clone(), user_data.clone())
                         .await
                     {
-                        let error_text = format!("Failed to submit elicitation response: {}", e);
-                        error!(error_text);
-                        return Ok(Box::pin(stream::once(async {
-                            Ok(AgentEvent::Message(
-                                Message::assistant().with_text(error_text),
-                            ))
+                        // No live request is waiting on this id. The usual cause
+                        // is a daemon restart between the elicitation and the
+                        // reply: the in-memory pending request — and the tool
+                        // call parked on it — died with the old process, so the
+                        // answer has nowhere to go (BR-41). Surface that the run
+                        // was interrupted instead of a raw error, and still keep
+                        // the reply in history.
+                        tracing::warn!("Elicitation response for {id} could not be delivered: {e}");
+                        session_manager
+                            .add_message(&session_config.id, &user_message)
+                            .await?;
+                        let notice = Message::assistant()
+                            .with_system_notification(
+                                SystemNotificationType::InlineMessage,
+                                "The request that was waiting for your input was interrupted \
+                                 (most likely by a restart), so your answer couldn't be \
+                                 delivered. Please re-send your request to continue.",
+                            )
+                            .user_only();
+                        return Ok(Box::pin(stream::once(async move {
+                            Ok(AgentEvent::Message(notice))
                         })));
                     }
                     session_manager
@@ -1437,6 +1452,13 @@ impl Agent {
                 }
             }
         }
+
+        // A daemon restart drops the in-memory goal registry and its Stop-hook
+        // judge, while the goal itself persists in the session's extension_data
+        // (like todos). Restore it before handling this turn so an active /goal
+        // survives the restart. No-op when the goal is already live in this
+        // process or none was stored (BR-41).
+        self.restore_goal(&session_config.id).await;
 
         let message_text = user_message.as_concat_text();
 
