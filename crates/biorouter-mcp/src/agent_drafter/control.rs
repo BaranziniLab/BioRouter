@@ -53,6 +53,11 @@ pub const APP_PAYLOAD_MAX: usize = 65_536;
 /// it gives up and returns gracefully (so a missing/hung handler can't wedge the
 /// turn). Tests shadow this via [`UiBridge::set_app_call_timeout_s`].
 pub const APP_CALL_TIMEOUT_S: u64 = 60;
+/// Seconds the `consult` tool parks waiting for a worker profile to answer before
+/// it gives up gracefully (design §3.8 multi-agent profiles). A consult runs a
+/// whole worker turn, so its budget is larger than an `app_call`'s. Tests shadow
+/// it via [`UiBridge::set_consult_timeout_s`].
+pub const CONSULT_TIMEOUT_S: u64 = 120;
 
 // ── Shared state document caps (Apps SDK v2, Pillar 2) ──────────────────────
 // Enforced after every mutation so an unschema'd app can't become an unbounded
@@ -469,6 +474,24 @@ struct PendingOutput {
     schema: Option<Value>,
 }
 
+/// A request from the `consult` tool for a named worker profile to answer a
+/// self-contained sub-question (design §3.8 multi-agent profiles).
+///
+/// The tool cannot reach the worker agent (that lives in `biorouter-server`'s app
+/// socket loop), so it hands the request through the bridge's consult channel and
+/// parks on a oneshot keyed by `id`; the app socket loop runs a bounded worker
+/// turn and unparks it via [`UiBridge::resolve_consult`].
+#[derive(Debug, Clone)]
+pub struct ConsultRequest {
+    /// Correlates the reply the app socket loop posts back via `resolve_consult`.
+    pub id: String,
+    /// The worker profile name to run (must be a validated `orchestration.agents`
+    /// entry; the loop rejects unknown ones).
+    pub agent: String,
+    /// The self-contained prompt for the worker to answer.
+    pub prompt: String,
+}
+
 struct BridgeInner {
     /// Outbound half of the *current* connection. `None` between connections.
     tx: Mutex<Option<mpsc::UnboundedSender<Value>>>,
@@ -483,6 +506,17 @@ struct BridgeInner {
     /// on purpose: asks carry ask-specific cancel/timeout semantics, so the two
     /// parking maps mirror each other's mechanics but never share a call id space.
     pending_calls: Mutex<HashMap<String, oneshot::Sender<Value>>>,
+    /// Sender for `consult` requests, installed by the app socket loop via
+    /// [`UiBridge::set_consult_handler`]. `None` when no worker-profile handler is
+    /// listening (an app with no profiles) — `consult` then reports so gracefully.
+    consult_tx: Mutex<Option<mpsc::UnboundedSender<ConsultRequest>>>,
+    /// `id` → responder for a parked `consult` (mirrors [`Self::pending_calls`]),
+    /// so [`UiBridge::cancel_all`] can unpark a consult and the loop can reply.
+    pending_consults: Mutex<HashMap<String, oneshot::Sender<Value>>>,
+    /// Seconds a `consult` waits before timing out. Initialized to
+    /// [`CONSULT_TIMEOUT_S`]; only tests mutate it (via
+    /// [`UiBridge::set_consult_timeout_s`]).
+    consult_timeout_s: AtomicU64,
     /// A pending structured-output request the server armed for `emit_result`:
     /// the call id the app is waiting on plus an optional JSON Schema the result
     /// must satisfy. `None` unless a structured call is in flight.
@@ -538,6 +572,9 @@ impl UiBridge {
                 generation: AtomicU64::new(0),
                 pending: Mutex::new(HashMap::new()),
                 pending_calls: Mutex::new(HashMap::new()),
+                consult_tx: Mutex::new(None),
+                pending_consults: Mutex::new(HashMap::new()),
+                consult_timeout_s: AtomicU64::new(CONSULT_TIMEOUT_S),
                 pending_output: Mutex::new(None),
                 subscriptions: Mutex::new(HashSet::new()),
                 surface_decl: Mutex::new(SurfaceDecl::default()),
@@ -750,10 +787,10 @@ impl UiBridge {
         }
     }
 
-    /// Fail every parked `ui_ask` **and** `app_call` (socket closed / turn
-    /// cancelled) so no tool hangs past the life of the connection. Both parking
-    /// maps unblock with the same `{cancelled:true}` payload, which each tool
-    /// recognizes and reports as a cancellation rather than a real answer.
+    /// Fail every parked `ui_ask`, `app_call` **and** `consult` (socket closed /
+    /// turn cancelled) so no tool hangs past the life of the connection. All three
+    /// parking maps unblock with the same `{cancelled:true}` payload, which each
+    /// tool recognizes and reports as a cancellation rather than a real answer.
     pub fn cancel_all(&self) {
         let asks: Vec<_> = self
             .inner
@@ -767,7 +804,13 @@ impl UiBridge {
             .lock()
             .map(|mut p| p.drain().map(|(_, tx)| tx).collect())
             .unwrap_or_default();
-        for tx in asks.into_iter().chain(calls) {
+        let consults: Vec<_> = self
+            .inner
+            .pending_consults
+            .lock()
+            .map(|mut p| p.drain().map(|(_, tx)| tx).collect())
+            .unwrap_or_default();
+        for tx in asks.into_iter().chain(calls).chain(consults) {
             let _ = tx.send(json!({ "cancelled": true }));
         }
     }
@@ -815,6 +858,70 @@ impl UiBridge {
         if let Ok(mut p) = self.inner.pending_calls.lock() {
             p.remove(call_id);
         }
+    }
+
+    // ── consult (multi-agent profiles, design §3.8) ─────────────────────────
+
+    /// Install the consult handler channel and return the receiver the app socket
+    /// loop drains. Called once per connection (like [`attach`](Self::attach)); a
+    /// reconnect replaces the sender so a stale receiver is dropped. Only the MAIN
+    /// agent's turn loop drains this — a worker turn deliberately does not, which
+    /// is what bounds consult depth to 1.
+    pub fn set_consult_handler(&self) -> mpsc::UnboundedReceiver<ConsultRequest> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        if let Ok(mut slot) = self.inner.consult_tx.lock() {
+            *slot = Some(tx);
+        }
+        rx
+    }
+
+    /// Hand a [`ConsultRequest`] to the installed handler. Returns whether a
+    /// handler was listening (an app with no worker profiles has none).
+    fn send_consult_request(&self, req: ConsultRequest) -> bool {
+        let Ok(slot) = self.inner.consult_tx.lock() else {
+            return false;
+        };
+        match slot.as_ref() {
+            Some(tx) => tx.send(req).is_ok(),
+            None => false,
+        }
+    }
+
+    fn register_consult(&self, id: String) -> oneshot::Receiver<Value> {
+        let (tx, rx) = oneshot::channel();
+        if let Ok(mut p) = self.inner.pending_consults.lock() {
+            p.insert(id, tx);
+        }
+        rx
+    }
+
+    fn forget_consult(&self, id: &str) {
+        if let Ok(mut p) = self.inner.pending_consults.lock() {
+            p.remove(id);
+        }
+    }
+
+    /// Resolve a parked `consult`. Returns whether one was actually waiting. The
+    /// app socket loop calls this once a worker turn produced an answer; the
+    /// payload is `{text: "…"}`, `{error: "…"}`, or `{cancelled: true}`.
+    pub fn resolve_consult(&self, id: &str, payload: Value) -> bool {
+        let responder = self
+            .inner
+            .pending_consults
+            .lock()
+            .ok()
+            .and_then(|mut p| p.remove(id));
+        match responder {
+            Some(tx) => tx.send(payload).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Test-only knob to shorten the `consult` timeout so the timeout path can be
+    /// exercised without a real 120-second wait.
+    #[cfg(test)]
+    pub fn set_consult_timeout_s(&self, secs: u64) {
+        self.inner.consult_timeout_s.store(secs, Ordering::Relaxed);
     }
 
     /// Arm a structured-output request for `emit_result`: the app is now waiting
@@ -2136,6 +2243,14 @@ pub struct SubscribeParams {
     pub signals: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct ConsultParams {
+    /// The worker profile to consult (a name from the app's `ready.profiles`).
+    pub agent: String,
+    /// A self-contained question for that profile to answer independently.
+    pub prompt: String,
+}
+
 // ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
@@ -2149,10 +2264,27 @@ pub struct AppControlServer {
     /// The app's declared surface (state schema, actions, signals, components),
     /// reported to the model via `ui_describe`.
     surface: SurfaceDecl,
+    /// Whether the `consult` tool may reach worker profiles (design §3.8). TRUE
+    /// only for the MAIN agent's server when the app declares ≥1 valid profile;
+    /// FALSE for a worker's server (a worker cannot consult — depth is 1) and for
+    /// any app that declares no profiles.
+    consult_enabled: bool,
 }
 
 impl AppControlServer {
     pub fn new(bridge: UiBridge, cap: UiCapability, surface: SurfaceDecl) -> Self {
+        Self::new_with_consult(bridge, cap, surface, false)
+    }
+
+    /// Like [`new`](Self::new) but sets whether the `consult` tool is live. The
+    /// app socket loop passes `true` for the MAIN agent when the manifest declares
+    /// worker profiles; workers and profile-less apps get `false`.
+    pub fn new_with_consult(
+        bridge: UiBridge,
+        cap: UiCapability,
+        surface: SurfaceDecl,
+        consult_enabled: bool,
+    ) -> Self {
         // Mirror the declared surface onto the bridge so its server-facing signal
         // accessors (signal_decl / validate_signal) can resolve declarations
         // without holding this server — no apps.rs wiring required.
@@ -2162,6 +2294,7 @@ impl AppControlServer {
             bridge,
             cap,
             surface,
+            consult_enabled,
         }
     }
 
@@ -3402,6 +3535,90 @@ impl AppControlServer {
             serde_json::to_string(&json!({ "subscribed": signals }))
                 .unwrap_or_else(|_| "{}".to_string()),
         )
+    }
+
+    #[tool(
+        name = "consult",
+        description = "Ask one of THIS app's declared worker agent profiles to independently \
+                       handle a sub-question and return its answer to you. Use it for a second \
+                       opinion (e.g. a 'critic' profile) or to delegate a specialized sub-task to \
+                       a profile that runs on a different model, system prompt, or tool set. \
+                       `agent` is the profile name (the app's ready frame lists the available \
+                       profiles); `prompt` is the self-contained question. Blocks until the \
+                       profile answers or times out. Only the app's MAIN agent may consult, and a \
+                       consulted profile cannot itself consult (depth is 1)."
+    )]
+    pub async fn consult(
+        &self,
+        Parameters(p): Parameters<ConsultParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        // Gated: only the main agent's server carries a live consult (workers and
+        // profile-less apps get a friendly no-op so the model stops trying).
+        if !self.consult_enabled {
+            return ok_text(
+                "consult is unavailable: this app declares no worker agent profiles to consult.",
+            );
+        }
+        let agent = p.agent.trim();
+        let prompt = p.prompt.trim();
+        if agent.is_empty() {
+            return Err(invalid(
+                "\"agent\" must name one of the app's declared worker profiles (see ready.profiles)",
+            ));
+        }
+        if prompt.is_empty() {
+            return Err(invalid(
+                "\"prompt\" must be a non-empty, self-contained question for the profile to answer",
+            ));
+        }
+
+        // Park on a fresh oneshot and hand the request to the app socket loop,
+        // which runs the bounded worker turn and resolves it (or the timeout fires
+        // / the turn is cancelled).
+        let id = fresh_call_id();
+        let rx = self.bridge.register_consult(id.clone());
+        if !self.bridge.send_consult_request(ConsultRequest {
+            id: id.clone(),
+            agent: agent.to_string(),
+            prompt: prompt.to_string(),
+        }) {
+            self.bridge.forget_consult(&id);
+            return ok_text(
+                "consult is unavailable right now: no worker-profile handler is listening.",
+            );
+        }
+
+        let secs = self.bridge.inner.consult_timeout_s.load(Ordering::Relaxed);
+        match tokio::time::timeout(Duration::from_secs(secs), rx).await {
+            Ok(Ok(payload)) => {
+                if payload.get("cancelled").and_then(Value::as_bool) == Some(true) {
+                    return ok_text(format!(
+                        "The consultation with \"{agent}\" was cancelled before it returned."
+                    ));
+                }
+                if let Some(err) = payload.get("error").and_then(Value::as_str) {
+                    return ok_text(format!("The \"{agent}\" profile could not answer: {err}"));
+                }
+                let text = payload.get("text").and_then(Value::as_str).unwrap_or("");
+                ok_text(format!("[{agent}] {text}"))
+            }
+            // Sender dropped: the socket closed out from under the parked consult.
+            Ok(Err(_)) => {
+                self.bridge.forget_consult(&id);
+                Err(ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    "the app window closed before the consulted profile answered".to_string(),
+                    None,
+                ))
+            }
+            Err(_) => {
+                self.bridge.forget_consult(&id);
+                ok_text(format!(
+                    "The \"{agent}\" profile did not answer within {secs}s. Proceed without its \
+                     input or tell the user."
+                ))
+            }
+        }
     }
 }
 
@@ -5706,6 +5923,182 @@ mod tests {
         let (_rx2, _tok2) = bridge.attach();
         let r = task.await.unwrap().unwrap();
         assert!(text_of(&r).contains("cancelled"), "{}", text_of(&r));
+    }
+
+    // ── consult (multi-agent profiles, design §3.8) ─────────────────────────
+
+    #[tokio::test]
+    async fn consult_disabled_when_no_profiles() {
+        // A default server has consult_enabled == false → a friendly no-op.
+        let (s, _rx) = server();
+        let r = s
+            .consult(Parameters(ConsultParams {
+                agent: "critic".into(),
+                prompt: "check this".into(),
+            }))
+            .await
+            .unwrap();
+        assert!(
+            text_of(&r).contains("no worker agent profiles"),
+            "{}",
+            text_of(&r)
+        );
+    }
+
+    #[tokio::test]
+    async fn consult_without_handler_reports_unavailable() {
+        // consult_enabled but no handler installed → graceful message, no hang.
+        let bridge = UiBridge::new();
+        let (_rx, _tok) = bridge.attach();
+        let s = AppControlServer::new_with_consult(
+            bridge,
+            UiCapability::default(),
+            SurfaceDecl::default(),
+            true,
+        );
+        let r = s
+            .consult(Parameters(ConsultParams {
+                agent: "critic".into(),
+                prompt: "check this".into(),
+            }))
+            .await
+            .unwrap();
+        assert!(
+            text_of(&r).contains("no worker-profile handler"),
+            "{}",
+            text_of(&r)
+        );
+    }
+
+    #[tokio::test]
+    async fn consult_round_trips_a_worker_answer() {
+        let bridge = UiBridge::new();
+        let (_rx, _tok) = bridge.attach();
+        let mut consult_rx = bridge.set_consult_handler();
+        let s = AppControlServer::new_with_consult(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+            true,
+        );
+        let task = tokio::spawn(async move {
+            s.consult(Parameters(ConsultParams {
+                agent: "critic".into(),
+                prompt: "is this sound?".into(),
+            }))
+            .await
+        });
+        let req = consult_rx.recv().await.expect("a consult request arrives");
+        assert_eq!(req.agent, "critic");
+        assert_eq!(req.prompt, "is this sound?");
+        assert_eq!(req.id.len(), 16, "consult id is 16 hex chars: {}", req.id);
+        assert!(bridge.resolve_consult(&req.id, json!({ "text": "looks good to me" })));
+        let r = task.await.unwrap().unwrap();
+        assert!(
+            text_of(&r).contains("[critic] looks good to me"),
+            "{}",
+            text_of(&r)
+        );
+    }
+
+    #[tokio::test]
+    async fn consult_reports_a_worker_error() {
+        let bridge = UiBridge::new();
+        let (_rx, _tok) = bridge.attach();
+        let mut consult_rx = bridge.set_consult_handler();
+        let s = AppControlServer::new_with_consult(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+            true,
+        );
+        let task = tokio::spawn(async move {
+            s.consult(Parameters(ConsultParams {
+                agent: "ghost".into(),
+                prompt: "hi".into(),
+            }))
+            .await
+        });
+        let req = consult_rx.recv().await.unwrap();
+        assert!(bridge.resolve_consult(&req.id, json!({ "error": "no such profile \"ghost\"" })));
+        let r = task.await.unwrap().unwrap();
+        assert!(text_of(&r).contains("could not answer"), "{}", text_of(&r));
+    }
+
+    #[tokio::test]
+    async fn consult_times_out_gracefully() {
+        let bridge = UiBridge::new();
+        let (_rx, _tok) = bridge.attach();
+        bridge.set_consult_timeout_s(1);
+        let mut consult_rx = bridge.set_consult_handler();
+        let s = AppControlServer::new_with_consult(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+            true,
+        );
+        let task = tokio::spawn(async move {
+            s.consult(Parameters(ConsultParams {
+                agent: "critic".into(),
+                prompt: "slow one".into(),
+            }))
+            .await
+        });
+        // Receive but never resolve → let the 1s timeout fire.
+        let _ = consult_rx.recv().await.unwrap();
+        let r = task.await.unwrap().unwrap();
+        assert!(text_of(&r).contains("within 1s"), "{}", text_of(&r));
+    }
+
+    #[tokio::test]
+    async fn consult_unparks_on_cancel_all() {
+        let bridge = UiBridge::new();
+        let (_rx, _tok) = bridge.attach();
+        let mut consult_rx = bridge.set_consult_handler();
+        let s = AppControlServer::new_with_consult(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+            true,
+        );
+        let task = tokio::spawn(async move {
+            s.consult(Parameters(ConsultParams {
+                agent: "critic".into(),
+                prompt: "cancel me".into(),
+            }))
+            .await
+        });
+        let _ = consult_rx.recv().await.unwrap();
+        bridge.cancel_all();
+        let r = task.await.unwrap().unwrap();
+        assert!(text_of(&r).contains("cancelled"), "{}", text_of(&r));
+    }
+
+    #[tokio::test]
+    async fn consult_rejects_blank_args() {
+        let bridge = UiBridge::new();
+        let (_rx, _tok) = bridge.attach();
+        let _consult_rx = bridge.set_consult_handler();
+        let s = AppControlServer::new_with_consult(
+            bridge,
+            UiCapability::default(),
+            SurfaceDecl::default(),
+            true,
+        );
+        assert!(s
+            .consult(Parameters(ConsultParams {
+                agent: "  ".into(),
+                prompt: "hi".into(),
+            }))
+            .await
+            .is_err());
+        assert!(s
+            .consult(Parameters(ConsultParams {
+                agent: "critic".into(),
+                prompt: "   ".into(),
+            }))
+            .await
+            .is_err());
     }
 
     #[tokio::test]

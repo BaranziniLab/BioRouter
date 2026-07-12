@@ -1204,6 +1204,172 @@ async function runSelftest() {
     check("the next ui_error after drops carries droppedCount (=2)", !!ue && ue.droppedCount === 2, JSON.stringify(ue));
   }
 
+  // ── Scenario X: multi-agent client facade (§3.8) ───────────────────────────
+  // A `ready` frame advertising a worker profile ("critic") lets `br.agent()`
+  // open a scoped facade whose prompts/calls carry `agent:critic`, whose `on()`
+  // sees only critic frames, and whose activity is attributed in the presence
+  // chip. Un-tagged (main) frames stay on the base client.
+  send({
+    type: "ready",
+    protocol: 2,
+    capabilities: ["ui"],
+    sessionId: "harness",
+    resumed: false,
+    profiles: ["critic"],
+  });
+  await waitFor(() => win.eval("JSON.stringify(window.BioRouter.agents())") === '["critic"]');
+  check(
+    "ready.profiles is exposed via br.agents()",
+    win.eval("JSON.stringify(window.BioRouter.agents())") === '["critic"]',
+    win.eval("JSON.stringify(window.BioRouter.agents())")
+  );
+
+  // Start a scoped call and register a facade-scoped + a global listener.
+  win.eval(
+    "window.__critCall = null; window.__critMsgs = []; window.__mainMsgs = [];" +
+      "window.BioRouter.agent('critic').on('message', function (ev) { window.__critMsgs.push(ev.delta); });" +
+      "window.BioRouter.on('message', function (ev) { window.__mainMsgs.push(ev.delta); });" +
+      "window.BioRouter.agent('critic').call({ text: 'grade this answer' }).then(function (r) { window.__critCall = r; });"
+  );
+  const baseAg = received.length;
+  await waitFor(() => received.slice(baseAg).some((f) => f.type === "call" && f.agent === "critic"));
+  const critCall = received.slice(baseAg).find((f) => f.type === "call" && f.agent === "critic");
+  check(
+    "br.agent(name).call sends a call frame carrying agent:name",
+    !!critCall && critCall.agent === "critic" && critCall.text === "grade this answer",
+    JSON.stringify(critCall)
+  );
+
+  // Two worker frames stream in; only the critic facade's on() should see them.
+  send({ type: "message", delta: "Looks ", agent: "critic" });
+  send({ type: "message", delta: "solid.", agent: "critic" });
+  await waitFor(() => win.eval("window.__critMsgs.length") >= 2);
+  check(
+    "br.agent(name).on() receives ONLY that worker's frames",
+    win.eval("JSON.stringify(window.__critMsgs)") === '["Looks ","solid."]',
+    win.eval("JSON.stringify(window.__critMsgs)")
+  );
+  check(
+    "a worker message frame shows the presence chip attributed to the profile",
+    /^critic · /.test(String(win.eval("window.BioRouter.ui.presenceText() || ''"))),
+    "presence=" + win.eval("String(window.BioRouter.ui.presenceText())")
+  );
+
+  // An un-tagged (main) frame reaches the global on() but NOT the critic facade.
+  send({ type: "message", delta: "MAIN-ONLY" });
+  await waitFor(() => win.eval("window.__mainMsgs.indexOf('MAIN-ONLY') >= 0"));
+  check(
+    "an un-tagged (main) frame never reaches a worker facade's on()",
+    win.eval("window.__critMsgs.indexOf('MAIN-ONLY') < 0"),
+    win.eval("JSON.stringify(window.__critMsgs)")
+  );
+  check(
+    "the global on() still fires for ALL frames (main + worker, back-compat)",
+    win.eval("window.__mainMsgs.indexOf('MAIN-ONLY') >= 0 && window.__mainMsgs.indexOf('Looks ') >= 0"),
+    win.eval("JSON.stringify(window.__mainMsgs)")
+  );
+
+  // done{agent:critic} settles the critic call with its accumulated {text}.
+  send({ type: "done", agent: "critic" });
+  await waitFor(() => win.eval("window.__critCall") != null);
+  check(
+    "done with agent:critic settles the critic call with {text}",
+    win.eval("window.__critCall && window.__critCall.text") === "Looks solid.",
+    win.eval("JSON.stringify(window.__critCall)")
+  );
+
+  // Unknown profile → the async methods reject immediately, sending no frame.
+  const baseGhost = received.length;
+  win.eval(
+    "window.__ghostCall = null; window.__ghostPrompt = null;" +
+      "window.BioRouter.agent('ghost').call({ text: 'hi' }).then(function () { window.__ghostCall = 'ok'; }, function (e) { window.__ghostCall = String(e && e.message); });" +
+      "window.BioRouter.agent('ghost').prompt('hi').then(function () { window.__ghostPrompt = 'ok'; }, function (e) { window.__ghostPrompt = String(e && e.message); });"
+  );
+  await waitFor(() => win.eval("window.__ghostCall") != null && win.eval("window.__ghostPrompt") != null);
+  check(
+    "an unknown agent profile's call rejects immediately with a clear error",
+    /Unknown agent profile/i.test(String(win.eval("window.__ghostCall"))),
+    win.eval("JSON.stringify(window.__ghostCall)")
+  );
+  check(
+    "an unknown agent profile's prompt rejects immediately with a clear error",
+    /Unknown agent profile/i.test(String(win.eval("window.__ghostPrompt"))),
+    win.eval("JSON.stringify(window.__ghostPrompt)")
+  );
+  check(
+    "an unknown-profile call/prompt sends no frame to the server",
+    !received.slice(baseGhost).some((f) => f.agent === "ghost"),
+    JSON.stringify(received.slice(baseGhost).map((f) => f.type + "/" + f.agent))
+  );
+
+  // ── Scenario Y: createApp config via a JSON <script> tag (CSP prep, Task 2) ──
+  // A fresh page mounts the same bundle with a `#biorouter-app-config` JSON tag
+  // (or a malformed one) and no working socket; we assert only on the config the
+  // client latched. The WebSocket is stubbed so the probe never touches the live
+  // daemon socket (config is read synchronously, before connect()).
+  const TAG_ID = "biorouter-app-config";
+  const jsonTag = (json) =>
+    '<script type="application/json" id="' + TAG_ID + '">' + json + "</scr" + "ipt>";
+  async function probeConfig(bodyHtml, windowConfig) {
+    const doc2 =
+      "<!doctype html><html><head><title>cfg</title></head><body>" + bodyHtml + "</body></html>";
+    const dom2 = new JSDOM(doc2, {
+      url: `http://127.0.0.1:${PORT}/`,
+      runScripts: "outside-only",
+      pretendToBeVisual: true,
+    });
+    const w = dom2.window;
+    const warns = [];
+    // Stub WebSocket so the eager connect() fails fast and stays isolated.
+    w.WebSocket = function () {
+      throw new Error("no ws (config probe)");
+    };
+    w.console = {
+      log: () => {},
+      info: () => {},
+      debug: () => {},
+      error: () => {},
+      warn: (...a) => warns.push(a.map(String).join(" ")),
+    };
+    if (windowConfig) w.BIOROUTER_APP_CONFIG = windowConfig;
+    w.eval(bundle);
+    await delay(30);
+    const cfg = w.BioRouter ? w.BioRouter.config : null;
+    dom2.window.close();
+    return { cfg, warns };
+  }
+
+  const cfgTag = await probeConfig(jsonTag('{"appId":"cfg-from-tag","autoChat":false,"ui":false}'), null);
+  check(
+    "createApp reads config from a #biorouter-app-config JSON script tag",
+    !!cfgTag.cfg && cfgTag.cfg.appId === "cfg-from-tag",
+    JSON.stringify(cfgTag.cfg)
+  );
+  check(
+    "the JSON script-tag config is fully applied (autoChat/ui carried through)",
+    !!cfgTag.cfg && cfgTag.cfg.autoChat === false && cfgTag.cfg.ui === false,
+    JSON.stringify(cfgTag.cfg)
+  );
+
+  const cfgPrec = await probeConfig(jsonTag('{"appId":"from-tag"}'), { appId: "from-window" });
+  check(
+    "the JSON script tag takes precedence over window.BIOROUTER_APP_CONFIG",
+    !!cfgPrec.cfg && cfgPrec.cfg.appId === "from-tag",
+    JSON.stringify(cfgPrec.cfg)
+  );
+
+  const cfgBad = await probeConfig(jsonTag("{ not valid json ]"), { appId: "cfg-from-window" });
+  check(
+    "malformed script-tag JSON falls back to window.BIOROUTER_APP_CONFIG",
+    !!cfgBad.cfg && cfgBad.cfg.appId === "cfg-from-window",
+    JSON.stringify(cfgBad.cfg)
+  );
+  check(
+    "malformed script-tag JSON logs a warning",
+    cfgBad.warns.some((wln) => /biorouter-app-config/i.test(wln)),
+    JSON.stringify(cfgBad.warns)
+  );
+
   dom.window.close();
   log(failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`);
   return failures === 0 ? 0 : 1;

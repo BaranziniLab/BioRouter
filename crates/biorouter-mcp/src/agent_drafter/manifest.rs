@@ -522,6 +522,13 @@ pub struct ModelRoute {
 pub struct Orchestration {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub sub_agents: HashMap<String, SubAgentManifest>,
+    /// Named **worker agent profiles** (design §3.8, Phase 4b). Each is a full
+    /// alternate [`AgentConfig`] — its own model, system prompt, extensions and
+    /// KB — that a `prompt` / `call` frame can target via `"agent": "<name>"`, or
+    /// that the main agent can reach with the `consult` tool. The app socket loop
+    /// validates each profile at connect (capability subset of the app, resolvable
+    /// provider/model, provider-class constraint), caps the count, and advertises
+    /// the survivors in the `ready.profiles` list. Empty ⇒ a single-agent app.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub agents: HashMap<String, AgentConfig>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
