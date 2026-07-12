@@ -142,9 +142,9 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   if (!hasProvider && showFirstTimeSetup) {
     return (
-      <div className="fixed inset-0 bg-background-muted flex flex-col">
+      <div className="fixed inset-0 flex flex-col overflow-hidden bg-background-muted">
         {/* Flat page header */}
-        <div className="px-6 sm:px-8 pt-10 sm:pt-12 pb-5 sm:pb-6 flex-shrink-0 border-b border-border-subtle">
+        <div className="flex-shrink-0 border-b border-border-subtle px-5 pb-5 pt-8 sm:px-8 sm:pb-6 sm:pt-10">
           <div className="max-w-2xl mx-auto">
             <div className="mb-3 sm:mb-4 biorouter-icon-animation origin-bottom-left">
               <BioRouter className="size-8" />
@@ -165,7 +165,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
           onScroll={checkScrollPosition}
           className="flex-1 min-h-0 overflow-y-auto bg-background-muted"
         >
-          <div className="max-w-2xl mx-auto px-6 sm:px-8">
+          <div className="mx-auto max-w-2xl space-y-4 px-4 py-4 sm:px-8 sm:py-6">
             <LlamaServerInlineCard onSuccess={handleLlamaServerComplete} />
             <OllamaInlineCard onSuccess={handleOllamaComplete} />
             <InstitutionalSetupCard

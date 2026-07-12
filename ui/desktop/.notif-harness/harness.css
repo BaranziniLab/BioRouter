@@ -1,0 +1,7 @@
+/* The harness's vite root is .notif-harness/, so Tailwind's automatic content
+   detection never sees ../src. Explicitly register the real component sources so
+   classes unique to NotificationSurface.tsx (self-start, w-7, the chip tints,
+   gap-3, …) are actually compiled — otherwise the harness renders a component
+   that the real app compiles fine. */
+@import '../src/styles/main.css';
+@source '../src';

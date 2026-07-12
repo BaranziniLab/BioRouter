@@ -111,14 +111,14 @@ describe('CreateWorkflowFromSessionModal', () => {
       render(<CreateWorkflowFromSessionModal {...defaultProps} />);
 
       expect(screen.getByTestId('modal-header')).toBeInTheDocument();
-      expect(screen.getByTestId('close-button')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Close' })).toBeInTheDocument();
     });
 
     it('calls onClose when close button is clicked', async () => {
       const user = userEvent.setup();
       render(<CreateWorkflowFromSessionModal {...defaultProps} />);
 
-      await user.click(screen.getByTestId('close-button'));
+      await user.click(screen.getByRole('button', { name: 'Close' }));
       expect(defaultProps.onClose).toHaveBeenCalled();
     });
   });

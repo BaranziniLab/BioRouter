@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { Layers } from '../icons/app-icons';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../ui/dropdown-menu';
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 import { Input } from '../ui/input';
 import { Switch } from '../ui/switch';
 import {
@@ -34,12 +39,9 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
   const [allSkills, setAllSkills] = useState<Skill[]>([]);
   const [allBundles, setAllBundles] = useState<SkillBundle[]>([]);
   const [hubUpdateTrigger, setHubUpdateTrigger] = useState(0);
-  const [isTransitioning, setIsTransitioning] = useState(false);
-  const [pendingSort, setPendingSort] = useState(false);
-  const [togglingKey, setTogglingKey] = useState<string | null>(null);
-  const [bulkInFlight, setBulkInFlight] = useState(false);
   const [sessionOverrides, setSessionOverrides] = useState<Map<string, boolean>>(new Map());
-  const sortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const saveGenerationRef = useRef(0);
   const isHubView = !sessionId;
 
   const loadAll = useCallback(() => {
@@ -61,35 +63,30 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
     }
   }, [isOpen, loadAll]);
 
-  useEffect(() => {
-    return () => {
-      if (sortTimeoutRef.current) clearTimeout(sortTimeoutRef.current);
-    };
+  const persistOverrides = useCallback(() => {
+    const generation = ++saveGenerationRef.current;
+    const save = saveQueueRef.current.catch(() => undefined).then(() => saveSkillOverrides());
+    saveQueueRef.current = save;
+    void save.catch(async () => {
+      toastService.error({
+        title: 'Skill Update Failed',
+        msg: 'The skill preference could not be saved.',
+      });
+      if (generation !== saveGenerationRef.current) return;
+      const restored = await loadSkillOverrides();
+      if (restored && generation === saveGenerationRef.current) {
+        setHubUpdateTrigger((prev) => prev + 1);
+      }
+    });
   }, []);
 
   const handleToggle = useCallback(
-    async (key: string, displayName: string) => {
-      if (togglingKey === key) return;
-
-      setIsTransitioning(true);
-      setTogglingKey(key);
-
-      const scheduleSort = () => {
-        setPendingSort(true);
-        if (sortTimeoutRef.current) clearTimeout(sortTimeoutRef.current);
-        sortTimeoutRef.current = setTimeout(() => {
-          setHubUpdateTrigger((prev) => prev + 1);
-          setPendingSort(false);
-          setIsTransitioning(false);
-          setTogglingKey(null);
-        }, 800);
-      };
-
+    (key: string, displayName: string) => {
       if (isHubView) {
         const currentEnabled = isSkillEnabled(key);
         setSkillOverride(key, !currentEnabled);
-        await saveSkillOverrides();
-        scheduleSort();
+        setHubUpdateTrigger((prev) => prev + 1);
+        persistOverrides();
         toastService.success({
           title: 'Skill Updated',
           msg: `${displayName} will be ${!currentEnabled ? 'enabled' : 'disabled'} in new chats`,
@@ -107,13 +104,12 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
         next.set(key, newEnabled);
         return next;
       });
-      scheduleSort();
       toastService.success({
         title: 'Skill Updated',
         msg: `${displayName} ${newEnabled ? 'enabled' : 'disabled'} for this session`,
       });
     },
-    [isHubView, togglingKey, sessionOverrides]
+    [isHubView, persistOverrides, sessionOverrides]
   );
 
   const entries = useMemo((): SkillEntry[] => {
@@ -161,7 +157,6 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
 
   const sortedEntries = useMemo(() => {
     return [...filteredEntries].sort((a, b) => {
-      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
       const nameA = a.kind === 'single' ? a.skill.name : a.bundle.bundleName;
       const nameB = b.kind === 'single' ? b.skill.name : b.bundle.bundleName;
       return nameA.localeCompare(nameB);
@@ -175,8 +170,8 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
     [sortedEntries]
   );
 
-  const handleBulkToggle = useCallback(async () => {
-    if (bulkInFlight || togglingKey !== null || sortedEntries.length === 0) {
+  const handleBulkToggle = useCallback(() => {
+    if (sortedEntries.length === 0) {
       return;
     }
 
@@ -186,26 +181,12 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
       return;
     }
 
-    setBulkInFlight(true);
-    setIsTransitioning(true);
-
     const keys = targets.map((e) => (e.kind === 'single' ? e.skill.name : e.bundle.bundleName));
-
-    const scheduleSort = () => {
-      setPendingSort(true);
-      if (sortTimeoutRef.current) clearTimeout(sortTimeoutRef.current);
-      sortTimeoutRef.current = setTimeout(() => {
-        setHubUpdateTrigger((prev) => prev + 1);
-        setPendingSort(false);
-        setIsTransitioning(false);
-        setBulkInFlight(false);
-      }, 800);
-    };
 
     if (isHubView) {
       keys.forEach((k) => setSkillOverride(k, targetEnabled));
-      await saveSkillOverrides();
-      scheduleSort();
+      setHubUpdateTrigger((prev) => prev + 1);
+      persistOverrides();
       toastService.success({
         title: 'Skills Updated',
         msg: `${keys.length} skill${keys.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} in new chats`,
@@ -218,12 +199,11 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
       keys.forEach((k) => next.set(k, targetEnabled));
       return next;
     });
-    scheduleSort();
     toastService.success({
       title: 'Skills Updated',
       msg: `${keys.length} skill${keys.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} for this session`,
     });
-  }, [bulkInFlight, togglingKey, sortedEntries, visibleEnabledCount, isHubView]);
+  }, [isHubView, persistOverrides, sortedEntries, visibleEnabledCount]);
 
   return (
     <DropdownMenu
@@ -232,18 +212,15 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
         setIsOpen(open);
         if (!open) {
           setSearchQuery('');
-          if (sortTimeoutRef.current) clearTimeout(sortTimeoutRef.current);
-          setIsTransitioning(false);
-          setPendingSort(false);
-          setTogglingKey(null);
-          setBulkInFlight(false);
         }
       }}
     >
       <DropdownMenuTrigger asChild>
         <button
+          type="button"
           className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-xs"
           title="manage skills"
+          aria-label={`Manage skills (${activeCount} enabled)`}
         >
           <Layers className="mr-0.5 h-4 w-4" />
           <span>{activeCount}</span>
@@ -268,8 +245,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
             <button
               type="button"
               onClick={handleBulkToggle}
-              disabled={bulkInFlight || togglingKey !== null}
-              className="mt-1.5 text-xs text-text-default/70 hover:text-text-default underline-offset-2 hover:underline disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              className="mt-1.5 cursor-pointer text-xs text-text-default/70 underline-offset-2 hover:text-text-default hover:underline"
             >
               {visibleEnabledCount === 0
                 ? `Enable all (${sortedEntries.length})`
@@ -277,11 +253,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
             </button>
           )}
         </div>
-        <div
-          className={`max-h-[400px] overflow-y-auto transition-opacity duration-300 ${
-            isTransitioning && pendingSort ? 'opacity-50' : 'opacity-100'
-          }`}
-        >
+        <div className="max-h-[400px] overflow-y-auto">
           {sortedEntries.length === 0 ? (
             <div className="px-2 py-4 text-center text-sm text-text-default/70">
               {searchQuery ? 'no skills found' : 'no skills available'}
@@ -290,15 +262,14 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
             sortedEntries.map((entry) => {
               if (entry.kind === 'single') {
                 const { skill, enabled } = entry;
-                const isToggling = togglingKey === skill.name;
-                const rowDisabled = isToggling || bulkInFlight;
                 return (
-                  <div
+                  <DropdownMenuCheckboxItem
                     key={skill.folderPath}
-                    className={`flex items-center justify-between px-2 py-2 hover:bg-background-medium transition-all duration-300 ${
-                      rowDisabled ? 'cursor-wait opacity-70' : 'cursor-pointer'
-                    }`}
-                    onClick={() => !rowDisabled && handleToggle(skill.name, skill.name)}
+                    checked={enabled}
+                    showIndicator={false}
+                    onCheckedChange={() => handleToggle(skill.name, skill.name)}
+                    onSelect={(event) => event.preventDefault()}
+                    className="flex cursor-pointer items-center justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium"
                     title={skill.description || skill.name}
                   >
                     <div className="flex items-center gap-1.5 min-w-0 pr-2">
@@ -307,30 +278,24 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
                       </div>
                       {isBuiltinSkill(skill.name) && <BuiltInBadge />}
                     </div>
-                    <div onClick={(e) => e.stopPropagation()}>
-                      <Switch
-                        checked={enabled}
-                        onCheckedChange={() => handleToggle(skill.name, skill.name)}
-                        variant="mono"
-                        disabled={rowDisabled}
-                      />
+                    <div className="pointer-events-none" aria-hidden="true">
+                      <Switch checked={enabled} variant="mono" tabIndex={-1} aria-hidden="true" />
                     </div>
-                  </div>
+                  </DropdownMenuCheckboxItem>
                 );
               }
 
               // Bundle entry
               const { bundle, enabled } = entry;
-              const isToggling = togglingKey === bundle.bundleName;
-              const rowDisabled = isToggling || bulkInFlight;
               const subNames = bundle.skills.map((s) => s.name).join(', ');
               return (
-                <div
+                <DropdownMenuCheckboxItem
                   key={bundle.folderPath}
-                  className={`flex items-start justify-between px-2 py-2 hover:bg-background-medium transition-all duration-300 ${
-                    rowDisabled ? 'cursor-wait opacity-70' : 'cursor-pointer'
-                  }`}
-                  onClick={() => !rowDisabled && handleToggle(bundle.bundleName, bundle.bundleName)}
+                  checked={enabled}
+                  showIndicator={false}
+                  onCheckedChange={() => handleToggle(bundle.bundleName, bundle.bundleName)}
+                  onSelect={(event) => event.preventDefault()}
+                  className="flex cursor-pointer items-start justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium"
                   title={`Bundle: ${subNames}`}
                 >
                   <div className="flex-1 min-w-0 pr-2">
@@ -340,15 +305,10 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
                     </div>
                     <div className="text-[11px] text-text-subtle truncate">{subNames}</div>
                   </div>
-                  <div onClick={(e) => e.stopPropagation()} className="flex-shrink-0 mt-0.5">
-                    <Switch
-                      checked={enabled}
-                      onCheckedChange={() => handleToggle(bundle.bundleName, bundle.bundleName)}
-                      variant="mono"
-                      disabled={rowDisabled}
-                    />
+                  <div className="pointer-events-none mt-0.5 flex-shrink-0" aria-hidden="true">
+                    <Switch checked={enabled} variant="mono" tabIndex={-1} aria-hidden="true" />
                   </div>
-                </div>
+                </DropdownMenuCheckboxItem>
               );
             })
           )}

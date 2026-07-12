@@ -38,36 +38,13 @@ export type ViewOptions = {
   pendingScheduleDeepLink?: string;
 };
 
-type ViewTransitionDocument = Document & {
-  startViewTransition?: (callback: () => void) => { finished: Promise<void> };
-};
-
-const prefersReducedMotion = () =>
-  typeof window !== 'undefined' &&
-  typeof window.matchMedia === 'function' &&
-  window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
 export const navigateWithViewTransition = (
   navigate: NavigateFunction,
   to: string,
   state?: unknown,
   options: { replace?: boolean } = {}
 ) => {
-  const runNavigation = () => navigate(to, { replace: options.replace, state });
-  const doc = typeof document === 'undefined' ? undefined : (document as ViewTransitionDocument);
-  const transition = doc?.startViewTransition;
-  const disableAnimation =
-    typeof state === 'object' &&
-    state !== null &&
-    'disableAnimation' in state &&
-    Boolean((state as { disableAnimation?: unknown }).disableAnimation);
-
-  if (disableAnimation || prefersReducedMotion() || !transition) {
-    runNavigation();
-    return;
-  }
-
-  transition.call(doc, runNavigation);
+  navigate(to, { replace: options.replace, state });
 };
 
 export const createNavigationHandler = (navigate: NavigateFunction) => {

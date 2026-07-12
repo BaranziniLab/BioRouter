@@ -126,9 +126,14 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
   );
 
   return (
-    <section className="py-7 border-b border-border-default">
+    <section
+      aria-labelledby="ollama-setup-title"
+      className="min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-card p-5 sm:p-6"
+    >
       <OnboardingSectionLabel category="local" label="Local · Run on your computer" />
-      <h2 className="text-base font-medium text-text-default mt-2">Ollama</h2>
+      <h2 id="ollama-setup-title" className="mt-2 text-base font-medium text-text-default">
+        Ollama
+      </h2>
       <p className="text-sm text-text-muted mt-1 mb-5 leading-relaxed">
         Run open-source models on your own machine. Free, private, offline.
       </p>
@@ -171,21 +176,29 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
             </div>
           )}
 
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+          <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
             {modelStatus === 'not-available' && (
-              <Button onClick={handleDownloadModel} variant="outline" className="h-9 px-4">
+              <Button
+                onClick={handleDownloadModel}
+                variant="outline"
+                className="h-9 w-full px-4 sm:w-auto"
+              >
                 Download {getPreferredModel()} (~11GB)
               </Button>
             )}
             {modelStatus === 'available' && (
-              <Button onClick={handleConnectOllama} disabled={isConnecting} className="h-9 px-4">
+              <Button
+                onClick={handleConnectOllama}
+                disabled={isConnecting}
+                className="h-9 w-full px-4 sm:w-auto"
+              >
                 {isConnecting ? 'Connecting…' : 'Connect to Ollama'}
               </Button>
             )}
             <button
               type="button"
               onClick={() => navigate('/welcome', { replace: true })}
-              className="text-xs text-text-muted hover:text-text-default transition-colors duration-150"
+              className="w-full py-1 text-center text-xs text-text-muted transition-colors duration-150 hover:text-text-default sm:w-auto sm:text-left"
             >
               View all local providers →
             </button>
@@ -194,7 +207,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
       ) : (
         <div className="space-y-3">
           <div>{notDetectedPill}</div>
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-3">
+          <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
             {isPolling ? (
               <div className="flex items-center gap-2 text-xs text-text-muted">
                 <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin flex-shrink-0" />
@@ -206,7 +219,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
                 target="_blank"
                 rel="noopener noreferrer"
                 onClick={handleInstallClick}
-                className="inline-flex items-center justify-center h-9 px-4 bg-background-medium text-text-default hover:bg-background-strong transition-colors rounded-md text-sm"
+                className="inline-flex h-9 w-full items-center justify-center rounded-md bg-background-medium px-4 text-sm text-text-default transition-colors hover:bg-background-strong sm:w-auto"
               >
                 Install Ollama
               </a>
@@ -214,7 +227,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
             <button
               type="button"
               onClick={() => navigate('/welcome', { replace: true })}
-              className="text-xs text-text-muted hover:text-text-default transition-colors duration-150"
+              className="w-full py-1 text-center text-xs text-text-muted transition-colors duration-150 hover:text-text-default sm:w-auto sm:text-left"
             >
               View all local providers →
             </button>

@@ -1,15 +1,11 @@
-import React, { useState, useEffect } from 'react';
-import { X, AlertTriangle, Info, Edit, Save } from '../icons/app-icons';
+import { useState, useEffect } from 'react';
+import { Edit, Save } from '../icons/app-icons';
 import { cn } from '../../utils';
 import { Alert, AlertType } from './types';
+import { NotificationSurface, type NotificationStatus } from './NotificationSurface';
 import { upsertConfig } from '../../api';
 import { useConfig } from '../ConfigContext';
-
-const alertIcons: Record<AlertType, React.ReactNode> = {
-  [AlertType.Error]: <X className="h-5 w-5" />,
-  [AlertType.Warning]: <AlertTriangle className="h-5 w-5" />,
-  [AlertType.Info]: <Info className="h-5 w-5" />,
-};
+import { toastError } from '../../toasts';
 
 interface AlertBoxProps {
   alert: Alert;
@@ -17,6 +13,15 @@ interface AlertBoxProps {
   compactButtonEnabled?: boolean;
 }
 
+const ALERT_STATUS: Record<AlertType, NotificationStatus> = {
+  [AlertType.Error]: 'error',
+  [AlertType.Warning]: 'warning',
+  [AlertType.Info]: 'info',
+};
+
+// Progress-mode (context-window meter) keeps its solid-fill container — it is a
+// distinct indicator widget, not a status notification. The simple message mode
+// below renders through the shared NotificationSurface.
 const alertStyles: Record<AlertType, string> = {
   [AlertType.Error]: 'bg-background-danger text-white',
   [AlertType.Warning]: 'bg-background-warning text-neutral-900',
@@ -88,14 +93,44 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
       }
     } catch (error) {
       console.error('Error saving threshold:', error);
-      window.alert(
-        `Failed to save threshold: ${error instanceof Error ? error.message : 'Unknown error'}`
-      );
+      toastError({
+        title: 'Failed to save threshold',
+        msg: error instanceof Error ? error.message : 'Unknown error',
+      });
     } finally {
       setIsSaving(false);
     }
   };
 
+  // Simple message alert → shared NotificationSurface: neutral surface, tinted
+  // status chip, top-aligned icon. Rendered full-bleed (no border/radius) so it
+  // sits flush in the alert popover's stacked tiles.
+  if (!alert.progress) {
+    return (
+      <NotificationSurface
+        status={ALERT_STATUS[alert.type]}
+        className={cn('rounded-none border-0 px-3 py-3', className)}
+        message={<span className="whitespace-pre-line">{alert.message}</span>}
+        actions={
+          alert.action ? (
+            <a
+              role="button"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                alert.action?.onClick();
+              }}
+              className="cursor-pointer text-left text-[13px] text-text-default underline hover:opacity-80"
+            >
+              {alert.action.text}
+            </a>
+          ) : undefined
+        }
+      />
+    );
+  }
+
+  // Context-window progress meter — a distinct indicator widget, kept as-is.
   return (
     <div
       className={cn('flex flex-col gap-2 px-3 py-3', alertStyles[alert.type], className)}
@@ -106,8 +141,7 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
         }
       }}
     >
-      {alert.progress ? (
-        <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2">
           <span className="text-[11px]">{alert.message}</span>
 
           {/* Auto-compact threshold indicator with edit */}
@@ -282,29 +316,6 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
             </button>
           )}
         </div>
-      ) : (
-        <>
-          <div className="flex items-center gap-2">
-            <div className="flex-shrink-0">{alertIcons[alert.type]}</div>
-            <div className="flex flex-col gap-2 flex-1">
-              <span className="text-[11px] break-words whitespace-pre-line">{alert.message}</span>
-              {alert.action && (
-                <a
-                  role="button"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    alert.action?.onClick();
-                  }}
-                  className="text-[11px] text-left underline hover:opacity-80 cursor-pointer"
-                >
-                  {alert.action.text}
-                </a>
-              )}
-            </div>
-          </div>
-        </>
-      )}
     </div>
   );
 };

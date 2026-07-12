@@ -15,6 +15,12 @@ export class SearchHighlighter {
   private currentMatchIndex: number = -1;
   private isScrollingProgrammatically: boolean = false;
   private highlightTimeout?: ReturnType<typeof setTimeout>;
+  private scrollEndTimeout?: ReturnType<typeof setTimeout>;
+  private readonly handleScroll = () => {
+    if (!this.isScrollingProgrammatically) {
+      this.updateHighlightPositions();
+    }
+  };
 
   constructor(container: HTMLElement, onMatchesChange?: (count: number) => void) {
     this.container = container;
@@ -45,16 +51,7 @@ export class SearchHighlighter {
       this.scrollContainer.appendChild(this.overlay);
 
       // Add scroll end detection
-      this.scrollContainer.addEventListener(
-        'scroll',
-        () => {
-          if (!this.isScrollingProgrammatically) {
-            // User is manually scrolling, update highlight positions
-            this.updateHighlightPositions();
-          }
-        },
-        { passive: true }
-      );
+      this.scrollContainer.addEventListener('scroll', this.handleScroll, { passive: true });
     } else {
       container.style.position = 'relative';
       container.appendChild(this.overlay);
@@ -251,7 +248,9 @@ export class SearchHighlighter {
         this.scrollContainer.scrollTop = targetScrollTop;
 
         // Clear flag after a short delay
-        setTimeout(() => {
+        if (this.scrollEndTimeout) clearTimeout(this.scrollEndTimeout);
+        this.scrollEndTimeout = setTimeout(() => {
+          this.scrollEndTimeout = undefined;
           this.isScrollingProgrammatically = false;
         }, 100);
       }
@@ -285,6 +284,10 @@ export class SearchHighlighter {
     if (this.highlightTimeout) {
       clearTimeout(this.highlightTimeout);
     }
+    if (this.scrollEndTimeout) {
+      clearTimeout(this.scrollEndTimeout);
+    }
+    this.scrollContainer?.removeEventListener('scroll', this.handleScroll);
     this.resizeObserver.disconnect();
     this.mutationObserver.disconnect();
     this.overlay.remove();

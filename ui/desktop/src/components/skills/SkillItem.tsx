@@ -23,11 +23,13 @@ export default function SkillItem({
 }: SkillItemProps) {
   const builtin = isBuiltinSkill(skill.name);
   return (
-    <div
-      className="biorouter-list-row flex cursor-pointer items-start gap-3 px-3 py-3 group"
-      onClick={onClick}
-    >
-      <div className="flex-1 min-w-0">
+    <div className="biorouter-list-row flex items-start gap-3 px-3 py-3 group">
+      <button
+        type="button"
+        className="flex-1 min-w-0 cursor-pointer rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+        onClick={onClick}
+        aria-label={`Open skill ${skill.name}`}
+      >
         <div className="flex items-center gap-1.5">
           <p className="text-sm text-text-default">{skill.name}</p>
           {builtin && <BuiltInBadge />}
@@ -36,10 +38,10 @@ export default function SkillItem({
         {skill.sourceDir !== BIOROUTER_SKILLS_DIR && (
           <p className="text-[11px] text-text-subtle mt-0.5 font-mono">{skill.sourceDir}</p>
         )}
-      </div>
+      </button>
       <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
         <div
-          className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+          className="flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
           onClick={(e) => e.stopPropagation()}
         >
           <Button
@@ -48,6 +50,7 @@ export default function SkillItem({
             className="h-7 w-7 p-0"
             onClick={() => onClick()}
             title="Open in Finder"
+            aria-label={`Open ${skill.name} in Finder`}
           >
             <FolderDot className="h-3.5 w-3.5" />
           </Button>
@@ -57,6 +60,7 @@ export default function SkillItem({
             className="h-7 w-7 p-0"
             onClick={() => onShare()}
             title="Copy SKILL.md to clipboard"
+            aria-label={`Copy ${skill.name} SKILL.md to clipboard`}
           >
             <Share2 className="h-3.5 w-3.5" />
           </Button>
@@ -67,13 +71,19 @@ export default function SkillItem({
               className="h-7 w-7 p-0 text-text-danger hover:bg-background-danger/10"
               onClick={() => onDelete()}
               title="Delete"
+              aria-label={`Delete ${skill.name}`}
             >
               <Trash2 className="h-3.5 w-3.5" />
             </Button>
           )}
         </div>
         <div onClick={(e) => e.stopPropagation()}>
-          <Switch checked={enabled} onCheckedChange={onToggle} variant="mono" />
+          <Switch
+            checked={enabled}
+            onCheckedChange={onToggle}
+            variant="mono"
+            aria-label={`${enabled ? 'Disable' : 'Enable'} ${skill.name}`}
+          />
         </div>
       </div>
     </div>

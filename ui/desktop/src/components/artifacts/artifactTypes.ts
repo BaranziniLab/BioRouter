@@ -42,6 +42,11 @@ export type ArtifactFilePreview =
       text: string;
       size: number;
       found: true;
+      // For an HTML file, the security-prepared (asset-inlined) HTML the rendered
+      // Preview toggle shows. `text` stays the raw source the Raw toggle shows.
+      // Only ArtifactViewer sets this (it calls prepareArtifactHtml); the main
+      // process read handler does not.
+      preparedHtml?: string;
     }
   | {
       kind: 'image';

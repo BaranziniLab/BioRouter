@@ -21,7 +21,6 @@ import { Button } from '../ui/button';
 import { Skeleton } from '../ui/skeleton';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { toastSuccess, toastError } from '../../toasts';
-import { useEscapeKey } from '../../hooks/useEscapeKey';
 import {
   deleteWorkflow,
   WorkflowManifest,
@@ -52,6 +51,8 @@ import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { ReadableContent } from '../Layout/ReadableContent';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import { BUILTIN_RECREATED_TITLE, isBuiltinWorkflow } from '../../utils/builtins';
+import { ConfirmationModal } from '../ui/ConfirmationModal';
+import { EmptyState } from '../ui/empty-state';
 
 export default function WorkflowsView() {
   const setView = useNavigation();
@@ -59,11 +60,11 @@ export default function WorkflowsView() {
   const dashboard = useDashboard();
   const [savedWorkflows, setSavedWorkflows] = useState<WorkflowManifest[]>([]);
   const [loading, setLoading] = useState(true);
-  const [showSkeleton, setShowSkeleton] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedWorkflow, setSelectedWorkflow] = useState<WorkflowManifest | null>(null);
   const [showEditor, setShowEditor] = useState(false);
-  const [showContent, setShowContent] = useState(false);
+  const [workflowToDelete, setWorkflowToDelete] = useState<WorkflowManifest | null>(null);
+  const [isDeletingWorkflow, setIsDeletingWorkflow] = useState(false);
 
   const [showCreateDialog, setShowCreateDialog] = useState(false);
   const [showImportDialog, setShowImportDialog] = useState(false);
@@ -73,11 +74,13 @@ export default function WorkflowsView() {
     null
   );
   const [scheduleCron, setScheduleCron] = useState<string>('');
+  const [isSavingSchedule, setIsSavingSchedule] = useState(false);
 
   const [showSlashCommandDialog, setShowSlashCommandDialog] = useState(false);
   const [slashCommandWorkflowManifest, setSlashCommandWorkflowManifest] =
     useState<WorkflowManifest | null>(null);
   const [slashCommand, setSlashCommand] = useState<string>('');
+  const [isSavingSlashCommand, setIsSavingSlashCommand] = useState(false);
   const [scheduleValid, setScheduleIsValid] = useState(true);
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -104,27 +107,9 @@ export default function WorkflowsView() {
     loadSavedWorkflows();
   }, []);
 
-  useEscapeKey(showEditor, () => setShowEditor(false));
-
-  useEffect(() => {
-    if (!loading && showSkeleton) {
-      const timer = setTimeout(() => {
-        setShowSkeleton(false);
-        setTimeout(() => {
-          setShowContent(true);
-        }, 50);
-      }, 300);
-
-      return () => clearTimeout(timer);
-    }
-    return () => void 0;
-  }, [loading, showSkeleton]);
-
   const loadSavedWorkflows = async () => {
     try {
       setLoading(true);
-      setShowSkeleton(true);
-      setShowContent(false);
       setError(null);
       const workflowManifestResponses = await listSavedWorkflows();
       setSavedWorkflows(workflowManifestResponses);
@@ -189,23 +174,14 @@ export default function WorkflowsView() {
     }
   };
 
-  const handleDeleteWorkflow = async (workflowManifest: WorkflowManifest) => {
-    const result = await window.electron.showMessageBox({
-      type: 'warning',
-      buttons: ['Cancel', 'Delete'],
-      defaultId: 0,
-      title: 'Delete Workflow',
-      message: `Are you sure you want to delete "${workflowManifest.workflow.title}"?`,
-      detail: 'Workflow file will be deleted.',
-    });
-
-    if (result.response !== 1) {
-      return;
-    }
-
+  const handleDeleteWorkflow = async () => {
+    if (!workflowToDelete || isDeletingWorkflow) return;
+    const workflowManifest = workflowToDelete;
+    setIsDeletingWorkflow(true);
     try {
       await deleteWorkflow({ body: { id: workflowManifest.id } });
       await loadSavedWorkflows();
+      setWorkflowToDelete(null);
       toastSuccess({
         title: workflowManifest.workflow.title,
         msg: 'Workflow deleted successfully',
@@ -214,6 +190,8 @@ export default function WorkflowsView() {
       console.error('Failed to delete workflow:', err);
       const errorMsg = err instanceof Error ? err.message : 'Failed to delete workflow';
       setError(errorMsg);
+    } finally {
+      setIsDeletingWorkflow(false);
     }
   };
 
@@ -322,8 +300,9 @@ export default function WorkflowsView() {
   };
 
   const handleSaveSchedule = async () => {
-    if (!scheduleWorkflowManifest) return;
+    if (!scheduleWorkflowManifest || isSavingSchedule) return;
 
+    setIsSavingSchedule(true);
     try {
       await scheduleWorkflow({
         body: {
@@ -344,12 +323,15 @@ export default function WorkflowsView() {
       console.error('Failed to save schedule:', error);
       const errorMsg = error instanceof Error ? error.message : 'Failed to save schedule';
       setError(errorMsg);
+    } finally {
+      setIsSavingSchedule(false);
     }
   };
 
   const handleRemoveSchedule = async () => {
-    if (!scheduleWorkflowManifest) return;
+    if (!scheduleWorkflowManifest || isSavingSchedule) return;
 
+    setIsSavingSchedule(true);
     try {
       await scheduleWorkflow({
         body: {
@@ -370,6 +352,8 @@ export default function WorkflowsView() {
       console.error('Failed to remove schedule:', error);
       const errorMsg = error instanceof Error ? error.message : 'Failed to remove schedule';
       setError(errorMsg);
+    } finally {
+      setIsSavingSchedule(false);
     }
   };
 
@@ -380,8 +364,9 @@ export default function WorkflowsView() {
   };
 
   const handleSaveSlashCommand = async () => {
-    if (!slashCommandWorkflowManifest) return;
+    if (!slashCommandWorkflowManifest || isSavingSlashCommand) return;
 
+    setIsSavingSlashCommand(true);
     try {
       await setWorkflowSlashCommand({
         body: {
@@ -402,12 +387,15 @@ export default function WorkflowsView() {
       console.error('Failed to save slash command:', error);
       const errorMsg = error instanceof Error ? error.message : 'Failed to save slash command';
       setError(errorMsg);
+    } finally {
+      setIsSavingSlashCommand(false);
     }
   };
 
   const handleRemoveSlashCommand = async () => {
-    if (!slashCommandWorkflowManifest) return;
+    if (!slashCommandWorkflowManifest || isSavingSlashCommand) return;
 
+    setIsSavingSlashCommand(true);
     try {
       await setWorkflowSlashCommand({
         body: {
@@ -428,6 +416,8 @@ export default function WorkflowsView() {
       console.error('Failed to remove slash command:', error);
       const errorMsg = error instanceof Error ? error.message : 'Failed to remove slash command';
       setError(errorMsg);
+    } finally {
+      setIsSavingSlashCommand(false);
     }
   };
 
@@ -478,7 +468,7 @@ export default function WorkflowsView() {
           </div>
         </div>
 
-        <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-1 shrink-0 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
           <Button
             onClick={(e) => {
               e.stopPropagation();
@@ -586,7 +576,7 @@ export default function WorkflowsView() {
           <Button
             onClick={(e) => {
               e.stopPropagation();
-              handleDeleteWorkflow(workflowManifestResponse);
+              setWorkflowToDelete(workflowManifestResponse);
             }}
             variant="ghost"
             size="sm"
@@ -620,7 +610,7 @@ export default function WorkflowsView() {
   );
 
   const renderContent = () => {
-    if (loading || showSkeleton) {
+    if (loading) {
       return (
         <div className="space-y-6">
           <div className="space-y-3">
@@ -650,20 +640,33 @@ export default function WorkflowsView() {
 
     if (savedWorkflows.length === 0) {
       return (
-        <div className="flex flex-col justify-center pt-2 h-full">
-          <p className="text-lg">No saved workflows</p>
-          <p className="text-sm text-text-muted">Workflow saved from chats will show up here.</p>
-        </div>
+        <EmptyState
+          icon={FileText}
+          title="No workflows yet"
+          description="Create a reusable workflow here, save one from a conversation, or import an existing workflow."
+          actions={
+            <>
+              <Button onClick={() => setShowCreateDialog(true)}>
+                <FileText className="h-4 w-4" />
+                Create workflow
+              </Button>
+              <Button onClick={() => setShowImportDialog(true)} variant="outline">
+                Import workflow
+              </Button>
+            </>
+          }
+        />
       );
     }
 
     if (filteredWorkflows.length === 0 && searchTerm) {
       return (
-        <div className="flex flex-col items-center justify-center h-full text-text-muted mt-4">
-          <FileText className="h-12 w-12 mb-4" />
-          <p className="text-lg mb-2">No matching workflows found</p>
-          <p className="text-sm">Try adjusting your search terms</p>
-        </div>
+        <EmptyState
+          icon={FileText}
+          title="No matching workflows"
+          description="Try a different title, description, or slash command."
+          compact
+        />
       );
     }
 
@@ -713,13 +716,7 @@ export default function WorkflowsView() {
                 onSearch={(term) => setSearchTerm(term)}
                 placeholder="Search workflows..."
               >
-                <div
-                  className={`h-full relative transition-all duration-300 ${
-                    showContent ? 'opacity-100 animate-in fade-in ' : 'opacity-0'
-                  }`}
-                >
-                  {renderContent()}
-                </div>
+                <div className="h-full relative">{renderContent()}</div>
               </SearchView>
             </ScrollArea>
           </ReadableContent>
@@ -753,8 +750,11 @@ export default function WorkflowsView() {
       )}
 
       {showScheduleDialog && scheduleWorkflowManifest && (
-        <Dialog open={showScheduleDialog} onOpenChange={setShowScheduleDialog}>
-          <DialogContent className="max-w-md">
+        <Dialog
+          open={showScheduleDialog}
+          onOpenChange={(open) => !isSavingSchedule && setShowScheduleDialog(open)}
+        >
+          <DialogContent dismissible={!isSavingSchedule} className="max-w-md">
             <DialogHeader>
               <DialogTitle>
                 {scheduleWorkflowManifest.schedule_cron ? 'Edit' : 'Add'} Schedule
@@ -779,15 +779,23 @@ export default function WorkflowsView() {
               />
               <div className="flex gap-2 justify-end">
                 {scheduleWorkflowManifest.schedule_cron && (
-                  <Button variant="outline" onClick={handleRemoveSchedule}>
-                    Remove Schedule
+                  <Button
+                    variant="outline"
+                    onClick={handleRemoveSchedule}
+                    disabled={isSavingSchedule}
+                  >
+                    {isSavingSchedule ? 'Working…' : 'Remove Schedule'}
                   </Button>
                 )}
-                <Button variant="outline" onClick={() => setShowScheduleDialog(false)}>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowScheduleDialog(false)}
+                  disabled={isSavingSchedule}
+                >
                   Cancel
                 </Button>
-                <Button onClick={handleSaveSchedule} disabled={!scheduleValid}>
-                  Save
+                <Button onClick={handleSaveSchedule} disabled={!scheduleValid || isSavingSchedule}>
+                  {isSavingSchedule ? 'Saving…' : 'Save'}
                 </Button>
               </div>
             </div>
@@ -796,8 +804,11 @@ export default function WorkflowsView() {
       )}
 
       {showSlashCommandDialog && slashCommandWorkflowManifest && (
-        <Dialog open={showSlashCommandDialog} onOpenChange={setShowSlashCommandDialog}>
-          <DialogContent className="max-w-md">
+        <Dialog
+          open={showSlashCommandDialog}
+          onOpenChange={(open) => !isSavingSlashCommand && setShowSlashCommandDialog(open)}
+        >
+          <DialogContent dismissible={!isSavingSlashCommand} className="max-w-md">
             <DialogHeader>
               <DialogTitle>Slash Command</DialogTitle>
             </DialogHeader>
@@ -825,19 +836,41 @@ export default function WorkflowsView() {
 
               <div className="flex gap-2 justify-end">
                 {slashCommandWorkflowManifest.slash_command && (
-                  <Button variant="outline" onClick={handleRemoveSlashCommand}>
-                    Remove
+                  <Button
+                    variant="outline"
+                    onClick={handleRemoveSlashCommand}
+                    disabled={isSavingSlashCommand}
+                  >
+                    {isSavingSlashCommand ? 'Working…' : 'Remove'}
                   </Button>
                 )}
-                <Button variant="outline" onClick={() => setShowSlashCommandDialog(false)}>
+                <Button
+                  variant="outline"
+                  onClick={() => setShowSlashCommandDialog(false)}
+                  disabled={isSavingSlashCommand}
+                >
                   Cancel
                 </Button>
-                <Button onClick={handleSaveSlashCommand}>Save</Button>
+                <Button onClick={handleSaveSlashCommand} disabled={isSavingSlashCommand}>
+                  {isSavingSlashCommand ? 'Saving…' : 'Save'}
+                </Button>
               </div>
             </div>
           </DialogContent>
         </Dialog>
       )}
+
+      <ConfirmationModal
+        isOpen={workflowToDelete !== null}
+        title={`Delete "${workflowToDelete?.workflow.title ?? ''}"?`}
+        message="This permanently removes the workflow file. This action cannot be undone."
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        confirmVariant="destructive"
+        isSubmitting={isDeletingWorkflow}
+        onConfirm={() => void handleDeleteWorkflow()}
+        onCancel={() => setWorkflowToDelete(null)}
+      />
     </>
   );
 }

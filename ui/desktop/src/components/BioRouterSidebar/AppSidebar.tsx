@@ -228,9 +228,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     // For /pair, preserve the current session if one exists
     // Priority: current URL param > last known session > context
     const sessionId = currentSessionId || lastSessionIdRef.current || chatContext?.chat?.sessionId;
-    // Route through the View Transitions crossfade (same path Hub/useNavigation
-    // uses) so a top-level view switch orients the user instead of hard-cutting.
-    // The helper falls back to a plain navigate under reduced-motion / no support.
+    // Route through the shared navigation helper so every entry follows the same path.
     if (path === '/pair' && sessionId && sessionId.length > 0) {
       navigateWithViewTransition(navigate, `/pair?resumeSessionId=${sessionId}`);
     } else {

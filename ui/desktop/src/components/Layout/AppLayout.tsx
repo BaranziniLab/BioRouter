@@ -18,6 +18,8 @@ const AppLayoutContent: React.FC = () => {
   const { isMobile, open, openMobile, setOpen } = useSidebar();
   const autoCollapsedSidebarRef = React.useRef(false);
   const resizeSettlingTimerRef = React.useRef<number | null>(null);
+  const routeSurfaceRef = React.useRef<HTMLElement>(null);
+  const routeAnimationRef = React.useRef<ReturnType<HTMLElement['animate']> | null>(null);
 
   // Calculate padding based on sidebar state and macOS
   const headerPadding = safeIsMacOS ? 'pl-[100px]' : 'pl-4';
@@ -79,9 +81,53 @@ const AppLayoutContent: React.FC = () => {
     };
   }, []);
 
-  // Delegate to the shared, view-transition-aware handler so top-bar navigation
-  // crossfades like the sidebar and Hub. This used to be a raw-navigate duplicate
-  // of createNavigationHandler that hard-cut between views (no view transition).
+  React.useLayoutEffect(() => {
+    const routeSurface = routeSurfaceRef.current;
+    const previousAnimation = routeAnimationRef.current;
+    const isInterrupting =
+      Boolean(routeSurface) &&
+      (previousAnimation?.pending || previousAnimation?.playState === 'running');
+    const interruptedStyle =
+      isInterrupting && routeSurface ? window.getComputedStyle(routeSurface) : null;
+
+    previousAnimation?.cancel();
+    routeAnimationRef.current = null;
+
+    if (
+      !routeSurface ||
+      typeof routeSurface.animate !== 'function' ||
+      window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    ) {
+      return;
+    }
+
+    const animation = routeSurface.animate(
+      [
+        {
+          opacity: interruptedStyle?.opacity ?? 0.92,
+          transform: interruptedStyle?.transform ?? 'translate3d(0, 6px, 0)',
+        },
+        { opacity: 1, transform: 'translate3d(0, 0, 0)' },
+      ],
+      { duration: 180, easing: 'cubic-bezier(0.2, 0, 0, 1)' }
+    );
+    routeAnimationRef.current = animation;
+
+    const clearFinishedAnimation = () => {
+      if (routeAnimationRef.current === animation) routeAnimationRef.current = null;
+    };
+    animation.addEventListener('finish', clearFinishedAnimation, { once: true });
+    animation.addEventListener('cancel', clearFinishedAnimation, { once: true });
+  }, [location.pathname]);
+
+  React.useEffect(
+    () => () => {
+      routeAnimationRef.current?.cancel();
+    },
+    []
+  );
+
+  // Keep every top-level route on the shared navigation mapping.
   const navigateToView = useNavigation();
   const setView = (view: View, viewOptions?: ViewOptions) => navigateToView(view, viewOptions);
 
@@ -101,11 +147,7 @@ const AppLayoutContent: React.FC = () => {
           {/* All three chrome icons share one size (sm / 32px) and the same calm
               surface-shift hover as the rest of the app's icon buttons — the
               trigger no longer scales/borders differently from its neighbours. */}
-          <SidebarTrigger
-            size="sm"
-            shape="round"
-            className="no-drag hover:!bg-background-medium"
-          />
+          <SidebarTrigger size="sm" shape="round" className="no-drag hover:!bg-background-medium" />
           <Button
             onClick={handleNewWindow}
             className="no-drag hover:!bg-background-medium"
@@ -139,6 +181,7 @@ const AppLayoutContent: React.FC = () => {
       </Sidebar>
       <SidebarInset>
         <main
+          ref={routeSurfaceRef}
           className="route-container biorouter-route-surface relative z-[60] flex h-full min-h-0 min-w-0 flex-1 flex-col"
           data-route-path={location.pathname}
         >

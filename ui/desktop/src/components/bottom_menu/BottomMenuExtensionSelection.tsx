@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { Puzzle } from '../icons/app-icons';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../ui/dropdown-menu';
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from '../ui/dropdown-menu';
 import { Input } from '../ui/input';
 import { Switch } from '../ui/switch';
 import BuiltInBadge from '../ui/BuiltInBadge';
@@ -13,11 +18,7 @@ import {
 } from '../settings/extensions/subcomponents/ExtensionList';
 import { ExtensionConfig, getSessionExtensions } from '../../api';
 import { addToAgent, removeFromAgent } from '../settings/extensions/agent-api';
-import {
-  setExtensionOverride,
-  getExtensionOverride,
-  getExtensionOverrides,
-} from '../../store/extensionOverrides';
+import { setExtensionOverride, getExtensionOverrides } from '../../store/extensionOverrides';
 
 interface BottomMenuExtensionSelectionProps {
   sessionId: string | null;
@@ -28,18 +29,20 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
   const [isOpen, setIsOpen] = useState(false);
   const [sessionExtensions, setSessionExtensions] = useState<ExtensionConfig[]>([]);
   const [hubUpdateTrigger, setHubUpdateTrigger] = useState(0);
-  const [isTransitioning, setIsTransitioning] = useState(false);
-  const [pendingSort, setPendingSort] = useState(false);
-  const [togglingExtension, setTogglingExtension] = useState<string | null>(null);
+  const [sessionOverrides, setSessionOverrides] = useState<Map<string, boolean>>(new Map());
+  const [pendingExtensionNames, setPendingExtensionNames] = useState<Set<string>>(new Set());
   const [bulkInFlight, setBulkInFlight] = useState(false);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const sortTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionToggleChainsRef = useRef<Map<string, Promise<boolean>>>(new Map());
   const { extensionsList: allExtensions } = useConfig();
   const isHubView = !sessionId;
 
   useEffect(() => {
     const handleSessionLoaded = () => {
-      setTimeout(() => {
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
+      refreshTimerRef.current = setTimeout(() => {
+        refreshTimerRef.current = null;
         setRefreshTrigger((prev) => prev + 1);
       }, 500);
     };
@@ -50,16 +53,15 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
     return () => {
       window.removeEventListener('session-created', handleSessionLoaded);
       window.removeEventListener('message-stream-finished', handleSessionLoaded);
+      if (refreshTimerRef.current) clearTimeout(refreshTimerRef.current);
     };
   }, []);
 
   useEffect(() => {
-    return () => {
-      if (sortTimeoutRef.current) {
-        clearTimeout(sortTimeoutRef.current);
-      }
-    };
-  }, []);
+    sessionToggleChainsRef.current.clear();
+    setSessionOverrides(new Map());
+    setPendingExtensionNames(new Set());
+  }, [sessionId]);
 
   // Fetch session-specific extensions or use global defaults
   useEffect(() => {
@@ -85,41 +87,20 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
   }, [sessionId, isOpen, refreshTrigger]);
 
   const handleToggle = useCallback(
-    async (extensionConfig: FixedExtensionEntry) => {
-      if (togglingExtension === extensionConfig.name) {
-        return;
-      }
-
-      setIsTransitioning(true);
-      setTogglingExtension(extensionConfig.name);
-
+    (extensionConfig: FixedExtensionEntry, requestedState?: boolean) => {
+      const nextEnabled = requestedState ?? !extensionConfig.enabled;
       if (isHubView) {
-        const currentState = getExtensionOverride(extensionConfig.name) ?? extensionConfig.enabled;
-        setExtensionOverride(extensionConfig.name, !currentState);
-        setPendingSort(true);
-
-        if (sortTimeoutRef.current) {
-          clearTimeout(sortTimeoutRef.current);
-        }
-
-        // Delay the re-sort to allow animation
-        sortTimeoutRef.current = setTimeout(() => {
-          setHubUpdateTrigger((prev) => prev + 1);
-          setPendingSort(false);
-          setIsTransitioning(false);
-          setTogglingExtension(null);
-        }, 800);
+        setExtensionOverride(extensionConfig.name, nextEnabled);
+        setHubUpdateTrigger((prev) => prev + 1);
 
         toastService.success({
           title: 'Extension Updated',
-          msg: `${formatExtensionName(extensionConfig.name)} will be ${!currentState ? 'enabled' : 'disabled'} in new chats`,
+          msg: `${formatExtensionName(extensionConfig.name)} will be ${nextEnabled ? 'enabled' : 'disabled'} in new chats`,
         });
         return;
       }
 
       if (!sessionId) {
-        setIsTransitioning(false);
-        setTogglingExtension(null);
         toastService.error({
           title: 'Extension Toggle Error',
           msg: 'No active session found. Please start a chat session first.',
@@ -128,38 +109,61 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
         return;
       }
 
-      try {
-        if (extensionConfig.enabled) {
-          await removeFromAgent(extensionConfig.name, sessionId, true);
-        } else {
-          await addToAgent(extensionConfig, sessionId, true);
-        }
+      const name = extensionConfig.name;
+      setSessionOverrides((prev) => new Map(prev).set(name, nextEnabled));
+      setPendingExtensionNames((prev) => new Set(prev).add(name));
 
-        setPendingSort(true);
-
-        if (sortTimeoutRef.current) {
-          clearTimeout(sortTimeoutRef.current);
-        }
-
-        sortTimeoutRef.current = setTimeout(async () => {
-          const response = await getSessionExtensions({
-            path: { session_id: sessionId },
-          });
-
-          if (response.data?.extensions) {
-            setSessionExtensions(response.data.extensions);
+      const previous =
+        sessionToggleChainsRef.current.get(name) ?? Promise.resolve(extensionConfig.enabled);
+      const operation = previous.then(async (appliedState) => {
+        if (appliedState === nextEnabled) return appliedState;
+        try {
+          if (nextEnabled) {
+            await addToAgent(extensionConfig, sessionId, true);
+          } else {
+            await removeFromAgent(name, sessionId, true);
           }
-          setPendingSort(false);
-          setIsTransitioning(false);
-          setTogglingExtension(null);
-        }, 800);
-      } catch {
-        setIsTransitioning(false);
-        setPendingSort(false);
-        setTogglingExtension(null);
-      }
+          return nextEnabled;
+        } catch {
+          toastService.error({
+            title: 'Extension Toggle Error',
+            msg: `${formatExtensionName(name)} could not be ${nextEnabled ? 'enabled' : 'disabled'}.`,
+          });
+          return appliedState;
+        }
+      });
+
+      sessionToggleChainsRef.current.set(name, operation);
+      void operation.then(async () => {
+        if (sessionToggleChainsRef.current.get(name) !== operation) return;
+
+        try {
+          const response = await getSessionExtensions({ path: { session_id: sessionId } });
+          if (sessionToggleChainsRef.current.get(name) !== operation) return;
+          if (response.data?.extensions) setSessionExtensions(response.data.extensions);
+        } catch {
+          toastService.error({
+            title: 'Extension Refresh Error',
+            msg: 'The latest extension state could not be refreshed.',
+          });
+        } finally {
+          if (sessionToggleChainsRef.current.get(name) === operation) {
+            sessionToggleChainsRef.current.delete(name);
+            setSessionOverrides((prev) => {
+              const next = new Map(prev);
+              next.delete(name);
+              return next;
+            });
+            setPendingExtensionNames((prev) => {
+              const next = new Set(prev);
+              next.delete(name);
+              return next;
+            });
+          }
+        }
+      });
     },
-    [sessionId, isHubView, togglingExtension]
+    [isHubView, sessionId]
   );
 
   // Merge all available extensions with session-specific or hub override state
@@ -189,11 +193,13 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
       (ext) =>
         ({
           ...ext,
-          enabled: sessionExtensionNames.has(ext.name),
+          enabled: sessionOverrides.has(ext.name)
+            ? sessionOverrides.get(ext.name)!
+            : sessionExtensionNames.has(ext.name),
         }) as FixedExtensionEntry
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [allExtensions, sessionExtensions, isHubView, hubUpdateTrigger]);
+  }, [allExtensions, sessionExtensions, sessionOverrides, isHubView, hubUpdateTrigger]);
 
   const filteredExtensions = useMemo(() => {
     return extensionsList.filter((ext) => {
@@ -206,13 +212,7 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
   }, [extensionsList, searchQuery]);
 
   const sortedExtensions = useMemo(() => {
-    return [...filteredExtensions].sort((a, b) => {
-      // Primary sort: enabled first
-      if (a.enabled !== b.enabled) return a.enabled ? -1 : 1;
-
-      // Secondary sort: alphabetically by name
-      return a.name.localeCompare(b.name);
-    });
+    return [...filteredExtensions].sort((a, b) => a.name.localeCompare(b.name));
   }, [filteredExtensions]);
 
   const activeCount = useMemo(() => {
@@ -225,7 +225,7 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
   );
 
   const handleBulkToggle = useCallback(async () => {
-    if (bulkInFlight || togglingExtension !== null || sortedExtensions.length === 0) {
+    if (bulkInFlight || pendingExtensionNames.size > 0 || sortedExtensions.length === 0) {
       return;
     }
 
@@ -236,21 +236,10 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
     }
 
     setBulkInFlight(true);
-    setIsTransitioning(true);
-
     if (isHubView) {
       targets.forEach((ext) => setExtensionOverride(ext.name, targetEnabled));
-      setPendingSort(true);
-
-      if (sortTimeoutRef.current) {
-        clearTimeout(sortTimeoutRef.current);
-      }
-      sortTimeoutRef.current = setTimeout(() => {
-        setHubUpdateTrigger((prev) => prev + 1);
-        setPendingSort(false);
-        setIsTransitioning(false);
-        setBulkInFlight(false);
-      }, 800);
+      setHubUpdateTrigger((prev) => prev + 1);
+      setBulkInFlight(false);
 
       toastService.success({
         title: 'Extensions Updated',
@@ -260,7 +249,6 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
     }
 
     if (!sessionId) {
-      setIsTransitioning(false);
       setBulkInFlight(false);
       toastService.error({
         title: 'Extension Toggle Error',
@@ -271,6 +259,11 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
     }
 
     try {
+      setSessionOverrides((prev) => {
+        const next = new Map(prev);
+        targets.forEach((ext) => next.set(ext.name, targetEnabled));
+        return next;
+      });
       await Promise.all(
         targets.map((ext) =>
           targetEnabled
@@ -278,35 +271,29 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
             : removeFromAgent(ext.name, sessionId, true)
         )
       );
-
-      setPendingSort(true);
-      if (sortTimeoutRef.current) {
-        clearTimeout(sortTimeoutRef.current);
-      }
-      sortTimeoutRef.current = setTimeout(async () => {
-        const response = await getSessionExtensions({
-          path: { session_id: sessionId },
-        });
-        if (response.data?.extensions) {
-          setSessionExtensions(response.data.extensions);
-        }
-        setPendingSort(false);
-        setIsTransitioning(false);
-        setBulkInFlight(false);
-      }, 800);
+      const response = await getSessionExtensions({ path: { session_id: sessionId } });
+      if (response.data?.extensions) setSessionExtensions(response.data.extensions);
 
       toastService.success({
         title: 'Extensions Updated',
         msg: `${targets.length} extension${targets.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} for this chat session`,
       });
     } catch {
-      setIsTransitioning(false);
-      setPendingSort(false);
+      toastService.error({
+        title: 'Extension Toggle Error',
+        msg: 'The extension selection could not be updated.',
+      });
+    } finally {
+      setSessionOverrides((prev) => {
+        const next = new Map(prev);
+        targets.forEach((ext) => next.delete(ext.name));
+        return next;
+      });
       setBulkInFlight(false);
     }
   }, [
     bulkInFlight,
-    togglingExtension,
+    pendingExtensionNames.size,
     sortedExtensions,
     visibleEnabledCount,
     isHubView,
@@ -320,20 +307,15 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
         setIsOpen(open);
         if (!open) {
           setSearchQuery('');
-          if (sortTimeoutRef.current) {
-            clearTimeout(sortTimeoutRef.current);
-          }
-          setIsTransitioning(false);
-          setPendingSort(false);
-          setTogglingExtension(null);
-          setBulkInFlight(false);
         }
       }}
     >
       <DropdownMenuTrigger asChild>
         <button
+          type="button"
           className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-xs"
           title="manage extensions"
+          aria-label={`Manage extensions (${activeCount} enabled)`}
         >
           <Puzzle className="mr-0.5 h-4 w-4" />
           <span>{activeCount}</span>
@@ -360,7 +342,7 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
             <button
               type="button"
               onClick={handleBulkToggle}
-              disabled={bulkInFlight || togglingExtension !== null}
+              disabled={bulkInFlight || pendingExtensionNames.size > 0}
               className="mt-1.5 text-xs text-text-default/70 hover:text-text-default underline-offset-2 hover:underline disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               {visibleEnabledCount === 0
@@ -369,26 +351,25 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
             </button>
           )}
         </div>
-        <div
-          className={`max-h-[400px] overflow-y-auto transition-opacity duration-300 ${
-            isTransitioning && pendingSort ? 'opacity-50' : 'opacity-100'
-          }`}
-        >
+        <div className="max-h-[400px] overflow-y-auto">
           {sortedExtensions.length === 0 ? (
             <div className="px-2 py-4 text-center text-sm text-text-default/70">
               {searchQuery ? 'no extensions found' : 'no extensions available'}
             </div>
           ) : (
             sortedExtensions.map((ext) => {
-              const isToggling = togglingExtension === ext.name;
-              const rowDisabled = isToggling || bulkInFlight;
+              const rowDisabled = bulkInFlight;
               return (
-                <div
+                <DropdownMenuCheckboxItem
                   key={ext.name}
-                  className={`flex items-center justify-between px-2 py-2 hover:bg-background-medium transition-all duration-300 ${
+                  checked={ext.enabled}
+                  showIndicator={false}
+                  disabled={rowDisabled}
+                  onCheckedChange={(checked) => handleToggle(ext, checked)}
+                  onSelect={(event) => event.preventDefault()}
+                  className={`flex items-center justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium ${
                     rowDisabled ? 'cursor-wait opacity-70' : 'cursor-pointer'
                   }`}
-                  onClick={() => !rowDisabled && handleToggle(ext)}
                   title={ext.description || ext.name}
                 >
                   <div className="flex items-center gap-1.5 min-w-0 pr-2">
@@ -397,15 +378,16 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
                     </div>
                     {isBuiltInExtension(ext) && <BuiltInBadge />}
                   </div>
-                  <div onClick={(e) => e.stopPropagation()}>
+                  <div className="pointer-events-none" aria-hidden="true">
                     <Switch
                       checked={ext.enabled}
-                      onCheckedChange={() => handleToggle(ext)}
                       variant="mono"
                       disabled={rowDisabled}
+                      tabIndex={-1}
+                      aria-hidden="true"
                     />
                   </div>
-                </div>
+                </DropdownMenuCheckboxItem>
               );
             })
           )}

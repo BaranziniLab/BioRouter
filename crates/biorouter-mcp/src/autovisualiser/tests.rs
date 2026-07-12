@@ -4,6 +4,16 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{ErrorCode, RawContent, ResourceContents, Role};
 use serde_json::json;
 
+#[test]
+fn forced_theme_injection_preserves_unicode_document_content() {
+    let html = "<!doctype html><html><head><title>Résumé</title></head><body>Δ</body></html>";
+    let result = inject_forced_theme(html.to_string(), "dark");
+
+    assert!(result
+        .contains("<head><script>window.__BR_VIZ_THEME__=\"dark\";</script><title>Résumé</title>"));
+    assert!(result.ends_with("<body>Δ</body></html>"));
+}
+
 // ---------------------------------------------------------------------------
 // validate_data_param (loosely-typed data guard)
 // ---------------------------------------------------------------------------

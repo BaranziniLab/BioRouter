@@ -48,6 +48,8 @@ import {
 import { formatExtensionName } from '../settings/extensions/subcomponents/ExtensionList';
 import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { ReadableContent } from '../Layout/ReadableContent';
+import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
+import { EmptyState } from '../ui/empty-state';
 
 function getSessionExtensionNames(extensionData: ExtensionData): string[] {
   try {
@@ -85,7 +87,7 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
     }, [session, isOpen]);
 
     const handleSave = useCallback(async () => {
-      if (!session || disabled) return;
+      if (!session || disabled || isUpdating) return;
 
       const trimmedDescription = description.trim();
       if (trimmedDescription === session.name) {
@@ -113,7 +115,7 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
       } finally {
         setIsUpdating(false);
       }
-    }, [session, description, onSave, onClose, disabled]);
+    }, [session, description, onSave, onClose, disabled, isUpdating]);
 
     const handleCancel = useCallback(() => {
       if (!isUpdating) {
@@ -125,11 +127,9 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
       (e: React.KeyboardEvent<HTMLInputElement>) => {
         if (e.key === 'Enter' && !isUpdating) {
           handleSave();
-        } else if (e.key === 'Escape' && !isUpdating) {
-          handleCancel();
         }
       },
-      [handleSave, handleCancel, isUpdating]
+      [handleSave, isUpdating]
     );
 
     const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -139,9 +139,15 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
     if (!isOpen || !session) return null;
 
     return (
-      <div className="biorouter-modal-overlay fixed inset-0 z-[300] flex items-center justify-center">
-        <div className="biorouter-modal-surface bg-background-default p-6 w-[500px] max-w-[90vw]">
-          <h3 className="text-lg font-medium text-text-default mb-4">Edit Session Description</h3>
+      <Dialog
+        open={isOpen}
+        onOpenChange={(open) => !open && !isUpdating && !disabled && handleCancel()}
+      >
+        <DialogContent
+          dismissible={!isUpdating && !disabled}
+          className="w-[500px] max-w-[90vw] sm:max-w-[500px]"
+        >
+          <DialogTitle>Edit Session Description</DialogTitle>
 
           <div className="space-y-4">
             <div>
@@ -172,8 +178,8 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
               {isUpdating ? 'Saving...' : 'Save'}
             </Button>
           </div>
-        </div>
-      </div>
+        </DialogContent>
+      </Dialog>
     );
   }
 );
@@ -606,12 +612,16 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
       return (
         <div
-          onClick={handleCardClick}
-          className="biorouter-list-row session-item flex items-center gap-3 py-2 px-4 cursor-pointer relative group"
+          className="biorouter-list-row session-item flex items-center gap-3 py-2 px-4 relative group"
           ref={(el) => setSessionRefs(session.id, el)}
         >
           {/* Title + metadata */}
-          <div className="flex-1 min-w-0">
+          <button
+            type="button"
+            onClick={handleCardClick}
+            className="flex-1 min-w-0 cursor-pointer rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+            aria-label={`Open session ${session.name}`}
+          >
             <h3 className="text-sm font-medium truncate">{session.name}</h3>
             {session.diverged_from && (
               <div className="flex items-center gap-1 mt-0.5 text-text-muted text-xs min-w-0">
@@ -632,7 +642,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 <span className="truncate max-w-[240px]">{session.working_dir}</span>
               </div>
             </div>
-          </div>
+          </button>
 
           {/* Right-side stats + hover actions */}
           <div className="flex items-center gap-3 flex-shrink-0">
@@ -673,13 +683,14 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 </TooltipProvider>
               )}
             </div>
-            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+            <div className="flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <button
                     onClick={(e) => e.stopPropagation()}
                     className="p-1.5 rounded hover:bg-background-medium transition-colors"
                     title="Launch session"
+                    aria-label={`Launch options for ${session.name}`}
                   >
                     <ExternalLink className="w-3 h-3 text-text-muted" />
                   </button>
@@ -699,6 +710,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 onClick={handleEditClick}
                 className="p-1.5 rounded hover:bg-background-medium transition-colors"
                 title="Edit session name"
+                aria-label={`Edit ${session.name}`}
               >
                 <Edit2 className="w-3 h-3 text-text-muted" />
               </button>
@@ -706,6 +718,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 onClick={handleDeleteClick}
                 className="p-1.5 rounded text-text-danger hover:bg-background-danger/10 transition-colors"
                 title="Delete session"
+                aria-label={`Delete ${session.name}`}
               >
                 <Trash2 className="w-3 h-3" />
               </button>
@@ -713,6 +726,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 onClick={handleExportClick}
                 className="p-1.5 rounded hover:bg-background-medium transition-colors"
                 title="Export session"
+                aria-label={`Export ${session.name}`}
               >
                 <Download className="w-3 h-3 text-text-muted" />
               </button>
@@ -762,21 +776,31 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
       if (sessions.length === 0) {
         return (
-          <div className="flex flex-col justify-center h-full text-text-muted">
-            <MessageSquareText className="h-12 w-12 mb-4" />
-            <p className="text-lg mb-2">No chat sessions found</p>
-            <p className="text-sm">Your chat history will appear here</p>
-          </div>
+          <EmptyState
+            icon={MessageSquareText}
+            title="No conversations yet"
+            description="Past conversations will appear here after you start chatting. You can also import an existing session."
+            actions={
+              <>
+                <Button onClick={() => navigate('/pair')}>Start a chat</Button>
+                <Button onClick={handleImportClick} variant="outline">
+                  <Upload className="h-4 w-4" />
+                  Import session
+                </Button>
+              </>
+            }
+          />
         );
       }
 
       if (dateGroups.length === 0 && searchResults !== null) {
         return (
-          <div className="flex flex-col items-center justify-center h-full text-text-muted mt-4">
-            <MessageSquareText className="h-12 w-12 mb-4" />
-            <p className="text-lg mb-2">No matching sessions found</p>
-            <p className="text-sm">Try adjusting your search terms</p>
-          </div>
+          <EmptyState
+            icon={MessageSquareText}
+            title="No matching conversations"
+            description="Try a different name, folder, or session ID."
+            compact
+          />
         );
       }
 

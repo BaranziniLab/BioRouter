@@ -61,6 +61,8 @@ export default function ApplicationsView() {
   const [searchTerm, setSearchTerm] = useState('');
   const [appToDelete, setAppToDelete] = useState<AppManifest | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [launchingAppId, setLaunchingAppId] = useState<string | null>(null);
+  const [exportingAppId, setExportingAppId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -84,16 +86,20 @@ export default function ApplicationsView() {
   }, [load]);
 
   const launch = async (app: AppManifest) => {
+    if (launchingAppId === app.id) return;
     const baseUrl = configuredBaseUrl();
     if (!baseUrl) {
       setError('Backend URL unavailable. Is biorouterd running?');
       return;
     }
+    setLaunchingAppId(app.id);
     try {
       await window.electron.openExternal(appUrl(app.id, baseUrl));
     } catch (err) {
       console.error('Failed to open app:', err);
       toastError({ title: app.title, msg: 'Could not open the app in your browser.' });
+    } finally {
+      setLaunchingAppId((current) => (current === app.id ? null : current));
     }
   };
 
@@ -106,6 +112,8 @@ export default function ApplicationsView() {
   };
 
   const exportApp = async (app: AppManifest) => {
+    if (exportingAppId === app.id) return;
+    setExportingAppId(app.id);
     try {
       const res = await fetch(`${configuredBaseUrl()}/apps/${encodeURIComponent(app.id)}/export`, {
         headers: await secretHeader(),
@@ -132,6 +140,8 @@ export default function ApplicationsView() {
     } catch (err) {
       console.error('Failed to export app:', err);
       toastError({ title: app.title, msg: 'Could not export the app.' });
+    } finally {
+      setExportingAppId((current) => (current === app.id ? null : current));
     }
   };
 
@@ -224,6 +234,8 @@ export default function ApplicationsView() {
                     onOpenConversation={() => openConversation(app)}
                     onExport={() => exportApp(app)}
                     onDelete={() => setAppToDelete(app)}
+                    isLaunching={launchingAppId === app.id}
+                    isExporting={exportingAppId === app.id}
                   />
                 ))}
               </div>
@@ -256,19 +268,26 @@ interface ApplicationItemProps {
   onOpenConversation: () => void;
   onExport: () => void;
   onDelete: () => void;
+  isLaunching?: boolean;
+  isExporting?: boolean;
 }
 
-function ApplicationItem({
+export function ApplicationItem({
   app,
   onLaunch,
   onOpenConversation,
   onExport,
   onDelete,
+  isLaunching = false,
+  isExporting = false,
 }: ApplicationItemProps) {
   const model = app.agent?.model?.model;
   const kb = app.agent?.knowledge_base;
   return (
-    <div className="biorouter-list-row flex items-start py-3 px-3 group gap-3">
+    <div
+      className="biorouter-list-row flex items-start py-3 px-3 group gap-3"
+      aria-busy={isLaunching || isExporting}
+    >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
           <p className="text-sm text-text-default truncate">{app.title}</p>
@@ -292,8 +311,15 @@ function ApplicationItem({
           {kb && <span className="font-mono">KB: {kb}</span>}
         </div>
       </div>
-      <div className="flex items-center gap-1 flex-shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-        <Button onClick={onLaunch} size="sm" className="h-7 w-7 p-0" title="Launch in browser">
+      <div className="flex items-center gap-1 flex-shrink-0 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+        <Button
+          onClick={onLaunch}
+          size="sm"
+          className="h-7 w-7 p-0"
+          title="Launch in browser"
+          aria-label={`Launch ${app.title} in browser`}
+          disabled={isLaunching}
+        >
           <Play className="w-4 h-4" />
         </Button>
         {app.session_id && (
@@ -303,6 +329,7 @@ function ApplicationItem({
             size="sm"
             className="h-7 w-7 p-0"
             title="Open the conversation where this app was built"
+            aria-label={`Open the conversation where ${app.title} was built`}
           >
             <MessageSquare className="w-4 h-4" />
           </Button>
@@ -313,6 +340,8 @@ function ApplicationItem({
           size="sm"
           className="h-7 w-7 p-0"
           title="Export to a folder"
+          aria-label={`Export ${app.title} to a folder`}
+          disabled={isExporting}
         >
           <Download className="w-4 h-4" />
         </Button>
@@ -322,6 +351,7 @@ function ApplicationItem({
           size="sm"
           className="h-7 w-7 p-0 text-text-danger hover:bg-background-danger/10"
           title="Delete"
+          aria-label={`Delete ${app.title}`}
         >
           <Trash2 className="w-4 h-4" />
         </Button>

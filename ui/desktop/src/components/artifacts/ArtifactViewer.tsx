@@ -169,10 +169,21 @@ export default function ArtifactViewer({
         )) as ArtifactFilePreview;
         if (cancelled) return;
         if (response.kind === 'html') {
-          const prepared = (await window.electron.prepareArtifactHtml({
-            html: response.text,
-          })) as PreparedArtifactHtml;
-          if (!cancelled) setPreview({ kind: 'html', html: prepared.html });
+          // An HTML file the agent wrote gets a Preview/Raw toggle, like markdown:
+          // keep it a file preview (so `text` remains the raw source) and attach a
+          // security-prepared copy for the rendered Preview. A `ui://` figure
+          // resource is `artifact.kind === 'html'` and took the branch above, so it
+          // still renders figure-only with no raw source — only real files land here.
+          let preparedHtml = response.text;
+          try {
+            const prepared = (await window.electron.prepareArtifactHtml({
+              html: response.text,
+            })) as PreparedArtifactHtml;
+            preparedHtml = prepared.html;
+          } catch {
+            // Preparation failed; fall back to the raw HTML for the Preview.
+          }
+          if (!cancelled) setPreview({ kind: 'file', preview: { ...response, preparedHtml } });
           return;
         }
         setPreview({ kind: 'file', preview: response });
@@ -281,9 +292,7 @@ export default function ArtifactViewer({
         // Animate only transform + opacity — width tracks instantly (drag is
         // transition-none; window-resize should snap, not lag the edge by 180ms).
         // Exit is a tier faster than entrance (--motion-fast vs --motion-base).
-        isResizing
-          ? 'transition-none'
-          : 'transition-[opacity,transform] ease-[var(--ease-out)]',
+        isResizing ? 'transition-none' : 'transition-[opacity,transform] ease-[var(--ease-out)]',
         !isResizing && (isOpen ? 'duration-[var(--motion-base)]' : 'duration-[var(--motion-fast)]'),
         isOpen ? 'translate-x-0 opacity-100' : 'translate-x-3 opacity-0',
         className
@@ -357,6 +366,13 @@ export default function ArtifactViewer({
 
       <div className="relative z-0 flex min-h-0 flex-1 flex-col p-3">
         <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border-subtle bg-background-default shadow-popover">
+          {isResizing && (
+            <div
+              data-testid="artifact-resize-shield"
+              aria-hidden="true"
+              className="absolute inset-3 z-50 cursor-col-resize"
+            />
+          )}
           <ArtifactPreviewBody
             preview={preview}
             artifact={artifact}
@@ -606,7 +622,8 @@ function TextFilePreview({
 }) {
   const markdown = isMarkdownPath(file.path);
   const delimited = isDelimitedPath(file.path);
-  const renderable = markdown || delimited;
+  const html = file.kind === 'html';
+  const renderable = markdown || delimited || html;
   const [showRaw, setShowRaw] = useState(false);
 
   const lineCount = useMemo(() => countLines(file.text), [file.text]);
@@ -636,7 +653,7 @@ function TextFilePreview({
           {renderable && (
             <div className="inline-flex rounded-md border border-border-subtle p-0.5 text-xs">
               {[
-                { label: markdown ? 'Preview' : 'Table', raw: false },
+                { label: delimited ? 'Table' : 'Preview', raw: false },
                 { label: 'Raw', raw: true },
               ].map((option) => (
                 <button
@@ -665,6 +682,16 @@ function TextFilePreview({
           <div className="px-4 py-3">
             <MarkdownContent content={file.text} />
           </div>
+        ) : html ? (
+          // Same sandbox + theme injection as the figure preview above. `allow-popups`
+          // is withheld so the framed HTML can't window.open() into a real BrowserWindow
+          // that would inherit the preload IPC bridge.
+          <iframe
+            title={file.title}
+            srcDoc={withHostTheme(file.preparedHtml ?? file.text, resolvedTheme)}
+            sandbox="allow-scripts allow-forms allow-modals"
+            className="h-full w-full bg-white"
+          />
         ) : (
           <DelimitedTable
             text={file.text}
