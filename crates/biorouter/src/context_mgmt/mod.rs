@@ -79,39 +79,108 @@ pub async fn compact_messages(
     compact_messages_with_window(provider, conversation, manual_compact, keep_last_turns).await
 }
 
+/// BR-13: a reactive context-overflow recovery strategy, in ascending order of
+/// aggressiveness. The agent loop steps through these on successive
+/// `ContextLengthExceeded` errors (see [`overflow_recovery_for_attempt`]) so a
+/// session that stays over-window degrades gracefully instead of dead-ending
+/// after two attempts (the old 2-attempt cliff).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverflowRecovery {
+    /// Standard compaction: summarize the older prefix, keep the recent verbatim
+    /// window (BR-10 default). The gentlest step; matches the pre-BR-13
+    /// first-attempt behaviour.
+    Compact,
+    /// Summarize more: shrink the verbatim window to `keep_last_turns` so more of
+    /// the recent tail is summarized away.
+    ShrinkWindow(usize),
+    /// Summarize everything — no verbatim window survives, so even a large recent
+    /// tool result is collapsed into the summary (and head/tail-truncated by
+    /// BR-11 if it alone overflows the summarizer).
+    SummarizeAll,
+    /// Last resort before giving up: hard-drop the oldest agent-visible turns and
+    /// then summarize everything that remains, so even a pathological history that
+    /// is still over-window after full summarization can be recovered.
+    DropOldestThenSummarize,
+}
+
+/// BR-13: map a 1-based reactive-compaction attempt to a recovery strategy, or
+/// `None` when the ladder is exhausted and the loop should finally give up.
+/// Successive overflows escalate: keep-window → shrink-window → summarize-all →
+/// drop-oldest. Returning `None` (attempt 5+) is the only path that surfaces the
+/// "context limit still exceeded" error to the user, replacing the old hard
+/// 2-attempt cliff.
+pub fn overflow_recovery_for_attempt(attempt: usize) -> Option<OverflowRecovery> {
+    match attempt {
+        1 => Some(OverflowRecovery::Compact),
+        2 => Some(OverflowRecovery::ShrinkWindow(2)),
+        3 => Some(OverflowRecovery::SummarizeAll),
+        4 => Some(OverflowRecovery::DropOldestThenSummarize),
+        _ => None,
+    }
+}
+
+/// BR-13: run one reactive compaction using the given recovery strategy. Reactive
+/// compaction is never user-initiated, so `manual_compact` is always false.
+pub async fn compact_messages_with_recovery(
+    provider: &dyn Provider,
+    conversation: &Conversation,
+    recovery: OverflowRecovery,
+) -> Result<(Conversation, ProviderUsage)> {
+    match recovery {
+        OverflowRecovery::Compact => {
+            let keep_last_turns = Config::global()
+                .get_param::<usize>("BIOROUTER_COMPACT_KEEP_LAST_TURNS")
+                .unwrap_or(DEFAULT_COMPACT_KEEP_LAST_TURNS);
+            compact_messages_with_window(provider, conversation, false, keep_last_turns).await
+        }
+        OverflowRecovery::ShrinkWindow(keep_last_turns) => {
+            compact_messages_with_window(provider, conversation, false, keep_last_turns).await
+        }
+        OverflowRecovery::SummarizeAll => {
+            compact_messages_with_window(provider, conversation, false, 0).await
+        }
+        OverflowRecovery::DropOldestThenSummarize => {
+            let pruned = Conversation::new_unvalidated(drop_oldest_agent_visible_turns(
+                conversation.messages(),
+            ));
+            compact_messages_with_window(provider, &pruned, false, 0).await
+        }
+    }
+}
+
+/// A compaction turn boundary: an agent-visible, text-only user message (a
+/// genuine user prompt, not a tool response). Snapping a cut to such a boundary
+/// guarantees tool_request/tool_response pairs stay intact across it and that the
+/// kept slice never opens with a dangling tool response. Shared by
+/// [`recent_window_split`] (BR-10) and [`drop_oldest_agent_visible_turns`] (BR-13).
+fn is_user_prompt_turn(msg: &Message) -> bool {
+    msg.is_agent_visible()
+        && matches!(msg.role, Role::User)
+        && msg
+            .content
+            .iter()
+            .any(|c| matches!(c, MessageContent::Text(_)))
+        && !msg.content.iter().any(|c| {
+            matches!(
+                c,
+                MessageContent::ToolRequest(_) | MessageContent::ToolResponse(_)
+            )
+        })
+}
+
 /// Return the index into `messages` at which the recent verbatim window begins,
 /// or `None` when the recent-turn strategy does not apply — either it is
 /// disabled (`keep_last_turns == 0`), there are not more than `keep_last_turns`
 /// user-prompt turns, or the older prefix has nothing agent-visible to summarize.
-///
-/// A turn boundary is an agent-visible, text-only user message (a genuine user
-/// prompt, not a tool response). Snapping the cut to such a boundary guarantees
-/// tool_request/tool_response pairs stay intact across the boundary and that the
-/// kept window never opens with a dangling tool response.
 fn recent_window_split(messages: &[Message], keep_last_turns: usize) -> Option<usize> {
     if keep_last_turns == 0 {
         return None;
     }
 
-    let is_user_prompt = |msg: &Message| {
-        msg.is_agent_visible()
-            && matches!(msg.role, Role::User)
-            && msg
-                .content
-                .iter()
-                .any(|c| matches!(c, MessageContent::Text(_)))
-            && !msg.content.iter().any(|c| {
-                matches!(
-                    c,
-                    MessageContent::ToolRequest(_) | MessageContent::ToolResponse(_)
-                )
-            })
-    };
-
     let boundaries: Vec<usize> = messages
         .iter()
         .enumerate()
-        .filter(|(_, msg)| is_user_prompt(msg))
+        .filter(|(_, msg)| is_user_prompt_turn(msg))
         .map(|(idx, _)| idx)
         .collect();
 
@@ -131,6 +200,43 @@ fn recent_window_split(messages: &[Message], keep_last_turns: usize) -> Option<u
     } else {
         None
     }
+}
+
+/// BR-13: hard-drop the oldest agent-visible turns by flipping them
+/// agent-invisible — they stay in the user transcript but leave both the agent
+/// context and the summarizer input. Used only as the final reactive-compaction
+/// stage ([`OverflowRecovery::DropOldestThenSummarize`]) for the pathological
+/// case where summarizing the entire history is *still* over-window. Keeps
+/// roughly the newer half of the user-prompt turns; the cut snaps to a clean
+/// user-prompt boundary so tool_request/tool_response pairs are never split.
+fn drop_oldest_agent_visible_turns(messages: &[Message]) -> Vec<Message> {
+    let boundaries: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, msg)| is_user_prompt_turn(msg))
+        .map(|(idx, _)| idx)
+        .collect();
+
+    // Need at least two user-prompt boundaries to drop the older half and still
+    // keep a newer one; with fewer there is nothing safe to drop.
+    if boundaries.len() < 2 {
+        return messages.to_vec();
+    }
+
+    let cut = boundaries[boundaries.len() / 2];
+
+    messages
+        .iter()
+        .enumerate()
+        .map(|(idx, msg)| {
+            if idx < cut && msg.is_agent_visible() {
+                msg.clone()
+                    .with_metadata(msg.metadata.with_agent_invisible())
+            } else {
+                msg.clone()
+            }
+        })
+        .collect()
 }
 
 async fn compact_messages_with_window(
@@ -1162,5 +1268,133 @@ mod tests {
             .unwrap();
         let agent_msgs = compacted.agent_visible_messages();
         Conversation::new(agent_msgs).expect("fallback compaction should validate");
+    }
+
+    /// BR-13: the reactive-overflow ladder escalates strictly and terminates —
+    /// keep-window → shrink-window → summarize-all → drop-oldest → give up.
+    #[test]
+    fn test_overflow_recovery_ladder_escalates() {
+        assert_eq!(
+            overflow_recovery_for_attempt(1),
+            Some(OverflowRecovery::Compact)
+        );
+        assert_eq!(
+            overflow_recovery_for_attempt(2),
+            Some(OverflowRecovery::ShrinkWindow(2))
+        );
+        assert_eq!(
+            overflow_recovery_for_attempt(3),
+            Some(OverflowRecovery::SummarizeAll)
+        );
+        assert_eq!(
+            overflow_recovery_for_attempt(4),
+            Some(OverflowRecovery::DropOldestThenSummarize)
+        );
+        // Ladder exhausted -> give up. This is the ONLY path that surfaces the
+        // "context limit still exceeded" error to the user.
+        assert_eq!(overflow_recovery_for_attempt(5), None);
+        assert_eq!(overflow_recovery_for_attempt(99), None);
+    }
+
+    /// BR-13: dropping the oldest turns flips the older half agent-invisible while
+    /// keeping the newer half, and the cut snaps to a user-prompt boundary.
+    #[test]
+    fn test_drop_oldest_agent_visible_turns_snaps_boundary() {
+        let msgs: Vec<Message> = (1..=4)
+            .flat_map(|i| {
+                vec![
+                    Message::user().with_text(format!("q{i}")),
+                    Message::assistant().with_text(format!("a{i}")),
+                ]
+            })
+            .collect();
+        // boundaries q1@0, q2@2, q3@4, q4@6 -> cut = boundaries[4/2] = index 4 (q3).
+        let out = drop_oldest_agent_visible_turns(&msgs);
+        for (i, m) in out.iter().enumerate() {
+            if i < 4 {
+                assert!(!m.is_agent_visible(), "index {i} should be dropped");
+            } else {
+                assert!(m.is_agent_visible(), "index {i} should be kept");
+            }
+        }
+
+        // With a single user prompt there is nothing safe to drop.
+        let one = vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_text("a1"),
+        ];
+        let out = drop_oldest_agent_visible_turns(&one);
+        assert!(
+            out.iter().all(|m| m.is_agent_visible()),
+            "too few turns to drop -> conversation left untouched"
+        );
+    }
+
+    /// BR-13: escalating from a shrunken verbatim window to summarize-everything
+    /// leaves strictly fewer agent-visible messages, which is exactly how the
+    /// ladder claws a wedged session back under the window.
+    #[tokio::test]
+    async fn test_recovery_summarize_all_collapses_recent_window() {
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 100_000);
+        let messages: Vec<Message> = (1..=8)
+            .flat_map(|i| {
+                vec![
+                    Message::user().with_text(format!("q{i}")),
+                    Message::assistant().with_text(format!("a{i}")),
+                ]
+            })
+            .collect();
+        let conversation = Conversation::new_unvalidated(messages);
+
+        let (shrunk, _) = compact_messages_with_recovery(
+            &provider,
+            &conversation,
+            OverflowRecovery::ShrinkWindow(2),
+        )
+        .await
+        .unwrap();
+        let (all, _) = compact_messages_with_recovery(
+            &provider,
+            &conversation,
+            OverflowRecovery::SummarizeAll,
+        )
+        .await
+        .unwrap();
+
+        let visible = |c: &Conversation| c.agent_visible_messages().len();
+        assert!(
+            visible(&all) < visible(&shrunk),
+            "summarize-all should leave fewer agent-visible messages than a shrunk window: all={}, shrunk={}",
+            visible(&all),
+            visible(&shrunk),
+        );
+    }
+
+    /// BR-13: the last-resort drop-oldest stage produces a valid conversation
+    /// (oldest turns dropped, remainder summarized) instead of dead-ending.
+    #[tokio::test]
+    async fn test_recovery_drop_oldest_then_summarize() {
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 100_000);
+        let messages: Vec<Message> = (1..=6)
+            .flat_map(|i| {
+                vec![
+                    Message::user().with_text(format!("q{i}")),
+                    Message::assistant().with_text(format!("a{i}")),
+                ]
+            })
+            .collect();
+        let conversation = Conversation::new_unvalidated(messages);
+
+        let (compacted, _) = compact_messages_with_recovery(
+            &provider,
+            &conversation,
+            OverflowRecovery::DropOldestThenSummarize,
+        )
+        .await
+        .expect("drop-oldest recovery should succeed");
+
+        let agent_msgs = compacted.agent_visible_messages();
+        Conversation::new(agent_msgs)
+            .expect("drop-oldest recovery should produce a valid conversation");
     }
 }

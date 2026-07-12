@@ -33,7 +33,8 @@ use crate::agents::types::{FrontendTool, SharedProvider, ToolResultReceiver};
 use crate::config::permission::PermissionManager;
 use crate::config::{BioRouterMode, Config};
 use crate::context_mgmt::{
-    check_if_compaction_needed, compact_messages, DEFAULT_COMPACTION_THRESHOLD,
+    check_if_compaction_needed, compact_messages, compact_messages_with_recovery,
+    overflow_recovery_for_attempt, DEFAULT_COMPACTION_THRESHOLD,
 };
 use crate::conversation::message::{
     ActionRequiredData, Message, MessageContent, ProviderMetadata, SystemNotificationType,
@@ -2117,8 +2118,15 @@ impl Agent {
                         Err(ProviderError::ContextLengthExceeded(_)) => {
                             compaction_attempts += 1;
 
-                            if compaction_attempts >= 2 {
-                                error!("Context limit exceeded after compaction - prompt too large");
+                            // BR-13: progressive context-overflow fallback. Instead of a
+                            // hard 2-attempt cliff, each successive overflow escalates to a
+                            // more aggressive compaction strategy (keep-window ->
+                            // shrink-window -> summarize-all -> drop-oldest); only once the
+                            // ladder is exhausted do we surface the "still exceeded" error.
+                            // `compaction_attempts` resets to 0 on the next successful
+                            // provider response, so a later overflow restarts the ladder.
+                            let Some(recovery) = overflow_recovery_for_attempt(compaction_attempts) else {
+                                error!("Context limit exceeded after progressive compaction fallbacks - prompt too large");
                                 yield AgentEvent::Message(
                                     Message::assistant().with_system_notification(
                                         SystemNotificationType::InlineMessage,
@@ -2126,7 +2134,7 @@ impl Agent {
                                     )
                                 );
                                 break;
-                            }
+                            };
 
                             yield AgentEvent::Message(
                                 Message::assistant().with_system_notification(
@@ -2148,7 +2156,7 @@ impl Agent {
                                 "auto",
                                 Some("context_overflow"),
                             );
-                            match compact_messages(self.provider().await?.as_ref(), &conversation, false).await {
+                            match compact_messages_with_recovery(self.provider().await?.as_ref(), &conversation, recovery).await {
                                 Ok((compacted_conversation, usage)) => {
                                     session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
                                     self.update_session_metrics(&session_config, &usage, true).await?;
