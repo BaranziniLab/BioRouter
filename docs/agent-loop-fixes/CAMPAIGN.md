@@ -48,3 +48,11 @@ builds on BR-33 (wave 0); BR-16 is subsumed by BR-33; BR-47 builds on BR-19.
 - **2026-07-12** — Campaign started. Integration branch cut from `main`
   (24cdc3a2) + review corpus merged (a409e7d7). Baseline full-workspace test
   run started. Wave 0 workflow launched.
+- **2026-07-12** — Baseline complete: **53 suites ok, 1 pre-existing failure**
+  — `test_anthropic_provider` (`crates/biorouter/tests/providers.rs:251`, a
+  *live-API* test asserting oversized input yields `ContextLengthExceeded`;
+  the call instead succeeds with `finish_reason: None` — the exact BR-46 bug
+  surface). Known-failing at baseline; only failures *beyond* this one count
+  as regressions at any gate. Note: `tests/providers.rs` hits live provider
+  APIs when keys are present — gate comparisons must tolerate its
+  environment-dependence.
