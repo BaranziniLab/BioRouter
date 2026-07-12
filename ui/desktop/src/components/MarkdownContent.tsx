@@ -136,10 +136,54 @@ const MarkdownCode = memo(
   })
 );
 
+// Bare absolute file paths the assistant mentions in prose (e.g.
+// /Users/me/report.md or ~/notes.txt) aren't markdown links, so ReactMarkdown
+// renders them as plain text. Turn them into clickable spans so a user can open
+// them straight in the side preview instead of digging through Files. Requires a
+// leading / or ~/ and a short extension to avoid linkifying arbitrary slashes.
+const FILE_PATH_RE = /(?<![\w:/@.])((?:~\/|\/)[\w.\-+@/]+\.[A-Za-z0-9]{1,8})(?![\w/])/g;
+
+function linkifyFilePaths(
+  children: React.ReactNode,
+  onOpenArtifact?: (artifact: ArtifactSource) => void
+): React.ReactNode {
+  if (!onOpenArtifact) return children;
+  return React.Children.map(children, (child) => {
+    if (typeof child !== 'string' || !child.includes('/')) return child;
+    const out: React.ReactNode[] = [];
+    let last = 0;
+    let match: RegExpExecArray | null;
+    FILE_PATH_RE.lastIndex = 0;
+    while ((match = FILE_PATH_RE.exec(child)) !== null) {
+      const filePath = match[1];
+      if (match.index > last) out.push(child.slice(last, match.index));
+      out.push(
+        <button
+          key={match.index}
+          type="button"
+          className="inline cursor-pointer break-all text-left font-mono text-[0.95em] text-text-default underline underline-offset-2 decoration-border-strong hover:text-text-muted"
+          onClick={() =>
+            onOpenArtifact({ kind: 'file', title: basenameFromPath(filePath), path: filePath })
+          }
+        >
+          {filePath}
+        </button>
+      );
+      last = match.index + filePath.length;
+    }
+    if (last === 0) return child;
+    if (last < child.length) out.push(child.slice(last));
+    return out;
+  });
+}
+
 const MarkdownParagraph = ({
   children,
+  onOpenArtifact,
   ...props
-}: React.HTMLAttributes<globalThis.HTMLParagraphElement>) => {
+}: React.HTMLAttributes<globalThis.HTMLParagraphElement> & {
+  onOpenArtifact?: (artifact: ArtifactSource) => void;
+}) => {
   const childArray = React.Children.toArray(children);
   const meaningfulChildren = childArray.filter(
     (child) => !(typeof child === 'string' && child.trim() === '')
@@ -159,7 +203,7 @@ const MarkdownParagraph = ({
       </p>
     );
   }
-  return <p {...props}>{children}</p>;
+  return <p {...props}>{linkifyFilePaths(children, onOpenArtifact)}</p>;
 };
 
 const MarkdownContent = memo(function MarkdownContent({
@@ -236,6 +280,22 @@ const MarkdownContent = memo(function MarkdownContent({
                 </button>
               );
             }
+            // http(s) links resolve to the side preview (iframe) rather than an
+            // external browser. The viewer's expand button hands off to the real
+            // browser for sites that can't be framed.
+            if (href && /^https?:\/\//i.test(href) && onOpenArtifact) {
+              return (
+                <button
+                  type="button"
+                  className="inline cursor-pointer break-all text-left text-text-accent underline underline-offset-2 decoration-border-strong hover:text-text-muted"
+                  onClick={() =>
+                    onOpenArtifact({ kind: 'externalUrl', title: href, url: href })
+                  }
+                >
+                  {children}
+                </button>
+              );
+            }
             return (
               <a href={href} {...props} target="_blank" rel="noopener noreferrer">
                 {children}
@@ -243,7 +303,10 @@ const MarkdownContent = memo(function MarkdownContent({
             );
           },
           code: MarkdownCode,
-          p: MarkdownParagraph,
+          p: (props) => <MarkdownParagraph {...props} onOpenArtifact={onOpenArtifact} />,
+          li: ({ children, ...props }) => (
+            <li {...props}>{linkifyFilePaths(children, onOpenArtifact)}</li>
+          ),
         }}
       >
         {processedContent}

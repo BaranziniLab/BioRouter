@@ -330,6 +330,20 @@ export default function ArtifactViewer({
             )}
           </button>
         )}
+        {/* A file preview (text / binary / directory) is not HTML, so "expand"
+            hands it to the OS default app for that type rather than a standalone
+            window — the user shouldn't have to hunt for it in Files. */}
+        {preview.kind === 'file' && (
+          <button
+            type="button"
+            onClick={() => window.electron.openDirectoryInExplorer(preview.preview.path)}
+            className="no-drag relative z-50 inline-flex h-7 w-7 items-center justify-center rounded-md text-text-muted transition-[background-color,color,transform,scale] duration-[var(--motion-fast)] active:scale-[0.97] hover:bg-background-medium hover:text-text-default"
+            aria-label="Open file in the default app"
+            title="Open in default app"
+          >
+            <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        )}
         <button
           type="button"
           onClick={onClose}
@@ -474,13 +488,28 @@ function ArtifactPreviewBody({
   }
 
   if (file.kind === 'binary') {
+    // Text-decodable files already fall through to the plain-text preview below
+    // (see isTextArtifact in the main process). Reaching here means the bytes are
+    // genuinely binary (or the file is too large), so there is nothing to show —
+    // tell the user plainly and offer to open it in its default app.
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 p-5 text-center text-sm text-text-muted">
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-text-muted">
         <File className="h-8 w-8" aria-hidden="true" />
-        <div>{basenameFromPath(file.path)}</div>
+        <div className="font-medium text-text-default">{basenameFromPath(file.path)}</div>
         <div>
           {file.mimeType} · {formatBytes(file.size)}
         </div>
+        <p className="max-w-xs leading-relaxed">
+          This file can’t be previewed here. Open it in the app your system uses for this file type.
+        </p>
+        <button
+          type="button"
+          onClick={() => window.electron.openDirectoryInExplorer(file.path)}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border-strong bg-transparent px-3 py-1.5 text-text-default transition-[background-color,color,transform,scale] duration-[var(--motion-fast)] active:scale-[0.97] hover:bg-background-medium"
+        >
+          <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
+          Open the file
+        </button>
       </div>
     );
   }
