@@ -6,6 +6,7 @@ mod lang;
 pub mod paths;
 mod shell;
 mod text_editor;
+mod undo_history;
 
 pub mod rmcp_developer;
 
