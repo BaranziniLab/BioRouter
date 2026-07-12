@@ -333,6 +333,31 @@ async function runSelftest() {
     ui: true,
     wsToken: WS_TOKEN,
   };
+  // jsdom has no real 2D canvas. Give getContext a no-op stub so the `network`
+  // engine's draw path actually runs (proving it never crashes) without needing
+  // a real context — physics, selection and positions work regardless.
+  win.HTMLCanvasElement.prototype.getContext = function () {
+    return {
+      save() {},
+      restore() {},
+      beginPath() {},
+      moveTo() {},
+      lineTo() {},
+      arc() {},
+      fill() {},
+      stroke() {},
+      clearRect() {},
+      setTransform() {},
+      setLineDash() {},
+      fillText() {},
+      measureText() {
+        return { width: 10 };
+      },
+      createRadialGradient() {
+        return { addColorStop() {} };
+      },
+    };
+  };
   win.eval(bundle);
 
   const doc = win.document;
@@ -487,6 +512,154 @@ async function runSelftest() {
   await waitFor(() => $("cnt").textContent === "99");
   check("legacy state frame (no mode) is treated as a snapshot", $("cnt").textContent === "99", $("cnt").textContent);
   check("legacy snapshot re-evaluates all bindings", $("lnk").getAttribute("href") === "https://legacy.example/z", $("lnk").getAttribute("href"));
+
+  // ── Scenario F: ui_patch — instance registry, morph, focus preservation ────
+  emitUi({
+    cmd: "render",
+    target: "@region:results",
+    body: [
+      { t: "kpi", id: "k1", label: "Count", value: 10, delta: "+2", unit: "n" },
+      { t: "form", id: "f1", children: [{ t: "input", name: "q", label: "Query" }] },
+    ],
+  });
+  await waitFor(() => doc.querySelector("[data-br-iid='k1']") && doc.querySelector("[data-br-iid='f1']"));
+  check(
+    "ui_render tags data-br-iid and registers instances",
+    !!doc.querySelector("[data-br-iid='k1']") && !!doc.querySelector("[data-br-iid='f1']")
+  );
+  {
+    const d = doc.querySelector("[data-br-iid='k1'] .br-kpi__delta");
+    check("kpi renders a delta with an up/down arrow", !!d && /▲|▼/.test(d.textContent || ""), d && d.textContent);
+  }
+
+  // Focus a sibling input, patch a different instance; the focus must survive.
+  const qInput = doc.querySelector("[data-br-iid='f1'] input");
+  if (qInput && typeof qInput.focus === "function") qInput.focus();
+  check("sibling input can take focus", doc.activeElement === qInput);
+  emitUi({ cmd: "patch", ops: [{ op: "set_props", id: "k1", props: { value: 99, delta: "-5" } }] });
+  await waitFor(() => {
+    const v = doc.querySelector("[data-br-iid='k1'] .br-kpi__value");
+    return v && (v.textContent || "").indexOf("99") >= 0;
+  });
+  check(
+    "set_props shallow-merges + re-renders the targeted instance",
+    (doc.querySelector("[data-br-iid='k1'] .br-kpi__value").textContent || "").indexOf("99") >= 0
+  );
+  check("set_props on a sibling preserves focus", doc.activeElement === qInput);
+  check("set_props delta now reads as a decrease (▼)", /▼/.test(doc.querySelector("[data-br-iid='k1'] .br-kpi__delta").textContent || ""));
+
+  // replace re-renders the instance in place (same id).
+  emitUi({ cmd: "patch", ops: [{ op: "replace", id: "k1", node: { t: "kpi", label: "Total", value: 7 } }] });
+  await waitFor(() => {
+    const l = doc.querySelector("[data-br-iid='k1'] .br-kpi__label");
+    return l && l.textContent === "Total";
+  });
+  check("replace re-renders an instance in place", doc.querySelector("[data-br-iid='k1'] .br-kpi__label").textContent === "Total");
+
+  // add + remove round-trip.
+  emitUi({ cmd: "patch", ops: [{ op: "add", id: "added1", target: "@region:results", node: { t: "text", value: "hello-added" } }] });
+  await waitFor(() => doc.querySelector("[data-br-iid='added1']"));
+  check("add inserts a new instance at the target", (doc.querySelector("[data-br-iid='added1']").textContent || "").indexOf("hello-added") >= 0);
+  emitUi({ cmd: "patch", ops: [{ op: "remove", id: "added1" }] });
+  await waitFor(() => !doc.querySelector("[data-br-iid='added1']"));
+  check("remove deletes the instance + registry entry", !doc.querySelector("[data-br-iid='added1']"));
+
+  // ── Scenario G: log append + cap (drop oldest) ─────────────────────────────
+  emitUi({
+    cmd: "render",
+    target: "@region:results",
+    body: [{ t: "log", id: "log1", max: 3, lines: [{ text: "l1" }, { text: "l2" }] }],
+  });
+  await waitFor(() => doc.querySelectorAll("[data-br-iid='log1'] .br-log__line").length === 2);
+  check("log renders its initial lines", doc.querySelectorAll("[data-br-iid='log1'] .br-log__line").length === 2);
+  emitUi({
+    cmd: "patch",
+    ops: [{ op: "set_props", id: "log1", props: { append: [{ text: "l3" }, { text: "l4" }, { text: "l5" }] } }],
+  });
+  await waitFor(() => doc.querySelectorAll("[data-br-iid='log1'] .br-log__line").length === 3);
+  {
+    const rows = Array.prototype.map.call(doc.querySelectorAll("[data-br-iid='log1'] .br-log__line"), (e) => e.textContent);
+    check("log append caps at node.max, dropping the oldest", rows.length === 3 && rows[2] === "l5" && rows.indexOf("l1") < 0, rows.join(","));
+  }
+
+  // ── Scenario H: plot scatter + heatmap render SVG ──────────────────────────
+  emitUi({
+    cmd: "render",
+    target: "@region:results",
+    body: [
+      { t: "plot", id: "sc1", spec: { type: "scatter", data: [{ x: 1, y: 2 }, { x: 3, y: 4 }, { x: 5, y: 1 }] } },
+      { t: "plot", id: "hm1", spec: { type: "heatmap", z: [[0, 1], [2, 3]] } },
+    ],
+  });
+  await waitFor(() => doc.querySelector("[data-br-iid='sc1'] svg") && doc.querySelector("[data-br-iid='hm1'] svg"));
+  check("plot scatter produces an svg with one circle per point", doc.querySelectorAll("[data-br-iid='sc1'] circle").length === 3);
+  check("plot heatmap produces an svg grid of rects", doc.querySelectorAll("[data-br-iid='hm1'] rect").length >= 4);
+
+  // ── Scenario I: network engine mounts, selects, exposes positions ──────────
+  emitUi({
+    cmd: "render",
+    target: "@region:results",
+    body: [
+      {
+        t: "network",
+        id: "net1",
+        spec: {
+          nodes: [{ id: "n1", label: "A" }, { id: "n2", label: "B" }, { id: "n3", label: "C" }],
+          edges: [{ source: "n1", target: "n2" }, { source: "n2", target: "n3" }],
+        },
+      },
+    ],
+  });
+  await waitFor(() => doc.querySelector("[data-br-iid='net1'] canvas"));
+  check("network mounts a canvas", !!doc.querySelector("[data-br-iid='net1'] canvas"));
+  const netCanvas = doc.querySelector("[data-br-iid='net1'] canvas");
+  let netSel = "none";
+  netCanvas.addEventListener("br-network-select", (e) => {
+    netSel = e && e.detail ? e.detail.id : null;
+  });
+  win.BioRouter.ui.network("net1").select("n1");
+  check("programmatic select fires a br-network-select CustomEvent", netSel === "n1", "detail.id=" + netSel);
+  const netPos = win.BioRouter.ui.network("net1").positions();
+  check(
+    "network exposes a positions object keyed by node id",
+    !!netPos && typeof netPos === "object" && !!netPos.n1 && typeof netPos.n1.x === "number",
+    JSON.stringify(netPos && netPos.n1)
+  );
+
+  // ── Scenario J: author component registry — mount + update ─────────────────
+  win.eval(
+    "window.__cMount = []; window.__cUpdate = [];" +
+      "window.BioRouter.components.register('greeter', {" +
+      "  mount: function (el, props) { window.__cMount.push(props && props.name); el.setAttribute('data-greet', (props && props.name) || ''); el.textContent = 'hi ' + ((props && props.name) || ''); }," +
+      "  update: function (el, props) { window.__cUpdate.push(props && props.name); el.setAttribute('data-greet', (props && props.name) || ''); el.textContent = 'hi ' + ((props && props.name) || ''); }" +
+      "});"
+  );
+  emitUi({ cmd: "render", target: "@region:results", body: [{ t: "component", id: "c1", name: "greeter", props: { name: "Ada" } }] });
+  await waitFor(() => doc.querySelector("[data-br-iid='c1'][data-greet='Ada']"));
+  check("component mount runs with the agent-supplied props", win.__cMount.length === 1 && win.__cMount[0] === "Ada", JSON.stringify(win.__cMount));
+  emitUi({ cmd: "patch", ops: [{ op: "set_props", id: "c1", props: { name: "Grace" } }] });
+  await waitFor(() => doc.querySelector("[data-br-iid='c1'][data-greet='Grace']"));
+  check("component update runs with new props (container preserved)", win.__cUpdate.length === 1 && win.__cUpdate[0] === "Grace", JSON.stringify(win.__cUpdate));
+
+  // ── Scenario K: privileged html + figure nodes ─────────────────────────────
+  emitUi({
+    cmd: "render",
+    target: "@region:results",
+    body: [
+      { t: "html", id: "h1", html: "<b class='br-sanit'>safe-html</b>" },
+      { t: "figure", id: "fig1", html: "<!doctype html><body>fig</body>" },
+    ],
+  });
+  await waitFor(() => doc.querySelector("[data-br-iid='h1'] .br-sanit") && doc.querySelector("[data-br-iid='fig1'] iframe"));
+  check("html node lands its (server-sanitized) innerHTML", !!doc.querySelector("[data-br-iid='h1'] .br-sanit"));
+  {
+    const fr = doc.querySelector("[data-br-iid='fig1'] iframe");
+    check(
+      "figure node creates a sandboxed iframe with srcdoc",
+      !!fr && fr.getAttribute("sandbox") === "allow-scripts" && (fr.getAttribute("srcdoc") || "").indexOf("fig") >= 0,
+      fr && fr.getAttribute("sandbox")
+    );
+  }
 
   dom.window.close();
   log(failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`);

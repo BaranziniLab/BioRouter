@@ -180,11 +180,45 @@ const CDN_MERMAID: &str = "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.
 /// "visualization cannot be generated on reopen" issue with very large diagrams.
 /// It requires network access at render time. Inlining (the default) keeps the
 /// figure fully self-contained and offline.
+///
+/// A caller can force inlining regardless of the env flag via
+/// [`with_inline_assets`] — that short-circuits here, before the env read, so a
+/// figure that must be self-contained (the standalone embedding path, and the
+/// dashboard) never emits a CDN `<script src=…>`.
 pub fn use_cdn() -> bool {
+    if force_inline() {
+        return false;
+    }
     matches!(
         std::env::var("BIOROUTER_AUTOVIS_CDN").ok().as_deref(),
         Some("1") | Some("true") | Some("TRUE") | Some("yes")
     )
+}
+
+tokio::task_local! {
+    /// Set while assets must be inlined regardless of `BIOROUTER_AUTOVIS_CDN`.
+    static FORCE_INLINE: ();
+}
+
+/// True while running inside [`with_inline_assets`].
+fn force_inline() -> bool {
+    FORCE_INLINE.try_with(|_| ()).is_ok()
+}
+
+/// Render `fut` with asset inlining forced on (CDN mode disabled for its span),
+/// regardless of `BIOROUTER_AUTOVIS_CDN`.
+///
+/// The `render_standalone_figure` embedding path uses this: its HTML lands in a
+/// `srcdoc` iframe the Electron CDN→inline rewriter cannot reach, so a remote
+/// `<script src=…>` would be blocked by the renderer CSP and render blank — the
+/// same reasoning that makes a dashboard always inline its libraries. Because the
+/// override is a task-local checked *before* the env read, it holds even when the
+/// desktop app has set `BIOROUTER_AUTOVIS_CDN=1`.
+pub async fn with_inline_assets<F, T>(fut: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    FORCE_INLINE.scope((), fut).await
 }
 
 fn script_inline(src: &str) -> String {
