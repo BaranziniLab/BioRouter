@@ -1431,7 +1431,7 @@ impl Agent {
                 .add_message(
                     &session_config.id,
                     &Message::user()
-                        .with_text(format!("<hook-context>\n{context}\n</hook-context>"))
+                        .with_text(crate::hooks::outcome::frame_hook_context(&context))
                         .with_visibility(false, true),
                 )
                 .await?;
@@ -1938,9 +1938,8 @@ impl Agent {
                                             }
                                             if !hook_contexts.is_empty() {
                                                 let context_message = Message::user()
-                                                    .with_text(format!(
-                                                        "<hook-context>\n{}\n</hook-context>",
-                                                        hook_contexts.join("\n\n")
+                                                    .with_text(crate::hooks::outcome::frame_hook_context(
+                                                        &hook_contexts.join("\n\n"),
                                                     ))
                                                     .with_visibility(false, true);
                                                 messages_to_add.push(context_message);
