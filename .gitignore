@@ -78,3 +78,6 @@ spoke-work/
 cdwagent-work/
 *.brxt
 biorouter-testing-apps/
+
+# Signing certificates — never commit (also covered by notarization/)
+*.p12

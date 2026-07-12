@@ -62,10 +62,20 @@ need_version() { [ -n "${1:-}" ] || die "version required, e.g. scripts/release.
 
 activate_hermit() { set +u; source "$ROOT/bin/activate-hermit" >/dev/null 2>&1 || true; set -u; }
 
-# Pull notarization creds from the gitignored notes file unless already in env.
+# Resolve notarization creds: env → macOS Keychain → gitignored notes file.
+# The Keychain is the preferred store (encrypted at rest, no plaintext on disk).
+# Seed it once (any local build agent can then read it without a prompt):
+#   security add-generic-password -s biorouter-notarization -a APPLE_ID -w <id> -A -U
+#   security add-generic-password -s biorouter-notarization -a APPLE_APP_SPECIFIC_PASSWORD -w <pw> -A -U
 load_apple_creds() {
+  if [ -z "${APPLE_ID:-}" ]; then
+    APPLE_ID="$(security find-generic-password -s biorouter-notarization -a APPLE_ID -w 2>/dev/null || true)"
+  fi
+  if [ -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]; then
+    APPLE_APP_SPECIFIC_PASSWORD="$(security find-generic-password -s biorouter-notarization -a APPLE_APP_SPECIFIC_PASSWORD -w 2>/dev/null || true)"
+  fi
   if [ -z "${APPLE_ID:-}" ] || [ -z "${APPLE_APP_SPECIFIC_PASSWORD:-}" ]; then
-    [ -f "$NOTARY/APPLE_DEVELOPER_NOTES.md" ] || die "no APPLE_ID env and no $NOTARY/APPLE_DEVELOPER_NOTES.md"
+    [ -f "$NOTARY/APPLE_DEVELOPER_NOTES.md" ] || die "no APPLE_ID env, no Keychain item, and no $NOTARY/APPLE_DEVELOPER_NOTES.md"
     APPLE_ID="$(grep -iE 'Apple ID \(notarization\)' "$NOTARY/APPLE_DEVELOPER_NOTES.md" | grep -oE '`[^`]+`' | tr -d '`' | head -1)"
     APPLE_APP_SPECIFIC_PASSWORD="$(grep -iE 'App-specific password' "$NOTARY/APPLE_DEVELOPER_NOTES.md" | grep -oE '`[^`]+`' | tr -d '`' | head -1)"
   fi
