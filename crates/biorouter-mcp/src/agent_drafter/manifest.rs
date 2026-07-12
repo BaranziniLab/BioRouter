@@ -143,6 +143,19 @@ pub struct UiCapability {
     /// is denied and the agent is told so.
     #[serde(default)]
     pub allow_html: bool,
+    /// Allow app→agent signals to *autonomously start a turn* (autorun, design
+    /// §3.5/§3.7).
+    ///
+    /// **Default: `false`** — the same deny-by-default posture as `allow_html`,
+    /// and for a stronger reason: a signal-triggered turn spends the user's
+    /// provider quota without a human in the loop, which on commercial or
+    /// institutional providers is real money. `allow_signals` only lets the agent
+    /// *listen*; this flag lets a signal *act*. It is user-granted only (the agent
+    /// can never self-grant), a signal must additionally opt in via its
+    /// [`SignalDecl::autorun`] flag, and the server enforces per-minute/per-session
+    /// budgets. Off ⇒ every signal stays queue-only.
+    #[serde(default)]
+    pub allow_autorun: bool,
     /// Cap on simultaneously mounted agent panels (oldest evicted past this).
     #[serde(default = "default_max_panels")]
     pub max_panels: usize,
@@ -169,6 +182,9 @@ impl Default for UiCapability {
             // Off by default even though every sibling defaults on — see the
             // field docs: raw HTML is an XSS surface, so it is opt-in.
             allow_html: false,
+            // Off by default: autonomous, quota-spending turns are user-granted
+            // only (see the field docs).
+            allow_autorun: false,
             max_panels: default_max_panels(),
             ask_timeout_s: default_ask_timeout_s(),
         }
@@ -630,6 +646,14 @@ pub struct SignalDecl {
     /// coalescing / rate cap).
     #[serde(default = "default_coalesce_ms")]
     pub coalesce_ms: u64,
+    /// Whether this signal may *start a turn* on its own (autorun, design §3.5).
+    ///
+    /// **Default: `false`.** A signal must explicitly opt in to be turn-triggering,
+    /// and even then autorun only fires when the app also holds the user-granted
+    /// [`UiCapability::allow_autorun`] and the server's autorun budgets hold.
+    /// Absent/false ⇒ the signal is queue-only (context for the next turn).
+    #[serde(default)]
+    pub autorun: bool,
 }
 
 impl Default for SignalDecl {
@@ -638,6 +662,7 @@ impl Default for SignalDecl {
             name: String::new(),
             payload: None,
             coalesce_ms: default_coalesce_ms(),
+            autorun: false,
         }
     }
 }

@@ -2098,6 +2098,29 @@ pub struct NotifyParams {
     pub timeout_ms: Option<u64>,
 }
 
+/// One `ui_suggest` chip: a short label plus an optional prompt sent on click.
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+#[schemars(inline)]
+pub struct SuggestChip {
+    /// Short button label (≤80 chars).
+    pub label: String,
+    /// Prompt sent when the chip is tapped (≤500 chars). Omit it to hand the
+    /// click to the app's own `onCommand` listener as a synthetic `suggest`
+    /// command carrying the label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct SuggestParams {
+    /// Up to five suggestion chips to show as a dismissible row.
+    pub chips: Vec<SuggestChip>,
+    /// Where to mount the row (e.g. `@region:results`). Omit for the docked
+    /// suggestion host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct StateParams {
     /// Keys to set/overwrite in the app's shared state document (merged at the root).
@@ -2495,6 +2518,7 @@ impl AppControlServer {
                 "ask": self.cap.allow_ask,
                 "html": self.cap.allow_html,
                 "signals": self.cap.allow_signals,
+                "autorun": self.cap.allow_autorun,
                 "maxPanels": self.cap.max_panels,
             },
         });
@@ -2840,6 +2864,52 @@ impl AppControlServer {
             "timeoutMs": p.timeout_ms.unwrap_or(4000),
         }))?;
         ok_text("Notification shown.")
+    }
+
+    #[tool(
+        name = "ui_suggest",
+        description = "Offer up to five non-blocking suggestion chips — next steps the user can tap \
+                       to send (or ignore). Unlike `ui_ask`, this never blocks the turn: it renders \
+                       a lightweight 'you might want to…' rail the user can dismiss. Each chip is a \
+                       short label plus an optional prompt sent on click (omit the prompt to hand \
+                       the click to the app's own code). Easy to invoke, easy to ignore."
+    )]
+    pub async fn ui_suggest(
+        &self,
+        Parameters(p): Parameters<SuggestParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if p.chips.is_empty() {
+            return Err(invalid("\"chips\" must contain at least one suggestion"));
+        }
+        if p.chips.len() > 5 {
+            return Err(invalid("\"chips\" is capped at 5 suggestions"));
+        }
+        for c in &p.chips {
+            if c.label.trim().is_empty() {
+                return Err(invalid("each chip \"label\" must not be empty"));
+            }
+            if c.label.chars().count() > 80 {
+                return Err(invalid(
+                    "each chip \"label\" must be 80 characters or fewer",
+                ));
+            }
+            if let Some(prompt) = &c.prompt {
+                if prompt.chars().count() > 500 {
+                    return Err(invalid(
+                        "each chip \"prompt\" must be 500 characters or fewer",
+                    ));
+                }
+            }
+        }
+        let mut frame = json!({
+            "cmd": "suggest",
+            "chips": serde_json::to_value(&p.chips).unwrap_or_else(|_| json!([])),
+        });
+        if let Some(target) = p.target.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            frame["target"] = json!(target);
+        }
+        self.bridge.emit(frame)?;
+        ok_text(format!("Offered {} suggestion chip(s).", p.chips.len()))
     }
 
     #[tool(
@@ -3937,6 +4007,113 @@ mod tests {
             .collect();
         let e = vw(&json!({"t":"col","children":children}), &gctx()).unwrap_err();
         assert!(e.contains("exceeds"), "{e}");
+    }
+
+    // ── ui_suggest (SDK v2 §3.5, mixed initiative) ──────────────────────────
+
+    #[tokio::test]
+    async fn suggest_emits_a_ui_frame_with_chips() {
+        let (s, mut rx) = server();
+        let r = s
+            .ui_suggest(Parameters(SuggestParams {
+                chips: vec![
+                    SuggestChip {
+                        label: "Show KM curve".into(),
+                        prompt: Some("Plot the Kaplan-Meier survival curve".into()),
+                    },
+                    SuggestChip {
+                        label: "Just this label".into(),
+                        prompt: None,
+                    },
+                ],
+                target: Some("@region:results".into()),
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&r).contains("2"));
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd["type"], "ui");
+        assert_eq!(cmd["cmd"], "suggest");
+        assert_eq!(cmd["target"], "@region:results");
+        let chips = cmd["chips"].as_array().unwrap();
+        assert_eq!(chips.len(), 2);
+        assert_eq!(chips[0]["label"], "Show KM curve");
+        assert_eq!(chips[0]["prompt"], "Plot the Kaplan-Meier survival curve");
+        // A promptless chip omits the field (SDK hands the click to onCommand).
+        assert_eq!(chips[1]["label"], "Just this label");
+        assert!(chips[1].get("prompt").is_none());
+    }
+
+    #[tokio::test]
+    async fn suggest_rejects_empty_chip_list() {
+        let (s, mut rx) = server();
+        let err = s
+            .ui_suggest(Parameters(SuggestParams {
+                chips: vec![],
+                target: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("at least one"));
+        assert!(rx.try_recv().is_err(), "no frame on rejection");
+    }
+
+    #[tokio::test]
+    async fn suggest_caps_at_five_chips() {
+        let (s, mut rx) = server();
+        let chips = (0..6)
+            .map(|i| SuggestChip {
+                label: format!("chip {i}"),
+                prompt: None,
+            })
+            .collect();
+        let err = s
+            .ui_suggest(Parameters(SuggestParams {
+                chips,
+                target: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(err.message.contains("5"));
+        assert!(rx.try_recv().is_err(), "no frame on rejection");
+    }
+
+    #[tokio::test]
+    async fn suggest_rejects_empty_and_overlong_fields() {
+        let (s, _rx) = server();
+        // Empty label.
+        assert!(s
+            .ui_suggest(Parameters(SuggestParams {
+                chips: vec![SuggestChip {
+                    label: "   ".into(),
+                    prompt: None
+                }],
+                target: None,
+            }))
+            .await
+            .is_err());
+        // Overlong label (>80).
+        assert!(s
+            .ui_suggest(Parameters(SuggestParams {
+                chips: vec![SuggestChip {
+                    label: "x".repeat(81),
+                    prompt: None
+                }],
+                target: None,
+            }))
+            .await
+            .is_err());
+        // Overlong prompt (>500).
+        assert!(s
+            .ui_suggest(Parameters(SuggestParams {
+                chips: vec![SuggestChip {
+                    label: "ok".into(),
+                    prompt: Some("x".repeat(501))
+                }],
+                target: None,
+            }))
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -5067,6 +5244,7 @@ mod tests {
                 name: "node_selected".into(),
                 payload: None,
                 coalesce_ms: 250,
+                ..Default::default()
             }],
             components: vec![ComponentDecl {
                 name: "pathway_map".into(),
@@ -5742,11 +5920,13 @@ mod tests {
                     name: "tick".into(),
                     payload: Some(num_obj),
                     coalesce_ms: 100,
+                    ..Default::default()
                 },
                 SignalDecl {
                     name: "raw".into(),
                     payload: None,
                     coalesce_ms: 500,
+                    ..Default::default()
                 },
             ],
             ..Default::default()

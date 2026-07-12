@@ -3019,7 +3019,8 @@ br.run("hello", "#missing");
         }
         let index = std::fs::read_to_string(out.path().join("index.html")).unwrap();
         assert!(index.contains("dist/app.js"));
-        assert!(index.contains("BIOROUTER_APP_CONFIG"));
+        // Config is the non-executable JSON island (CSP parity with served apps).
+        assert!(index.contains("<script type=\"application/json\" id=\"biorouter-app-config\">"));
 
         // The exported manifest is what registers the app with a daemon.
         let m: Manifest = serde_json::from_str(

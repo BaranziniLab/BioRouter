@@ -369,12 +369,10 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     // (6d) Prop-fed HTML sink: component props are agent-controlled (prompt-
     // injectable). Feeding them straight into innerHTML/insertAdjacentHTML injects
     // markup into the app's own origin.
-    let prop_fed_sink = strip_js_comments(&main)
-        .split(|c| c == ';' || c == '\n')
-        .any(|stmt| {
-            (stmt.contains("innerHTML") || stmt.contains("insertAdjacentHTML"))
-                && stmt.contains("props.")
-        });
+    let prop_fed_sink = strip_js_comments(&main).split([';', '\n']).any(|stmt| {
+        (stmt.contains("innerHTML") || stmt.contains("insertAdjacentHTML"))
+            && stmt.contains("props.")
+    });
     if prop_fed_sink {
         warning(&mut out, "src/main.ts feeds component `props` into innerHTML/insertAdjacentHTML. Component props are agent-controlled (prompt-injectable) — render them via textContent or sanitize the HTML instead of injecting markup into the app's own origin.");
     }
@@ -478,9 +476,9 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     // whose argument opens with a template literal, or a line splicing string
     // fragments together (`" +` / `+ "`).
     if !declared_actions.is_empty() {
-        let concat_into_run = main.lines().any(|line| match line.find(".run(") {
-            Some(pos) => {
-                let arg = line[pos + ".run(".len()..].trim_start();
+        let concat_into_run = main.lines().any(|line| match line.split_once(".run(") {
+            Some((_, after)) => {
+                let arg = after.trim_start();
                 arg.starts_with('`') || line.contains("\" +") || line.contains("+ \"")
             }
             None => false,
@@ -555,7 +553,10 @@ fn registered_components(src: &str) -> Vec<Option<String>> {
         if !boundary_ok {
             continue;
         }
-        let rest = src[idx + needle.len()..].trim_start();
+        // `idx` is a match start, so `idx + needle.len()` is always a valid char
+        // boundary; `.get(..)` keeps clippy's `string_slice` lint happy without an
+        // indexing panic risk.
+        let rest = src.get(idx + needle.len()..).unwrap_or("").trim_start();
         let mut chars = rest.chars();
         match chars.next() {
             Some(q) if q == '"' || q == '\'' => match chars.as_str().split_once(q) {
@@ -587,7 +588,10 @@ fn literal_call_args(src: &str, object: &str, method: &str) -> Vec<Option<String
         if !boundary_ok {
             continue;
         }
-        let rest = src[idx + needle.len()..].trim_start();
+        // `idx` is a match start, so `idx + needle.len()` is always a valid char
+        // boundary; `.get(..)` keeps clippy's `string_slice` lint happy without an
+        // indexing panic risk.
+        let rest = src.get(idx + needle.len()..).unwrap_or("").trim_start();
         let mut chars = rest.chars();
         match chars.next() {
             Some(q) if q == '"' || q == '\'' => match chars.as_str().split_once(q) {

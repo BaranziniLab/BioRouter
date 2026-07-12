@@ -76,6 +76,7 @@ Agent Drafter–specific blocks are shown):
     "capabilities": {
       "ui": { "enabled": true, "allow_theme": true, "allow_layout": true,
               "allow_ask": true, "allow_signals": true, "allow_html": false,
+              "allow_autorun": false,   // signal-triggered turns; user-granted only
               "max_panels": 12, "ask_timeout_s": 300 },
       "files": { "entries": [{ "name": "data", "local_dir": "/abs/dir",
                                "mode": "ro", "out_dir": false }],
@@ -133,7 +134,8 @@ Agent Drafter–specific blocks are shown):
                     "required": ["id"] } }
     ],
     "signals": [                     // app→agent notifications (ui_subscribe)
-      { "name": "node_selected", "payload": { "type": "object" }, "coalesce_ms": 250 }
+      { "name": "node_selected", "payload": { "type": "object" }, "coalesce_ms": 250,
+        "autorun": false }           // opt in (true) to let this signal start a turn (needs allow_autorun)
     ],
     "components": [                  // custom catalog kinds the app registers
       { "name": "pathway_map", "props": { "type": "object" } }
@@ -148,7 +150,8 @@ Agent Drafter–specific blocks are shown):
 
 **Field notes (from `manifest.rs`):**
 
-- `capabilities.ui` is **on by default** (all sub-switches default on except `allow_html`, which is off). `max_panels` default 12; `ask_timeout_s` default 300.
+- `capabilities.ui` is **on by default** (all sub-switches default on except `allow_html` and `allow_autorun`, which are off). `max_panels` default 12; `ask_timeout_s` default 300.
+- `allow_signals` lets the agent **listen** to declared `surface.signals`; it does **not** let a signal act. `allow_autorun` (**default off, user-granted only** — the agent can never self-grant) additionally lets a signal *start a turn*, and only when that signal opts in via `surface.signals[].autorun: true` and the server's autorun budgets hold (6/min, 60/session). Without it every signal is **queue-only** (context for the next turn).
 - `DataSource.ids` scopes a `kind:"knowledge"` source to specific KB id(s). Empty `ids` grants **nothing** by itself — the only exception is a back-compat implicit single grant of the agent's configured `knowledge_base`. A KB id not enumerated here is denied even if it exists (§6). `read_only` defaults `true`; setting it `false` grants write (`br.kb.ingest`).
 - `ModelRoute` (at `orchestration.routes`) has optional `provider` + `model`; an absent field inherits the session's current value. Routes resolve against the *user's* configured providers only (apps never carry keys) and are subject to the provider-class rule (§6).
 - **Skills scoping is advisory** — the named skills are surfaced to the agent, but BioRouter's skill enable/disable is global, so true per-app skill isolation is a follow-up.
@@ -396,14 +399,11 @@ the agent can target them later with `ui_patch`.
 | `ui_html` | Render **server-sanitized** rich HTML (≤64 KB). Gated by `allow_html` (**default off**). Scripts/styles/forms/iframes/`on*`/unsafe-URL are stripped fail-closed in `control.rs`. |
 | `ui_figure` | Render a publication-grade Auto Visualiser figure — `tool` (e.g. `render_volcano`, `render_kaplan_meier`, `render_dashboard`) + that tool's `args` — into a sandboxed iframe. |
 | `ui_ask` | Render a form and **block the tool call** until the user submits; the result *is* their answers. Gated by `allow_ask`; `fields` ≤24; times out per `ask_timeout_s`. |
+| `ui_suggest` | Offer up to 5 **non-blocking** suggestion chips (next steps the user can tap or ignore) — `chips:[{label ≤80, prompt? ≤500}]`, optional `target`. Core `ui` (no capability). Unlike `ui_ask` it never blocks the turn. |
 | `app_call` | Invoke a declared `surface.actions` verb; `args` validated against its schema. Blocks up to 60 s for the app's registered handler. |
 | `emit_result` | Deliver a structured result for a `br.call({outputSchema})` the app is awaiting; validated against the output schema; sends an `output` frame. |
 | `ui_subscribe` | Replace the set of subscribed `surface.signals`. Gated by `allow_signals`. |
 | `consult` | Ask a declared worker profile (§3.10) to independently answer a self-contained sub-question and return its answer. **Main agent only, depth 1**; armed only when the app declares ≥1 valid profile (else a friendly no-op). Blocks up to `CONSULT_TIMEOUT_S` (120 s). |
-
-> **`ui_suggest` — Partial.** The SDK renders `suggest` frames (dismissible
-> chips, capped at 5, Escape/× to dismiss, click → `prompt`), but there is **no
-> `ui_suggest` MCP tool** in this build — only `ui_ask` (blocking) is agent-callable.
 
 ### 4.1 Widget catalog (node `t` values)
 
@@ -528,11 +528,18 @@ The system prompt states that everything between `<app-data>` … `</app-data>` 
 it. Only text outside the markers can change agent behavior. Text-form `br.call`
 (free `text`) is passed through directly and is *not* enveloped.
 
-> **`ui_error` — Partial.** The SDK produces `ui_error` frames (render/action
-> failures, rate-limited to 3 per rolling 30 s with a `droppedCount`), but
-> `biorouter-server` has **no handler** for them in this build — they parse-fail
-> and are dropped, so the design's agent-visible error-feedback loop is
-> client-instrumented only.
+> **`ui_error` — consumed server-side.** The SDK produces `ui_error` frames
+> (render/action failures, rate-limited to 3 per rolling 30 s with a
+> `droppedCount`), and `biorouter-server` now handles them: each is buffered
+> per-connection (cap 5) and delivered to the model under the **artifact-repair
+> grace discipline** (`should_auto_repair`, a server port of the frontend's
+> `shouldAutoRepairArtifact`). When the next turn starts, the buffered errors ride
+> in front of its user message as an `[app ui errors]` `<app-data>` envelope. If an
+> error arrives within 15 s of the last turn ending, it **auto-starts one repair
+> turn** ("Fix the rendering problem you just caused if it was yours; otherwise
+> briefly note it.") — capped at once per 60 s. Errors that surface long after the
+> agent went idle just wait for the next user-initiated turn (they are treated as
+> user-managed UI, not the agent's mess to silently resume and fix).
 
 ---
 
@@ -594,8 +601,10 @@ start (they stay in the manifest but re-reject at call time).
 | `max_panels` | 12 (default) | simultaneously mounted agent panels |
 | kb_result | ~1 MB | one `kb_result` payload |
 | queued signals / frames | 10 / 32 | per-connection buffers (oldest dropped) |
+| buffered `ui_error`s | 5 | per-connection buffer (oldest dropped) |
 | default `max_turns` | 24 | per-message tool loop |
 | `ui_error` | 3 / 30 s | client-side rate limit (`droppedCount`) |
+| autorun budget | 6 / min, 60 / session | signal-triggered autonomous turns (server-side) |
 
 ---
 
@@ -664,12 +673,17 @@ recipient's store, starts the daemon **headlessly** (via `BIOROUTER_PORT`, not
 endpoint is left unset so the SDK derives it from the page origin; `.vault/` and
 `.git/` are always excluded.
 
-**First-run consent.** The design (§3.9) calls for a single first-run screen that
-re-consents the app's capability requests and enumerates the payload to install.
-What ships is the machine-readable `export.json` audit manifest and the launcher
-install flow; `required_credentials` / `runtime_requirements` are currently empty
-(they can't be enumerated without the BAAM registry), and the interactive
-re-consent UI is not part of this build.
+**First-run consent.** A full-mode export's launcher **does** prompt for consent
+before installing its payload: `install_payload()` (in `biorouter-launch.sh`,
+generated by `render.rs`) prints the knowledge bases and skills it is about to
+install, then requires an interactive `y/N` confirmation — set
+`BIOROUTER_EXPORT_YES=1` to skip it for CI/headless runs, and a marker file makes
+re-runs no-ops. Launcher-mode exports carry no payload, so the step is a clean
+no-op there. What is **not** yet shipped is the richer in-SDK capability
+re-consent screen the design (§3.9) envisions (enumerating capability requests
+and driving credential setup); `export.json` is the machine-readable audit
+manifest today, and `required_credentials` / `runtime_requirements` are currently
+empty (they can't be enumerated without the BAAM registry).
 
 ---
 

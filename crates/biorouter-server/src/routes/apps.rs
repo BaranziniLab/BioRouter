@@ -18,6 +18,7 @@
 
 use std::collections::VecDeque;
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::{
     extract::{
@@ -50,7 +51,7 @@ use biorouter::session::SessionType;
 use biorouter_mcp::agent_drafter::control::{
     ConsultRequest, StateWriteError, UiBridge, APP_PAYLOAD_MAX, CATALOG_VERSION,
 };
-use biorouter_mcp::agent_drafter::manifest::PiiMode;
+use biorouter_mcp::agent_drafter::manifest::{PiiMode, SignalDecl, UiCapability};
 use biorouter_mcp::agent_drafter::store::{AgentConfig, ArtifactStore, Manifest};
 use biorouter_mcp::agent_drafter::{
     bundle_is_stale, default_root, export_scaffold, rebuild_and_stamp,
@@ -65,6 +66,45 @@ const DEFAULT_MAX_TURNS: u32 = 24;
 
 fn store() -> ArtifactStore {
     ArtifactStore::new(default_root())
+}
+
+/// Strict Content-Security-Policy for served (and exported) apps.
+///
+/// SDK v2 ships app code as an external `dist/app.js` and the app config as a
+/// non-executable `<script type="application/json" id="biorouter-app-config">`
+/// island (see `render::app_config_script`), so `script-src 'self'` — no
+/// `unsafe-inline` — holds. That is what makes CSP a real defense against the
+/// injection classes v2 introduces (agent-emitted `html` nodes, data bindings);
+/// `unsafe-inline` would make the policy inert against exactly those. Mirrors the
+/// app-proxy's existing `script-src 'self'` (`mcp_app_proxy.rs`).
+///
+/// Directive rationale:
+/// - `default-src 'none'` — deny-by-default; every capability is opted in below.
+/// - `script-src 'self'` — only the same-origin `dist/app.js` bundle.
+/// - `style-src 'self' 'unsafe-inline'` — the injected `<style id="biorouter-theme">`
+///   block and the SDK's runtime inline element styles.
+/// - `img-src`/`font-src 'self' data:` — inline (base64) images/fonts the SDK and
+///   figures use.
+/// - `connect-src 'self' ws://localhost:* ws://127.0.0.1:*` — the same-origin agent
+///   WebSocket. `'self'` covers same-origin ws in modern browsers, but the explicit
+///   loopback `ws:` sources are belt-and-suspenders across engines and the desktop
+///   app's ephemeral loopback port.
+/// - `frame-src 'self' data:` — autovis `ui://` figures render as sandboxed `srcdoc`
+///   iframes (exempt from `frame-src`, but `'self' data:` is harmless and covers
+///   `data:` frames).
+/// - `form-action 'none'`, `base-uri 'self'`, `frame-ancestors 'self'` — no form
+///   posts, the `<base href="/apps/<id>/">` stays same-origin, framed same-origin only.
+const APP_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; frame-src 'self' data:; form-action 'none'; base-uri 'self'; frame-ancestors 'self'";
+
+/// Attach [`APP_CSP`] to a served-app response. Applied by `serve_index` and the
+/// `dist`/`assets` file responses so every byte a browser loads for a live app
+/// carries the strict policy (the NOT_FOUND paths deliberately omit it).
+fn with_app_csp(mut resp: Response) -> Response {
+    resp.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        header::HeaderValue::from_static(APP_CSP),
+    );
+    resp
 }
 
 fn mime_for(path: &str) -> &'static str {
@@ -132,14 +172,16 @@ async fn serve_index(Path(id): Path<String>) -> Response {
         None,
         Some(&ws_token),
     );
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
+    with_app_csp(([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response())
 }
 
 /// GET /apps/{id}/dist/{*path} and /apps/{id}/assets/{*path} — serve a file.
 async fn serve_file(Path((id, sub)): Path<(String, String)>, prefix: &str) -> Response {
     let rel = format!("{prefix}/{sub}");
     match store().read_bytes(&id, &rel) {
-        Ok(bytes) => ([(header::CONTENT_TYPE, mime_for(&rel))], bytes).into_response(),
+        Ok(bytes) => {
+            with_app_csp(([(header::CONTENT_TYPE, mime_for(&rel))], bytes).into_response())
+        }
         Err(_) => (StatusCode::NOT_FOUND, "not found").into_response(),
     }
 }
@@ -347,6 +389,23 @@ enum ClientFrame {
         name: String,
         #[serde(default)]
         payload: serde_json::Value,
+    },
+    /// SDK v2 Phase 6.3: a catalog render / action-handler error the app hit while
+    /// applying an agent-emitted frame (rate-limited client-side). Buffered per
+    /// connection (cap 5) and delivered to the model under the artifact-repair grace
+    /// discipline: within the grace window of the last turn it may trigger ONE
+    /// budgeted repair turn; otherwise it rides the next user-initiated turn as
+    /// context. `where` is the sink that failed, `instance` the offending node id.
+    #[serde(rename = "ui_error")]
+    UiError {
+        #[serde(rename = "where", default)]
+        location: String,
+        #[serde(default)]
+        instance: Option<String>,
+        #[serde(default)]
+        message: String,
+        #[serde(rename = "droppedCount", default)]
+        dropped_count: Option<u64>,
     },
     /// BRSDK Pillar 1 (typed request): the app asks the agent to handle a typed
     /// request — a declared action `name` + `args`, or free `text` — and starts a
@@ -2146,29 +2205,192 @@ fn build_turn_text(base: String, signals: &mut SignalQueue) -> String {
     }
 }
 
-/// Validate an inbound `signal` frame and enqueue it (queue-only). On validation
-/// failure the app is warned via a `notify` frame and the signal is dropped.
-/// Returns `false` only when the socket send failed (a dead connection).
+/// Cap on app→agent UI errors buffered per connection (SDK v2 Phase 6.3). The SDK
+/// already rate-limits its `ui_error` frames, so a small cap suffices; past it the
+/// oldest is dropped so a broken component can't grow the buffer without bound.
+const MAX_QUEUED_UI_ERRORS: usize = 5;
+
+/// Grace window after a turn ends during which a fresh `ui_error` may auto-start a
+/// repair turn. Mirrors the frontend `ARTIFACT_REPAIR_ACTIVE_GRACE_MS` (15 s) so
+/// an error surfacing well after the agent went idle is treated as user-managed
+/// UI, not the agent's mess to silently resume and fix.
+const UI_ERROR_REPAIR_GRACE: Duration = Duration::from_secs(15);
+/// Minimum spacing between auto-repair turns (spends the user's provider quota).
+const UI_ERROR_REPAIR_BUDGET: Duration = Duration::from_secs(60);
+
+/// The instruction handed to the agent when a `ui_error` auto-starts a repair turn.
+/// The offending errors ride in front of it as an `[app ui errors]` `<app-data>`
+/// envelope (see [`prepend_ui_errors`]).
+const UI_ERROR_REPAIR_MESSAGE: &str =
+    "Fix the rendering problem you just caused if it was yours; otherwise briefly note it.";
+
+/// Per-connection queue of validated app→agent UI errors awaiting delivery.
+#[derive(Default)]
+struct UiErrorQueue {
+    items: VecDeque<serde_json::Value>,
+}
+
+impl UiErrorQueue {
+    /// Buffer one structured UI error, dropping the oldest past the cap.
+    fn push(&mut self, err: serde_json::Value) {
+        self.items.push_back(err);
+        while self.items.len() > MAX_QUEUED_UI_ERRORS {
+            self.items.pop_front();
+        }
+    }
+}
+
+/// Build the structured value stored for a `ui_error` frame (absent optionals are
+/// omitted, mirroring the SDK's `JSON.stringify` that drops `undefined`).
+fn ui_error_value(
+    location: &str,
+    instance: &Option<String>,
+    message: &str,
+    dropped_count: Option<u64>,
+) -> serde_json::Value {
+    let mut v = json!({ "where": location, "message": message });
+    if let Some(inst) = instance.as_deref().filter(|s| !s.is_empty()) {
+        v["instance"] = json!(inst);
+    }
+    if let Some(n) = dropped_count.filter(|n| *n > 0) {
+        v["droppedCount"] = json!(n);
+    }
+    v
+}
+
+/// Prepend any buffered UI errors to a turn's user message as an UNTRUSTED-DATA
+/// envelope (`[app ui errors]`), draining the queue. Parallel to
+/// [`build_turn_text`] for signals; an empty queue leaves `base` unchanged.
+fn prepend_ui_errors(base: String, ui_errors: &mut UiErrorQueue) -> String {
+    if ui_errors.items.is_empty() {
+        return base;
+    }
+    let arr: Vec<serde_json::Value> = ui_errors.items.drain(..).collect();
+    let envelope = app_data_envelope("app ui errors", &serde_json::Value::Array(arr));
+    if base.is_empty() {
+        envelope
+    } else {
+        format!("{envelope}\n\n{base}")
+    }
+}
+
+/// Whether a `ui_error` arriving between turns should auto-start a repair turn.
+///
+/// Ports the frontend `shouldAutoRepairArtifact` grace semantics to the server
+/// (design plan 6.3): only when the last turn ended within [`UI_ERROR_REPAIR_GRACE`]
+/// (so the error is plausibly the agent's own doing, not the user reopening/editing
+/// finished UI), and only once per [`UI_ERROR_REPAIR_BUDGET`] window. A connection
+/// that has never run a turn (`last_turn_ended` = None) never auto-repairs — the
+/// error is from an initial/idle render. Pure, so it is unit-testable.
+fn should_auto_repair(
+    now: Instant,
+    last_turn_ended: Option<Instant>,
+    last_repair: Option<Instant>,
+) -> bool {
+    let within_grace = match last_turn_ended {
+        Some(ended) => now.saturating_duration_since(ended) < UI_ERROR_REPAIR_GRACE,
+        None => false,
+    };
+    if !within_grace {
+        return false;
+    }
+    match last_repair {
+        Some(repaired) => now.saturating_duration_since(repaired) >= UI_ERROR_REPAIR_BUDGET,
+        None => true,
+    }
+}
+
+/// Outcome of an inbound `signal` frame.
+struct SignalHandled {
+    /// `false` only when a socket send failed (a dead connection).
+    socket_ok: bool,
+    /// `true` when the signal validated and was enqueued — so it is eligible to be
+    /// considered for autorun. A rejected (invalid) signal is never enqueued and
+    /// never autoruns.
+    enqueued: bool,
+}
+
+/// Validate an inbound `signal` frame and enqueue it (queue-only baseline). On
+/// validation failure the app is warned via a `notify` frame and the signal is
+/// dropped. Autorun (if any) is decided by the caller on the returned outcome.
 async fn handle_signal(
     socket_tx: &mut WsSink,
     ui_bridge: &UiBridge,
     signals: &mut SignalQueue,
     name: String,
     payload: serde_json::Value,
-) -> bool {
+) -> SignalHandled {
     match ui_bridge.validate_signal(&name, &payload) {
         Ok(()) => {
             signals.push(name, payload);
-            true
+            SignalHandled {
+                socket_ok: true,
+                enqueued: true,
+            }
         }
         Err(msg) => {
-            send_json(
+            let socket_ok = send_json(
                 socket_tx,
                 json!({"type":"ui","cmd":"notify","level":"warn","message": msg,"v":1}),
             )
-            .await
+            .await;
+            SignalHandled {
+                socket_ok,
+                enqueued: false,
+            }
         }
     }
+}
+
+/// Autorun budgets (design §3.5/§3.7): signal-triggered autonomous turns spend the
+/// user's provider quota, so they are bounded by a per-minute sliding window plus a
+/// hard per-session total. Both are deliberately conservative.
+const AUTORUN_PER_MINUTE_MAX: usize = 6;
+const AUTORUN_PER_SESSION_MAX: usize = 60;
+
+/// Sliding-window + session counters for signal-triggered autorun turns.
+#[derive(Default)]
+struct AutorunBudget {
+    /// Start-times of autorun turns within the last minute.
+    recent: VecDeque<Instant>,
+    /// Autorun turns started this session (never decremented).
+    session_total: usize,
+}
+
+impl AutorunBudget {
+    /// Whether another autorun turn may start `now`, pruning the minute window
+    /// first. Does NOT consume the budget — call [`AutorunBudget::record`] when a
+    /// turn actually starts.
+    fn has_room(&mut self, now: Instant) -> bool {
+        while let Some(&front) = self.recent.front() {
+            if now.saturating_duration_since(front) >= Duration::from_secs(60) {
+                self.recent.pop_front();
+            } else {
+                break;
+            }
+        }
+        self.recent.len() < AUTORUN_PER_MINUTE_MAX && self.session_total < AUTORUN_PER_SESSION_MAX
+    }
+
+    /// Record that an autorun turn started `now`.
+    fn record(&mut self, now: Instant) {
+        self.recent.push_back(now);
+        self.session_total += 1;
+    }
+}
+
+/// Whether a validated app signal may autonomously start a turn (autorun). Pure:
+/// the **user** must have granted `allow_autorun` (the agent can never self-grant),
+/// the signal must opt in via its declaration's `autorun` flag, and the budget must
+/// have room. Any false ⇒ the signal stays queue-only. `budget_ok` is
+/// [`AutorunBudget::has_room`] as evaluated by the caller.
+fn autorun_eligible(cap: &UiCapability, decl: &SignalDecl, budget_ok: bool) -> bool {
+    cap.allow_autorun && decl.autorun && budget_ok
+}
+
+/// The declared signal (if any) named `name`, for the autorun opt-in check.
+fn signal_decl_for<'a>(manifest: &'a Manifest, name: &str) -> Option<&'a SignalDecl> {
+    manifest.surface.signals.iter().find(|s| s.name == name)
 }
 
 /// Cap on client frames buffered while a turn is running. A well-behaved app
@@ -2232,6 +2454,10 @@ fn handle_midturn_frame(
         // may need to send a notify on rejection), so one reaching this sync
         // helper is stray. Never queue it as a new turn.
         ClientFrame::Signal { .. } => {}
+        // `ui_error` is buffered inline on the socket-owning task (both loop
+        // states); one reaching this sync helper is stray. Never queue it as a
+        // new turn (the fall-through `other` arm would).
+        ClientFrame::UiError { .. } => {}
         ClientFrame::Cancel => {
             cancel.cancel();
             // A parked `ui_ask` (and any parked `app_call`) must not survive the
@@ -2419,6 +2645,21 @@ async fn handle_agent_socket(
     // Validated app→agent signals awaiting the next turn (Pillar 1). Signals are
     // queue-only — they carry into the next turn as context, never trigger one.
     let mut pending_signals = SignalQueue::default();
+    // Buffered app→agent UI errors (Phase 6.3). Delivered under the artifact-repair
+    // grace discipline: `last_turn_ended` gates the 15 s repair-eligibility window
+    // and `last_repair` enforces the once-per-60 s budget.
+    let mut recent_ui_errors = UiErrorQueue::default();
+    let mut last_turn_ended: Option<Instant> = None;
+    let mut last_repair: Option<Instant> = None;
+    // Autorun (design §3.5): the app's UI capability (for `allow_autorun`) and the
+    // per-connection autorun budget. A signal starts a turn only when the user
+    // granted autorun, the signal opts in, and the budget holds.
+    let ui_cap: UiCapability = manifest
+        .agent
+        .as_ref()
+        .map(|a| a.capabilities.ui.clone())
+        .unwrap_or_default();
+    let mut autorun_budget = AutorunBudget::default();
 
     loop {
         // Mop up any structured-output request a previous turn armed but that an
@@ -2465,18 +2706,77 @@ async fn handle_agent_socket(
                                     );
                                 }
                                 // Signals are validated + queued for the next turn.
+                                // A validated, autorun-opted signal MAY additionally
+                                // start a turn (design §3.5) — user-granted + budgeted.
                                 Ok(ClientFrame::Signal { name, payload }) => {
-                                    if !handle_signal(
+                                    let handled = handle_signal(
                                         &mut socket_tx,
                                         &ui_bridge,
                                         &mut pending_signals,
-                                        name,
+                                        name.clone(),
                                         payload,
                                     )
-                                    .await
-                                    {
+                                    .await;
+                                    if !handled.socket_ok {
                                         ui_bridge.detach(conn_token);
                                         return;
+                                    }
+                                    if handled.enqueued {
+                                        if let Some(decl) = signal_decl_for(&manifest, &name) {
+                                            let now = Instant::now();
+                                            if autorun_eligible(
+                                                &ui_cap,
+                                                decl,
+                                                autorun_budget.has_room(now),
+                                            ) {
+                                                autorun_budget.record(now);
+                                                // Presence: the user sees the
+                                                // autonomous turn start.
+                                                let _ = send_json(
+                                                    &mut socket_tx,
+                                                    json!({"type":"ui","cmd":"notify","level":"info","message": format!("autorun: {name}"),"v":1}),
+                                                )
+                                                .await;
+                                                // The queued signal (incl. this one)
+                                                // rides in front via build_turn_text.
+                                                break ClientFrame::Prompt {
+                                                    text: format!(
+                                                        "[autorun] triggered by app signal {name}"
+                                                    ),
+                                                    images: Vec::new(),
+                                                    agent: None,
+                                                };
+                                            }
+                                        }
+                                    }
+                                }
+                                // UI errors buffer (cap 5). Within the repair grace
+                                // window of the last turn, and under the once-per-60s
+                                // budget, one auto-starts a repair turn — otherwise it
+                                // rides the next user-initiated turn as context.
+                                Ok(ClientFrame::UiError {
+                                    location,
+                                    instance,
+                                    message,
+                                    dropped_count,
+                                }) => {
+                                    recent_ui_errors.push(ui_error_value(
+                                        &location,
+                                        &instance,
+                                        &message,
+                                        dropped_count,
+                                    ));
+                                    let now = Instant::now();
+                                    if should_auto_repair(now, last_turn_ended, last_repair) {
+                                        last_repair = Some(now);
+                                        // The buffered errors ride in front of this
+                                        // message via `prepend_ui_errors` when the turn
+                                        // builds its user text below.
+                                        break ClientFrame::Prompt {
+                                            text: UI_ERROR_REPAIR_MESSAGE.to_string(),
+                                            images: Vec::new(),
+                                            agent: None,
+                                        };
                                     }
                                 }
                                 Ok(ClientFrame::StateWrite {
@@ -2734,7 +3034,9 @@ async fn handle_agent_socket(
                 continue;
             }
             // Handled between turns (inner dispatch loop) / inline; stray here.
-            ClientFrame::AppResult { .. } | ClientFrame::Signal { .. } => continue,
+            ClientFrame::AppResult { .. }
+            | ClientFrame::Signal { .. }
+            | ClientFrame::UiError { .. } => continue,
         };
 
         // Resolve which agent runs this turn (design §3.8): the main agent, or a
@@ -2798,7 +3100,8 @@ async fn handle_agent_socket(
         // this turn's user message (Pillar 1) — MAIN turns only; a worker turn is a
         // scoped delegation and does not consume the app's pending signals.
         let prompt_text = if agent_stamp.is_none() {
-            build_turn_text(prompt_text, &mut pending_signals)
+            let with_signals = build_turn_text(prompt_text, &mut pending_signals);
+            prepend_ui_errors(with_signals, &mut recent_ui_errors)
         } else {
             prompt_text
         };
@@ -2983,6 +3286,8 @@ async fn handle_agent_socket(
                             }
                         }
                         Ok(ClientFrame::Signal { name, payload }) => {
+                            // Mid-turn signals stay queue-only — never autorun, never
+                            // interrupt the running turn.
                             if !handle_signal(
                                 &mut socket_tx,
                                 &ui_bridge,
@@ -2991,11 +3296,28 @@ async fn handle_agent_socket(
                                 payload,
                             )
                             .await
+                            .socket_ok
                             {
                                 cancel.cancel();
                                 ui_bridge.detach(conn_token);
                                 return;
                             }
+                        }
+                        // A UI error mid-turn is buffered only — it never interrupts
+                        // the running turn; it rides the next turn (or a between-turns
+                        // repair) as context.
+                        Ok(ClientFrame::UiError {
+                            location,
+                            instance,
+                            message,
+                            dropped_count,
+                        }) => {
+                            recent_ui_errors.push(ui_error_value(
+                                &location,
+                                &instance,
+                                &message,
+                                dropped_count,
+                            ));
                         }
                         // br.kb / br.model.status served mid-turn too (a KB read
                         // must not wait for the turn to finish). Replies flow
@@ -3169,6 +3491,13 @@ async fn handle_agent_socket(
         // SDK resolves the call with `{text}` on `done` — no `output` frame needed.
         // We just clear the armed request so it can't leak into a later turn.
         let _ = ui_bridge.take_pending_output();
+
+        // Mark the turn's end so a `ui_error` arriving within the grace window can
+        // auto-start a repair turn (Phase 6.3). MAIN turns only — a worker turn is a
+        // scoped delegation and does not own the app's UI-repair loop.
+        if agent_stamp.is_none() {
+            last_turn_ended = Some(Instant::now());
+        }
 
         if !errored && !send_json(&mut socket_tx, stamp_agent(json!({"type":"done"}), stamp)).await
         {
@@ -3671,6 +4000,60 @@ mod tests {
             PiiMode::Block,
         );
         assert!(matches!(out, PiiOutcome::Pass(_)));
+    }
+
+    // --- strict CSP on served apps (SDK v2 Phase 6.1) ---
+
+    #[test]
+    fn app_csp_policy_is_exact_and_strict() {
+        // Pinned verbatim so an accidental loosening (e.g. adding 'unsafe-inline'
+        // to script-src, which would make CSP inert against the html-node / data-
+        // binding injection classes v2 introduces) fails a test rather than shipping.
+        assert_eq!(
+            super::APP_CSP,
+            "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; connect-src 'self' ws://localhost:* ws://127.0.0.1:*; frame-src 'self' data:; form-action 'none'; base-uri 'self'; frame-ancestors 'self'"
+        );
+        // script-src is 'self' only — never 'unsafe-inline'.
+        assert!(super::APP_CSP.contains("script-src 'self';"));
+        assert!(!super::APP_CSP.contains("script-src 'self' 'unsafe-inline'"));
+        // The same-origin agent WebSocket must remain reachable.
+        assert!(super::APP_CSP.contains("connect-src 'self' ws://localhost:* ws://127.0.0.1:*"));
+        // Theme <style> block and runtime inline styles need style 'unsafe-inline'.
+        assert!(super::APP_CSP.contains("style-src 'self' 'unsafe-inline'"));
+    }
+
+    #[test]
+    fn serve_index_and_dist_responses_carry_the_app_csp() {
+        use axum::http::header;
+        use axum::response::IntoResponse;
+        // Exercise the exact response builders serve_index (HTML) and serve_file
+        // (dist/assets) use, asserting the header is present with the verbatim policy.
+        let html = super::with_app_csp(
+            (
+                [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+                "<html></html>",
+            )
+                .into_response(),
+        );
+        assert_eq!(
+            html.headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some(super::APP_CSP)
+        );
+        let dist = super::with_app_csp(
+            (
+                [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+                vec![1u8, 2, 3],
+            )
+                .into_response(),
+        );
+        assert_eq!(
+            dist.headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some(super::APP_CSP)
+        );
     }
 
     // --- data-source jail boundary (the security boundary of the data feature) ---
@@ -4623,6 +5006,200 @@ mod tests {
             !text.contains("dropped"),
             "no drop note when nothing was dropped: {text}"
         );
+    }
+
+    // --- ui_error feedback loop (SDK v2 Phase 6.3) ---
+
+    #[test]
+    fn ui_error_frame_parses_with_and_without_optionals() {
+        use super::ClientFrame;
+        let full = r#"{"type":"ui_error","where":"render:@region:results","instance":"n7","message":"boom","droppedCount":2}"#;
+        match serde_json::from_str::<ClientFrame>(full).unwrap() {
+            ClientFrame::UiError {
+                location,
+                instance,
+                message,
+                dropped_count,
+            } => {
+                assert_eq!(location, "render:@region:results");
+                assert_eq!(instance.as_deref(), Some("n7"));
+                assert_eq!(message, "boom");
+                assert_eq!(dropped_count, Some(2));
+            }
+            _ => panic!("expected UiError"),
+        }
+        // The SDK omits undefined instance / droppedCount.
+        let min = r#"{"type":"ui_error","where":"action:move","message":"nope"}"#;
+        match serde_json::from_str::<ClientFrame>(min).unwrap() {
+            ClientFrame::UiError {
+                location,
+                instance,
+                message,
+                dropped_count,
+            } => {
+                assert_eq!(location, "action:move");
+                assert!(instance.is_none());
+                assert_eq!(message, "nope");
+                assert!(dropped_count.is_none());
+            }
+            _ => panic!("expected UiError"),
+        }
+    }
+
+    #[test]
+    fn ui_error_value_omits_absent_or_empty_optionals() {
+        use super::ui_error_value;
+        let v = ui_error_value("render:x", &Some(String::new()), "m", Some(0));
+        assert_eq!(v["where"], "render:x");
+        assert_eq!(v["message"], "m");
+        assert!(v.get("instance").is_none(), "empty instance omitted");
+        assert!(v.get("droppedCount").is_none(), "zero droppedCount omitted");
+        let v2 = ui_error_value("render:x", &Some("n1".into()), "m", Some(3));
+        assert_eq!(v2["instance"], "n1");
+        assert_eq!(v2["droppedCount"], 3);
+    }
+
+    #[test]
+    fn ui_error_queue_caps_at_five_and_envelopes_on_drain() {
+        use super::{prepend_ui_errors, ui_error_value, UiErrorQueue, MAX_QUEUED_UI_ERRORS};
+        let mut q = UiErrorQueue::default();
+        for i in 0..(MAX_QUEUED_UI_ERRORS + 3) {
+            q.push(ui_error_value(&format!("sink{i}"), &None, "err", None));
+        }
+        assert_eq!(q.items.len(), MAX_QUEUED_UI_ERRORS, "caps at the max");
+        // The three oldest (sink0..2) were dropped; sink3 is now the front.
+        assert_eq!(q.items.front().unwrap()["where"], "sink3");
+        let text = prepend_ui_errors("please fix".into(), &mut q);
+        assert!(text.contains("[app ui errors]"), "{text}");
+        assert!(text.contains("<app-data>"), "{text}");
+        assert!(text.contains(r#""where":"sink3""#), "{text}");
+        assert!(text.trim_end().ends_with("please fix"), "{text}");
+        assert!(q.items.is_empty(), "drained");
+    }
+
+    #[test]
+    fn prepend_ui_errors_empty_queue_leaves_base_untouched() {
+        use super::{prepend_ui_errors, UiErrorQueue};
+        let mut q = UiErrorQueue::default();
+        assert_eq!(prepend_ui_errors("hello".into(), &mut q), "hello");
+    }
+
+    #[test]
+    fn should_auto_repair_mirrors_artifact_grace_semantics() {
+        use super::{should_auto_repair, UI_ERROR_REPAIR_BUDGET, UI_ERROR_REPAIR_GRACE};
+        use std::time::Duration;
+        // Build times forward from a base so no Instant subtraction underflows.
+        let base = std::time::Instant::now();
+        let now = base + Duration::from_secs(1000);
+
+        // Never ran a turn → never auto-repairs (initial/idle render error).
+        assert!(!should_auto_repair(now, None, None));
+        // A turn ended 2s ago, no prior repair → eligible.
+        assert!(should_auto_repair(
+            now,
+            Some(now - Duration::from_secs(2)),
+            None
+        ));
+        // Turn ended just outside the 15s grace → not eligible (user-managed UI).
+        assert!(!should_auto_repair(
+            now,
+            Some(now - (UI_ERROR_REPAIR_GRACE + Duration::from_secs(1))),
+            None
+        ));
+        // Within grace, but a repair fired 30s ago (< 60s budget) → refused.
+        assert!(!should_auto_repair(
+            now,
+            Some(now - Duration::from_secs(2)),
+            Some(now - Duration::from_secs(30))
+        ));
+        // Within grace, last repair older than the budget → eligible again.
+        assert!(should_auto_repair(
+            now,
+            Some(now - Duration::from_secs(2)),
+            Some(now - (UI_ERROR_REPAIR_BUDGET + Duration::from_secs(1)))
+        ));
+    }
+
+    // --- autorun (SDK v2 §3.5): OFF by default, opt-in + budgeted ---
+
+    #[test]
+    fn autorun_off_by_default_keeps_signals_queue_only() {
+        use super::{autorun_eligible, SignalDecl, UiCapability};
+        // The default UiCapability grants no autorun, so even an autorun-opted
+        // signal with budget room stays queue-only (no turn constructs).
+        let cap = UiCapability::default();
+        assert!(!cap.allow_autorun, "allow_autorun must default OFF");
+        let decl = SignalDecl {
+            name: "collision".into(),
+            autorun: true,
+            ..Default::default()
+        };
+        assert!(!autorun_eligible(&cap, &decl, true));
+    }
+
+    #[test]
+    fn autorun_requires_cap_signal_optin_and_budget() {
+        use super::{autorun_eligible, SignalDecl, UiCapability};
+        let granted = UiCapability {
+            allow_autorun: true,
+            ..Default::default()
+        };
+        let optin = SignalDecl {
+            name: "s".into(),
+            autorun: true,
+            ..Default::default()
+        };
+        let no_optin = SignalDecl {
+            name: "s".into(),
+            autorun: false,
+            ..Default::default()
+        };
+        // All three conditions hold → eligible.
+        assert!(autorun_eligible(&granted, &optin, true));
+        // Missing ANY one → not eligible.
+        assert!(
+            !autorun_eligible(&UiCapability::default(), &optin, true),
+            "cap not granted"
+        );
+        assert!(
+            !autorun_eligible(&granted, &no_optin, true),
+            "signal did not opt in"
+        );
+        assert!(
+            !autorun_eligible(&granted, &optin, false),
+            "budget exhausted"
+        );
+    }
+
+    #[test]
+    fn autorun_budget_enforces_per_minute_and_session_caps() {
+        use super::{AutorunBudget, AUTORUN_PER_MINUTE_MAX, AUTORUN_PER_SESSION_MAX};
+        use std::time::Duration;
+        let base = std::time::Instant::now();
+        let t0 = base + Duration::from_secs(1000);
+
+        // Fill the per-minute window at one instant, then refuse the next.
+        let mut b = AutorunBudget::default();
+        for _ in 0..AUTORUN_PER_MINUTE_MAX {
+            assert!(b.has_room(t0));
+            b.record(t0);
+        }
+        assert!(!b.has_room(t0), "per-minute cap enforced");
+        // A minute later the sliding window frees the per-minute budget.
+        assert!(
+            b.has_room(t0 + Duration::from_secs(61)),
+            "sliding window refills the per-minute budget"
+        );
+
+        // The per-session total is a hard ceiling regardless of spacing.
+        let mut b2 = AutorunBudget::default();
+        let mut t = t0;
+        for _ in 0..AUTORUN_PER_SESSION_MAX {
+            assert!(b2.has_room(t));
+            b2.record(t);
+            t += Duration::from_secs(61); // beyond the minute window each time
+        }
+        assert!(!b2.has_room(t), "per-session cap enforced");
     }
 
     /// The typed-call analogue of `a_parked_ui_ask_is_unparked_by_a_midturn_ui_reply`:
