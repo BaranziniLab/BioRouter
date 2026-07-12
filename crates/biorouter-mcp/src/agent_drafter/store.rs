@@ -11,6 +11,7 @@ use std::path::{Component, Path, PathBuf};
 
 use super::manifest::{
     Capabilities, GuardrailsConfig, ModelSettings, Orchestration, ReliabilityConfig, SurfaceDecl,
+    ThemeConfig,
 };
 
 /// Whether an artifact embeds live agent capability.
@@ -167,6 +168,12 @@ pub struct Manifest {
     /// surface, which deserializes and re-serializes unchanged.
     #[serde(default, skip_serializing_if = "SurfaceDecl::is_empty")]
     pub surface: SurfaceDecl,
+    /// The app's theme selection (Apps SDK v2, Pillar 6): a curated pack plus
+    /// optional accent / custom token overrides. Absent/default → the base
+    /// `biorouter` look, so a v1 manifest deserializes and re-serializes
+    /// unchanged.
+    #[serde(default, skip_serializing_if = "ThemeConfig::is_default")]
+    pub theme: ThemeConfig,
 }
 
 fn now_secs() -> u64 {
@@ -299,6 +306,7 @@ impl ArtifactStore {
             sdk_hash: None,
             session_id: None,
             surface: SurfaceDecl::default(),
+            theme: ThemeConfig::default(),
         };
         self.save_manifest(&manifest)?;
         for (path, content) in files {
@@ -345,6 +353,7 @@ impl ArtifactStore {
             sdk_hash: None,
             session_id: None,
             surface: SurfaceDecl::default(),
+            theme: ThemeConfig::default(),
         };
         self.save_manifest(&manifest)?;
         for (path, content) in files {
@@ -542,6 +551,48 @@ mod tests {
         let agent = m.agent.unwrap();
         assert!(!agent.capabilities.ui.enabled);
         assert!(agent.capabilities.advertised().is_empty());
+    }
+
+    #[test]
+    fn theme_persists_and_defaults_are_omitted() {
+        use crate::agent_drafter::manifest::ThemeConfig;
+        let (_d, s) = store();
+        let mut m = s
+            .create("Themed", "", ArtifactKind::Static, "index.html", &[])
+            .unwrap();
+        // A default theme is not serialized, so a v1 manifest stays clean.
+        assert!(m.theme.is_default());
+        let json = std::fs::read_to_string(s.root().join("themed").join("manifest.json")).unwrap();
+        assert!(
+            !json.contains("\"theme\""),
+            "default theme must be omitted: {json}"
+        );
+
+        // A customised theme survives save → load.
+        let mut tokens = std::collections::HashMap::new();
+        tokens.insert("--br-radius".to_string(), "4px".to_string());
+        m.theme = ThemeConfig {
+            pack: "terminal".into(),
+            accent: Some("#3ddc84".into()),
+            tokens,
+        };
+        s.save_manifest(&m).unwrap();
+        let loaded = s.load_manifest("themed").unwrap();
+        assert_eq!(loaded.theme.pack, "terminal");
+        assert_eq!(loaded.theme.accent.as_deref(), Some("#3ddc84"));
+        assert_eq!(
+            loaded.theme.tokens.get("--br-radius").map(String::as_str),
+            Some("4px")
+        );
+
+        // A legacy manifest with no theme block loads with the base pack.
+        let legacy: Manifest = serde_json::from_str(
+            r#"{"id":"x","title":"X","description":"","kind":"static",
+                "entry":"index.html","created_at":0,"updated_at":0}"#,
+        )
+        .unwrap();
+        assert!(legacy.theme.is_default());
+        assert_eq!(legacy.theme.resolved_pack(), "biorouter");
     }
 
     #[test]

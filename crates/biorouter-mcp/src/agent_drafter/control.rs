@@ -35,12 +35,24 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 
-use super::manifest::{SurfaceDecl, UiCapability};
+use super::manifest::{SurfaceDecl, UiCapability, THEME_PACKS};
 
 /// Catalog / protocol version stamped onto every `ui` frame (`"v"`), so an older
 /// SDK can feature-detect and ignore frames it doesn't understand. Bump when the
 /// frame vocabulary changes in a backward-incompatible way.
 pub const CATALOG_VERSION: u64 = 1;
+
+// ── Apps SDK v2 control-plane caps (Pillar 1, §3.5 / §3.7) ──────────────────
+/// Max serialized bytes of a payload relayed across the agent↔app boundary: an
+/// `app_call` result (capped with a truncation marker), an `emit_result` value
+/// (rejected as a fixable error when larger), or an inbound signal payload
+/// (rejected by [`UiBridge::validate_signal`]). Bounds the transcript / token
+/// cost of the round-trips so an app cannot flood the agent.
+pub const APP_PAYLOAD_MAX: usize = 65_536;
+/// Seconds an `app_call` parks waiting for the app's registered handler before
+/// it gives up and returns gracefully (so a missing/hung handler can't wedge the
+/// turn). Tests shadow this via [`UiBridge::set_app_call_timeout_s`].
+pub const APP_CALL_TIMEOUT_S: u64 = 60;
 
 // ── Shared state document caps (Apps SDK v2, Pillar 2) ──────────────────────
 // Enforced after every mutation so an unschema'd app can't become an unbounded
@@ -152,6 +164,159 @@ fn want_json(field: &str, kind: &str, example: &str) -> String {
 
 fn ok_text(msg: impl Into<String>) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::success(vec![Content::text(msg.into())]))
+}
+
+// ── Layout grammar (Apps SDK v2, Pillar 6) ──────────────────────────────────
+/// Max rows/columns in a `ui_layout` grid — bounds the template so the grammar
+/// can never blow up into an arbitrary CSS grid.
+const LAYOUT_MAX_ROWS: usize = 4;
+const LAYOUT_MAX_COLS: usize = 4;
+
+/// True when `s` is a safe grid area / track name (`^[a-z][a-z0-9_-]{0,23}$`),
+/// so it can be spliced into `grid-template-areas` / a track list without any
+/// chance of breaking out of the declaration.
+fn is_layout_name(s: &str) -> bool {
+    let b = s.as_bytes();
+    !b.is_empty()
+        && b.len() <= 24
+        && b[0].is_ascii_lowercase()
+        && b[1..]
+            .iter()
+            .all(|&c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_' || c == b'-')
+}
+
+/// Validate a `grid-template-areas` grid: 1..=4 rectangular rows of ≤4 columns,
+/// each cell a safe area name or `"."` (the CSS empty-cell token).
+fn validate_layout_areas(areas: &[Vec<String>]) -> Result<(), String> {
+    if areas.is_empty() {
+        return Err("\"areas\" must have at least one row".to_string());
+    }
+    if areas.len() > LAYOUT_MAX_ROWS {
+        return Err(format!("\"areas\" allows at most {LAYOUT_MAX_ROWS} rows"));
+    }
+    let cols = areas[0].len();
+    if cols == 0 {
+        return Err("\"areas\" rows must have at least one column".to_string());
+    }
+    if cols > LAYOUT_MAX_COLS {
+        return Err(format!(
+            "\"areas\" allows at most {LAYOUT_MAX_COLS} columns"
+        ));
+    }
+    for (r, row) in areas.iter().enumerate() {
+        if row.len() != cols {
+            return Err(format!(
+                "\"areas\" must be rectangular: row {r} has {} cells, expected {cols}",
+                row.len()
+            ));
+        }
+        for cell in row {
+            if cell != "." && !is_layout_name(cell) {
+                return Err(format!(
+                    "\"areas\" cell {cell:?} must be a lowercase name \
+                     (^[a-z][a-z0-9_-]{{0,23}}$) or \".\""
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate a `sizes` value against the bounded vocabulary: `NNNpx` (80–800),
+/// `NN%` (5–95), `Nfr` (1–6), or `auto`.
+fn is_layout_size(v: &str) -> bool {
+    if v == "auto" {
+        return true;
+    }
+    if let Some(n) = v.strip_suffix("px") {
+        return n.parse::<u32>().is_ok_and(|x| (80..=800).contains(&x));
+    }
+    if let Some(n) = v.strip_suffix('%') {
+        return n.parse::<u32>().is_ok_and(|x| (5..=95).contains(&x));
+    }
+    if let Some(n) = v.strip_suffix("fr") {
+        return n.parse::<u32>().is_ok_and(|x| (1..=6).contains(&x));
+    }
+    false
+}
+
+/// Validate a `sizes` map: safe track names → vocabulary values.
+fn validate_layout_sizes(sizes: &HashMap<String, String>) -> Result<(), String> {
+    for (k, v) in sizes {
+        if !is_layout_name(k) {
+            return Err(format!(
+                "\"sizes\" key {k:?} must be a lowercase track/area name"
+            ));
+        }
+        if !is_layout_size(v) {
+            return Err(format!(
+                "\"sizes\" value {v:?} must be one of: NNNpx (80-800), NN% (5-95), \
+                 Nfr (1-6), auto"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// A fresh 16-hex-char id for an `app_call`, derived from a v4 UUID. Distinct
+/// from [`UiBridge::next_id`]'s sequential ids so a call id can't collide with a
+/// panel/ask id and is unguessable across sessions.
+fn fresh_call_id() -> String {
+    // `simple()` is 32 ASCII hex chars; take the first 16 (byte == char here).
+    uuid::Uuid::new_v4()
+        .simple()
+        .to_string()
+        .chars()
+        .take(16)
+        .collect()
+}
+
+/// Serialize `v` and cap it at [`APP_PAYLOAD_MAX`] bytes, appending a
+/// `…[truncated]` marker when it overflows. Used to relay an `app_call` result
+/// back to the model without letting a huge payload flood the transcript.
+fn capped_json_text(v: &Value) -> String {
+    let s = serde_json::to_string(v).unwrap_or_else(|_| "null".to_string());
+    if s.len() <= APP_PAYLOAD_MAX {
+        return s;
+    }
+    let mut end = APP_PAYLOAD_MAX;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    // `s.get(..end)` avoids a panicking slice index; `end` is a char boundary.
+    format!("{}…[truncated]", s.get(..end).unwrap_or(s.as_str()))
+}
+
+/// Validate `value` against a JSON Schema, fail-closed. An empty/absent schema
+/// (`{}` or `null`) is unconstrained. A schema that itself fails to compile is a
+/// single error naming the manifest fix, never an accept-any fallback. Returns
+/// the joined validation messages so the caller can prefix its own context.
+/// Shared by `app_call` args, `emit_result` values, and inbound signal payloads.
+fn json_schema_errors(value: &Value, schema: &Value) -> Result<(), String> {
+    let unconstrained =
+        schema.is_null() || schema.as_object().is_some_and(serde_json::Map::is_empty);
+    if unconstrained {
+        return Ok(());
+    }
+    let validator = jsonschema::validator_for(schema).map_err(|e| {
+        format!("the declared JSON Schema failed to compile — fix the app manifest: {e}")
+    })?;
+    let errors: Vec<String> = validator
+        .iter_errors(value)
+        .map(|err| {
+            let path = err.instance_path.to_string();
+            if path.is_empty() {
+                err.to_string()
+            } else {
+                format!("{path}: {err}")
+            }
+        })
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +460,15 @@ pub struct UiBridge {
     inner: Arc<BridgeInner>,
 }
 
+/// An armed structured-output request. The server calls
+/// [`UiBridge::set_pending_output`] when the app opens a structured call; the
+/// agent's `emit_result` tool consumes it, validates the value against `schema`
+/// (when present), and pushes a top-level `output` frame carrying `call_id`.
+struct PendingOutput {
+    call_id: String,
+    schema: Option<Value>,
+}
+
 struct BridgeInner {
     /// Outbound half of the *current* connection. `None` between connections.
     tx: Mutex<Option<mpsc::UnboundedSender<Value>>>,
@@ -305,6 +479,27 @@ struct BridgeInner {
     generation: AtomicU64,
     /// `requestId` → responder for a parked `ui_ask`.
     pending: Mutex<HashMap<String, oneshot::Sender<Value>>>,
+    /// `callId` → responder for a parked `app_call`. Separate from [`Self::pending`]
+    /// on purpose: asks carry ask-specific cancel/timeout semantics, so the two
+    /// parking maps mirror each other's mechanics but never share a call id space.
+    pending_calls: Mutex<HashMap<String, oneshot::Sender<Value>>>,
+    /// A pending structured-output request the server armed for `emit_result`:
+    /// the call id the app is waiting on plus an optional JSON Schema the result
+    /// must satisfy. `None` unless a structured call is in flight.
+    pending_output: Mutex<Option<PendingOutput>>,
+    /// Signals (`surface.signals` names) the agent is currently subscribed to.
+    /// Replaced wholesale by `ui_subscribe`; read by the server to decide which
+    /// inbound signals to deliver.
+    subscriptions: Mutex<HashSet<String>>,
+    /// The app's declared surface, mirrored onto the bridge (set by
+    /// [`AppControlServer::new`]) so the server-facing signal accessors
+    /// ([`UiBridge::signal_decl`] / [`UiBridge::validate_signal`]) can resolve a
+    /// declaration without holding the `AppControlServer`.
+    surface_decl: Mutex<SurfaceDecl>,
+    /// Seconds an `app_call` waits before timing out. Initialized to
+    /// [`APP_CALL_TIMEOUT_S`]; only tests mutate it (via
+    /// [`UiBridge::set_app_call_timeout_s`]) to exercise the timeout path quickly.
+    app_call_timeout_s: AtomicU64,
     /// The app session's shared state document + version. Both the agent
     /// (`ui_state` / `ui_patch_state`) and the browser (`state_write`) mutate it;
     /// this bridge is the ordering authority.
@@ -342,6 +537,11 @@ impl UiBridge {
                 tx: Mutex::new(None),
                 generation: AtomicU64::new(0),
                 pending: Mutex::new(HashMap::new()),
+                pending_calls: Mutex::new(HashMap::new()),
+                pending_output: Mutex::new(None),
+                subscriptions: Mutex::new(HashSet::new()),
+                surface_decl: Mutex::new(SurfaceDecl::default()),
+                app_call_timeout_s: AtomicU64::new(APP_CALL_TIMEOUT_S),
                 state: Mutex::new(StateDoc::default()),
                 panels: Mutex::new(Vec::new()),
                 instances: Mutex::new(HashMap::new()),
@@ -550,18 +750,172 @@ impl UiBridge {
         }
     }
 
-    /// Fail every parked `ui_ask` (socket closed / turn cancelled) so no tool
-    /// hangs past the life of the connection.
+    /// Fail every parked `ui_ask` **and** `app_call` (socket closed / turn
+    /// cancelled) so no tool hangs past the life of the connection. Both parking
+    /// maps unblock with the same `{cancelled:true}` payload, which each tool
+    /// recognizes and reports as a cancellation rather than a real answer.
     pub fn cancel_all(&self) {
-        let drained: Vec<_> = self
+        let asks: Vec<_> = self
             .inner
             .pending
             .lock()
             .map(|mut p| p.drain().map(|(_, tx)| tx).collect())
             .unwrap_or_default();
-        for tx in drained {
+        let calls: Vec<_> = self
+            .inner
+            .pending_calls
+            .lock()
+            .map(|mut p| p.drain().map(|(_, tx)| tx).collect())
+            .unwrap_or_default();
+        for tx in asks.into_iter().chain(calls) {
             let _ = tx.send(json!({ "cancelled": true }));
         }
+    }
+
+    /// Push a **raw** frame at the browser, exactly as given — used for top-level
+    /// frames that are *not* `ui` commands (e.g. the `{type:"output"}` frame that
+    /// `emit_result` sends). Unlike [`emit`](Self::emit) it does not stamp
+    /// `type:"ui"` / `v`, so the caller owns the whole envelope. Returns whether a
+    /// socket was attached to receive it.
+    pub fn emit_frame(&self, frame: Value) -> bool {
+        let Ok(slot) = self.inner.tx.lock() else {
+            return false;
+        };
+        match slot.as_ref() {
+            Some(tx) => tx.send(frame).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Resolve a parked `app_call`. Returns whether a call was actually waiting.
+    /// The server calls this when the browser sends an `app_result` frame; the
+    /// payload is `{result: …}` or `{error: "…"}`.
+    pub fn resolve_app_call(&self, call_id: &str, payload: Value) -> bool {
+        let responder = self
+            .inner
+            .pending_calls
+            .lock()
+            .ok()
+            .and_then(|mut p| p.remove(call_id));
+        match responder {
+            Some(tx) => tx.send(payload).is_ok(),
+            None => false,
+        }
+    }
+
+    fn register_call(&self, call_id: String) -> oneshot::Receiver<Value> {
+        let (tx, rx) = oneshot::channel();
+        if let Ok(mut p) = self.inner.pending_calls.lock() {
+            p.insert(call_id, tx);
+        }
+        rx
+    }
+
+    fn forget_call(&self, call_id: &str) {
+        if let Ok(mut p) = self.inner.pending_calls.lock() {
+            p.remove(call_id);
+        }
+    }
+
+    /// Arm a structured-output request for `emit_result`: the app is now waiting
+    /// on `call_id`, and the emitted result must satisfy `schema` when present.
+    pub fn set_pending_output(&self, call_id: String, schema: Option<Value>) {
+        if let Ok(mut o) = self.inner.pending_output.lock() {
+            *o = Some(PendingOutput { call_id, schema });
+        }
+    }
+
+    /// Take (and clear) the armed structured-output request, if any.
+    pub fn take_pending_output(&self) -> Option<(String, Option<Value>)> {
+        self.inner
+            .pending_output
+            .lock()
+            .ok()
+            .and_then(|mut o| o.take())
+            .map(|p| (p.call_id, p.schema))
+    }
+
+    /// Replace the active signal subscription set (idempotent — the caller has
+    /// already validated every name against `surface.signals`).
+    fn replace_subscriptions(&self, names: Vec<String>) {
+        if let Ok(mut s) = self.inner.subscriptions.lock() {
+            *s = names.into_iter().collect();
+        }
+    }
+
+    /// The signals the agent is currently subscribed to, sorted for a stable
+    /// `ui_describe` view and deterministic tests.
+    pub fn subscribed_signals(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .inner
+            .subscriptions
+            .lock()
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default();
+        v.sort();
+        v
+    }
+
+    /// Mirror the app's declared surface onto the bridge so the server-facing
+    /// signal accessors can resolve declarations. Called by
+    /// [`AppControlServer::new`]; no `apps.rs` change is required.
+    pub fn set_surface_decl(&self, surface: SurfaceDecl) {
+        if let Ok(mut s) = self.inner.surface_decl.lock() {
+            *s = surface;
+        }
+    }
+
+    /// A declared signal's `(payload_schema, coalesce_ms)`, or `None` when the
+    /// name is not declared. For the server's inbound-signal path.
+    pub fn signal_decl(&self, name: &str) -> Option<(Option<Value>, u64)> {
+        let s = self.inner.surface_decl.lock().ok()?;
+        s.signals
+            .iter()
+            .find(|sig| sig.name == name)
+            .map(|sig| (sig.payload.clone(), sig.coalesce_ms))
+    }
+
+    /// Validate an inbound signal the browser wants to deliver to the agent, in
+    /// order: subscribed? → declared? → payload within [`APP_PAYLOAD_MAX`]? →
+    /// schema-valid (when the declaration carries a payload schema)? The `Err`
+    /// message is safe to relay/log.
+    pub fn validate_signal(&self, name: &str, payload: &Value) -> Result<(), String> {
+        let subscribed = self
+            .inner
+            .subscriptions
+            .lock()
+            .map(|s| s.contains(name))
+            .unwrap_or(false);
+        if !subscribed {
+            return Err(format!("signal \"{name}\" is not subscribed"));
+        }
+        let Some((schema, _coalesce)) = self.signal_decl(name) else {
+            return Err(format!(
+                "signal \"{name}\" is not declared in the app surface"
+            ));
+        };
+        let bytes = serde_json::to_vec(payload)
+            .map(|b| b.len())
+            .unwrap_or(usize::MAX);
+        if bytes > APP_PAYLOAD_MAX {
+            return Err(format!(
+                "signal \"{name}\" payload is {bytes} bytes; cap is {APP_PAYLOAD_MAX}"
+            ));
+        }
+        if let Some(sc) = schema.as_ref() {
+            json_schema_errors(payload, sc).map_err(|e| {
+                format!("signal \"{name}\" payload does not match its declared schema: {e}")
+            })?;
+        }
+        Ok(())
+    }
+
+    /// Test-only knob to shorten the `app_call` timeout so the timeout path can be
+    /// exercised without a real 60-second wait. Production keeps
+    /// [`APP_CALL_TIMEOUT_S`].
+    #[cfg(test)]
+    pub fn set_app_call_timeout_s(&self, secs: u64) {
+        self.inner.app_call_timeout_s.store(secs, Ordering::Relaxed);
     }
 
     fn register_ask(&self, request_id: String) -> oneshot::Receiver<Value> {
@@ -1587,6 +1941,10 @@ pub struct HighlightParams {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct ThemeParams {
+    /// Switch the whole theme pack: "biorouter" (base), "clinical",
+    /// "lab-notebook", "terminal", "journal", or "midnight".
+    #[serde(default)]
+    pub pack: Option<String>,
     /// Accent colour as a CSS colour (e.g. "#2f6f4e", "tomato").
     #[serde(default)]
     pub accent: Option<String>,
@@ -1600,12 +1958,25 @@ pub struct ThemeParams {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct LayoutParams {
-    /// "single" (default), "sidebar-right", "sidebar-left", "split", or
-    /// "dashboard" (a responsive grid of panels).
-    pub preset: String,
+    /// A named preset (an alias over the grammar): "single" (default),
+    /// "sidebar-right", "sidebar-left", "split", or "dashboard" (a responsive
+    /// grid). Supply this OR `areas`.
+    #[serde(default)]
+    pub preset: Option<String>,
     /// Sidebar width in CSS px (sidebar presets only).
     #[serde(default)]
     pub sidebar_width: Option<u32>,
+    /// A `grid-template-areas` grid: rows of area names, e.g.
+    /// `[["nav","nav"],["side","main"]]`. At most 4 rows × 4 columns; every row
+    /// must have the same number of columns. Each cell is a lowercase area name
+    /// (`^[a-z][a-z0-9_-]{0,23}$`) or `"."` for an empty cell. Author regions
+    /// mount into an area via `@region:<area>`.
+    #[serde(default)]
+    pub areas: Option<Vec<Vec<String>>>,
+    /// Track sizes keyed by area/track name, from a bounded vocabulary:
+    /// `"<80-800>px"`, `"<5-95>%"`, `"<1-6>fr"`, or `"auto"`.
+    #[serde(default)]
+    pub sizes: Option<HashMap<String, String>>,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -1739,6 +2110,32 @@ pub struct AskParams {
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct DescribeParams {}
 
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct AppCallParams {
+    /// The declared app action to invoke (must match a name in
+    /// `surface.actions` — call `ui_describe` to list them).
+    pub action: String,
+    /// Arguments object for the action, validated against its declared params
+    /// schema. Omit (or `{}`) for an action that takes none.
+    #[serde(default)]
+    #[schemars(with = "Value")]
+    pub args: Value,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct EmitResultParams {
+    /// The structured result object to deliver to the app's pending structured
+    /// call. Validated against that call's output schema when one is in force.
+    #[schemars(with = "Value")]
+    pub result: Value,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct SubscribeParams {
+    /// The declared signal names to subscribe to. REPLACES the current set.
+    pub signals: Vec<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Server
 // ---------------------------------------------------------------------------
@@ -1756,6 +2153,10 @@ pub struct AppControlServer {
 
 impl AppControlServer {
     pub fn new(bridge: UiBridge, cap: UiCapability, surface: SurfaceDecl) -> Self {
+        // Mirror the declared surface onto the bridge so its server-facing signal
+        // accessors (signal_decl / validate_signal) can resolve declarations
+        // without holding this server — no apps.rs wiring required.
+        bridge.set_surface_decl(surface.clone());
         Self {
             tool_router: Self::tool_router(),
             bridge,
@@ -1954,11 +2355,13 @@ impl AppControlServer {
                 "keys": keys,
             },
             "declared": self.declared_surface(),
+            "subscribed": self.bridge.subscribed_signals(),
             "allowed": {
                 "theme": self.cap.allow_theme,
                 "layout": self.cap.allow_layout,
                 "ask": self.cap.allow_ask,
                 "html": self.cap.allow_html,
+                "signals": self.cap.allow_signals,
                 "maxPanels": self.cap.max_panels,
             },
         });
@@ -2175,9 +2578,10 @@ impl AppControlServer {
 
     #[tool(
         name = "ui_theme",
-        description = "Restyle the app: accent colour, light/dark mode, density. Use this to \
-                       make the app *feel* like what it is showing (e.g. a warning palette \
-                       for a safety review)."
+        description = "Restyle the app: theme pack (biorouter/clinical/lab-notebook/terminal/\
+                       journal/midnight), accent colour, light/dark mode, density. Use this to \
+                       make the app *feel* like what it is showing (e.g. a clinical pack for a \
+                       cohort review, a terminal pack for a log viewer)."
     )]
     pub async fn ui_theme(
         &self,
@@ -2185,6 +2589,14 @@ impl AppControlServer {
     ) -> Result<CallToolResult, ErrorData> {
         if !self.cap.allow_theme {
             return Err(Self::denied("theme control"));
+        }
+        if let Some(pack) = p.pack.as_deref() {
+            if !THEME_PACKS.contains(&pack) {
+                return Err(invalid(format!(
+                    "\"pack\" must be one of: {}",
+                    THEME_PACKS.join(", ")
+                )));
+            }
         }
         if let Some(m) = p.mode.as_deref() {
             if !["light", "dark", "auto"].contains(&m) {
@@ -2208,6 +2620,7 @@ impl AppControlServer {
         }
         self.bridge.emit(json!({
             "cmd": "theme",
+            "pack": p.pack,
             "accent": p.accent,
             "mode": p.mode,
             "density": p.density,
@@ -2217,9 +2630,10 @@ impl AppControlServer {
 
     #[tool(
         name = "ui_layout",
-        description = "Switch the app's layout: \"single\", \"sidebar-right\", \"sidebar-left\", \
-                       \"split\", or \"dashboard\" (a responsive grid). Pair with ui_panel to \
-                       fill the new regions."
+        description = "Set the app's layout. Either a preset — \"single\", \"sidebar-right\", \
+                       \"sidebar-left\", \"split\", or \"dashboard\" (a responsive grid) — or a \
+                       grid grammar via `areas` (rows of area names, ≤4×4) with optional `sizes`. \
+                       Pair with ui_panel/@region: to fill the regions."
     )]
     pub async fn ui_layout(
         &self,
@@ -2235,18 +2649,40 @@ impl AppControlServer {
             "split",
             "dashboard",
         ];
-        if !PRESETS.contains(&p.preset.as_str()) {
-            return Err(invalid(format!(
-                "\"preset\" must be one of: {}",
-                PRESETS.join(", ")
-            )));
+        if p.preset.is_none() && p.areas.is_none() {
+            return Err(invalid("ui_layout needs a `preset` or an `areas` grid"));
+        }
+        if let Some(preset) = p.preset.as_deref() {
+            if !PRESETS.contains(&preset) {
+                return Err(invalid(format!(
+                    "\"preset\" must be one of: {}",
+                    PRESETS.join(", ")
+                )));
+            }
+        }
+        if let Some(areas) = &p.areas {
+            validate_layout_areas(areas).map_err(invalid)?;
+        }
+        if let Some(sizes) = &p.sizes {
+            validate_layout_sizes(sizes).map_err(invalid)?;
         }
         self.bridge.emit(json!({
             "cmd": "layout",
             "preset": p.preset,
+            "areas": p.areas,
+            "sizes": p.sizes,
             "sidebarWidth": p.sidebar_width,
         }))?;
-        ok_text(format!("Layout set to {}.", p.preset))
+        let what = match (&p.preset, &p.areas) {
+            (Some(preset), _) => format!("preset {preset}"),
+            (None, Some(areas)) => format!(
+                "a {}×{} grid",
+                areas.len(),
+                areas.first().map_or(0, Vec::len)
+            ),
+            _ => "layout".to_string(),
+        };
+        ok_text(format!("Layout set to {what}."))
     }
 
     #[tool(
@@ -2732,6 +3168,241 @@ impl AppControlServer {
             }
         }
     }
+
+    #[tool(
+        name = "app_call",
+        description = "Invoke an APP-DEFINED function on the page — one of the verbs the app author \
+                       declared in `surface.actions` and registered a handler for. Unlike the \
+                       other ui_* tools (which mutate the DOM), this calls into the app's own \
+                       logic and returns its result to you as this tool's result. Call \
+                       `ui_describe` FIRST to see the app's declared actions (name, description, \
+                       and argument schema); `args` is validated against the named action's \
+                       declared params schema. Blocks until the app responds or 60 seconds \
+                       elapse, whichever comes first."
+    )]
+    pub async fn app_call(
+        &self,
+        Parameters(p): Parameters<AppCallParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let action = p.action.trim();
+        if action.is_empty() {
+            return Err(invalid(
+                "\"action\" must name one of the app's declared actions (see ui_describe)",
+            ));
+        }
+        // The action must be declared in the surface; an unknown one lists the
+        // declared names so the model can correct itself.
+        let decl = self
+            .surface
+            .actions
+            .iter()
+            .find(|a| a.name == action)
+            .ok_or_else(|| {
+                let known: Vec<&str> = self
+                    .surface
+                    .actions
+                    .iter()
+                    .map(|a| a.name.as_str())
+                    .collect();
+                if known.is_empty() {
+                    invalid(format!(
+                        "action \"{action}\" is not declared; this app declares no actions"
+                    ))
+                } else {
+                    invalid(format!(
+                        "action \"{action}\" is not declared; declared actions: {}",
+                        known.join(", ")
+                    ))
+                }
+            })?;
+
+        // `args` is an object (absent/null ⇒ empty), then schema-checked against
+        // the declared params, fail-closed exactly like component props.
+        let args = if p.args.is_null() {
+            json!({})
+        } else {
+            unstringify(&p.args)
+        };
+        if !args.is_object() {
+            return Err(invalid(want_json(
+                "args",
+                "a JSON object",
+                r#"{"gene":"TP53"}"#,
+            )));
+        }
+        json_schema_errors(&args, &decl.params).map_err(|e| {
+            invalid(format!(
+                "action \"{action}\" args do not match its declared schema: {e}"
+            ))
+        })?;
+
+        // Emit the app_call frame and park on a fresh oneshot until the app posts
+        // an app_result (or the timeout fires / the turn is cancelled).
+        let call_id = fresh_call_id();
+        let rx = self.bridge.register_call(call_id.clone());
+        let emit = self.bridge.emit(json!({
+            "cmd": "app_call",
+            "callId": call_id,
+            "action": action,
+            "args": args,
+        }));
+        if let Err(e) = emit {
+            self.bridge.forget_call(&call_id);
+            return Err(e);
+        }
+
+        let secs = self.bridge.inner.app_call_timeout_s.load(Ordering::Relaxed);
+        match tokio::time::timeout(Duration::from_secs(secs), rx).await {
+            Ok(Ok(payload)) => {
+                if payload.get("cancelled").and_then(Value::as_bool) == Some(true) {
+                    return ok_text(format!(
+                        "The app call \"{action}\" was cancelled before it returned."
+                    ));
+                }
+                if let Some(err) = payload.get("error").and_then(Value::as_str) {
+                    return ok_text(format!("the app reported an error: {err}"));
+                }
+                let result = payload.get("result").cloned().unwrap_or(Value::Null);
+                ok_text(capped_json_text(&result))
+            }
+            // Sender dropped: the socket closed out from under the parked call.
+            Ok(Err(_)) => {
+                self.bridge.forget_call(&call_id);
+                Err(ErrorData::new(
+                    ErrorCode::INTERNAL_ERROR,
+                    "the app window closed before it answered the call".to_string(),
+                    None,
+                ))
+            }
+            Err(_) => {
+                self.bridge.forget_call(&call_id);
+                ok_text(format!(
+                    "The app did not handle \"{action}\" within {secs}s. It may not register a \
+                     handler for this action; proceed without its result or tell the user."
+                ))
+            }
+        }
+    }
+
+    #[tool(
+        name = "emit_result",
+        description = "Deliver a STRUCTURED result to the app for the structured call it is \
+                       currently awaiting. Use this instead of prose when the app opened a \
+                       structured request (it will have told you the shape). If no structured \
+                       call is pending, this is a no-op and you should just answer in prose. When \
+                       a schema is in force, `result` is validated against it and a mismatch \
+                       comes back as a fixable error to retry."
+    )]
+    pub async fn emit_result(
+        &self,
+        Parameters(p): Parameters<EmitResultParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let Some((call_id, schema)) = self.bridge.take_pending_output() else {
+            return ok_text("no structured call is pending — reply in prose instead.");
+        };
+
+        let result = unstringify(&p.result);
+
+        // Size cap: reject (fixable) so the model returns something smaller. Put
+        // the pending request back first so the retry can still satisfy it.
+        let serialized = serde_json::to_string(&result).unwrap_or_default();
+        if serialized.len() > APP_PAYLOAD_MAX {
+            self.bridge.set_pending_output(call_id, schema);
+            return Err(invalid(format!(
+                "the structured result is {} bytes; cap is {APP_PAYLOAD_MAX} — return a smaller \
+                 result (summarize, drop rows, or reference data instead of inlining it)",
+                serialized.len()
+            )));
+        }
+
+        // Schema check (fixable): restore the pending request so a corrected
+        // result can be re-emitted. Compute the error first so the borrow of
+        // `schema` ends before it is moved back on failure.
+        let schema_err = schema
+            .as_ref()
+            .and_then(|sc| json_schema_errors(&result, sc).err());
+        if let Some(e) = schema_err {
+            self.bridge.set_pending_output(call_id, schema);
+            return Err(invalid(format!(
+                "the structured result does not match the declared output schema: {e}"
+            )));
+        }
+
+        // Top-level (non-ui) frame — built here and sent raw via emit_frame so the
+        // `type:"output"` envelope is not overwritten with `type:"ui"`.
+        let mut frame = json!({
+            "type": "output",
+            "callId": call_id,
+            "value": result,
+            "v": CATALOG_VERSION,
+        });
+        if let Some(sc) = schema {
+            if let Some(obj) = frame.as_object_mut() {
+                obj.insert("schema".to_string(), sc);
+            }
+        }
+        if !self.bridge.emit_frame(frame) {
+            return Err(ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                "the app window is no longer connected; the structured result was not delivered"
+                    .to_string(),
+                None,
+            ));
+        }
+        ok_text("structured result delivered to the app.")
+    }
+
+    #[tool(
+        name = "ui_subscribe",
+        description = "Subscribe to app→agent signals the author declared in `surface.signals` \
+                       (see ui_describe). Pass the signal names you want; this REPLACES your \
+                       current subscription set (re-subscribing is idempotent). The app then \
+                       delivers those signals to you, rate-limited by each one's coalesce window. \
+                       Only available when the app grants `ui.allow_signals`."
+    )]
+    pub async fn ui_subscribe(
+        &self,
+        Parameters(p): Parameters<SubscribeParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if !self.cap.allow_signals {
+            return Err(Self::denied("app→agent signals (ui.allow_signals)"));
+        }
+        // Every requested name must be declared; an undeclared one lists what is
+        // available so the model can correct itself.
+        for name in &p.signals {
+            if !self.surface.signals.iter().any(|s| &s.name == name) {
+                let known: Vec<&str> = self
+                    .surface
+                    .signals
+                    .iter()
+                    .map(|s| s.name.as_str())
+                    .collect();
+                return Err(invalid(if known.is_empty() {
+                    format!("signal \"{name}\" is not declared; this app declares no signals")
+                } else {
+                    format!(
+                        "signal \"{name}\" is not declared; declared signals: {}",
+                        known.join(", ")
+                    )
+                }));
+            }
+        }
+
+        // Replace the set (dedup by collecting through the bridge's HashSet).
+        self.bridge.replace_subscriptions(p.signals.clone());
+        let active = self.bridge.subscribed_signals();
+        let signals: Vec<Value> = active
+            .iter()
+            .map(|name| {
+                let coalesce = self.bridge.signal_decl(name).map(|(_, ms)| ms).unwrap_or(0);
+                json!({ "name": name, "coalesceMs": coalesce })
+            })
+            .collect();
+        ok_text(
+            serde_json::to_string(&json!({ "subscribed": signals }))
+                .unwrap_or_else(|_| "{}".to_string()),
+        )
+    }
 }
 
 impl AppControlServer {
@@ -2847,8 +3518,12 @@ impl ServerHandler for AppControlServer {
                  Kaplan-Meier, Sankey, forest, heatmap, maps, Mermaid diagrams, multi-figure \
                  dashboards) call ui_figure with the Auto Visualiser tool name and its args. \
                  ui_html renders sanitized rich HTML, but only when the app grants it. Call \
+                 app_call to invoke a function the app author declared (its verbs live in the \
+                 declared surface — call ui_describe to see the app's declared actions and their \
+                 argument schemas), emit_result to hand the app a structured result when it is \
+                 awaiting one, and ui_subscribe to listen for app→agent signals. Call \
                  ui_describe first to learn what the page already offers (regions, node ids, \
-                 declared surface)."
+                 declared surface, declared actions/signals)."
                     .to_string(),
             ),
             ..Default::default()
@@ -2895,8 +3570,17 @@ pub fn ui_system_prompt(cap: &UiCapability) -> String {
          **4. Reach for real figures.** For anything publication-grade — volcano, Manhattan, \
          Kaplan-Meier, forest, Sankey, chord, heatmap, maps, Mermaid diagrams, or a multi-figure \
          dashboard — call `ui_figure` with the Auto Visualiser tool name and its arguments \
-         instead of hand-building a chart. It is richer and more correct than `ui_chart`.",
+         instead of hand-building a chart. It is richer and more correct than `ui_chart`.\n\n\
+         **5. Call into the app's own logic.** Some apps declare *actions* (verbs the author \
+         wired to real handlers) and *signals* (notifications the app can push you). Use \
+         `app_call` to run a declared action — call `ui_describe` first to see the app's declared \
+         actions and their argument schemas. When the app is awaiting a structured answer, use \
+         `emit_result` to hand it a typed object rather than writing prose. Use `ui_subscribe` to \
+         listen for the signals you care about.",
     );
+    if !cap.allow_signals {
+        s.push_str("\n\nNote: `ui_subscribe` is disabled for this app.");
+    }
     if !cap.allow_ask {
         s.push_str("\n\nNote: `ui_ask` is disabled for this app.");
     }
@@ -3159,6 +3843,7 @@ mod tests {
         let (s, _rx) = server();
         let e = s
             .ui_theme(Parameters(ThemeParams {
+                pack: None,
                 accent: Some("red; background:url(http://x)".into()),
                 mode: None,
                 density: None,
@@ -3180,6 +3865,7 @@ mod tests {
         let s = AppControlServer::new(bridge, cap, SurfaceDecl::default());
         assert!(s
             .ui_theme(Parameters(ThemeParams {
+                pack: None,
                 accent: None,
                 mode: Some("dark".into()),
                 density: None
@@ -3188,11 +3874,213 @@ mod tests {
             .is_err());
         assert!(s
             .ui_layout(Parameters(LayoutParams {
-                preset: "dashboard".into(),
-                sidebar_width: None
+                preset: Some("dashboard".into()),
+                sidebar_width: None,
+                areas: None,
+                sizes: None,
             }))
             .await
             .is_err());
+    }
+
+    #[tokio::test]
+    async fn theme_pack_switch_validates_and_emits() {
+        let (s, mut rx) = server();
+        let r = s
+            .ui_theme(Parameters(ThemeParams {
+                pack: Some("terminal".into()),
+                accent: Some("#3ddc84".into()),
+                mode: None,
+                density: Some("compact".into()),
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&r).contains("Theme updated"));
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd["cmd"], "theme");
+        assert_eq!(cmd["pack"], "terminal");
+        assert_eq!(cmd["accent"], "#3ddc84");
+        assert_eq!(cmd["density"], "compact");
+
+        // Every curated pack name is accepted.
+        for pack in THEME_PACKS {
+            assert!(s
+                .ui_theme(Parameters(ThemeParams {
+                    pack: Some((*pack).to_string()),
+                    accent: None,
+                    mode: None,
+                    density: None,
+                }))
+                .await
+                .is_ok());
+        }
+
+        // An unknown pack is rejected and the message names the field.
+        let e = s
+            .ui_theme(Parameters(ThemeParams {
+                pack: Some("neon".into()),
+                accent: None,
+                mode: None,
+                density: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("pack"), "{}", e.message);
+    }
+
+    #[tokio::test]
+    async fn layout_preset_still_works_and_emits() {
+        let (s, mut rx) = server();
+        let r = s
+            .ui_layout(Parameters(LayoutParams {
+                preset: Some("sidebar-right".into()),
+                sidebar_width: Some(320),
+                areas: None,
+                sizes: None,
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&r).contains("sidebar-right"));
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd["cmd"], "layout");
+        assert_eq!(cmd["preset"], "sidebar-right");
+        assert_eq!(cmd["sidebarWidth"], 320);
+        assert!(cmd["areas"].is_null());
+
+        // A bad preset is still rejected.
+        assert!(s
+            .ui_layout(Parameters(LayoutParams {
+                preset: Some("holodeck".into()),
+                sidebar_width: None,
+                areas: None,
+                sizes: None,
+            }))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn layout_grammar_validates_areas_and_sizes() {
+        let (s, mut rx) = server();
+        let areas = vec![
+            vec!["nav".to_string(), "nav".to_string()],
+            vec!["side".to_string(), "main".to_string()],
+        ];
+        let mut sizes = HashMap::new();
+        sizes.insert("side".to_string(), "240px".to_string());
+        sizes.insert("main".to_string(), "1fr".to_string());
+        let r = s
+            .ui_layout(Parameters(LayoutParams {
+                preset: None,
+                sidebar_width: None,
+                areas: Some(areas.clone()),
+                sizes: Some(sizes),
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&r).contains("2×2 grid"), "{}", text_of(&r));
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd["cmd"], "layout");
+        assert_eq!(cmd["areas"][0][0], "nav");
+        assert_eq!(cmd["areas"][1][1], "main");
+        assert_eq!(cmd["sizes"]["side"], "240px");
+        assert!(cmd["preset"].is_null());
+
+        // Neither preset nor areas → error.
+        assert!(s
+            .ui_layout(Parameters(LayoutParams {
+                preset: None,
+                sidebar_width: None,
+                areas: None,
+                sizes: None,
+            }))
+            .await
+            .is_err());
+
+        // A ragged grid is rejected.
+        let ragged = vec![
+            vec!["a".to_string(), "b".to_string()],
+            vec!["c".to_string()],
+        ];
+        let e = s
+            .ui_layout(Parameters(LayoutParams {
+                preset: None,
+                sidebar_width: None,
+                areas: Some(ragged),
+                sizes: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("rectangular"), "{}", e.message);
+
+        // Too many rows.
+        let tall: Vec<Vec<String>> = (0..5).map(|_| vec!["a".to_string()]).collect();
+        let e = s
+            .ui_layout(Parameters(LayoutParams {
+                preset: None,
+                sidebar_width: None,
+                areas: Some(tall),
+                sizes: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("at most 4 rows"), "{}", e.message);
+
+        // Too many columns.
+        let wide = vec![vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+            "e".to_string(),
+        ]];
+        let e = s
+            .ui_layout(Parameters(LayoutParams {
+                preset: None,
+                sidebar_width: None,
+                areas: Some(wide),
+                sizes: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("at most 4 columns"), "{}", e.message);
+
+        // An illegal area name (spaces/caps).
+        let bad_name = vec![vec!["Main Panel".to_string()]];
+        let e = s
+            .ui_layout(Parameters(LayoutParams {
+                preset: None,
+                sidebar_width: None,
+                areas: Some(bad_name),
+                sizes: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("lowercase name"), "{}", e.message);
+        // The CSS empty-cell token is allowed.
+        assert!(s
+            .ui_layout(Parameters(LayoutParams {
+                preset: None,
+                sidebar_width: None,
+                areas: Some(vec![vec!["main".to_string(), ".".to_string()]]),
+                sizes: None,
+            }))
+            .await
+            .is_ok());
+
+        // A size outside the bounded vocabulary.
+        let mut bad_sizes = HashMap::new();
+        bad_sizes.insert("main".to_string(), "1000px".to_string()); // > 800
+        let e = s
+            .ui_layout(Parameters(LayoutParams {
+                preset: None,
+                sidebar_width: None,
+                areas: Some(areas.clone()),
+                sizes: Some(bad_sizes),
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("must be one of"), "{}", e.message);
     }
 
     #[tokio::test]
@@ -4220,7 +5108,8 @@ mod tests {
         // from the first '{'.
         let t = text_of(&s.ui_describe(Parameters(DescribeParams {})).await.unwrap());
         let start = t.find('{').expect("ui_describe returns a JSON body");
-        serde_json::from_str(&t[start..]).expect("ui_describe body is valid JSON")
+        let body = t.get(start..).expect("valid slice at a char boundary");
+        serde_json::from_str(body).expect("ui_describe body is valid JSON")
     }
 
     #[tokio::test]
@@ -4604,5 +5493,426 @@ mod tests {
             .await
             .unwrap_err();
         assert!(e.message.contains("totally_made_up"), "{}", e.message);
+    }
+
+    // ── Apps SDK v2: app_call / emit_result / signals (Phase 3) ─────────────
+
+    /// A surface declaring two actions (one schema-constrained, one free) and two
+    /// signals (one schema-constrained, one free) — the fixture the control-plane
+    /// tests exercise.
+    fn call_surface() -> SurfaceDecl {
+        use crate::agent_drafter::manifest::{ActionDecl, SignalDecl};
+        let num_obj = json!({
+            "type": "object",
+            "properties": { "n": { "type": "number" } },
+            "required": ["n"],
+        });
+        SurfaceDecl {
+            actions: vec![
+                ActionDecl {
+                    name: "echo".into(),
+                    description: "Echo a number".into(),
+                    params: num_obj.clone(),
+                },
+                ActionDecl {
+                    name: "ping".into(),
+                    description: "Takes no args".into(),
+                    params: json!({}),
+                },
+            ],
+            signals: vec![
+                SignalDecl {
+                    name: "tick".into(),
+                    payload: Some(num_obj),
+                    coalesce_ms: 100,
+                },
+                SignalDecl {
+                    name: "raw".into(),
+                    payload: None,
+                    coalesce_ms: 500,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    /// Drain frames until the first `app_call` command; panics if the channel
+    /// closes first.
+    async fn next_app_call(rx: &mut mpsc::UnboundedReceiver<Value>) -> Value {
+        loop {
+            match rx.recv().await {
+                Some(c) if c["cmd"] == "app_call" => return c,
+                Some(_) => continue,
+                None => panic!("channel closed before an app_call frame"),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn app_call_unknown_action_lists_declared() {
+        let (s, _rx) = server_with_surface(call_surface());
+        let e = s
+            .app_call(Parameters(AppCallParams {
+                action: "nope".into(),
+                args: json!({}),
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("not declared"), "{}", e.message);
+        assert!(
+            e.message.contains("echo") && e.message.contains("ping"),
+            "{}",
+            e.message
+        );
+    }
+
+    #[tokio::test]
+    async fn app_call_rejects_args_that_break_the_schema() {
+        let (s, _rx) = server_with_surface(call_surface());
+        let e = s
+            .app_call(Parameters(AppCallParams {
+                action: "echo".into(),
+                args: json!({ "n": "not-a-number" }),
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("declared schema"), "{}", e.message);
+    }
+
+    #[tokio::test]
+    async fn app_call_round_trips_a_result() {
+        let bridge = UiBridge::new();
+        let (mut rx, _tok) = bridge.attach();
+        let s = AppControlServer::new(bridge.clone(), UiCapability::default(), call_surface());
+        let task = tokio::spawn(async move {
+            s.app_call(Parameters(AppCallParams {
+                action: "echo".into(),
+                args: json!({ "n": 7 }),
+            }))
+            .await
+        });
+        let frame = next_app_call(&mut rx).await;
+        assert_eq!(frame["type"], "ui");
+        assert_eq!(frame["action"], "echo");
+        assert_eq!(frame["args"]["n"], 7);
+        let call_id = frame["callId"].as_str().unwrap().to_string();
+        assert_eq!(call_id.len(), 16, "call id is 16 hex chars: {call_id}");
+        assert!(bridge.resolve_app_call(&call_id, json!({ "result": { "echoed": 7 } })));
+        let r = task.await.unwrap().unwrap();
+        let out: Value = serde_json::from_str(&text_of(&r)).unwrap();
+        assert_eq!(out["echoed"], 7);
+    }
+
+    #[tokio::test]
+    async fn app_call_reports_an_app_error() {
+        let bridge = UiBridge::new();
+        let (mut rx, _tok) = bridge.attach();
+        let s = AppControlServer::new(bridge.clone(), UiCapability::default(), call_surface());
+        let task = tokio::spawn(async move {
+            s.app_call(Parameters(AppCallParams {
+                action: "ping".into(),
+                args: json!({}),
+            }))
+            .await
+        });
+        let call_id = next_app_call(&mut rx).await["callId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(bridge.resolve_app_call(&call_id, json!({ "error": "boom" })));
+        let r = task.await.unwrap().unwrap();
+        assert!(
+            text_of(&r).contains("the app reported an error: boom"),
+            "{}",
+            text_of(&r)
+        );
+    }
+
+    #[tokio::test]
+    async fn app_call_caps_a_huge_result() {
+        let bridge = UiBridge::new();
+        let (mut rx, _tok) = bridge.attach();
+        let s = AppControlServer::new(bridge.clone(), UiCapability::default(), call_surface());
+        let task = tokio::spawn(async move {
+            s.app_call(Parameters(AppCallParams {
+                action: "ping".into(),
+                args: json!({}),
+            }))
+            .await
+        });
+        let call_id = next_app_call(&mut rx).await["callId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let big = "x".repeat(APP_PAYLOAD_MAX + 100);
+        assert!(bridge.resolve_app_call(&call_id, json!({ "result": big })));
+        let r = task.await.unwrap().unwrap();
+        let t = text_of(&r);
+        assert!(t.ends_with("…[truncated]"), "should be truncated");
+        assert!(t.len() <= APP_PAYLOAD_MAX + "…[truncated]".len());
+    }
+
+    #[tokio::test]
+    async fn app_call_times_out_gracefully() {
+        let bridge = UiBridge::new();
+        let (mut rx, _tok) = bridge.attach();
+        bridge.set_app_call_timeout_s(1);
+        let s = AppControlServer::new(bridge.clone(), UiCapability::default(), call_surface());
+        let task = tokio::spawn(async move {
+            s.app_call(Parameters(AppCallParams {
+                action: "ping".into(),
+                args: json!({}),
+            }))
+            .await
+        });
+        // Drain the frame, but never resolve — let the 1s timeout fire.
+        let _ = next_app_call(&mut rx).await;
+        let r = task.await.unwrap().unwrap();
+        assert!(text_of(&r).contains("within 1s"), "{}", text_of(&r));
+    }
+
+    #[tokio::test]
+    async fn app_call_unparks_on_cancel_all() {
+        let bridge = UiBridge::new();
+        let (mut rx, _tok) = bridge.attach();
+        let s = AppControlServer::new(bridge.clone(), UiCapability::default(), call_surface());
+        let task = tokio::spawn(async move {
+            s.app_call(Parameters(AppCallParams {
+                action: "ping".into(),
+                args: json!({}),
+            }))
+            .await
+        });
+        let _ = next_app_call(&mut rx).await;
+        bridge.cancel_all();
+        let r = task.await.unwrap().unwrap();
+        assert!(text_of(&r).contains("cancelled"), "{}", text_of(&r));
+    }
+
+    #[tokio::test]
+    async fn app_call_unparks_on_reattach() {
+        let bridge = UiBridge::new();
+        let (mut rx, _tok) = bridge.attach();
+        let s = AppControlServer::new(bridge.clone(), UiCapability::default(), call_surface());
+        let task = tokio::spawn(async move {
+            s.app_call(Parameters(AppCallParams {
+                action: "ping".into(),
+                args: json!({}),
+            }))
+            .await
+        });
+        let _ = next_app_call(&mut rx).await;
+        // A reload re-attaches, which cancels the parked call (via cancel_all).
+        let (_rx2, _tok2) = bridge.attach();
+        let r = task.await.unwrap().unwrap();
+        assert!(text_of(&r).contains("cancelled"), "{}", text_of(&r));
+    }
+
+    #[tokio::test]
+    async fn emit_result_with_no_pending_says_so() {
+        let (s, _rx) = server();
+        let r = s
+            .emit_result(Parameters(EmitResultParams {
+                result: json!({ "x": 1 }),
+            }))
+            .await
+            .unwrap();
+        assert!(
+            text_of(&r).contains("no structured call is pending"),
+            "{}",
+            text_of(&r)
+        );
+    }
+
+    #[tokio::test]
+    async fn emit_result_valid_emits_output_frame_and_clears_pending() {
+        let bridge = UiBridge::new();
+        let (mut rx, _tok) = bridge.attach();
+        let s = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
+        bridge.set_pending_output(
+            "call-1".into(),
+            Some(json!({ "type": "object", "required": ["ok"] })),
+        );
+        let r = s
+            .emit_result(Parameters(EmitResultParams {
+                result: json!({ "ok": true }),
+            }))
+            .await
+            .unwrap();
+        assert!(
+            text_of(&r).contains("structured result delivered"),
+            "{}",
+            text_of(&r)
+        );
+        let frame = rx.try_recv().unwrap();
+        assert_eq!(frame["type"], "output");
+        assert_eq!(frame["callId"], "call-1");
+        assert_eq!(frame["value"]["ok"], true);
+        assert_eq!(frame["v"], CATALOG_VERSION);
+        assert!(frame.get("schema").is_some(), "schema echoed on the frame");
+        // The pending request was consumed.
+        assert!(bridge.take_pending_output().is_none());
+    }
+
+    #[tokio::test]
+    async fn emit_result_schema_mismatch_is_fixable_and_keeps_pending() {
+        let bridge = UiBridge::new();
+        let (_rx, _tok) = bridge.attach();
+        let s = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
+        bridge.set_pending_output(
+            "c".into(),
+            Some(json!({ "type": "object", "required": ["ok"] })),
+        );
+        let e = s
+            .emit_result(Parameters(EmitResultParams {
+                result: json!({ "nope": 1 }),
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            e.message.contains("declared output schema"),
+            "{}",
+            e.message
+        );
+        // The request is still armed so a corrected retry can satisfy it.
+        assert!(bridge.take_pending_output().is_some());
+    }
+
+    #[tokio::test]
+    async fn emit_result_oversized_is_rejected_and_keeps_pending() {
+        let bridge = UiBridge::new();
+        let (_rx, _tok) = bridge.attach();
+        let s = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
+        bridge.set_pending_output("c".into(), None);
+        let big = "x".repeat(APP_PAYLOAD_MAX + 10);
+        let e = s
+            .emit_result(Parameters(EmitResultParams {
+                result: json!({ "blob": big }),
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("cap is"), "{}", e.message);
+        assert!(bridge.take_pending_output().is_some());
+    }
+
+    #[tokio::test]
+    async fn ui_subscribe_replaces_the_set_and_reports_coalesce() {
+        let (s, _rx) = server_with_surface(call_surface());
+        let r = s
+            .ui_subscribe(Parameters(SubscribeParams {
+                signals: vec!["tick".into(), "raw".into()],
+            }))
+            .await
+            .unwrap();
+        let out: Value = serde_json::from_str(&text_of(&r)).unwrap();
+        let arr = out["subscribed"].as_array().unwrap();
+        let names: Vec<&str> = arr.iter().map(|v| v["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["raw", "tick"]); // sorted
+        let tick = arr.iter().find(|v| v["name"] == "tick").unwrap();
+        assert_eq!(tick["coalesceMs"], 100);
+        // Re-subscribing replaces the set (not a union).
+        let r2 = s
+            .ui_subscribe(Parameters(SubscribeParams {
+                signals: vec!["tick".into()],
+            }))
+            .await
+            .unwrap();
+        let out2: Value = serde_json::from_str(&text_of(&r2)).unwrap();
+        assert_eq!(out2["subscribed"].as_array().unwrap().len(), 1);
+        assert_eq!(s.bridge.subscribed_signals(), vec!["tick".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn ui_subscribe_rejects_an_undeclared_signal() {
+        let (s, _rx) = server_with_surface(call_surface());
+        let e = s
+            .ui_subscribe(Parameters(SubscribeParams {
+                signals: vec!["ghost".into()],
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("not declared"), "{}", e.message);
+        assert!(e.message.contains("tick"), "{}", e.message);
+    }
+
+    #[tokio::test]
+    async fn ui_subscribe_denied_when_capability_off() {
+        let bridge = UiBridge::new();
+        let (_rx, _tok) = bridge.attach();
+        let cap = UiCapability {
+            allow_signals: false,
+            ..Default::default()
+        };
+        let s = AppControlServer::new(bridge, cap, call_surface());
+        let e = s
+            .ui_subscribe(Parameters(SubscribeParams {
+                signals: vec!["tick".into()],
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("allow_signals"), "{}", e.message);
+    }
+
+    #[test]
+    fn validate_signal_checks_subscription_declaration_size_and_schema() {
+        let bridge = UiBridge::new();
+        // AppControlServer::new does this in production; here we mirror it directly.
+        bridge.set_surface_decl(call_surface());
+
+        // Unsubscribed → refused.
+        let e = bridge
+            .validate_signal("tick", &json!({ "n": 1 }))
+            .unwrap_err();
+        assert!(e.contains("not subscribed"), "{e}");
+
+        // Subscribed + declared + schema-valid → ok.
+        bridge.replace_subscriptions(vec!["tick".into()]);
+        assert!(bridge.validate_signal("tick", &json!({ "n": 1 })).is_ok());
+
+        // Schema failure.
+        let e = bridge
+            .validate_signal("tick", &json!({ "n": "x" }))
+            .unwrap_err();
+        assert!(e.contains("declared schema"), "{e}");
+
+        // Oversized payload (raw has no schema, so the size cap is what trips).
+        bridge.replace_subscriptions(vec!["raw".into()]);
+        let big = "x".repeat(APP_PAYLOAD_MAX + 10);
+        let e = bridge
+            .validate_signal("raw", &json!({ "blob": big }))
+            .unwrap_err();
+        assert!(e.contains("cap is"), "{e}");
+
+        // Subscribed to a name the surface never declared (a stale server push).
+        bridge.replace_subscriptions(vec!["mystery".into()]);
+        let e = bridge.validate_signal("mystery", &json!({})).unwrap_err();
+        assert!(e.contains("not declared"), "{e}");
+    }
+
+    #[test]
+    fn emit_frame_sends_raw_frames_unstamped() {
+        let bridge = UiBridge::new();
+        let (mut rx, _tok) = bridge.attach();
+        assert!(bridge.emit_frame(json!({ "type": "custom", "hi": 1 })));
+        let f = rx.try_recv().unwrap();
+        assert_eq!(f["type"], "custom");
+        assert_eq!(f["hi"], 1);
+        // Unlike emit(), emit_frame does not stamp `type:ui` / `v`.
+        assert!(f.get("v").is_none());
+        // With no receiver attached, it reports failure instead of panicking.
+        drop(rx);
+        assert!(!bridge.emit_frame(json!({ "x": 1 })));
     }
 }

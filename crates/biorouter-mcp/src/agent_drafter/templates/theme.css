@@ -44,6 +44,9 @@
   --br-shadow-pop: 0px 8px 24px 0px rgba(32, 25, 15, 0.1), 0px 0px 1px 0px rgba(0, 0, 0, 0.15);
   --br-font: Arial, Helvetica, "Helvetica Neue", system-ui, sans-serif;
   --br-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  /* Heading typeface — defaults to the body font so the base look is unchanged;
+     theme packs override this to give serif/monospace headings. */
+  --br-font-heading: var(--br-font);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -66,6 +69,143 @@
   }
 }
 
+/* ═══════════════════════════════════════════════════════════════════════════
+   Theme packs (Apps SDK v2, Pillar 6)
+   Curated CSS-custom-property layers selected by `data-br-pack` on <html>.
+   `biorouter` is the base above (no overrides). Each pack keeps EVERY token
+   name identical, so all components restyle automatically. Packs use the
+   `:root[data-br-pack="…"]` selector (specificity 0,2,0), which beats both the
+   base `:root` and the `@media dark` base but is still overridden by an
+   explicit `ui_theme` mode (`:root[data-br-theme="…"]`, same specificity, later
+   in source). Dark-native packs set dark values directly and hint the SDK via
+   `--br-forced-mode`.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* clinical — cool slate grays, blue accent, high contrast, compact. */
+:root[data-br-pack="clinical"] {
+  --br-forced-mode: light;
+  --br-bg: #ffffff;
+  --br-surface: #ffffff;
+  --br-muted: #f1f5f9;
+  --br-medium: #e2e8f0;
+  --br-strong: #cbd5e1;
+  --br-accent: #2563eb;
+  --br-accent-hover: #1d4ed8;
+  --br-on-accent: #ffffff;
+  --br-text: #0f172a;
+  --br-text-muted: #475569;
+  --br-border: #e2e8f0;
+  --br-border-subtle: #eef2f6;
+  --br-coral: #ea580c;
+  --br-danger: #dc2626;
+  --br-green: #16a34a;
+  --br-radius: 8px;
+  --br-radius-ctl: 4px;
+  --br-gap: 6px;
+  --br-pad: 8px;
+  --br-font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --br-font-heading: var(--br-font);
+}
+
+/* lab-notebook — warm paper, serif headings, ruled ink-blue borders. */
+:root[data-br-pack="lab-notebook"] {
+  --br-forced-mode: light;
+  --br-bg: #f7f3e8;
+  --br-surface: #fffdf6;
+  --br-muted: #f2ecdb;
+  --br-medium: #e8dfc7;
+  --br-strong: #d8cba6;
+  --br-accent: #34557a;
+  --br-accent-hover: #274063;
+  --br-on-accent: #fffdf6;
+  --br-text: #3a3220;
+  --br-text-muted: #7a6f52;
+  --br-border: #d8cba6;
+  --br-border-subtle: #e3d8ba;
+  --br-coral: #b5502f;
+  --br-danger: #b23b2e;
+  --br-green: #5c7d3a;
+  --br-radius: 4px;
+  --br-radius-ctl: 3px;
+  --br-font-heading: Georgia, "Iowan Old Style", "Times New Roman", serif;
+}
+
+/* terminal — dark, monospace throughout, green accent, sharp corners. */
+:root[data-br-pack="terminal"] {
+  --br-forced-mode: dark;
+  --br-bg: #0a0e0a;
+  --br-surface: #111811;
+  --br-muted: #0f160f;
+  --br-medium: #16211a;
+  --br-strong: #24352a;
+  --br-accent: #3ddc84;
+  --br-accent-hover: #34c576;
+  --br-on-accent: #06120a;
+  --br-text: #d1f7d6;
+  --br-text-muted: #6fae7f;
+  --br-border: #1c2a20;
+  --br-border-subtle: #16211a;
+  --br-coral: #e5a54b;
+  --br-danger: #ff5c5c;
+  --br-green: #3ddc84;
+  --br-radius: 3px;
+  --br-radius-ctl: 2px;
+  --br-font: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --br-font-heading: var(--br-font);
+  --br-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --br-shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.6);
+}
+
+/* journal — light editorial serif, generous spacing, wide measure. */
+:root[data-br-pack="journal"] {
+  --br-forced-mode: light;
+  --br-bg: #fffef9;
+  --br-surface: #ffffff;
+  --br-muted: #f6f3ea;
+  --br-medium: #ece7d8;
+  --br-strong: #d9d1bd;
+  --br-accent: #7a2e2e;
+  --br-accent-hover: #632424;
+  --br-on-accent: #fffef9;
+  --br-text: #26221b;
+  --br-text-muted: #6b6456;
+  --br-border: #e4ddcc;
+  --br-border-subtle: #eee8da;
+  --br-coral: #b0502f;
+  --br-danger: #b23b2e;
+  --br-green: #4f7a3a;
+  --br-radius: 6px;
+  --br-radius-ctl: 4px;
+  --br-gap: 12px;
+  --br-pad: 16px;
+  --br-font: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  --br-font-heading: var(--br-font);
+}
+:root[data-br-pack="journal"] body { font-size: 15.5px; line-height: 1.7; }
+:root[data-br-pack="journal"] .br-container { max-width: 940px; }
+
+/* midnight — deep dark, violet accent. */
+:root[data-br-pack="midnight"] {
+  --br-forced-mode: dark;
+  --br-bg: #0b0b14;
+  --br-surface: #14141f;
+  --br-muted: #1a1a28;
+  --br-medium: #232338;
+  --br-strong: #34344f;
+  --br-accent: #8b5cf6;
+  --br-accent-hover: #7c3aed;
+  --br-on-accent: #ffffff;
+  --br-text: #e8e6f5;
+  --br-text-muted: #a09fc0;
+  --br-border: #262640;
+  --br-border-subtle: #1e1e30;
+  --br-coral: #fb7185;
+  --br-danger: #f43f5e;
+  --br-green: #4ade80;
+  --br-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  --br-shadow-pop: 0 10px 30px rgba(0, 0, 0, 0.6);
+}
+
 * { box-sizing: border-box; }
 
 html, body {
@@ -81,9 +221,9 @@ html, body {
 
 .br-container { max-width: 860px; margin: 0 auto; padding: 28px 24px 56px; }
 
-h1 { font-size: 1.5rem; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 4px; }
-h2 { font-size: 1.15rem; font-weight: 600; margin: 24px 0 8px; }
-h3 { font-size: 1rem; font-weight: 600; margin: 16px 0 6px; }
+h1 { font-family: var(--br-font-heading); font-size: 1.5rem; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 4px; }
+h2 { font-family: var(--br-font-heading); font-size: 1.15rem; font-weight: 600; margin: 24px 0 8px; }
+h3 { font-family: var(--br-font-heading); font-size: 1rem; font-weight: 600; margin: 16px 0 6px; }
 p { margin: 0 0 12px; }
 a { color: var(--br-text); text-decoration: underline; text-underline-offset: 2px; }
 a:hover { color: var(--br-coral); }

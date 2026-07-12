@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{TITLE}}</title>
+</head>
+<body>
+  <main class="br-container" data-br-main>
+    <span class="br-badge">Canvas</span>
+    <h1>{{TITLE}}</h1>
+    <p style="color: var(--br-text-muted); margin-top: 2px;">{{DESCRIPTION}}</p>
+
+    <!-- Presence: the agent's step progress renders here (see main.ts). -->
+    <div data-br-progress class="br-run-status" style="margin-top: 12px;"></div>
+
+    <div class="br-grid br-grid--2" style="margin-top: 16px;">
+      <!-- The author-registered `scene` component mounts here and redraws from
+           the shared /scene state. The agent may also render more scenes via
+           ui_render(target="@region:stage", …). -->
+      <section class="br-card" id="scene" data-br-region="stage" style="min-height: 340px;"></section>
+
+      <aside class="br-card">
+        <h2 style="font-size: 14px; margin: 0 0 8px;">Controls</h2>
+        <div class="br-row" id="pad" style="display: flex; gap: 8px; flex-wrap: wrap;">
+          <button class="br-btn" data-dir="up">Up</button>
+          <button class="br-btn" data-dir="down">Down</button>
+          <button class="br-btn" data-dir="left">Left</button>
+          <button class="br-btn" data-dir="right">Right</button>
+          <button class="br-btn br-btn--ghost" id="reset">Reset</button>
+        </div>
+        <p class="br-text--muted" style="margin: 12px 0 0;">Position</p>
+        <p style="color: var(--br-text); font-weight: 600;">
+          x <span data-br-bind="/scene/x">5</span> · y <span data-br-bind="/scene/y">5</span>
+        </p>
+      </aside>
+    </div>
+
+    <section class="br-output" id="out" data-br-region="notes" style="margin-top: 16px;"></section>
+    <p class="br-footer">Powered by BioRouter · Canvas archetype</p>
+  </main>
+</body>
+</html>

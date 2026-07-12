@@ -57,9 +57,70 @@ fn inject_after(html: &str, needle: &str, insert: &str) -> String {
 }
 
 const THEME_TAG: &str = "<style id=\"biorouter-theme\">";
+const THEME_OVERRIDES_TAG: &str = "<style id=\"biorouter-theme-overrides\">";
 
 fn theme_block() -> String {
     format!("{THEME_TAG}\n{THEME_CSS}\n</style>\n")
+}
+
+/// An extra `<style>` layer carrying the app's sanitized accent + custom token
+/// overrides. Emitted only when the app declares overrides, so a v1/base app's
+/// output is byte-identical to before. Scoped to `:root[data-br-pack]` (an
+/// attribute [`set_root_pack`] always writes when overrides exist), so these
+/// declarations win over both the base `:root` tokens and any pack layer.
+fn theme_overrides_block(manifest: &Manifest) -> Option<String> {
+    let accent = manifest.theme.sanitized_accent();
+    let tokens = manifest.theme.sanitized_tokens();
+    if accent.is_none() && tokens.is_empty() {
+        return None;
+    }
+    let mut decls = String::new();
+    if let Some(a) = accent {
+        decls.push_str(&format!("--br-accent: {a};"));
+    }
+    for (k, v) in &tokens {
+        decls.push_str(&format!(" {k}: {v};"));
+    }
+    Some(format!(
+        "{THEME_OVERRIDES_TAG}\n:root[data-br-pack] {{ {decls} }}\n</style>\n"
+    ))
+}
+
+/// The full injected head CSS: the base design system plus, when the app
+/// customises its theme, an overrides layer.
+fn theme_head(manifest: &Manifest) -> String {
+    let mut s = theme_block();
+    if let Some(ov) = theme_overrides_block(manifest) {
+        s.push_str(&ov);
+    }
+    s
+}
+
+/// The `data-br-pack` value to stamp on `<html>`, or `None` when the base look
+/// with no overrides is in effect (so nothing is written and v1 output is
+/// unchanged). Present for a non-base pack, or whenever overrides exist (the
+/// overrides style keys off the `[data-br-pack]` attribute).
+fn pack_attr_value(manifest: &Manifest) -> Option<&str> {
+    let pack = manifest.theme.resolved_pack();
+    if pack == crate::agent_drafter::manifest::DEFAULT_THEME_PACK && !manifest.theme.has_overrides()
+    {
+        None
+    } else {
+        Some(pack)
+    }
+}
+
+/// Stamp `data-br-pack="<pack>"` onto the document's `<html>` element. Robust to
+/// `<html>` and `<html lang="en">`; if the document has no `<html>` tag (a bare
+/// fragment) the string is returned unchanged — the base tokens still apply.
+fn set_root_pack(html: &str, pack: &str) -> String {
+    if let Some(pos) = html.to_lowercase().find("<html") {
+        let at = pos + "<html".len();
+        let (before, after) = html.split_at(at);
+        format!("{before} data-br-pack=\"{}\"{after}", html_escape(pack))
+    } else {
+        html.to_string()
+    }
 }
 
 /// The script that hands the app SDK its configuration.
@@ -126,12 +187,16 @@ pub fn assemble_app_with_endpoints(
     if let Some(base) = base_href {
         head.push_str(&format!("<base href=\"{}\">\n", html_escape(base)));
     }
-    head.push_str(&theme_block());
+    head.push_str(&theme_head(manifest));
     let mut html = inject_after(index_html, "<head>", &head);
     // If there was no <head>, inject_after fell back to prepending; ensure the
     // theme is still present (it is, since `head` was prepended).
     if !html.contains(THEME_TAG) {
-        html = format!("{}{html}", theme_block());
+        html = format!("{}{html}", theme_head(manifest));
+    }
+    // Select the app's theme pack (and enable its override layer) on <html>.
+    if let Some(pack) = pack_attr_value(manifest) {
+        html = set_root_pack(&html, pack);
     }
 
     let mut tail = app_config_script(manifest, endpoint, endpoints, ws_token);
@@ -142,10 +207,13 @@ pub fn assemble_app_with_endpoints(
 /// A lightweight static preview for inline chat display. No live agent — apps
 /// are launched in the browser. Shows the styled UI plus a launch hint banner.
 pub fn assemble_card(manifest: &Manifest, index_html: &str) -> String {
-    let head = theme_block();
+    let head = theme_head(manifest);
     let mut html = inject_after(index_html, "<head>", &head);
     if !html.contains(THEME_TAG) {
         html = format!("{head}{html}");
+    }
+    if let Some(pack) = pack_attr_value(manifest) {
+        html = set_root_pack(&html, pack);
     }
     let banner = format!(
         "<div style=\"position:sticky;top:0;z-index:10;background:var(--br-medium);\
@@ -663,6 +731,7 @@ mod tests {
             sdk_hash: None,
             session_id: None,
             surface: crate::agent_drafter::manifest::SurfaceDecl::default(),
+            theme: crate::agent_drafter::manifest::ThemeConfig::default(),
         }
     }
 
@@ -743,6 +812,130 @@ mod tests {
         assert!(out.contains("biorouter-theme"));
         assert!(out.contains("Applications panel"));
         assert!(out.contains("<h1>Hi</h1>"));
+    }
+
+    // ── Theme packs (Apps SDK v2, Pillar 6) ─────────────────────────────────
+
+    #[test]
+    fn base_theme_leaves_v1_output_untouched() {
+        // The default `biorouter` pack with no overrides must stamp no attribute
+        // and inject no overrides layer, so a v1 app renders byte-for-byte as it
+        // used to.
+        let m = manifest(ArtifactKind::Static);
+        assert!(m.theme.is_default());
+        let out = assemble_app(
+            &m,
+            "<html lang=\"en\"><head></head><body>hi</body></html>",
+            None,
+            None,
+            None,
+        );
+        // `data-br-pack` appears in theme.css pack selectors, so check the
+        // stamped ATTRIBUTE specifically (right after `<html`).
+        assert!(
+            !out.contains("<html data-br-pack"),
+            "base pack stamps no attribute"
+        );
+        assert!(!out.contains("biorouter-theme-overrides"));
+    }
+
+    #[test]
+    fn named_pack_lands_on_html_element() {
+        use crate::agent_drafter::manifest::ThemeConfig;
+        let mut m = manifest(ArtifactKind::Static);
+        m.theme = ThemeConfig {
+            pack: "clinical".into(),
+            ..Default::default()
+        };
+        let out = assemble_app(
+            &m,
+            "<html lang=\"en\"><head></head><body>hi</body></html>",
+            None,
+            None,
+            None,
+        );
+        assert!(
+            out.contains("<html data-br-pack=\"clinical\" lang=\"en\">"),
+            "pack must stamp <html>: {out}"
+        );
+        // No custom overrides declared → no overrides style layer.
+        assert!(!out.contains("biorouter-theme-overrides"));
+    }
+
+    #[test]
+    fn theme_overrides_are_injected_and_sanitized() {
+        use crate::agent_drafter::manifest::ThemeConfig;
+        use std::collections::HashMap;
+        let mut tokens = HashMap::new();
+        tokens.insert("--br-radius".to_string(), "2px".to_string()); // safe
+        tokens.insert("color".to_string(), "red".to_string()); // bad key: dropped
+        tokens.insert("--br-bg".to_string(), "red; } body{}".to_string()); // breakout: dropped
+        let mut m = manifest(ArtifactKind::Agentic);
+        m.theme = ThemeConfig {
+            pack: "midnight".into(),
+            accent: Some("#8b5cf6".into()),
+            tokens,
+        };
+        let out = assemble_app(
+            &m,
+            "<html><head></head><body></body></html>",
+            None,
+            None,
+            None,
+        );
+        assert!(out.contains("biorouter-theme-overrides"));
+        assert!(
+            out.contains("--br-accent: #8b5cf6;"),
+            "accent override: {out}"
+        );
+        assert!(
+            out.contains("--br-radius: 2px;"),
+            "safe token override kept"
+        );
+        assert!(!out.contains("color: red"), "unsafe key dropped");
+        assert!(!out.contains("red; }"), "breakout value dropped");
+        // Overrides key off the pack attribute, which is stamped for midnight.
+        assert!(out.contains("<html data-br-pack=\"midnight\">"));
+    }
+
+    #[test]
+    fn overrides_on_base_pack_still_stamp_the_attribute() {
+        use crate::agent_drafter::manifest::ThemeConfig;
+        let mut m = manifest(ArtifactKind::Static);
+        m.theme = ThemeConfig {
+            pack: "biorouter".into(),
+            accent: Some("#123456".into()),
+            ..Default::default()
+        };
+        let out = assemble_app(
+            &m,
+            "<html><head></head><body></body></html>",
+            None,
+            None,
+            None,
+        );
+        // The base pack needs the attribute too so `:root[data-br-pack]` matches.
+        assert!(out.contains("<html data-br-pack=\"biorouter\">"));
+        assert!(out.contains("--br-accent: #123456;"));
+    }
+
+    #[test]
+    fn unknown_pack_falls_back_to_base_and_stamps_nothing() {
+        use crate::agent_drafter::manifest::ThemeConfig;
+        let mut m = manifest(ArtifactKind::Static);
+        m.theme = ThemeConfig {
+            pack: "neon-hacker".into(),
+            ..Default::default()
+        };
+        let out = assemble_app(
+            &m,
+            "<html><head></head><body></body></html>",
+            None,
+            None,
+            None,
+        );
+        // resolved_pack() → biorouter, no overrides → no attribute stamped.
+        assert!(!out.contains("<html data-br-pack"));
     }
 
     fn export(m: &Manifest, endpoint: Option<&str>) -> Vec<(String, String)> {

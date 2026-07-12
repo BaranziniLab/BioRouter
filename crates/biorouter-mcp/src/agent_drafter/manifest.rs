@@ -120,6 +120,18 @@ pub struct UiCapability {
     /// Allow `ui_ask` to block a tool call on a user form submission.
     #[serde(default = "yes")]
     pub allow_ask: bool,
+    /// Allow `ui_subscribe` — the agent may subscribe to app→agent signals the
+    /// author declared in `surface.signals`.
+    ///
+    /// **Default: `true`.** Unlike raw HTML, subscribing is safe to grant by
+    /// default: the token cost is bounded by each signal's `coalesce_ms`
+    /// (server-side rate cap) plus the payload/size caps enforced when a signal is
+    /// validated, so a chatty app cannot flood the agent. The genuinely risky
+    /// autonomy switch — letting a signal auto-run a turn on its own (autorun) — is
+    /// a separate capability that lands in a later phase; this flag only governs
+    /// whether the agent may *listen*.
+    #[serde(default = "yes")]
+    pub allow_signals: bool,
     /// Allow `ui_html` to inject server-sanitized rich HTML into the page.
     ///
     /// **Default: `false`** — deliberately unlike the other `allow_*` switches,
@@ -153,6 +165,7 @@ impl Default for UiCapability {
             allow_theme: true,
             allow_layout: true,
             allow_ask: true,
+            allow_signals: true,
             // Off by default even though every sibling defaults on — see the
             // field docs: raw HTML is an XSS surface, so it is opt-in.
             allow_html: false,
@@ -582,4 +595,232 @@ pub struct ComponentDecl {
     /// JSON Schema for the component props (`{}` → unconstrained).
     #[serde(default = "empty_object", skip_serializing_if = "is_empty_object")]
     pub props: serde_json::Value,
+}
+
+// ───────────────────────────── Theme (SDK v2) ──────────────────────────────
+
+/// The curated theme packs an app may select (Apps SDK v2, Pillar 6). Each name
+/// corresponds to a `[data-br-pack="<name>"]` token layer in
+/// `templates/theme.css`. `biorouter` is the base look (no overrides), so an app
+/// that never sets a pack renders exactly like a v1 app.
+pub const THEME_PACKS: &[&str] = &[
+    "biorouter",
+    "clinical",
+    "lab-notebook",
+    "terminal",
+    "journal",
+    "midnight",
+];
+
+/// The base pack — the historical BioRouter light/dark look.
+pub const DEFAULT_THEME_PACK: &str = "biorouter";
+
+fn default_pack() -> String {
+    DEFAULT_THEME_PACK.to_string()
+}
+
+/// True when a token KEY names a `--br-*` custom property, so an override can
+/// only touch the design-system tokens and never inject an arbitrary CSS
+/// declaration.
+pub fn is_safe_token_key(k: &str) -> bool {
+    let rest = match k.strip_prefix("--br-") {
+        Some(r) => r,
+        None => return false,
+    };
+    !rest.is_empty()
+        && k.len() <= 48
+        && rest
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// True when a CSS value is safe to splice into a `--br-*: <value>;`
+/// declaration. Mirrors `ui_theme`'s accent sanitizer (reject `;`/`}`/`{`,
+/// angle brackets, parentheses — which also blocks `url(`/`color-mix(` — plus
+/// quotes/backslash/slash) so an author's token override can never break out of
+/// the rule or smuggle a `url(...)` fetch.
+pub fn is_safe_token_value(v: &str) -> bool {
+    let v = v.trim();
+    !v.is_empty()
+        && v.len() <= 64
+        && !v.contains([';', '}', '{', '<', '>', '(', ')', '"', '\'', '\\', '/'])
+}
+
+/// An app's theme selection: a curated pack plus optional accent and custom
+/// `--br-*` token overrides. Every field defaults to the base look, so a v1
+/// manifest (no `theme` block) deserializes and re-serializes unchanged.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ThemeConfig {
+    /// One of [`THEME_PACKS`]; selects the `[data-br-pack]` token layer. An
+    /// unrecognised value falls back to [`DEFAULT_THEME_PACK`] at render time
+    /// (see [`ThemeConfig::resolved_pack`]).
+    #[serde(default = "default_pack")]
+    pub pack: String,
+    /// Accent colour override, sanitized like `ui_theme`'s accent. `None` → the
+    /// pack's own accent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accent: Option<String>,
+    /// Custom `--br-*` token overrides. Keys must be `--br-*` custom properties
+    /// and values must pass [`is_safe_token_value`]; anything else is dropped at
+    /// render time (see [`ThemeConfig::sanitized_tokens`]).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tokens: HashMap<String, String>,
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            pack: default_pack(),
+            accent: None,
+            tokens: HashMap::new(),
+        }
+    }
+}
+
+impl ThemeConfig {
+    /// True when nothing is customised — used to keep a v1 manifest from gaining
+    /// a `theme: {}` key on re-serialize.
+    pub fn is_default(&self) -> bool {
+        self.pack == DEFAULT_THEME_PACK && self.accent.is_none() && self.tokens.is_empty()
+    }
+
+    /// The selected pack, validated against [`THEME_PACKS`]; an unknown pack
+    /// resolves to [`DEFAULT_THEME_PACK`] so a bad manifest can't inject an
+    /// arbitrary `[data-br-pack]` attribute value.
+    pub fn resolved_pack(&self) -> &str {
+        if THEME_PACKS.contains(&self.pack.as_str()) {
+            &self.pack
+        } else {
+            DEFAULT_THEME_PACK
+        }
+    }
+
+    /// The accent override if it passes the sanitizer, else `None`.
+    pub fn sanitized_accent(&self) -> Option<&str> {
+        self.accent
+            .as_deref()
+            .map(str::trim)
+            .filter(|a| is_safe_token_value(a))
+    }
+
+    /// The token overrides that pass both key and value sanitizers, sorted for a
+    /// deterministic render. Unsafe entries are silently dropped.
+    pub fn sanitized_tokens(&self) -> Vec<(String, String)> {
+        let mut out: Vec<(String, String)> = self
+            .tokens
+            .iter()
+            .filter(|(k, v)| is_safe_token_key(k) && is_safe_token_value(v))
+            .map(|(k, v)| (k.clone(), v.trim().to_string()))
+            .collect();
+        out.sort();
+        out
+    }
+
+    /// True when the app carries an accent or token override the renderer must
+    /// splice in as an extra style layer.
+    pub fn has_overrides(&self) -> bool {
+        self.sanitized_accent().is_some() || !self.sanitized_tokens().is_empty()
+    }
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+
+    #[test]
+    fn theme_config_defaults_are_the_base_look() {
+        let t = ThemeConfig::default();
+        assert_eq!(t.pack, DEFAULT_THEME_PACK);
+        assert!(t.is_default());
+        assert_eq!(t.resolved_pack(), "biorouter");
+        assert!(t.sanitized_accent().is_none());
+        assert!(t.sanitized_tokens().is_empty());
+        assert!(!t.has_overrides());
+    }
+
+    #[test]
+    fn theme_config_roundtrips_through_serde_with_defaults() {
+        // An absent block deserializes to the default.
+        let t: ThemeConfig = serde_json::from_str("{}").unwrap();
+        assert!(t.is_default());
+        // A customised block round-trips losslessly.
+        let src = r##"{"pack":"clinical","accent":"#2563eb","tokens":{"--br-radius":"6px"}}"##;
+        let t: ThemeConfig = serde_json::from_str(src).unwrap();
+        assert_eq!(t.pack, "clinical");
+        assert_eq!(t.accent.as_deref(), Some("#2563eb"));
+        let back = serde_json::to_string(&t).unwrap();
+        let again: ThemeConfig = serde_json::from_str(&back).unwrap();
+        assert_eq!(t, again);
+    }
+
+    #[test]
+    fn every_pack_name_is_known() {
+        for p in THEME_PACKS {
+            let t = ThemeConfig {
+                pack: (*p).to_string(),
+                ..Default::default()
+            };
+            assert_eq!(t.resolved_pack(), *p);
+        }
+    }
+
+    #[test]
+    fn unknown_pack_resolves_to_base() {
+        let t = ThemeConfig {
+            pack: "neon-hacker".into(),
+            ..Default::default()
+        };
+        assert_eq!(t.resolved_pack(), "biorouter");
+        // A non-base string is still not the default (so it is serialized).
+        assert!(!t.is_default());
+    }
+
+    #[test]
+    fn token_sanitizer_drops_unsafe_keys_and_values() {
+        let mut tokens = HashMap::new();
+        tokens.insert("--br-radius".to_string(), "4px".to_string()); // ok
+        tokens.insert("--br-bg".to_string(), " #fff ".to_string()); // ok (trimmed)
+        tokens.insert("color".to_string(), "red".to_string()); // bad key: no --br-
+        tokens.insert("--BR-BG".to_string(), "red".to_string()); // bad key: uppercase
+        tokens.insert("--br-x".to_string(), "red;}body{color:red".into()); // breakout
+        tokens.insert("--br-y".to_string(), "url(http://x)".into()); // url(
+        let t = ThemeConfig {
+            pack: "biorouter".into(),
+            accent: None,
+            tokens,
+        };
+        let safe = t.sanitized_tokens();
+        assert_eq!(safe.len(), 2, "only the two safe tokens survive: {safe:?}");
+        assert!(safe.iter().any(|(k, v)| k == "--br-radius" && v == "4px"));
+        assert!(safe.iter().any(|(k, v)| k == "--br-bg" && v == "#fff"));
+        // sorted, deterministic order
+        assert!(safe.windows(2).all(|w| w[0].0 <= w[1].0));
+    }
+
+    #[test]
+    fn accent_sanitizer_matches_ui_theme_rules() {
+        let ok = ThemeConfig {
+            accent: Some("#2f6f4e".into()),
+            ..Default::default()
+        };
+        assert_eq!(ok.sanitized_accent(), Some("#2f6f4e"));
+        assert!(ok.has_overrides());
+
+        let bad = ThemeConfig {
+            accent: Some("red; background:url(x)".into()),
+            ..Default::default()
+        };
+        assert!(bad.sanitized_accent().is_none());
+        assert!(!bad.has_overrides());
+    }
+
+    #[test]
+    fn token_value_length_is_capped() {
+        assert!(is_safe_token_value("#abc"));
+        assert!(!is_safe_token_value("")); // empty rejected
+        assert!(!is_safe_token_value(&"a".repeat(65))); // over the 64-char cap
+        assert!(is_safe_token_key("--br-accent-hover"));
+        assert!(!is_safe_token_key("--br-")); // empty suffix
+        assert!(!is_safe_token_key("accent")); // not a --br- prop
+    }
 }

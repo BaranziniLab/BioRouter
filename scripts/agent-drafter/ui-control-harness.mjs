@@ -661,6 +661,376 @@ async function runSelftest() {
     );
   }
 
+  // ── Scenario L: app.actions — app_call round-trip, errors, truncation ──────
+  win.eval(
+    "window.BioRouter.actions.register('greet', function (args) { return { hello: (args && args.who) || '?' }; });" +
+      "window.BioRouter.actions.register('boom', function () { throw new Error('kaboom'); });" +
+      "window.BioRouter.actions.register('big', function () { return { blob: new Array(70001).join('x') }; });" +
+      "window.BioRouter.actions.register('slow', function (args) { return Promise.resolve({ doubled: (args && args.n) * 2 }); });"
+  );
+  emitUi({ cmd: "app_call", callId: "ac1", action: "greet", args: { who: "Ada" } });
+  await waitFor(() => received.some((f) => f.type === "app_result" && f.callId === "ac1"));
+  {
+    const r = received.find((f) => f.type === "app_result" && f.callId === "ac1");
+    check("app_call dispatches to the registered handler and returns its result", !!r && r.result && r.result.hello === "Ada", JSON.stringify(r));
+  }
+  // An async handler resolves before app_result is sent.
+  emitUi({ cmd: "app_call", callId: "ac5", action: "slow", args: { n: 21 } });
+  await waitFor(() => received.some((f) => f.type === "app_result" && f.callId === "ac5"));
+  {
+    const r = received.find((f) => f.type === "app_result" && f.callId === "ac5");
+    check("an async (Promise) handler's resolved value is awaited", !!r && r.result && r.result.doubled === 42, JSON.stringify(r));
+  }
+  emitUi({ cmd: "app_call", callId: "ac2", action: "nope" });
+  await waitFor(() => received.some((f) => f.type === "app_result" && f.callId === "ac2"));
+  {
+    const r = received.find((f) => f.type === "app_result" && f.callId === "ac2");
+    check("an unregistered action yields an app_result error", !!r && r.error === "no handler registered for nope", JSON.stringify(r));
+  }
+  emitUi({ cmd: "app_call", callId: "ac3", action: "boom" });
+  await waitFor(() => received.some((f) => f.type === "app_result" && f.callId === "ac3"));
+  {
+    const r = received.find((f) => f.type === "app_result" && f.callId === "ac3");
+    check("a throwing handler yields an app_result error string", !!r && r.error === "kaboom", JSON.stringify(r));
+  }
+  emitUi({ cmd: "app_call", callId: "ac4", action: "big" });
+  await waitFor(() => received.some((f) => f.type === "app_result" && f.callId === "ac4"));
+  {
+    const r = received.find((f) => f.type === "app_result" && f.callId === "ac4");
+    const wrapped = r && r.result;
+    check(
+      "an oversized result is truncated inside a {truncated,text} wrapper",
+      !!wrapped && wrapped.truncated === true && typeof wrapped.text === "string" && wrapped.text.length <= 64 * 1024 + 32 && /…\[truncated\]$/.test(wrapped.text),
+      JSON.stringify({ truncated: wrapped && wrapped.truncated, len: wrapped && (wrapped.text || "").length })
+    );
+  }
+  check(
+    "br.actions.list() reports the registered action names",
+    win.eval("window.BioRouter.actions.list().indexOf('greet') >= 0 && window.BioRouter.actions.list().indexOf('boom') >= 0"),
+    win.eval("JSON.stringify(window.BioRouter.actions.list())")
+  );
+
+  // ── Scenario M: br.call — typed turns with structured / prose results ──────
+  win.eval(
+    "window.__callResult = null;" +
+      "window.BioRouter.call({ name: 'analyze', args: { x: 1 }, outputSchema: { type: 'object' } }).then(function (r) { window.__callResult = r; });"
+  );
+  await waitFor(() => received.some((f) => f.type === "call"));
+  const callFrame = received.find((f) => f.type === "call");
+  check("br.call sends a call frame with a fresh callId", !!callFrame && typeof callFrame.callId === "string" && callFrame.callId.length > 0, JSON.stringify(callFrame));
+  check(
+    "call frame carries name/args/outputSchema (name+args form)",
+    !!callFrame && callFrame.name === "analyze" && callFrame.args && callFrame.args.x === 1 && !!callFrame.outputSchema,
+    JSON.stringify(callFrame)
+  );
+  send({ type: "output", callId: callFrame.callId, value: { score: 42 } });
+  await waitFor(() => win.eval("window.__callResult") != null);
+  check(
+    "br.call resolves {value} when a matching output frame arrives",
+    win.eval("window.__callResult && window.__callResult.value && window.__callResult.value.score") === 42,
+    win.eval("JSON.stringify(window.__callResult)")
+  );
+
+  win.eval(
+    "window.__callText = null;" +
+      "window.BioRouter.call({ text: 'summarize the cohort' }).then(function (r) { window.__callText = r; });"
+  );
+  await waitFor(() => received.filter((f) => f.type === "call").length >= 2);
+  const callFrame2 = received.filter((f) => f.type === "call").pop();
+  check("text-only br.call sends a call frame with text and no name", !!callFrame2 && callFrame2.text === "summarize the cohort" && callFrame2.name === undefined, JSON.stringify(callFrame2));
+  send({ type: "message", delta: "Cohort " });
+  send({ type: "message", delta: "has 7 rows." });
+  send({ type: "done" });
+  await waitFor(() => win.eval("window.__callText") != null);
+  check(
+    "br.call resolves {text} when the turn ends (done) without an output frame",
+    win.eval("window.__callText && window.__callText.text") === "Cohort has 7 rows.",
+    win.eval("JSON.stringify(window.__callText)")
+  );
+
+  // Supersede: a second superseding call on the same key cancels the first.
+  const baseSup = received.length;
+  win.eval(
+    "window.__sup1 = null; window.__sup2 = null;" +
+      "window.BioRouter.call({ name: 'search', args: { q: 'a' }, supersede: true }).then(function (r) { window.__sup1 = r; });" +
+      "window.BioRouter.call({ name: 'search', args: { q: 'ab' }, supersede: true }).then(function (r) { window.__sup2 = r; });"
+  );
+  await waitFor(() => win.eval("window.__sup1") != null);
+  check("a superseded br.call resolves {superseded:true}", win.eval("window.__sup1 && window.__sup1.superseded") === true, win.eval("JSON.stringify(window.__sup1)"));
+  const supFrames = received.slice(baseSup);
+  check("supersede sends a cancel frame for the in-flight turn", supFrames.some((f) => f.type === "cancel"), JSON.stringify(supFrames.map((f) => f.type)));
+  check("supersede still sends both call frames (old + new)", supFrames.filter((f) => f.type === "call" && f.name === "search").length === 2, JSON.stringify(supFrames.map((f) => f.type)));
+
+  // ── Scenario N: app.signals — declared coalescing, trailing-edge, last-wins ─
+  send({
+    type: "ready",
+    protocol: 2,
+    capabilities: ["ui"],
+    sessionId: "harness",
+    resumed: false,
+    surface: {
+      signals: [
+        { name: "filter_changed", coalesceMs: 40 },
+        { name: "node_selected", coalesceMs: 30 },
+      ],
+      actions: ["greet"],
+    },
+  });
+  await waitFor(() => win.eval("window.BioRouter.signals.declared().length") >= 2);
+  check(
+    "the ready surface's signals are latched into signals.declared()",
+    win.eval("window.BioRouter.signals.declared().map(function (s) { return s.name; }).indexOf('filter_changed') >= 0"),
+    win.eval("JSON.stringify(window.BioRouter.signals.declared())")
+  );
+  const baseSig = received.length;
+  win.eval(
+    "window.BioRouter.signals.emit('filter_changed', { q: 'first' });" +
+      "window.BioRouter.signals.emit('filter_changed', { q: 'second' });"
+  );
+  await waitFor(() => received.slice(baseSig).some((f) => f.type === "signal" && f.name === "filter_changed"), 2000);
+  await delay(80);
+  {
+    const sigs = received.slice(baseSig).filter((f) => f.type === "signal" && f.name === "filter_changed");
+    check("two rapid emits within the declared window coalesce to ONE signal frame", sigs.length === 1, "count=" + sigs.length);
+    check("the coalesced signal carries the LAST payload", sigs[0] && sigs[0].payload && sigs[0].payload.q === "second", JSON.stringify(sigs[0]));
+  }
+  // An UNdeclared signal falls back to the 250ms default (proves declared wins).
+  const baseUn = received.length;
+  win.eval(
+    "window.BioRouter.signals.emit('mystery', { v: 1 });" +
+      "window.BioRouter.signals.emit('mystery', { v: 2 });"
+  );
+  await delay(80);
+  check(
+    "an undeclared signal uses the 250ms default (no frame yet at 80ms)",
+    !received.slice(baseUn).some((f) => f.type === "signal" && f.name === "mystery"),
+    "names=" + JSON.stringify(received.slice(baseUn).filter((f) => f.type === "signal").map((f) => f.name))
+  );
+  await waitFor(() => received.slice(baseUn).some((f) => f.type === "signal" && f.name === "mystery"), 1500);
+  {
+    const myst = received.slice(baseUn).filter((f) => f.type === "signal" && f.name === "mystery");
+    check("the undeclared signal eventually sends ONE frame with the last payload", myst.length === 1 && myst[0].payload && myst[0].payload.v === 2, JSON.stringify(myst));
+  }
+
+  // ── Scenario O: network selection auto-emits the declared node_selected ─────
+  const baseNode = received.length;
+  emitUi({
+    cmd: "render",
+    target: "@region:results",
+    body: [
+      {
+        t: "network",
+        id: "net2",
+        spec: { nodes: [{ id: "x1", label: "X" }, { id: "x2", label: "Y" }], edges: [{ source: "x1", target: "x2" }] },
+      },
+    ],
+  });
+  await waitFor(() => doc.querySelector("[data-br-iid='net2'] canvas"));
+  win.eval("window.BioRouter.ui.network('net2').select('x1');");
+  await waitFor(() => received.slice(baseNode).some((f) => f.type === "signal" && f.name === "node_selected"), 2000);
+  {
+    const nodeSig = received.slice(baseNode).filter((f) => f.type === "signal" && f.name === "node_selected");
+    check("selecting a network node auto-emits a node_selected signal (declared)", nodeSig.length >= 1, JSON.stringify(nodeSig.map((f) => f.payload)));
+    check(
+      "the node_selected payload carries {id, instance}",
+      nodeSig[0] && nodeSig[0].payload && nodeSig[0].payload.id === "x1" && nodeSig[0].payload.instance === "net2",
+      JSON.stringify(nodeSig[0] && nodeSig[0].payload)
+    );
+  }
+
+  // ── Scenario P: br.kb — grant gating, search/page/ingest, timeout ──────────
+  // At this point the last `ready` advertised only ["ui"] (scenario N), so the
+  // KB grant is absent: a kb call must reject immediately without a round-trip.
+  const baseNoGrant = received.length;
+  win.eval(
+    "window.__kbNoGrant = 'pending';" +
+      "window.BioRouter.kb.search('x').then(" +
+      "  function () { window.__kbNoGrant = 'resolved'; }," +
+      "  function (e) { window.__kbNoGrant = String(e && e.message); });"
+  );
+  await waitFor(() => win.eval("window.__kbNoGrant") !== "pending");
+  check(
+    "br.kb rejects immediately with a clear error when no KB grant is advertised",
+    /knowledge-base grant/i.test(win.eval("window.__kbNoGrant")),
+    win.eval("window.__kbNoGrant")
+  );
+  check(
+    "an ungranted br.kb call sends NO kb frame (pure pre-reject)",
+    !received.slice(baseNoGrant).some((f) => f.type === "kb"),
+    JSON.stringify(received.slice(baseNoGrant).map((f) => f.type))
+  );
+
+  // Advertise the `data` grant (what manifest.advertised() emits for a KB
+  // source); the KB methods now round-trip to the server.
+  send({ type: "ready", protocol: 2, capabilities: ["ui", "data"], sessionId: "harness", resumed: false });
+  await waitFor(() => win.eval("window.BioRouter.has('data')"));
+  check("a ready frame advertising 'data' lifts the KB grant gate", win.eval("window.BioRouter.has('data')") === true);
+
+  // Scenario P1: search resolves.
+  const baseSearch = received.length;
+  win.eval(
+    "window.__search = null;" +
+      "window.BioRouter.kb.search('cohort', { limit: 5 }).then(" +
+      "  function (r) { window.__search = r; }," +
+      "  function (e) { window.__search = { err: String(e.message) }; });"
+  );
+  await waitFor(() => received.slice(baseSearch).some((f) => f.type === "kb" && f.op === "search"));
+  const sf = received.slice(baseSearch).find((f) => f.type === "kb" && f.op === "search");
+  check(
+    "br.kb.search sends a kb frame {op:search, params.query/limit, fresh reqId}",
+    !!sf && sf.op === "search" && sf.params && sf.params.query === "cohort" && sf.params.limit === 5 && typeof sf.reqId === "string" && sf.reqId.length > 0,
+    JSON.stringify(sf)
+  );
+  send({ type: "kb_result", reqId: sf.reqId, result: { hits: [{ path: "a.md", score: 0.9 }] } });
+  await waitFor(() => win.eval("window.__search") != null);
+  check(
+    "br.kb.search resolves with the server's result on kb_result",
+    win.eval("window.__search && window.__search.hits && window.__search.hits.length") === 1,
+    win.eval("JSON.stringify(window.__search)")
+  );
+
+  // Scenario P2: error rejects with Error(error).
+  const baseErr = received.length;
+  win.eval(
+    "window.__pageErr = null;" +
+      "window.BioRouter.kb.page('missing.md').then(" +
+      "  function (r) { window.__pageErr = { ok: r }; }," +
+      "  function (e) { window.__pageErr = String(e.message); });"
+  );
+  await waitFor(() => received.slice(baseErr).some((f) => f.type === "kb" && f.op === "page"));
+  const pf = received.slice(baseErr).find((f) => f.type === "kb" && f.op === "page");
+  check("br.kb.page sends {op:page, params.path}", !!pf && pf.params && pf.params.path === "missing.md", JSON.stringify(pf));
+  send({ type: "kb_result", reqId: pf.reqId, error: "page not found" });
+  await waitFor(() => win.eval("window.__pageErr") != null);
+  check(
+    "a kb_result carrying an error rejects with Error(error)",
+    win.eval("window.__pageErr") === "page not found",
+    win.eval("JSON.stringify(window.__pageErr)")
+  );
+
+  // Scenario P3: ingest streams two progress events, then the final result.
+  const baseIng = received.length;
+  win.eval(
+    "window.__ingProg = []; window.__ingDone = null;" +
+      "window.BioRouter.kb.ingest([{ url: 'https://x' }], {" +
+      "  onProgress: function (p) { window.__ingProg.push(p.stage + ':' + (p.pct == null ? '-' : p.pct)); } })" +
+      ".then(function (r) { window.__ingDone = r; }, function (e) { window.__ingDone = { err: String(e.message) }; });"
+  );
+  await waitFor(() => received.slice(baseIng).some((f) => f.type === "kb" && f.op === "ingest"));
+  const inf = received.slice(baseIng).find((f) => f.type === "kb" && f.op === "ingest");
+  check(
+    "br.kb.ingest sends {op:ingest, params.items}",
+    !!inf && inf.params && Array.isArray(inf.params.items) && inf.params.items.length === 1,
+    JSON.stringify(inf)
+  );
+  send({ type: "kb_progress", reqId: inf.reqId, stage: "fetch", pct: 10 });
+  send({ type: "kb_progress", reqId: inf.reqId, stage: "digest", detail: "page 1", pct: 60 });
+  await waitFor(() => win.eval("window.__ingProg.length") >= 2);
+  check(
+    "br.kb.ingest routes each kb_progress frame to onProgress, in order",
+    win.eval("window.__ingProg.join('|')") === "fetch:10|digest:60",
+    win.eval("window.__ingProg.join('|')")
+  );
+  check("br.kb.ingest does not resolve before its final kb_result", win.eval("window.__ingDone") == null);
+  send({ type: "kb_result", reqId: inf.reqId, result: { added: 1 } });
+  await waitFor(() => win.eval("window.__ingDone") != null);
+  check(
+    "br.kb.ingest resolves with the final kb_result after the progress stream",
+    win.eval("window.__ingDone && window.__ingDone.added") === 1,
+    win.eval("JSON.stringify(window.__ingDone)")
+  );
+
+  // Scenario P4: timeout rejects (100ms per-call override; no reply is sent).
+  const baseTo = received.length;
+  win.eval(
+    "window.__toRes = null;" +
+      "window.BioRouter.kb.search('slow', { timeoutMs: 100 }).then(" +
+      "  function (r) { window.__toRes = { ok: r }; }," +
+      "  function (e) { window.__toRes = String(e.message); });"
+  );
+  await waitFor(() => received.slice(baseTo).some((f) => f.type === "kb" && f.op === "search"));
+  await waitFor(() => win.eval("window.__toRes") != null, 1500);
+  check(
+    "br.kb rejects with a timeout Error when no reply arrives within timeoutMs",
+    typeof win.eval("window.__toRes") === "string" && /timed out/i.test(win.eval("window.__toRes")),
+    win.eval("JSON.stringify(window.__toRes)")
+  );
+
+  // ── Scenario Q: br.model.status() round-trip ───────────────────────────────
+  const baseMs = received.length;
+  win.eval(
+    "window.__ms = null;" +
+      "window.BioRouter.model.status().then(" +
+      "  function (s) { window.__ms = s; }, function (e) { window.__ms = { err: String(e.message) }; });"
+  );
+  await waitFor(() => received.slice(baseMs).some((f) => f.type === "model_status"));
+  check(
+    "br.model.status() sends a model_status request frame (no params)",
+    received.slice(baseMs).some((f) => f.type === "model_status"),
+    JSON.stringify(received.slice(baseMs).map((f) => f.type))
+  );
+  send({ type: "model_status", provider: "llamacpp", model: "qwen3.5-4b", ready: false, detail: "downloading 42%" });
+  await waitFor(() => win.eval("window.__ms") != null);
+  check(
+    "br.model.status() resolves {provider,model,ready,detail} from the reply",
+    win.eval("window.__ms && window.__ms.provider") === "llamacpp" &&
+      win.eval("window.__ms.model") === "qwen3.5-4b" &&
+      win.eval("window.__ms.ready") === false &&
+      /downloading/.test(win.eval("String(window.__ms && window.__ms.detail)")),
+    win.eval("JSON.stringify(window.__ms)")
+  );
+
+  // ── Scenario R: br.kb.graphToNetwork — pure KB-graph → network-spec mapping ─
+  win.eval(
+    "window.__net = window.BioRouter.kb.graphToNetwork({" +
+      "  nodes: [" +
+      "    { id: 'n1', label: 'Gene A', kind: 'Gene' }," +
+      "    { id: 'n2', label: 'Disease B', kind: 'Disease' }," +
+      "    { id: 'n3', label: 'Untyped' }," + // missing type → tolerated
+      "    'n4'," + // bare string node → id === label
+      "    { label: 'no-id' }" + // dropped: no usable id
+      "  ]," +
+      "  edges: [" +
+      "    { from: 'n1', to: 'n2', relation: 'associated_with' }," +
+      "    { source: 'n2', target: 'n3' }," + // alt field names, no kind
+      "    { from: 'n1' }" + // dropped: no target
+      "  ]" +
+      "});"
+  );
+  const netDump = win.eval("JSON.stringify(window.__net)");
+  check("graphToNetwork drops id-less nodes (4 of 5 map)", win.eval("window.__net.nodes.length") === 4, netDump);
+  check(
+    "graphToNetwork maps node kind→type",
+    win.eval("window.__net.nodes[0].type") === "Gene" && win.eval("window.__net.nodes[1].type") === "Disease",
+    netDump
+  );
+  check(
+    "graphToNetwork tolerates a missing-type node (type undefined, label kept)",
+    win.eval("typeof window.__net.nodes[2].type") === "undefined" && win.eval("window.__net.nodes[2].label") === "Untyped",
+    netDump
+  );
+  check(
+    "graphToNetwork accepts a bare string node (id === label)",
+    win.eval("window.__net.nodes[3].id") === "n4" && win.eval("window.__net.nodes[3].label") === "n4",
+    netDump
+  );
+  check(
+    "graphToNetwork maps edges to {source,target,kind} across from/to & source/target (drops incomplete)",
+    win.eval("window.__net.edges.length") === 2 &&
+      win.eval("window.__net.edges[0].source") === "n1" &&
+      win.eval("window.__net.edges[0].target") === "n2" &&
+      win.eval("window.__net.edges[0].kind") === "associated_with",
+    netDump
+  );
+  check(
+    "graphToNetwork tolerates an edge with no kind (kind undefined)",
+    win.eval("window.__net.edges[1].source") === "n2" &&
+      win.eval("window.__net.edges[1].target") === "n3" &&
+      win.eval("typeof window.__net.edges[1].kind") === "undefined",
+    netDump
+  );
+  check("graphToNetwork is defensive about a non-graph input (empty spec)", win.eval("(function(){var n=window.BioRouter.kb.graphToNetwork(null);return n.nodes.length===0&&n.edges.length===0;})()"));
+
   dom.window.close();
   log(failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`);
   return failures === 0 ? 0 : 1;

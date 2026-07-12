@@ -57,6 +57,11 @@ export interface ImageInput {
 
 export interface PromptOptions {
   images?: ImageInput[];
+  // SDK v2 (`br.run` turn control): trailing-edge debounce per run target, and
+  // supersede — cancel the in-flight superseding run (resolving it early with
+  // its partial text) and start this one instead of queueing behind it.
+  debounceMs?: number;
+  supersede?: boolean;
 }
 
 export interface TimelineOptions {
@@ -71,14 +76,14 @@ export interface TimelineSummary {
 
 /** Events emitted while the agent answers a prompt. */
 export type AgentEvent =
-  | { type: "ready"; protocol?: number; capabilities?: string[]; sessionId?: string; resumed?: boolean; messageCount?: number }
+  | { type: "ready"; protocol?: number; capabilities?: string[]; sessionId?: string; resumed?: boolean; messageCount?: number; surface?: ReadySurface }
   | { type: "message"; delta: string }
   | { type: "thought"; delta: string }
   | { type: "tool"; name: string; status: string; id?: string }
   | { type: "done" }
   | { type: "error"; message: string }
   // ── BRSDK protocol v2 (additive; gated by the ready frame's capabilities) ──
-  | { type: "output"; schema?: unknown; value: unknown }
+  | { type: "output"; callId?: string; schema?: unknown; value: unknown }
   | { type: "usage"; inputTokens?: number; outputTokens?: number; totalTokens?: number; model?: string }
   | { type: "guardrail"; stage?: string; name?: string; blocked?: boolean; reason?: string }
   | { type: "approval"; requestId: string; tool: string; args?: unknown; prompt?: string | null }
@@ -90,6 +95,10 @@ export type AgentEvent =
   | { type: "history"; messages?: Array<{ role: string; text: string }> }
   | { type: "model"; ok: boolean; provider?: string; model?: string }
   | { type: "widget"; id: string; tree: unknown }
+  // ── SDK v2 Phase 4 (br.kb + model status; additive, gated by capabilities) ──
+  | { type: "kb_result"; reqId?: string; result?: unknown; error?: string }
+  | { type: "kb_progress"; reqId?: string; stage?: string; detail?: string; pct?: number }
+  | { type: "model_status"; provider?: string; model?: string; ready?: boolean; detail?: string }
   // ── Agent-driven UI control (BRSDK v3) ──
   // The agent's `ui_*` tools push these; the UI runtime below applies them.
   | ({ type: "ui" } & UiCommand);
@@ -101,6 +110,216 @@ type Listener = (ev: AgentEvent) => void;
 // bare `(() => void)` annotation lacks).
 type ResolveFn = () => void;
 type RejectFn = (e: Error) => void;
+
+// ── SDK v2 Phase 3: app.actions / br.call / app.signals ──────────────────────
+// Single-ident named aliases (see note above): a bare inline function/object
+// annotation would survive the no-esbuild fallback stripper, so every callback
+// and record shape used in *code* positions goes through a named type.
+type ActionHandler = (args: unknown) => unknown;
+type CallResolve = (r: CallResult) => void;
+type RunEarly = () => void;
+type RunResolve = (text: string) => void;
+
+/** The `output` frame's fields, named so a `msg as OutputFrame` cast survives the
+ *  fallback stripper (an inline object-type cast does not). */
+interface OutputFrame {
+  callId?: string;
+  value?: unknown;
+  schema?: unknown;
+}
+
+/** The `br-network-select` CustomEvent shape (named for a strip-safe cast). */
+interface NetSelectDetail {
+  id: string | null;
+}
+interface NetSelectEvent {
+  detail?: NetSelectDetail;
+  target?: ElementLike;
+}
+interface ElementLike {
+  closest?: (sel: string) => ElementLike | null;
+  getAttribute: (name: string) => string | null;
+}
+
+/** Normalised argument bag for `br.call` (and the run-control subset). */
+interface CallOpts {
+  name?: string;
+  args?: unknown;
+  text?: string;
+  outputSchema?: unknown;
+  debounceMs?: number;
+  supersede?: boolean;
+}
+
+/** What `br.call` resolves to: a structured `value` (from an `output` frame), or
+ *  the accumulated `text` of the turn, or `superseded` when a newer call replaced
+ *  it before it finished. */
+interface CallResult {
+  value?: unknown;
+  text?: string;
+  superseded?: boolean;
+}
+
+/** A `br.call` turn awaiting its `output`/`done`/`error`. */
+interface PendingCall {
+  callId: string;
+  key: string;
+  resolve: CallResolve;
+  reject: RejectFn;
+  textBuf: string;
+  settled: boolean;
+  superseding: boolean;
+}
+
+/** A trailing-edge debounce slot for `br.call`, keyed by call-key. */
+interface CallDebounceRec {
+  timer: ReturnType<typeof setTimeout>;
+  resolve: CallResolve;
+}
+
+/** A pending coalesced signal (trailing-edge, last-payload-wins). */
+interface SignalRec {
+  payload: unknown;
+  timer: number | ReturnType<typeof setTimeout>;
+}
+
+/** One declared signal from the `ready` surface (`coalesceMs` defaults to 250). */
+interface SignalDecl {
+  name: string;
+  coalesceMs?: number;
+}
+
+/** The `ready` frame's optional advertised surface. */
+interface ReadySurface {
+  signals?: SignalDecl[];
+  actions?: string[];
+}
+
+/** Live handle for an in-flight `br.run`, so a superseding run can resolve the
+ *  prior one early with its partial text. */
+interface RunHandle {
+  superseding: boolean;
+  settled: boolean;
+  partial: string;
+  resolveEarly: RunEarly;
+}
+
+/** A trailing-edge debounce slot for `br.run`, keyed by run target. */
+interface RunDebounceRec {
+  timer: ReturnType<typeof setTimeout>;
+  resolve: RunResolve;
+  reject: RejectFn;
+}
+
+// ── SDK v2 Phase 4: br.kb (knowledge bases) + br.model.status ────────────────
+// Single-ident named aliases (see the note near ResolveFn): every callback and
+// record shape used in a *code* position goes through a named type so the
+// no-esbuild fallback stripper can erase the annotation.
+/** What a `br.kb` request resolves to — op-shaped and opaque to the SDK. */
+type KbResult = unknown;
+/** Resolve fn for a pending `br.kb` request. */
+type KbResolve = (r: KbResult) => void;
+/** `br.kb.ingest` progress callback. */
+type KbProgressFn = (p: KbProgress) => void;
+/** `br.model.status()` resolve fn. */
+type ModelStatusResolve = (s: ModelStatus) => void;
+
+/** A `kb_progress` frame streamed during an `ingest`. */
+interface KbProgress {
+  stage: string;
+  detail?: string;
+  pct?: number;
+}
+/** Options common to every `br.kb` call (per-call timeout override). */
+interface KbCallOpts {
+  timeoutMs?: number;
+}
+/** Options for `br.kb.search`. */
+interface KbSearchOpts {
+  limit?: number;
+  timeoutMs?: number;
+}
+/** The server-side `params` a `br.kb.search` sends. */
+interface KbSearchParams {
+  query: string;
+  limit?: number;
+}
+/** Options for `br.kb.ingest`. */
+interface KbIngestOpts {
+  onProgress?: KbProgressFn;
+  timeoutMs?: number;
+}
+/** A `br.kb` request awaiting its terminal `kb_result`. */
+interface PendingKb {
+  reqId: string;
+  op: string;
+  resolve: KbResolve;
+  reject: RejectFn;
+  onProgress?: KbProgressFn;
+  timer: number | ReturnType<typeof setTimeout>;
+  settled: boolean;
+}
+/** The fields of a `kb_result` frame (named for a strip-safe cast). */
+interface KbResultFrame {
+  reqId?: string;
+  result?: unknown;
+  error?: string;
+}
+/** The fields of a `kb_progress` frame (named for a strip-safe cast). */
+interface KbProgressFrame {
+  reqId?: string;
+  stage?: string;
+  detail?: string;
+  pct?: number;
+}
+/** What `br.model.status()` resolves to. */
+interface ModelStatus {
+  provider?: string;
+  model?: string;
+  ready?: boolean;
+  detail?: string;
+}
+/** The fields of a `model_status` reply frame (named for a strip-safe cast). */
+interface ModelStatusFrame {
+  provider?: string;
+  model?: string;
+  ready?: boolean;
+  detail?: string;
+}
+/** A pending `br.model.status()` awaiting its reply (or timeout). */
+interface PendingModelStatus {
+  resolve: ModelStatusResolve;
+  reject: RejectFn;
+  timer: number | ReturnType<typeof setTimeout>;
+  settled: boolean;
+}
+/** A KB `graph()` result's loose node shape (defensive field access). */
+interface KbNodeLike {
+  id?: unknown;
+  name?: unknown;
+  label?: unknown;
+  title?: unknown;
+  type?: unknown;
+  kind?: unknown;
+  group?: unknown;
+}
+/** A KB `graph()` result's loose edge shape (defensive field access). */
+interface KbEdgeLike {
+  source?: unknown;
+  target?: unknown;
+  from?: unknown;
+  to?: unknown;
+  kind?: unknown;
+  relation?: unknown;
+  predicate?: unknown;
+  label?: unknown;
+  type?: unknown;
+}
+/** A KB `graph()` result envelope (`{nodes, edges}`, both loose). */
+interface KbGraphLike {
+  nodes?: unknown[];
+  edges?: unknown[];
+}
 
 declare global {
   interface Window {
@@ -212,6 +431,36 @@ export class BioRouterClient {
   readonly ui: UiRuntime;
   /** The endpoint that actually connected (useful in diagnostics). */
   activeEndpoint: string | null = null;
+  // ── SDK v2 Phase 3 ──
+  // Author-registered action handlers (`br.actions`), invoked by `app_call`.
+  private actionHandlers: Map<string, ActionHandler> = new Map();
+  // `br.call` turns awaiting resolution, keyed by callId, plus the currently
+  // streaming turn (message deltas / done / error attach to it) and the
+  // in-flight *superseding* call per call-key (so a newer one can cancel it).
+  private pendingCalls: Map<string, PendingCall> = new Map();
+  private callInFlight: Map<string, PendingCall> = new Map();
+  private callDebounce: Map<string, CallDebounceRec> = new Map();
+  private activeCall: PendingCall | null = null;
+  private callSeq = 0;
+  // `br.signals`: client-side trailing-edge coalescing + the `ready`-advertised
+  // surface (signal names + coalesce windows, and the action names the agent
+  // may `app_call`).
+  private signalPending: Map<string, SignalRec> = new Map();
+  private signalDeclMap: Map<string, SignalDecl> = new Map();
+  private declaredSignals: SignalDecl[] = [];
+  private declaredActions: string[] = [];
+  // In-flight `br.run` (for supersede) + its trailing-edge debounce slots.
+  private activeRun: RunHandle | null = null;
+  private runDebounce: Map<string, RunDebounceRec> = new Map();
+  // ── SDK v2 Phase 4 ──
+  // In-flight `br.kb` requests, keyed by reqId, plus a monotonic reqId counter
+  // and a latch for whether a `ready` frame has been seen (so the KB grant
+  // pre-check only fires once the capability vocabulary is known).
+  private pendingKb: Map<string, PendingKb> = new Map();
+  private reqSeq = 0;
+  private readySeen = false;
+  // Callers parked on `br.model.status()` until the reply (or a 10s timeout).
+  private modelStatusWaiters: PendingModelStatus[] = [];
 
   constructor(config: AppConfig) {
     this.config = config;
@@ -315,16 +564,29 @@ export class BioRouterClient {
     if (msg == null || typeof msg.type !== "string") return;
     // Latch advertised capabilities + durable-session info from `ready`.
     if (msg.type === "ready") {
+      this.readySeen = true;
       if (Array.isArray(msg.capabilities)) this.capabilities = msg.capabilities;
       if (typeof msg.sessionId === "string") this.sessionId = msg.sessionId;
       this.resumed = msg.resumed === true;
+      // Latch the advertised signal/action surface (absent on pre-Phase-3
+      // servers — tolerated, falling back to the 250 ms default coalescing).
+      this.latchSurface(msg.surface);
       // Tell the agent what this page offers it (regions, ids) so `ui_describe`
       // returns something real and `ui_render` can target the author's markup.
       if (this.has("ui")) this.ui.reportSurface();
     }
-    // Agent-driven UI: apply the command to the page.
+    // Agent-driven UI: apply the command to the page. An `app_call` rides the
+    // `ui` frame but is not a DOM command — dispatch it to `br.actions` instead.
     if (msg.type === "ui") {
-      this.ui.apply(msg);
+      if (msg.cmd === "app_call") this.dispatchAction(msg);
+      else this.ui.apply(msg);
+    }
+    // Structured result for a pending `br.call` (matched by callId).
+    if (msg.type === "output") this.resolveOutput(msg);
+    // Accumulate a `br.call` turn's prose so a turn that ends without an
+    // `output` frame still resolves with its `{text}`.
+    if (msg.type === "message" && this.activeCall && typeof msg.delta === "string") {
+      this.activeCall.textBuf += msg.delta;
     }
     // Resolve any pending br.context.tokens() callers.
     if (msg.type === "context") {
@@ -343,6 +605,10 @@ export class BioRouterClient {
     if (msg.type === "widget" && typeof msg.id === "string") {
       this.widgetStore.set(msg.id, msg.tree as WidgetNode);
     }
+    // ── SDK v2 Phase 4 ── resolve pending br.kb / br.model.status callers.
+    if (msg.type === "kb_result") this.resolveKb(msg);
+    if (msg.type === "kb_progress") this.progressKb(msg);
+    if (msg.type === "model_status") this.resolveModelStatus(msg);
     // Resolve any pending history() callers.
     if (msg.type === "history") {
       const waiters = this.historyWaiters;
@@ -357,8 +623,14 @@ export class BioRouterClient {
       }
     }
     this.emit(msg);
-    if (msg.type === "done") this.settleActive();
-    else if (msg.type === "error") this.settleActive(new Error(msg.message));
+    if (msg.type === "done") {
+      this.settleActiveCall(null);
+      this.settleActive();
+    } else if (msg.type === "error") {
+      const err = new Error(msg.message);
+      this.settleActiveCall(err);
+      this.settleActive(err);
+    }
   }
 
   /**
@@ -433,12 +705,227 @@ export class BioRouterClient {
     this.send({ type: "modelselect", provider, model });
   }
 
-  /** Namespaced model surface: `br.model.list()` / `br.model.select(p, m)`. */
+  /** Namespaced model surface: `br.model.list()` / `br.model.select(p, m)` /
+   *  `br.model.status()` (is the routed provider ready — e.g. is llamacpp still
+   *  downloading, what context size). */
   get model() {
     return {
       list: () => this.listModels(),
       select: (provider: string, model: string) => this.selectModel(provider, model),
+      status: (timeoutMs?: number) =>
+        this.requestModelStatus(typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : 10000),
     };
+  }
+
+  /** Namespaced knowledge-base surface (`br.kb`). Every method sends a `kb`
+   *  frame with a fresh reqId and resolves/rejects on the matching `kb_result`
+   *  (`ingest` additionally streams `kb_progress` to `onProgress`). Access is
+   *  gated by the app's `data.sources[kind:"knowledge"]` grant: when the `ready`
+   *  frame advertises no KB-family capability token, the read/write methods
+   *  reject immediately with a clear "no knowledge-base grant" error rather than
+   *  round-tripping. `graphToNetwork` is a pure client-side convenience that maps
+   *  a `graph()` result straight into the `network` component's spec shape. */
+  get kb() {
+    return {
+      search: (query: string, opts?: KbSearchOpts) => this.kbSearch(query, opts),
+      page: (path: string, opts?: KbCallOpts) => this.kbRequest("page", { path: path }, opts),
+      graph: (opts?: KbCallOpts) => this.kbRequest("graph", {}, opts),
+      history: (limit?: number, opts?: KbCallOpts) =>
+        this.kbRequest("history", typeof limit === "number" ? { limit: limit } : {}, opts),
+      ingest: (items: unknown, opts?: KbIngestOpts) => this.kbIngest(items, opts),
+      graphToNetwork: (graph: unknown) => graphToNetwork(graph),
+    };
+  }
+
+  // ── SDK v2 Phase 4: br.kb request plumbing ──────────────────────────────────
+
+  private kbSearch(query: string, opts?: KbSearchOpts): Promise<KbResult> {
+    const o = opts || {};
+    const q = typeof query === "string" ? query : "";
+    const params: KbSearchParams = { query: q };
+    if (typeof o.limit === "number") params.limit = o.limit;
+    return this.kbRequest("search", params, o);
+  }
+
+  private kbRequest(op: string, params: unknown, opts?: KbCallOpts): Promise<KbResult> {
+    const o = opts || {};
+    const timeoutMs = typeof o.timeoutMs === "number" && o.timeoutMs > 0 ? o.timeoutMs : 30000;
+    if (this.kbGrantMissing()) return Promise.reject(this.kbGrantError());
+    return new Promise((resolve, reject) => {
+      this.startKb(op, params, timeoutMs, undefined, resolve, reject);
+    });
+  }
+
+  private kbIngest(items: unknown, opts?: KbIngestOpts): Promise<KbResult> {
+    const o = opts || {};
+    const timeoutMs = typeof o.timeoutMs === "number" && o.timeoutMs > 0 ? o.timeoutMs : 600000;
+    if (this.kbGrantMissing()) return Promise.reject(this.kbGrantError());
+    return new Promise((resolve, reject) => {
+      this.startKb("ingest", { items: items }, timeoutMs, o.onProgress, resolve, reject);
+    });
+  }
+
+  /** True only when a `ready` frame has been latched AND none of the KB-family
+   *  capability tokens is advertised — the one case where a graceful pre-reject
+   *  beats a round-trip. Before `ready` (vocabulary unknown) we attempt the call
+   *  and let the server answer, per the design's "tolerate absence" rule. */
+  private kbGrantMissing(): boolean {
+    if (!this.readySeen) return false;
+    const kbTokens = ["data:knowledge", "data", "kb", "knowledge"];
+    for (const t of kbTokens) {
+      if (this.has(t)) return false;
+    }
+    return true;
+  }
+
+  private kbGrantError(): Error {
+    return new Error(
+      'br.kb: this app has no knowledge-base grant — declare a data.sources[kind:"knowledge"] ' +
+        "capability in the manifest to read or ingest knowledge bases."
+    );
+  }
+
+  private startKb(
+    op: string,
+    params: unknown,
+    timeoutMs: number,
+    onProgress: KbProgressFn | undefined,
+    resolve: KbResolve,
+    reject: RejectFn
+  ): void {
+    const reqId = this.freshReqId();
+    const timer = setTimeout(() => {
+      const p = this.pendingKb.get(reqId);
+      if (p) this.rejectKb(p, new Error("br.kb " + op + " timed out after " + timeoutMs + "ms"));
+    }, timeoutMs);
+    const pending: PendingKb = {
+      reqId: reqId,
+      op: op,
+      resolve: resolve,
+      reject: reject,
+      onProgress: onProgress,
+      timer: timer,
+      settled: false,
+    };
+    this.pendingKb.set(reqId, pending);
+    const frame = { type: "kb", op: op, params: params, reqId: reqId };
+    if (this.send(frame)) return;
+    // Socket not open yet — connect, then send (or reject if still unreachable).
+    this.connect().then(
+      () => {
+        if (!this.send(frame)) this.rejectKb(pending, new Error("Not connected to the BioRouter backend."));
+      },
+      (e: Error) => this.rejectKb(pending, e)
+    );
+  }
+
+  private freshReqId(): string {
+    this.reqSeq++;
+    return "req-" + this.reqSeq + "-" + Date.now().toString(36);
+  }
+
+  private resolveKb(msg: AgentEvent): void {
+    const frame = msg as KbResultFrame;
+    const reqId = typeof frame.reqId === "string" ? frame.reqId : "";
+    const pending = reqId ? this.pendingKb.get(reqId) : undefined;
+    if (!pending) return;
+    if (typeof frame.error === "string" && frame.error) this.rejectKb(pending, new Error(frame.error));
+    else this.settleKb(pending, frame.result);
+  }
+
+  private progressKb(msg: AgentEvent): void {
+    const frame = msg as KbProgressFrame;
+    const reqId = typeof frame.reqId === "string" ? frame.reqId : "";
+    const pending = reqId ? this.pendingKb.get(reqId) : undefined;
+    if (!pending || !pending.onProgress) return;
+    try {
+      pending.onProgress({
+        stage: typeof frame.stage === "string" ? frame.stage : "",
+        detail: frame.detail,
+        pct: frame.pct,
+      });
+    } catch {
+      /* progress-callback errors are non-fatal */
+    }
+  }
+
+  private settleKb(pending: PendingKb, result: unknown): void {
+    if (pending.settled) return;
+    pending.settled = true;
+    clearTimeout(pending.timer);
+    this.pendingKb.delete(pending.reqId);
+    try {
+      pending.resolve(result);
+    } catch {
+      /* consumer errors are non-fatal */
+    }
+  }
+
+  private rejectKb(pending: PendingKb, err: Error): void {
+    if (pending.settled) return;
+    pending.settled = true;
+    clearTimeout(pending.timer);
+    this.pendingKb.delete(pending.reqId);
+    try {
+      pending.reject(err);
+    } catch {
+      /* consumer errors are non-fatal */
+    }
+  }
+
+  // ── SDK v2 Phase 4: br.model.status ─────────────────────────────────────────
+
+  private requestModelStatus(timeoutMs: number): Promise<ModelStatus> {
+    return new Promise((resolve, reject) => {
+      const rec: PendingModelStatus = { resolve: resolve, reject: reject, timer: 0, settled: false };
+      rec.timer = setTimeout(
+        () => this.failModelStatus(rec, new Error("br.model.status timed out after " + timeoutMs + "ms")),
+        timeoutMs
+      );
+      this.modelStatusWaiters.push(rec);
+      const frame = { type: "model_status" };
+      if (this.send(frame)) return;
+      this.connect().then(
+        () => {
+          if (!this.send(frame)) this.failModelStatus(rec, new Error("Not connected to the BioRouter backend."));
+        },
+        (e: Error) => this.failModelStatus(rec, e)
+      );
+    });
+  }
+
+  private resolveModelStatus(msg: AgentEvent): void {
+    const frame = msg as ModelStatusFrame;
+    const status: ModelStatus = {
+      provider: frame.provider,
+      model: frame.model,
+      ready: frame.ready === true,
+      detail: frame.detail,
+    };
+    const waiters = this.modelStatusWaiters;
+    this.modelStatusWaiters = [];
+    for (const w of waiters) {
+      if (w.settled) continue;
+      w.settled = true;
+      clearTimeout(w.timer);
+      try {
+        w.resolve(status);
+      } catch {
+        /* consumer errors are non-fatal */
+      }
+    }
+  }
+
+  private failModelStatus(rec: PendingModelStatus, err: Error): void {
+    if (rec.settled) return;
+    rec.settled = true;
+    clearTimeout(rec.timer);
+    this.modelStatusWaiters = this.modelStatusWaiters.filter((w) => w !== rec);
+    try {
+      rec.reject(err);
+    } catch {
+      /* consumer errors are non-fatal */
+    }
   }
 
   /**
@@ -611,12 +1098,100 @@ export class BioRouterClient {
     target: HTMLElement | string,
     opts: PromptOptions = {}
   ): Promise<string> {
-    const next = this.runChain.then(() => this.doRun(text, target, opts));
-    this.runChain = next.then(
+    const key = typeof target === "string" ? target : "@el";
+    // Trailing-edge debounce: within the window, only the last run on this
+    // target survives; earlier ones resolve early with "" (no partial yet).
+    if (opts.debounceMs && opts.debounceMs > 0) {
+      return this.debounceRun(key, text, target, opts);
+    }
+    return this.startRun(text, target, opts);
+  }
+
+  private debounceRun(
+    key: string,
+    text: string,
+    target: HTMLElement | string,
+    opts: PromptOptions
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const prev = this.runDebounce.get(key);
+      if (prev) {
+        clearTimeout(prev.timer);
+        prev.resolve("");
+      }
+      const timer = setTimeout(() => {
+        this.runDebounce.delete(key);
+        this.startRun(text, target, opts).then(resolve, reject);
+      }, opts.debounceMs);
+      this.runDebounce.set(key, { timer: timer, resolve: resolve, reject: reject });
+    });
+  }
+
+  /** Start a run. Plain runs serialize behind `runChain`. A `supersede` run
+   *  cancels the in-flight superseding turn (resolving its promise early with
+   *  the partial text streamed so far) so it drains fast, then queues after it —
+   *  the single server turn is never doubled up. */
+  private startRun(
+    text: string,
+    target: HTMLElement | string,
+    opts: PromptOptions
+  ): Promise<string> {
+    const superseding = !!opts.supersede;
+    if (superseding && this.activeRun && this.activeRun.superseding && !this.activeRun.settled) {
+      this.cancel();
+      this.activeRun.resolveEarly();
+    }
+    let userResolve: RunResolve = () => {};
+    let userReject: RejectFn = () => {};
+    const userPromise = new Promise<string>((res, rej) => {
+      userResolve = res;
+      userReject = rej;
+    });
+    const handle: RunHandle = {
+      superseding: superseding,
+      settled: false,
+      partial: "",
+      resolveEarly: () => {
+        if (handle.settled) return;
+        handle.settled = true;
+        userResolve(handle.partial);
+      },
+    };
+    // The queue advances on the *internal* turn settling (server done), NOT on
+    // the user promise — which may resolve early via resolveEarly.
+    const internal = this.runChain.then(() =>
+      this.launchRun(text, target, opts, handle, userResolve, userReject)
+    );
+    this.runChain = internal.then(
       () => undefined,
       () => undefined
     );
-    return next;
+    return userPromise;
+  }
+
+  private async launchRun(
+    text: string,
+    target: HTMLElement | string,
+    opts: PromptOptions,
+    handle: RunHandle,
+    userResolve: RunResolve,
+    userReject: RejectFn
+  ): Promise<void> {
+    this.activeRun = handle;
+    try {
+      const full = await this.doRun(text, target, opts, handle);
+      if (!handle.settled) {
+        handle.settled = true;
+        userResolve(full);
+      }
+    } catch (e) {
+      if (!handle.settled) {
+        handle.settled = true;
+        userReject(e as Error);
+      }
+    } finally {
+      if (this.activeRun === handle) this.activeRun = null;
+    }
   }
 
   private runChain: Promise<void> = Promise.resolve();
@@ -624,7 +1199,8 @@ export class BioRouterClient {
   private async doRun(
     text: string,
     target: HTMLElement | string,
-    opts: PromptOptions = {}
+    opts: PromptOptions = {},
+    handle?: RunHandle
   ): Promise<string> {
     const el =
       typeof target === "string"
@@ -640,6 +1216,7 @@ export class BioRouterClient {
     const onMsg: Listener = (ev) => {
       if (ev.type === "message") {
         buf += ev.delta;
+        if (handle) handle.partial = buf;
         answerEl.innerHTML = this.renderMarkdown(buf);
       }
     };
@@ -671,6 +1248,353 @@ export class BioRouterClient {
   renderMarkdown(md: string): string {
     return renderMarkdown(md);
   }
+
+  // ── SDK v2 Phase 3: app.actions ────────────────────────────────────────────
+
+  /** Author-callable action registry. The agent invokes a registered handler by
+   *  name via an `app_call` frame; the handler's (awaited) return value is sent
+   *  back as `app_result`. A missing handler / a throw becomes an `app_result`
+   *  error string, so the agent branches on the failure inside its turn. Results
+   *  that serialize to more than 64 KB are truncated inside a
+   *  `{truncated:true, text:<prefix>}` wrapper.
+   *
+   *  - `register(name, handler)` — `handler: async (args) => result`.
+   *  - `list()` — the registered action names. */
+  get actions() {
+    return {
+      register: (name: string, handler: ActionHandler) => this.registerAction(name, handler),
+      list: () => this.listActions(),
+    };
+  }
+
+  private registerAction(name: string, handler: ActionHandler): void {
+    if (name && typeof handler === "function") this.actionHandlers.set(String(name), handler);
+  }
+
+  private listActions(): string[] {
+    const out: string[] = [];
+    this.actionHandlers.forEach((_v, k) => out.push(k));
+    return out;
+  }
+
+  /** Dispatch an `app_call` frame to a registered handler and reply with
+   *  `app_result`. Never throws — every failure path answers the call. */
+  private dispatchAction(cmd: UiCommand): void {
+    const callId = typeof cmd.callId === "string" ? cmd.callId : "";
+    const action = typeof cmd.action === "string" ? cmd.action : "";
+    const handler = this.actionHandlers.get(action);
+    if (!handler) {
+      this.send({ type: "app_result", callId: callId, error: "no handler registered for " + action });
+      return;
+    }
+    Promise.resolve()
+      .then(() => handler(cmd.args))
+      .then(
+        (result) => {
+          const payload = this.serializeActionResult(result);
+          this.send({ type: "app_result", callId: callId, result: payload });
+        },
+        (err) => {
+          const emsg =
+            err && (err as Error).message ? String((err as Error).message) : "action handler failed";
+          this.send({ type: "app_result", callId: callId, error: emsg });
+        }
+      );
+  }
+
+  /** Cap an action result at 64 KB of serialized JSON. Over the cap, the JSON is
+   *  truncated (with a `…[truncated]` marker) inside a wrapper object so the
+   *  agent still receives a well-formed, bounded value. */
+  private serializeActionResult(result: unknown): unknown {
+    let json: string;
+    try {
+      json = JSON.stringify(result);
+    } catch {
+      json = String(result);
+    }
+    if (json == null) json = "null";
+    const limit = 64 * 1024;
+    if (json.length > limit) {
+      const prefix = json.slice(0, limit) + "…[truncated]";
+      return { truncated: true, text: prefix };
+    }
+    return result;
+  }
+
+  // ── SDK v2 Phase 3: br.call (typed turns with structured results) ───────────
+
+  /** Request a typed turn and resolve with a structured result. Pass either an
+   *  action `name` + `args`, or free `text`; add `outputSchema` to ask the agent
+   *  for a shaped `output`. Resolves `{value}` when an `output` frame with this
+   *  call's id arrives, `{text}` when the turn ends without one, `{superseded:true}`
+   *  when a newer superseding call replaced it; rejects on the turn's `error`.
+   *
+   *  Options: `debounceMs` (trailing-edge, per call-key = name||text) and
+   *  `supersede` (cancel the in-flight superseding call on this key first). */
+  call(nameOrOpts: string | CallOpts, args?: unknown, opts?: CallOpts): Promise<CallResult> {
+    const o = this.normalizeCall(nameOrOpts, args, opts);
+    return new Promise((resolve, reject) => {
+      this.scheduleCall(o, resolve, reject);
+    });
+  }
+
+  private normalizeCall(nameOrOpts: string | CallOpts, args?: unknown, opts?: CallOpts): CallOpts {
+    const extra = opts || {};
+    if (typeof nameOrOpts === "string") {
+      return {
+        name: nameOrOpts,
+        args: args,
+        text: extra.text,
+        outputSchema: extra.outputSchema,
+        debounceMs: extra.debounceMs,
+        supersede: extra.supersede,
+      };
+    }
+    const base = nameOrOpts || {};
+    return {
+      name: base.name,
+      args: base.args,
+      text: base.text,
+      outputSchema: base.outputSchema,
+      debounceMs: base.debounceMs,
+      supersede: base.supersede,
+    };
+  }
+
+  private callKey(o: CallOpts): string {
+    return o.name || o.text || "__call";
+  }
+
+  private scheduleCall(o: CallOpts, resolve: CallResolve, reject: RejectFn): void {
+    const key = this.callKey(o);
+    if (o.debounceMs && o.debounceMs > 0) {
+      const prev = this.callDebounce.get(key);
+      if (prev) {
+        clearTimeout(prev.timer);
+        prev.resolve({ superseded: true });
+      }
+      const timer = setTimeout(() => {
+        this.callDebounce.delete(key);
+        this.dispatchCall(o, key, resolve, reject);
+      }, o.debounceMs);
+      this.callDebounce.set(key, { timer: timer, resolve: resolve });
+      return;
+    }
+    this.dispatchCall(o, key, resolve, reject);
+  }
+
+  private dispatchCall(o: CallOpts, key: string, resolve: CallResolve, reject: RejectFn): void {
+    // Supersede: cancel the in-flight superseding call on this key, resolve its
+    // promise `{superseded:true}`, then take over.
+    if (o.supersede) {
+      const inflight = this.callInFlight.get(key);
+      if (inflight && inflight.superseding && !inflight.settled) {
+        this.cancel();
+        this.resolveCall(inflight, { superseded: true });
+      }
+    }
+    const callId = this.freshCallId();
+    const pending: PendingCall = {
+      callId: callId,
+      key: key,
+      resolve: resolve,
+      reject: reject,
+      textBuf: "",
+      settled: false,
+      superseding: !!o.supersede,
+    };
+    this.pendingCalls.set(callId, pending);
+    this.activeCall = pending;
+    if (o.supersede) this.callInFlight.set(key, pending);
+    // JSON.stringify drops the `undefined` fields, so name/args or text ride
+    // exactly as populated.
+    const frame = {
+      type: "call",
+      callId: callId,
+      name: o.name,
+      args: o.args,
+      text: o.text,
+      outputSchema: o.outputSchema,
+    };
+    if (this.send(frame)) return;
+    // Socket not open yet — connect, then send (or reject if still unreachable).
+    this.connect().then(
+      () => {
+        if (!this.send(frame)) this.rejectCall(pending, new Error("Not connected to the BioRouter backend."));
+      },
+      (e: Error) => this.rejectCall(pending, e)
+    );
+  }
+
+  private freshCallId(): string {
+    this.callSeq++;
+    return "call-" + this.callSeq + "-" + Date.now().toString(36);
+  }
+
+  private resolveOutput(msg: AgentEvent): void {
+    const frame = msg as OutputFrame;
+    const cid = typeof frame.callId === "string" ? frame.callId : "";
+    const pending = cid ? this.pendingCalls.get(cid) : this.activeCall;
+    if (!pending) return;
+    this.resolveCall(pending, { value: frame.value });
+  }
+
+  private settleActiveCall(err: Error | null): void {
+    const pending = this.activeCall;
+    if (!pending) return;
+    if (err) this.rejectCall(pending, err);
+    else this.resolveCall(pending, { text: pending.textBuf });
+  }
+
+  private resolveCall(pending: PendingCall, result: CallResult): void {
+    if (pending.settled) return;
+    pending.settled = true;
+    this.pendingCalls.delete(pending.callId);
+    if (this.activeCall === pending) this.activeCall = null;
+    if (this.callInFlight.get(pending.key) === pending) this.callInFlight.delete(pending.key);
+    try {
+      pending.resolve(result);
+    } catch {
+      /* consumer errors are non-fatal */
+    }
+  }
+
+  private rejectCall(pending: PendingCall, err: Error): void {
+    if (pending.settled) return;
+    pending.settled = true;
+    this.pendingCalls.delete(pending.callId);
+    if (this.activeCall === pending) this.activeCall = null;
+    if (this.callInFlight.get(pending.key) === pending) this.callInFlight.delete(pending.key);
+    try {
+      pending.reject(err);
+    } catch {
+      /* consumer errors are non-fatal */
+    }
+  }
+
+  // ── SDK v2 Phase 3: app.signals ─────────────────────────────────────────────
+
+  /** Client→server signals with trailing-edge coalescing: within a signal's
+   *  declared `coalesceMs` window (default 250 ms) only the last payload per name
+   *  is kept, then a single `signal` frame is sent.
+   *
+   *  - `emit(name, payload)` — coalesced send.
+   *  - `declared()` — the `[{name, coalesceMs}]` the `ready` surface advertised. */
+  get signals() {
+    return {
+      emit: (name: string, payload: unknown) => this.emitSignal(name, payload),
+      declared: () => this.declaredSignals.slice(),
+    };
+  }
+
+  private emitSignal(name: string, payload: unknown): void {
+    if (!name) return;
+    const decl = this.signalDeclMap.get(name);
+    const coalesceMs = decl && typeof decl.coalesceMs === "number" ? decl.coalesceMs : 250;
+    if (coalesceMs <= 0) {
+      this.send({ type: "signal", name: name, payload: payload });
+      return;
+    }
+    const pending = this.signalPending.get(name);
+    if (pending) {
+      // Trailing edge: keep the last payload; the running timer still fires once.
+      pending.payload = payload;
+      return;
+    }
+    const rec: SignalRec = { payload: payload, timer: 0 };
+    rec.timer = setTimeout(() => {
+      this.signalPending.delete(name);
+      this.send({ type: "signal", name: name, payload: rec.payload });
+    }, coalesceMs);
+    this.signalPending.set(name, rec);
+  }
+
+  /** Latch the `ready` frame's advertised surface. Absent/partial surfaces are
+   *  tolerated (Phase-3 servers add it; older ones do not). */
+  private latchSurface(surface?: ReadySurface): void {
+    if (!surface || typeof surface !== "object") return;
+    const sigs = Array.isArray(surface.signals) ? surface.signals : [];
+    this.declaredSignals = sigs;
+    this.signalDeclMap.clear();
+    for (const s of sigs) {
+      if (s && typeof s.name === "string") this.signalDeclMap.set(s.name, s);
+    }
+    this.declaredActions = Array.isArray(surface.actions) ? surface.actions : [];
+  }
+
+  /** Convenience wiring: a `network` instance's selection change auto-emits a
+   *  `node_selected` signal `{id, instance}` — but only when the `ready` surface
+   *  declared such a signal (so it stays silent unless the agent asked for it). */
+  autoEmitNodeSelected(nodeId: string | null, instanceId: string | null): void {
+    if (!this.signalDeclMap.has("node_selected")) return;
+    this.emitSignal("node_selected", { id: nodeId, instance: instanceId });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// SDK v2 Phase 4: br.kb.graphToNetwork — pure KB-graph → network-spec mapper.
+// ---------------------------------------------------------------------------
+
+/** First non-empty string in `vals`, else `undefined`. Used to pick a field
+ *  across the several names a KB graph might use (id/name, label/title, …). */
+function firstString(vals: unknown[]): string | undefined {
+  for (const v of vals) {
+    if (typeof v === "string" && v) return v;
+  }
+  return undefined;
+}
+
+/** Map one KB graph node (object or a bare id string) into a `network` NetNode,
+ *  or `null` when it has no usable id. Type is optional — missing-type nodes are
+ *  tolerated (they simply carry no `type`). */
+function kbNode(n: unknown): NetNode | null {
+  if (typeof n === "string") return n ? { id: n, label: n } : null;
+  if (!n || typeof n !== "object") return null;
+  const o = n as KbNodeLike;
+  const id = firstString([o.id, o.name]);
+  if (!id) return null;
+  const label = firstString([o.label, o.title, o.name]) || id;
+  const type = firstString([o.type, o.kind, o.group]);
+  const node: NetNode = { id: id, label: label };
+  if (type) node.type = type;
+  return node;
+}
+
+/** Map one KB graph edge into a `network` NetEdge, or `null` when either
+ *  endpoint is missing. Accepts `source`/`target` or `from`/`to`, and derives
+ *  `kind` from any of kind/relation/predicate/label/type (all optional). */
+function kbEdge(e: unknown): NetEdge | null {
+  if (!e || typeof e !== "object") return null;
+  const o = e as KbEdgeLike;
+  const source = firstString([o.source, o.from]);
+  const target = firstString([o.target, o.to]);
+  if (!source || !target) return null;
+  const kind = firstString([o.kind, o.relation, o.predicate, o.label, o.type]);
+  const edge: NetEdge = { source: source, target: target };
+  if (kind) edge.kind = kind;
+  return edge;
+}
+
+/** Map a knowledge-base `graph()` result (`{nodes, edges}`) into the `network`
+ *  component's spec shape (`{nodes:[{id,label,type}], edges:[{source,target,kind}]}`)
+ *  so an `explorer` app can do `ui.network(...)` in one line. Pure and defensive:
+ *  a missing/mis-shaped graph yields empty arrays, id-less nodes and dangling
+ *  edges are dropped, and missing `type`/`kind` are simply omitted. */
+export function graphToNetwork(graph: unknown): NetworkSpec {
+  const g = (graph && typeof graph === "object" ? graph : {}) as KbGraphLike;
+  const rawNodes = Array.isArray(g.nodes) ? g.nodes : [];
+  const rawEdges = Array.isArray(g.edges) ? g.edges : [];
+  const nodes: NetNode[] = [];
+  for (const n of rawNodes) {
+    const node = kbNode(n);
+    if (node) nodes.push(node);
+  }
+  const edges: NetEdge[] = [];
+  for (const e of rawEdges) {
+    const edge = kbEdge(e);
+    if (edge) edges.push(edge);
+  }
+  return { nodes: nodes, edges: edges };
 }
 
 // ---------------------------------------------------------------------------
@@ -2691,7 +3615,9 @@ function buildNetworkEngine(canvas: HTMLCanvasElement, spec: NetworkSpec): Netwo
     selected = id != null && byId[id] ? byId[id] : null;
     const chosen = selected ? selected.id : null;
     try {
-      const ev = new CustomEvent("br-network-select", { detail: { id: chosen }, bubbles: false });
+      // Bubbles so the runtime's document-level listener can auto-emit a
+      // `node_selected` signal; author listeners on the canvas still fire.
+      const ev = new CustomEvent("br-network-select", { detail: { id: chosen }, bubbles: true });
       canvas.dispatchEvent(ev);
     } catch {
       /* CustomEvent unavailable */
@@ -2965,6 +3891,11 @@ export interface UiCommand {
   fields?: AskFieldSpec[];
   // ── ui_patch (SDK v2): incremental instance edits by id ──
   ops?: unknown[];
+  // ── app_call (SDK v2 Phase 3): invoke an author-registered action ──
+  // Rides the `ui` frame (`cmd:"app_call"`) but is dispatched to `br.actions`.
+  callId?: string;
+  action?: string;
+  args?: unknown;
 }
 
 export interface AskFieldSpec {
@@ -3268,6 +4199,8 @@ export class UiRuntime {
   private instances: Map<string, InstanceEntry> = new Map();
   private iidSeq = 0;
   private componentReg: ComponentRegistry = new ComponentRegistry();
+  // Whether the `node_selected` auto-signal document listener is installed.
+  private netSignalWired = false;
 
   constructor(client: BioRouterClient) {
     this.client = client;
@@ -3324,6 +4257,27 @@ export class UiRuntime {
     // is ready, and paint them with the current (possibly empty) doc.
     this.scanBindings();
     this.evalAllBindings();
+    this.wireNetworkSelectSignal();
+  }
+
+  /** Install (once) a document-level listener that turns a `network` instance's
+   *  selection change into a `node_selected` signal (gated on the ready surface
+   *  declaring it — see `autoEmitNodeSelected`). */
+  private wireNetworkSelectSignal(): void {
+    if (this.netSignalWired) return;
+    this.netSignalWired = true;
+    try {
+      document.addEventListener("br-network-select", (e) => {
+        const ev = e as NetSelectEvent;
+        const nodeId = ev.detail ? ev.detail.id : null;
+        const tgt = ev.target as ElementLike;
+        const holder = tgt && tgt.closest ? tgt.closest("[data-br-iid]") : null;
+        const iid = holder ? holder.getAttribute("data-br-iid") : null;
+        this.client.autoEmitNodeSelected(nodeId, iid);
+      });
+    } catch {
+      /* no document (non-browser host) — nothing to wire */
+    }
   }
 
   /** Apply one agent command. Unknown commands are ignored, not fatal. */
