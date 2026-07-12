@@ -17,6 +17,14 @@ pub const DEFAULT_COMPACTION_THRESHOLD: f64 = 0.8;
 /// set it to `0` to restore the legacy summarize-everything behaviour.
 pub const DEFAULT_COMPACT_KEEP_LAST_TURNS: usize = 4;
 
+/// BR-11: approximate characters per token, used only to turn the summarizer
+/// model's token-based context limit into a character budget for the truncation
+/// fallback in `do_compact`. English prose is ~4 chars/token; this is a
+/// deliberate under-estimate — the summarizer still guards every attempt with
+/// `ContextLengthExceeded`, so guessing low only costs one extra retry, never a
+/// broken request.
+const APPROX_CHARS_PER_TOKEN: usize = 4;
+
 /// Continuation note for the recent-turn window path: the summary covers only
 /// the older prefix, and the most recent turns follow it verbatim.
 const RECENT_WINDOW_CONTINUATION_TEXT: &str =
@@ -422,6 +430,43 @@ fn filter_tool_responses<'a>(messages: &[&'a Message], remove_percent: u32) -> V
         .collect()
 }
 
+/// BR-11: head/tail ("middle-out") truncation of a single payload. Keeps the
+/// first and last halves of `max_chars` and replaces the middle with a marker
+/// recording how much was elided. Head+tail is deliberate — a single huge
+/// message (a 400k-token paste or an un-removed oversized tool result) usually
+/// carries its point at the top (what it is) and its most relevant lines at the
+/// bottom (the tail of a log / the end of a file), both of which a plain
+/// head-only or tail-only cut would throw away. Char-based, so it is safe on
+/// multibyte text.
+fn truncate_middle_out(text: &str, max_chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= max_chars {
+        return text.to_string();
+    }
+    // Reserve room for the elision marker so the result stays near the budget
+    // even when `max_chars` is small.
+    const MARKER_RESERVE: usize = 48;
+    let keep = max_chars.saturating_sub(MARKER_RESERVE);
+    let head_len = keep / 2;
+    let tail_len = keep - head_len;
+    let chars: Vec<char> = text.chars().collect();
+    let head: String = chars[..head_len].iter().collect();
+    let tail: String = chars[total - tail_len..].iter().collect();
+    let elided = total - head_len - tail_len;
+    format!("{head}\n…[{elided} characters elided]…\n{tail}")
+}
+
+/// BR-11: one attempt at building the summarizer input. The first attempts
+/// preserve message fidelity and only drop whole tool responses middle-out; the
+/// later attempts also head/tail-truncate the payload so a single over-window
+/// message can no longer dead-end compaction (`per_msg_cap`/`total_cap` are
+/// `None` on the fidelity attempts).
+struct CompactionAttempt {
+    remove_percent: u32,
+    per_msg_cap: Option<usize>,
+    total_cap: Option<usize>,
+}
+
 async fn do_compact(
     provider: &dyn Provider,
     messages: &[Message],
@@ -431,17 +476,83 @@ async fn do_compact(
         .filter(|msg| msg.is_agent_visible())
         .collect();
 
-    // Try progressively removing more tool response messages from the middle to reduce context length
-    let removal_percentages = [0, 10, 20, 50, 100];
+    // BR-11: character budget for the summarizer payload, derived from the
+    // model's token window. Kept to roughly half the window so the
+    // summarize_oneshot prompt and the model's own reasoning still fit.
+    let payload_budget_chars = provider
+        .get_model_config()
+        .context_limit()
+        .saturating_mul(APPROX_CHARS_PER_TOKEN)
+        / 2;
 
-    for (attempt, &remove_percent) in removal_percentages.iter().enumerate() {
-        let filtered_messages = filter_tool_responses(&agent_visible_messages, remove_percent);
+    // Try progressively cheaper inputs, stopping at the first that fits. The
+    // first five preserve message fidelity and only drop whole tool responses
+    // middle-out (`filter_tool_responses`). If a single message still overflows
+    // the window (BR-11), the last three head/tail-truncate the payload — first
+    // per message, finally with a hard cap on the whole thing — so an oversized
+    // paste or tool result no longer dead-ends the session with "start a new
+    // session".
+    let attempts = [
+        CompactionAttempt {
+            remove_percent: 0,
+            per_msg_cap: None,
+            total_cap: None,
+        },
+        CompactionAttempt {
+            remove_percent: 10,
+            per_msg_cap: None,
+            total_cap: None,
+        },
+        CompactionAttempt {
+            remove_percent: 20,
+            per_msg_cap: None,
+            total_cap: None,
+        },
+        CompactionAttempt {
+            remove_percent: 50,
+            per_msg_cap: None,
+            total_cap: None,
+        },
+        CompactionAttempt {
+            remove_percent: 100,
+            per_msg_cap: None,
+            total_cap: None,
+        },
+        CompactionAttempt {
+            remove_percent: 100,
+            per_msg_cap: Some(payload_budget_chars),
+            total_cap: None,
+        },
+        CompactionAttempt {
+            remove_percent: 100,
+            per_msg_cap: Some(payload_budget_chars / 2),
+            total_cap: None,
+        },
+        CompactionAttempt {
+            remove_percent: 100,
+            per_msg_cap: Some(payload_budget_chars / 4),
+            total_cap: Some(payload_budget_chars),
+        },
+    ];
 
-        let messages_text = filtered_messages
+    for (attempt, plan) in attempts.iter().enumerate() {
+        let filtered_messages = filter_tool_responses(&agent_visible_messages, plan.remove_percent);
+
+        let mut messages_text = filtered_messages
             .iter()
-            .map(|&msg| format_message_for_compacting(msg))
+            .map(|&msg| {
+                let formatted = format_message_for_compacting(msg);
+                match plan.per_msg_cap {
+                    Some(cap) => truncate_middle_out(&formatted, cap),
+                    None => formatted,
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n");
+
+        if let Some(total_cap) = plan.total_cap {
+            messages_text = truncate_middle_out(&messages_text, total_cap);
+        }
 
         let context = SummarizeContext {
             messages: messages_text,
@@ -469,11 +580,11 @@ async fn do_compact(
             }
             Err(e) => {
                 if matches!(e, ProviderError::ContextLengthExceeded(_)) {
-                    if attempt < removal_percentages.len() - 1 {
+                    if attempt < attempts.len() - 1 {
                         continue;
                     } else {
                         return Err(anyhow::anyhow!(
-                            "Failed to compact: context limit exceeded even after removing all tool responses"
+                            "Failed to compact: context limit exceeded even after removing all tool responses and truncating the largest messages"
                         ));
                     }
                 }
@@ -583,6 +694,7 @@ mod tests {
         message: Message,
         config: ModelConfig,
         max_tool_responses: Option<usize>,
+        max_input_chars: Option<usize>,
     }
 
     impl MockProvider {
@@ -600,11 +712,21 @@ mod tests {
                     request_params: None,
                 },
                 max_tool_responses: None,
+                max_input_chars: None,
             }
         }
 
         fn with_max_tool_responses(mut self, max: usize) -> Self {
             self.max_tool_responses = Some(max);
+            self
+        }
+
+        /// Fail with `ContextLengthExceeded` when the summarizer's system prompt
+        /// (which carries the formatted history) exceeds `max` characters —
+        /// models a payload that is too large regardless of tool-response count,
+        /// so only BR-11 truncation can recover.
+        fn with_max_input_chars(mut self, max: usize) -> Self {
+            self.max_input_chars = Some(max);
             self
         }
     }
@@ -622,10 +744,22 @@ mod tests {
         async fn complete_with_model(
             &self,
             _model_config: &ModelConfig,
-            _system: &str,
+            system: &str,
             messages: &[Message],
             _tools: &[Tool],
         ) -> Result<(Message, ProviderUsage), ProviderError> {
+            // If max_input_chars is set, fail when the payload (carried in the
+            // summarizer system prompt) is too large.
+            if let Some(max) = self.max_input_chars {
+                if system.chars().count() > max {
+                    return Err(ProviderError::ContextLengthExceeded(format!(
+                        "Input too large: {} > {}",
+                        system.chars().count(),
+                        max
+                    )));
+                }
+            }
+
             // If max_tool_responses is set, fail if we have too many
             if let Some(max) = self.max_tool_responses {
                 let tool_response_count = messages
@@ -941,6 +1075,76 @@ mod tests {
             .count();
         assert_eq!(requests, 1, "kept tool_request should survive");
         assert_eq!(responses, 1, "kept tool_response should survive");
+    }
+
+    /// BR-11: `truncate_middle_out` keeps the head and tail and elides the
+    /// middle, leaves short text untouched, and never panics on tiny budgets.
+    #[test]
+    fn test_truncate_middle_out_keeps_head_and_tail() {
+        let text: String = "abcdefghij".repeat(1000); // 10_000 ASCII chars
+        let out = truncate_middle_out(&text, 1000);
+        assert!(
+            out.chars().count() < text.chars().count(),
+            "over-budget text should shrink"
+        );
+        assert!(
+            out.contains("characters elided"),
+            "an elision marker should be present"
+        );
+        assert!(out.starts_with(&text[..100]), "head should be preserved");
+        assert!(
+            out.ends_with(&text[text.len() - 100..]),
+            "tail should be preserved"
+        );
+
+        // Under-budget text is returned verbatim.
+        assert_eq!(truncate_middle_out("small", 1000), "small");
+        // A tiny budget must not panic (head/tail collapse to the marker).
+        let tiny = truncate_middle_out(&text, 4);
+        assert!(tiny.contains("characters elided"));
+    }
+
+    /// BR-11: a single message that alone overflows the window — with no tool
+    /// responses to drop — is no longer a dead end. Head/tail truncation of the
+    /// payload lets compaction succeed instead of erroring out and telling the
+    /// user to start a new session.
+    #[tokio::test]
+    async fn test_truncates_single_oversized_message() {
+        // context_limit 1000 -> payload budget = 1000 * 4 / 2 = 2000 chars.
+        // Fail whenever the summarizer system prompt carries > 5000 chars, so
+        // the fidelity attempts (payload ~= 50_000) all fail and only the
+        // truncation fallback fits.
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 1000)
+            .with_max_input_chars(5000);
+
+        let huge = "x".repeat(50_000);
+        let conversation = Conversation::new_unvalidated(vec![Message::user().with_text(huge)]);
+
+        // keep_last_turns = 0 forces the legacy (non-windowed) path so the whole
+        // oversized message reaches do_compact.
+        let (compacted, _usage) = compact_messages_with_window(&provider, &conversation, false, 0)
+            .await
+            .expect("BR-11 truncation should recover instead of dead-ending");
+
+        let agent_msgs = compacted.agent_visible_messages();
+        Conversation::new(agent_msgs).expect("compaction should produce a valid conversation");
+    }
+
+    /// BR-11: when the payload cannot fit even after full truncation, compaction
+    /// still surfaces a clear error (rather than looping) — the truncation path
+    /// is a recovery, not a guarantee against a pathologically tiny window.
+    #[tokio::test]
+    async fn test_truncation_still_errors_when_nothing_fits() {
+        // max_input_chars smaller than the summarize prompt itself: no payload
+        // can ever fit, so every attempt fails and do_compact returns an error.
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 1000)
+            .with_max_input_chars(1);
+
+        let conversation =
+            Conversation::new_unvalidated(vec![Message::user().with_text("x".repeat(50_000))]);
+
+        let result = compact_messages_with_window(&provider, &conversation, false, 0).await;
+        assert!(result.is_err(), "an impossible window should error cleanly");
     }
 
     /// BR-10: with too few turns to keep a window, compaction falls back to the
