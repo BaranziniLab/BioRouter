@@ -78,22 +78,246 @@ pub trait ExtensionState: Sized + Serialize + for<'de> Deserialize<'de> {
     }
 }
 
-/// TODO extension state implementation
+/// Status of a single todo item (BR-60).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TodoStatus {
+    #[default]
+    Pending,
+    InProgress,
+    Completed,
+}
+
+impl TodoStatus {
+    /// Lenient parse of a status word (accepts a few friendly aliases so the
+    /// model isn't forced onto exact spelling).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().replace(['-', ' '], "_").as_str() {
+            "pending" | "todo" | "open" | "not_started" | "unchecked" => Some(Self::Pending),
+            "in_progress" | "inprogress" | "doing" | "active" | "started" | "wip" => {
+                Some(Self::InProgress)
+            }
+            "completed" | "complete" | "done" | "finished" | "checked" => Some(Self::Completed),
+            _ => None,
+        }
+    }
+
+    /// Markdown-checkbox marker used in the compact MOIM rendering.
+    fn marker(self) -> &'static str {
+        match self {
+            Self::Pending => "[ ]",
+            Self::InProgress => "[~]",
+            Self::Completed => "[x]",
+        }
+    }
+}
+
+/// A single, individually-addressable todo item (BR-60). Replaces the former
+/// full-overwrite `content: String` blob so per-item state can be updated
+/// without rewriting (and truncating) the whole list.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoItem {
+    pub id: String,
+    pub text: String,
+    #[serde(default)]
+    pub status: TodoStatus,
+}
+
+/// TODO extension state: a structured per-item checklist plus an optional
+/// living plan artifact the agent maintains as it works (BR-60). Legacy
+/// `todo.v0` blobs are migrated to this shape on read (see [`TodoState::load`]).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TodoState {
-    pub content: String,
+    #[serde(default)]
+    pub items: Vec<TodoItem>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
 }
 
 impl ExtensionState for TodoState {
+    const EXTENSION_NAME: &'static str = "todo";
+    // v1: structured items + plan. v0 was the `{"content": String}` blob.
+    const VERSION: &'static str = "v1";
+}
+
+/// The legacy v0 blob, kept only so existing sessions can be migrated on read.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LegacyTodoBlob {
+    content: String,
+}
+
+impl ExtensionState for LegacyTodoBlob {
     const EXTENSION_NAME: &'static str = "todo";
     const VERSION: &'static str = "v0";
 }
 
 impl TodoState {
-    /// Create a new TODO state
-    pub fn new(content: String) -> Self {
-        Self { content }
+    /// Create an empty TODO state.
+    pub fn new() -> Self {
+        Self::default()
     }
+
+    /// Load the structured state, migrating a legacy `todo.v0` blob if that is
+    /// all a session has. A blob that parses as a markdown checklist becomes
+    /// structured items; freeform notes are preserved as the plan text so
+    /// nothing is silently lost.
+    pub fn load(extension_data: &ExtensionData) -> Option<Self> {
+        if let Some(state) = Self::from_extension_data(extension_data) {
+            return Some(state);
+        }
+        let legacy = LegacyTodoBlob::from_extension_data(extension_data)?;
+        let items = parse_markdown_checklist(&legacy.content);
+        let plan = if items.is_empty() {
+            let trimmed = legacy.content.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        } else {
+            None
+        };
+        Some(Self { items, plan })
+    }
+
+    /// Next sequential id (ids are stringified integers so they stay stable and
+    /// compact in the MOIM rendering the model reads back).
+    fn next_id(&self) -> u64 {
+        self.items
+            .iter()
+            .filter_map(|i| i.id.parse::<u64>().ok())
+            .max()
+            .map_or(1, |m| m + 1)
+    }
+
+    /// Append new pending items; returns the ids assigned (skipping blanks).
+    pub fn add_items<I: IntoIterator<Item = String>>(&mut self, texts: I) -> Vec<String> {
+        let mut next = self.next_id();
+        let mut ids = Vec::new();
+        for text in texts {
+            let text = text.trim();
+            if text.is_empty() {
+                continue;
+            }
+            let id = next.to_string();
+            next += 1;
+            self.items.push(TodoItem {
+                id: id.clone(),
+                text: text.to_string(),
+                status: TodoStatus::Pending,
+            });
+            ids.push(id);
+        }
+        ids
+    }
+
+    /// Update one item's status and/or text. Returns false if the id is unknown.
+    pub fn update_item(
+        &mut self,
+        id: &str,
+        status: Option<TodoStatus>,
+        text: Option<String>,
+    ) -> bool {
+        if let Some(item) = self.items.iter_mut().find(|i| i.id == id) {
+            if let Some(s) = status {
+                item.status = s;
+            }
+            if let Some(t) = text {
+                let t = t.trim();
+                if !t.is_empty() {
+                    item.text = t.to_string();
+                }
+            }
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Replace the whole checklist from a markdown checklist (full write).
+    pub fn set_from_markdown(&mut self, content: &str) {
+        self.items = parse_markdown_checklist(content);
+    }
+
+    /// True when there is nothing worth re-injecting into context.
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+            && self
+                .plan
+                .as_deref()
+                .map(str::trim)
+                .unwrap_or_default()
+                .is_empty()
+    }
+
+    /// Compact, human-readable rendering for MOIM re-injection.
+    pub fn render(&self) -> String {
+        let mut out = String::new();
+        if let Some(plan) = self.plan.as_deref() {
+            let plan = plan.trim();
+            if !plan.is_empty() {
+                out.push_str("Plan:\n");
+                out.push_str(plan);
+                out.push('\n');
+            }
+        }
+        if !self.items.is_empty() {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str("Todo checklist:\n");
+            for item in &self.items {
+                out.push_str(&format!(
+                    "- {} (#{}) {}\n",
+                    item.status.marker(),
+                    item.id,
+                    item.text
+                ));
+            }
+        }
+        out
+    }
+}
+
+/// Parse a markdown checklist into structured items. Recognises `- [ ]`,
+/// `- [x]`/`- [X]`, and `- [~]`/`- [-]` (in-progress) with `-`, `*`, or `+`
+/// bullets; indentation (sub-tasks) is flattened. Non-checkbox lines are
+/// ignored. Ids are assigned sequentially.
+fn parse_markdown_checklist(content: &str) -> Vec<TodoItem> {
+    let mut items = Vec::new();
+    let mut next: u64 = 1;
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        let Some(body) = trimmed
+            .strip_prefix("- ")
+            .or_else(|| trimmed.strip_prefix("* "))
+            .or_else(|| trimmed.strip_prefix("+ "))
+        else {
+            continue;
+        };
+        let (status, text) = if let Some(rest) = body.strip_prefix("[ ] ") {
+            (TodoStatus::Pending, rest)
+        } else if let Some(rest) = body
+            .strip_prefix("[x] ")
+            .or_else(|| body.strip_prefix("[X] "))
+        {
+            (TodoStatus::Completed, rest)
+        } else if let Some(rest) = body
+            .strip_prefix("[~] ")
+            .or_else(|| body.strip_prefix("[-] "))
+        {
+            (TodoStatus::InProgress, rest)
+        } else {
+            continue;
+        };
+        let text = text.trim();
+        if text.is_empty() {
+            continue;
+        }
+        items.push(TodoItem {
+            id: next.to_string(),
+            text: text.to_string(),
+            status,
+        });
+        next += 1;
+    }
+    items
 }
 
 /// Enabled extensions state implementation for storing which extensions are active
@@ -153,14 +377,116 @@ mod tests {
     fn test_todo_state_trait() {
         let mut extension_data = ExtensionData::new();
 
-        // Create and save TODO state
-        let todo = TodoState::new("- Task 1\n- Task 2".to_string());
+        // Create and save a structured TODO state
+        let mut todo = TodoState::new();
+        todo.add_items(["Task 1".to_string(), "Task 2".to_string()]);
         todo.to_extension_data(&mut extension_data).unwrap();
 
-        // Retrieve TODO state
-        let retrieved = TodoState::from_extension_data(&extension_data);
-        assert!(retrieved.is_some());
-        assert_eq!(retrieved.unwrap().content, "- Task 1\n- Task 2");
+        // Retrieve TODO state (persisted under todo.v1)
+        let retrieved = TodoState::load(&extension_data).unwrap();
+        assert_eq!(retrieved.items.len(), 2);
+        assert_eq!(retrieved.items[0].id, "1");
+        assert_eq!(retrieved.items[0].text, "Task 1");
+        assert_eq!(retrieved.items[0].status, TodoStatus::Pending);
+    }
+
+    #[test]
+    fn test_todo_add_assigns_sequential_ids() {
+        let mut todo = TodoState::new();
+        let first = todo.add_items(["a".to_string(), "".to_string(), "b".to_string()]);
+        // Blank items are skipped.
+        assert_eq!(first, vec!["1", "2"]);
+        let second = todo.add_items(["c".to_string()]);
+        assert_eq!(second, vec!["3"]);
+        assert_eq!(todo.items.len(), 3);
+    }
+
+    #[test]
+    fn test_todo_update_item_status_and_text() {
+        let mut todo = TodoState::new();
+        todo.add_items(["draft report".to_string()]);
+        assert!(todo.update_item("1", Some(TodoStatus::InProgress), None));
+        assert_eq!(todo.items[0].status, TodoStatus::InProgress);
+        assert!(todo.update_item(
+            "1",
+            Some(TodoStatus::Completed),
+            Some("final report".to_string())
+        ));
+        assert_eq!(todo.items[0].status, TodoStatus::Completed);
+        assert_eq!(todo.items[0].text, "final report");
+        // Unknown id is a no-op returning false.
+        assert!(!todo.update_item("99", Some(TodoStatus::Completed), None));
+    }
+
+    #[test]
+    fn test_todo_set_from_markdown_parses_statuses() {
+        let mut todo = TodoState::new();
+        todo.set_from_markdown(
+            "- [x] done one\n- [ ] pending two\n  - [~] nested in progress\n* [X] done three\nnot a checkbox line\n",
+        );
+        assert_eq!(todo.items.len(), 4);
+        assert_eq!(todo.items[0].status, TodoStatus::Completed);
+        assert_eq!(todo.items[1].status, TodoStatus::Pending);
+        assert_eq!(todo.items[2].status, TodoStatus::InProgress);
+        assert_eq!(todo.items[2].text, "nested in progress");
+        assert_eq!(todo.items[3].status, TodoStatus::Completed);
+    }
+
+    #[test]
+    fn test_todo_status_lenient_parse() {
+        assert_eq!(TodoStatus::parse("done"), Some(TodoStatus::Completed));
+        assert_eq!(
+            TodoStatus::parse("in-progress"),
+            Some(TodoStatus::InProgress)
+        );
+        assert_eq!(TodoStatus::parse("  Pending "), Some(TodoStatus::Pending));
+        assert_eq!(TodoStatus::parse("bogus"), None);
+    }
+
+    #[test]
+    fn test_todo_migrates_legacy_v0_checklist() {
+        let mut extension_data = ExtensionData::new();
+        // Simulate a legacy todo.v0 blob.
+        extension_data.set_extension_state(
+            "todo",
+            "v0",
+            json!({"content": "- [x] shipped\n- [ ] follow up"}),
+        );
+        let migrated = TodoState::load(&extension_data).unwrap();
+        assert_eq!(migrated.items.len(), 2);
+        assert_eq!(migrated.items[0].status, TodoStatus::Completed);
+        assert_eq!(migrated.items[1].text, "follow up");
+        assert!(migrated.plan.is_none());
+    }
+
+    #[test]
+    fn test_todo_migrates_legacy_v0_freeform_to_plan() {
+        let mut extension_data = ExtensionData::new();
+        extension_data.set_extension_state(
+            "todo",
+            "v0",
+            json!({"content": "remember to email the PI about results"}),
+        );
+        let migrated = TodoState::load(&extension_data).unwrap();
+        assert!(migrated.items.is_empty());
+        assert_eq!(
+            migrated.plan.as_deref(),
+            Some("remember to email the PI about results")
+        );
+    }
+
+    #[test]
+    fn test_todo_render_and_is_empty() {
+        let mut todo = TodoState::new();
+        assert!(todo.is_empty());
+        todo.plan = Some("1. gather data\n2. analyse".to_string());
+        todo.add_items(["gather".to_string()]);
+        todo.update_item("1", Some(TodoStatus::InProgress), None);
+        let rendered = todo.render();
+        assert!(rendered.contains("Plan:"));
+        assert!(rendered.contains("Todo checklist:"));
+        assert!(rendered.contains("[~] (#1) gather"));
+        assert!(!todo.is_empty());
     }
 
     #[test]
