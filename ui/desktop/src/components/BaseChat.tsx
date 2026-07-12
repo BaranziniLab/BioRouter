@@ -1351,7 +1351,7 @@ function BaseChatContent({
           </TooltipTrigger>
           <TooltipContent>Review session summary</TooltipContent>
         </Tooltip>
-        <PopoverContent side="bottom" align="end" className="w-80 p-3">
+        <PopoverContent side="bottom" align="end" className="w-96 p-3">
           <div className="space-y-3">
             <div>
               <div className="text-sm font-medium text-text-default">Session review</div>
@@ -1379,8 +1379,10 @@ function BaseChatContent({
                 className="min-w-0 flex-1 justify-center gap-1.5"
                 onClick={handleWorkflowReviewAction}
               >
-                <Pipeline className="h-3.5 w-3.5" />
-                <span className="truncate">{workflow ? 'Workflow' : 'Make workflow'}</span>
+                <Pipeline className="h-3.5 w-3.5 shrink-0" />
+                <span className="whitespace-nowrap">
+                  {workflow ? 'Workflow' : 'Make workflow'}
+                </span>
               </Button>
               <Button
                 type="button"
@@ -1389,8 +1391,8 @@ function BaseChatContent({
                 className="min-w-0 flex-1 justify-center gap-1.5"
                 onClick={handleDiagnosticsReviewAction}
               >
-                <CodeAnalysis className="h-3.5 w-3.5" />
-                <span className="truncate">Diagnostics</span>
+                <CodeAnalysis className="h-3.5 w-3.5 shrink-0" />
+                <span className="whitespace-nowrap">Diagnostics</span>
               </Button>
             </div>
           </div>

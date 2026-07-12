@@ -1189,7 +1189,13 @@ body.biorouter-window-resizing .biorouter-sidebar-inset-depth,
 body.biorouter-window-resizing .biorouter-sidebar-shell,
 body.biorouter-window-resizing [data-slot='sidebar-gap'],
 body.biorouter-window-resizing [data-testid='artifact-viewer'] {
-  animation: none !important;
+  /* Only suppress TRANSITIONS during resize. Do NOT set `animation: none` here:
+     the route surface carries a one-shot entrance animation, and toggling its
+     animation-name to none (on resize) and back (when this class is removed
+     ~180ms after resize settles) RESTARTS that entrance — the whole main screen
+     re-ran its fade-from-transparent, reading as a reload/flicker after every
+     resize. Leaving the animation-name untouched keeps it from restarting.
+     (These elements animate via transitions anyway, so nothing is lost.) */
   transition-duration: 0ms !important;
 }
 
