@@ -467,6 +467,16 @@ export class BioRouterClient {
     };
   }
 
+  /** Author component registry (`br.components.register(name, def)`). A
+   *  `component` node renders a container and calls the registered `mount`;
+   *  `set_props`/`replace` call `update` if present, else remount. Props are
+   *  agent-controlled — treat them as untrusted input. */
+  get components() {
+    return {
+      register: (name: string, def: ComponentDef) => this.ui.registerComponent(name, def),
+    };
+  }
+
   /** HITL: approve a pending tool surfaced via an `approval` event.
    *  `action` is "allow_once" (default) or "always_allow". */
   approve(requestId: string, action: string = "allow_once"): void {
@@ -1031,6 +1041,15 @@ export function renderGraph(input: string): string {
   return `<div class="br-visual br-graph"><svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" role="img">${title}${edgeEls}${nodeEls}</svg></div>`;
 }
 
+// Sequence for auto-ids assigned to lowered markdown fences (chart#n / graph#n),
+// so `ui_patch replace` can address a chart/graph rendered inside prose.
+let fenceSeq = 0;
+function withFenceIid(html: string, kind: string): string {
+  fenceSeq++;
+  const id = kind + "#" + fenceSeq;
+  return html.replace(/^<div /, '<div data-br-iid="' + id + '" ');
+}
+
 export function renderMarkdown(md: string): string {
   const src = escapeHtml(md || "");
   const lines = src.split("\n");
@@ -1059,11 +1078,14 @@ export function renderMarkdown(md: string): string {
       }
       i++; // skip closing fence
       const fenceKind = (fence[1] || "").toLowerCase();
-      // AI-generated visualization blocks render as themed SVG.
+      // AI-generated visualization blocks render as themed SVG. Fences are
+      // lowered to addressable instances (data-br-iid) so `ui_patch replace`
+      // can target them — kept on the lightweight renderers, not the heavy
+      // network engine.
       if (fenceKind === "chart") {
-        out.push(renderChart(code.join("\n")));
+        out.push(withFenceIid(renderChart(code.join("\n")), "chart"));
       } else if (["graph", "diagram", "network", "map", "mermaid"].includes(fenceKind)) {
-        out.push(renderGraph(code.join("\n")));
+        out.push(withFenceIid(renderGraph(code.join("\n")), "graph"));
       } else {
         out.push(`<pre><code>${code.join("\n")}</code></pre>`);
       }
@@ -1307,13 +1329,166 @@ export type WidgetNode =
   | { t: "select"; name: string; label?: string; value?: string; options: Array<string | { value: string; label?: string }> }
   | { t: "checkbox"; name: string; label?: string; checked?: boolean }
   | { t: "button"; label: string; action: string; variant?: string; submit?: boolean }
-  | { t: "form"; children: WidgetNode[] };
+  | { t: "form"; children: WidgetNode[] }
+  // ── SDK v2 science pack (added to bodies/patches; server-validated) ──
+  | { t: "markdown"; md: string; id?: string }
+  | { t: "image"; src: string; alt?: string; caption?: string; id?: string }
+  | { t: "kpi"; label?: string; value: string | number; delta?: string | number; unit?: string; id?: string }
+  | { t: "log"; lines?: LogLine[]; max?: number; id?: string }
+  | { t: "plot"; spec: PlotSpec; id?: string }
+  | { t: "network"; spec: NetworkSpec; id?: string }
+  | { t: "component"; name: string; props?: unknown; id?: string }
+  | { t: "html"; html: string; id?: string }
+  | { t: "figure"; html: string; tool?: string; id?: string };
+
+// Node shapes for the science-pack renderers. Interfaces are dropped wholesale by
+// the no-esbuild fallback stripper, so they never leak into the emitted JS.
+export interface LogLine {
+  level?: string;
+  text: string;
+}
+export interface PlotPoint {
+  label?: string;
+  value?: number;
+  x?: number;
+  y?: number;
+}
+export interface PlotSeries {
+  name?: string;
+  data?: PlotPoint[];
+  points?: PlotPoint[];
+  values?: number[];
+}
+export interface PlotSpec {
+  type?: string;
+  title?: string;
+  data?: PlotPoint[];
+  series?: PlotSeries[];
+  values?: number[];
+  z?: number[][];
+  xLabels?: string[];
+  yLabels?: string[];
+}
+export interface NetNode {
+  id: string;
+  label?: string;
+  type?: string;
+  size?: number;
+  color?: string;
+}
+export interface NetEdge {
+  source: string;
+  target: string;
+  kind?: string;
+  style?: string;
+  label?: string;
+}
+export interface NetEncoding {
+  type_colors?: Record<string, string>;
+  families?: Record<string, string>;
+  negated_kinds?: string[];
+}
+export interface NetPhysics {
+  charge?: number;
+  linkDistance?: number;
+  gravity?: number;
+  damping?: number;
+}
+export interface NetworkSpec {
+  title?: string;
+  nodes?: NetNode[];
+  edges?: NetEdge[];
+  encoding?: NetEncoding;
+  physics?: NetPhysics;
+  onSelect?: NetSelectCb;
+}
+export interface NetworkController {
+  select(id: string | null): void;
+  positions(): Record<string, XY>;
+  adopt(prev: Record<string, XY>): void;
+  destroy(): void;
+}
+interface XY {
+  x: number;
+  y: number;
+}
+// Author-registered components (Task 3). `props` is agent-controlled — untrusted.
+export interface ComponentContext {
+  id: string;
+  state: unknown;
+  run: RunFn;
+}
+export interface ComponentDef {
+  props?: unknown;
+  mount: MountFn;
+  update?: UpdateFn;
+}
+// Small helper node shapes used by the renderers/registry below.
+interface ImageNode {
+  src?: string;
+  alt?: string;
+  caption?: string;
+}
+interface KpiNode {
+  label?: string;
+  value?: string | number;
+  delta?: string | number;
+  unit?: string;
+}
+interface LogNode {
+  lines?: LogLine[];
+  max?: number;
+}
+interface FigureNode {
+  html?: string;
+  tool?: string;
+}
+interface ComponentNode {
+  t?: string;
+  name?: string;
+  props?: unknown;
+}
+interface InstanceEntry {
+  node: WidgetNode;
+  el: HTMLElement;
+}
+interface PatchOp {
+  op?: string;
+  id?: string;
+  target?: string;
+  parent?: string;
+  index?: number;
+  node?: WidgetNode;
+  props?: AnyRecord;
+}
+interface FocusSnap {
+  name: string;
+  start: number;
+  end: number;
+  value: string;
+}
+interface ScrollSnap {
+  idx: number[];
+  tops: number[];
+  lefts: number[];
+}
+// Named callback/marker aliases so the fallback stripper drops the annotations
+// (a bare `(id: string) => void` has no leading uppercase/primitive token).
+type NetSelectCb = (id: string) => void;
+type RunFn = (text: string, target: HTMLElement | string, opts?: PromptOptions) => Promise<string>;
+type MountFn = (el: HTMLElement, props: unknown, ctx: ComponentContext) => void;
+type UpdateFn = (el: HTMLElement, props: unknown, prev: unknown) => void;
+type MountComponentFn = (name: string, props: unknown, id?: string) => HTMLElement | null;
+type NodeWithId = { id?: string };
+type WithNet = { __brNet?: NetworkController };
 
 export interface WidgetContext {
   // name → live value getter, registered by inputs/selects/checkboxes.
   fields: Map<string, () => string | boolean>;
   // dispatched by a button (carrying collected form fields on submit).
   onAction: (action: string, payload: unknown) => void;
+  // optional bridge to the author component registry (Task 3).
+  mountComponent?: MountComponentFn;
 }
 
 function wEl(tag: string, cls?: string): HTMLElement {
@@ -1524,19 +1699,1224 @@ export function renderWidget(node: WidgetNode, ctx: WidgetContext): HTMLElement 
       for (const ch of node.children) f.appendChild(renderWidget(ch, ctx));
       return f;
     }
+    // ── SDK v2 science pack ──
+    case "markdown": {
+      const d = wEl("div", "br-md");
+      d.innerHTML = renderMarkdown(node.md || "");
+      return d;
+    }
+    case "image":
+      return renderImage(node);
+    case "kpi":
+      return renderKpi(node);
+    case "log":
+      return renderLog(node);
+    case "plot": {
+      const w = wEl("div", "br-plot");
+      w.innerHTML = renderPlot(node.spec);
+      return w;
+    }
+    case "network":
+      return createNetwork(node.spec);
+    case "component": {
+      const name = String(node.name || "");
+      if (ctx.mountComponent) {
+        const mounted = ctx.mountComponent(name, node.props, (node as NodeWithId).id);
+        if (mounted) return mounted;
+      }
+      return unknownWidgetEl("component:" + name);
+    }
+    case "html": {
+      // `node.html` is ALREADY server-sanitized (privileged kind, `ui.allow_html`).
+      const h = wEl("div", "br-html");
+      h.innerHTML = String(node.html || "");
+      return h;
+    }
+    case "figure":
+      return renderFigure(node);
     default: {
       const kind = String((node as UnknownWidget).t || "unknown");
-      if (!warnedWidgetKinds.has(kind)) {
-        warnedWidgetKinds.add(kind);
-        try {
-          console.warn("[BioRouter] unsupported widget kind: " + kind);
-        } catch {
-          /* console may be unavailable */
+      return unknownWidgetEl(kind);
+    }
+  }
+}
+
+/** The neutral, warn-once placeholder for an unknown/unregistered widget kind. */
+function unknownWidgetEl(kind: string): HTMLElement {
+  if (!warnedWidgetKinds.has(kind)) {
+    warnedWidgetKinds.add(kind);
+    try {
+      console.warn("[BioRouter] unsupported widget kind: " + kind);
+    } catch {
+      /* console may be unavailable */
+    }
+  }
+  const d = wEl("div", "br-unknown-widget");
+  d.textContent = "[unsupported: " + kind + "]";
+  return d;
+}
+
+// ── science-pack leaf renderers (dependency-free, theme-token styled) ────────
+
+/** Refuse `javascript:` and insecure `http:` image sources client-side (the
+ *  server also validates); https / data: / relative references are allowed. */
+function isSafeImageSrc(s: string): boolean {
+  const v = (s || "").trim().toLowerCase();
+  if (v.indexOf("javascript:") === 0) return false;
+  if (v.indexOf("http:") === 0) return false;
+  return true;
+}
+
+function renderImage(node: ImageNode): HTMLElement {
+  const fig = wEl("figure", "br-image");
+  const img = document.createElement("img");
+  const src = String(node.src || "");
+  if (isSafeImageSrc(src)) img.setAttribute("src", src);
+  img.setAttribute("alt", node.alt || "");
+  fig.appendChild(img);
+  if (node.caption) {
+    const cap = wEl("figcaption", "br-image__cap");
+    cap.textContent = node.caption;
+    fig.appendChild(cap);
+  }
+  return fig;
+}
+
+function renderKpi(node: KpiNode): HTMLElement {
+  const c = wEl("div", "br-kpi");
+  if (node.label != null && node.label !== "") {
+    const l = wEl("div", "br-kpi__label");
+    l.textContent = String(node.label);
+    c.appendChild(l);
+  }
+  const v = wEl("div", "br-kpi__value");
+  v.textContent = node.value == null ? "" : String(node.value);
+  if (node.unit) {
+    const u = wEl("span", "br-kpi__unit");
+    u.textContent = " " + node.unit;
+    v.appendChild(u);
+  }
+  c.appendChild(v);
+  if (node.delta != null && node.delta !== "") {
+    const ds = String(node.delta);
+    const down = ds.trim().charAt(0) === "-";
+    const cls = down ? "br-kpi__delta br-kpi-down" : "br-kpi__delta br-kpi-up";
+    const d = wEl("div", cls);
+    d.textContent = (down ? "▼ " : "▲ ") + ds;
+    c.appendChild(d);
+  }
+  return c;
+}
+
+const LOG_CAP = 500;
+
+function logLineEl(ln: LogLine): HTMLElement {
+  const row = wEl("div", "br-log__line");
+  const level = ln && ln.level ? String(ln.level).toLowerCase() : "";
+  if (level) row.classList.add("br-log__line--" + level);
+  row.textContent = ln && ln.text != null ? String(ln.text) : "";
+  return row;
+}
+
+function logCap(node: LogNode): number {
+  return typeof node.max === "number" && node.max > 0 ? node.max : LOG_CAP;
+}
+
+function atLogBottom(box: HTMLElement): boolean {
+  return box.scrollHeight - box.scrollTop - box.clientHeight < 4;
+}
+
+function renderLog(node: LogNode): HTMLElement {
+  const box = wEl("div", "br-log");
+  box.setAttribute("data-br-log", "1");
+  const lines = Array.isArray(node.lines) ? node.lines : [];
+  const max = logCap(node);
+  const start = lines.length > max ? lines.length - max : 0;
+  const kept = lines.slice(start);
+  for (const ln of kept) box.appendChild(logLineEl(ln));
+  // keep the node's own array in sync with what is rendered, so appends cap right.
+  node.lines = kept;
+  try {
+    box.scrollTop = box.scrollHeight;
+  } catch {
+    /* no layout (jsdom) */
+  }
+  return box;
+}
+
+/** Append lines to a rendered log (the `set_props {append:[…]}` fast-path):
+ *  auto-scroll only when already pinned to the bottom; cap oldest-out. */
+function appendLogLines(box: HTMLElement, node: LogNode, add: LogLine[]): void {
+  const wasBottom = atLogBottom(box);
+  const lines = Array.isArray(node.lines) ? node.lines : (node.lines = []);
+  for (const ln of add) {
+    lines.push(ln);
+    box.appendChild(logLineEl(ln));
+  }
+  const max = logCap(node);
+  while (lines.length > max) {
+    lines.shift();
+    if (box.firstChild) box.removeChild(box.firstChild);
+  }
+  if (wasBottom) {
+    try {
+      box.scrollTop = box.scrollHeight;
+    } catch {
+      /* no layout */
+    }
+  }
+}
+
+function renderFigure(node: FigureNode): HTMLElement {
+  const wrap = wEl("div", "br-figure");
+  const frame = document.createElement("iframe");
+  frame.className = "br-figure__frame";
+  // Self-contained autovis document: sandbox to scripts only, no same-origin.
+  frame.setAttribute("sandbox", "allow-scripts");
+  frame.setAttribute("srcdoc", String(node.html || ""));
+  frame.style.width = "100%";
+  frame.style.minHeight = "360px";
+  frame.style.border = "0";
+  wrap.appendChild(frame);
+  // Grow to fit the autovis `ui-size-change` postMessage convention (capped).
+  const onMsg = (ev: MessageEvent) => {
+    if (!ev || (frame.contentWindow && ev.source !== frame.contentWindow)) return;
+    const data = ev.data;
+    if (data && data.type === "ui-size-change") {
+      const h = Number(data.height);
+      if (isFinite(h) && h > 0) {
+        frame.style.height = Math.max(120, Math.min(1200, h)) + "px";
+      }
+    }
+  };
+  try {
+    window.addEventListener("message", onMsg);
+  } catch {
+    /* no window (non-browser) */
+  }
+  return wrap;
+}
+
+// ── plot: scatter / area / box / heatmap over the themed-SVG conventions ─────
+
+const PLOT_W = 520;
+const PLOT_H = 240;
+
+function plotFrame(inner: string, title?: string): string {
+  const t = title
+    ? `<text x="${PLOT_W / 2}" y="18" font-size="12" font-weight="600" text-anchor="middle" fill="var(--br-text)">${escapeHtml(
+        title
+      )}</text>`
+    : "";
+  return `<div class="br-chart"><svg viewBox="0 0 ${PLOT_W} ${PLOT_H}" width="100%" preserveAspectRatio="xMidYMid meet" role="img">${t}${inner}</svg></div>`;
+}
+
+const PLOT_PENDING = '<div class="br-chart br-chart--pending"></div>';
+
+function renderPlot(spec: PlotSpec): string {
+  if (!spec || typeof spec !== "object") return PLOT_PENDING;
+  const type = spec.type || "bar";
+  if (type === "scatter") return renderScatter(spec);
+  if (type === "area") return renderArea(spec);
+  if (type === "box") return renderBox(spec);
+  if (type === "heatmap") return renderHeatmap(spec);
+  // bar / line / pie reuse the existing chart renderer verbatim.
+  return renderChart(JSON.stringify(spec));
+}
+
+function cleanPoints(pts?: PlotPoint[]): PlotPoint[] {
+  const out: PlotPoint[] = [];
+  if (!Array.isArray(pts)) return out;
+  for (const d of pts) {
+    if (!d) continue;
+    const x = typeof d.x === "number" ? d.x : Number(d.x);
+    const yr = typeof d.y === "number" ? d.y : typeof d.value === "number" ? d.value : Number(d.value);
+    if (isFinite(x) && isFinite(yr)) out.push({ x: x, y: yr, label: d.label });
+    if (out.length >= 2000) break;
+  }
+  return out;
+}
+
+function scatterSeries(spec: PlotSpec): PlotSeries[] {
+  if (Array.isArray(spec.series) && spec.series.length) {
+    return spec.series.map((s) => ({ name: s.name, points: cleanPoints(s.points || s.data) }));
+  }
+  const p = cleanPoints(spec.data);
+  return p.length ? [{ points: p }] : [];
+}
+
+function renderScatter(spec: PlotSpec): string {
+  const series = scatterSeries(spec);
+  if (!series.length) return PLOT_PENDING;
+  const padL = 44;
+  const padR = 14;
+  const padB = 34;
+  const padT = spec.title ? 28 : 14;
+  const allX: number[] = [];
+  const allY: number[] = [];
+  for (const s of series) {
+    for (const p of s.points || []) {
+      allX.push(Number(p.x));
+      allY.push(Number(p.y));
+    }
+  }
+  const xmin = Math.min(...allX);
+  const xmax = Math.max(...allX);
+  const ymin = Math.min(...allY);
+  const ymax = Math.max(...allY);
+  const xspan = xmax - xmin || 1;
+  const yspan = ymax - ymin || 1;
+  const plotW = PLOT_W - padL - padR;
+  const plotH = PLOT_H - padT - padB;
+  const sx = (v: number) => padL + (plotW * (v - xmin)) / xspan;
+  const sy = (v: number) => padT + plotH * (1 - (v - ymin) / yspan);
+  let body = "";
+  series.forEach((s, si) => {
+    const fill = CHART_PALETTE[si % CHART_PALETTE.length];
+    for (const p of s.points || []) {
+      body += `<circle cx="${sx(Number(p.x)).toFixed(1)}" cy="${sy(Number(p.y)).toFixed(1)}" r="3" fill="${fill}" opacity="0.82"/>`;
+    }
+  });
+  const baseline = (padT + plotH).toFixed(1);
+  const axis =
+    `<line x1="${padL}" y1="${baseline}" x2="${PLOT_W - padR}" y2="${baseline}" stroke="var(--br-border)"/>` +
+    `<line x1="${padL}" y1="${padT}" x2="${padL}" y2="${baseline}" stroke="var(--br-border)"/>`;
+  return plotFrame(axis + body, spec.title);
+}
+
+function renderArea(spec: PlotSpec): string {
+  const series = normalizeSeries(spec as ChartSpec);
+  if (!series.length) return PLOT_PENDING;
+  const longest = series.reduce((a, s) => (s.data.length > a.length ? s.data : a), series[0].data);
+  const n = longest.length;
+  const padL = 44;
+  const padR = 14;
+  const padB = 40;
+  const padT = spec.title ? 28 : 14;
+  const allVals = series.flatMap((s) => s.data.map((d) => d.value));
+  const max = Math.max(...allVals, 0);
+  const min = Math.min(...allVals, 0);
+  const span = max - min || 1;
+  const plotW = PLOT_W - padL - padR;
+  const plotH = PLOT_H - padT - padB;
+  const x = (i: number) => padL + (plotW * (i + 0.5)) / Math.max(n, 1);
+  const y = (v: number) => padT + plotH * (1 - (v - min) / span);
+  let body = "";
+  series.forEach((s, si) => {
+    const stroke = CHART_PALETTE[si % CHART_PALETTE.length];
+    const pts = s.data.map((d, i) => `${x(i).toFixed(1)},${y(d.value).toFixed(1)}`).join(" ");
+    const baseY = y(min).toFixed(1);
+    const first = x(0).toFixed(1);
+    const last = x(Math.max(s.data.length - 1, 0)).toFixed(1);
+    body += `<polygon fill="${stroke}" opacity="0.18" points="${first},${baseY} ${pts} ${last},${baseY}"/>`;
+    body += `<polyline fill="none" stroke="${stroke}" stroke-width="2.5" points="${pts}"/>`;
+  });
+  return plotFrame(body, spec.title);
+}
+
+function quartiles(vals: number[]): number[] {
+  const s = vals.filter((v) => isFinite(v)).slice().sort((a, b) => a - b);
+  if (!s.length) return [0, 0, 0, 0, 0];
+  const q = (p: number) => {
+    const idx = (s.length - 1) * p;
+    const lo = Math.floor(idx);
+    const hi = Math.ceil(idx);
+    if (lo === hi) return s[lo];
+    return s[lo] + (s[hi] - s[lo]) * (idx - lo);
+  };
+  return [s[0], q(0.25), q(0.5), q(0.75), s[s.length - 1]];
+}
+
+function seriesValues(s: PlotSeries): number[] {
+  if (Array.isArray(s.values)) return s.values;
+  const out: number[] = [];
+  const pts = s.data || s.points || [];
+  for (const d of pts) {
+    const v = d && typeof d.value === "number" ? d.value : Number(d && d.value);
+    if (isFinite(v)) out.push(v);
+  }
+  return out;
+}
+
+function boxSeries(spec: PlotSpec): PlotSeries[] {
+  if (Array.isArray(spec.series) && spec.series.length) {
+    return spec.series.map((s) => ({ name: s.name, values: seriesValues(s) }));
+  }
+  if (Array.isArray(spec.values)) return [{ values: spec.values }];
+  return [];
+}
+
+function renderBox(spec: PlotSpec): string {
+  const series = boxSeries(spec);
+  if (!series.length) return PLOT_PENDING;
+  const stats = series.map((s) => quartiles((s.values || []).slice(0, 2000)));
+  const padL = 44;
+  const padR = 14;
+  const padB = 40;
+  const padT = spec.title ? 28 : 14;
+  const allv: number[] = [];
+  for (const st of stats) {
+    allv.push(st[0]);
+    allv.push(st[4]);
+  }
+  const max = Math.max(...allv);
+  const min = Math.min(...allv);
+  const span = max - min || 1;
+  const plotW = PLOT_W - padL - padR;
+  const plotH = PLOT_H - padT - padB;
+  const y = (v: number) => padT + plotH * (1 - (v - min) / span);
+  const n = series.length;
+  const slot = plotW / Math.max(n, 1);
+  const bw = Math.min(slot * 0.5, 46);
+  let body = "";
+  stats.forEach((st, si) => {
+    const cx = padL + slot * (si + 0.5);
+    const color = CHART_PALETTE[si % CHART_PALETTE.length];
+    const lo = st[0];
+    const q1 = st[1];
+    const med = st[2];
+    const q3 = st[3];
+    const hi = st[4];
+    const half = bw / 2;
+    body += `<line x1="${cx.toFixed(1)}" y1="${y(hi).toFixed(1)}" x2="${cx.toFixed(1)}" y2="${y(lo).toFixed(1)}" stroke="var(--br-text-muted)"/>`;
+    body += `<rect x="${(cx - half).toFixed(1)}" y="${y(q3).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.abs(y(q1) - y(q3)).toFixed(1)}" fill="${color}" fill-opacity="0.5" stroke="${color}"/>`;
+    body += `<line x1="${(cx - half).toFixed(1)}" y1="${y(med).toFixed(1)}" x2="${(cx + half).toFixed(1)}" y2="${y(med).toFixed(1)}" stroke="var(--br-text)" stroke-width="2"/>`;
+    const label = series[si].name;
+    if (label) {
+      body += `<text x="${cx.toFixed(1)}" y="${PLOT_H - padB + 16}" font-size="10" text-anchor="middle" fill="var(--br-text-muted)">${escapeHtml(
+        String(label)
+      ).slice(0, 10)}</text>`;
+    }
+  });
+  return plotFrame(body, spec.title);
+}
+
+function renderHeatmap(spec: PlotSpec): string {
+  const z = Array.isArray(spec.z) ? spec.z : [];
+  const rows = z.length;
+  let cols = 0;
+  for (const r of z) if (Array.isArray(r) && r.length > cols) cols = r.length;
+  if (!rows || !cols) return PLOT_PENDING;
+  let mn = Infinity;
+  let mx = -Infinity;
+  for (const r of z) {
+    if (!Array.isArray(r)) continue;
+    for (const c of r) {
+      const v = Number(c);
+      if (isFinite(v)) {
+        if (v < mn) mn = v;
+        if (v > mx) mx = v;
+      }
+    }
+  }
+  if (!isFinite(mn)) {
+    mn = 0;
+    mx = 1;
+  }
+  const span = mx - mn || 1;
+  const padL = spec.yLabels ? 60 : 20;
+  const padR = 14;
+  const padT = spec.title ? 28 : 14;
+  const padB = spec.xLabels ? 34 : 14;
+  const gw = (PLOT_W - padL - padR) / cols;
+  const gh = (PLOT_H - padT - padB) / rows;
+  let body = "";
+  for (let ri = 0; ri < rows; ri++) {
+    const row = z[ri];
+    for (let ci = 0; ci < cols; ci++) {
+      const raw = Array.isArray(row) ? Number(row[ci]) : NaN;
+      const tt = isFinite(raw) ? (raw - mn) / span : 0;
+      const op = (0.12 + 0.85 * tt).toFixed(3);
+      const rx = (padL + ci * gw).toFixed(1);
+      const ry = (padT + ri * gh).toFixed(1);
+      body += `<rect x="${rx}" y="${ry}" width="${(gw + 0.5).toFixed(1)}" height="${(gh + 0.5).toFixed(1)}" fill="var(--br-accent)" fill-opacity="${op}"/>`;
+    }
+  }
+  if (Array.isArray(spec.yLabels)) {
+    spec.yLabels.slice(0, rows).forEach((lab, ri) => {
+      body += `<text x="${padL - 6}" y="${(padT + ri * gh + gh / 2 + 3).toFixed(1)}" font-size="9" text-anchor="end" fill="var(--br-text-muted)">${escapeHtml(
+        String(lab)
+      ).slice(0, 12)}</text>`;
+    });
+  }
+  if (Array.isArray(spec.xLabels)) {
+    spec.xLabels.slice(0, cols).forEach((lab, ci) => {
+      body += `<text x="${(padL + ci * gw + gw / 2).toFixed(1)}" y="${PLOT_H - padB + 14}" font-size="9" text-anchor="middle" fill="var(--br-text-muted)">${escapeHtml(
+        String(lab)
+      ).slice(0, 8)}</text>`;
+    });
+  }
+  return plotFrame(body, spec.title);
+}
+
+// ── network: a canvas force-directed graph (Barnes-Hut), jsdom-safe ──────────
+// Adapted (not copied) from the BioOKF Studio engine: quadtree repulsion, spring
+// edges, center gravity, warm-start, energy-based auto-freeze, zoom/pan/drag,
+// viewport culling, hover focus + selection. All canvas ops are guarded so the
+// engine never throws when a 2D context is unavailable (jsdom) or a stub.
+
+const NET_FALLBACK_PALETTE = [
+  "#cf6d47",
+  "#4a7ec2",
+  "#5bbe5e",
+  "#b0842f",
+  "#8a5bbe",
+  "#3fa39a",
+  "#c2506d",
+  "#7a736c",
+];
+
+function createNetwork(spec: NetworkSpec): HTMLElement {
+  const wrap = wEl("div", "br-network");
+  const canvas = document.createElement("canvas");
+  canvas.className = "br-network__canvas";
+  wrap.appendChild(canvas);
+  const controller = buildNetworkEngine(canvas, spec || {});
+  (wrap as WithNet).__brNet = controller;
+  (canvas as WithNet).__brNet = controller;
+  return wrap;
+}
+
+function buildNetworkEngine(canvas: HTMLCanvasElement, spec: NetworkSpec): NetworkController {
+  const rawNodes = Array.isArray(spec.nodes) ? spec.nodes : [];
+  const rawEdges = Array.isArray(spec.edges) ? spec.edges : [];
+  const encoding = spec.encoding || {};
+  const physics = spec.physics || {};
+  const typeColors = encoding.type_colors || {};
+  const negated = new Set();
+  for (const k of encoding.negated_kinds || []) negated.add(String(k));
+
+  const BH_THETA = 0.9;
+  const REPULSE = typeof physics.charge === "number" ? Math.abs(physics.charge) : 4200;
+  const LINK = typeof physics.linkDistance === "number" ? physics.linkDistance : 92;
+  const GRAV = typeof physics.gravity === "number" ? physics.gravity : 0.012;
+  const DAMP = typeof physics.damping === "number" ? physics.damping : 0.82;
+  const DPR = getDpr();
+
+  const byId = {};
+  const nodes = [];
+  const total = Math.max(rawNodes.length, 1);
+  rawNodes.forEach((raw, i) => {
+    const id = raw && raw.id != null ? String(raw.id) : String(i);
+    if (byId[id]) return;
+    const ang = (i / total) * Math.PI * 2;
+    const rad = 150 + (i % 6) * 18;
+    const px = Math.cos(ang) * rad;
+    const py = Math.sin(ang) * rad;
+    const node = {
+      id: id,
+      label: raw && raw.label != null ? String(raw.label) : id,
+      type: raw && raw.type != null ? String(raw.type) : "",
+      size: raw && typeof raw.size === "number" ? raw.size : 1,
+      color: raw && raw.color ? String(raw.color) : "",
+      x: px,
+      y: py,
+      vx: 0,
+      vy: 0,
+      deg: 0,
+      hub: false,
+    };
+    byId[id] = node;
+    nodes.push(node);
+  });
+
+  const edges = [];
+  for (const e of rawEdges) {
+    if (!e) continue;
+    const s = String(e.source);
+    const t = String(e.target);
+    if (!byId[s] || !byId[t]) continue;
+    const kind = e.kind != null ? String(e.kind) : "";
+    const neg = negated.has(kind);
+    const dashed = e.style === "dashed" || neg;
+    edges.push({ source: s, target: t, kind: kind, label: e.label != null ? String(e.label) : "", dashed: dashed, neg: neg });
+    byId[s].deg++;
+    byId[t].deg++;
+  }
+
+  // hubs = top-6 by degree, drawn larger.
+  const ranked = nodes.slice().sort((a, b) => b.deg - a.deg);
+  const hubSet = new Set();
+  for (let i = 0; i < ranked.length && i < 6; i++) hubSet.add(ranked[i].id);
+  for (const n of nodes) n.hub = hubSet.has(n.id);
+
+  // prebuilt neighbor map → O(1) hover focus.
+  const neighbors = {};
+  for (const n of nodes) neighbors[n.id] = new Set();
+  for (const e of edges) {
+    neighbors[e.source].add(e.target);
+    neighbors[e.target].add(e.source);
+  }
+
+  const view = { k: 1, x: 0, y: 0 };
+  let alpha = 1;
+  let settled = false;
+  let settledFrames = 0;
+  let alive = true;
+  let W = 0;
+  let H = 0;
+  let drag = null;
+  let panning = null;
+  let hover = null;
+  let selected = null;
+  let moved = false;
+  let tip = null;
+  const listeners = [];
+  if (typeof spec.onSelect === "function") listeners.push(spec.onSelect);
+
+  let ctx = null;
+  try {
+    ctx = canvas.getContext("2d");
+  } catch {
+    ctx = null;
+  }
+
+  const typeIndex = {};
+  let typeSeq = 0;
+  function colorFor(n) {
+    if (n.color) return n.color;
+    const ty = n.type || "";
+    if (typeColors && typeColors[ty]) return typeColors[ty];
+    if (!(ty in typeIndex)) {
+      typeIndex[ty] = typeSeq % NET_FALLBACK_PALETTE.length;
+      typeSeq++;
+    }
+    return NET_FALLBACK_PALETTE[typeIndex[ty]];
+  }
+
+  class QNode {
+    constructor(x, y, w, h) {
+      this.x = x;
+      this.y = y;
+      this.w = w;
+      this.h = h;
+      this.mass = 0;
+      this.cmx = 0;
+      this.cmy = 0;
+      this.body = null;
+      this.children = null;
+    }
+    quad(nx, ny, hw, hh) {
+      return (nx >= this.x + hw ? 1 : 0) | (ny >= this.y + hh ? 2 : 0);
+    }
+    insert(nx, ny, node) {
+      if (this.mass === 0 && !this.children) {
+        this.body = node;
+        this.mass = 1;
+        this.cmx = nx;
+        this.cmy = ny;
+        return;
+      }
+      if (!this.children) {
+        const ob = this.body;
+        this.body = null;
+        this.children = [null, null, null, null];
+        const hw0 = this.w / 2;
+        const hh0 = this.h / 2;
+        const qi0 = this.quad(ob.x, ob.y, hw0, hh0);
+        this.children[qi0] = new QNode(this.x + (qi0 & 1 ? hw0 : 0), this.y + (qi0 & 2 ? hh0 : 0), hw0, hh0);
+        this.children[qi0].insert(ob.x, ob.y, ob);
+      }
+      const hw = this.w / 2;
+      const hh = this.h / 2;
+      const qi = this.quad(nx, ny, hw, hh);
+      if (!this.children[qi]) {
+        this.children[qi] = new QNode(this.x + (qi & 1 ? hw : 0), this.y + (qi & 2 ? hh : 0), hw, hh);
+      }
+      this.children[qi].insert(nx, ny, node);
+      this.mass++;
+      this.cmx = (this.cmx * (this.mass - 1) + nx) / this.mass;
+      this.cmy = (this.cmy * (this.mass - 1) + ny) / this.mass;
+    }
+    force(nx, ny, node, a) {
+      if (this.mass === 0) return;
+      if (this.body && this.body !== node) {
+        let dx = nx - this.body.x;
+        let dy = ny - this.body.y;
+        let d2 = dx * dx + dy * dy;
+        if (d2 < 0.01) {
+          d2 = 0.01;
+          dx = Math.random() - 0.5;
+          dy = Math.random() - 0.5;
+        }
+        const d = Math.sqrt(d2);
+        const rep = REPULSE / d2;
+        node.vx += (dx / d) * rep * a;
+        node.vy += (dy / d) * rep * a;
+        return;
+      }
+      if (this.children) {
+        const dx = nx - this.cmx;
+        const dy = ny - this.cmy;
+        const d2 = dx * dx + dy * dy;
+        const d = Math.sqrt(d2) || 0.01;
+        const s = Math.max(this.w, this.h);
+        if (s / d < BH_THETA) {
+          const rep = (REPULSE * this.mass) / d2;
+          node.vx += (dx / d) * rep * a;
+          node.vy += (dy / d) * rep * a;
+        } else {
+          for (const ch of this.children) if (ch) ch.force(nx, ny, node, a);
         }
       }
-      const d = wEl("div", "br-unknown-widget");
-      d.textContent = "[unsupported: " + kind + "]";
-      return d;
+    }
+  }
+
+  function tick(a) {
+    const M = nodes.length;
+    if (!M) return;
+    let mnx = 1e9;
+    let mny = 1e9;
+    let mxx = -1e9;
+    let mxy = -1e9;
+    for (const n of nodes) {
+      if (n.x < mnx) mnx = n.x;
+      if (n.y < mny) mny = n.y;
+      if (n.x > mxx) mxx = n.x;
+      if (n.y > mxy) mxy = n.y;
+    }
+    const qs = Math.max(mxx - mnx || 1, mxy - mny || 1);
+    const root = new QNode(mnx - qs * 0.1, mny - qs * 0.1, qs * 1.2, qs * 1.2);
+    for (const n of nodes) root.insert(n.x, n.y, n);
+    for (const n of nodes) root.force(n.x, n.y, n, a);
+    // edge springs — rest length scaled by endpoint size.
+    for (const e of edges) {
+      const s = byId[e.source];
+      const t = byId[e.target];
+      if (!s || !t) continue;
+      const dx = t.x - s.x;
+      const dy = t.y - s.y;
+      const d = Math.sqrt(dx * dx + dy * dy) || 0.01;
+      const rest = LINK * (1 + (nodeR(s) + nodeR(t)) / 24);
+      const f = (d - rest) * 0.045 * a;
+      const fx = (dx / d) * f;
+      const fy = (dy / d) * f;
+      s.vx += fx;
+      s.vy += fy;
+      t.vx -= fx;
+      t.vy -= fy;
+    }
+    for (const n of nodes) {
+      n.vx += -n.x * GRAV * a;
+      n.vy += -n.y * GRAV * a;
+    }
+    for (const n of nodes) {
+      if (n === drag) {
+        n.vx = 0;
+        n.vy = 0;
+        continue;
+      }
+      n.x += n.vx;
+      n.y += n.vy;
+      n.vx *= DAMP;
+      n.vy *= DAMP;
+    }
+  }
+
+  function measure() {
+    const rect = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : { width: 0, height: 0 };
+    let cw = canvas.clientWidth || rect.width || 0;
+    let ch = canvas.clientHeight || rect.height || 0;
+    if (!cw) cw = 320;
+    if (!ch) ch = 320;
+    W = cw;
+    H = ch;
+    const needW = Math.round(cw * DPR);
+    const needH = Math.round(ch * DPR);
+    if (needW > 0 && needH > 0 && (canvas.width !== needW || canvas.height !== needH)) {
+      canvas.width = needW;
+      canvas.height = needH;
+    }
+  }
+
+  function toScreen(x, y) {
+    return [x * view.k + view.x + W / 2, y * view.k + view.y + H / 2];
+  }
+  function toWorld(sx, sy) {
+    return [(sx - W / 2 - view.x) / view.k, (sy - H / 2 - view.y) / view.k];
+  }
+  function nodeR(n) {
+    const base = n.hub ? 9 : 6;
+    const scale = n.size > 1 ? Math.min(2, Math.sqrt(n.size)) : 1;
+    return base * scale;
+  }
+
+  function fitView() {
+    if (!nodes.length) return;
+    let mnx = 1e9;
+    let mny = 1e9;
+    let mxx = -1e9;
+    let mxy = -1e9;
+    for (const n of nodes) {
+      if (n.x < mnx) mnx = n.x;
+      if (n.y < mny) mny = n.y;
+      if (n.x > mxx) mxx = n.x;
+      if (n.y > mxy) mxy = n.y;
+    }
+    const pad = 60;
+    const gw = mxx - mnx || 1;
+    const gh = mxy - mny || 1;
+    const uw = Math.max(80, W - pad * 2);
+    const uh = Math.max(80, H - pad * 2);
+    const k = Math.min(uw / gw, uh / gh, 1.6);
+    view.k = k > 0 && isFinite(k) ? k : 1;
+    view.x = -((mnx + mxx) / 2) * view.k;
+    view.y = -((mny + mxy) / 2) * view.k;
+  }
+
+  function drawEdge(x1, y1, x2, y2, e, dim) {
+    let col = "rgba(120,128,106,0.35)";
+    if (e.neg) col = dim ? "rgba(207,80,71,0.16)" : "rgba(207,80,71,0.62)";
+    else if (dim) col = "rgba(120,128,106,0.1)";
+    ctx.save();
+    if (e.dashed) ctx.setLineDash([4, 3]);
+    else ctx.setLineDash([]);
+    ctx.strokeStyle = col;
+    ctx.lineWidth = e.neg ? 1.1 : 0.9;
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.stroke();
+    ctx.restore();
+    if (e.neg && !dim) {
+      // reddish strike at the midpoint reinforces a negated relationship.
+      const mx = (x1 + x2) / 2;
+      const my = (y1 + y2) / 2;
+      ctx.save();
+      ctx.strokeStyle = "rgba(207,80,71,0.9)";
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.moveTo(mx - 4, my - 4);
+      ctx.lineTo(mx + 4, my + 4);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  function drawNode(n, a, isFocus) {
+    const p = toScreen(n.x, n.y);
+    const r = Math.max(2, nodeR(n) * view.k);
+    ctx.globalAlpha = a;
+    ctx.beginPath();
+    ctx.arc(p[0], p[1], r, 0, 7);
+    ctx.fillStyle = colorFor(n);
+    ctx.fill();
+    ctx.lineWidth = isFocus ? 2 : 1;
+    ctx.strokeStyle = isFocus ? "#cf6d47" : "rgba(20,18,12,0.55)";
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawLabels(focusId, focusN) {
+    ctx.textBaseline = "middle";
+    ctx.fillStyle = "rgba(40,34,25,0.95)";
+    for (const n of nodes) {
+      const isFocus = focusId === n.id;
+      const isNb = focusN ? focusN.has(n.id) : false;
+      const show = isFocus || (n.hub && !focusId) || isNb || view.k >= 1.5;
+      if (!show) continue;
+      const p = toScreen(n.x, n.y);
+      const r = Math.max(2, nodeR(n) * view.k);
+      const raw = n.label.length > 28 ? n.label.slice(0, 27) + "…" : n.label;
+      ctx.font = (n.hub ? "600 " : "450 ") + "11px -apple-system,system-ui,sans-serif";
+      ctx.fillText(raw, p[0] + r + 5, p[1]);
+    }
+  }
+
+  function drawReal() {
+    if (typeof ctx.setTransform === "function") ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    if (typeof ctx.clearRect === "function") ctx.clearRect(0, 0, W, H);
+    const focusId = (selected && selected.id) || (hover && hover.id) || null;
+    const focusN = focusId ? neighbors[focusId] : null;
+    for (const e of edges) {
+      const s = byId[e.source];
+      const t = byId[e.target];
+      if (!s || !t) continue;
+      const p1 = toScreen(s.x, s.y);
+      const p2 = toScreen(t.x, t.y);
+      const dim = focusId ? e.source !== focusId && e.target !== focusId : false;
+      // viewport cull: skip edges fully off-screen when not focused.
+      if (!focusId && offScreen(p1) && offScreen(p2)) continue;
+      drawEdge(p1[0], p1[1], p2[0], p2[1], e, dim);
+    }
+    for (const n of nodes) {
+      const p = toScreen(n.x, n.y);
+      if (offScreen(p)) continue;
+      const isFocus = focusId === n.id;
+      const isNb = focusN ? focusN.has(n.id) : false;
+      const a = focusId && !isFocus && !isNb ? 0.22 : 1;
+      drawNode(n, a, isFocus);
+    }
+    drawLabels(focusId, focusN);
+  }
+
+  function offScreen(p) {
+    return p[0] < -80 || p[0] > W + 80 || p[1] < -80 || p[1] > H + 80;
+  }
+
+  function draw() {
+    if (!ctx) return;
+    try {
+      drawReal();
+    } catch {
+      /* stub/partial 2D context (jsdom) — physics + selection still run */
+    }
+  }
+
+  function reheat(v) {
+    if (settled || alpha < v) {
+      alpha = Math.max(alpha, v);
+      settled = false;
+      settledFrames = 0;
+    }
+  }
+
+  function loop() {
+    if (!alive) return;
+    measure();
+    if (alpha > 0.005) {
+      tick(alpha);
+      alpha *= 0.94;
+      let ke = 0;
+      for (const n of nodes) ke += n.vx * n.vx + n.vy * n.vy;
+      if (ke < nodes.length * 0.008) {
+        settledFrames++;
+        if (settledFrames > 30) {
+          alpha = 0;
+          settled = true;
+        }
+      } else {
+        settledFrames = 0;
+      }
+    }
+    draw();
+    schedule();
+  }
+  function schedule() {
+    if (!alive) return;
+    if (typeof requestAnimationFrame === "function") requestAnimationFrame(loop);
+    else if (typeof setTimeout === "function") setTimeout(loop, 16);
+  }
+
+  function pickNode(sx, sy) {
+    for (let i = nodes.length - 1; i >= 0; i--) {
+      const n = nodes[i];
+      const p = toScreen(n.x, n.y);
+      const r = Math.max(2, nodeR(n) * view.k) + 4;
+      const dx = sx - p[0];
+      const dy = sy - p[1];
+      if (dx * dx + dy * dy <= r * r) return n;
+    }
+    return null;
+  }
+  function localXY(ev) {
+    const rect = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : { left: 0, top: 0 };
+    return [(ev.clientX || 0) - rect.left, (ev.clientY || 0) - rect.top];
+  }
+  function ensureTip() {
+    if (tip) return tip;
+    tip = document.createElement("div");
+    tip.className = "br-network__tip";
+    tip.style.display = "none";
+    const host = canvas.parentElement;
+    if (host) host.appendChild(tip);
+    return tip;
+  }
+  function showTooltip(n, xy) {
+    const el = ensureTip();
+    if (!n) {
+      el.style.display = "none";
+      return;
+    }
+    el.textContent = n.label + (n.type ? " · " + n.type : "");
+    el.style.display = "block";
+    el.style.left = xy[0] + 12 + "px";
+    el.style.top = xy[1] + 12 + "px";
+  }
+  function onDown(ev) {
+    const xy = localXY(ev);
+    moved = false;
+    const n = pickNode(xy[0], xy[1]);
+    if (n) {
+      drag = n;
+      reheat(1);
+    } else {
+      panning = { x: xy[0], y: xy[1] };
+    }
+  }
+  function onMove(ev) {
+    const xy = localXY(ev);
+    if (drag) {
+      const w = toWorld(xy[0], xy[1]);
+      drag.x = w[0];
+      drag.y = w[1];
+      moved = true;
+      reheat(0.3);
+      return;
+    }
+    if (panning) {
+      view.x += xy[0] - panning.x;
+      view.y += xy[1] - panning.y;
+      panning = { x: xy[0], y: xy[1] };
+      moved = true;
+      return;
+    }
+    const n = pickNode(xy[0], xy[1]);
+    const prev = hover && hover.id;
+    hover = n;
+    if (prev !== (n && n.id)) showTooltip(n, xy);
+  }
+  function onUp(ev) {
+    if (!drag && !panning) return;
+    const xy = localXY(ev);
+    if (!moved) {
+      const n = pickNode(xy[0], xy[1]);
+      selectNode(n ? n.id : null);
+    }
+    drag = null;
+    panning = null;
+  }
+  function onWheel(ev) {
+    if (ev.preventDefault) ev.preventDefault();
+    const xy = localXY(ev);
+    const w = toWorld(xy[0], xy[1]);
+    const nk = Math.max(0.25, Math.min(5, view.k * Math.exp(-(ev.deltaY || 0) * 0.0014)));
+    view.k = nk;
+    view.x = xy[0] - W / 2 - w[0] * view.k;
+    view.y = xy[1] - H / 2 - w[1] * view.k;
+    reheat(0.25);
+  }
+
+  function selectNode(id) {
+    selected = id != null && byId[id] ? byId[id] : null;
+    const chosen = selected ? selected.id : null;
+    try {
+      const ev = new CustomEvent("br-network-select", { detail: { id: chosen }, bubbles: false });
+      canvas.dispatchEvent(ev);
+    } catch {
+      /* CustomEvent unavailable */
+    }
+    for (const cb of listeners) {
+      try {
+        cb(chosen);
+      } catch {
+        /* author callback errors are non-fatal */
+      }
+    }
+  }
+
+  function snapshot() {
+    const out = {};
+    for (const n of nodes) out[n.id] = { x: n.x, y: n.y };
+    return out;
+  }
+  function adopt(prev) {
+    if (!prev || typeof prev !== "object") return;
+    let any = false;
+    for (const n of nodes) {
+      const p = prev[n.id];
+      if (p && isFinite(p.x) && isFinite(p.y)) {
+        n.x = p.x;
+        n.y = p.y;
+        n.vx = 0;
+        n.vy = 0;
+        any = true;
+      }
+    }
+    if (any) {
+      fitView();
+      reheat(0.3);
+    }
+  }
+
+  let ro = null;
+  function destroy() {
+    alive = false;
+    try {
+      canvas.removeEventListener("mousedown", onDown);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      canvas.removeEventListener("wheel", onWheel);
+    } catch {
+      /* ignore */
+    }
+    if (ro) {
+      try {
+        ro.disconnect();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+
+  // ── init: warm-start layout, wire interaction, start the loop ──
+  measure();
+  for (let i = 0; i < 20; i++) tick(0.9 * Math.pow(0.985, i) + 0.02);
+  fitView();
+  try {
+    canvas.addEventListener("mousedown", onDown);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    canvas.addEventListener("wheel", onWheel, { passive: false });
+  } catch {
+    /* no event target */
+  }
+  if (typeof ResizeObserver !== "undefined") {
+    try {
+      ro = new ResizeObserver(() => {
+        const wasZero = W === 0 || H === 0;
+        measure();
+        if (wasZero && nodes.length) fitView();
+      });
+      ro.observe(canvas);
+    } catch {
+      ro = null;
+    }
+  }
+  schedule();
+
+  return {
+    select: (id) => selectNode(id),
+    positions: () => snapshot(),
+    adopt: (prev) => adopt(prev),
+    destroy: () => destroy(),
+  };
+}
+
+function getDpr(): number {
+  try {
+    return window.devicePixelRatio || 1;
+  } catch {
+    return 1;
+  }
+}
+
+// ── author component registry (Task 3) ───────────────────────────────────────
+
+class ComponentRegistry {
+  private defs: Map<string, ComponentDef> = new Map();
+  register(name: string, def: ComponentDef): void {
+    if (name && def && typeof def.mount === "function") this.defs.set(String(name), def);
+  }
+  get(name: string): ComponentDef | undefined {
+    return this.defs.get(String(name));
+  }
+}
+
+// ── instance morphing helpers (Task 1) ───────────────────────────────────────
+
+/** The network controller attached to a rendered `network` instance, if any. */
+function readNet(el: HTMLElement): NetworkController | null {
+  const n = (el as WithNet).__brNet;
+  return n ? n : null;
+}
+
+/** Carry sim positions from an old network instance to its replacement (matched
+ *  by node id), then tear the old one down so its animation loop stops. */
+function adoptNetwork(oldEl: HTMLElement, newEl: HTMLElement): void {
+  const oldNet = readNet(oldEl);
+  const newNet = readNet(newEl);
+  if (oldNet && newNet) {
+    try {
+      newNet.adopt(oldNet.positions());
+    } catch {
+      /* ignore */
+    }
+  }
+  if (oldNet) {
+    try {
+      oldNet.destroy();
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
+function shallowMergeNode(node: WidgetNode, props: AnyRecord): WidgetNode {
+  const out = Object.assign({}, node, props);
+  return out as WidgetNode;
+}
+
+/** Snapshot the focused input inside `root` so a re-render can restore it. */
+function captureFocus(root: HTMLElement): FocusSnap | null {
+  const active = document.activeElement as HTMLElement | null;
+  if (!active || !root.contains(active)) return null;
+  const tag = active.tagName ? active.tagName.toLowerCase() : "";
+  if (tag !== "input" && tag !== "textarea" && tag !== "select") return null;
+  const field = active as HTMLInputElement;
+  let start = -1;
+  let end = -1;
+  try {
+    start = field.selectionStart == null ? -1 : field.selectionStart;
+    end = field.selectionEnd == null ? -1 : field.selectionEnd;
+  } catch {
+    /* selection not supported on this input type */
+  }
+  return {
+    name: active.getAttribute("name") || "",
+    start: start,
+    end: end,
+    value: field.value == null ? "" : String(field.value),
+  };
+}
+
+/** Re-focus the same-named input inside a freshly re-rendered subtree, keeping
+ *  the caret/selection and (when the new field is blank) the in-progress value. */
+function restoreFocus(root: HTMLElement, snap: FocusSnap | null): void {
+  if (!snap) return;
+  let sel = null;
+  const list = root.querySelectorAll("input, textarea, select");
+  for (let i = 0; i < list.length; i++) {
+    const el = list[i] as HTMLElement;
+    if ((el.getAttribute("name") || "") === snap.name) {
+      sel = el;
+      break;
+    }
+  }
+  if (!sel) return;
+  const field = sel as HTMLInputElement;
+  try {
+    field.focus();
+    if (snap.value && (field.value == null || field.value === "")) field.value = snap.value;
+    if (snap.start >= 0 && typeof field.setSelectionRange === "function") {
+      field.setSelectionRange(snap.start, snap.end);
+    }
+  } catch {
+    /* focus/selection unsupported */
+  }
+}
+
+/** Capture scroll offsets of scrolled descendants, keyed by DOM position, so an
+ *  in-place re-render of a structurally-identical subtree keeps them. */
+function captureScroll(root: HTMLElement): ScrollSnap {
+  const idx: number[] = [];
+  const tops: number[] = [];
+  const lefts: number[] = [];
+  const all = root.querySelectorAll("*");
+  for (let i = 0; i < all.length; i++) {
+    const el = all[i] as HTMLElement;
+    const st = el.scrollTop || 0;
+    const sl = el.scrollLeft || 0;
+    if (st > 0 || sl > 0) {
+      idx.push(i);
+      tops.push(st);
+      lefts.push(sl);
+    }
+  }
+  return { idx: idx, tops: tops, lefts: lefts };
+}
+
+function restoreScroll(root: HTMLElement, snap: ScrollSnap): void {
+  if (!snap || !snap.idx.length) return;
+  const all = root.querySelectorAll("*");
+  for (let k = 0; k < snap.idx.length; k++) {
+    const el = all[snap.idx[k]] as HTMLElement;
+    if (!el) continue;
+    try {
+      el.scrollTop = snap.tops[k];
+      el.scrollLeft = snap.lefts[k];
+    } catch {
+      /* ignore */
     }
   }
 }
@@ -1583,6 +2963,8 @@ export interface UiCommand {
   prompt?: string;
   submitLabel?: string;
   fields?: AskFieldSpec[];
+  // ── ui_patch (SDK v2): incremental instance edits by id ──
+  ops?: unknown[];
 }
 
 export interface AskFieldSpec {
@@ -1882,6 +3264,10 @@ export class UiRuntime {
   private toastHost: HTMLElement | null = null;
   private modalHost: HTMLElement | null = null;
   private openAsk: string | null = null;
+  // ── SDK v2: flat id→instance registry + author component registry ──
+  private instances: Map<string, InstanceEntry> = new Map();
+  private iidSeq = 0;
+  private componentReg: ComponentRegistry = new ComponentRegistry();
 
   constructor(client: BioRouterClient) {
     this.client = client;
@@ -1956,6 +3342,9 @@ export class UiRuntime {
           break;
         case "render":
           this.applyRender(cmd);
+          break;
+        case "patch":
+          this.applyPatchOps(cmd);
           break;
         case "highlight":
           this.applyHighlight(cmd);
@@ -2050,7 +3439,10 @@ export class UiRuntime {
     if (!id) return;
     if (cmd.remove) {
       const existing = this.panels.get(id);
-      if (existing) existing.remove();
+      if (existing) {
+        this.disposeInstancesIn(existing);
+        existing.remove();
+      }
       this.panels.delete(id);
       this.syncDockVisibility();
       this.refreshBindings();
@@ -2097,6 +3489,7 @@ export class UiRuntime {
     const isTarget = place.indexOf("@") === 0 || DOCK_SLOTS.indexOf(place) < 0 && place !== "modal" && place !== "main";
     const prev = this.panels.get(id);
     if (prev && prev.parentElement) {
+      this.disposeInstancesIn(prev);
       prev.parentElement.replaceChild(panel, prev);
     } else if (isTarget) {
       const host = this.resolveTarget(place);
@@ -2135,27 +3528,334 @@ export class UiRuntime {
       });
       return;
     }
-    if (cmd.mode !== "append") host.innerHTML = "";
-    this.renderInto(host, cmd.body || [], cmd.target || "render", cmd.mode === "append");
+    const widgetId = cmd.target || "render";
+    const body = cmd.body || [];
+    if (cmd.mode === "append") {
+      this.renderInto(host, body, widgetId, true);
+    } else if (this.hasKeyedChildren(host)) {
+      // Re-render over a target that already holds instances → morph per-id
+      // instead of wiping (preserves focus/scroll/canvas/network positions).
+      this.morphInto(host, body, widgetId);
+    } else {
+      this.renderInto(host, body, widgetId, false);
+    }
     // Rendered markup may contain author bindings — re-index and paint.
     this.refreshBindings();
   }
 
-  /** Render widget nodes, wiring their buttons back into the agent loop. */
-  private renderInto(
-    host: HTMLElement,
-    nodes: WidgetNode[],
-    widgetId: string,
-    append?: boolean
-  ): void {
-    const ctx: WidgetContext = {
+  private hasKeyedChildren(host: HTMLElement): boolean {
+    for (let i = 0; i < host.children.length; i++) {
+      if (host.children[i].getAttribute("data-br-iid")) return true;
+    }
+    return false;
+  }
+
+  /** A `WidgetContext` bound to `widgetId`, including the component bridge. */
+  private makeCtx(widgetId: string): WidgetContext {
+    const rt = this;
+    return {
       fields: new Map(),
-      onAction: (action, payload) =>
-        this.client.sendRaw({ type: "widget_action", widgetId, action, payload }),
+      onAction: (action, payload) => rt.client.sendRaw({ type: "widget_action", widgetId: widgetId, action: action, payload: payload }),
+      mountComponent: (name, props, cid) => rt.mountComponent(name, props, cid || widgetId),
     };
-    if (!append) host.innerHTML = "";
+  }
+
+  /** The stable id for a node: its own `id`, else a generated one (stamped back
+   *  onto the node so nested lookups agree within this render). */
+  private nodeId(node: WidgetNode): string {
+    const raw = (node as NodeWithId).id;
+    if (typeof raw === "string" && raw) return raw;
+    this.iidSeq++;
+    const gen = "auto-" + this.iidSeq;
+    (node as NodeWithId).id = gen;
+    return gen;
+  }
+
+  /** Render one node standalone (own ctx), tag it, but do NOT register it. */
+  private buildInstanceEl(node: WidgetNode, id: string): HTMLElement {
+    const el = renderWidget(node, this.makeCtx(id));
+    el.setAttribute("data-br-iid", id);
+    return el;
+  }
+
+  /** Render widget nodes into `host`, wiring buttons back into the agent loop
+   *  and registering each top-level node as an addressable instance. A shared
+   *  ctx keeps a form's fields collectable across sibling nodes. */
+  private renderInto(host: HTMLElement, nodes: WidgetNode[], widgetId: string, append?: boolean): void {
+    if (!append) {
+      this.disposeInstancesIn(host);
+      host.innerHTML = "";
+    }
+    const ctx = this.makeCtx(widgetId);
     for (const node of nodes) {
-      host.appendChild(renderWidget(node, ctx));
+      const el = renderWidget(node, ctx);
+      const id = this.nodeId(node);
+      el.setAttribute("data-br-iid", id);
+      this.instances.set(id, { node: node, el: el });
+      host.appendChild(el);
+    }
+  }
+
+  /** Keyed reconciliation: match new body ids against existing instances under
+   *  `host`; update matched in place, append new, remove unmatched, reorder. */
+  private morphInto(host: HTMLElement, nodes: WidgetNode[], widgetId: string): void {
+    const existing: AnyRecord = {};
+    for (let i = 0; i < host.children.length; i++) {
+      const iid = host.children[i].getAttribute("data-br-iid");
+      if (iid) existing[iid] = true;
+    }
+    const ctx = this.makeCtx(widgetId);
+    const seen: AnyRecord = {};
+    const ordered: HTMLElement[] = [];
+    for (const node of nodes) {
+      const id = this.nodeId(node);
+      seen[id] = true;
+      if (existing[id] && this.instances.has(id)) {
+        this.morphInstance(id, node);
+      } else {
+        const el = renderWidget(node, ctx);
+        el.setAttribute("data-br-iid", id);
+        this.instances.set(id, { node: node, el: el });
+        host.appendChild(el);
+      }
+      const entry = this.instances.get(id);
+      if (entry) ordered.push(entry.el);
+    }
+    for (let i = host.children.length - 1; i >= 0; i--) {
+      const ch = host.children[i] as HTMLElement;
+      const iid = ch.getAttribute("data-br-iid");
+      if (iid && !seen[iid]) {
+        this.disposeInstance(iid);
+        ch.remove();
+      }
+    }
+    for (const el of ordered) host.appendChild(el);
+  }
+
+  /** Update a single instance in place. Component nodes update without swapping
+   *  their container; everything else re-renders the subtree and restores
+   *  focus / scroll / network positions. */
+  private morphInstance(id: string, newNode: WidgetNode): void {
+    const entry = this.instances.get(id);
+    if (!entry) return;
+    const oldNode = entry.node;
+    const oldEl = entry.el;
+    if ((newNode as UnknownWidget).t === "component") {
+      this.updateComponent(id, oldNode, newNode, oldEl);
+      entry.node = newNode;
+      return;
+    }
+    const parent = oldEl.parentElement;
+    const focus = captureFocus(oldEl);
+    const scroll = captureScroll(oldEl);
+    const newEl = this.buildInstanceEl(newNode, id);
+    adoptNetwork(oldEl, newEl);
+    if (parent) parent.replaceChild(newEl, oldEl);
+    this.instances.set(id, { node: newNode, el: newEl });
+    restoreScroll(newEl, scroll);
+    restoreFocus(newEl, focus);
+  }
+
+  // ── ui_patch ops (add / replace / set_props / remove) ──────────────────────
+
+  private applyPatchOps(cmd: UiCommand): void {
+    const ops = Array.isArray(cmd.ops) ? cmd.ops : [];
+    for (const raw of ops) {
+      if (!raw || typeof raw !== "object") continue;
+      this.applyOneOp(raw as PatchOp);
+    }
+    this.refreshBindings();
+  }
+
+  private applyOneOp(op: PatchOp): void {
+    const kind = String(op.op || "");
+    if (kind === "add") this.opAdd(op);
+    else if (kind === "replace") this.opReplace(op);
+    else if (kind === "set_props") this.opSetProps(op);
+    else if (kind === "remove") this.opRemove(op);
+  }
+
+  private resolvePatchHost(op: PatchOp): HTMLElement | null {
+    if (op.parent) {
+      const p = this.instances.get(op.parent);
+      if (p) return p.el;
+    }
+    if (op.target) return this.resolveTarget(op.target);
+    // default target: the main results region, else the app's main host.
+    return this.resolveTarget("@region:results") || this.mainHost();
+  }
+
+  private opAdd(op: PatchOp): void {
+    const node = op.node;
+    if (!node) return;
+    const id = typeof op.id === "string" && op.id ? op.id : this.nodeId(node);
+    (node as NodeWithId).id = id;
+    const host = this.resolvePatchHost(op);
+    if (!host) return;
+    const el = this.buildInstanceEl(node, id);
+    this.instances.set(id, { node: node, el: el });
+    const index = typeof op.index === "number" ? op.index : -1;
+    const ref = index >= 0 && index < host.children.length ? host.children[index] : null;
+    if (ref) host.insertBefore(el, ref);
+    else host.appendChild(el);
+  }
+
+  private opReplace(op: PatchOp): void {
+    const id = op.id || "";
+    if (!id || !op.node || !this.instances.has(id)) return;
+    (op.node as NodeWithId).id = id;
+    this.morphInstance(id, op.node);
+  }
+
+  private opSetProps(op: PatchOp): void {
+    const id = op.id || "";
+    const entry = this.instances.get(id);
+    if (!entry) return;
+    const props = op.props && typeof op.props === "object" ? op.props : {};
+    const node = entry.node as UnknownWidget;
+    // Log append fast-path: preserves scroll, no full re-render.
+    if (node.t === "log" && Array.isArray(props.append)) {
+      appendLogLines(entry.el, entry.node as LogNode, props.append);
+      if (typeof props.max === "number") (entry.node as LogNode).max = props.max;
+      return;
+    }
+    // Components: merge into the component's own props (not the node header).
+    if (node.t === "component") {
+      const cn = entry.node as ComponentNode;
+      const cur = cn.props && typeof cn.props === "object" ? cn.props : {};
+      const mergedProps = Object.assign({}, cur, props);
+      const mergedNode = Object.assign({}, entry.node);
+      (mergedNode as ComponentNode).props = mergedProps;
+      this.morphInstance(id, mergedNode as WidgetNode);
+      return;
+    }
+    const merged = shallowMergeNode(entry.node, props);
+    this.morphInstance(id, merged);
+  }
+
+  private opRemove(op: PatchOp): void {
+    const id = op.id || "";
+    const entry = this.instances.get(id);
+    if (!entry) return;
+    const net = readNet(entry.el);
+    if (net) {
+      try {
+        net.destroy();
+      } catch {
+        /* ignore */
+      }
+    }
+    if (entry.el.parentElement) entry.el.remove();
+    this.instances.delete(id);
+  }
+
+  private disposeInstance(id: string): void {
+    const entry = this.instances.get(id);
+    if (entry) {
+      const net = readNet(entry.el);
+      if (net) {
+        try {
+          net.destroy();
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    this.instances.delete(id);
+  }
+
+  /** Dispose every instance whose element lives inside `host` (before a wipe). */
+  private disposeInstancesIn(host: HTMLElement): void {
+    const found = host.querySelectorAll("[data-br-iid]");
+    for (let i = 0; i < found.length; i++) {
+      const iid = found[i].getAttribute("data-br-iid");
+      if (iid) this.disposeInstance(iid);
+    }
+  }
+
+  // ── author component registry (`br.components`) ────────────────────────────
+
+  registerComponent(name: string, def: ComponentDef): void {
+    this.componentReg.register(name, def);
+  }
+
+  private componentCtx(id: string): ComponentContext {
+    const client = this.client;
+    return {
+      id: id,
+      state: client.state,
+      run: (t, tgt, o) => client.run(t, tgt, o),
+    };
+  }
+
+  /** Mount a registered component into a fresh container; `null` when the name
+   *  is unregistered (renderWidget then shows the neutral placeholder). */
+  mountComponent(name: string, props: unknown, id: string): HTMLElement | null {
+    const def = this.componentReg.get(name);
+    if (!def) return null;
+    const el = wEl("div", "br-component");
+    el.setAttribute("data-br-component", String(name));
+    try {
+      def.mount(el, props, this.componentCtx(id));
+    } catch {
+      /* author mount errors are non-fatal */
+    }
+    return el;
+  }
+
+  private updateComponent(id: string, oldNode: WidgetNode, newNode: WidgetNode, el: HTMLElement): void {
+    const nn = newNode as ComponentNode;
+    const on = oldNode as ComponentNode;
+    const name = String(nn.name || "");
+    const def = this.componentReg.get(name);
+    const sameName = on && on.t === "component" && String(on.name || "") === name;
+    if (def && typeof def.update === "function" && sameName) {
+      try {
+        def.update(el, nn.props, on.props);
+      } catch {
+        /* author update errors are non-fatal */
+      }
+    } else {
+      el.innerHTML = "";
+      if (def) {
+        try {
+          def.mount(el, nn.props, this.componentCtx(id));
+        } catch {
+          /* ignore */
+        }
+      } else {
+        el.appendChild(unknownWidgetEl("component:" + name));
+      }
+    }
+  }
+
+  /** The network controller for a rendered `network` instance (for programmatic
+   *  select / positions). Returns `null` when the id is not a network. */
+  network(id: string): NetworkController | null {
+    const entry = this.instances.get(id);
+    return entry ? readNet(entry.el) : null;
+  }
+
+  /** Programmatically select a node in a network instance. */
+  selectNetworkNode(id: string, nodeId: string | null): void {
+    const net = this.network(id);
+    if (net) net.select(nodeId);
+  }
+
+  /** Register any addressable containers rendered outside the instance path
+   *  (```chart / ```graph fences carry a `data-br-iid`) so `ui_patch replace`
+   *  can target them. Kind is inferred from the container class. */
+  private indexDomInstances(): void {
+    const found = document.querySelectorAll("[data-br-iid]");
+    for (let i = 0; i < found.length; i++) {
+      const el = found[i] as HTMLElement;
+      const iid = el.getAttribute("data-br-iid") || "";
+      if (!iid || this.instances.has(iid)) continue;
+      const cls = typeof el.className === "string" ? el.className : "";
+      let kind = "widget";
+      if (cls.indexOf("br-chart") >= 0 || cls.indexOf("br-plot") >= 0) kind = "plot";
+      else if (cls.indexOf("br-visual") >= 0 || cls.indexOf("br-graph") >= 0) kind = "network-lite";
+      this.instances.set(iid, { node: { t: kind } as WidgetNode, el: el });
     }
   }
 
@@ -2390,6 +4090,7 @@ export class UiRuntime {
   private refreshBindings(): void {
     this.scanBindings();
     this.evalAllBindings();
+    this.indexDomInstances();
   }
 
   private evalAllBindings(): void {

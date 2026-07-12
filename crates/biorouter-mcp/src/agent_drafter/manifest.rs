@@ -120,6 +120,17 @@ pub struct UiCapability {
     /// Allow `ui_ask` to block a tool call on a user form submission.
     #[serde(default = "yes")]
     pub allow_ask: bool,
+    /// Allow `ui_html` to inject server-sanitized rich HTML into the page.
+    ///
+    /// **Default: `false`** — deliberately unlike the other `allow_*` switches,
+    /// which default on. Raw HTML is a real XSS surface (design §3.7): even
+    /// though `ui_html` sanitizes fail-closed server-side (in `control.rs`, so
+    /// the frame never leaves the daemon unsanitized), the sanitizer then *is* a
+    /// primary injection barrier. An app must therefore opt into it explicitly
+    /// rather than inherit it — the whole point of a capability. Off ⇒ `ui_html`
+    /// is denied and the agent is told so.
+    #[serde(default)]
+    pub allow_html: bool,
     /// Cap on simultaneously mounted agent panels (oldest evicted past this).
     #[serde(default = "default_max_panels")]
     pub max_panels: usize,
@@ -142,6 +153,9 @@ impl Default for UiCapability {
             allow_theme: true,
             allow_layout: true,
             allow_ask: true,
+            // Off by default even though every sibling defaults on — see the
+            // field docs: raw HTML is an XSS surface, so it is opt-in.
+            allow_html: false,
             max_panels: default_max_panels(),
             ask_timeout_s: default_ask_timeout_s(),
         }

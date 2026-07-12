@@ -527,3 +527,80 @@ body.br-has-dock-bottom { padding-bottom: var(--br-dock-h); }
   border-bottom: 1px solid var(--br-danger); color: var(--br-text);
 }
 .br-backend-error strong { display: block; margin-bottom: 2px; }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   SDK v2 science pack (markdown / image / kpi / log / plot / network /
+   component / html / figure). Styles for the new widget kinds only.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+.br-md { font-size: 0.92rem; line-height: 1.55; }
+.br-md > :first-child { margin-top: 0; }
+.br-md > :last-child { margin-bottom: 0; }
+
+/* Image */
+.br-image { margin: 0; }
+.br-image img { display: block; max-width: 100%; height: auto; border-radius: var(--br-radius-ctl); }
+.br-image__cap { margin-top: 6px; font-size: 0.78rem; color: var(--br-text-muted); }
+
+/* KPI stat card with a directional delta */
+.br-kpi {
+  padding: 12px 14px; background: var(--br-muted);
+  border: 1px solid var(--br-border-subtle); border-radius: var(--br-radius-ctl);
+}
+.br-kpi__label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--br-text-muted); }
+.br-kpi__value { font-size: 1.6rem; font-weight: 650; line-height: 1.15; margin-top: 2px; }
+.br-kpi__unit { font-size: 0.8rem; font-weight: 400; color: var(--br-text-muted); }
+.br-kpi__delta { margin-top: 3px; font-size: 0.78rem; font-weight: 600; }
+.br-kpi-up { color: var(--br-green); }
+.br-kpi-down { color: var(--br-coral); }
+
+/* Log — monospace, scrolling, level-tinted */
+.br-log {
+  max-height: 240px; overflow-y: auto; padding: 8px 10px;
+  background: var(--br-muted); border: 1px solid var(--br-border-subtle);
+  border-radius: var(--br-radius-ctl);
+  font-family: var(--br-mono); font-size: 0.78rem; line-height: 1.5;
+}
+.br-log__line { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--br-text); }
+.br-log__line--debug { color: var(--br-text-muted); }
+.br-log__line--info { color: var(--br-text); }
+.br-log__line--success { color: var(--br-green); }
+.br-log__line--warn, .br-log__line--warning { color: var(--br-coral); }
+.br-log__line--error { color: var(--br-danger); }
+
+/* Plot — reuses the .br-chart card chrome; the wrapper just spaces it out */
+.br-plot { margin: 4px 0; }
+.br-plot .br-chart { margin: 0; }
+
+/* Network — canvas force graph */
+.br-network {
+  position: relative; width: 100%; height: 100%; min-height: 320px;
+  background: linear-gradient(180deg, var(--br-surface), var(--br-muted));
+  border: 1px solid color-mix(in srgb, var(--br-border) 52%, transparent);
+  border-radius: var(--br-radius); overflow: hidden;
+}
+.br-network__canvas { display: block; width: 100%; height: 100%; min-height: 320px; cursor: grab; touch-action: none; }
+.br-network__canvas:active { cursor: grabbing; }
+.br-network__tip {
+  position: absolute; z-index: 3; pointer-events: none;
+  padding: 4px 8px; font-size: 0.75rem; border-radius: 4px;
+  background: var(--br-surface); color: var(--br-text);
+  border: 1px solid var(--br-border); box-shadow: var(--br-shadow-pop);
+  max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Server-sanitized privileged HTML */
+.br-html { font-size: 0.92rem; line-height: 1.55; }
+.br-html > :first-child { margin-top: 0; }
+.br-html > :last-child { margin-bottom: 0; }
+.br-html img { max-width: 100%; height: auto; }
+
+/* Figure — sandboxed autovis iframe */
+.br-figure {
+  margin: 4px 0; border: 1px solid color-mix(in srgb, var(--br-border) 52%, transparent);
+  border-radius: var(--br-radius); overflow: hidden; background: var(--br-surface);
+}
+.br-figure__frame { display: block; width: 100%; border: 0; background: var(--br-surface); }
+
+/* Author-registered component container */
+.br-component { display: block; min-height: 8px; }

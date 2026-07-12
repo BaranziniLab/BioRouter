@@ -17,7 +17,7 @@
 //! `{"type":"ui_reply","requestId":…,"payload":{…}}`. The tool result *is* the
 //! user's answer, so the agent can branch on it inside a single turn.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -55,13 +55,46 @@ pub const STATE_MAX_DEPTH: usize = 8;
 /// Max total object keys across the whole state document.
 pub const STATE_MAX_KEYS: usize = 2000;
 
-/// Widget node kinds the client SDK's `renderWidget` understands. Kept in sync
-/// with `templates/sdk.ts` (`WidgetNode`). Validated server-side so a malformed
-/// tree comes back to the model as a fixable error instead of a blank panel.
+/// Widget node kinds the client SDK's `renderWidget` understands and that a
+/// *generic* agent tree (`ui_panel` / `ui_render` / `ui_patch`) may emit. Kept
+/// in sync with `templates/sdk.ts` (`WidgetNode`). Validated server-side so a
+/// malformed tree comes back to the model as a fixable error instead of a blank
+/// panel. The privileged kinds in [`PRIVILEGED_WIDGET_KINDS`] are **not** here.
 pub const WIDGET_KINDS: &[&str] = &[
-    "card", "row", "col", "text", "badge", "table", "chart", "graph", "stat", "divider", "input",
-    "select", "checkbox", "button", "form", "progress",
+    // v1 built-ins
+    "card",
+    "row",
+    "col",
+    "text",
+    "badge",
+    "table",
+    "chart",
+    "graph",
+    "stat",
+    "divider",
+    "input",
+    "select",
+    "checkbox",
+    "button",
+    "form",
+    "progress",
+    // Apps SDK v2 catalog additions (Pillar 3)
+    "markdown",
+    "image",
+    "kpi",
+    "log",
+    "plot",
+    "network",
+    "component",
 ];
+
+/// Widget kinds that only the dedicated server-side tools may construct, *after*
+/// they have sanitized / rendered the payload. They are rejected by
+/// [`validate_widget`] when they arrive inside a generic agent tree — an agent
+/// cannot hand-write a `{t:"html"}` node and smuggle raw markup past the
+/// sanitizer, nor forge a `{t:"figure"}` with arbitrary iframe content. `ui_html`
+/// / `ui_figure` build these nodes themselves with `allow_privileged = true`.
+pub const PRIVILEGED_WIDGET_KINDS: &[&str] = &["html", "figure"];
 
 /// Placement slots a panel can occupy. `dock` is the SDK-provided right-hand
 /// drawer that exists in every app even when the author declared no regions.
@@ -71,6 +104,26 @@ const MAX_WIDGET_DEPTH: usize = 12;
 const MAX_WIDGET_NODES: usize = 600;
 const MAX_TABLE_ROWS: usize = 500;
 const MAX_CHART_POINTS: usize = 500;
+
+// ── Apps SDK v2 catalog caps ────────────────────────────────────────────────
+/// Max characters in a `markdown` node's `md`.
+const MAX_MARKDOWN_CHARS: usize = 32_768;
+/// Max bytes of an `image` `data:` URL (rendered inline).
+const MAX_IMAGE_DATA_BYTES: usize = 512 * 1024;
+/// Max lines in a `log` node.
+const MAX_LOG_LINES: usize = 500;
+/// Max total data points across a `plot` node's series/cells.
+const MAX_PLOT_POINTS: usize = 2000;
+/// Max nodes in a `network` node's spec.
+const MAX_NETWORK_NODES: usize = 1500;
+/// Max edges in a `network` node's spec.
+const MAX_NETWORK_EDGES: usize = 4000;
+/// Max operations in one `ui_patch` call.
+const MAX_PATCH_OPS: usize = 32;
+/// Max characters in an instance / patch id.
+const MAX_INSTANCE_ID_LEN: usize = 64;
+/// Max raw HTML bytes accepted by `ui_html` before sanitization.
+const MAX_HTML_BYTES: usize = 64 * 1024;
 
 fn invalid(msg: impl Into<String>) -> ErrorData {
     ErrorData::new(ErrorCode::INVALID_PARAMS, msg.into(), None)
@@ -191,7 +244,9 @@ fn pointer_set(root: &mut Value, pointer: &str, value: Value) -> Result<(), Stri
             "JSON pointer must be empty or start with '/', got {pointer:?}"
         ));
     }
-    let tokens: Vec<String> = pointer[1..]
+    let tokens: Vec<String> = pointer
+        .strip_prefix('/')
+        .unwrap_or("")
         .split('/')
         .map(|t| t.replace("~1", "/").replace("~0", "~"))
         .collect();
@@ -256,6 +311,11 @@ struct BridgeInner {
     state: Mutex<StateDoc>,
     /// Panel ids currently mounted, oldest first.
     panels: Mutex<Vec<String>>,
+    /// Instance registry (Apps SDK v2, Pillar 3): widget node id → its last-known
+    /// node, so `ui_patch` can add / replace / set_props / remove individual
+    /// components by id. Reset on [`UiBridge::attach`] (v1 reconnect semantics:
+    /// the UI resets, but the shared `state` doc persists).
+    instances: Mutex<HashMap<String, Value>>,
     /// Last surface report the browser sent (regions, element ids, title).
     surface: Mutex<Option<Value>>,
     /// Fingerprint of the last `ui_describe` payload, so a repeat says "unchanged"
@@ -284,6 +344,7 @@ impl UiBridge {
                 pending: Mutex::new(HashMap::new()),
                 state: Mutex::new(StateDoc::default()),
                 panels: Mutex::new(Vec::new()),
+                instances: Mutex::new(HashMap::new()),
                 surface: Mutex::new(None),
                 last_describe: Mutex::new(None),
                 seq: AtomicU64::new(0),
@@ -308,6 +369,12 @@ impl UiBridge {
         }
         if let Ok(mut p) = self.inner.panels.lock() {
             p.clear();
+        }
+        // The reloaded page has rendered none of the prior instances, so the
+        // registry that `ui_patch` targets resets with it. (The shared state
+        // doc, below, deliberately survives.)
+        if let Ok(mut i) = self.inner.instances.lock() {
+            i.clear();
         }
         if let Ok(mut s) = self.inner.surface.lock() {
             *s = None;
@@ -516,10 +583,29 @@ impl UiBridge {
 // Widget-tree validation
 // ---------------------------------------------------------------------------
 
+/// Context threaded through [`validate_widget`]: whether the privileged
+/// `html`/`figure` kinds are allowed (they are, only when the *dedicated*
+/// server-side tool builds the node after sanitizing/rendering), and the app's
+/// declared surface (needed to validate a `component` instance against its
+/// [`ComponentDecl`](super::manifest::ComponentDecl) props schema).
+pub struct WidgetCtx<'a> {
+    /// Permit `html` / `figure` nodes. FALSE for every generic agent tree
+    /// (`ui_panel` / `ui_render` / `ui_patch`), TRUE only inside `ui_html` /
+    /// `ui_figure`.
+    pub allow_privileged: bool,
+    /// The declared surface, so `component` instances can be schema-checked.
+    pub surface: &'a SurfaceDecl,
+}
+
 /// Validate an agent-authored widget tree against what the SDK can render.
 /// Returns a message aimed at the model (it will see it as a tool error and
 /// retry), not at the user.
-pub fn validate_widget(node: &Value, depth: usize, budget: &mut usize) -> Result<(), String> {
+pub fn validate_widget(
+    node: &Value,
+    depth: usize,
+    budget: &mut usize,
+    ctx: &WidgetCtx,
+) -> Result<(), String> {
     if depth > MAX_WIDGET_DEPTH {
         return Err(format!("widget tree nested deeper than {MAX_WIDGET_DEPTH}"));
     }
@@ -535,13 +621,60 @@ pub fn validate_widget(node: &Value, depth: usize, budget: &mut usize) -> Result
         .and_then(Value::as_str)
         .ok_or_else(|| "each widget node needs a \"t\" (type) string".to_string())?;
     if !WIDGET_KINDS.contains(&t) {
-        return Err(format!(
-            "unknown widget type \"{t}\"; use one of: {}",
-            WIDGET_KINDS.join(", ")
-        ));
+        // Distinguish "this is a privileged kind you can't hand-write" from an
+        // outright typo, so the model is steered to the right tool.
+        if PRIVILEGED_WIDGET_KINDS.contains(&t) {
+            if !ctx.allow_privileged {
+                return Err(format!(
+                    "\"{t}\" nodes cannot be placed in a widget tree directly — they are only \
+                     produced by the ui_{t} tool, which sanitizes/renders their contents \
+                     server-side. Call ui_{t} instead."
+                ));
+            }
+            // allow_privileged: the dedicated tool built this node; fall through.
+        } else {
+            return Err(format!(
+                "unknown widget type \"{t}\"; use one of: {}",
+                WIDGET_KINDS.join(", ")
+            ));
+        }
     }
 
     match t {
+        "markdown" => {
+            let md = obj
+                .get("md")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "\"markdown\" needs a string \"md\"".to_string())?;
+            let n = md.chars().count();
+            if n > MAX_MARKDOWN_CHARS {
+                return Err(format!(
+                    "\"markdown\".md is {n} chars; cap is {MAX_MARKDOWN_CHARS}"
+                ));
+            }
+        }
+        "image" => {
+            let src = obj
+                .get("src")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "\"image\" needs a string \"src\"".to_string())?;
+            validate_image_src(src)?;
+        }
+        "kpi" => {
+            if !obj.get("label").is_some_and(Value::is_string) {
+                return Err("\"kpi\" needs a string \"label\"".to_string());
+            }
+            if !obj
+                .get("value")
+                .is_some_and(|v| v.is_string() || v.is_number())
+            {
+                return Err("\"kpi\" needs a string or number \"value\"".to_string());
+            }
+        }
+        "log" => validate_log(obj)?,
+        "plot" => validate_plot(obj.get("spec").unwrap_or(&Value::Null))?,
+        "network" => validate_network(obj.get("spec").unwrap_or(&Value::Null))?,
+        "component" => validate_component(obj, ctx.surface)?,
         "text" | "badge" => {
             if !obj.get("value").is_some_and(Value::is_string) {
                 return Err(format!("\"{t}\" needs a string \"value\""));
@@ -619,7 +752,7 @@ pub fn validate_widget(node: &Value, depth: usize, budget: &mut usize) -> Result
             .as_array()
             .ok_or_else(|| format!("\"{t}\".children must be an array"))?;
         for child in arr {
-            validate_widget(child, depth + 1, budget)?;
+            validate_widget(child, depth + 1, budget, ctx)?;
         }
     } else if matches!(t, "card" | "row" | "col" | "form") {
         return Err(format!("\"{t}\" needs a \"children\" array"));
@@ -627,8 +760,10 @@ pub fn validate_widget(node: &Value, depth: usize, budget: &mut usize) -> Result
     Ok(())
 }
 
-/// Coerce, validate, and return the widget array a tool was handed.
-fn checked_body(body: &Value) -> Result<Value, ErrorData> {
+/// Coerce, validate, and return the widget array a tool was handed. `ctx` is
+/// built by the calling tool: generic entry points (`ui_panel` / `ui_render`)
+/// pass a non-privileged ctx, so `html`/`figure` nodes are rejected here.
+fn checked_body(body: &Value, ctx: &WidgetCtx) -> Result<Value, ErrorData> {
     let body = unstringify(body);
     let nodes = body.as_array().ok_or_else(|| {
         invalid(want_json(
@@ -642,9 +777,392 @@ fn checked_body(body: &Value) -> Result<Value, ErrorData> {
     }
     let mut budget = MAX_WIDGET_NODES;
     for n in nodes {
-        validate_widget(n, 0, &mut budget).map_err(invalid)?;
+        validate_widget(n, 0, &mut budget, ctx).map_err(invalid)?;
     }
     Ok(body)
+}
+
+/// The scheme of a URL, lowercased, or `None` for a relative URL (no scheme).
+/// A scheme is `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":"`; anything else
+/// before the first delimiter means the URL is relative.
+fn url_scheme(s: &str) -> Option<String> {
+    let mut chars = s.chars();
+    let mut scheme = match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() => c.to_ascii_lowercase().to_string(),
+        _ => return None,
+    };
+    for c in chars {
+        if c == ':' {
+            return Some(scheme);
+        }
+        if c.is_ascii_alphanumeric() || c == '+' || c == '-' || c == '.' {
+            scheme.push(c.to_ascii_lowercase());
+        } else {
+            return None; // hit '/', '?', '#', … before ':' → relative
+        }
+    }
+    None
+}
+
+/// An `image.src` must be a `data:image/…` URL (≤ 512 KB), an `https:` URL, or a
+/// relative path. `http:` and `javascript:` (and every other scheme) are refused
+/// so a rendered image can neither leak referrers over cleartext nor execute.
+fn validate_image_src(src: &str) -> Result<(), String> {
+    let s = src.trim();
+    if s.is_empty() {
+        return Err("\"image\".src must not be empty".to_string());
+    }
+    match url_scheme(s) {
+        None => Ok(()), // relative path
+        Some(scheme) => match scheme.as_str() {
+            "https" => Ok(()),
+            "data" => {
+                if !s.starts_with("data:image/") {
+                    return Err(
+                        "\"image\".src data URLs must be data:image/… (only images allowed)"
+                            .to_string(),
+                    );
+                }
+                if s.len() > MAX_IMAGE_DATA_BYTES {
+                    return Err(format!(
+                        "\"image\".src data URL is {} bytes; cap is {MAX_IMAGE_DATA_BYTES}",
+                        s.len()
+                    ));
+                }
+                Ok(())
+            }
+            other => Err(format!(
+                "\"image\".src scheme \"{other}:\" is not allowed; use https:, a relative path, \
+                 or a data:image/ URL"
+            )),
+        },
+    }
+}
+
+/// A `log` node: `{lines: [{level?, text}] ≤ 500, max?}`.
+fn validate_log(obj: &serde_json::Map<String, Value>) -> Result<(), String> {
+    let lines = obj
+        .get("lines")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "\"log\" needs a \"lines\" array of {text, level?}".to_string())?;
+    if lines.len() > MAX_LOG_LINES {
+        return Err(format!(
+            "\"log\" has {} lines; cap is {MAX_LOG_LINES}",
+            lines.len()
+        ));
+    }
+    for (i, ln) in lines.iter().enumerate() {
+        let lo = ln
+            .as_object()
+            .ok_or_else(|| format!("\"log\".lines[{i}] must be an object"))?;
+        if !lo.get("text").is_some_and(Value::is_string) {
+            return Err(format!("\"log\".lines[{i}] needs a string \"text\""));
+        }
+        if lo.get("level").is_some_and(|v| !v.is_string()) {
+            return Err(format!("\"log\".lines[{i}].level must be a string"));
+        }
+    }
+    if obj.get("max").is_some_and(|v| !v.is_number()) {
+        return Err("\"log\".max must be a number".to_string());
+    }
+    Ok(())
+}
+
+/// A `plot` node's spec: like `chart` but with more types and a 2000-point cap.
+/// `box` carries `series:[{label, values:[…]}]`; `heatmap` carries
+/// `{x:[], y:[], z:[[]]}`; the rest carry `data:[…]` or `series:[{name, data}]`.
+fn validate_plot(spec: &Value) -> Result<(), String> {
+    let obj = spec.as_object().ok_or_else(|| {
+        want_json(
+            "spec",
+            "a plot object",
+            r#"{"type":"scatter","title":"…","data":[{"label":"A","value":1}]}"#,
+        )
+    })?;
+    let ty = obj.get("type").and_then(Value::as_str).unwrap_or("bar");
+    const PLOT_TYPES: &[&str] = &["bar", "line", "pie", "scatter", "area", "box", "heatmap"];
+    if !PLOT_TYPES.contains(&ty) {
+        return Err(format!(
+            "plot type \"{ty}\" must be one of: {}",
+            PLOT_TYPES.join(", ")
+        ));
+    }
+    match ty {
+        "box" => {
+            let series = obj.get("series").and_then(Value::as_array).ok_or_else(|| {
+                "box plot needs a \"series\" array of {label, values:[…]}".to_string()
+            })?;
+            if series.is_empty() {
+                return Err("box plot \"series\" is empty".to_string());
+            }
+            let mut total = 0usize;
+            for (i, s) in series.iter().enumerate() {
+                let so = s
+                    .as_object()
+                    .ok_or_else(|| format!("box plot series[{i}] must be an object"))?;
+                if !so.get("label").is_some_and(Value::is_string) {
+                    return Err(format!("box plot series[{i}] needs a string \"label\""));
+                }
+                let values = so.get("values").and_then(Value::as_array).ok_or_else(|| {
+                    format!("box plot series[{i}] needs a \"values\" number array")
+                })?;
+                for (j, v) in values.iter().enumerate() {
+                    if v.as_f64().map(f64::is_finite) != Some(true) {
+                        return Err(format!(
+                            "box plot series[{i}].values[{j}] must be a finite number"
+                        ));
+                    }
+                }
+                total += values.len();
+            }
+            if total > MAX_PLOT_POINTS {
+                return Err(format!(
+                    "box plot has {total} values; cap is {MAX_PLOT_POINTS}"
+                ));
+            }
+        }
+        "heatmap" => {
+            let x = obj
+                .get("x")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "heatmap needs an \"x\" axis array".to_string())?;
+            let y = obj
+                .get("y")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "heatmap needs a \"y\" axis array".to_string())?;
+            let z = obj
+                .get("z")
+                .and_then(Value::as_array)
+                .ok_or_else(|| "heatmap needs a \"z\" array of rows".to_string())?;
+            if z.len() != y.len() {
+                return Err(format!(
+                    "heatmap \"z\" has {} rows but \"y\" has {}",
+                    z.len(),
+                    y.len()
+                ));
+            }
+            let mut total = 0usize;
+            for (i, row) in z.iter().enumerate() {
+                let cells = row
+                    .as_array()
+                    .ok_or_else(|| format!("heatmap \"z\"[{i}] must be an array"))?;
+                if cells.len() != x.len() {
+                    return Err(format!(
+                        "heatmap \"z\"[{i}] has {} cells but \"x\" has {}",
+                        cells.len(),
+                        x.len()
+                    ));
+                }
+                for (j, c) in cells.iter().enumerate() {
+                    if !c.is_number() && !c.is_null() {
+                        return Err(format!("heatmap \"z\"[{i}][{j}] must be a number or null"));
+                    }
+                }
+                total += cells.len();
+            }
+            if total > MAX_PLOT_POINTS {
+                return Err(format!(
+                    "heatmap has {total} cells; cap is {MAX_PLOT_POINTS}"
+                ));
+            }
+        }
+        _ => validate_plot_xy(obj)?,
+    }
+    Ok(())
+}
+
+/// Point-count + shape check shared by the `bar|line|pie|scatter|area` plot
+/// types: either `series:[{name, data:[…]}]` or a single `data:[…]`, each point
+/// an object; total points capped at [`MAX_PLOT_POINTS`].
+fn validate_plot_xy(obj: &serde_json::Map<String, Value>) -> Result<(), String> {
+    let count_points = |data: &[Value], where_: &str| -> Result<usize, String> {
+        if data.is_empty() {
+            return Err(format!("plot {where_} is empty"));
+        }
+        for (i, p) in data.iter().enumerate() {
+            if !p.is_object() {
+                return Err(format!("plot {where_}[{i}] must be an object"));
+            }
+        }
+        Ok(data.len())
+    };
+    let total = if let Some(series) = obj.get("series").and_then(Value::as_array) {
+        if series.is_empty() {
+            return Err("plot \"series\" is empty".to_string());
+        }
+        if series.len() > 12 {
+            return Err(format!("plot has {} series; cap is 12", series.len()));
+        }
+        let mut t = 0usize;
+        for (si, s) in series.iter().enumerate() {
+            let so = s
+                .as_object()
+                .ok_or_else(|| format!("plot series[{si}] must be an object with \"data\""))?;
+            let data = so
+                .get("data")
+                .and_then(Value::as_array)
+                .ok_or_else(|| format!("plot series[{si}] needs a \"data\" array"))?;
+            t += count_points(data, &format!("series[{si}].data"))?;
+        }
+        t
+    } else {
+        let data = obj.get("data").and_then(Value::as_array).ok_or_else(|| {
+            "plot spec needs a \"data\" array (or \"series\":[{name, data}])".to_string()
+        })?;
+        count_points(data, "data")?
+    };
+    if total > MAX_PLOT_POINTS {
+        return Err(format!("plot has {total} points; cap is {MAX_PLOT_POINTS}"));
+    }
+    Ok(())
+}
+
+/// A `network` node's spec: bounded node/edge counts, unique node ids, and every
+/// edge endpoint resolving to a declared node.
+fn validate_network(spec: &Value) -> Result<(), String> {
+    let obj = spec.as_object().ok_or_else(|| {
+        want_json(
+            "spec",
+            "a network object",
+            r#"{"nodes":[{"id":"A"}],"edges":[{"source":"A","target":"B"}]}"#,
+        )
+    })?;
+    let nodes = obj
+        .get("nodes")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "network spec needs a \"nodes\" array".to_string())?;
+    if nodes.len() > MAX_NETWORK_NODES {
+        return Err(format!(
+            "network has {} nodes; cap is {MAX_NETWORK_NODES}",
+            nodes.len()
+        ));
+    }
+    let mut ids: HashSet<&str> = HashSet::with_capacity(nodes.len());
+    for (i, n) in nodes.iter().enumerate() {
+        let no = n
+            .as_object()
+            .ok_or_else(|| format!("network nodes[{i}] must be an object"))?;
+        let id = no
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("network nodes[{i}] needs a string \"id\""))?;
+        if !ids.insert(id) {
+            return Err(format!(
+                "network nodes[{i}] repeats id \"{id}\"; node ids must be unique"
+            ));
+        }
+    }
+    let edges = obj
+        .get("edges")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "network spec needs an \"edges\" array".to_string())?;
+    if edges.len() > MAX_NETWORK_EDGES {
+        return Err(format!(
+            "network has {} edges; cap is {MAX_NETWORK_EDGES}",
+            edges.len()
+        ));
+    }
+    for (i, e) in edges.iter().enumerate() {
+        let eo = e
+            .as_object()
+            .ok_or_else(|| format!("network edges[{i}] must be an object"))?;
+        let src = eo
+            .get("source")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("network edges[{i}] needs a string \"source\""))?;
+        let tgt = eo
+            .get("target")
+            .and_then(Value::as_str)
+            .ok_or_else(|| format!("network edges[{i}] needs a string \"target\""))?;
+        if !ids.contains(src) {
+            return Err(format!(
+                "network edges[{i}].source \"{src}\" is not a declared node id"
+            ));
+        }
+        if !ids.contains(tgt) {
+            return Err(format!(
+                "network edges[{i}].target \"{tgt}\" is not a declared node id"
+            ));
+        }
+    }
+    // `encoding` / `physics` are optional shaping hints; only assert container type.
+    if obj.get("encoding").is_some_and(|v| !v.is_object()) {
+        return Err("network \"encoding\" must be an object".to_string());
+    }
+    if obj.get("physics").is_some_and(|v| !v.is_object()) {
+        return Err("network \"physics\" must be an object".to_string());
+    }
+    Ok(())
+}
+
+/// A `component` node: `{name, props}` where `name` matches a declared
+/// [`ComponentDecl`](super::manifest::ComponentDecl) and `props` validates
+/// against that declaration's JSON Schema. **Fail-closed:** a declared schema
+/// that itself fails to compile is treated as a validation failure that tells
+/// the author to fix the manifest — never an accept-any fallback.
+fn validate_component(
+    obj: &serde_json::Map<String, Value>,
+    surface: &SurfaceDecl,
+) -> Result<(), String> {
+    let name = obj
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "\"component\" needs a string \"name\"".to_string())?;
+    let decl = surface
+        .components
+        .iter()
+        .find(|c| c.name == name)
+        .ok_or_else(|| {
+            let known: Vec<&str> = surface.components.iter().map(|c| c.name.as_str()).collect();
+            if known.is_empty() {
+                format!(
+                    "component \"{name}\" is not declared; this app registers no custom components"
+                )
+            } else {
+                format!(
+                    "component \"{name}\" is not declared; declared components: {}",
+                    known.join(", ")
+                )
+            }
+        })?;
+    let props = obj.get("props").cloned().unwrap_or_else(|| json!({}));
+    validate_against_schema(&props, &decl.props, name)
+}
+
+/// Validate `value` against a JSON Schema. An empty/absent schema (`{}` or
+/// `null`) is unconstrained. A schema that fails to compile is a fail-closed
+/// error naming the manifest fix, not a pass.
+fn validate_against_schema(value: &Value, schema: &Value, comp: &str) -> Result<(), String> {
+    let unconstrained =
+        schema.is_null() || schema.as_object().is_some_and(serde_json::Map::is_empty);
+    if unconstrained {
+        return Ok(());
+    }
+    let validator = jsonschema::validator_for(schema).map_err(|e| {
+        format!(
+            "component \"{comp}\" has an invalid props schema in the app manifest — fix the \
+             declared schema (it failed to compile: {e})"
+        )
+    })?;
+    let errors: Vec<String> = validator
+        .iter_errors(value)
+        .map(|err| {
+            let path = err.instance_path.to_string();
+            if path.is_empty() {
+                err.to_string()
+            } else {
+                format!("{path}: {err}")
+            }
+        })
+        .collect();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "component \"{comp}\" props do not match its declared schema: {}",
+            errors.join("; ")
+        ))
+    }
 }
 
 fn validate_chart(spec: &Value) -> Result<(), String> {
@@ -759,6 +1277,151 @@ fn validate_target(target: &str) -> Result<(), ErrorData> {
         return Err(invalid("\"target\" is unreasonably long"));
     }
     Ok(())
+}
+
+/// The fixable error for a `ui_patch` op naming an id that isn't in the registry:
+/// list up to 20 of the known ids so the model can pick a real one.
+fn unknown_id_msg(i: usize, id: &str, reg: &HashMap<String, Value>) -> String {
+    let mut known: Vec<&str> = reg.keys().map(String::as_str).collect();
+    known.sort_unstable();
+    if known.is_empty() {
+        return format!("ops[{i}]: unknown id \"{id}\"; no instances exist yet — add one first");
+    }
+    let shown: Vec<&str> = known.iter().take(20).copied().collect();
+    let more = known.len().saturating_sub(shown.len());
+    let suffix = if more > 0 {
+        format!(" (+{more} more)")
+    } else {
+        String::new()
+    };
+    format!(
+        "ops[{i}]: unknown id \"{id}\"; known ids: {}{suffix}",
+        shown.join(", ")
+    )
+}
+
+// ---------------------------------------------------------------------------
+// HTML sanitization (ui_html — capability-gated, fail-closed; design §3.7)
+// ---------------------------------------------------------------------------
+
+/// Sanitize a block of author/agent-supplied HTML with a **pinned, fail-closed**
+/// allowlist and return `(clean, removed_element_count)`.
+///
+/// Policy (an XSS barrier, not cosmetic):
+/// - a common rich-text tag set + table + figure + basic inline SVG; everything
+///   else (`script`, `style`, `form`, `input`, `button`, `iframe`, `object`,
+///   `embed`, `link`, `meta`, `base`, …) is dropped, and the genuinely dangerous
+///   ones also have their *content* removed (`clean_content_tags`);
+/// - **no** event-handler attributes (ammonia never allows `on*`), no inline
+///   `style`;
+/// - absolute URLs restricted to `https:` / `mailto:` (`url_schemes`); relative
+///   URLs pass through; **all** `data:` URLs are dropped — ammonia's scheme
+///   filter is global, so rather than risk a `data:text/html` bypass we fail
+///   closed and forbid `data:` here (an app that needs inline images uses the
+///   `image` widget kind, which validates `data:image/` itself);
+/// - `rel="noopener noreferrer"` forced on links (ammonia default).
+fn sanitize_html(raw: &str) -> (String, usize) {
+    let tags: HashSet<&str> = [
+        "a",
+        "abbr",
+        "b",
+        "blockquote",
+        "br",
+        "caption",
+        "cite",
+        "code",
+        "col",
+        "colgroup",
+        "dd",
+        "del",
+        "details",
+        "div",
+        "dl",
+        "dt",
+        "em",
+        "figcaption",
+        "figure",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "hr",
+        "i",
+        "ins",
+        "kbd",
+        "li",
+        "mark",
+        "ol",
+        "p",
+        "pre",
+        "q",
+        "s",
+        "samp",
+        "section",
+        "small",
+        "span",
+        "strong",
+        "sub",
+        "summary",
+        "sup",
+        "table",
+        "tbody",
+        "td",
+        "tfoot",
+        "th",
+        "thead",
+        "time",
+        "tr",
+        "u",
+        "ul",
+        "wbr",
+        "img", // basic inline SVG
+        "svg",
+        "g",
+        "path",
+        "circle",
+        "rect",
+        "line",
+        "polyline",
+        "polygon",
+        "ellipse",
+        "text",
+    ]
+    .into_iter()
+    .collect();
+    // Tags whose entire *content* is discarded (not just the tag unwrapped),
+    // because their text is executable or a data-exfiltration vector.
+    let clean_content: HashSet<&str> = [
+        "script", "style", "iframe", "object", "embed", "form", "noscript", "template",
+    ]
+    .into_iter()
+    .collect();
+    let schemes: HashSet<&str> = ["https", "mailto"].into_iter().collect();
+
+    let clean = ammonia::Builder::default()
+        .tags(tags)
+        .clean_content_tags(clean_content)
+        .url_schemes(schemes)
+        .clean(raw)
+        .to_string();
+
+    let removed = count_start_tags(raw).saturating_sub(count_start_tags(&clean));
+    (clean, removed)
+}
+
+/// Count HTML start tags (`<` immediately followed by an ASCII letter). A rough
+/// proxy for "how many elements" so `ui_html` can report how much it stripped.
+fn count_start_tags(s: &str) -> usize {
+    let b = s.as_bytes();
+    let mut n = 0usize;
+    for i in 0..b.len().saturating_sub(1) {
+        if b[i] == b'<' && b[i + 1].is_ascii_alphabetic() {
+            n += 1;
+        }
+    }
+    n
 }
 
 // ---------------------------------------------------------------------------
@@ -974,6 +1637,69 @@ pub struct PatchStateParams {
     pub patch: Value,
 }
 
+/// Schema mirror for one `ui_patch` op (so the model sees the real shape).
+#[derive(JsonSchema)]
+#[schemars(inline)]
+#[allow(dead_code)]
+struct PatchOpSchema {
+    /// "add", "replace", "set_props", or "remove".
+    op: String,
+    /// The instance id this op targets (non-empty, ≤ 64 chars).
+    id: String,
+    /// For op:"add": where to mount — "@region:x", "@panel:x", or a CSS
+    /// selector. Defaults to the app's main results region.
+    target: Option<String>,
+    /// For op:"add": instance id of an existing node to append into.
+    parent: Option<String>,
+    /// For op:"add": insertion index within the parent/target.
+    index: Option<i64>,
+    /// For op:"add"/"replace": the widget node.
+    node: Option<Value>,
+    /// For op:"set_props": keys shallow-merged into the existing node.
+    props: Option<Value>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct PatchParams {
+    /// The edit operations to apply (≤ 32), each one of:
+    /// {"op":"add","id":"n1","target":"@region:results","node":{…}},
+    /// {"op":"replace","id":"n1","node":{…}},
+    /// {"op":"set_props","id":"n1","props":{…}},
+    /// {"op":"remove","id":"n1"}.
+    #[schemars(with = "Vec<PatchOpSchema>")]
+    pub ops: Value,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct HtmlParams {
+    /// Where to render (see `ui_render.target`): "@region:x", "@panel:x", or a
+    /// CSS selector.
+    pub target: String,
+    /// The HTML to sanitize and render (≤ 64 KB). Scripts, styles, forms,
+    /// iframes, event handlers, and non-https/mailto URLs are stripped
+    /// server-side before anything reaches the page.
+    pub html: String,
+    /// Optional heading — renders the HTML inside a titled card.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct FigureParams {
+    /// The Auto Visualiser tool to call, e.g. "render_volcano",
+    /// "render_kaplan_meier", "render_sankey", "render_dashboard".
+    pub tool: String,
+    /// That tool's exact arguments object.
+    #[schemars(with = "Value")]
+    pub args: Value,
+    /// Where to place it (see `ui_render.target`). Omit for a dock panel.
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Optional panel title / caption.
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 #[schemars(inline)]
 pub struct AskField {
@@ -1087,6 +1813,83 @@ impl AppControlServer {
             panels.retain(|p| p != id);
         }
     }
+
+    /// Build the validation context for a tool. `allow_privileged` is true only
+    /// for `ui_html` / `ui_figure`, which construct `html`/`figure` nodes after
+    /// sanitizing/rendering; every generic entry point passes false.
+    fn widget_ctx(&self, allow_privileged: bool) -> WidgetCtx<'_> {
+        WidgetCtx {
+            allow_privileged,
+            surface: &self.surface,
+        }
+    }
+
+    /// Assign a stable id to every node in an (already-validated) body, register
+    /// each in the instance registry, and return the assigned ids. Nodes with a
+    /// non-empty string `id` keep it; the rest get `<base>#n<idx>` where `idx` is
+    /// the node's pre-order position, so `ui_patch` can later target any of them.
+    /// The body is mutated in place, so the emitted frame is fully ID-keyed.
+    fn assign_and_register(&self, base: &str, body: &mut Value) -> Vec<String> {
+        fn walk(base: &str, node: &mut Value, counter: &mut usize, out: &mut Vec<(String, Value)>) {
+            let idx = *counter;
+            *counter += 1;
+            let id = {
+                let Some(obj) = node.as_object_mut() else {
+                    return;
+                };
+                match obj.get("id").and_then(Value::as_str) {
+                    Some(existing) if !existing.trim().is_empty() => existing.to_string(),
+                    _ => {
+                        let auto = format!("{base}#n{idx}");
+                        obj.insert("id".to_string(), json!(auto));
+                        auto
+                    }
+                }
+            };
+            // Re-borrow to recurse (ends the `obj` borrow) so we can snapshot the
+            // node afterwards.
+            if let Some(children) = node.get_mut("children").and_then(Value::as_array_mut) {
+                for child in children.iter_mut() {
+                    walk(base, child, counter, out);
+                }
+            }
+            out.push((id, node.clone()));
+        }
+
+        let mut counter = 0usize;
+        let mut pairs: Vec<(String, Value)> = Vec::new();
+        if let Some(arr) = body.as_array_mut() {
+            for node in arr.iter_mut() {
+                walk(base, node, &mut counter, &mut pairs);
+            }
+        }
+        let ids: Vec<String> = pairs.iter().map(|(id, _)| id.clone()).collect();
+        if let Ok(mut reg) = self.bridge.inner.instances.lock() {
+            for (id, node) in pairs {
+                reg.insert(id, node);
+            }
+        }
+        ids
+    }
+
+    /// Append the "targetable ids" hint to a tool result. Capped so a 600-node
+    /// render doesn't flood the transcript.
+    fn ids_hint(ids: &[String]) -> String {
+        if ids.is_empty() {
+            return String::new();
+        }
+        const SHOWN: usize = 40;
+        let head: Vec<&str> = ids.iter().take(SHOWN).map(String::as_str).collect();
+        let mut s = format!(
+            " Node ids you can target with ui_patch: {}",
+            head.join(", ")
+        );
+        if ids.len() > SHOWN {
+            s.push_str(&format!(" (+{} more)", ids.len() - SHOWN));
+        }
+        s.push('.');
+        s
+    }
 }
 
 #[tool_router(router = tool_router)]
@@ -1122,9 +1925,30 @@ impl AppControlServer {
             .as_object()
             .map(|m| m.keys().cloned().collect())
             .unwrap_or_default();
+        // Live instance registry (id → kind), deterministic order, ≤ 100 shown, so
+        // the model knows which node ids it can target with ui_patch.
+        let instances: Vec<Value> = self
+            .bridge
+            .inner
+            .instances
+            .lock()
+            .map(|m| {
+                let mut v: Vec<Value> = m
+                    .iter()
+                    .map(|(id, node)| {
+                        let kind = node.get("t").and_then(Value::as_str).unwrap_or("?");
+                        json!({ "id": id, "kind": kind })
+                    })
+                    .collect();
+                v.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+                v.truncate(100);
+                v
+            })
+            .unwrap_or_default();
         let out = json!({
             "surface": surface,
             "panels": panels,
+            "instances": instances,
             "state": {
                 "version": version,
                 "keys": keys,
@@ -1134,6 +1958,7 @@ impl AppControlServer {
                 "theme": self.cap.allow_theme,
                 "layout": self.cap.allow_layout,
                 "ask": self.cap.allow_ask,
+                "html": self.cap.allow_html,
                 "maxPanels": self.cap.max_panels,
             },
         });
@@ -1214,8 +2039,8 @@ impl AppControlServer {
             validate_target(place)?;
         }
 
-        let body = match (&p.body, &p.markdown) {
-            (Some(b), _) => checked_body(b)?,
+        let mut body = match (&p.body, &p.markdown) {
+            (Some(b), _) => checked_body(b, &self.widget_ctx(false))?,
             (None, Some(md)) => json!([{ "t": "text", "value": md, "markdown": true }]),
             (None, None) => {
                 return Err(invalid(
@@ -1223,6 +2048,7 @@ impl AppControlServer {
                 ))
             }
         };
+        let assigned = self.assign_and_register(id, &mut body);
 
         let evicted = self.note_panel(id);
         if let Some(old) = &evicted {
@@ -1245,6 +2071,7 @@ impl AppControlServer {
                 self.cap.max_panels
             ));
         }
+        msg.push_str(&Self::ids_hint(&assigned));
         ok_text(msg)
     }
 
@@ -1260,18 +2087,23 @@ impl AppControlServer {
         Parameters(p): Parameters<RenderParams>,
     ) -> Result<CallToolResult, ErrorData> {
         validate_target(&p.target)?;
-        let body = checked_body(&p.body)?;
+        let mut body = checked_body(&p.body, &self.widget_ctx(false))?;
         let mode = p.mode.as_deref().unwrap_or("replace");
         if !["replace", "append"].contains(&mode) {
             return Err(invalid("\"mode\" must be \"replace\" or \"append\""));
         }
+        let assigned = self.assign_and_register(p.target.trim(), &mut body);
         self.bridge.emit(json!({
             "cmd": "render",
             "target": p.target,
             "mode": mode,
             "body": body,
         }))?;
-        ok_text(format!("Rendered into {} ({mode}).", p.target))
+        ok_text(format!(
+            "Rendered into {} ({mode}).{}",
+            p.target,
+            Self::ids_hint(&assigned)
+        ))
     }
 
     #[tool(
@@ -1589,6 +2421,231 @@ impl AppControlServer {
     }
 
     #[tool(
+        name = "ui_patch",
+        description = "Incrementally edit the UI by node id — the preferred way to update an app \
+                       once something is on the page (it preserves scroll, focus, and input \
+                       state instead of re-rendering). `ops` is an array (≤ 32) of:\n\
+                       {\"op\":\"add\",\"id\":\"kpi-cases\",\"target\":\"@region:results\",\"node\":{…}} \
+                       — mount a new node (target defaults to the main results region; use \
+                       \"parent\":<id> to nest inside an existing node);\n\
+                       {\"op\":\"replace\",\"id\":\"kpi-cases\",\"node\":{…}} — swap a node's contents;\n\
+                       {\"op\":\"set_props\",\"id\":\"kpi-cases\",\"props\":{…}} — shallow-merge keys into a node;\n\
+                       {\"op\":\"remove\",\"id\":\"kpi-cases\"} — delete a node.\n\
+                       Nodes you create with ui_panel/ui_render get ids (returned in their tool \
+                       result); use those ids here. Same node grammar as ui_panel."
+    )]
+    pub async fn ui_patch(
+        &self,
+        Parameters(p): Parameters<PatchParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let ops_v = unstringify(&p.ops);
+        let ops = ops_v.as_array().ok_or_else(|| {
+            invalid(want_json(
+                "ops",
+                "an array of patch operations",
+                r#"[{"op":"add","id":"n1","node":{"t":"text","value":"hi"}}]"#,
+            ))
+        })?;
+        if ops.is_empty() {
+            return Err(invalid("\"ops\" must contain at least one operation"));
+        }
+        if ops.len() > MAX_PATCH_OPS {
+            return Err(invalid(format!(
+                "\"ops\" has {} operations; cap is {MAX_PATCH_OPS}",
+                ops.len()
+            )));
+        }
+
+        let ctx = self.widget_ctx(false);
+        let mut guard = self
+            .bridge
+            .inner
+            .instances
+            .lock()
+            .map_err(|_| invalid("the app instance registry is unavailable"))?;
+        // Validate & simulate against a clone; commit (and emit) only if EVERY op
+        // is valid, so a rejected batch leaves the registry and page untouched.
+        let mut next = guard.clone();
+
+        for (i, op) in ops.iter().enumerate() {
+            let oo = op
+                .as_object()
+                .ok_or_else(|| invalid(format!("ops[{i}] must be an object")))?;
+            let kind = oo.get("op").and_then(Value::as_str).ok_or_else(|| {
+                invalid(format!(
+                    "ops[{i}] needs a string \"op\" (add|replace|set_props|remove)"
+                ))
+            })?;
+            let id = oo
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .ok_or_else(|| invalid(format!("ops[{i}] needs a string \"id\"")))?;
+            if id.is_empty() {
+                return Err(invalid(format!("ops[{i}].id must not be empty")));
+            }
+            if id.len() > MAX_INSTANCE_ID_LEN {
+                return Err(invalid(format!(
+                    "ops[{i}].id is {} chars; cap is {MAX_INSTANCE_ID_LEN}",
+                    id.len()
+                )));
+            }
+
+            match kind {
+                "add" => {
+                    if next.contains_key(id) {
+                        return Err(invalid(format!(
+                            "ops[{i}]: id \"{id}\" already exists; use op:\"replace\" to change it"
+                        )));
+                    }
+                    let node = oo
+                        .get("node")
+                        .ok_or_else(|| invalid(format!("ops[{i}] (add) needs a \"node\"")))?;
+                    let mut budget = MAX_WIDGET_NODES;
+                    validate_widget(node, 0, &mut budget, &ctx).map_err(invalid)?;
+                    if let Some(t) = oo.get("target").and_then(Value::as_str) {
+                        validate_target(t)?;
+                    }
+                    if let Some(parent) = oo.get("parent").and_then(Value::as_str) {
+                        if !next.contains_key(parent) {
+                            return Err(invalid(format!(
+                                "ops[{i}].parent \"{parent}\" is not a known instance id"
+                            )));
+                        }
+                    }
+                    next.insert(id.to_string(), node.clone());
+                }
+                "replace" => {
+                    if !next.contains_key(id) {
+                        return Err(invalid(unknown_id_msg(i, id, &next)));
+                    }
+                    let node = oo
+                        .get("node")
+                        .ok_or_else(|| invalid(format!("ops[{i}] (replace) needs a \"node\"")))?;
+                    let mut budget = MAX_WIDGET_NODES;
+                    validate_widget(node, 0, &mut budget, &ctx).map_err(invalid)?;
+                    next.insert(id.to_string(), node.clone());
+                }
+                "set_props" => {
+                    if !next.contains_key(id) {
+                        return Err(invalid(unknown_id_msg(i, id, &next)));
+                    }
+                    let props = oo.get("props").and_then(Value::as_object).ok_or_else(|| {
+                        invalid(format!("ops[{i}] (set_props) needs a \"props\" object"))
+                    })?;
+                    let mut merged = next.get(id).cloned().unwrap_or_else(|| json!({}));
+                    if let Some(m) = merged.as_object_mut() {
+                        for (k, v) in props {
+                            m.insert(k.clone(), v.clone());
+                        }
+                    }
+                    let mut budget = MAX_WIDGET_NODES;
+                    validate_widget(&merged, 0, &mut budget, &ctx).map_err(invalid)?;
+                    next.insert(id.to_string(), merged);
+                }
+                "remove" => {
+                    if !next.contains_key(id) {
+                        return Err(invalid(unknown_id_msg(i, id, &next)));
+                    }
+                    next.remove(id);
+                }
+                other => {
+                    return Err(invalid(format!(
+                        "ops[{i}].op \"{other}\" must be add, replace, set_props, or remove"
+                    )))
+                }
+            }
+        }
+
+        *guard = next;
+        drop(guard);
+
+        // Emit the validated ops verbatim (the client morphs by id).
+        self.bridge.emit(json!({ "cmd": "patch", "ops": ops }))?;
+        ok_text(format!("Applied {} patch op(s).", ops.len()))
+    }
+
+    #[tool(
+        name = "ui_html",
+        description = "Render a block of rich HTML into the app. The HTML is SANITIZED \
+                       server-side before it is shown: scripts, styles, forms, iframes, \
+                       event-handler attributes, and non-https/mailto/relative URLs are all \
+                       stripped. Use it for prose-with-markup an app keeps hand-rolling; prefer \
+                       ui_panel widgets or ui_figure for anything structured. Only available \
+                       when the app grants `ui.allow_html`."
+    )]
+    pub async fn ui_html(
+        &self,
+        Parameters(p): Parameters<HtmlParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        if !self.cap.allow_html {
+            return Err(Self::denied("raw HTML (ui.allow_html)"));
+        }
+        validate_target(&p.target)?;
+        if p.html.trim().is_empty() {
+            return Err(invalid("\"html\" must not be empty"));
+        }
+        if p.html.len() > MAX_HTML_BYTES {
+            return Err(invalid(format!(
+                "\"html\" is {} bytes; cap is {MAX_HTML_BYTES}",
+                p.html.len()
+            )));
+        }
+        let (clean, removed) = sanitize_html(&p.html);
+        // Privileged node: constructed here, AFTER sanitization, so it can carry
+        // the `html` kind that a generic tree may not.
+        let html_node = json!({ "t": "html", "html": clean });
+        let node = match &p.title {
+            Some(t) => json!({ "t": "card", "title": t, "children": [html_node] }),
+            None => html_node,
+        };
+        self.bridge.emit(json!({
+            "cmd": "render",
+            "target": p.target,
+            "mode": "replace",
+            "body": [node],
+        }))?;
+        let mut msg = format!("Rendered sanitized HTML into {}.", p.target);
+        if removed > 0 {
+            msg.push_str(&format!(
+                " Sanitization removed {removed} disallowed element(s) \
+                 (scripts, styles, forms, iframes, or unsafe URLs)."
+            ));
+        }
+        ok_text(msg)
+    }
+
+    #[tool(
+        name = "ui_figure",
+        description = "Render a publication-grade Auto Visualiser figure into the app. Pass the \
+                       tool name (e.g. \"render_volcano\", \"render_manhattan\", \
+                       \"render_kaplan_meier\", \"render_forest\", \"render_sankey\", \
+                       \"render_chord\", \"render_heatmap\", \"render_choropleth\", \
+                       \"render_dashboard\") and that tool's exact `args`. The figure is rendered \
+                       server-side and shown in a sandboxed frame — richer and more correct than \
+                       hand-built ui_chart output. Omit `target` for a dock panel."
+    )]
+    pub async fn ui_figure(
+        &self,
+        Parameters(p): Parameters<FigureParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let tool = p.tool.trim();
+        if tool.is_empty() {
+            return Err(invalid(
+                "\"tool\" must name an Auto Visualiser tool, e.g. \"render_volcano\"",
+            ));
+        }
+        let args = unstringify(&p.args);
+        // Trusted output: the autovisualiser renders/sanitizes the fragment, so
+        // the resulting `figure` node is privileged and built here.
+        let html = crate::autovisualiser::render_standalone_figure(tool, args)
+            .await
+            .map_err(|e| invalid(format!("could not render figure with \"{tool}\": {e}")))?;
+        let node = json!({ "t": "figure", "html": html, "tool": tool });
+        self.emit_figure(p.target, p.title, tool, node)
+    }
+
+    #[tool(
         name = "ui_ask",
         description = "Render a form in the app and WAIT for the user to submit it; the tool \
                        result is their answers, so you branch on them without ending your turn.\n\n\
@@ -1722,6 +2779,48 @@ impl AppControlServer {
             }
         }
     }
+
+    /// Placement tail for `ui_figure`, mirroring [`emit_visual`](Self::emit_visual):
+    /// render into an explicit target, or wrap in a dock panel when none is given.
+    fn emit_figure(
+        &self,
+        target: Option<String>,
+        title: Option<String>,
+        tool: &str,
+        node: Value,
+    ) -> Result<CallToolResult, ErrorData> {
+        match target {
+            Some(t) => {
+                validate_target(&t)?;
+                self.bridge.emit(json!({
+                    "cmd": "render",
+                    "target": t,
+                    "mode": "replace",
+                    "body": [node],
+                }))?;
+                ok_text(format!("Rendered the {tool} figure into {t}."))
+            }
+            None => {
+                let panel_id = self.bridge.next_id("figure");
+                let evicted = self.note_panel(&panel_id);
+                if let Some(old) = &evicted {
+                    self.bridge
+                        .emit(json!({ "cmd": "panel", "id": old, "remove": true }))?;
+                }
+                self.bridge.emit(json!({
+                    "cmd": "panel",
+                    "id": panel_id,
+                    "title": title,
+                    "place": "dock",
+                    "collapsible": true,
+                    "body": [node],
+                }))?;
+                ok_text(format!(
+                    "Rendered the {tool} figure in panel \"{panel_id}\"."
+                ))
+            }
+        }
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -1741,8 +2840,15 @@ impl ServerHandler for AppControlServer {
                  and dashboards (ui_panel), render into the author's own regions (ui_render), \
                  draw charts and graphs (ui_chart / ui_graph), direct attention (ui_highlight), \
                  restyle (ui_theme), rearrange (ui_layout), notify (ui_notify), share state \
-                 (ui_state), and ask the user structured questions mid-turn (ui_ask). Call \
-                 ui_describe first to learn what the page already offers."
+                 (ui_state), and ask the user structured questions mid-turn (ui_ask). Once \
+                 something is on the page, prefer ui_patch to edit individual nodes by id \
+                 (add / replace / set_props / remove) instead of re-rendering — it preserves \
+                 scroll, focus, and input state. For publication-grade figures (volcano, \
+                 Kaplan-Meier, Sankey, forest, heatmap, maps, Mermaid diagrams, multi-figure \
+                 dashboards) call ui_figure with the Auto Visualiser tool name and its args. \
+                 ui_html renders sanitized rich HTML, but only when the app grants it. Call \
+                 ui_describe first to learn what the page already offers (regions, node ids, \
+                 declared surface)."
                     .to_string(),
             ),
             ..Default::default()
@@ -1780,7 +2886,16 @@ pub fn ui_system_prompt(cap: &UiCapability) -> String {
          you already set — set a key only when it actually changes; identical repeats do nothing \
          and waste the budget. Batch your UI updates: build each panel/chart once with its final \
          content rather than nudging it repeatedly. A turn is for acting on the user's input, not \
-         for polling the page.",
+         for polling the page.\n\n\
+         **3. Update in place, don't re-render.** Once a panel or region is on the page, prefer \
+         `ui_patch` to change individual nodes by id — `add`, `replace`, `set_props`, `remove`. \
+         It keeps scroll, focus, and input state alive where a full re-render would destroy them. \
+         Nodes you build with `ui_panel`/`ui_render` come back with stable ids (listed in the \
+         tool result and in `ui_describe`); target those.\n\n\
+         **4. Reach for real figures.** For anything publication-grade — volcano, Manhattan, \
+         Kaplan-Meier, forest, Sankey, chord, heatmap, maps, Mermaid diagrams, or a multi-figure \
+         dashboard — call `ui_figure` with the Auto Visualiser tool name and its arguments \
+         instead of hand-building a chart. It is richer and more correct than `ui_chart`.",
     );
     if !cap.allow_ask {
         s.push_str("\n\nNote: `ui_ask` is disabled for this app.");
@@ -1790,6 +2905,16 @@ pub fn ui_system_prompt(cap: &UiCapability) -> String {
     }
     if !cap.allow_layout {
         s.push_str("\n\nNote: `ui_layout` is disabled for this app.");
+    }
+    if cap.allow_html {
+        s.push_str(
+            "\n\nThis app grants `ui_html`: you may render rich HTML (it is sanitized \
+             server-side — scripts, styles, forms, iframes and unsafe URLs are stripped). \
+             Prefer widgets and `ui_figure` for structured content; reach for `ui_html` only \
+             when you genuinely need free-form markup.",
+        );
+    } else {
+        s.push_str("\n\nNote: `ui_html` is disabled for this app.");
     }
     s
 }
@@ -1821,29 +2946,43 @@ mod tests {
             .join("")
     }
 
+    /// A non-privileged validation context against an empty surface — the shape
+    /// every generic agent tree is checked with.
+    fn empty_surface() -> &'static SurfaceDecl {
+        use std::sync::OnceLock;
+        static S: OnceLock<SurfaceDecl> = OnceLock::new();
+        S.get_or_init(SurfaceDecl::default)
+    }
+    fn gctx() -> WidgetCtx<'static> {
+        WidgetCtx {
+            allow_privileged: false,
+            surface: empty_surface(),
+        }
+    }
+    /// Convenience: validate a single node with a fresh budget.
+    fn vw(node: &Value, ctx: &WidgetCtx) -> Result<(), String> {
+        let mut b = MAX_WIDGET_NODES;
+        validate_widget(node, 0, &mut b, ctx)
+    }
+
     #[test]
     fn validates_widget_kinds_and_shapes() {
-        let mut b = MAX_WIDGET_NODES;
-        assert!(validate_widget(&json!({"t":"text","value":"hi"}), 0, &mut b).is_ok());
+        assert!(vw(&json!({"t":"text","value":"hi"}), &gctx()).is_ok());
 
-        let mut b = MAX_WIDGET_NODES;
-        let e = validate_widget(&json!({"t":"blah"}), 0, &mut b).unwrap_err();
+        let e = vw(&json!({"t":"blah"}), &gctx()).unwrap_err();
         assert!(e.contains("unknown widget type"), "{e}");
 
-        let mut b = MAX_WIDGET_NODES;
-        let e = validate_widget(&json!({"t":"text"}), 0, &mut b).unwrap_err();
+        let e = vw(&json!({"t":"text"}), &gctx()).unwrap_err();
         assert!(e.contains("string \"value\""), "{e}");
 
         // A card must declare children.
-        let mut b = MAX_WIDGET_NODES;
-        assert!(validate_widget(&json!({"t":"card","title":"x"}), 0, &mut b).is_err());
+        assert!(vw(&json!({"t":"card","title":"x"}), &gctx()).is_err());
     }
 
     #[test]
     fn rejects_ragged_tables() {
-        let mut b = MAX_WIDGET_NODES;
         let node = json!({"t":"table","columns":["a","b"],"rows":[["1","2"],["3"]]});
-        let e = validate_widget(&node, 0, &mut b).unwrap_err();
+        let e = vw(&node, &gctx()).unwrap_err();
         assert!(e.contains("row 1 has 1 cells"), "{e}");
     }
 
@@ -1888,16 +3027,14 @@ mod tests {
         for _ in 0..(MAX_WIDGET_DEPTH + 2) {
             node = json!({"t":"col","children":[node]});
         }
-        let mut b = MAX_WIDGET_NODES;
-        let e = validate_widget(&node, 0, &mut b).unwrap_err();
+        let e = vw(&node, &gctx()).unwrap_err();
         assert!(e.contains("nested deeper"), "{e}");
 
         // And a wide-but-shallow tree exhausts the node budget.
         let children: Vec<Value> = (0..MAX_WIDGET_NODES + 5)
             .map(|i| json!({"t":"text","value": i.to_string()}))
             .collect();
-        let mut b = MAX_WIDGET_NODES;
-        let e = validate_widget(&json!({"t":"col","children":children}), 0, &mut b).unwrap_err();
+        let e = vw(&json!({"t":"col","children":children}), &gctx()).unwrap_err();
         assert!(e.contains("exceeds"), "{e}");
     }
 
@@ -2845,5 +3982,627 @@ mod tests {
         assert_eq!(d["declared"]["components"][0]["name"], "pathway_map");
         assert_eq!(d["state"]["version"], 0);
         assert!(d["state"]["keys"].as_array().unwrap().is_empty());
+    }
+
+    // ── Apps SDK v2: catalog kinds ──────────────────────────────────────────
+
+    #[test]
+    fn markdown_kind_validates_and_caps() {
+        assert!(vw(&json!({"t":"markdown","md":"# Hello"}), &gctx()).is_ok());
+        // missing md
+        let e = vw(&json!({"t":"markdown"}), &gctx()).unwrap_err();
+        assert!(e.contains("string \"md\""), "{e}");
+        // over the char cap
+        let big = "x".repeat(MAX_MARKDOWN_CHARS + 1);
+        let e = vw(&json!({"t":"markdown","md":big}), &gctx()).unwrap_err();
+        assert!(e.contains("cap is"), "{e}");
+    }
+
+    #[test]
+    fn image_kind_restricts_url_schemes() {
+        assert!(vw(&json!({"t":"image","src":"https://x/y.png"}), &gctx()).is_ok());
+        assert!(vw(&json!({"t":"image","src":"figures/a.png"}), &gctx()).is_ok());
+        assert!(vw(
+            &json!({"t":"image","src":"data:image/png;base64,AAAA"}),
+            &gctx()
+        )
+        .is_ok());
+        // http: refused
+        let e = vw(&json!({"t":"image","src":"http://x/y.png"}), &gctx()).unwrap_err();
+        assert!(e.contains("not allowed"), "{e}");
+        // javascript: refused
+        assert!(vw(&json!({"t":"image","src":"javascript:alert(1)"}), &gctx()).is_err());
+        // data:text/html refused (not an image)
+        let e = vw(&json!({"t":"image","src":"data:text/html,<b>"}), &gctx()).unwrap_err();
+        assert!(e.contains("data:image/"), "{e}");
+        // oversized data URL refused
+        let huge = format!("data:image/png;base64,{}", "A".repeat(MAX_IMAGE_DATA_BYTES));
+        assert!(vw(&json!({"t":"image","src":huge}), &gctx()).is_err());
+    }
+
+    #[test]
+    fn kpi_kind_validates() {
+        assert!(vw(
+            &json!({"t":"kpi","label":"Cases","value":42,"delta":"+3%","unit":"n"}),
+            &gctx()
+        )
+        .is_ok());
+        let e = vw(&json!({"t":"kpi","value":1}), &gctx()).unwrap_err();
+        assert!(e.contains("string \"label\""), "{e}");
+    }
+
+    #[test]
+    fn log_kind_validates_and_caps() {
+        assert!(vw(
+            &json!({"t":"log","lines":[{"text":"a"},{"text":"b","level":"warn"}]}),
+            &gctx()
+        )
+        .is_ok());
+        // a line missing text
+        let e = vw(&json!({"t":"log","lines":[{"level":"info"}]}), &gctx()).unwrap_err();
+        assert!(e.contains("string \"text\""), "{e}");
+        // too many lines
+        let lines: Vec<Value> = (0..(MAX_LOG_LINES + 1))
+            .map(|_| json!({"text":"x"}))
+            .collect();
+        let e = vw(&json!({"t":"log","lines":lines}), &gctx()).unwrap_err();
+        assert!(e.contains("cap is"), "{e}");
+    }
+
+    #[test]
+    fn plot_kind_validates_types_and_shapes() {
+        assert!(vw(
+            &json!({"t":"plot","spec":{"type":"scatter","data":[{"x":1,"y":2}]}}),
+            &gctx()
+        )
+        .is_ok());
+        assert!(vw(
+            &json!({"t":"plot","spec":{"type":"box","series":[{"label":"A","values":[1,2,3]}]}}),
+            &gctx()
+        )
+        .is_ok());
+        assert!(vw(
+            &json!({"t":"plot","spec":{"type":"heatmap","x":["a","b"],"y":["r1"],"z":[[1,2]]}}),
+            &gctx()
+        )
+        .is_ok());
+        // bad type
+        let e = vw(
+            &json!({"t":"plot","spec":{"type":"banana","data":[{"x":1}]}}),
+            &gctx(),
+        )
+        .unwrap_err();
+        assert!(e.contains("must be one of"), "{e}");
+        // heatmap row/col mismatch
+        let e = vw(
+            &json!({"t":"plot","spec":{"type":"heatmap","x":["a","b"],"y":["r1"],"z":[[1]]}}),
+            &gctx(),
+        )
+        .unwrap_err();
+        assert!(e.contains("cells but"), "{e}");
+        // over the point cap
+        let data: Vec<Value> = (0..(MAX_PLOT_POINTS + 1)).map(|i| json!({"x":i})).collect();
+        let e = vw(
+            &json!({"t":"plot","spec":{"type":"scatter","data":data}}),
+            &gctx(),
+        )
+        .unwrap_err();
+        assert!(e.contains("cap is"), "{e}");
+    }
+
+    #[test]
+    fn network_kind_checks_ids_and_endpoints() {
+        assert!(vw(
+            &json!({"t":"network","spec":{"nodes":[{"id":"A"},{"id":"B"}],
+                "edges":[{"source":"A","target":"B","kind":"binds"}],
+                "encoding":{"negated_kinds":["inhibits"]},"physics":{"charge":-30}}}),
+            &gctx()
+        )
+        .is_ok());
+        // duplicate node id
+        let e = vw(
+            &json!({"t":"network","spec":{"nodes":[{"id":"A"},{"id":"A"}],"edges":[]}}),
+            &gctx(),
+        )
+        .unwrap_err();
+        assert!(e.contains("repeats id"), "{e}");
+        // dangling edge endpoint
+        let e = vw(
+            &json!({"t":"network","spec":{"nodes":[{"id":"A"}],"edges":[{"source":"A","target":"Z"}]}}),
+            &gctx(),
+        )
+        .unwrap_err();
+        assert!(e.contains("not a declared node id"), "{e}");
+    }
+
+    fn surface_with_component(schema: Value) -> SurfaceDecl {
+        use crate::agent_drafter::manifest::ComponentDecl;
+        SurfaceDecl {
+            components: vec![ComponentDecl {
+                name: "pathway_map".into(),
+                props: schema,
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn component_kind_validates_against_declared_schema() {
+        let sfc = surface_with_component(json!({
+            "type":"object",
+            "properties":{"title":{"type":"string"}},
+            "required":["title"]
+        }));
+        let ctx = WidgetCtx {
+            allow_privileged: false,
+            surface: &sfc,
+        };
+        // passes when props match
+        assert!(vw(
+            &json!({"t":"component","name":"pathway_map","props":{"title":"X"}}),
+            &ctx
+        )
+        .is_ok());
+        // fails when props violate the schema
+        let e = vw(
+            &json!({"t":"component","name":"pathway_map","props":{}}),
+            &ctx,
+        )
+        .unwrap_err();
+        assert!(e.contains("do not match its declared schema"), "{e}");
+        // fails when the component is not declared
+        let e = vw(&json!({"t":"component","name":"nope","props":{}}), &ctx).unwrap_err();
+        assert!(e.contains("not declared"), "{e}");
+    }
+
+    #[test]
+    fn component_schema_that_fails_to_compile_fails_closed() {
+        // A declared props schema that itself is invalid must be a validation
+        // FAILURE (fix-the-manifest), never an accept-any fallback.
+        let bad = surface_with_component(json!({"type": 5}));
+        let ctx = WidgetCtx {
+            allow_privileged: false,
+            surface: &bad,
+        };
+        let e = vw(
+            &json!({"t":"component","name":"pathway_map","props":{"any":"thing"}}),
+            &ctx,
+        )
+        .unwrap_err();
+        assert!(
+            e.contains("invalid props schema") && e.contains("manifest"),
+            "{e}"
+        );
+    }
+
+    #[test]
+    fn html_and_figure_are_rejected_from_generic_trees() {
+        // Non-privileged (the generic ui_panel/ui_render/ui_patch path) refuses them…
+        let e = vw(&json!({"t":"html","html":"<b>x</b>"}), &gctx()).unwrap_err();
+        assert!(e.contains("ui_html"), "{e}");
+        let e = vw(
+            &json!({"t":"figure","html":"<div/>","tool":"render_volcano"}),
+            &gctx(),
+        )
+        .unwrap_err();
+        assert!(e.contains("ui_figure"), "{e}");
+        // …but the dedicated tools may build them (allow_privileged).
+        let pctx = WidgetCtx {
+            allow_privileged: true,
+            surface: empty_surface(),
+        };
+        assert!(vw(&json!({"t":"html","html":"<b>x</b>"}), &pctx).is_ok());
+        assert!(vw(
+            &json!({"t":"figure","html":"<div/>","tool":"render_volcano"}),
+            &pctx
+        )
+        .is_ok());
+    }
+
+    #[tokio::test]
+    async fn ui_render_rejects_a_privileged_html_node() {
+        let (s, _rx) = server();
+        let e = s
+            .ui_render(Parameters(RenderParams {
+                target: "@main".into(),
+                body: json!([{"t":"html","html":"<b>x</b>"}]),
+                mode: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("ui_html"), "{}", e.message);
+    }
+
+    // ── Apps SDK v2: ui_patch + instance registry ───────────────────────────
+
+    async fn describe_json(s: &AppControlServer) -> Value {
+        // The result may carry a leading "(Surface unchanged …)\n" note; parse
+        // from the first '{'.
+        let t = text_of(&s.ui_describe(Parameters(DescribeParams {})).await.unwrap());
+        let start = t.find('{').expect("ui_describe returns a JSON body");
+        serde_json::from_str(&t[start..]).expect("ui_describe body is valid JSON")
+    }
+
+    #[tokio::test]
+    async fn ui_patch_round_trips_registry_and_emits_one_frame() {
+        let (s, mut rx) = server();
+        // add
+        let r = s
+            .ui_patch(Parameters(PatchParams {
+                ops: json!([{"op":"add","id":"n1","target":"@region:results",
+                    "node":{"t":"text","value":"hi"}}]),
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&r).contains("Applied 1"), "{}", text_of(&r));
+        let frame = rx.try_recv().unwrap();
+        assert_eq!(frame["cmd"], "patch");
+        assert_eq!(frame["type"], "ui");
+        assert_eq!(frame["v"], CATALOG_VERSION);
+        assert_eq!(frame["ops"][0]["op"], "add");
+        assert_eq!(frame["ops"][0]["id"], "n1");
+        // registry reflects it (via ui_describe)
+        let d = describe_json(&s).await;
+        let inst = d["instances"].as_array().unwrap();
+        assert_eq!(inst.len(), 1);
+        assert_eq!(inst[0]["id"], "n1");
+        assert_eq!(inst[0]["kind"], "text");
+
+        // replace
+        s.ui_patch(Parameters(PatchParams {
+            ops: json!([{"op":"replace","id":"n1","node":{"t":"badge","value":"b"}}]),
+        }))
+        .await
+        .unwrap();
+        assert_eq!(rx.try_recv().unwrap()["ops"][0]["op"], "replace");
+        assert_eq!(describe_json(&s).await["instances"][0]["kind"], "badge");
+
+        // set_props (shallow merge)
+        s.ui_patch(Parameters(PatchParams {
+            ops: json!([{"op":"set_props","id":"n1","props":{"value":"c"}}]),
+        }))
+        .await
+        .unwrap();
+        assert_eq!(rx.try_recv().unwrap()["ops"][0]["op"], "set_props");
+
+        // remove
+        s.ui_patch(Parameters(PatchParams {
+            ops: json!([{"op":"remove","id":"n1"}]),
+        }))
+        .await
+        .unwrap();
+        assert_eq!(rx.try_recv().unwrap()["ops"][0]["op"], "remove");
+        assert!(describe_json(&s).await["instances"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn ui_patch_unknown_id_is_a_fixable_error() {
+        let (s, _rx) = server();
+        let e = s
+            .ui_patch(Parameters(PatchParams {
+                ops: json!([{"op":"replace","id":"ghost","node":{"t":"text","value":"x"}}]),
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            e.message.contains("unknown id") && e.message.contains("ghost"),
+            "{}",
+            e.message
+        );
+    }
+
+    #[tokio::test]
+    async fn ui_patch_add_existing_id_suggests_replace() {
+        let (s, _rx) = server();
+        s.ui_patch(Parameters(PatchParams {
+            ops: json!([{"op":"add","id":"n1","node":{"t":"text","value":"x"}}]),
+        }))
+        .await
+        .unwrap();
+        let e = s
+            .ui_patch(Parameters(PatchParams {
+                ops: json!([{"op":"add","id":"n1","node":{"t":"text","value":"y"}}]),
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            e.message.contains("already exists") && e.message.contains("replace"),
+            "{}",
+            e.message
+        );
+    }
+
+    #[tokio::test]
+    async fn ui_patch_caps_the_op_count() {
+        let (s, _rx) = server();
+        let ops: Vec<Value> = (0..(MAX_PATCH_OPS + 1))
+            .map(|i| json!({"op":"add","id":format!("n{i}"),"node":{"t":"text","value":"x"}}))
+            .collect();
+        let e = s
+            .ui_patch(Parameters(PatchParams { ops: json!(ops) }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("cap is 32"), "{}", e.message);
+    }
+
+    #[tokio::test]
+    async fn ui_patch_rejected_batch_leaves_registry_untouched() {
+        let (s, mut rx) = server();
+        // A batch with a bad op (unknown-id remove) must apply NONE of its ops.
+        let e = s
+            .ui_patch(Parameters(PatchParams {
+                ops: json!([
+                    {"op":"add","id":"ok1","node":{"t":"text","value":"a"}},
+                    {"op":"remove","id":"ghost"}
+                ]),
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("unknown id"), "{}", e.message);
+        assert!(
+            rx.try_recv().is_err(),
+            "a rejected batch must emit no frame"
+        );
+        assert!(describe_json(&s).await["instances"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn ui_render_assigns_and_returns_node_ids() {
+        let (s, mut rx) = server();
+        let r = s
+            .ui_render(Parameters(RenderParams {
+                target: "@region:results".into(),
+                body: json!([{"t":"card","children":[{"t":"text","value":"a"}]}]),
+                mode: None,
+            }))
+            .await
+            .unwrap();
+        let txt = text_of(&r);
+        assert!(txt.contains("ui_patch"), "{txt}");
+        let frame = rx.try_recv().unwrap();
+        let top_id = frame["body"][0]["id"].as_str().unwrap();
+        assert!(top_id.starts_with("@region:results#n"), "{top_id}");
+        assert!(frame["body"][0]["children"][0]["id"].is_string());
+        assert!(
+            txt.contains(top_id),
+            "the assigned ids must be returned: {txt}"
+        );
+        // and they are targetable via ui_patch
+        s.ui_patch(Parameters(PatchParams {
+            ops: json!([{"op":"remove","id":top_id}]),
+        }))
+        .await
+        .expect("an assigned id must be a valid ui_patch target");
+    }
+
+    #[tokio::test]
+    async fn ui_render_keeps_explicit_node_ids() {
+        let (s, mut rx) = server();
+        s.ui_render(Parameters(RenderParams {
+            target: "@main".into(),
+            body: json!([{"t":"text","id":"my-node","value":"a"}]),
+            mode: None,
+        }))
+        .await
+        .unwrap();
+        assert_eq!(rx.try_recv().unwrap()["body"][0]["id"], "my-node");
+        // targetable by that explicit id
+        s.ui_patch(Parameters(PatchParams {
+            ops: json!([{"op":"set_props","id":"my-node","props":{"value":"b"}}]),
+        }))
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn attach_clears_instances_but_keeps_state() {
+        let bridge = UiBridge::new();
+        let (mut first, _t1) = bridge.attach();
+        let s = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
+        s.ui_state(Parameters(StateParams {
+            set: Some(json!({"gene":"BRCA1"})),
+            remove: None,
+        }))
+        .await
+        .unwrap();
+        s.ui_patch(Parameters(PatchParams {
+            ops: json!([{"op":"add","id":"n1","node":{"t":"text","value":"x"}}]),
+        }))
+        .await
+        .unwrap();
+        while first.try_recv().is_ok() {}
+
+        // Reconnect.
+        let (mut second, _t2) = bridge.attach();
+        // State survives (replayed as one snapshot)…
+        let replay = second.try_recv().unwrap();
+        assert_eq!(replay["cmd"], "state");
+        assert_eq!(replay["doc"]["gene"], "BRCA1");
+        // …but the instance registry reset with the page.
+        let d = describe_json(&s).await;
+        assert!(d["instances"].as_array().unwrap().is_empty());
+    }
+
+    // ── Apps SDK v2: ui_html (capability-gated, server-side sanitization) ────
+
+    fn html_server() -> (AppControlServer, mpsc::UnboundedReceiver<Value>) {
+        let bridge = UiBridge::new();
+        let (rx, _tok) = bridge.attach();
+        let cap = UiCapability {
+            allow_html: true,
+            ..Default::default()
+        };
+        (
+            AppControlServer::new(bridge, cap, SurfaceDecl::default()),
+            rx,
+        )
+    }
+
+    #[tokio::test]
+    async fn ui_html_denied_by_default() {
+        let (s, _rx) = server(); // default cap: allow_html = false
+        let e = s
+            .ui_html(Parameters(HtmlParams {
+                target: "@main".into(),
+                html: "<p>hi</p>".into(),
+                title: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(
+            e.message.contains("does not grant") && e.message.contains("HTML"),
+            "{}",
+            e.message
+        );
+    }
+
+    #[tokio::test]
+    async fn ui_html_sanitizes_a_bypass_corpus() {
+        let (s, mut rx) = html_server();
+
+        // Each case: (raw html, a token that must NOT survive sanitization).
+        let corpus: &[(&str, &str)] = &[
+            ("<script>alert(1)</script><p>ok</p>", "alert(1)"),
+            ("<img src=x onerror=alert(1)>", "onerror"),
+            ("<svg onload=alert(1)></svg>", "onload"),
+            ("<a href=\"javascript:alert(1)\">x</a>", "javascript:"),
+            (
+                "<a href=\"data:text/html,<script>alert(1)</script>\">x</a>",
+                "data:text/html",
+            ),
+            ("<base href=\"http://evil/\">", "<base"),
+            ("<style>@import url(https://evil)</style>", "@import"),
+            (
+                "<form action=\"https://evil\"><input name=p></form>",
+                "<form",
+            ),
+            (
+                "<iframe srcdoc=\"<script>alert(1)</script>\"></iframe>",
+                "srcdoc",
+            ),
+            (
+                "<noscript><p title=\"</noscript><img src=x onerror=alert(1)>\"></noscript>",
+                "onerror",
+            ),
+            ("<object data=\"evil.swf\"></object>", "<object"),
+            ("<embed src=\"evil\">", "<embed"),
+        ];
+
+        for (raw, forbidden) in corpus {
+            let _ = s
+                .ui_html(Parameters(HtmlParams {
+                    target: "@main".into(),
+                    html: (*raw).into(),
+                    title: None,
+                }))
+                .await
+                .unwrap();
+            let frame = rx.try_recv().unwrap();
+            let clean = frame["body"][0]["html"]
+                .as_str()
+                .unwrap()
+                .to_ascii_lowercase();
+            assert!(
+                !clean.contains(&forbidden.to_ascii_lowercase()),
+                "sanitizer let {forbidden:?} survive for input {raw:?}: {clean}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn ui_html_reports_stripped_elements_and_keeps_safe_markup() {
+        let (s, mut rx) = html_server();
+        let r = s
+            .ui_html(Parameters(HtmlParams {
+                target: "@region:notes".into(),
+                html: "<p>Kept <b>bold</b></p><script>evil()</script>".into(),
+                title: Some("Notes".into()),
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&r).contains("removed"), "{}", text_of(&r));
+        let frame = rx.try_recv().unwrap();
+        assert_eq!(frame["cmd"], "render");
+        // Title ⇒ wrapped in a card whose child is the privileged html node.
+        assert_eq!(frame["body"][0]["t"], "card");
+        let html = frame["body"][0]["children"][0]["html"].as_str().unwrap();
+        assert!(
+            html.contains("<b>bold</b>"),
+            "safe markup must survive: {html}"
+        );
+        assert!(!html.contains("script"), "{html}");
+    }
+
+    // ── Apps SDK v2: ui_figure (trusted Auto Visualiser output) ─────────────
+
+    #[tokio::test]
+    async fn ui_figure_renders_autovis_into_a_dock_panel() {
+        let (s, mut rx) = server();
+        s.ui_figure(Parameters(FigureParams {
+            tool: "show_chart".into(),
+            args: json!({"data": {
+                "type": "bar",
+                "labels": ["A", "B"],
+                "datasets": [{"label": "S", "data": [1.0, 2.0]}]
+            }}),
+            target: None,
+            title: Some("Counts".into()),
+        }))
+        .await
+        .expect("show_chart should render");
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd["cmd"], "panel");
+        assert_eq!(cmd["place"], "dock");
+        assert_eq!(cmd["body"][0]["t"], "figure");
+        assert_eq!(cmd["body"][0]["tool"], "show_chart");
+        assert!(
+            cmd["body"][0]["html"].as_str().unwrap().contains("<html")
+                || cmd["body"][0]["html"]
+                    .as_str()
+                    .unwrap()
+                    .contains("<!DOCTYPE")
+        );
+    }
+
+    #[tokio::test]
+    async fn ui_figure_renders_into_an_explicit_target() {
+        let (s, mut rx) = server();
+        s.ui_figure(Parameters(FigureParams {
+            tool: "volcano".into(),
+            args: json!({"data": {"points": [{"label":"MYC","log2fc":2.4,"negLog10P":4.0}]}}),
+            target: Some("@region:results".into()),
+            title: None,
+        }))
+        .await
+        .unwrap();
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd["cmd"], "render");
+        assert_eq!(cmd["target"], "@region:results");
+        assert_eq!(cmd["body"][0]["t"], "figure");
+    }
+
+    #[tokio::test]
+    async fn ui_figure_reports_a_bad_tool_as_a_fixable_error() {
+        let (s, _rx) = server();
+        let e = s
+            .ui_figure(Parameters(FigureParams {
+                tool: "totally_made_up".into(),
+                args: json!({"data": {}}),
+                target: None,
+                title: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("totally_made_up"), "{}", e.message);
     }
 }

@@ -1088,7 +1088,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "lint_app",
-        description = "Run the build harness guardrails on an app and report findings: does it reach the backend via the App SDK, is it self-contained (no CDN/external assets), and is it on-theme (BioRouter classes/tokens)? Fix ERRORs before launch/export."
+        description = "Run the build harness guardrails on an app and report findings: does it reach the backend via the App SDK, is it self-contained (no CDN/external assets), on-theme (BioRouter classes/tokens), and — for SDK v2 apps — do its custom components match the manifest's declared surface (registered ⇔ declared, string-literal names, no prop-fed HTML sinks) and its state bindings stay safe (declared state_schema, no on*/style bind-attr)? Fix ERRORs before launch/export."
     )]
     pub async fn lint_app(
         &self,
