@@ -86,7 +86,16 @@ The foundation every other pillar builds on. Additive; no behavior change for v1
 4. **Skills scoping enforcement** for app sessions (per-app skill list actually filters, not advisory).
 5. **Docs + capability matrix** in `docs/agent-drafter-apps.md`.
 
-**Acceptance:** the KB-explorer demo app (design §4A) works end-to-end against a real knowledge base with `network` + inspector + agent narration, and cannot read a KB outside its grant.
+**Phase 4b — multi-agent profiles (design §3.8; ~1–2 weeks, after Phase 3's `br.call` lands):**
+
+6. **Named profiles.** Wire the dormant `orchestration.agents` manifest map (`manifest.rs` — the struct exists, `apps.rs` never reads it): the `agent` block becomes the `main` profile; validate at session start that each profile's capabilities/extensions/KB are a **subset** of the app's grants, and that routes obey the provider-class constraint per profile.
+7. **Session-per-profile + frame multiplexing.** Sessions keyed `app:<id>:<client_id>:<profile>`; frames gain an optional `agent` field (omitted = `main`, so every v1 frame is unchanged). `handle_agent_socket` grows a task-per-active-profile with an mpsc merge into the single socket writer — this is the real work: today the loop drives exactly one agent's turn; profile turns must run concurrently (per-app cap, default 3) while same-profile turns stay serialized. Cancel targets a profile.
+8. **SDK facade.** `br.agent(name)` → scoped `call/run/prompt/on`; `main` remains the default for all existing APIs. Presence chips + timeline items attribute the acting profile ("Critic · …"); `handoff` frames (already rendered, `sdk.ts:1156`) get the profile name.
+9. **`consult` tool.** `main` (or any profile granted it) can invoke a named profile mid-turn as a tool — parked/resolved like `app_call`, result size-capped + enveloped. Keep the shipped sub-agents-as-tools path (`materialize_subagent_recipe`, `apps.rs:708-737`) untouched as the low-cost delegation default; document when to use which.
+10. **UI authority.** Only `main` gets `appcontrol` unless a profile declares `ui:true`; worker-profile panels are namespaced so two profiles can't fight over one panel id.
+11. Tests: route tests for subset-validation and parallel-profile turns; harness — two profiles answer one fan-out concurrently and render into separate panels; unit — consult parking/timeout/cancel; per-app concurrency cap enforced.
+
+**Acceptance:** the KB-explorer demo app (design §4A) works end-to-end against a real knowledge base with `network` + inspector + agent narration, and cannot read a KB outside its grant. The adversarial-review demo (design §4D) runs both author-orchestrated (`br.agent(...)` fan-out) and agent-orchestrated (`consult`) with visible per-agent attribution.
 
 ## Phase 5 — Aesthetics: theme packs, layout grammar, archetype starters (~1–2 weeks)
 
@@ -115,6 +124,6 @@ The foundation every other pillar builds on. Additive; no behavior change for v1
 
 - **Phases 1→2→3 are the dependency spine** (state → catalog → RPC/signals). The **read-only `br.kb` slice of Phase 4 can run concurrently after Phase 2** so the flagship KB-explorer (the closest analog to the BioOKF exemplar) demos as early as possible. Phase 5 can start once 2 lands; Phase 6 is continuous with a closing milestone.
 - **Compat gates every phase:** the existing `agent_drafter::` unit tests + `agent_drafter_registered` + the vendored `check-all.mjs` corpus must stay at the pinned v1 pass count; any v1 app that breaks is a phase-blocking bug.
-- **Deferred to v2.1 (explicitly, per design §7):** `.brapp` distribution/BAAM listing (gated on import re-consent), workflows/scheduled refresh, provider-level structured output, collaborative multi-user apps, voice input.
+- **Deferred to v2.1 (explicitly, per design §7):** `.brapp` distribution/BAAM listing (gated on import re-consent), workflows/scheduled refresh, provider-level structured output, collaborative multi-user apps, voice input. **Multi-agent profiles are NOT deferred** — they land as Phase 4b (design §3.8); only same-profile parallel turns and cross-process (ACP) orchestration stay out.
 - **Biggest technical risks:** (a) morphing renderer correctness — mitigate with the harness's focus/scroll tests before porting widgets onto it; (b) the `emit_result` convention's reliability across weak local models — mitigate with the lint/instruction pairing and prose fallback, and measure it in benchmark v2; (c) autovis `figure` wiring — the private-module refactor is a prerequisite task, not incidental; (d) WS token/origin changes must not break the Electron Applications tab or exported apps — route tests + export smoke cover both.
-- **Estimate:** ~10–13 weeks of focused work end-to-end, but Phase 1+2 (≈4 weeks) already dissolve the chatbot ceiling, and with the early `br.kb` read slice the KB-explorer class of apps lands by ~week 6.
+- **Estimate:** ~11–15 weeks of focused work end-to-end (Phase 4b adds ~1–2), but Phase 1+2 (≈4 weeks) already dissolve the chatbot ceiling, and with the early `br.kb` read slice the KB-explorer class of apps lands by ~week 6. Multi-agent apps (4b) land by ~week 8–9.
