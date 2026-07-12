@@ -32,11 +32,13 @@ use std::collections::HashMap;
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 
 use crate::conversation::message::Message;
 use crate::conversation::Conversation;
 use crate::hooks::{HookDefinition, HookEvent};
+use crate::session::extension_data::ExtensionState;
 
 use super::Agent;
 
@@ -61,7 +63,12 @@ const GOAL_STALL_SIMILARITY: f32 = 0.5;
 const CLEAR_WORDS: &[&str] = &["clear", "stop", "off", "reset", "none", "cancel"];
 
 /// An active goal for one session.
-#[derive(Debug, Clone)]
+///
+/// Persisted into the session's `extension_data` under key `goal.v0` (see the
+/// [`ExtensionState`] impl below) so an active `/goal` survives a daemon
+/// restart, exactly like todos — otherwise a restart silently drops the goal
+/// while its todos live on (BR-41).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GoalState {
     pub condition: String,
     pub set_at: DateTime<Utc>,
@@ -71,6 +78,11 @@ pub struct GoalState {
     pub last_reason: Option<String>,
     /// Consecutive iterations whose feedback resembled the previous one.
     pub stall_count: u32,
+}
+
+impl ExtensionState for GoalState {
+    const EXTENSION_NAME: &'static str = "goal";
+    const VERSION: &'static str = "v0";
 }
 
 impl GoalState {
@@ -269,11 +281,13 @@ impl Agent {
         self.install_goal_hook(session_id, &condition, 1, None)
             .await;
         self.hooks_manager.reset_stop_blocks(session_id).await;
+        let state = GoalState::new(condition);
+        self.persist_goal(session_id, &state).await;
         self.goals
             .goals
             .lock()
             .await
-            .insert(session_id.to_string(), GoalState::new(condition));
+            .insert(session_id.to_string(), state);
     }
 
     /// Clear the session goal and its Stop-hook evaluator. Returns the goal
@@ -283,7 +297,91 @@ impl Agent {
             .clear_session_hooks(session_id, HookEvent::Stop)
             .await;
         self.hooks_manager.reset_stop_blocks(session_id).await;
+        self.clear_persisted_goal(session_id).await;
         self.goals.goals.lock().await.remove(session_id)
+    }
+
+    /// Persist `state` into the session's `extension_data` (key `goal.v0`), so
+    /// an active goal survives a daemon restart — mirroring how todos persist.
+    /// Best-effort: a persistence failure only forfeits the restore-after-restart
+    /// property, never the live in-memory goal.
+    async fn persist_goal(&self, session_id: &str, state: &GoalState) {
+        let manager = &self.config.session_manager;
+        match manager.get_session(session_id, false).await {
+            Ok(mut session) => {
+                if state.to_extension_data(&mut session.extension_data).is_ok() {
+                    if let Err(e) = manager
+                        .update(session_id)
+                        .extension_data(session.extension_data)
+                        .apply()
+                        .await
+                    {
+                        tracing::warn!("Failed to persist goal for session {session_id}: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to load session {session_id} to persist goal: {e}");
+            }
+        }
+    }
+
+    /// Clear any persisted goal for `session_id` (null out the `goal.v0` key),
+    /// so a resolved or manually cleared goal does not resurrect on resume.
+    async fn clear_persisted_goal(&self, session_id: &str) {
+        let manager = &self.config.session_manager;
+        if let Ok(mut session) = manager.get_session(session_id, false).await {
+            session.extension_data.set_extension_state(
+                GoalState::EXTENSION_NAME,
+                GoalState::VERSION,
+                serde_json::Value::Null,
+            );
+            if let Err(e) = manager
+                .update(session_id)
+                .extension_data(session.extension_data)
+                .apply()
+                .await
+            {
+                tracing::warn!("Failed to clear persisted goal for session {session_id}: {e}");
+            }
+        }
+    }
+
+    /// Restore a persisted goal into the in-memory registry and re-install its
+    /// Stop-hook judge, when a daemon restart dropped the live state but the
+    /// goal is still recorded in the session's `extension_data`. A no-op when
+    /// the goal is already live in this process or none was stored. Called at
+    /// the start of a turn (see `Agent::reply`) so a resumed `/goal` keeps
+    /// working instead of silently vanishing.
+    pub(crate) async fn restore_goal(&self, session_id: &str) {
+        if self.goals.goals.lock().await.contains_key(session_id) {
+            return;
+        }
+        let Ok(session) = self
+            .config
+            .session_manager
+            .get_session(session_id, false)
+            .await
+        else {
+            return;
+        };
+        let Some(state) = GoalState::from_extension_data(&session.extension_data) else {
+            return;
+        };
+        // The Stop-hook judge was in-memory too, so re-install it with the same
+        // progress context the loop would have had (next attempt #, last note).
+        self.install_goal_hook(
+            session_id,
+            &state.condition,
+            state.iterations + 1,
+            state.last_reason.as_deref(),
+        )
+        .await;
+        self.goals
+            .goals
+            .lock()
+            .await
+            .insert(session_id.to_string(), state);
     }
 
     /// Record a judge block against the active goal and decide whether to keep
@@ -295,7 +393,7 @@ impl Agent {
         session_id: &str,
         reason: &str,
     ) -> Option<GoalOutcome> {
-        let (condition, attempt, outcome) = {
+        let (condition, attempt, outcome, snapshot) = {
             let mut goals = self.goals.goals.lock().await;
             let state = goals.get_mut(session_id)?;
             state.iterations += 1;
@@ -318,8 +416,18 @@ impl Agent {
             } else {
                 GoalOutcome::Continue
             };
-            (state.condition.clone(), state.iterations, outcome)
+            (
+                state.condition.clone(),
+                state.iterations,
+                outcome,
+                state.clone(),
+            )
         };
+
+        // Persist the bumped iteration/stall counters so a restart resumes the
+        // goal with the right remaining budget instead of an infinite one. On a
+        // give-up the caller clears the goal right after, which nulls this out.
+        self.persist_goal(session_id, &snapshot).await;
 
         if outcome == GoalOutcome::Continue {
             // Refresh the judge with the new attempt # and latest feedback so it
@@ -447,5 +555,190 @@ mod tests {
         let text = giveup_instruction("output too large for chat");
         assert!(text.contains("best final answer"));
         assert!(text.contains("output too large for chat"));
+    }
+
+    #[test]
+    fn goal_state_persists_under_versioned_key() {
+        use crate::session::extension_data::ExtensionData;
+
+        let mut state = GoalState::new("cargo test exits 0".to_string());
+        state.iterations = 3;
+        state.stall_count = 1;
+        state.last_reason = Some("still two tests failing".to_string());
+
+        let mut data = ExtensionData::new();
+        state.to_extension_data(&mut data).unwrap();
+
+        // Stored under the todo-style versioned key "goal.v0".
+        assert!(data.get_extension_state("goal", "v0").is_some());
+
+        let back = GoalState::from_extension_data(&data).expect("goal round-trips");
+        assert_eq!(back.condition, "cargo test exits 0");
+        assert_eq!(back.iterations, 3);
+        assert_eq!(back.stall_count, 1);
+        assert_eq!(back.last_reason.as_deref(), Some("still two tests failing"));
+    }
+
+    #[test]
+    fn cleared_goal_does_not_load() {
+        use crate::session::extension_data::ExtensionData;
+
+        let mut data = ExtensionData::new();
+        // Absent → None.
+        assert!(GoalState::from_extension_data(&data).is_none());
+
+        GoalState::new("do x".to_string())
+            .to_extension_data(&mut data)
+            .unwrap();
+        assert!(GoalState::from_extension_data(&data).is_some());
+
+        // Nulled out (how `clear_persisted_goal` clears it) → None, so a
+        // resolved goal does not resurrect on the next resume.
+        data.set_extension_state(
+            GoalState::EXTENSION_NAME,
+            GoalState::VERSION,
+            serde_json::Value::Null,
+        );
+        assert!(GoalState::from_extension_data(&data).is_none());
+    }
+}
+
+/// End-to-end persistence/restore across a *simulated daemon restart*: a fresh
+/// `Agent` + `SessionManager` over the same on-disk session DB models the new
+/// process, so its in-memory goal registry starts empty and must rehydrate from
+/// `extension_data` (BR-41).
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::hooks::HookEvent;
+    use crate::session::session_manager::SessionType;
+    use crate::session::SessionManager;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+    use tempfile::TempDir;
+
+    /// A fresh `Agent` bound to an isolated `SessionManager` over `dir`.
+    fn agent_over(dir: &std::path::Path) -> Agent {
+        let session_manager = Arc::new(SessionManager::new(dir.to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.to_path_buf()));
+        Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        ))
+    }
+
+    async fn new_session(agent: &Agent, name: &str) -> String {
+        agent
+            .config
+            .session_manager
+            .create_session(PathBuf::from("."), name.to_string(), SessionType::User)
+            .await
+            .unwrap()
+            .id
+    }
+
+    #[tokio::test]
+    async fn goal_survives_a_simulated_daemon_restart() {
+        let dir = TempDir::new().unwrap();
+
+        // Process 1: set a goal on a session.
+        let session_id = {
+            let agent = agent_over(dir.path());
+            let session_id = new_session(&agent, "goal-persist").await;
+            agent
+                .set_goal(&session_id, "cargo test exits 0".to_string())
+                .await;
+            assert!(agent.active_goal(&session_id).await.is_some());
+            session_id
+        };
+
+        // Process 2: a fresh Agent + SessionManager over the same on-disk DB
+        // starts with an empty in-memory registry (the restart). Restore
+        // rehydrates the goal and its Stop-hook judge.
+        let agent2 = agent_over(dir.path());
+        assert!(
+            agent2.active_goal(&session_id).await.is_none(),
+            "a fresh process starts with no live goal"
+        );
+        assert!(
+            !agent2
+                .hooks_manager()
+                .has_session_hooks(&session_id, HookEvent::Stop)
+                .await,
+            "and no live Stop-hook judge"
+        );
+
+        agent2.restore_goal(&session_id).await;
+
+        let restored = agent2
+            .active_goal(&session_id)
+            .await
+            .expect("goal restored after restart");
+        assert_eq!(restored.condition, "cargo test exits 0");
+        assert!(
+            agent2
+                .hooks_manager()
+                .has_session_hooks(&session_id, HookEvent::Stop)
+                .await,
+            "the Stop-hook judge is re-installed on restore"
+        );
+    }
+
+    #[tokio::test]
+    async fn record_goal_block_persists_the_iteration_budget() {
+        let dir = TempDir::new().unwrap();
+        let session_id;
+        {
+            let agent = agent_over(dir.path());
+            session_id = new_session(&agent, "goal-budget").await;
+            agent
+                .set_goal(&session_id, "finish the report".to_string())
+                .await;
+            // Two judge blocks bump the (non-resetting) iteration counter to 2
+            // and persist it, so the give-up budget can't reset across restarts.
+            agent
+                .record_goal_block(&session_id, "still missing section 3")
+                .await;
+            agent
+                .record_goal_block(&session_id, "conclusion not written yet")
+                .await;
+        }
+
+        let agent2 = agent_over(dir.path());
+        agent2.restore_goal(&session_id).await;
+        let restored = agent2
+            .active_goal(&session_id)
+            .await
+            .expect("goal restored after restart");
+        assert_eq!(
+            restored.iterations, 2,
+            "the iteration budget survives the restart"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleared_goal_does_not_resurrect_on_restart() {
+        let dir = TempDir::new().unwrap();
+        let session_id;
+        {
+            let agent = agent_over(dir.path());
+            session_id = new_session(&agent, "goal-clear").await;
+            agent
+                .set_goal(&session_id, "do the thing".to_string())
+                .await;
+            agent.clear_goal(&session_id).await;
+        }
+
+        let agent2 = agent_over(dir.path());
+        agent2.restore_goal(&session_id).await;
+        assert!(
+            agent2.active_goal(&session_id).await.is_none(),
+            "a cleared goal must not come back after a restart"
+        );
     }
 }
