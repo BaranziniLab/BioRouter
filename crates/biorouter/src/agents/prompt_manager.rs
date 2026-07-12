@@ -26,6 +26,68 @@ fn current_hour_timestamp() -> String {
     chrono::Local::now().format("%Y-%m-%d %H:00").to_string()
 }
 
+/// BR-3: which system-prompt variant to render for the active model.
+///
+/// One fixed `system.md` served 43+ providers of wildly varying capability:
+/// strong models paid for scaffolding they don't need, and small/local models
+/// got too little. Rather than the "one prompt file per model" sprawl the
+/// review warned against, variants are kept intentionally minimal — a shared
+/// base (`system.md`, the strong-model default) plus at most one small overlay.
+/// The `Default` variant renders the base byte-identically, so strong models
+/// (and their multi-session prompt cache key) are unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptVariant {
+    /// Strong commercial / institution-hosted models. Base `system.md` only.
+    Default,
+    /// Small, weak local models (Llama Server, Ollama). Base + a compact
+    /// scaffolding overlay (`system_small_local.md`).
+    SmallLocal,
+}
+
+impl PromptVariant {
+    /// Choose a variant for `(provider_name, model_name)`.
+    ///
+    /// `BIOROUTER_SYSTEM_PROMPT_VARIANT` (`default` | `small_local`) pins the
+    /// choice for testing / power users; otherwise the provider/model-keyed
+    /// table decides, defaulting to [`PromptVariant::Default`].
+    pub fn select(provider_name: &str, model_name: &str) -> PromptVariant {
+        if let Ok(pinned) = Config::global().get_param::<String>("BIOROUTER_SYSTEM_PROMPT_VARIANT")
+        {
+            match pinned.trim().to_ascii_lowercase().as_str() {
+                "default" | "strong" => return PromptVariant::Default,
+                "small_local" | "small" | "local" => return PromptVariant::SmallLocal,
+                other => tracing::warn!(
+                    variant = other,
+                    "unknown BIOROUTER_SYSTEM_PROMPT_VARIANT; using the model-derived variant"
+                ),
+            }
+        }
+        select_variant_from_table(provider_name, model_name)
+    }
+}
+
+/// Provider/model → variant rules, first match wins, `Default` as the fallback.
+/// Kept deliberately tiny (BR-3: "keep variants minimal / avoid sprawl").
+///
+/// The local providers ship small, weak models by default (Llama Server's
+/// Qwen3.5-4B / Gemma-4, Ollama's local tags), so they get the extra
+/// scaffolding — except when the model name says a *large* model is loaded
+/// locally, which needs no hand-holding.
+fn select_variant_from_table(provider_name: &str, model_name: &str) -> PromptVariant {
+    let provider = provider_name.to_ascii_lowercase();
+    let model = model_name.to_ascii_lowercase();
+
+    if matches!(provider.as_str(), "llamacpp" | "ollama") {
+        const LARGE_LOCAL_MARKERS: &[&str] = &["70b", "72b", "65b", "34b", "large"];
+        if LARGE_LOCAL_MARKERS.iter().any(|m| model.contains(m)) {
+            return PromptVariant::Default;
+        }
+        return PromptVariant::SmallLocal;
+    }
+
+    PromptVariant::Default
+}
+
 pub struct PromptManager {
     system_prompt_override: Option<String>,
     system_prompt_extras: Vec<String>,
@@ -58,9 +120,16 @@ pub struct SystemPromptBuilder<'a, M> {
     subagents_enabled: bool,
     hints: Option<String>,
     code_execution_mode: bool,
+    variant: PromptVariant,
 }
 
 impl<'a> SystemPromptBuilder<'a, PromptManager> {
+    /// BR-3: select the per-model prompt variant (default: strong-model base).
+    pub fn with_prompt_variant(mut self, variant: PromptVariant) -> Self {
+        self.variant = variant;
+        self
+    }
+
     pub fn with_extension(mut self, extension: ExtensionInfo) -> Self {
         self.extensions_info.push(extension);
         self
@@ -172,7 +241,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             code_execution_mode: self.code_execution_mode,
         };
 
-        let base_prompt = if let Some(override_prompt) = &self.manager.system_prompt_override {
+        let mut base_prompt = if let Some(override_prompt) = &self.manager.system_prompt_override {
             let sanitized_override_prompt = sanitize_unicode_tags(override_prompt);
             prompt_template::render_inline_once(&sanitized_override_prompt, &context)
         } else {
@@ -181,6 +250,25 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         .unwrap_or_else(|_| {
             "You are Biorouter, a general-purpose AI agent and integrated research environment for biomedical discovery, created by Wanjun Gu and the Baranzini Lab at UCSF".to_string()
         });
+
+        // BR-3: small/weak local models get a compact scaffolding overlay on top
+        // of the shared base prompt. The `Default` variant appends nothing, so a
+        // strong model's rendered prompt (and its cache key) stays byte-identical.
+        // Skipped under a full custom prompt override, which is already complete.
+        if self.variant == PromptVariant::SmallLocal
+            && self.manager.system_prompt_override.is_none()
+        {
+            match prompt_template::render_global_file("system_small_local.md", &context) {
+                Ok(overlay) if !overlay.trim().is_empty() => {
+                    base_prompt.push_str("\n\n");
+                    base_prompt.push_str(&overlay);
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!("failed to render small-local prompt overlay: {e}")
+                }
+            }
+        }
 
         let mut system_prompt_extras = self.manager.system_prompt_extras.clone();
 
@@ -253,6 +341,7 @@ impl PromptManager {
             subagents_enabled: false,
             hints: None,
             code_execution_mode: false,
+            variant: PromptVariant::Default,
         }
     }
 
@@ -602,5 +691,116 @@ mod tests {
         assert!(report.is_empty());
         assert_eq!(extensions[0].instructions, big);
         assert_eq!(hints.as_deref(), Some(big.as_str()));
+    }
+
+    /// BR-3: the provider/model table routes the local providers to the
+    /// small-local variant and everything else to the strong-model default.
+    #[test]
+    fn test_prompt_variant_table() {
+        // Local providers → small-local scaffolding.
+        assert_eq!(
+            select_variant_from_table("llamacpp", "qwen3.5-4b"),
+            PromptVariant::SmallLocal
+        );
+        assert_eq!(
+            select_variant_from_table("ollama", "gemma4:latest"),
+            PromptVariant::SmallLocal
+        );
+        // Strong commercial / institution-hosted → base prompt only.
+        assert_eq!(
+            select_variant_from_table("anthropic", "claude-sonnet-4"),
+            PromptVariant::Default
+        );
+        assert_eq!(
+            select_variant_from_table("openai", "gpt-5.2"),
+            PromptVariant::Default
+        );
+        // A *large* model run locally does not need the extra hand-holding.
+        assert_eq!(
+            select_variant_from_table("ollama", "llama3.3:70b"),
+            PromptVariant::Default
+        );
+    }
+
+    /// BR-3: the small-local variant appends the scaffolding overlay, while the
+    /// default variant renders the base prompt byte-identically (no overlay).
+    #[test]
+    fn test_small_local_variant_appends_overlay() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+
+        let default_prompt = manager
+            .builder()
+            .with_prompt_variant(PromptVariant::Default)
+            .build();
+        assert!(
+            !default_prompt.contains("Running on a Smaller Model"),
+            "the default (strong-model) variant must not append the overlay"
+        );
+
+        let small_prompt = manager
+            .builder()
+            .with_prompt_variant(PromptVariant::SmallLocal)
+            .build();
+        assert!(
+            small_prompt.starts_with(&default_prompt),
+            "the small-local variant is the shared base plus an appended overlay"
+        );
+        assert!(
+            small_prompt.len() > default_prompt.len(),
+            "the small-local variant must add scaffolding on top of the base"
+        );
+    }
+
+    /// BR-3 contract test: guard the small-local overlay's intentional clauses
+    /// against silent removal (mirrors `test_system_prompt_has_behavior_clauses`
+    /// for the base prompt). If any of these disappears, the weak-model
+    /// scaffolding is quietly lost.
+    #[test]
+    fn test_small_local_overlay_has_scaffolding_clauses() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let p = manager
+            .builder()
+            .with_prompt_variant(PromptVariant::SmallLocal)
+            .build();
+
+        assert!(
+            p.contains("You are running on a smaller local model"),
+            "missing small-model self-identification"
+        );
+        assert!(
+            p.contains("single tool call per turn"),
+            "missing one-step-at-a-time discipline"
+        );
+        assert!(
+            p.contains("emit only valid JSON for tool arguments"),
+            "missing valid-tool-JSON discipline"
+        );
+        assert!(
+            p.contains("ask a short clarifying question"),
+            "missing ask-vs-act discipline"
+        );
+        assert!(
+            p.contains("Before saying a task is done"),
+            "missing verify-before-done discipline"
+        );
+    }
+
+    /// BR-3: a full custom prompt override is already complete, so the overlay
+    /// is not appended even for the small-local variant.
+    #[test]
+    fn test_small_local_variant_skips_overlay_under_override() {
+        let mut manager = PromptManager::new();
+        manager.set_system_prompt_override("Custom prompt for a workflow.".to_string());
+
+        let p = manager
+            .builder()
+            .with_prompt_variant(PromptVariant::SmallLocal)
+            .build();
+
+        assert!(p.contains("Custom prompt for a workflow."));
+        assert!(
+            !p.contains("Running on a Smaller Model"),
+            "the overlay must not be appended to a custom prompt override"
+        );
     }
 }

@@ -145,6 +145,13 @@ impl Agent {
         let provider = self.provider().await?;
         let model_config = provider.get_model_config();
 
+        // BR-3: pick the system-prompt variant for this provider/model so small
+        // local models get extra scaffolding while strong models stay lean.
+        let prompt_variant = crate::agents::prompt_manager::PromptVariant::select(
+            provider.get_name(),
+            &model_config.model_name,
+        );
+
         let prompt_manager = self.prompt_manager.lock().await;
         let mut system_prompt = prompt_manager
             .builder()
@@ -153,6 +160,7 @@ impl Agent {
             .with_code_execution_mode(code_execution_active)
             .with_hints(working_dir)
             .with_enable_subagents(self.subagents_enabled(session_id).await)
+            .with_prompt_variant(prompt_variant)
             .build();
 
         // Handle toolshim if enabled
