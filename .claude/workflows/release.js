@@ -1,5 +1,8 @@
+/* global agent, phase, log, args */
 // BioRouter release workflow — orchestrates a signed, notarized, multi-platform
-// release using agents over scripts/release.sh.
+// release using agents over scripts/release.sh. Runs in the Workflow sandbox,
+// which provides the globals declared above (not standalone Node), so a plain
+// ESLint pass would otherwise flag them as no-undef.
 //
 // Run it with the Workflow tool:
 //   Workflow({ name: 'release', args: { version: '1.80.1' } })
@@ -103,4 +106,7 @@ await step('publish',
   `(skip any that already exist), then \`bash scripts/release.sh publish ${version}\`. ` +
   `Finally confirm \`gh release view v${version}\` shows exactly 7 uploaded assets (5 GUI + 2 CLI) and is not a draft.`)
 
-return { version, status: 'released', release: `v${version}` }
+// (A top-level `return` here is valid inside the Workflow async-wrapper runtime
+// but a fatal parse error to a plain ESLint pass — the workflow's completion is
+// reported via this log line instead.)
+log(`release workflow complete: v${version} released`)
