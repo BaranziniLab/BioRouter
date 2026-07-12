@@ -153,9 +153,18 @@ pub fn app_config_script(
         cfg["wsToken"] = serde_json::json!(token);
     }
     let json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
-    // JSON is valid JS; neutralise any `</script>` breakout from string fields.
+    // Emit the config as a NON-executable data island so the served page can ship
+    // the strict CSP (`script-src 'self'`, no `unsafe-inline`) that SDK v2 needs —
+    // the SDK's `readAppConfig()` reads `#biorouter-app-config`'s textContent and
+    // `JSON.parse`s it. `<` is a valid JSON string escape, so replacing every
+    // `<` keeps the JSON well-formed while neutralising any `</script>` breakout
+    // from string fields (the HTML parser ends a <script> on `</script`, regardless
+    // of type). No legacy `window.BIOROUTER_APP_CONFIG` inline script is emitted:
+    // the SDK still falls back to that global, but nothing on the served/exported
+    // path needs it (rebuild-on-drift keeps every vendored SDK current), and an
+    // executable inline script would defeat the CSP.
     let json = json.replace('<', "\\u003c");
-    format!("<script>window.BIOROUTER_APP_CONFIG = {json};</script>\n")
+    format!("<script type=\"application/json\" id=\"biorouter-app-config\">{json}</script>\n")
 }
 
 /// Assemble the HTML `biorouterd` serves for a live app at `/apps/<id>/`.
@@ -1005,7 +1014,10 @@ mod tests {
         );
         assert!(out.contains("biorouter-theme"));
         assert!(out.contains("<base href=\"/apps/demo/\">"));
-        assert!(out.contains("BIOROUTER_APP_CONFIG"));
+        // Config ships as a non-executable JSON data island (CSP-friendly), never
+        // an inline executable `window.BIOROUTER_APP_CONFIG` script.
+        assert!(out.contains("<script type=\"application/json\" id=\"biorouter-app-config\">"));
+        assert!(!out.contains("window.BIOROUTER_APP_CONFIG"));
         assert!(out.contains("\"appId\":\"demo\""));
         assert!(out.contains("dist/app.js"));
         // theme precedes the bundle script

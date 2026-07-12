@@ -87,10 +87,13 @@ Three things ride these frames beyond the v1 agent stream:
 > (no `ready.protocol`/`surface`, no state/call/signal/kb frames). Use the
 > [reference frame tables](apps-sdk-reference.md#5-protocol-appendix) instead.
 >
-> **Partial:** the SDK emits `ui_error` frames (render/action failures,
-> rate-limited with a `droppedCount`), but the daemon has no handler for them in
-> this build. The `suggest` chip UI is rendered by the SDK, but there is **no
-> `ui_suggest` MCP tool** — only `ui_ask` is agent-callable.
+> **`ui_error` — consumed server-side:** the SDK emits `ui_error` frames
+> (render/action failures, rate-limited with a `droppedCount`); the daemon now
+> buffers them (cap 5) and delivers them to the model under the artifact-repair
+> grace discipline — riding the next turn as an `[app ui errors]` `<app-data>`
+> envelope, or auto-starting one repair turn within 15 s of the last turn ending
+> (capped at once per 60 s). `ui_suggest` is now a real MCP tool (non-blocking
+> suggestion chips, ≤5), alongside the blocking `ui_ask`.
 
 ## Capability matrix
 
@@ -103,8 +106,9 @@ under `manifest.agent.capabilities`.
 | `ui.allow_theme` | on | `ui_theme` may restyle (pack / accent / mode / density). |
 | `ui.allow_layout` | on | `ui_layout` may switch the region layout. |
 | `ui.allow_ask` | on | `ui_ask` may block a turn on a user form. |
-| `ui.allow_signals` | on | `ui_subscribe` may listen to declared app signals. |
+| `ui.allow_signals` | on | `ui_subscribe` may listen to declared app signals (listen only). |
 | `ui.allow_html` | **off** | `ui_html` may inject server-sanitized rich HTML (XSS surface — opt-in). |
+| `ui.allow_autorun` | **off** | An app signal may autonomously *start a turn* (spends provider quota — **user-granted only**, never agent-self-granted). Needs the signal to opt in (`surface.signals[].autorun:true`) + server budgets (6/min, 60/session). |
 | `ui.max_panels` / `ui.ask_timeout_s` | 12 / 300 s | Panel cap (oldest evicted) / `ui_ask` timeout. |
 | `files` | none | Mounted host dirs (`entries[]`, `ro`/`rw`, `out_dir`), `max_file_bytes`. |
 | `data.sources[]` | none | `knowledge` / `spoke` / `omop` / `cdw` / `sql`. `ids` scope KB access; `read_only:false` grants KB writes. |
@@ -114,9 +118,12 @@ under `manifest.agent.capabilities`.
 | `tracing` | off | Span export (`redact` on by default; `processor` langfuse/phoenix/otlp). |
 | `events[]` | none | Agent→app lifecycle stream to `br.on()` (`tool`/`handoff`/`compaction`/…). |
 
-> **Design-only:** `ui.allow_autorun` (signal-triggered turns) from design §3.5/§3.7
-> is not in `UiCapability` — signals are queue-only (context for the next turn,
-> never a turn trigger).
+> **Autorun (shipped, capability-gated):** `ui.allow_autorun` (design §3.5/§3.7)
+> lets a declared signal that opts in (`surface.signals[].autorun:true`)
+> autonomously start a turn — **default off, user-granted only** (the agent can
+> never self-grant), and bounded by per-minute/per-session budgets. Without the
+> grant, or without the per-signal opt-in, signals stay queue-only (context for
+> the next turn, never a turn trigger).
 
 ## Archetypes + starters
 
