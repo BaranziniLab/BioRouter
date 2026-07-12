@@ -4,6 +4,7 @@ import { cn } from '../../utils';
 import { Alert, AlertType } from './types';
 import { upsertConfig } from '../../api';
 import { useConfig } from '../ConfigContext';
+import { toastError } from '../../toasts';
 
 const alertIcons: Record<AlertType, React.ReactNode> = {
   [AlertType.Error]: <X className="h-5 w-5" />,
@@ -88,9 +89,10 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
       }
     } catch (error) {
       console.error('Error saving threshold:', error);
-      window.alert(
-        `Failed to save threshold: ${error instanceof Error ? error.message : 'Unknown error'}`
-      );
+      toastError({
+        title: 'Failed to save threshold',
+        msg: error instanceof Error ? error.message : 'Unknown error',
+      });
     } finally {
       setIsSaving(false);
     }

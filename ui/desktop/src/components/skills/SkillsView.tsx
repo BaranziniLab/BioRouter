@@ -66,15 +66,35 @@ export default function SkillsView() {
   }, [loadSkills]);
 
   const handleToggle = async (skill: Skill, enabled: boolean) => {
+    const previous = isSkillEnabled(skill.name);
     setSkillOverride(skill.name, enabled);
-    await saveSkillOverrides();
     setOverrideTrigger((prev) => prev + 1);
+    try {
+      await saveSkillOverrides();
+    } catch (error) {
+      setSkillOverride(skill.name, previous);
+      setOverrideTrigger((prev) => prev + 1);
+      toastError({
+        title: skill.name,
+        msg: error instanceof Error ? error.message : 'Could not save the skill preference',
+      });
+    }
   };
 
   const handleBundleToggle = async (bundle: SkillBundle, enabled: boolean) => {
+    const previous = isSkillEnabled(bundle.bundleName);
     setSkillOverride(bundle.bundleName, enabled);
-    await saveSkillOverrides();
     setOverrideTrigger((prev) => prev + 1);
+    try {
+      await saveSkillOverrides();
+    } catch (error) {
+      setSkillOverride(bundle.bundleName, previous);
+      setOverrideTrigger((prev) => prev + 1);
+      toastError({
+        title: bundle.bundleName,
+        msg: error instanceof Error ? error.message : 'Could not save the bundle preference',
+      });
+    }
   };
 
   const filterSkill = (skill: Skill) => {
@@ -349,11 +369,13 @@ interface BundleItemProps {
 
 function BundleItem({ bundle, enabled, onClick, onDelete, onToggle }: BundleItemProps) {
   return (
-    <div
-      className="biorouter-list-row flex cursor-pointer items-start gap-3 px-3 py-3 group"
-      onClick={onClick}
-    >
-      <div className="flex-1 min-w-0">
+    <div className="biorouter-list-row flex items-start gap-3 px-3 py-3 group">
+      <button
+        type="button"
+        className="flex-1 min-w-0 cursor-pointer rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+        onClick={onClick}
+        aria-label={`Open skill bundle ${bundle.bundleName}`}
+      >
         <div className="flex items-center gap-1.5">
           <p className="text-sm text-text-default">{bundle.bundleName}</p>
           <span className="text-[11px] text-text-subtle">· {bundle.skills.length} skills</span>
@@ -361,10 +383,10 @@ function BundleItem({ bundle, enabled, onClick, onDelete, onToggle }: BundleItem
         <p className="text-xs text-text-subtle mt-1 font-mono leading-relaxed">
           {bundle.skills.map((s) => s.name).join(' · ')}
         </p>
-      </div>
+      </button>
       <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">
         <div
-          className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity"
+          className="flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
           onClick={(e) => e.stopPropagation()}
         >
           <Button
@@ -373,12 +395,18 @@ function BundleItem({ bundle, enabled, onClick, onDelete, onToggle }: BundleItem
             className="h-7 w-7 p-0 text-text-danger hover:bg-background-danger/10"
             onClick={onDelete}
             title="Delete bundle"
+            aria-label={`Delete skill bundle ${bundle.bundleName}`}
           >
             <Trash2 className="h-3.5 w-3.5" />
           </Button>
         </div>
         <div onClick={(e) => e.stopPropagation()}>
-          <Switch checked={enabled} onCheckedChange={onToggle} variant="mono" />
+          <Switch
+            checked={enabled}
+            onCheckedChange={onToggle}
+            variant="mono"
+            aria-label={`${enabled ? 'Disable' : 'Enable'} ${bundle.bundleName}`}
+          />
         </div>
       </div>
     </div>

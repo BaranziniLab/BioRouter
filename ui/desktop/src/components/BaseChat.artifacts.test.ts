@@ -132,6 +132,40 @@ describe('collectArtifactsFromMessages', () => {
     ]);
   });
 
+  it('does not crash on a file whose name contains a literal percent sign', () => {
+    // Regression: the agent writes a file like "results 100%.csv". basenameFromPath
+    // called decodeURIComponent on it, which throws URIError: "URI malformed" on the
+    // stray `%`. Because collectArtifactsFromMessages runs during chat render, that
+    // throw crashed the whole app into the "Honk!" error boundary mid-task.
+    const messages: Message[] = [
+      writeRequest('t1', 'developer__text_editor', {
+        command: 'write',
+        path: '/work/results 100%.csv',
+      }),
+      textToolResponse('t1', 'ok'),
+    ];
+
+    expect(() => collectArtifactsFromMessages(messages, '/work')).not.toThrow();
+    expect(collectArtifactsFromMessages(messages, '/work')).toEqual([
+      { kind: 'file', title: 'results 100%.csv', path: '/work/results 100%.csv' },
+    ]);
+  });
+
+  it('does not crash on a ui:// resource whose URI contains a stray percent sign', () => {
+    const messages: Message[] = [
+      writeRequest('t1', 'autovisualiser__show_chart', {}),
+      hiddenToolResponse('t1', '<html><body>Chart</body></html>'),
+    ];
+    // Force the resource URI to carry an invalid percent-escape.
+    (
+      messages[1].content[0] as {
+        toolResult: { value: { content: Array<{ resource: { uri: string } }> } };
+      }
+    ).toolResult.value.content[0].resource.uri = 'ui://charts/effect 50% panel.html';
+
+    expect(() => collectArtifactsFromMessages(messages)).not.toThrow();
+  });
+
   it('does not preview a file whose write failed', () => {
     const messages: Message[] = [
       writeRequest('t1', 'developer__text_editor', { command: 'write', path: '/work/report.md' }),

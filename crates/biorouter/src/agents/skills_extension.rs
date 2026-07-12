@@ -17,8 +17,8 @@ use tokio_util::sync::CancellationToken;
 pub static EXTENSION_NAME: &str = "skills";
 
 /// Skills that ship with Biorouter. They are re-seeded into the user's skills
-/// directory on every session start, so removing the folder only lasts until
-/// the next session — users disable them via the normal toggle instead.
+/// directory on app and session startup, so removing the folder only lasts
+/// until the next startup — users disable them via the normal toggle instead.
 pub static BUILTIN_SKILLS: &[(&str, &str)] = &[
     (
         "about-biorouter",
@@ -33,6 +33,10 @@ pub static BUILTIN_SKILLS: &[(&str, &str)] = &[
         include_str!("builtin_skills/develop-biorouter-skill/SKILL.md"),
     ),
 ];
+
+pub(crate) fn install_builtin_skills() {
+    SkillsClient::ensure_builtin_skills(&Paths::config_dir().join("skills"));
+}
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct LoadSkillParams {
@@ -107,7 +111,7 @@ impl SkillsClient {
             instructions: Some(String::new()),
         };
 
-        Self::ensure_builtin_skills(&Paths::config_dir().join("skills"));
+        install_builtin_skills();
 
         let directories = Self::get_default_skill_directories()
             .into_iter()
@@ -1653,12 +1657,33 @@ Working dir biorouter content
         let temp_dir = TempDir::new().unwrap();
         let skills_dir = temp_dir.path().join("skills");
 
+        fs::create_dir_all(skills_dir.join("user-skill")).unwrap();
+        let user_skill = skills_dir.join("user-skill").join("SKILL.md");
+        fs::write(&user_skill, "user-authored content").unwrap();
+
+        let config_file = temp_dir.path().join("skills-config.json");
+        let disabled_preferences = r#"{"disabled":["about-biorouter","user-skill"]}"#;
+        fs::write(&config_file, disabled_preferences).unwrap();
+
         // First call seeds from scratch.
         SkillsClient::ensure_builtin_skills(&skills_dir);
-        let seeded = skills_dir.join("about-biorouter").join("SKILL.md");
-        assert!(seeded.exists(), "builtin skill should be seeded");
+        for (name, content) in BUILTIN_SKILLS {
+            let seeded = skills_dir.join(name).join("SKILL.md");
+            assert!(seeded.exists(), "builtin skill {name} should be seeded");
+            assert_eq!(fs::read_to_string(seeded).unwrap(), *content);
+        }
+        assert_eq!(
+            fs::read_to_string(&user_skill).unwrap(),
+            "user-authored content"
+        );
+        assert_eq!(
+            fs::read_to_string(&config_file).unwrap(),
+            disabled_preferences,
+            "seeding must not change disabled skill preferences"
+        );
 
         // Stale content is refreshed.
+        let seeded = skills_dir.join("about-biorouter").join("SKILL.md");
         fs::write(&seeded, "outdated").unwrap();
         SkillsClient::ensure_builtin_skills(&skills_dir);
         let refreshed = fs::read_to_string(&seeded).unwrap();

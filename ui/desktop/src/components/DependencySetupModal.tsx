@@ -12,6 +12,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Button } from './ui/button';
 import type { DependencyInfo, DependencyEvent } from '../utils/dependencyChecker';
+import { Dialog, DialogContent, DialogTitle } from './ui/dialog';
 
 type InstallState = 'idle' | 'running' | 'done' | 'error' | 'installed';
 
@@ -100,9 +101,17 @@ export default function DependencySetupModal() {
   }, []);
 
   const handleInstallCli = async () => {
+    if (cliState === 'running') return;
     setCliState('running');
     setCliError('');
-    const res = await window.electron.installCli();
+    let res: Awaited<ReturnType<typeof window.electron.installCli>>;
+    try {
+      res = await window.electron.installCli();
+    } catch (error) {
+      setCliError(error instanceof Error ? error.message : 'CLI installation failed');
+      setCliState('error');
+      return;
+    }
     if (!res.success) {
       setCliError(res.error);
       setCliState('error');
@@ -231,7 +240,22 @@ export default function DependencySetupModal() {
   }, [deps]);
 
   const handleInstall = async (depName: string) => {
-    await window.electron.installDependency(depName);
+    if (deps.some((dep) => dep.info.name === depName && dep.installState === 'running')) return;
+    try {
+      await window.electron.installDependency(depName);
+    } catch (error) {
+      setDeps((prev) =>
+        prev.map((dep) =>
+          dep.info.name === depName
+            ? {
+                ...dep,
+                installState: 'error',
+                errorMsg: error instanceof Error ? error.message : 'Dependency installation failed',
+              }
+            : dep
+        )
+      );
+    }
   };
 
   const handleOpenUrl = (url: string) => {
@@ -249,24 +273,35 @@ export default function DependencySetupModal() {
     : cliIsUpdate
       ? 'Updating…'
       : 'Installing…';
+  const isBusy = cliState === 'running' || deps.some((dep) => dep.installState === 'running');
   if (!visible || (deps.length === 0 && !cli)) return null;
 
   const allDone =
     deps.length > 0 && deps.every((d) => d.installState === 'done' || d.info.installed);
+  const handleDismiss = () => {
+    if (isBusy) return;
+    sessionStorage.setItem('cli-install-dismissed', '1');
+    if (cliIsUpdate) localStorage.setItem(cliDismissKey(cli), '1');
+    setVisible(false);
+  };
 
   return (
-    <div className="biorouter-modal-overlay fixed inset-0 z-[var(--z-overlay)] flex items-center justify-center">
-      <div className="biorouter-modal-surface bg-background-default z-[var(--z-modal)] w-[560px] max-h-[85vh] flex flex-col overflow-hidden">
+    <Dialog open={visible} onOpenChange={(open) => !open && handleDismiss()}>
+      <DialogContent
+        dismissible={!isBusy}
+        showCloseButton={!allDone && !isBusy}
+        className="flex max-h-[85vh] w-[560px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[560px]"
+      >
         {/* Header */}
-        <div className="px-6 pt-5 pb-4 border-b border-border-subtle flex items-start justify-between">
+        <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
           <div>
-            <h2 className="text-base font-semibold">
+            <DialogTitle>
               {deps.length === 0 && cliIsUpdate
                 ? cli?.brokenOnPath
                   ? 'Biorouter CLI Needs Repair'
                   : 'Biorouter CLI Update'
                 : 'Missing Dependencies'}
-            </h2>
+            </DialogTitle>
             <p className="text-xs text-text-muted mt-0.5">
               {deps.length === 0 && cliIsUpdate
                 ? cli?.brokenOnPath
@@ -275,25 +310,6 @@ export default function DependencySetupModal() {
                 : 'The following tools are required for BioRouter features. Install them to continue.'}
             </p>
           </div>
-          {allDone ? null : (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 w-7 p-0 shrink-0 ml-3"
-              title="Dismiss (you can install later)"
-              onClick={() => {
-                sessionStorage.setItem('cli-install-dismissed', '1');
-                // Don't re-prompt for this same version pair on future
-                // launches; missing required deps still re-open the modal.
-                if (cliIsUpdate) {
-                  localStorage.setItem(cliDismissKey(cli), '1');
-                }
-                setVisible(false);
-              }}
-            >
-              ✕
-            </Button>
-          )}
         </div>
 
         {/* Dep list */}
@@ -453,11 +469,11 @@ export default function DependencySetupModal() {
                   ? 'Install the CLI to use `biorouter` from any terminal.'
                   : 'BioRouter features may be limited until these are installed.'}
           </p>
-          <Button variant="outline" size="sm" onClick={() => setVisible(false)}>
+          <Button variant="outline" size="sm" onClick={handleDismiss} disabled={isBusy}>
             {allDone ? 'Done' : 'Dismiss'}
           </Button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

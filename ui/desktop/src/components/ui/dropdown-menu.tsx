@@ -6,8 +6,11 @@ import { CheckIcon, ChevronRightIcon, CircleIcon } from '../icons/app-icons';
 
 import { cn } from '../../utils';
 
-function DropdownMenu({ ...props }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
-  return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />;
+function DropdownMenu({
+  modal = false,
+  ...props
+}: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
+  return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" modal={modal} {...props} />;
 }
 
 function DropdownMenuPortal({
@@ -33,7 +36,7 @@ function DropdownMenuContent({
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
         className={cn(
-          'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[1000] max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-2xl p-1 space-y-0.5',
+          'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-2xl p-1 space-y-0.5',
           className
         )}
         {...props}
@@ -73,8 +76,11 @@ function DropdownMenuCheckboxItem({
   className,
   children,
   checked,
+  showIndicator = true,
   ...props
-}: React.ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem>) {
+}: React.ComponentProps<typeof DropdownMenuPrimitive.CheckboxItem> & {
+  showIndicator?: boolean;
+}) {
   return (
     <DropdownMenuPrimitive.CheckboxItem
       data-slot="dropdown-menu-checkbox-item"
@@ -85,11 +91,13 @@ function DropdownMenuCheckboxItem({
       checked={checked}
       {...props}
     >
-      <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">
-        <DropdownMenuPrimitive.ItemIndicator>
-          <CheckIcon className="size-4" />
-        </DropdownMenuPrimitive.ItemIndicator>
-      </span>
+      {showIndicator && (
+        <span className="pointer-events-none absolute left-2 flex size-3.5 items-center justify-center">
+          <DropdownMenuPrimitive.ItemIndicator>
+            <CheckIcon className="size-4" />
+          </DropdownMenuPrimitive.ItemIndicator>
+        </span>
+      )}
       {children}
     </DropdownMenuPrimitive.CheckboxItem>
   );
@@ -201,7 +209,7 @@ function DropdownMenuSubContent({
     <DropdownMenuPrimitive.SubContent
       data-slot="dropdown-menu-sub-content"
       className={cn(
-        'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[1000] min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-2xl p-1 space-y-0.5',
+        'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-2xl p-1 space-y-0.5',
         className
       )}
       {...props}

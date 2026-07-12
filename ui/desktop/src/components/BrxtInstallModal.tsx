@@ -8,7 +8,6 @@ import { useConfig } from './ConfigContext';
 import { activateExtensionDefault } from './settings/extensions';
 import { upsertConfig } from '../api';
 import { toastService } from '../toasts';
-import { useEscapeKey } from '../hooks/useEscapeKey';
 
 interface EnvEntry {
   key: string;
@@ -42,7 +41,6 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
   const [showOptional, setShowOptional] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { addExtension } = useConfig();
-  useEscapeKey(true, onClose);
 
   const processFile = useCallback(async (fp: string) => {
     setError(null);
@@ -51,24 +49,28 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
     setIsValidating(true);
     setFilePath(fp);
 
-    const result = await window.electron.validateBrxtBundle(fp);
-    setIsValidating(false);
-
-    if ('error' in result) {
-      setError(result.error);
-    } else {
-      setManifest(result.manifest);
-      setSkillsPreview(result.skillsPreview);
-      setEnvEntries(
-        result.manifest.env_vars.map((v: BrxtEnvVar) => ({
-          key: v.key,
-          value: v.auto_propagate && v.default ? v.default : '',
-          secret: v.secret,
-          required: v.required,
-          description: v.description,
-          auto_propagate: v.auto_propagate,
-        }))
-      );
+    try {
+      const result = await window.electron.validateBrxtBundle(fp);
+      if ('error' in result) {
+        setError(result.error);
+      } else {
+        setManifest(result.manifest);
+        setSkillsPreview(result.skillsPreview);
+        setEnvEntries(
+          result.manifest.env_vars.map((v: BrxtEnvVar) => ({
+            key: v.key,
+            value: v.auto_propagate && v.default ? v.default : '',
+            secret: v.secret,
+            required: v.required,
+            description: v.description,
+            auto_propagate: v.auto_propagate,
+          }))
+        );
+      }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Could not read the extension bundle');
+    } finally {
+      setIsValidating(false);
     }
   }, []);
 
@@ -115,61 +117,66 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
   };
 
   const handleInstall = async () => {
-    if (!filePath || !manifest) return;
+    if (!filePath || !manifest || isInstalling) return;
     setIsInstalling(true);
     setError(null);
 
-    const result = await window.electron.installBrxtBundle(filePath, manifest.name);
-
-    if ('error' in result) {
-      setError(result.error);
-      setIsInstalling(false);
-      return;
-    }
-
-    const { installDir } = result;
-
-    // Store secrets in BioRouter's keyring; track which ones succeeded
-    const secretEnvKeys: string[] = [];
-    for (const entry of envEntries.filter((e) => e.secret && e.value.trim())) {
-      const res = await upsertConfig({
-        body: { is_secret: true, key: entry.key, value: entry.value },
-      }).catch(() => null);
-      if (res && !res.error) {
-        secretEnvKeys.push(entry.key);
-      }
-    }
-
-    // Non-secret values go in envs; secrets that failed keyring storage are fallback-included
-    const envs: Record<string, string> = {};
-    envEntries.forEach(({ key, value, secret }) => {
-      if (!value.trim()) return;
-      if (!secret || !secretEnvKeys.includes(key)) envs[key] = value;
-    });
-
-    const extensionConfig = {
-      name: manifest.name,
-      description: manifest.description,
-      type: 'stdio' as const,
-      cmd: 'uv',
-      args: ['run', '--directory', installDir, manifest.entry_point],
-      envs,
-      env_keys: secretEnvKeys,
-      timeout: 300,
-    };
-
     try {
-      await activateExtensionDefault({ addToConfig: addExtension, extensionConfig });
+      const result = await window.electron.installBrxtBundle(filePath, manifest.name);
+
+      if ('error' in result) {
+        setError(result.error);
+        return;
+      }
+
+      const { installDir } = result;
+
+      // Store secrets in BioRouter's keyring; track which ones succeeded
+      const secretEnvKeys: string[] = [];
+      for (const entry of envEntries.filter((e) => e.secret && e.value.trim())) {
+        const res = await upsertConfig({
+          body: { is_secret: true, key: entry.key, value: entry.value },
+        }).catch(() => null);
+        if (res && !res.error) {
+          secretEnvKeys.push(entry.key);
+        }
+      }
+
+      // Non-secret values go in envs; secrets that failed keyring storage are fallback-included
+      const envs: Record<string, string> = {};
+      envEntries.forEach(({ key, value, secret }) => {
+        if (!value.trim()) return;
+        if (!secret || !secretEnvKeys.includes(key)) envs[key] = value;
+      });
+
+      const extensionConfig = {
+        name: manifest.name,
+        description: manifest.description,
+        type: 'stdio' as const,
+        cmd: 'uv',
+        args: ['run', '--directory', installDir, manifest.entry_point],
+        envs,
+        env_keys: secretEnvKeys,
+        timeout: 300,
+      };
+
+      try {
+        await activateExtensionDefault({ addToConfig: addExtension, extensionConfig });
+      } catch {
+        setError(
+          'Extension installed but failed to register. Try adding it manually from the Extensions tab.'
+        );
+        return;
+      }
       toastService.success({
         title: manifest.display_name,
         msg: 'Extension installed and enabled',
       });
       onInstalled();
       onClose();
-    } catch {
-      setError(
-        'Extension installed but failed to register. Try adding it manually from the Extensions tab.'
-      );
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Could not install the extension bundle');
+    } finally {
       setIsInstalling(false);
     }
   };
@@ -177,10 +184,14 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
   const requiredVars = envEntries.filter((e) => e.required);
   const optionalVars = envEntries.filter((e) => !e.required);
   const requiredMissing = requiredVars.some((e) => !e.value.trim());
+  const isBusy = isValidating || isInstalling;
 
   return (
-    <Dialog open={true} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-[560px] max-h-[90vh] overflow-y-auto">
+    <Dialog open onOpenChange={(open) => !open && !isBusy && onClose()}>
+      <DialogContent
+        dismissible={!isBusy}
+        className="sm:max-w-[560px] max-h-[90vh] overflow-y-auto"
+      >
         <DialogHeader>
           <DialogTitle>
             {step === 'drop' ? 'Add Extension' : `Configure ${manifest?.display_name ?? ''}`}
@@ -281,7 +292,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
             )}
 
             <DialogFooter>
-              <Button variant="outline" onClick={onClose}>
+              <Button variant="outline" onClick={onClose} disabled={isBusy}>
                 Cancel
               </Button>
               <Button
@@ -367,6 +378,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
             <DialogFooter>
               <Button
                 variant="outline"
+                disabled={isBusy}
                 onClick={() => {
                   setStep('drop');
                   setError(null);
@@ -374,7 +386,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
               >
                 ← Back
               </Button>
-              <Button variant="outline" onClick={onClose}>
+              <Button variant="outline" onClick={onClose} disabled={isBusy}>
                 Cancel
               </Button>
               <Button disabled={requiredMissing || isInstalling} onClick={handleInstall}>

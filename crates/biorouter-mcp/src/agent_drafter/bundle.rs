@@ -105,16 +105,13 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
         let hay_l = hay.to_lowercase();
         let mut hit = false;
         for pat in ["color:#", "color:rgb", "color:hsl"] {
-            let mut from = 0;
-            while let Some(p) = hay_l[from..].find(pat) {
-                let at = from + p;
+            for (at, _) in hay_l.match_indices(pat) {
                 // skip `background-color`/`border-color` — only bare `color:`
                 let preceded_by_dash = at > 0 && hay_l.as_bytes()[at - 1] == b'-';
                 if !preceded_by_dash {
                     hit = true;
                     break;
                 }
-                from = at + pat.len();
             }
             if hit {
                 break;
@@ -1161,6 +1158,10 @@ br.run("go", "#missing");
         // rgb() form too.
         let bad2 = mk(r#"<html><body><p style="color: rgb(40,34,23)">hi</p></body></html>"#);
         assert!(bad2.contains("hardcodes a text color"), "{bad2}");
+        let unicode = mk(
+            r#"<html><body><p>Résumé</p><div style="background-color:#fff;color:#282217">hi</div></body></html>"#,
+        );
+        assert!(unicode.contains("hardcodes a text color"), "{unicode}");
         // Theme token → NOT warned; and background-color hardcodes are not text.
         let good = mk(
             r#"<html><body><p style="color:var(--br-text)">hi</p>

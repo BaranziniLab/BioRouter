@@ -23,6 +23,8 @@ type ProposedDimensions = {
   rows: number;
 };
 
+export const MAX_TERMINAL_PANES = 8;
+
 function getTerminalSize(fitAddon: FitAddon): ProposedDimensions {
   const proposed = (
     fitAddon as FitAddon & { proposeDimensions?: () => ProposedDimensions | undefined }
@@ -48,48 +50,6 @@ function formatCwd(cwd?: string) {
 function makePaneTitle(workingDir: string | undefined, index: number) {
   const name = basename(workingDir);
   return index === 1 ? name : `${name} ${index}`;
-}
-
-function isEditableTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  if (target.isContentEditable) return true;
-  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
-}
-
-function keyEventToTerminalData(event: KeyboardEvent): string | null {
-  if (event.metaKey) return null;
-  if (event.ctrlKey && event.key.length === 1) {
-    const code = event.key.toUpperCase().charCodeAt(0);
-    if (code >= 64 && code <= 95) return String.fromCharCode(code - 64);
-  }
-  if (event.altKey || event.ctrlKey) return null;
-
-  switch (event.key) {
-    case 'Enter':
-      return '\r';
-    case 'Backspace':
-      return '\x7f';
-    case 'Tab':
-      return '\t';
-    case 'Escape':
-      return '\x1b';
-    case 'ArrowUp':
-      return '\x1b[A';
-    case 'ArrowDown':
-      return '\x1b[B';
-    case 'ArrowRight':
-      return '\x1b[C';
-    case 'ArrowLeft':
-      return '\x1b[D';
-    case 'Delete':
-      return '\x1b[3~';
-    case 'Home':
-      return '\x1b[H';
-    case 'End':
-      return '\x1b[F';
-    default:
-      return event.key.length === 1 ? event.key : null;
-  }
 }
 
 // xterm measures glyph widths itself, so it cannot read `var(--font-mono)`.
@@ -233,6 +193,11 @@ const TerminalPaneView: React.FC<{
   const fitAddonRef = useRef<FitAddon | null>(null);
   const backendSessionIdRef = useRef<string | null>(null);
   const pendingInputRef = useRef<string[]>([]);
+  const terminalExitedRef = useRef(false);
+  const fitEnabledRef = useRef(open && active);
+  const focusFrameRef = useRef<number | null>(null);
+  const focusTimerRef = useRef<number | null>(null);
+  fitEnabledRef.current = open && active;
 
   // The xterm instance is created once, in an effect that must not re-run when
   // the theme flips (that would tear down the pty session). The ref lets the
@@ -256,17 +221,26 @@ const TerminalPaneView: React.FC<{
   const writeToBackend = useCallback((data: string) => {
     const sessionId = backendSessionIdRef.current;
     if (!sessionId) {
-      pendingInputRef.current.push(data);
+      if (!terminalExitedRef.current) pendingInputRef.current.push(data);
       return;
     }
     window.electron.writeTerminalSession(sessionId, data).catch(() => {});
   }, []);
 
   const fitAndFocus = useCallback(() => {
+    if (focusFrameRef.current !== null) {
+      window.cancelAnimationFrame(focusFrameRef.current);
+      focusFrameRef.current = null;
+    }
+    if (focusTimerRef.current !== null) {
+      window.clearTimeout(focusTimerRef.current);
+      focusTimerRef.current = null;
+    }
     const term = terminalRef.current;
     const fitAddon = fitAddonRef.current;
     if (!term || !fitAddon || !open || !active) return;
-    window.requestAnimationFrame(() => {
+    focusFrameRef.current = window.requestAnimationFrame(() => {
+      focusFrameRef.current = null;
       try {
         fitAddon.fit();
         const { cols, rows } = getTerminalSize(fitAddon);
@@ -275,7 +249,10 @@ const TerminalPaneView: React.FC<{
           window.electron.resizeTerminalSession(sessionId, cols, rows).catch(() => {});
         }
         term.focus();
-        window.setTimeout(() => term.focus(), 30);
+        focusTimerRef.current = window.setTimeout(() => {
+          focusTimerRef.current = null;
+          if (fitEnabledRef.current) term.focus();
+        }, 30);
       } catch {
         /* xterm can throw while the hidden dock has no measurable dimensions */
       }
@@ -327,6 +304,9 @@ const TerminalPaneView: React.FC<{
     });
     const exitDisposer = window.electron.onTerminalExit((event) => {
       if (event.sessionId !== backendSessionIdRef.current) return;
+      backendSessionIdRef.current = null;
+      terminalExitedRef.current = true;
+      pendingInputRef.current = [];
       const suffix = event.signal ? ` (${event.signal})` : '';
       term.writeln(
         `\r\n\x1b[90m[terminal exited with code ${event.exitCode ?? 0}${suffix}]\x1b[0m`
@@ -337,6 +317,7 @@ const TerminalPaneView: React.FC<{
     });
 
     const resizeObserver = new ResizeObserver(() => {
+      if (!fitEnabledRef.current) return;
       window.cancelAnimationFrame(animationFrame);
       animationFrame = window.requestAnimationFrame(flushResize);
     });
@@ -352,9 +333,12 @@ const TerminalPaneView: React.FC<{
         return;
       }
       if (!result.success) {
+        terminalExitedRef.current = true;
+        pendingInputRef.current = [];
         term.writeln(`\x1b[31mCould not start terminal: ${result.error}\x1b[0m`);
         return;
       }
+      terminalExitedRef.current = false;
       backendSessionIdRef.current = result.sessionId;
       pendingInputRef.current.splice(0).forEach((data) => {
         window.electron.writeTerminalSession(result.sessionId, data).catch(() => {});
@@ -390,24 +374,11 @@ const TerminalPaneView: React.FC<{
   }, [fitAndFocus]);
 
   useEffect(() => {
-    if (!open || !active) return;
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      const host = terminalHostRef.current;
-      if (isEditableTarget(event.target) && (!host || !host.contains(event.target as Node))) {
-        return;
-      }
-      const data = keyEventToTerminalData(event);
-      if (!data) return;
-      event.preventDefault();
-      event.stopPropagation();
-      writeToBackend(data);
-      focusTerminal();
+    return () => {
+      if (focusFrameRef.current !== null) window.cancelAnimationFrame(focusFrameRef.current);
+      if (focusTimerRef.current !== null) window.clearTimeout(focusTimerRef.current);
     };
-
-    window.addEventListener('keydown', handleKeyDown, true);
-    return () => window.removeEventListener('keydown', handleKeyDown, true);
-  }, [active, focusTerminal, open, writeToBackend]);
+  }, []);
 
   return (
     <div
@@ -438,12 +409,12 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
 }) => {
   const [panes, setPanes] = useState<TerminalPane[]>([]);
   const [activePaneId, setActivePaneId] = useState<string | null>(null);
-  const dockRef = useRef<HTMLElement | null>(null);
   const suppressAutoOpenRef = useRef(false);
   const pendingDockCloseRef = useRef(false);
 
   const addPane = useCallback(() => {
     setPanes((current) => {
+      if (current.length >= MAX_TERMINAL_PANES) return current;
       const index = current.length + 1;
       const pane = {
         id: window.crypto.randomUUID(),
@@ -465,31 +436,28 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
     }
   }, [addPane, open, panes.length]);
 
-  const closePane = useCallback(
-    (paneId: string) => {
-      setPanes((current) => {
-        const closedIndex = current.findIndex((pane) => pane.id === paneId);
-        if (closedIndex === -1) return current;
+  const closePane = useCallback((paneId: string) => {
+    setPanes((current) => {
+      const closedIndex = current.findIndex((pane) => pane.id === paneId);
+      if (closedIndex === -1) return current;
 
-        const next = current.filter((pane) => pane.id !== paneId);
-        if (next.length === 0) {
-          suppressAutoOpenRef.current = true;
-          pendingDockCloseRef.current = true;
-          setActivePaneId(null);
-          return [];
+      const next = current.filter((pane) => pane.id !== paneId);
+      if (next.length === 0) {
+        suppressAutoOpenRef.current = true;
+        pendingDockCloseRef.current = true;
+        setActivePaneId(null);
+        return [];
+      }
+
+      setActivePaneId((activeId) => {
+        if (activeId && activeId !== paneId && next.some((pane) => pane.id === activeId)) {
+          return activeId;
         }
-
-        setActivePaneId((activeId) => {
-          if (activeId && activeId !== paneId && next.some((pane) => pane.id === activeId)) {
-            return activeId;
-          }
-          return next[Math.min(closedIndex, next.length - 1)].id;
-        });
-        return next;
+        return next[Math.min(closedIndex, next.length - 1)].id;
       });
-    },
-    [onClose]
-  );
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (!open || panes.length !== 0 || !pendingDockCloseRef.current) return;
@@ -503,82 +471,79 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
     setActivePaneId(panes[0].id);
   }, [activePaneId, open, panes]);
 
-  useEffect(() => {
-    if (!open) return;
-    const animationFrame = window.requestAnimationFrame(() => {
-      dockRef.current?.focus({ preventScroll: true });
-    });
-    return () => window.cancelAnimationFrame(animationFrame);
-  }, [open, activePaneId]);
-
   if (!open && panes.length === 0) return null;
 
   return (
     <section
-      ref={dockRef}
       data-testid="in-app-terminal-dock"
-      tabIndex={-1}
       className={cn(
-        'no-drag flex min-h-[220px] flex-shrink-0 flex-col overflow-hidden border-t border-border-subtle bg-background-default text-text-default ',
+        'no-drag flex min-h-[100px] flex-shrink-0 flex-col overflow-hidden border-t border-border-subtle bg-background-default text-text-default ',
         open
           ? 'animate-in slide-in-from-bottom-2 fade-in duration-[var(--motion-base)] ease-out'
           : 'hidden'
       )}
-      style={{ height: 'min(42vh, 380px)' }}
+      style={{ height: 'min(42vh, 380px, max(100px, calc(100% - 200px)))' }}
     >
       <div className="flex h-11 flex-shrink-0 items-center gap-2 border-b border-border-subtle bg-background-muted px-2">
-        <div
-          className="flex min-w-0 flex-1 items-center gap-1"
-          role="tablist"
-          aria-label="Terminal sessions"
-        >
-          {panes.map((pane) => {
-            const active = pane.id === activePaneId;
-            return (
-              <div
-                key={pane.id}
-                className={cn(
-                  'relative flex h-7 min-w-0 max-w-[190px] items-center overflow-hidden rounded-md text-xs transition-colors before:transition-[background-color] before:duration-[var(--motion-base)] before:ease-[var(--ease-out)]',
-                  active
-                    ? 'bg-background-default text-text-default before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-accent-bar'
-                    : 'text-text-muted hover:bg-background-default/70 hover:text-text-default'
-                )}
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  onClick={() => setActivePaneId(pane.id)}
-                  className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 text-left"
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <div
+            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
+            role="tablist"
+            aria-label="Terminal sessions"
+          >
+            {panes.map((pane) => {
+              const active = pane.id === activePaneId;
+              return (
+                <div
+                  key={pane.id}
+                  className={cn(
+                    'relative flex h-7 w-32 min-w-28 max-w-[190px] flex-shrink-0 items-center overflow-hidden rounded-md text-xs transition-colors before:transition-[background-color] before:duration-[var(--motion-base)] before:ease-[var(--ease-out)]',
+                    active
+                      ? 'bg-background-default text-text-default before:absolute before:inset-y-1 before:left-0 before:w-0.5 before:rounded-full before:bg-accent-bar'
+                      : 'text-text-muted hover:bg-background-default/70 hover:text-text-default'
+                  )}
                 >
-                  <TerminalIcon className="h-3.5 w-3.5 flex-shrink-0" />
-                  <span className="truncate">{pane.title}</span>
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={(event) => event.stopPropagation()}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    closePane(pane.id);
-                  }}
-                  className="mr-1 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
-                  aria-label={`Close terminal tab ${pane.title}`}
-                  title={`Close ${pane.title}`}
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            );
-          })}
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setActivePaneId(pane.id)}
+                    className="flex h-full min-w-0 flex-1 items-center gap-1.5 px-2 text-left"
+                  >
+                    <TerminalIcon className="h-3.5 w-3.5 flex-shrink-0" />
+                    <span className="truncate">{pane.title}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      closePane(pane.id);
+                    }}
+                    className="mr-1 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-sm text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+                    aria-label={`Close terminal tab ${pane.title}`}
+                    title={`Close ${pane.title}`}
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
           <Button
             type="button"
             variant="ghost"
             size="sm"
             shape="round"
             onClick={addPane}
+            disabled={panes.length >= MAX_TERMINAL_PANES}
             className="h-7 w-7 flex-shrink-0 p-0 text-text-muted hover:bg-background-default/70 hover:text-text-default"
             aria-label="New terminal session"
-            title="New terminal session"
+            title={
+              panes.length >= MAX_TERMINAL_PANES
+                ? `Maximum of ${MAX_TERMINAL_PANES} terminal sessions reached`
+                : 'New terminal session'
+            }
           >
             <Plus className="h-3.5 w-3.5" />
           </Button>

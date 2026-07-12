@@ -1,7 +1,7 @@
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import InAppTerminalDock from './InAppTerminalDock';
+import InAppTerminalDock, { MAX_TERMINAL_PANES } from './InAppTerminalDock';
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
@@ -32,7 +32,7 @@ beforeEach(() => {
       createTerminalSession: vi.fn(async () => ({
         backend: 'pty',
         cwd: '/Users/wgu/Desktop/BioRouter',
-        sessionId: crypto.randomUUID(),
+        sessionId: window.crypto.randomUUID(),
         success: true,
       })),
       disposeTerminalSession: vi.fn(async () => ({ success: true })),
@@ -59,9 +59,7 @@ describe('InAppTerminalDock', () => {
   it('opens with a visible active tab and lets users add another terminal tab', async () => {
     const user = userEvent.setup();
 
-    render(
-      <InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={vi.fn()} />
-    );
+    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={vi.fn()} />);
 
     const tabList = screen.getByRole('tablist', { name: /terminal sessions/i });
     expect(tabList).toBeInTheDocument();
@@ -115,19 +113,50 @@ describe('InAppTerminalDock', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('forwards plain keystrokes to the active terminal when focus stays on the window chrome', async () => {
+  it('does not hijack keyboard activation from dock or surrounding controls', async () => {
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onOutsideAction = vi.fn();
+
     render(
-      <InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={vi.fn()} />
+      <>
+        <button type="button" onClick={onOutsideAction}>
+          Outside action
+        </button>
+        <InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={onClose} />
+      </>
     );
 
     await waitFor(() => {
       expect(window.electron.createTerminalSession).toHaveBeenCalled();
     });
 
-    window.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', bubbles: true }));
+    screen.getByRole('button', { name: 'Outside action' }).focus();
+    await user.keyboard('{Enter}');
+    expect(onOutsideAction).toHaveBeenCalledTimes(1);
+    expect(window.electron.writeTerminalSession).not.toHaveBeenCalled();
+
+    screen.getByRole('button', { name: 'Hide terminal' }).focus();
+    await user.keyboard('{Enter}');
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('caps concurrent terminal panes and keeps the tab strip scrollable', async () => {
+    const user = userEvent.setup();
+
+    render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/BioRouter" onClose={vi.fn()} />);
+
+    const addButton = await screen.findByRole('button', { name: /new terminal session/i });
+    for (let index = 1; index < MAX_TERMINAL_PANES; index += 1) {
+      await user.click(addButton);
+    }
 
     await waitFor(() => {
-      expect(window.electron.writeTerminalSession).toHaveBeenCalledWith(expect.any(String), 'p');
+      expect(screen.getAllByRole('tab')).toHaveLength(MAX_TERMINAL_PANES);
     });
+    expect(addButton).toBeDisabled();
+    expect(screen.getByRole('tablist', { name: /terminal sessions/i })).toHaveClass(
+      'overflow-x-auto'
+    );
   });
 });

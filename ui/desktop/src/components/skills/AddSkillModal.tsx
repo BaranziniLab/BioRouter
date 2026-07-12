@@ -2,7 +2,7 @@ import { useState, useRef, DragEvent } from 'react';
 import { Button } from '../ui/button';
 import { parseSkillFrontmatter, toSlug, BIOROUTER_SKILLS_DIR } from './skillUtils';
 import { toastSuccess, toastError } from '../../toasts';
-import { useEscapeKey } from '../../hooks/useEscapeKey';
+import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
 
 interface Props {
   onClose: () => void;
@@ -34,7 +34,6 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [preview, setPreview] = useState<Preview | null>(null);
   const [isInstalling, setIsInstalling] = useState(false);
-  useEscapeKey(true, onClose);
   const mdInputRef = useRef<HTMLInputElement>(null);
 
   const processMdFile = (file: File) => {
@@ -124,44 +123,52 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
   };
 
   const handleInstall = async () => {
-    if (!preview) return;
+    if (!preview || isInstalling) return;
     setIsInstalling(true);
 
     const destFolder = `${BIOROUTER_SKILLS_DIR}/${preview.slug}`;
-    await window.electron.ensureDirectory(destFolder);
-    const TEXT_EXTENSIONS = new Set(['.md', '.txt', '.yaml', '.yml', '.json', '.py', '.sh']);
-    const textFiles = preview.files.filter(([relPath]) => {
-      const ext = relPath.slice(relPath.lastIndexOf('.')).toLowerCase();
-      return TEXT_EXTENSIONS.has(ext) || !relPath.includes('.');
-    });
-    let allOk = true;
-    for (const [relPath, content] of textFiles) {
-      const ok = await window.electron.writeFile(`${destFolder}/${relPath}`, content);
-      if (!ok) {
-        allOk = false;
-        break;
+    try {
+      await window.electron.ensureDirectory(destFolder);
+      const TEXT_EXTENSIONS = new Set(['.md', '.txt', '.yaml', '.yml', '.json', '.py', '.sh']);
+      const textFiles = preview.files.filter(([relPath]) => {
+        const ext = relPath.slice(relPath.lastIndexOf('.')).toLowerCase();
+        return TEXT_EXTENSIONS.has(ext) || !relPath.includes('.');
+      });
+      let allOk = true;
+      for (const [relPath, content] of textFiles) {
+        const ok = await window.electron.writeFile(`${destFolder}/${relPath}`, content);
+        if (!ok) {
+          allOk = false;
+          break;
+        }
       }
-    }
-    setIsInstalling(false);
 
-    if (allOk) {
-      const displayName = preview.isBundle ? preview.bundleName : preview.name;
-      toastSuccess({ title: displayName, msg: 'Installed to BioRouter Skills' });
-      onSaved();
-      onClose();
-    } else {
-      toastError({ title: 'Install failed', msg: `Could not write to ${destFolder}` });
+      if (allOk) {
+        const displayName = preview.isBundle ? preview.bundleName : preview.name;
+        toastSuccess({ title: displayName, msg: 'Installed to BioRouter Skills' });
+        onSaved();
+        onClose();
+      } else {
+        toastError({ title: 'Install failed', msg: `Could not write to ${destFolder}` });
+      }
+    } catch (error) {
+      toastError({
+        title: 'Install failed',
+        msg: error instanceof Error ? error.message : `Could not write to ${destFolder}`,
+      });
+    } finally {
+      setIsInstalling(false);
     }
   };
 
   return (
-    <div className="biorouter-modal-overlay fixed inset-0 z-50 flex items-center justify-center">
-      <div className="biorouter-modal-surface bg-background-default w-[480px] max-h-[80vh] flex flex-col overflow-hidden">
-        <div className="px-6 pt-5 pb-4 border-b border-border-subtle flex items-center justify-between">
-          <h2 className="text-base font-semibold">Add Skill</h2>
-          <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={onClose}>
-            ✕
-          </Button>
+    <Dialog open onOpenChange={(open) => !open && !isInstalling && onClose()}>
+      <DialogContent
+        dismissible={!isInstalling}
+        className="flex max-h-[80vh] w-[480px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[480px]"
+      >
+        <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
+          <DialogTitle>Add Skill</DialogTitle>
         </div>
 
         <div className="p-6 flex flex-col gap-4 overflow-y-auto">
@@ -238,7 +245,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
         </div>
 
         <div className="px-6 py-4 border-t border-border-subtle flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={onClose} disabled={isInstalling}>
             Cancel
           </Button>
           <Button variant="default" onClick={handleInstall} disabled={!preview || isInstalling}>
@@ -249,7 +256,7 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
                 : 'Install Skill'}
           </Button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

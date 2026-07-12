@@ -9,7 +9,7 @@ import {
   type BaamRegistry,
   type RegistryExtension,
 } from './registry';
-import { useEscapeKey } from '../../hooks/useEscapeKey';
+import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
 
 interface Props {
   onClose: () => void;
@@ -25,7 +25,6 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
   const [search, setSearch] = useState('');
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [brxtPath, setBrxtPath] = useState<string | null>(null);
-  useEscapeKey(true, onClose);
 
   useEffect(() => {
     let cancelled = false;
@@ -50,14 +49,23 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
   }, [registry, search]);
 
   const handleAdd = async (ext: RegistryExtension) => {
+    if (downloadingId !== null) return;
     setDownloadingId(ext.id);
-    const dl = await window.electron.downloadRegistryAsset(ext.download);
-    setDownloadingId(null);
-    if ('error' in dl) {
-      toastError({ title: ext.name, msg: dl.error });
-      return;
+    try {
+      const dl = await window.electron.downloadRegistryAsset(ext.download);
+      if ('error' in dl) {
+        toastError({ title: ext.name, msg: dl.error });
+        return;
+      }
+      setBrxtPath(dl.path);
+    } catch (error) {
+      toastError({
+        title: ext.name,
+        msg: error instanceof Error ? error.message : 'Download failed',
+      });
+    } finally {
+      setDownloadingId(null);
     }
-    setBrxtPath(dl.path);
   };
 
   // While the .brxt install (env-var configuration) flow is open, show it on
@@ -77,12 +85,15 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
   }
 
   return (
-    <div className="biorouter-modal-overlay fixed inset-0 z-[var(--z-overlay)] flex items-center justify-center">
-      <div className="biorouter-modal-surface bg-background-default z-[var(--z-modal)] w-[720px] max-w-[92vw] max-h-[86vh] flex flex-col overflow-hidden">
+    <Dialog open onOpenChange={(open) => !open && downloadingId === null && onClose()}>
+      <DialogContent
+        dismissible={downloadingId === null}
+        className="flex max-h-[86vh] w-[720px] max-w-[92vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[92vw] lg:max-w-[720px]"
+      >
         {/* Header */}
-        <div className="px-6 pt-5 pb-4 border-b border-border-subtle flex items-start justify-between gap-4">
+        <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
           <div>
-            <h2 className="text-base font-semibold">Browse Extensions</h2>
+            <DialogTitle>Browse Extensions</DialogTitle>
             <p className="text-xs text-text-muted mt-0.5">
               Install MCP extensions from the BioRouter marketplace. Add one at a time — most need
               credentials configured during install.
@@ -91,9 +102,6 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
               )}
             </p>
           </div>
-          <Button variant="ghost" size="sm" className="h-7 w-7 p-0 flex-shrink-0" onClick={onClose}>
-            ✕
-          </Button>
         </div>
 
         {/* Search */}
@@ -184,11 +192,11 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
 
         {/* Footer */}
         <div className="px-6 py-4 border-t border-border-subtle flex items-center justify-end">
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={onClose} disabled={downloadingId !== null}>
             Close
           </Button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

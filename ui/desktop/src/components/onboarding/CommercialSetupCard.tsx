@@ -126,27 +126,41 @@ export default function CommercialSetupCard({
   const supportedLabel = supported.join(', ');
 
   return (
-    <section className="py-7">
+    <section
+      aria-labelledby="commercial-setup-title"
+      className="min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-card p-5 sm:p-6"
+    >
       <OnboardingSectionLabel category="commercial" label="Commercial APIs" />
-      <h2 className="text-base font-medium text-text-default mt-2">Auto-detect from API key</h2>
+      <h2 id="commercial-setup-title" className="mt-2 text-base font-medium text-text-default">
+        Auto-detect from API key
+      </h2>
       <p className="text-sm text-text-muted mt-1 mb-5 leading-relaxed">
         Paste a key from {supportedLabel} — we'll detect the provider for you.
       </p>
 
-      <div className="flex gap-2">
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2">
+        <label htmlFor="commercial-provider-api-key" className="sr-only">
+          Commercial provider API key
+        </label>
         <input
+          id="commercial-provider-api-key"
           ref={inputRef}
           type="password"
           value={apiKey}
           onChange={(e) => setApiKey(e.target.value)}
           placeholder="Paste your API key here…"
-          className="flex-1 h-9 px-3 text-sm border border-border-subtle rounded-md bg-background-default text-text-default placeholder:text-text-muted focus:border-border-strong transition-colors duration-150"
+          className="h-9 min-w-0 rounded-md border border-border-subtle bg-background-default px-3 text-sm text-text-default transition-colors duration-150 placeholder:text-text-muted focus:border-border-strong"
           disabled={isLoading}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && canSubmit) testApiKey();
           }}
         />
-        <Button onClick={testApiKey} disabled={!canSubmit} className="h-9 px-3">
+        <Button
+          onClick={testApiKey}
+          disabled={!canSubmit}
+          aria-label="Detect provider"
+          className="h-9 px-3"
+        >
           {isLoading ? (
             <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
           ) : (
@@ -193,7 +207,7 @@ export default function CommercialSetupCard({
         </div>
       )}
 
-      <div className="mt-4">
+      <div className="mt-4 border-t border-border-subtle pt-4">
         <button
           type="button"
           onClick={() => navigate('/welcome', { replace: true })}

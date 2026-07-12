@@ -51,7 +51,17 @@ const GENERIC_UI_TITLE_PARTS = new Set([
 export function basenameFromPath(value: string): string {
   const clean = value.split(/[?#]/)[0];
   const parts = clean.split(/[\\/]/).filter(Boolean);
-  return decodeURIComponent(parts[parts.length - 1] || clean || 'Artifact');
+  const base = parts[parts.length - 1] || clean || 'Artifact';
+  // A real filename can contain a literal `%` that is not percent-encoding
+  // (e.g. "results 100%.csv") — decodeURIComponent throws URIError: "URI
+  // malformed" on those. This runs during chat render
+  // (collectArtifactsFromMessages), so an unguarded throw crashes the whole app
+  // into the "Honk!" error boundary. Fall back to the raw basename instead.
+  try {
+    return decodeURIComponent(base);
+  } catch {
+    return base;
+  }
 }
 
 export function extensionFromPath(value: string): string {

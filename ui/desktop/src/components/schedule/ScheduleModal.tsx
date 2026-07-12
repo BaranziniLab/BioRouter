@@ -6,6 +6,7 @@ import { CronPicker } from './CronPicker';
 import { getStorageDirectory } from '../../workflow/workflow_management';
 import { Folder } from '../icons/app-icons';
 import ClockIcon from '../../assets/clock-icon.svg';
+import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
 
 export interface NewSchedulePayload {
   id: string;
@@ -71,6 +72,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
 
   const handleLocalSubmit = async (event: FormEvent) => {
     event.preventDefault();
+    if (isLoadingExternally) return;
     setInternalValidationError(null);
 
     if (isEditMode) {
@@ -102,15 +104,21 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="biorouter-modal-overlay fixed inset-0 z-40 flex items-center justify-center p-4">
-      <div className="biorouter-modal-surface w-full max-w-md bg-background-default z-[var(--z-modal)] flex flex-col max-h-[90vh] overflow-hidden">
+    <Dialog
+      open={isOpen}
+      onOpenChange={(open) => {
+        if (!open && !isLoadingExternally) onClose();
+      }}
+    >
+      <DialogContent
+        dismissible={!isLoadingExternally}
+        className="flex max-h-[90vh] max-w-md flex-col gap-0 overflow-hidden p-0 sm:max-w-md"
+      >
         <div className="px-6 pt-5 pb-4 flex-shrink-0 border-b border-border-subtle">
           <div className="flex items-center gap-3">
             <img src={ClockIcon} alt="Clock" className="w-7 h-7" />
             <div className="flex-1">
-              <h2 className="text-base font-semibold text-text-default">
-                {isEditMode ? 'Edit Schedule' : 'Create New Schedule'}
-              </h2>
+              <DialogTitle>{isEditMode ? 'Edit Schedule' : 'Create New Schedule'}</DialogTitle>
               {isEditMode && <p className="text-xs text-text-muted mt-0.5">{schedule.id}</p>}
             </div>
           </div>
@@ -208,7 +216,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
                 : 'Create Schedule'}
           </Button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 };

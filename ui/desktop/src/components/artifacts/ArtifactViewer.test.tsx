@@ -89,6 +89,41 @@ describe('ArtifactViewer', () => {
     expect(screen.queryByText(/read-only artifact preview/i)).not.toBeInTheDocument();
   });
 
+  it('shields every preview surface from pointer input while the panel is resizing', async () => {
+    installElectronMock();
+
+    const { rerender } = render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{
+            kind: 'html',
+            title: 'interactive.html',
+            html: '<!doctype html><html><body><button>Inside frame</button></body></html>',
+          }}
+          isResizing
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByTestId('artifact-resize-shield')).toBeInTheDocument();
+
+    rerender(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'analysis.sql', path: '/tmp/analysis.sql' }}
+          isResizing
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => expect(window.electron.readArtifactFile).toHaveBeenCalled());
+    expect(screen.getByTestId('artifact-resize-shield')).toBeInTheDocument();
+  });
+
   it('loads generated text files with syntax-highlighted preview', async () => {
     installElectronMock();
 

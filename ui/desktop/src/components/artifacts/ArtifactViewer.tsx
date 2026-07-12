@@ -281,9 +281,7 @@ export default function ArtifactViewer({
         // Animate only transform + opacity — width tracks instantly (drag is
         // transition-none; window-resize should snap, not lag the edge by 180ms).
         // Exit is a tier faster than entrance (--motion-fast vs --motion-base).
-        isResizing
-          ? 'transition-none'
-          : 'transition-[opacity,transform] ease-[var(--ease-out)]',
+        isResizing ? 'transition-none' : 'transition-[opacity,transform] ease-[var(--ease-out)]',
         !isResizing && (isOpen ? 'duration-[var(--motion-base)]' : 'duration-[var(--motion-fast)]'),
         isOpen ? 'translate-x-0 opacity-100' : 'translate-x-3 opacity-0',
         className
@@ -357,6 +355,13 @@ export default function ArtifactViewer({
 
       <div className="relative z-0 flex min-h-0 flex-1 flex-col p-3">
         <div className="min-h-0 flex-1 overflow-hidden rounded-lg border border-border-subtle bg-background-default shadow-popover">
+          {isResizing && (
+            <div
+              data-testid="artifact-resize-shield"
+              aria-hidden="true"
+              className="absolute inset-3 z-50 cursor-col-resize"
+            />
+          )}
           <ArtifactPreviewBody
             preview={preview}
             artifact={artifact}
