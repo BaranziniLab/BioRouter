@@ -752,17 +752,25 @@ impl Agent {
     ) {
         for request in &permission_check_result.denied {
             if let Some(response_msg) = request_to_response_map.get(&request.id) {
-                // When a hook denied this call, tell the model why so it can
-                // adjust instead of blindly retrying.
-                let hook_reason = inspection_results.iter().find(|result| {
+                // When an inspector denied this call, tell the model why so it
+                // can adjust instead of blindly retrying. The always-on
+                // catastrophic-command block (security inspector) and hook denials
+                // carry a reason; surface it verbatim / with context.
+                let deny_reason = inspection_results.iter().find(|result| {
                     result.tool_request_id == request.id
-                        && result.inspector_name == crate::hooks::inspector::HOOK_INSPECTOR_NAME
                         && result.action == InspectionAction::Deny
+                        && !result.reason.trim().is_empty()
                 });
-                let response_text = match hook_reason {
-                    Some(result) if !result.reason.trim().is_empty() => {
+                let response_text = match deny_reason {
+                    Some(result)
+                        if result.inspector_name
+                            == crate::hooks::inspector::HOOK_INSPECTOR_NAME =>
+                    {
                         format!("{DECLINED_RESPONSE}\n\nHook feedback: {}", result.reason)
                     }
+                    // Non-bypassable safety block: the user did not decline, the
+                    // command is refused outright, so return the reason directly.
+                    Some(result) if result.inspector_name == "security" => result.reason.clone(),
                     _ => DECLINED_RESPONSE.to_string(),
                 };
                 let mut response = response_msg.lock().await;

@@ -7,9 +7,27 @@ use crate::config::Config;
 use crate::conversation::message::{Message, ToolRequest};
 use crate::permission::permission_judge::PermissionCheckResult;
 use anyhow::Result;
+use rmcp::model::CallToolRequestParams;
 use scanner::PromptInjectionScanner;
 use std::sync::OnceLock;
 use uuid::Uuid;
+
+/// A catastrophic-command hard block. These fire regardless of permission mode
+/// or `SECURITY_PROMPT_ENABLED` and cannot be bypassed by config.
+#[derive(Debug, Clone)]
+pub struct CatastrophicBlock {
+    pub tool_request_id: String,
+    pub rule_name: &'static str,
+    /// A self-contained, user-facing message naming the rule that fired.
+    pub message: String,
+}
+
+/// Argument keys that carry an executable command string (scanned on any tool).
+const COMMAND_ARG_KEYS: &[&str] = &["command", "cmd", "commands", "shell_command"];
+
+/// Substrings in a tool name that mark it as a shell/command executor (scan all
+/// of its string arguments, not just the command-bearing keys above).
+const SHELL_TOOL_HINTS: &[&str] = &["shell", "bash", "terminal"];
 
 pub struct SecurityManager {
     scanner: OnceLock<PromptInjectionScanner>,
@@ -46,6 +64,45 @@ impl SecurityManager {
         config
             .get_param::<bool>("SECURITY_PROMPT_CLASSIFIER_ENABLED")
             .unwrap_or(false)
+    }
+
+    /// Scan tool calls against the always-on catastrophic-command denylist.
+    ///
+    /// This runs unconditionally — independent of `SECURITY_PROMPT_ENABLED` and
+    /// of the session's permission mode — so that a handful of unrecoverable
+    /// commands (e.g. `rm -rf /`, disk wipes, fork bombs) are hard-blocked even
+    /// in `Auto` mode. Blocks are returned as `Deny` decisions by the security
+    /// inspector and cannot be overridden by the user.
+    pub fn catastrophic_blocks(&self, tool_requests: &[ToolRequest]) -> Vec<CatastrophicBlock> {
+        let mut blocks = Vec::new();
+        for tool_request in tool_requests {
+            let Ok(tool_call) = &tool_request.tool_call else {
+                continue;
+            };
+            let Some(text) = command_text(tool_call) else {
+                continue;
+            };
+            if let Some(rule) = patterns::match_catastrophic_command(&text) {
+                let message = format!(
+                    "Blocked by BioRouter's always-on catastrophic-command denylist \
+                     (rule: {}): {}. This safety rule cannot be bypassed by permission mode.",
+                    rule.name, rule.description
+                );
+                tracing::warn!(
+                    counter.biorouter.catastrophic_command_blocked = 1,
+                    tool_name = %tool_call.name,
+                    tool_request_id = %tool_request.id,
+                    rule = rule.name,
+                    "Catastrophic command hard-blocked (non-bypassable)"
+                );
+                blocks.push(CatastrophicBlock {
+                    tool_request_id: tool_request.id.clone(),
+                    rule_name: rule.name,
+                    message,
+                });
+            }
+        }
+        blocks
     }
 
     pub async fn analyze_tool_requests(
@@ -180,5 +237,49 @@ impl SecurityManager {
 impl Default for SecurityManager {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Extract the command text to screen from a tool call: the string values of
+/// any command-bearing argument, plus every string argument when the tool name
+/// looks like a shell/command executor. Returns `None` when there is nothing
+/// command-like to scan (so file contents written by an editor are not screened).
+fn command_text(tool_call: &CallToolRequestParams) -> Option<String> {
+    let args = tool_call.arguments.as_ref()?;
+    let name = tool_call.name.to_ascii_lowercase();
+    let shell_like = SHELL_TOOL_HINTS.iter().any(|hint| name.contains(hint));
+
+    let mut parts: Vec<String> = Vec::new();
+    for (key, value) in args.iter() {
+        let key_lc = key.to_ascii_lowercase();
+        let is_command_key = COMMAND_ARG_KEYS.iter().any(|k| key_lc == *k);
+        if shell_like || is_command_key {
+            collect_strings(value, &mut parts);
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n"))
+    }
+}
+
+/// Recursively collect every string scalar in a JSON value (handles arrays of
+/// commands and nested objects).
+fn collect_strings(value: &serde_json::Value, out: &mut Vec<String>) {
+    match value {
+        serde_json::Value::String(s) => out.push(s.clone()),
+        serde_json::Value::Array(items) => {
+            for item in items {
+                collect_strings(item, out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for v in map.values() {
+                collect_strings(v, out);
+            }
+        }
+        _ => {}
     }
 }
