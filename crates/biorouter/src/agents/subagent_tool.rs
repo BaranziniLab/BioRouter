@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 
 use anyhow::{anyhow, Result};
 use futures::FutureExt;
-use rmcp::model::{Content, ErrorCode, ErrorData, Tool};
+use rmcp::model::{ErrorCode, ErrorData, Tool};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
@@ -338,6 +338,9 @@ async fn execute_subagent(
             data: None,
         })?;
 
+    // The result envelope encodes success, an incomplete (tool-call-ending)
+    // run, or a failure — all as structured content — so this always returns a
+    // CallToolResult (with `is_error` set) rather than a bare tool error.
     let result = run_complete_subagent_task(
         config,
         workflow,
@@ -348,19 +351,7 @@ async fn execute_subagent(
     )
     .await;
 
-    match result {
-        Ok(text) => Ok(rmcp::model::CallToolResult {
-            content: vec![Content::text(text)],
-            structured_content: None,
-            is_error: Some(false),
-            meta: None,
-        }),
-        Err(e) => Err(ErrorData {
-            code: ErrorCode::INTERNAL_ERROR,
-            message: Cow::from(e.to_string()),
-            data: None,
-        }),
-    }
+    Ok(result.into_call_tool_result())
 }
 
 fn build_workflow(
