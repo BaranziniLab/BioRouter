@@ -8,9 +8,35 @@ use crate::{config::Config, token_counter::create_token_counter};
 use anyhow::Result;
 use rmcp::model::{Role, Tool};
 use serde::Serialize;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 pub const DEFAULT_COMPACTION_THRESHOLD: f64 = 0.8;
+
+/// BR-14: a usable compaction summary must clear this many characters. Below it
+/// the "summary" is effectively empty (a refusal, a stray token, a blank
+/// response) and is retried instead of silently becoming the agent's memory.
+const MIN_SUMMARY_CHARS: usize = 40;
+
+/// BR-14: how many of the mandated sections a summary must name to count as
+/// well-formed. Deliberately lenient — a stronger model may merge or rename a
+/// heading, and a false retry costs a whole extra summarization call.
+const MIN_SUMMARY_SECTIONS: usize = 3;
+
+/// BR-14: the section headings `summarize_oneshot.md` mandates. A well-formed
+/// summary names most of them; a total format collapse (a refusal, a one-liner)
+/// names none, which — together with [`MIN_SUMMARY_CHARS`] — is what a retry
+/// targets. `Next Step` is intentionally excluded: the prompt marks it
+/// conditional ("include only if directly continues user instruction").
+const MANDATED_SUMMARY_SECTIONS: [&str; 8] = [
+    "User Intent",
+    "Technical Concepts",
+    "Files",
+    "Errors",
+    "Problem Solving",
+    "User Messages",
+    "Pending Tasks",
+    "Current Work",
+];
 
 /// BR-10: number of most-recent turns kept verbatim at compaction; only the
 /// older prefix is summarized. Overridable with `BIOROUTER_COMPACT_KEEP_LAST_TURNS`;
@@ -573,6 +599,98 @@ struct CompactionAttempt {
     total_cap: Option<usize>,
 }
 
+/// BR-14: the plain-text body of a (summary) message.
+fn summary_text(msg: &Message) -> String {
+    msg.content
+        .iter()
+        .filter_map(|c| match c {
+            MessageContent::Text(t) => Some(t.text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// BR-14: reject an empty or garbage summary before it becomes the memory the
+/// strong model relies on. A usable summary is non-trivially long and names at
+/// least a few of the mandated sections.
+fn summary_is_usable(msg: &Message) -> bool {
+    let text = summary_text(msg);
+    let trimmed = text.trim();
+    if trimmed.chars().count() < MIN_SUMMARY_CHARS {
+        return false;
+    }
+    let lower = trimmed.to_lowercase();
+    let present = MANDATED_SUMMARY_SECTIONS
+        .iter()
+        .filter(|section| lower.contains(&section.to_lowercase()))
+        .count();
+    present >= MIN_SUMMARY_SECTIONS
+}
+
+/// BR-14: run one summarization completion. Uses the main (session) model by
+/// default so the strong model writes the memory it will later rely on, instead
+/// of the weakest/fast model. The fast model is opt-in via
+/// `BIOROUTER_COMPACT_USE_FAST_MODEL=true`, which restores the pre-BR-14
+/// behaviour (cheaper, lower fidelity, and a possibly smaller context window
+/// that overflows the summarizer more often).
+async fn complete_summary(
+    provider: &dyn Provider,
+    use_fast_model: bool,
+    system_prompt: &str,
+    request: &[Message],
+) -> Result<(Message, ProviderUsage), ProviderError> {
+    if use_fast_model {
+        provider.complete_fast(system_prompt, request, &[]).await
+    } else {
+        provider.complete(system_prompt, request, &[]).await
+    }
+}
+
+/// BR-14: summarize with validation and a single retry. A junk/empty summary is
+/// re-requested once; if the retry is still not well-formed we keep whichever
+/// result is non-empty (a mediocre summary beats dead-ending the turn) and only
+/// error when both are truly empty. A provider error on the *first* call is
+/// propagated so [`do_compact`] can fall through to a smaller payload; a
+/// provider error on the *retry* falls back to the non-empty first result.
+async fn summarize_with_validation(
+    provider: &dyn Provider,
+    use_fast_model: bool,
+    system_prompt: &str,
+    request: &[Message],
+) -> Result<(Message, ProviderUsage), ProviderError> {
+    let (response, usage) =
+        complete_summary(provider, use_fast_model, system_prompt, request).await?;
+    if summary_is_usable(&response) {
+        return Ok((response, usage));
+    }
+
+    warn!("Compaction summary failed validation (empty or missing sections); retrying once");
+    match complete_summary(provider, use_fast_model, system_prompt, request).await {
+        Ok((retry_response, retry_usage)) if summary_is_usable(&retry_response) => {
+            Ok((retry_response, retry_usage))
+        }
+        Ok((retry_response, retry_usage)) => {
+            if !summary_text(&retry_response).trim().is_empty() {
+                Ok((retry_response, retry_usage))
+            } else if !summary_text(&response).trim().is_empty() {
+                Ok((response, usage))
+            } else {
+                Err(ProviderError::ExecutionError(
+                    "Compaction produced an empty summary even after one retry".to_string(),
+                ))
+            }
+        }
+        Err(retry_err) => {
+            if summary_text(&response).trim().is_empty() {
+                Err(retry_err)
+            } else {
+                Ok((response, usage))
+            }
+        }
+    }
+}
+
 async fn do_compact(
     provider: &dyn Provider,
     messages: &[Message],
@@ -581,6 +699,14 @@ async fn do_compact(
         .iter()
         .filter(|msg| msg.is_agent_visible())
         .collect();
+
+    // BR-14: summarize with the main (session) model by default so the strong
+    // model — not the weakest/fast one — writes the memory it later relies on.
+    // Opt back into the cheaper fast-model summary with
+    // `BIOROUTER_COMPACT_USE_FAST_MODEL=true` (trades fidelity for cost).
+    let use_fast_model = Config::global()
+        .get_param::<bool>("BIOROUTER_COMPACT_USE_FAST_MODEL")
+        .unwrap_or(false);
 
     // BR-11: character budget for the summarizer payload, derived from the
     // model's token window. Kept to roughly half the window so the
@@ -670,11 +796,22 @@ async fn do_compact(
             .with_text("Please summarize the conversation history provided in the system prompt.");
         let summarization_request = vec![user_message];
 
-        match provider
-            .complete_fast(&system_prompt, &summarization_request, &[])
-            .await
+        match summarize_with_validation(
+            provider,
+            use_fast_model,
+            &system_prompt,
+            &summarization_request,
+        )
+        .await
         {
             Ok((mut response, mut provider_usage)) => {
+                // BR-14: keep the summary as a User-role message. After compaction
+                // it is the *first* agent-visible message, and `fix_conversation`'s
+                // `fix_lead_trail` strips a leading *assistant* message — so
+                // labelling the summary assistant would delete it and defeat
+                // compaction. Providers that require the first turn to be `user`
+                // (e.g. Anthropic) need this too. This is a deliberate framing of
+                // recovered context as user input, not an accidental mislabel.
                 response.role = Role::User;
 
                 provider_usage
@@ -801,6 +938,11 @@ mod tests {
         config: ModelConfig,
         max_tool_responses: Option<usize>,
         max_input_chars: Option<usize>,
+        // BR-14: when set, the first completion returns this (e.g. a garbage
+        // summary) and later completions return `message`, so a validation
+        // retry can be exercised.
+        first_call_response: Option<Message>,
+        call_count: std::sync::atomic::AtomicUsize,
     }
 
     impl MockProvider {
@@ -819,12 +961,26 @@ mod tests {
                 },
                 max_tool_responses: None,
                 max_input_chars: None,
+                first_call_response: None,
+                call_count: std::sync::atomic::AtomicUsize::new(0),
             }
         }
 
         fn with_max_tool_responses(mut self, max: usize) -> Self {
             self.max_tool_responses = Some(max);
             self
+        }
+
+        /// BR-14: return `first` on the first completion (e.g. an empty/garbage
+        /// summary) and `message` thereafter, so a validation retry is exercised.
+        fn with_first_response(mut self, first: Message) -> Self {
+            self.first_call_response = Some(first);
+            self
+        }
+
+        /// BR-14: how many completions have been requested so far.
+        fn calls(&self) -> usize {
+            self.call_count.load(std::sync::atomic::Ordering::SeqCst)
         }
 
         /// Fail with `ContextLengthExceeded` when the summarizer's system prompt
@@ -854,6 +1010,10 @@ mod tests {
             messages: &[Message],
             _tools: &[Tool],
         ) -> Result<(Message, ProviderUsage), ProviderError> {
+            let call_index = self
+                .call_count
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
             // If max_input_chars is set, fail when the payload (carried in the
             // summarizer system prompt) is too large.
             if let Some(max) = self.max_input_chars {
@@ -885,8 +1045,16 @@ mod tests {
                 }
             }
 
+            let response = if call_index == 0 {
+                self.first_call_response
+                    .clone()
+                    .unwrap_or_else(|| self.message.clone())
+            } else {
+                self.message.clone()
+            };
+
             Ok((
-                self.message.clone(),
+                response,
                 ProviderUsage::new("mock-model".to_string(), Usage::default()),
             ))
         }
@@ -1396,5 +1564,106 @@ mod tests {
         let agent_msgs = compacted.agent_visible_messages();
         Conversation::new(agent_msgs)
             .expect("drop-oldest recovery should produce a valid conversation");
+    }
+
+    /// BR-14: the summary validator accepts a well-formed summary and rejects an
+    /// empty one, a one-liner, and a refusal that names no mandated sections.
+    #[test]
+    fn test_summary_is_usable() {
+        let good = Message::assistant().with_text(
+            "User Intent: continue the task.\nTechnical Concepts: rust, tokio.\n\
+             Files + Code: mod.rs.\nPending Tasks: finish BR-14.",
+        );
+        assert!(summary_is_usable(&good), "a well-formed summary is usable");
+
+        // Empty / whitespace-only.
+        assert!(!summary_is_usable(&Message::assistant().with_text("   ")));
+        // Non-empty but far too short and section-less.
+        assert!(!summary_is_usable(&Message::assistant().with_text("ok")));
+        // A refusal: long enough, but names none of the mandated sections.
+        let refusal = Message::assistant()
+            .with_text("I'm sorry, but I can't help summarize this conversation right now.");
+        assert!(!summary_is_usable(&refusal), "a refusal is not a summary");
+        // Non-text content alone is not a usable summary.
+        assert!(!summary_is_usable(&Message::assistant()));
+    }
+
+    /// BR-14: a garbage first summary is retried once, and the valid retry — not
+    /// the junk — is what lands in the compacted conversation.
+    #[tokio::test]
+    async fn test_compaction_retries_on_garbage_summary() {
+        let good = Message::assistant().with_text(
+            "User Intent: continue the task.\nTechnical Concepts: rust, tokio.\n\
+             Files + Code: mod.rs.\nPending Tasks: finish BR-14.",
+        );
+        let provider = MockProvider::new(good, 100_000)
+            .with_first_response(Message::assistant().with_text("no"));
+
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_text("a1"),
+        ]);
+        // keep_last_turns = 0 forces the legacy path so do_compact runs directly.
+        let (compacted, _usage) = compact_messages_with_window(&provider, &conversation, false, 0)
+            .await
+            .unwrap();
+
+        let has_valid_summary = compacted.messages().iter().any(|m| {
+            m.content
+                .iter()
+                .any(|c| matches!(c, MessageContent::Text(t) if t.text.contains("User Intent")))
+        });
+        assert!(
+            has_valid_summary,
+            "the retried, valid summary should be used, not the garbage first response"
+        );
+        assert!(
+            !compacted.messages().iter().any(|m| {
+                m.content
+                    .iter()
+                    .any(|c| matches!(c, MessageContent::Text(t) if t.text.trim() == "no"))
+            }),
+            "the garbage first response must not survive"
+        );
+        assert_eq!(
+            provider.calls(),
+            2,
+            "compaction should make exactly one retry on a garbage summary"
+        );
+    }
+
+    /// BR-14: the summary lands as a `Role::User` message. This is load-bearing —
+    /// it is the first agent-visible message after compaction and
+    /// `fix_conversation`'s `fix_lead_trail` deletes a leading *assistant*
+    /// message, which would drop the summary and defeat compaction.
+    #[tokio::test]
+    async fn test_summary_lands_as_user_role() {
+        let summary = Message::assistant()
+            .with_text("User Intent: keep going.\nTechnical Concepts: none.\nPending Tasks: none.");
+        let provider = MockProvider::new(summary, 100_000);
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_text("a1"),
+        ]);
+
+        let (compacted, _usage) = compact_messages_with_window(&provider, &conversation, false, 0)
+            .await
+            .unwrap();
+
+        let summary_msg = compacted
+            .messages()
+            .iter()
+            .find(|m| {
+                m.is_agent_visible()
+                    && m.content.iter().any(
+                        |c| matches!(c, MessageContent::Text(t) if t.text.contains("User Intent")),
+                    )
+            })
+            .expect("summary present and agent-visible");
+        assert_eq!(
+            summary_msg.role,
+            Role::User,
+            "summary must be a User-role message so fix_lead_trail keeps it"
+        );
     }
 }
