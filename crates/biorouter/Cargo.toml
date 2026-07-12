@@ -123,6 +123,11 @@ aws-providers = [
 [target.'cfg(target_os = "windows")'.dependencies]
 winapi = { version = "0.3", features = ["wincred"] }
 
+# Managed-policy ownership verification (BR-65) reads the effective uid via
+# `geteuid` to trust a root- or current-user-owned policy file.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 agent-client-protocol-schema = "0.10.5"
 tempfile = "3.15.0"
