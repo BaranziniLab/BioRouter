@@ -885,6 +885,7 @@ async fn execute_job(
         id: session.id.clone(),
         schedule_id: Some(job.id.clone()),
         max_turns: None,
+        max_tool_calls: None,
         retry_config: None,
     };
 

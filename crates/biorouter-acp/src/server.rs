@@ -928,6 +928,7 @@ impl BioRouterAcpAgent {
             id: session_id.clone(),
             schedule_id: None,
             max_turns: None,
+            max_tool_calls: None,
             retry_config: None,
         };
 

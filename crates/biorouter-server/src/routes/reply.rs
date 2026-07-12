@@ -295,6 +295,7 @@ pub async fn reply(
             id: session_id.clone(),
             schedule_id: session.schedule_id.clone(),
             max_turns: None,
+            max_tool_calls: None,
             retry_config: None,
         };
 

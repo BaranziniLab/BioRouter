@@ -67,6 +67,14 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
 const DEFAULT_MAX_TURNS: u32 = 100;
+/// Absolute cap on the number of tool calls in a single reply, summed across all
+/// iterations. `max_turns` counts provider round-trips, but one round-trip can
+/// fan out many parallel tool calls, so a few iterations can run an unbounded
+/// number of tools with ever-changing args (which the exact-duplicate guard
+/// misses). This is the backstop for that. Generous by default so it never bites
+/// normal work; overridable per session (`max_tool_calls`) or globally
+/// (`BIOROUTER_MAX_TOOL_CALLS`).
+const DEFAULT_MAX_TOOL_CALLS: u32 = 200;
 const DEFAULT_MAX_REPETITIONS: u32 = 3;
 const COMPACTION_THINKING_TEXT: &str = "biorouter is compacting the conversation...";
 /// Max consecutive auto-continues for a turn the provider cut off by the output
@@ -1556,6 +1564,14 @@ impl Agent {
                 .max_turns
                 .or_else(|| Config::global().get_param("BIOROUTER_MAX_TURNS").ok())
                 .unwrap_or(DEFAULT_MAX_TURNS);
+            // Cumulative tool calls dispatched this reply, across all iterations,
+            // bounded by `max_tool_calls` so parallel fan-out can't run unbounded
+            // even while `turns_taken` stays under `max_turns`.
+            let mut tool_calls_taken = 0u32;
+            let max_tool_calls = session_config
+                .max_tool_calls
+                .or_else(|| Config::global().get_param("BIOROUTER_MAX_TOOL_CALLS").ok())
+                .unwrap_or(DEFAULT_MAX_TOOL_CALLS);
             let mut compaction_attempts = 0;
             // Consecutive auto-continues of a length-truncated turn; reset on any
             // tool call (real progress). Bounds the continue-on-truncation guard.
@@ -1585,6 +1601,14 @@ impl Agent {
                     yield AgentEvent::Message(
                         Message::assistant().with_text(format!(
                             "I've reached my action limit for this turn ({max_turns} actions without user input), so I'm stopping here rather than because the task is necessarily complete. Would you like me to continue? (raise the cap with `max_turns` / `BIOROUTER_MAX_TURNS`.)"
+                        ))
+                    );
+                    break;
+                }
+                if tool_calls_taken > max_tool_calls {
+                    yield AgentEvent::Message(
+                        Message::assistant().with_text(format!(
+                            "I've made {tool_calls_taken} tool calls this turn, past my per-turn limit of {max_tool_calls}, so I'm stopping here rather than because the task is necessarily complete. Would you like me to continue? (raise the cap with `max_tool_calls` / `BIOROUTER_MAX_TOOL_CALLS`.)"
                         ))
                     );
                     break;
@@ -1685,6 +1709,10 @@ impl Agent {
                                     messages_to_add.push(response.clone());
                                     continue;
                                 }
+                                // Count every tool call this reply requests; the
+                                // cumulative total is checked against `max_tool_calls`
+                                // at the top of the next iteration.
+                                tool_calls_taken = tool_calls_taken.saturating_add(num_tool_requests as u32);
 
                                 let tool_response_messages: Vec<Arc<Mutex<Message>>> = (0..num_tool_requests)
                                     .map(|_| Arc::new(Mutex::new(Message::user().with_id(
