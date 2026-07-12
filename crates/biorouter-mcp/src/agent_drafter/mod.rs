@@ -605,7 +605,7 @@ pub struct AppIdParams {
     pub id: String,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
+#[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ExportAppParams {
     /// App id.
     pub id: String,
@@ -614,6 +614,26 @@ pub struct ExportAppParams {
     /// Override the agent WebSocket endpoint the exported app connects to.
     #[serde(default)]
     pub endpoint: Option<String>,
+    /// Export mode: `"launcher"` (default) ships only the app + launch scripts,
+    /// running against whatever knowledge bases / skills / extensions already
+    /// exist on the target machine. `"full"` additionally stages the app's
+    /// server-side payload under `payload/` and writes an audit manifest
+    /// (`export.json`) — see Task 2/3 of the standalone-export design (§3.9).
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// Full-mode payload selection: `{"knowledge_bases": [ids], "skills":
+    /// [names], "extensions": [names]}`. Any omitted key falls back to what the
+    /// app's agent config references (KB → `agent.knowledge_base`; skills →
+    /// `agent.skills`; extensions → `agent.extensions` minus built-ins). Ignored
+    /// in launcher mode.
+    #[serde(default)]
+    pub include: Option<serde_json::Value>,
+    /// Bundle the daemon binary for a self-contained ("fat") export:
+    /// `"none"` (default) or `"current"` (the current platform's `biorouterd`).
+    /// `"all"` (universal, every platform) is out of scope in this build and is
+    /// treated as `"current"` with a note.
+    #[serde(default)]
+    pub bundle_daemon: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -812,6 +832,330 @@ pub fn export_scaffold(
         }
     }
     Ok(scaffold)
+}
+
+// ---------------------------------------------------------------------------
+// Full-export payload staging (design §3.9 — Task 2/3)
+// ---------------------------------------------------------------------------
+
+/// The biorouter-mcp built-in MCP server names (see `BUILTIN_EXTENSIONS` in
+/// `lib.rs`). Built-in extensions travel with the daemon, so a full export never
+/// stages them — only *external* extensions are recorded as registry references
+/// in `export.json`. Hardcoded (with this comment) because the app manifest only
+/// stores extension *names*, not whether each is built in.
+const BUILTIN_EXTENSION_NAMES: &[&str] = &[
+    "developer",
+    "computercontroller",
+    "autovisualiser",
+    "memory",
+    "tutorial",
+    "agent_drafter",
+    "knowledge",
+];
+
+fn is_builtin_extension(name: &str) -> bool {
+    BUILTIN_EXTENSION_NAMES.contains(&name)
+}
+
+/// Resolve a `KnowledgeService` for reading the author's knowledge bases while
+/// staging a full export. Honours `BIOROUTER_KNOWLEDGE_DIR` (an override used by
+/// tests and power users); otherwise the canonical store the `/knowledge` routes
+/// use. `None` when the store can't be opened → the caller notes the KBs were
+/// skipped rather than failing the export.
+fn knowledge_service_for_export() -> Option<crate::knowledge::service::KnowledgeService> {
+    use crate::knowledge::service::KnowledgeService;
+    if let Ok(dir) = std::env::var("BIOROUTER_KNOWLEDGE_DIR") {
+        if !dir.trim().is_empty() {
+            return Some(KnowledgeService::new(PathBuf::from(dir)));
+        }
+    }
+    KnowledgeService::new_default().ok()
+}
+
+/// The installed-skills directory (`<config>/skills`). Honours
+/// `BIOROUTER_SKILLS_DIR` as a test/override hook, mirroring [`default_root`]'s
+/// config-dir resolution.
+fn skills_root_for_export() -> PathBuf {
+    if let Ok(dir) = std::env::var("BIOROUTER_SKILLS_DIR") {
+        if !dir.trim().is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
+    choose_app_strategy(crate::APP_STRATEGY.clone())
+        .map(|s| s.in_config_dir("skills"))
+        .unwrap_or_else(|_| PathBuf::from(".config/biorouter/skills"))
+}
+
+/// Locate a `biorouterd` binary to bundle for a fat export. This code runs
+/// inside `biorouterd` (GUI) **or** `biorouter` (CLI), so `current_exe` is not
+/// necessarily the daemon — we look next to it (the GUI ships them side by
+/// side), then on `PATH`. `BIOROUTERD_BIN` overrides (and is the test hook).
+/// `None` → the caller falls back to a thin export.
+fn find_biorouterd_binary() -> Option<PathBuf> {
+    let exe_name = if cfg!(windows) {
+        "biorouterd.exe"
+    } else {
+        "biorouterd"
+    };
+    if let Ok(p) = std::env::var("BIOROUTERD_BIN") {
+        let pb = PathBuf::from(p);
+        if pb.is_file() {
+            return Some(pb);
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let cand = dir.join(exe_name);
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path) {
+            let cand = dir.join(exe_name);
+            if cand.is_file() {
+                return Some(cand);
+            }
+        }
+    }
+    None
+}
+
+/// Recursively copy `src` into `dst` (used to stage a skill directory tree).
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to)?;
+        }
+    }
+    Ok(())
+}
+
+/// Extract a `Vec<String>` from `include[key]` when it is an array of strings.
+/// `None` (key absent) means the caller falls back to the agent-config default;
+/// `Some(vec![])` (key present but empty) means "select none".
+fn selected_list(include: Option<&serde_json::Value>, key: &str) -> Option<Vec<String>> {
+    let arr = include?.get(key)?.as_array()?;
+    Some(
+        arr.iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect(),
+    )
+}
+
+/// The pieces staged for a full export, recorded in `export.json` and surfaced
+/// as notes in the tool result.
+struct StagedPayload {
+    /// `{id, file, bytes}` per staged `.brkb`.
+    knowledge_bases: Vec<serde_json::Value>,
+    /// `{name, path}` per staged skill directory.
+    skills: Vec<serde_json::Value>,
+    /// `{name, source:"registry", note}` per external extension.
+    extensions: Vec<serde_json::Value>,
+    /// Human-readable notes (skips, failures) — never fatal.
+    notes: Vec<String>,
+}
+
+impl StagedPayload {
+    fn empty() -> Self {
+        Self {
+            knowledge_bases: Vec::new(),
+            skills: Vec::new(),
+            extensions: Vec::new(),
+            notes: Vec::new(),
+        }
+    }
+}
+
+/// Stage the app's server-side payload under `<target>/payload/` (full mode).
+///
+/// Selection is per-item: an explicit `include` list wins; an omitted key falls
+/// back to what the app's agent config references (KB → `agent.knowledge_base`,
+/// skills → `agent.skills`, extensions → `agent.extensions` minus built-ins).
+/// A missing KB / skill is skipped with a note — it never fails the export.
+fn stage_full_payload(
+    manifest: &Manifest,
+    target: &std::path::Path,
+    include: Option<&serde_json::Value>,
+) -> StagedPayload {
+    let agent = manifest.agent.clone().unwrap_or_default();
+
+    let mut kb_ids = selected_list(include, "knowledge_bases")
+        .unwrap_or_else(|| agent.knowledge_base.clone().into_iter().collect());
+    let mut skill_names = selected_list(include, "skills").unwrap_or_else(|| agent.skills.clone());
+    let mut ext_names = selected_list(include, "extensions").unwrap_or_else(|| {
+        agent
+            .extensions
+            .iter()
+            .filter(|e| !is_builtin_extension(e))
+            .cloned()
+            .collect()
+    });
+    // Deterministic, deduped ordering so the export is auditable + reproducible.
+    for v in [&mut kb_ids, &mut skill_names, &mut ext_names] {
+        v.sort();
+        v.dedup();
+    }
+
+    let payload_dir = target.join("payload");
+    let mut out = StagedPayload::empty();
+
+    // ── Knowledge bases → payload/knowledge/<id>.brkb ──────────────────────
+    if !kb_ids.is_empty() {
+        match knowledge_service_for_export() {
+            Some(svc) => {
+                let kdir = payload_dir.join("knowledge");
+                for kb in &kb_ids {
+                    match svc.export_brkb(kb) {
+                        Ok(bytes) => {
+                            let fname = format!("{kb}.brkb");
+                            let ok = std::fs::create_dir_all(&kdir).is_ok()
+                                && std::fs::write(kdir.join(&fname), &bytes).is_ok();
+                            if ok {
+                                out.knowledge_bases.push(serde_json::json!({
+                                    "id": kb,
+                                    "file": format!("payload/knowledge/{fname}"),
+                                    "bytes": bytes.len(),
+                                }));
+                            } else {
+                                out.notes.push(format!(
+                                    "could not write knowledge base '{kb}' into the payload; skipped"
+                                ));
+                            }
+                        }
+                        Err(e) => out
+                            .notes
+                            .push(format!("skipped knowledge base '{kb}': {e}")),
+                    }
+                }
+            }
+            None => out.notes.push(format!(
+                "knowledge store unavailable; skipped {} knowledge base(s)",
+                kb_ids.len()
+            )),
+        }
+    }
+
+    // ── Skills → payload/skills/<name>/ (plain directory copy) ─────────────
+    // A plain recursive copy is used rather than a marketplace-format zip: it is
+    // simpler, needs no extra crate, and the launcher installs it with a plain
+    // dir copy into the skills dir. (The design allows either.)
+    if !skill_names.is_empty() {
+        let skills_root = skills_root_for_export();
+        let sdir = payload_dir.join("skills");
+        for name in &skill_names {
+            let src = skills_root.join(name);
+            if src.is_dir() {
+                let dst = sdir.join(name);
+                if copy_dir_recursive(&src, &dst).is_ok() {
+                    out.skills.push(serde_json::json!({
+                        "name": name,
+                        "path": format!("payload/skills/{name}"),
+                    }));
+                } else {
+                    out.notes.push(format!(
+                        "could not copy skill '{name}' into the payload; skipped"
+                    ));
+                }
+            } else {
+                out.notes
+                    .push(format!("skill '{name}' not installed; skipped"));
+            }
+        }
+    }
+
+    // ── External extensions → recorded as registry references only ─────────
+    // Staging installed `.brxt` bundles (the installed-bundle layout) is out of
+    // scope; a full export records external extensions as pinned registry
+    // references the first-run installer resolves from BAAM.
+    for name in &ext_names {
+        out.extensions.push(serde_json::json!({
+            "name": name,
+            "source": "registry",
+            "note": "install from the BAAM registry on the target; .brxt bundle staging is out of scope",
+        }));
+    }
+
+    out
+}
+
+/// Assemble the deterministic `export.json` payload manifest (design §3.9 —
+/// Task 3). `required_credentials` and `runtime_requirements` are empty: the app
+/// manifest does not carry the extensions' declared credential env keys or
+/// runtime prerequisites (those live in each extension's own bundle metadata /
+/// the BAAM registry, not in the app manifest), so they cannot be enumerated
+/// here without the registry. The first-run credential dialog (§3.9 item 3)
+/// resolves what a specific extension needs.
+fn build_export_json(
+    id: &str,
+    mode: &str,
+    staged: &StagedPayload,
+    bundled_daemon: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "version": 1,
+        "app": id,
+        "mode": mode,
+        "knowledge_bases": staged.knowledge_bases,
+        "skills": staged.skills,
+        "extensions": staged.extensions,
+        "bundled_daemon": bundled_daemon,
+        "required_credentials": [],
+        "runtime_requirements": [],
+    })
+}
+
+/// Stage the current-platform `biorouterd` under `payload/bin/` for a fat
+/// export. Returns the `export.json` record on success (or `None` → thin), plus
+/// a note either way.
+fn stage_current_daemon(target: &std::path::Path) -> (Option<serde_json::Value>, String) {
+    let bin_name = if cfg!(windows) {
+        "biorouterd.exe"
+    } else {
+        "biorouterd"
+    };
+    match find_biorouterd_binary() {
+        Some(bin) => {
+            let dst = target.join("payload").join("bin").join(bin_name);
+            if let Some(parent) = dst.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            match std::fs::copy(&bin, &dst) {
+                Ok(bytes) => {
+                    make_executable(&dst);
+                    let rec = serde_json::json!({
+                        "platform": std::env::consts::OS,
+                        "arch": std::env::consts::ARCH,
+                        "file": format!("payload/bin/{bin_name}"),
+                        "bytes": bytes,
+                    });
+                    (
+                        Some(rec),
+                        format!(
+                            "bundled the {}-{} daemon at payload/bin/{bin_name} (fat export)",
+                            std::env::consts::OS,
+                            std::env::consts::ARCH
+                        ),
+                    )
+                }
+                Err(e) => (
+                    None,
+                    format!("could not copy biorouterd into the payload ({e}); thin export instead"),
+                ),
+            }
+        }
+        None => (
+            None,
+            "biorouterd not found for a fat export; thin export instead (the launcher locates or installs a daemon at run time)".to_string(),
+        ),
+    }
 }
 
 #[tool_router(router = tool_router)]
@@ -1813,14 +2157,88 @@ impl AgentDrafterServer {
             }
         }
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Exported '{}' to {} ({} files). To run it: double-click run.command (macOS) or `bash run.sh`. \
+        // ── Standalone export v2 (design §3.9): mode + payload + fat daemon ──
+        // Launcher mode = today's scaffold exactly (above). Full mode also
+        // stages the app's server-side payload and writes an audit manifest.
+        let mode = match p.mode.as_deref() {
+            Some("full") => "full",
+            _ => "launcher", // default; unknown values degrade to launcher
+        };
+        let mut notes: Vec<String> = Vec::new();
+        // Re-load the manifest to resolve the payload selection from the agent
+        // config; export_scaffold already validated the app exists.
+        let manifest = store.load_manifest(&p.id).map_err(internal)?;
+
+        let staged = if mode == "full" {
+            stage_full_payload(&manifest, &target, p.include.as_ref())
+        } else {
+            StagedPayload::empty()
+        };
+        notes.extend(staged.notes.iter().cloned());
+
+        // Fat export: bundle the current-platform daemon (both modes may opt in).
+        let bundle_mode = p.bundle_daemon.as_deref().unwrap_or("none");
+        let daemon_record = match bundle_mode {
+            "none" => None,
+            other => {
+                if other == "all" {
+                    notes.push(
+                        "bundle_daemon=\"all\" (universal) is out of scope in this build; \
+                         staging the current platform's daemon instead"
+                            .to_string(),
+                    );
+                } else if other != "current" {
+                    notes.push(format!(
+                        "unknown bundle_daemon=\"{other}\"; treating it as \"current\""
+                    ));
+                }
+                let (rec, note) = stage_current_daemon(&target);
+                notes.push(note);
+                rec
+            }
+        };
+
+        // Write export.json whenever the export carries a payload: full mode, or
+        // a bundled daemon in launcher mode (a "fat launcher").
+        let wrote_manifest = if mode == "full" || daemon_record.is_some() {
+            let ejson = build_export_json(&p.id, mode, &staged, daemon_record.as_ref());
+            let ejpath = target.join("export.json");
+            std::fs::write(
+                &ejpath,
+                serde_json::to_string_pretty(&ejson).unwrap_or_default(),
+            )
+            .map_err(internal)?;
+            true
+        } else {
+            false
+        };
+
+        // ── Result summary ─────────────────────────────────────────────────
+        let mut msg = format!(
+            "Exported '{}' ({mode} mode) to {} ({} scaffold files). \
+             To run it: double-click run.command (macOS), `bash run.sh` (Linux), or run.bat (Windows). \
              That installs the app, starts a biorouterd if one isn't already up, and opens it in the browser — \
              no npm install, no build step.",
             p.id,
             target.display(),
             scaffold.len()
-        ))]))
+        );
+        if mode == "full" {
+            msg.push_str(&format!(
+                "\nPayload: {} knowledge base(s), {} skill(s), {} external extension reference(s).",
+                staged.knowledge_bases.len(),
+                staged.skills.len(),
+                staged.extensions.len()
+            ));
+        }
+        if wrote_manifest {
+            msg.push_str(" Wrote export.json (audit manifest).");
+        }
+        for n in &notes {
+            msg.push_str(&format!("\n- {n}"));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(msg)]))
     }
 
     #[tool(
@@ -2460,6 +2878,7 @@ br.run("hello", "#missing");
                 id: "broken-harness".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 endpoint: None,
+                ..Default::default()
             }))
             .await
             .is_err());
@@ -2580,6 +2999,7 @@ br.run("hello", "#missing");
                 id: "exporter".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 endpoint: None,
+                ..Default::default()
             }))
             .await
             .unwrap();
@@ -2642,6 +3062,7 @@ br.run("hello", "#missing");
             id: "vaulted".into(),
             target_dir: out.path().to_string_lossy().to_string(),
             endpoint: None,
+            ..Default::default()
         }))
         .await
         .unwrap();
@@ -2659,9 +3080,300 @@ br.run("hello", "#missing");
                 id: "ghost".into(),
                 target_dir: "/tmp/x".into(),
                 endpoint: None,
+                ..Default::default()
             }))
             .await
             .is_err());
+    }
+
+    // ── Standalone export v2 (design §3.9) ─────────────────────────────────
+
+    /// Removes an env var on drop so a panicking `#[serial]` test can't leak it
+    /// into the next one.
+    struct EnvGuard(&'static str);
+    impl EnvGuard {
+        fn set(key: &'static str, val: &std::path::Path) -> Self {
+            std::env::set_var(key, val);
+            EnvGuard(key)
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            std::env::remove_var(self.0);
+        }
+    }
+
+    /// Launcher mode (the default) is unchanged: no `payload/`, no `export.json`.
+    #[tokio::test]
+    async fn export_launcher_mode_writes_no_payload() {
+        let (_d, s) = server();
+        let mut p = create("Launcher", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let out = TempDir::new().unwrap();
+        s.export_app(Parameters(ExportAppParams {
+            id: "launcher".into(),
+            target_dir: out.path().to_string_lossy().to_string(),
+            mode: Some("launcher".into()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+        assert!(
+            !out.path().join("payload").exists(),
+            "no payload in launcher mode"
+        );
+        assert!(
+            !out.path().join("export.json").exists(),
+            "no export.json in launcher mode"
+        );
+        // The Windows launchers still ship in every export.
+        assert!(out.path().join("run.ps1").exists());
+        assert!(out.path().join("run.bat").exists());
+    }
+
+    /// Full mode stages the app's KB + skill payload and writes a deterministic
+    /// `export.json`. Uses env overrides so the KB / skills roots point at temp
+    /// fixtures (hence `#[serial]`).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn export_full_mode_stages_payload_and_writes_export_json() {
+        // Fake knowledge store with one KB directory the brkb exporter can walk.
+        let kroot = TempDir::new().unwrap();
+        let kb_dir = kroot.path().join("ms-cohort").join("knowledge");
+        std::fs::create_dir_all(&kb_dir).unwrap();
+        std::fs::write(kb_dir.join("index.md"), "# MS cohort\n").unwrap();
+        // Fake skills dir with one installed skill.
+        let sroot = TempDir::new().unwrap();
+        std::fs::create_dir_all(sroot.path().join("ggplot")).unwrap();
+        std::fs::write(sroot.path().join("ggplot").join("SKILL.md"), "# ggplot\n").unwrap();
+
+        let _kg = EnvGuard::set("BIOROUTER_KNOWLEDGE_DIR", kroot.path());
+        let _sg = EnvGuard::set("BIOROUTER_SKILLS_DIR", sroot.path());
+
+        let (_d, s) = server();
+        let mut p = create("Cohort", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        p.knowledge_base = Some("ms-cohort".into());
+        p.skills = vec!["ggplot".into()];
+        // developer is builtin (travels with the daemon); spokeagent is external.
+        p.extensions = vec!["developer".into(), "spokeagent".into()];
+        s.create_app_inner(p, None).await.unwrap();
+
+        // Give the app a vault to prove full mode still excludes it.
+        let vault = s.store().artifact_dir("cohort").join(".vault");
+        std::fs::create_dir_all(&vault).unwrap();
+        std::fs::write(vault.join("K.enc"), "sealed").unwrap();
+
+        let out = TempDir::new().unwrap();
+        let res = s
+            .export_app(Parameters(ExportAppParams {
+                id: "cohort".into(),
+                target_dir: out.path().to_string_lossy().to_string(),
+                mode: Some("full".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+
+        // Payload dirs.
+        assert!(
+            out.path().join("payload/knowledge/ms-cohort.brkb").exists(),
+            "KB staged as a .brkb"
+        );
+        assert!(
+            out.path().join("payload/skills/ggplot/SKILL.md").exists(),
+            "skill staged as a dir tree"
+        );
+        assert!(
+            !out.path().join(".vault").exists(),
+            "vault excluded in full mode"
+        );
+
+        // export.json structure.
+        let ej: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.path().join("export.json")).unwrap())
+                .expect("export.json must parse");
+        assert_eq!(ej["version"], 1);
+        assert_eq!(ej["app"], "cohort");
+        assert_eq!(ej["mode"], "full");
+        assert_eq!(ej["knowledge_bases"][0]["id"], "ms-cohort");
+        assert_eq!(
+            ej["knowledge_bases"][0]["file"],
+            "payload/knowledge/ms-cohort.brkb"
+        );
+        assert!(ej["knowledge_bases"][0]["bytes"].as_u64().unwrap() > 0);
+        assert_eq!(ej["skills"][0]["name"], "ggplot");
+        assert_eq!(ej["skills"][0]["path"], "payload/skills/ggplot");
+        // Only the external extension is recorded; the builtin is not.
+        assert_eq!(ej["extensions"].as_array().unwrap().len(), 1);
+        assert_eq!(ej["extensions"][0]["name"], "spokeagent");
+        assert_eq!(ej["extensions"][0]["source"], "registry");
+        assert!(ej["required_credentials"].as_array().unwrap().is_empty());
+        assert!(ej["runtime_requirements"].as_array().unwrap().is_empty());
+        assert!(ej["bundled_daemon"].is_null(), "thin export → no daemon");
+
+        assert!(text_of(&res).contains("full mode"));
+    }
+
+    /// A KB id that doesn't exist is skipped with a note — the export still
+    /// succeeds and `export.json` records an empty `knowledge_bases` list.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn export_full_mode_skips_missing_kb() {
+        let kroot = TempDir::new().unwrap(); // empty store — no such KB
+        let _kg = EnvGuard::set("BIOROUTER_KNOWLEDGE_DIR", kroot.path());
+
+        let (_d, s) = server();
+        let mut p = create("Ghostkb", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        p.knowledge_base = Some("does-not-exist".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let out = TempDir::new().unwrap();
+        let res = s
+            .export_app(Parameters(ExportAppParams {
+                id: "ghostkb".into(),
+                target_dir: out.path().to_string_lossy().to_string(),
+                mode: Some("full".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+
+        let ej: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.path().join("export.json")).unwrap())
+                .unwrap();
+        assert!(
+            ej["knowledge_bases"].as_array().unwrap().is_empty(),
+            "missing KB is skipped, not staged"
+        );
+        assert!(text_of(&res).contains("skipped knowledge base 'does-not-exist'"));
+    }
+
+    /// An explicit empty `include.knowledge_bases` selects nothing even when the
+    /// agent config references a KB (per-item opt-out).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn export_full_mode_explicit_empty_include_selects_none() {
+        let kroot = TempDir::new().unwrap();
+        std::fs::create_dir_all(kroot.path().join("kb1").join("knowledge")).unwrap();
+        std::fs::write(kroot.path().join("kb1").join("knowledge").join("i.md"), "x").unwrap();
+        let _kg = EnvGuard::set("BIOROUTER_KNOWLEDGE_DIR", kroot.path());
+
+        let (_d, s) = server();
+        let mut p = create("Opt Out", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        p.knowledge_base = Some("kb1".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let out = TempDir::new().unwrap();
+        s.export_app(Parameters(ExportAppParams {
+            id: "opt-out".into(),
+            target_dir: out.path().to_string_lossy().to_string(),
+            mode: Some("full".into()),
+            include: Some(serde_json::json!({ "knowledge_bases": [] })),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+
+        assert!(
+            !out.path().join("payload/knowledge").exists(),
+            "explicit empty include stages no KB"
+        );
+    }
+
+    /// `bundle_daemon="current"` copies a `biorouterd` (located via the
+    /// `BIOROUTERD_BIN` hook) into `payload/bin/` and records it in export.json.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn export_bundle_daemon_current_stages_binary() {
+        // A fake daemon binary on disk; find_biorouterd_binary honours BIOROUTERD_BIN first.
+        let bin_dir = TempDir::new().unwrap();
+        let fake = bin_dir.path().join("biorouterd");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+        let _bg = EnvGuard::set("BIOROUTERD_BIN", &fake);
+
+        let (_d, s) = server();
+        let mut p = create("Fat", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let out = TempDir::new().unwrap();
+        let res = s
+            .export_app(Parameters(ExportAppParams {
+                id: "fat".into(),
+                target_dir: out.path().to_string_lossy().to_string(),
+                bundle_daemon: Some("current".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+
+        let bin_name = if cfg!(windows) {
+            "biorouterd.exe"
+        } else {
+            "biorouterd"
+        };
+        let staged = out.path().join("payload/bin").join(bin_name);
+        assert!(staged.exists(), "daemon staged under payload/bin");
+        // A fat launcher still writes export.json recording the bundled daemon.
+        let ej: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.path().join("export.json")).unwrap())
+                .unwrap();
+        assert!(
+            !ej["bundled_daemon"].is_null(),
+            "records the bundled daemon"
+        );
+        assert_eq!(
+            ej["bundled_daemon"]["file"],
+            format!("payload/bin/{bin_name}")
+        );
+        assert!(text_of(&res).contains("fat export"));
+    }
+
+    /// When no daemon can be found, `bundle_daemon="current"` degrades to a thin
+    /// export with a note instead of failing.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn export_bundle_daemon_falls_back_to_thin_when_daemon_absent() {
+        // Point BIOROUTERD_BIN at a non-existent path and blank PATH so discovery
+        // fails deterministically.
+        std::env::set_var("BIOROUTERD_BIN", "/nonexistent/biorouterd-xyz");
+        let saved_path = std::env::var("PATH").ok();
+        std::env::set_var("PATH", "");
+
+        let (_d, s) = server();
+        let mut p = create("NoDaemon", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let out = TempDir::new().unwrap();
+        let res = s
+            .export_app(Parameters(ExportAppParams {
+                id: "nodaemon".into(),
+                target_dir: out.path().to_string_lossy().to_string(),
+                bundle_daemon: Some("current".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap();
+
+        std::env::remove_var("BIOROUTERD_BIN");
+        if let Some(pp) = saved_path {
+            std::env::set_var("PATH", pp);
+        }
+
+        assert!(!out.path().join("payload/bin").exists(), "no daemon staged");
+        assert!(text_of(&res).contains("thin export"));
     }
 
     // ── Archetype starters (Apps SDK v2, Pillar 6) ─────────────────────────────

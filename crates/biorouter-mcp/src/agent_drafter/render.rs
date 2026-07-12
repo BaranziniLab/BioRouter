@@ -271,6 +271,9 @@ find_biorouterd() {{
   # would abort the whole launcher with "unbound variable" before the PATH
   # lookup ever ran.
   if [ -n "${{BIOROUTERD_BIN:-}}" ] && [ -x "${{BIOROUTERD_BIN:-}}" ]; then echo "${{BIOROUTERD_BIN}}"; return 0; fi
+  # A "fat" export bundles the daemon under payload/bin — prefer it so the
+  # folder is self-contained (no BioRouter install required on the target).
+  if [ -x "$DIR/payload/bin/biorouterd" ]; then echo "$DIR/payload/bin/biorouterd"; return 0; fi
   if command -v biorouterd >/dev/null 2>&1; then command -v biorouterd; return 0; fi
   for p in \
     "$HOME/.local/bin/biorouterd" \
@@ -341,6 +344,73 @@ open_url() {{
   elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$1"
   else echo "Open this URL in your browser: $1"; fi
 }}
+
+# ── 5. First-run payload install (full-mode exports only) ─────────────────
+# A "full" export carries the app's server-side dependencies under payload/:
+# knowledge bases (.brkb archives), skills (plain directory trees), and
+# export.json (the audit manifest). On the FIRST run we import them into the
+# recipient's store, guarded by a marker so re-runs are no-ops. A launcher-mode
+# export has no payload/ dir, so this is a clean no-op there.
+#
+# Consent: the payload list is printed and an interactive y/N confirmation is
+# required. Set BIOROUTER_EXPORT_YES=1 to skip the prompt (CI / headless).
+install_payload() {{
+  [ -d "$DIR/payload" ] || return 0                     # launcher-mode export: nothing to install
+  CFG="${{XDG_CONFIG_HOME:-$HOME/.config}}/biorouter"
+  MARKER="$CFG/.apps-payload-installed-$APP_ID"
+  [ -f "$MARKER" ] && return 0                          # already installed on a previous run
+
+  # Collect what there is to install (knowledge bases + skills). A payload that
+  # only carries a bundled daemon (payload/bin) has nothing to import here.
+  kbs=""; skills=""
+  if [ -d "$DIR/payload/knowledge" ]; then
+    for f in "$DIR/payload/knowledge/"*.brkb; do [ -e "$f" ] && kbs="$kbs $f"; done
+  fi
+  if [ -d "$DIR/payload/skills" ]; then
+    for d in "$DIR/payload/skills/"*/; do [ -e "$d" ] && skills="$skills $d"; done
+  fi
+  [ -z "$kbs" ] && [ -z "$skills" ] && return 0
+
+  echo ""
+  echo "This app ships a payload to install into your BioRouter (see payload/export.json):"
+  for f in $kbs;    do echo "  - knowledge base: $(basename "$f")"; done
+  for d in $skills; do echo "  - skill: $(basename "$d")"; done
+
+  if [ "${{BIOROUTER_EXPORT_YES:-}}" != "1" ]; then
+    printf "Install this payload now? [y/N] "
+    read -r reply || reply=""
+    case "$reply" in
+      y|Y|yes|YES) ;;
+      *) echo "Skipping payload install. Re-run to install it later."; return 0 ;;
+    esac
+  fi
+
+  mkdir -p "$CFG/skills"
+  # Knowledge bases: the `biorouter` CLI has no `knowledge import` subcommand as
+  # of the 2026-07 tree, so we stage each .brkb under
+  # ~/.config/biorouter/knowledge-imports/ and point the user at the Knowledge
+  # panel's importer. If a future CLI grows `knowledge import`, prefer it.
+  for f in $kbs; do
+    if command -v biorouter >/dev/null 2>&1 && biorouter knowledge import --help >/dev/null 2>&1; then
+      biorouter knowledge import "$f" && echo "  - imported $(basename "$f")" || echo "  ! import failed for $(basename "$f")"
+    else
+      mkdir -p "$CFG/knowledge-imports"
+      cp "$f" "$CFG/knowledge-imports/"
+      echo "  - staged $(basename "$f") in $CFG/knowledge-imports/ (import it from BioRouter's Knowledge panel)"
+    fi
+  done
+  # Skills install straight into the skills dir the daemon already reads.
+  for d in $skills; do
+    name="$(basename "$d")"
+    rm -rf "$CFG/skills/$name"
+    cp -R "$d" "$CFG/skills/$name"
+    echo "  - installed skill $name"
+  done
+
+  mkdir -p "$CFG"
+  : > "$MARKER"
+  echo "Payload installed."
+}}
 "#
     )
 }
@@ -359,12 +429,178 @@ DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "$DIR/biorouter-launch.sh"
 
 install_app
+install_payload          # no-op for launcher-mode exports (no payload/ dir)
 start_daemon
 BASE="http://127.0.0.1:$PORT"
 verify_app
 open_url "$BASE/apps/$APP_ID/"
 "#
     .to_string()
+}
+
+/// The Windows launcher (`run.ps1`), invoked by `run.bat`. Mirrors
+/// `biorouter-launch.sh` + `run.sh`: locate a `biorouterd` (bundled
+/// `payload\bin` first for fat exports, then PATH / known install dirs), install
+/// the app into the local store, run the first-run payload install (with
+/// consent), start the daemon headlessly, and open the app in the default
+/// browser. The page is served *by* the daemon, so the SDK derives its
+/// WebSocket endpoint — and the per-app token, which rides the query string —
+/// from the page origin; nothing is hard-coded. Windows parity is validated in
+/// CI later; this keeps the surface simple and self-documenting.
+///
+/// Built with `.replace` rather than `format!` so the many PowerShell braces
+/// need no doubling.
+fn run_ps1(id: &str) -> String {
+    // App ids are slugified (a-z0-9-), so they are safe to embed in a
+    // double-quoted PowerShell string literal without escaping.
+    RUN_PS1_TEMPLATE.replace("__APP_ID__", id)
+}
+
+const RUN_PS1_TEMPLATE: &str = r#"#Requires -Version 5.0
+# Windows launcher for the exported BioRouter app "__APP_ID__".
+$ErrorActionPreference = "Stop"
+$AppId = "__APP_ID__"
+$Dir   = Split-Path -Parent $MyInvocation.MyCommand.Definition
+# BioRouter uses an XDG-style config dir; honour XDG_CONFIG_HOME, else ~/.config.
+if ($env:XDG_CONFIG_HOME) { $Cfg = Join-Path $env:XDG_CONFIG_HOME "biorouter" }
+else { $Cfg = Join-Path $HOME ".config\biorouter" }
+$Store = Join-Path $Cfg "agent_drafter\$AppId"
+
+function Find-Biorouterd {
+  if ($env:BIOROUTERD_BIN -and (Test-Path $env:BIOROUTERD_BIN)) { return $env:BIOROUTERD_BIN }
+  $bundled = Join-Path $Dir "payload\bin\biorouterd.exe"
+  if (Test-Path $bundled) { return $bundled }               # fat export: self-contained
+  $cmd = Get-Command biorouterd -ErrorAction SilentlyContinue
+  if ($cmd) { return $cmd.Source }
+  foreach ($p in @(
+      (Join-Path $env:LOCALAPPDATA "Programs\BioRouter\resources\bin\biorouterd.exe"),
+      "C:\Program Files\BioRouter\resources\bin\biorouterd.exe")) {
+    if ($p -and (Test-Path $p)) { return $p }
+  }
+  throw "biorouterd not found. Install BioRouter, or set BIOROUTERD_BIN."
+}
+
+# Copy the runtime files into the store so the daemon can resolve the app.
+function Install-App {
+  if (-not (Test-Path (Join-Path $Dir "manifest.json"))) {
+    throw "manifest.json missing from this folder - re-export the app."
+  }
+  New-Item -ItemType Directory -Force -Path $Store | Out-Null
+  Copy-Item (Join-Path $Dir "manifest.json") (Join-Path $Store "manifest.json") -Force
+  if (Test-Path (Join-Path $Dir "index.html")) {
+    Copy-Item (Join-Path $Dir "index.html") (Join-Path $Store "index.html") -Force
+  }
+  foreach ($sub in @("src", "dist", "assets")) {
+    if (Test-Path (Join-Path $Dir $sub)) {
+      $dst = Join-Path $Store $sub
+      if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+      Copy-Item (Join-Path $Dir $sub) $dst -Recurse -Force
+    }
+  }
+}
+
+# First-run payload install (full-mode exports). Mirrors bash install_payload:
+# import knowledge bases + skills once, guarded by a marker, consent required
+# (set BIOROUTER_EXPORT_YES=1 to skip the prompt).
+function Install-Payload {
+  $payload = Join-Path $Dir "payload"
+  if (-not (Test-Path $payload)) { return }                 # launcher-mode export
+  $marker = Join-Path $Cfg ".apps-payload-installed-$AppId"
+  if (Test-Path $marker) { return }                         # already installed
+
+  $kbs = @(); $skills = @()
+  $kdir = Join-Path $payload "knowledge"
+  if (Test-Path $kdir) { $kbs = @(Get-ChildItem -Path $kdir -Filter *.brkb -ErrorAction SilentlyContinue) }
+  $sdir = Join-Path $payload "skills"
+  if (Test-Path $sdir) { $skills = @(Get-ChildItem -Path $sdir -Directory -ErrorAction SilentlyContinue) }
+  if ($kbs.Count -eq 0 -and $skills.Count -eq 0) { return }
+
+  Write-Host ""
+  Write-Host "This app ships a payload to install into your BioRouter (see payload/export.json):"
+  foreach ($f in $kbs)    { Write-Host "  - knowledge base: $($f.Name)" }
+  foreach ($d in $skills) { Write-Host "  - skill: $($d.Name)" }
+
+  if ($env:BIOROUTER_EXPORT_YES -ne "1") {
+    $reply = Read-Host "Install this payload now? [y/N]"
+    if ($reply -notmatch '^(y|Y|yes|YES)$') {
+      Write-Host "Skipping payload install. Re-run to install it later."
+      return
+    }
+  }
+
+  New-Item -ItemType Directory -Force -Path (Join-Path $Cfg "skills") | Out-Null
+  # No `biorouter knowledge import` CLI subcommand exists yet (2026-07 tree), so
+  # stage each .brkb and point the user at the Knowledge panel importer. Prefer
+  # the CLI if a future version grows the command.
+  foreach ($f in $kbs) {
+    $bio = Get-Command biorouter -ErrorAction SilentlyContinue
+    $canImport = $false
+    if ($bio) { & $bio.Source knowledge import --help *> $null; $canImport = ($LASTEXITCODE -eq 0) }
+    if ($canImport) {
+      & $bio.Source knowledge import $f.FullName
+      Write-Host "  - imported $($f.Name)"
+    } else {
+      $imp = Join-Path $Cfg "knowledge-imports"
+      New-Item -ItemType Directory -Force -Path $imp | Out-Null
+      Copy-Item $f.FullName $imp -Force
+      Write-Host "  - staged $($f.Name) in $imp (import it from BioRouter's Knowledge panel)"
+    }
+  }
+  foreach ($d in $skills) {
+    $dst = Join-Path (Join-Path $Cfg "skills") $d.Name
+    if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
+    Copy-Item $d.FullName $dst -Recurse -Force
+    Write-Host "  - installed skill $($d.Name)"
+  }
+
+  New-Item -ItemType Directory -Force -Path $Cfg | Out-Null
+  New-Item -ItemType File -Force -Path $marker | Out-Null
+  Write-Host "Payload installed."
+}
+
+function Test-Port([int]$Port) {
+  try {
+    $r = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/status" -TimeoutSec 1 -UseBasicParsing
+    return ($r.StatusCode -eq 200)
+  } catch { return $false }
+}
+
+# Reuse a running daemon, else spawn one headlessly and wait for /status.
+function Start-Daemon {
+  $preferred = if ($env:BIOROUTERD_PORT) { [int]$env:BIOROUTERD_PORT } else { 3000 }
+  foreach ($p in @($preferred, 3000, 3001, 3002, 3003)) {
+    if (Test-Port $p) { Write-Host "Using the BioRouter daemon already on :$p"; return $p }
+  }
+  $bin = Find-Biorouterd
+  foreach ($p in @($preferred, 3001, 3002, 3003)) {
+    Write-Host "Starting $bin on :$p ..."
+    $env:BIOROUTER_PORT = "$p"
+    Start-Process -FilePath $bin -ArgumentList "agent" -WindowStyle Hidden | Out-Null
+    for ($i = 0; $i -lt 40; $i++) {
+      if (Test-Port $p) { return $p }
+      Start-Sleep -Milliseconds 500
+    }
+  }
+  throw "could not start biorouterd."
+}
+
+Install-App
+Install-Payload
+$Port = Start-Daemon
+$Base = "http://127.0.0.1:$Port"
+$code = 0
+try { $code = (Invoke-WebRequest -Uri "$Base/apps/$AppId/" -TimeoutSec 5 -UseBasicParsing).StatusCode } catch { $code = 0 }
+if ($code -ne 200) { throw "the daemon on :$Port does not serve '$AppId' (HTTP $code)." }
+Write-Host "Opening $Base/apps/$AppId/"
+Start-Process "$Base/apps/$AppId/"
+"#;
+
+/// The thin `run.bat` wrapper: double-clickable on Windows, it just runs
+/// `run.ps1` with an unrestricted policy for this one invocation. Kept as a
+/// separate file so Explorer shows a runnable `.bat` (a bare `.ps1` opens in an
+/// editor by default).
+fn run_bat() -> String {
+    "@echo off\r\nrem Windows launcher for the exported BioRouter app.\r\npowershell -NoProfile -ExecutionPolicy Bypass -File \"%~dp0run.ps1\"\r\n".to_string()
 }
 
 /// The dev server: static files from *this* folder (so `npm run build` edits are
@@ -583,18 +819,29 @@ daemon using whatever LLM provider you have configured.
 
 ## Run it
 
-Double-click **`run.command`** (macOS) or run **`bash run.sh`** (Linux/WSL).
+Double-click **`run.command`** (macOS), run **`bash run.sh`** (Linux/WSL), or
+double-click **`run.bat`** (Windows — it runs `run.ps1`).
 
 That's the whole thing. The launcher:
 
 1. installs the app into your local BioRouter store (`manifest.json` and all),
-2. reuses a running `biorouterd`, or starts one on the first free port,
-3. checks the daemon can actually serve the app, and
-4. opens it in your browser.
+2. installs any first-run payload this export carries (`payload/` — knowledge
+   bases and skills — with your consent; see `payload/export.json`),
+3. reuses a running `biorouterd`, or starts one on the first free port,
+4. checks the daemon can actually serve the app, and
+5. opens it in your browser.
 
 No Node, no `npm install`, no build step. You need BioRouter installed with a
-provider configured (`biorouter configure`). If `biorouterd` lives somewhere
-unusual, set `BIOROUTERD_BIN=/path/to/biorouterd`.
+provider configured (`biorouter configure`) — unless this is a **fat** export,
+which bundles `biorouterd` under `payload/bin/` and needs nothing installed. If
+`biorouterd` lives somewhere unusual, set `BIOROUTERD_BIN=/path/to/biorouterd`.
+
+- **macOS quarantine (fat exports):** a bundled `payload/bin/biorouterd`
+  downloaded from the internet is quarantined by Gatekeeper. If macOS blocks it,
+  right-click the launcher (or the binary) and choose **Open** once to approve
+  it. Per-app notarized packaging is a later milestone.
+- **Non-interactive install:** set `BIOROUTER_EXPORT_YES=1` to accept the
+  payload install without the interactive prompt.
 
 ## Editing the UI
 
@@ -676,6 +923,9 @@ pub fn scaffold_standalone(
         ),
         ("run.command".to_string(), run_script()),
         ("run.sh".to_string(), run_script()),
+        // Windows launchers: run.bat (double-clickable) shells out to run.ps1.
+        ("run.ps1".to_string(), run_ps1(&manifest.id)),
+        ("run.bat".to_string(), run_bat()),
     ];
     for (path, content) in src_files {
         files.push((path.clone(), content.clone()));
@@ -1038,11 +1288,83 @@ mod tests {
             serve.contains("\"demo\""),
             "app id must be embedded as JSON"
         );
+        // The per-app WS token rides the query string, so the proxy must forward
+        // the FULL req.url (path + query) upstream, not just the path.
+        assert!(
+            serve.contains("path: req.url"),
+            "proxy must preserve query strings (the ws token rides the query)"
+        );
         // It fronts the daemon's auth-exempt /apps routes, so it must never
         // leave loopback — binding 0.0.0.0 would expose an unauthenticated agent.
         assert!(
             serve.contains(r#"server.listen(port, "127.0.0.1""#),
             "the dev server must bind loopback only"
+        );
+    }
+
+    /// The OS-agnostic launcher set: `run.ps1` (PowerShell) + `run.bat` (thin
+    /// wrapper) ship alongside the shell launchers, so the exported folder runs
+    /// on Windows too.
+    #[test]
+    fn windows_launchers_are_generated_and_wired() {
+        let m = manifest(ArtifactKind::Agentic);
+        let files = export(&m, None);
+        let ps1 = file(&files, "run.ps1");
+        let bat = file(&files, "run.bat");
+
+        // The batch wrapper just invokes run.ps1 under a bypassed policy.
+        assert!(
+            bat.to_lowercase().contains("powershell") && bat.contains("-File \"%~dp0run.ps1\""),
+            "run.bat must shell out to run.ps1: {bat}"
+        );
+        assert!(bat.contains("-ExecutionPolicy Bypass"));
+
+        // run.ps1 installs the payload, prefers a bundled daemon, and opens the
+        // daemon origin (so the WS token rides the query string — nothing is
+        // hard-coded).
+        assert!(
+            ps1.contains("Install-Payload"),
+            "run.ps1 must install payload"
+        );
+        assert!(
+            ps1.contains("payload\\bin\\biorouterd.exe"),
+            "prefers bundled daemon"
+        );
+        assert!(ps1.contains("/apps/$AppId/"), "opens the daemon origin");
+        // The app id is embedded, not a leftover placeholder.
+        assert!(ps1.contains("$AppId = \"demo\""));
+        assert!(!ps1.contains("__APP_ID__"));
+        // Consent + skip hook.
+        assert!(ps1.contains("BIOROUTER_EXPORT_YES"));
+    }
+
+    /// The shell launcher library exposes the first-run payload installer, and
+    /// `run.sh` invokes it. Launcher-mode exports (no `payload/` dir) short-out
+    /// harmlessly.
+    #[test]
+    fn launcher_lib_installs_payload_with_consent() {
+        let m = manifest(ArtifactKind::Agentic);
+        let files = export(&m, None);
+        let lib = file(&files, "biorouter-launch.sh");
+        let run = file(&files, "run.sh");
+
+        assert!(lib.contains("install_payload()"), "defines install_payload");
+        assert!(
+            lib.contains(r#"[ -d "$DIR/payload" ] || return 0"#),
+            "no-op without a payload dir"
+        );
+        assert!(
+            lib.contains(".apps-payload-installed-$APP_ID"),
+            "guarded by a marker"
+        );
+        assert!(lib.contains("BIOROUTER_EXPORT_YES"), "consent skip hook");
+        assert!(
+            lib.contains("payload/bin/biorouterd"),
+            "prefers the bundled daemon"
+        );
+        assert!(
+            run.contains("install_payload"),
+            "run.sh calls install_payload"
         );
     }
 
