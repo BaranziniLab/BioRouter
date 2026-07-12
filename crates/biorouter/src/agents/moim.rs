@@ -1,4 +1,5 @@
 use crate::agents::extension_manager::{ExtensionManager, MOIM_CLOSE_TAG, MOIM_OPEN_TAG};
+use crate::context_budget::{estimate_tokens, max_moim_tokens, truncate_to_tokens};
 use crate::conversation::message::Message;
 use crate::conversation::{fix_conversation, Conversation};
 use rmcp::model::Role;
@@ -15,6 +16,26 @@ thread_local! {
 fn is_moim_block(text: &str) -> bool {
     let trimmed = text.trim();
     trimmed.starts_with(MOIM_OPEN_TAG) && trimmed.ends_with(MOIM_CLOSE_TAG)
+}
+
+/// BR-2: bound the size of the injected MOIM `<info-msg>` block. A Platform
+/// extension's `get_moim` (e.g. a huge todo list) could otherwise balloon the
+/// block that is re-injected every action. Head-truncate the body while keeping
+/// the opening and closing tags intact so the result still parses as a MOIM
+/// block (`is_moim_block`) and merges correctly. `max_tokens == 0` disables it.
+fn cap_moim_block(moim: String, max_tokens: usize) -> String {
+    if max_tokens == 0 || estimate_tokens(&moim) <= max_tokens {
+        return moim;
+    }
+    // Preserve the closing tag; truncate_to_tokens keeps the leading `<info-msg>`.
+    let body = moim
+        .strip_suffix(MOIM_CLOSE_TAG)
+        .unwrap_or(&moim)
+        .trim_end();
+    let reserve = estimate_tokens(MOIM_CLOSE_TAG) + 1;
+    let head_budget = max_tokens.saturating_sub(reserve).max(1);
+    let truncated = truncate_to_tokens(body, head_budget, "moim");
+    format!("{truncated}\n{MOIM_CLOSE_TAG}")
 }
 
 /// Remove any previously injected MOIM before inserting a fresh one, so exactly
@@ -51,6 +72,7 @@ pub async fn inject_moim(
         .collect_moim(session_id, working_dir)
         .await
     {
+        let moim = cap_moim_block(moim, max_moim_tokens());
         let mut messages = conversation.messages().clone();
         // Drop any stale MOIM from a prior loop iteration first, so a long
         // multi-tool turn never accumulates several near-identical (and
@@ -275,6 +297,38 @@ mod tests {
             .collect::<Vec<_>>()
             .join("");
         assert!(joined.contains("the user's actual question"));
+    }
+
+    /// BR-2: an oversized MOIM block is head-truncated but still parses as a
+    /// MOIM block (opening + closing tags intact), so dedup and merging work.
+    #[test]
+    fn test_cap_moim_block_truncates_but_keeps_tags() {
+        let huge_body = "x".repeat(40_000); // ~10k tokens
+        let moim = format!("{MOIM_OPEN_TAG}\nIt is currently now\n{huge_body}\n{MOIM_CLOSE_TAG}");
+        let capped = cap_moim_block(moim, 100);
+
+        assert!(
+            is_moim_block(&capped),
+            "capped block must still parse as MOIM"
+        );
+        assert!(capped.starts_with(MOIM_OPEN_TAG));
+        assert!(capped.trim_end().ends_with(MOIM_CLOSE_TAG));
+        assert!(capped.contains("elided to fit the context budget"));
+        assert!(estimate_tokens(&capped) <= 120, "stays near the budget");
+    }
+
+    /// BR-2: a normal-sized MOIM block passes through unchanged.
+    #[test]
+    fn test_cap_moim_block_noop_when_small() {
+        let moim = sample_moim();
+        assert_eq!(cap_moim_block(moim.clone(), 8_000), moim);
+    }
+
+    /// BR-2: a cap of 0 disables MOIM truncation.
+    #[test]
+    fn test_cap_moim_block_disabled_with_zero() {
+        let huge = format!("{MOIM_OPEN_TAG}\n{}\n{MOIM_CLOSE_TAG}", "x".repeat(40_000));
+        assert_eq!(cap_moim_block(huge.clone(), 0), huge);
     }
 
     #[tokio::test]

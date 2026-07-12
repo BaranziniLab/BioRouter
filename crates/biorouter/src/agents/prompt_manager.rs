@@ -5,6 +5,9 @@ use serde_json::Value;
 use std::collections::HashMap;
 
 use crate::agents::extension::ExtensionInfo;
+use crate::context_budget::{
+    fit_context_blocks, injection_budget_tokens, BudgetReport, ContextBlock,
+};
 use crate::hints::load_hints::{load_hint_files, AGENTS_MD_FILENAME, BIOROUTER_HINTS_FILENAME};
 use crate::{
     config::{BioRouterMode, Config},
@@ -126,13 +129,32 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         // Stable tool ordering is important for multi session prompt caching.
         extensions_info.sort_by(|a, b| a.name.cmp(&b.name));
 
-        let sanitized_extensions_info: Vec<ExtensionInfo> = extensions_info
+        let mut sanitized_extensions_info: Vec<ExtensionInfo> = extensions_info
             .into_iter()
             .map(|mut ext_info| {
                 ext_info.instructions = sanitize_unicode_tags(&ext_info.instructions);
                 ext_info
             })
             .collect();
+
+        // BR-2: bound the aggregate size of injected context (extension
+        // instructions + hint files) so a chatty MCP server or a runaway
+        // `AGENTS.md` can't silently blow the window. The base `system.md` and
+        // the app-supplied extras (desktop/CLI prompt) are trusted and small, so
+        // they stay pinned outside the budget.
+        let mut hints = self.hints;
+        let report = apply_injection_budget(
+            &mut sanitized_extensions_info,
+            &mut hints,
+            injection_budget_tokens(),
+        );
+        if !report.is_empty() {
+            tracing::warn!(
+                dropped = ?report.dropped,
+                truncated = ?report.truncated,
+                "context budget: trimmed injected system-prompt blocks to fit CONTEXT_INJECTION_BUDGET_TOKENS"
+            );
+        }
 
         let config = Config::global();
         let biorouter_mode = config.get_biorouter_mode().unwrap_or(BioRouterMode::Auto);
@@ -162,8 +184,8 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
 
         let mut system_prompt_extras = self.manager.system_prompt_extras.clone();
 
-        // Add hints if provided
-        if let Some(hints) = self.hints {
+        // Add hints if provided (post-budget)
+        if let Some(hints) = hints {
             system_prompt_extras.push(hints);
         }
 
@@ -239,6 +261,61 @@ impl PromptManager {
         prompt_template::render_global_file("workflow.md", &context)
             .unwrap_or_else(|_| "The workflow prompt is busted. Tell the user.".to_string())
     }
+}
+
+/// Apply the BR-2 injection budget across the injected system-prompt blocks —
+/// the MCP extension instructions and the hint files — mutating each in place
+/// (truncating or emptying). Extension instructions rank above hints: teaching
+/// the model how to call a tool matters more than project hints, so hints are
+/// trimmed first and instructions only if the servers alone exceed the budget.
+/// `budget_tokens == 0` disables the cap. Returns what was trimmed for logging.
+fn apply_injection_budget(
+    extensions: &mut [ExtensionInfo],
+    hints: &mut Option<String>,
+    budget_tokens: usize,
+) -> BudgetReport {
+    if budget_tokens == 0 {
+        return BudgetReport::default();
+    }
+
+    let has_hints = hints.is_some();
+    let mut blocks: Vec<ContextBlock> = extensions
+        .iter()
+        .map(|ext| ContextBlock {
+            label: format!("extension:{}", ext.name),
+            content: ext.instructions.clone(),
+            priority: 100,
+        })
+        .collect();
+    if let Some(h) = hints.as_ref() {
+        blocks.push(ContextBlock {
+            label: "hints".to_string(),
+            content: h.clone(),
+            priority: 50,
+        });
+    }
+
+    let (fitted, report) = fit_context_blocks(blocks, budget_tokens);
+    if report.is_empty() {
+        // Fast path: nothing changed, avoid rewriting every field.
+        return report;
+    }
+
+    // `fitted` preserves input order: the first `extensions.len()` entries are
+    // the extension blocks, followed by the optional hints block.
+    for (ext, fitted_block) in extensions.iter_mut().zip(fitted.iter()) {
+        ext.instructions = fitted_block.content.clone();
+    }
+    if has_hints {
+        let fitted_hints = &fitted[extensions.len()].content;
+        *hints = if fitted_hints.is_empty() {
+            None
+        } else {
+            Some(fitted_hints.clone())
+        };
+    }
+
+    report
 }
 
 #[cfg(test)]
@@ -478,5 +555,52 @@ mod tests {
             !without_ext.contains("about-biorouter"),
             "pillar awareness must not appear when no extensions are loaded"
         );
+    }
+
+    /// BR-2: with a generous budget, injected blocks are left byte-identical and
+    /// the report is empty — ordinary sessions are unaffected.
+    #[test]
+    fn test_injection_budget_noop_under_budget() {
+        let mut extensions = vec![
+            ExtensionInfo::new("a", "short instructions", false),
+            ExtensionInfo::new("b", "more instructions", false),
+        ];
+        let mut hints = Some("some project hints".to_string());
+        let report = apply_injection_budget(&mut extensions, &mut hints, 10_000);
+        assert!(report.is_empty());
+        assert_eq!(extensions[0].instructions, "short instructions");
+        assert_eq!(extensions[1].instructions, "more instructions");
+        assert_eq!(hints.as_deref(), Some("some project hints"));
+    }
+
+    /// BR-2: hints (lower priority) are dropped before extension instructions
+    /// (higher priority) when the budget is tight.
+    #[test]
+    fn test_injection_budget_drops_hints_before_instructions() {
+        let big_instructions = "i".repeat(3_000); // ~750 tokens
+        let big_hints = "h".repeat(3_000);
+        let mut extensions = vec![ExtensionInfo::new("dev", &big_instructions, false)];
+        let mut hints = Some(big_hints.clone());
+
+        let report = apply_injection_budget(&mut extensions, &mut hints, 800);
+
+        assert_eq!(
+            extensions[0].instructions, big_instructions,
+            "extension instructions must be kept in full"
+        );
+        assert_eq!(hints, None, "hints must be dropped to fit the budget");
+        assert!(report.dropped.iter().any(|l| l == "hints"));
+    }
+
+    /// BR-2: a budget of 0 disables the cap entirely.
+    #[test]
+    fn test_injection_budget_disabled_with_zero() {
+        let big = "x".repeat(100_000);
+        let mut extensions = vec![ExtensionInfo::new("dev", &big, false)];
+        let mut hints = Some(big.clone());
+        let report = apply_injection_budget(&mut extensions, &mut hints, 0);
+        assert!(report.is_empty());
+        assert_eq!(extensions[0].instructions, big);
+        assert_eq!(hints.as_deref(), Some(big.as_str()));
     }
 }
