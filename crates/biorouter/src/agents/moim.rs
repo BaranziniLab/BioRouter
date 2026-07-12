@@ -1,4 +1,4 @@
-use crate::agents::extension_manager::ExtensionManager;
+use crate::agents::extension_manager::{ExtensionManager, MOIM_CLOSE_TAG, MOIM_OPEN_TAG};
 use crate::conversation::message::Message;
 use crate::conversation::{fix_conversation, Conversation};
 use rmcp::model::Role;
@@ -7,6 +7,34 @@ use std::path::Path;
 // Test-only utility. Do not use in production code. No `test` directive due to call outside crate.
 thread_local! {
     pub static SKIP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// True if `text` is (only) a MOIM `<info-msg>` block, ignoring surrounding
+/// whitespace. `collect_moim` emits the whole block as one text content item,
+/// so an exactly-matching item is an agent-injected MOIM, never user prose.
+fn is_moim_block(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed.starts_with(MOIM_OPEN_TAG) && trimmed.ends_with(MOIM_CLOSE_TAG)
+}
+
+/// Remove any previously injected MOIM before inserting a fresh one, so exactly
+/// one `<info-msg>` block is ever present. Only drops a *user* message whose
+/// content is nothing but MOIM block(s) — i.e. an agent-only injection. A MOIM
+/// that `fix_conversation` merged alongside real user text lives in its own
+/// content item next to the user's prose, so that turn has a non-MOIM item and
+/// is left untouched (never strip a user's actual turn).
+fn strip_existing_moim(messages: &mut Vec<Message>) {
+    messages.retain(|message| {
+        if message.role != Role::User {
+            return true;
+        }
+        let all_moim = !message.content.is_empty()
+            && message
+                .content
+                .iter()
+                .all(|c| c.as_text().is_some_and(is_moim_block));
+        !all_moim
+    });
 }
 
 pub async fn inject_moim(
@@ -24,6 +52,10 @@ pub async fn inject_moim(
         .await
     {
         let mut messages = conversation.messages().clone();
+        // Drop any stale MOIM from a prior loop iteration first, so a long
+        // multi-tool turn never accumulates several near-identical (and
+        // differently-timestamped) `<info-msg>` blocks.
+        strip_existing_moim(&mut messages);
         // Insert MOIM after the last assistant message AND any trailing tool
         // responses that follow it. Inserting between an assistant tool_call and
         // its tool_result would put a user message there, which the OpenAI API
@@ -195,5 +227,83 @@ mod tests {
             msgs[4].is_tool_response(),
             "tool_result must remain before MOIM"
         );
+    }
+
+    /// A standalone `<info-msg>` block (an agent-only injection, e.g. left over
+    /// from a prior loop iteration) is removed so exactly one MOIM survives.
+    fn sample_moim() -> String {
+        format!("{MOIM_OPEN_TAG}\nIt is currently 2020-01-01 00:00:00\nWorking directory: /x\n{MOIM_CLOSE_TAG}")
+    }
+
+    fn count_info_msgs(conv: &Conversation) -> usize {
+        conv.messages()
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|c| c.as_text())
+            .filter(|t| t.contains(MOIM_OPEN_TAG))
+            .count()
+    }
+
+    #[test]
+    fn test_strip_removes_agent_only_moim() {
+        let mut messages = vec![
+            Message::user().with_text("real question"),
+            Message::assistant().with_text("ok"),
+            Message::user().with_text(sample_moim()),
+        ];
+        strip_existing_moim(&mut messages);
+        assert_eq!(messages.len(), 2, "agent-only MOIM message must be dropped");
+        assert!(messages.iter().all(|m| m
+            .content
+            .iter()
+            .all(|c| !c.as_text().unwrap().contains(MOIM_OPEN_TAG))));
+    }
+
+    #[test]
+    fn test_strip_preserves_moim_merged_into_user_turn() {
+        // A MOIM that `fix_conversation` merged with real user prose sits in its
+        // own content item next to the user's text; that turn must survive.
+        let mut messages = vec![Message::user()
+            .with_text(sample_moim())
+            .with_text("the user's actual question")];
+        strip_existing_moim(&mut messages);
+        assert_eq!(messages.len(), 1, "a real user turn must never be stripped");
+        let joined = messages[0]
+            .content
+            .iter()
+            .filter_map(|c| c.as_text())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(joined.contains("the user's actual question"));
+    }
+
+    #[tokio::test]
+    async fn test_inject_dedups_prior_moim() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let working_dir = std::path::PathBuf::from("/test/dir");
+
+        // Conversation already carries a stale standalone MOIM from a prior
+        // iteration; injecting a fresh one must not leave two behind.
+        let conv = Conversation::new_unvalidated(vec![
+            Message::user().with_text("Hello"),
+            Message::assistant().with_text("Hi"),
+            Message::user().with_text(sample_moim()),
+        ]);
+        let result = inject_moim("test-session-id", conv, &em, &working_dir).await;
+
+        assert_eq!(
+            count_info_msgs(&result),
+            1,
+            "exactly one MOIM must be present after injection"
+        );
+        // The freshly injected MOIM carries the live working directory, not the
+        // stale sample's `/x`.
+        assert!(result
+            .messages()
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|c| c.as_text())
+            .any(|t| t.contains("Working directory: /test/dir")));
     }
 }

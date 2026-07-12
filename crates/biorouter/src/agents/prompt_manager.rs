@@ -1,6 +1,5 @@
 #[cfg(test)]
-use chrono::DateTime;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -14,10 +13,22 @@ use crate::{
 };
 use std::path::Path;
 
+/// Local time at hour granularity, e.g. `2026-07-12 14:00`. Hour (not
+/// minute/second) granularity keeps the rendered system prompt byte-identical
+/// within the hour so multi-session prompt caching still hits; Local (not UTC)
+/// matches the MOIM `<info-msg>` clock so the model never sees two contradictory
+/// timezones. Computed fresh at each `build()` (not frozen at construction) so a
+/// long-lived agent's clock never goes stale.
+fn current_hour_timestamp() -> String {
+    chrono::Local::now().format("%Y-%m-%d %H:00").to_string()
+}
+
 pub struct PromptManager {
     system_prompt_override: Option<String>,
     system_prompt_extras: Vec<String>,
-    current_date_timestamp: String,
+    /// When `Some`, pins the rendered clock (deterministic tests). When `None`,
+    /// the clock is computed live at `build()` time.
+    fixed_timestamp: Option<String>,
 }
 
 impl Default for PromptManager {
@@ -128,7 +139,11 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
 
         let context = SystemPromptContext {
             extensions: sanitized_extensions_info,
-            current_date_time: self.manager.current_date_timestamp.clone(),
+            current_date_time: self
+                .manager
+                .fixed_timestamp
+                .clone()
+                .unwrap_or_else(current_hour_timestamp),
             biorouter_mode,
             is_autonomous: biorouter_mode == BioRouterMode::Auto,
             enable_subagents: self.subagents_enabled,
@@ -181,9 +196,10 @@ impl PromptManager {
         PromptManager {
             system_prompt_override: None,
             system_prompt_extras: Vec::new(),
-            // Use the fixed current date time so that prompt cache can be used.
-            // Filtering to an hour to balance user time accuracy and multi session prompt cache hits.
-            current_date_timestamp: Utc::now().format("%Y-%m-%d %H:00").to_string(),
+            // Left unset: the clock is computed live per `build()` (hour
+            // granularity) so it stays cache-stable within the hour yet never
+            // freezes at agent-construction time.
+            fixed_timestamp: None,
         }
     }
 
@@ -192,7 +208,7 @@ impl PromptManager {
         PromptManager {
             system_prompt_override: None,
             system_prompt_extras: Vec::new(),
-            current_date_timestamp: dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+            fixed_timestamp: Some(dt.format("%Y-%m-%d %H:%M:%S").to_string()),
         }
     }
 
@@ -320,6 +336,23 @@ mod tests {
         let system_prompt = manager.builder().build();
 
         assert_snapshot!(system_prompt)
+    }
+
+    /// The live (non-test) clock is computed at `build()` time, at Local hour
+    /// granularity — not frozen at construction, not UTC. Robust across an hour
+    /// tick by accepting either boundary.
+    #[test]
+    fn test_live_clock_is_fresh_local_hour() {
+        let before = chrono::Local::now().format("%Y-%m-%d %H:00").to_string();
+        let prompt = PromptManager::new().builder().build();
+        let after = chrono::Local::now().format("%Y-%m-%d %H:00").to_string();
+
+        let expected_before = format!("The current date and time is {before}.");
+        let expected_after = format!("The current date and time is {after}.");
+        assert!(
+            prompt.contains(&expected_before) || prompt.contains(&expected_after),
+            "system prompt must render the live Local hour clock (minutes pinned to :00)"
+        );
     }
 
     #[test]
