@@ -381,6 +381,20 @@ pub fn get_usage(data: &Value) -> Result<Usage> {
     }
 }
 
+/// Map Anthropic's `stop_reason` onto the OpenAI-style `finish_reason` the agent
+/// loop understands. In particular `max_tokens` becomes `"length"` so a response
+/// cut off by the output-length limit is auto-continued instead of ending the
+/// turn silently mid-sentence; the other reasons map to their OpenAI
+/// equivalents, and anything unrecognised passes through unchanged.
+pub fn map_stop_reason(stop_reason: &str) -> String {
+    match stop_reason {
+        "max_tokens" => "length".to_string(),
+        "end_turn" | "stop_sequence" => "stop".to_string(),
+        "tool_use" => "tool_calls".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Create a complete request payload for Anthropic's API
 pub fn create_request(
     model_config: &ModelConfig,
@@ -637,6 +651,18 @@ where
                 "message_delta" => {
                     // Message metadata delta (like stop_reason) and cumulative usage
                     tracing::debug!("🔍 Anthropic message_delta event data: {}", serde_json::to_string_pretty(&event.data).unwrap_or_else(|_| format!("{:?}", event.data)));
+
+                    // Anthropic reports why generation stopped in `delta.stop_reason`
+                    // (e.g. "max_tokens", "end_turn", "tool_use"). Map it onto the
+                    // OpenAI-style finish_reason so the agent loop can auto-continue a
+                    // response cut off by the output-length limit ("length") instead
+                    // of ending the turn silently mid-sentence.
+                    let finish_reason = event.data
+                        .get("delta")
+                        .and_then(|d| d.get("stop_reason"))
+                        .and_then(|v| v.as_str())
+                        .map(map_stop_reason);
+
                     if let Some(usage_data) = event.data.get("usage") {
                         tracing::debug!("🔍 Anthropic message_delta usage data (cumulative): {}", serde_json::to_string_pretty(usage_data).unwrap_or_else(|_| format!("{:?}", usage_data)));
                         let delta_usage = get_usage(usage_data).unwrap_or_default();
@@ -669,16 +695,38 @@ where
                             tracing::debug!("🔍 Anthropic no existing usage, using delta usage");
                         }
 
-                        // Emit a running snapshot. Anthropic reports usage only on
-                        // the terminal chunk, so a cancelled turn used to record
-                        // nothing at all even though the full input and the partial
-                        // output were billed. The agent keeps the LAST snapshot per
-                        // turn, so re-yielding here cannot double count.
-                        if let Some(snapshot) = final_usage.clone() {
-                            yield (None, Some(snapshot));
-                        }
                     } else {
                         tracing::debug!("🔍 Anthropic message_delta event has no usage field");
+                    }
+
+                    // Attach the mapped finish_reason to the running snapshot. A
+                    // message_delta usually carries stop_reason alongside usage, but
+                    // surface it even if this delta had no usage field yet.
+                    if let Some(reason) = finish_reason {
+                        match final_usage.as_mut() {
+                            Some(existing) => existing.finish_reason = Some(reason),
+                            None => {
+                                let model = event.data.get("model")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("unknown")
+                                    .to_string();
+                                let mut usage = crate::providers::base::ProviderUsage::new(
+                                    model,
+                                    crate::providers::base::Usage::default(),
+                                );
+                                usage.finish_reason = Some(reason);
+                                final_usage = Some(usage);
+                            }
+                        }
+                    }
+
+                    // Emit a running snapshot. Anthropic reports usage only on
+                    // the terminal chunk, so a cancelled turn used to record
+                    // nothing at all even though the full input and the partial
+                    // output were billed. The agent keeps the LAST snapshot per
+                    // turn, so re-yielding here cannot double count.
+                    if let Some(snapshot) = final_usage.clone() {
+                        yield (None, Some(snapshot));
                     }
                     continue;
                 }
@@ -694,7 +742,14 @@ where
                             .unwrap_or("unknown")
                             .to_string();
                         tracing::debug!("🔍 Anthropic final_usage created with model: {}", model);
-                        final_usage = Some(crate::providers::base::ProviderUsage::new(model, usage));
+                        // Preserve any finish_reason mapped from an earlier
+                        // message_delta so the terminal snapshot still reports it.
+                        let prior_finish_reason =
+                            final_usage.as_ref().and_then(|u| u.finish_reason.clone());
+                        let mut provider_usage =
+                            crate::providers::base::ProviderUsage::new(model, usage);
+                        provider_usage.finish_reason = prior_finish_reason;
+                        final_usage = Some(provider_usage);
                     } else {
                         tracing::debug!("🔍 Anthropic message_stop event has no usage data");
                     }
@@ -1029,5 +1084,89 @@ mod tests {
             "Error: -32603: Tool failed"
         );
         assert_eq!(spec[1]["content"][0]["is_error"], true);
+    }
+
+    #[test]
+    fn test_map_stop_reason() {
+        assert_eq!(map_stop_reason("max_tokens"), "length");
+        assert_eq!(map_stop_reason("end_turn"), "stop");
+        assert_eq!(map_stop_reason("stop_sequence"), "stop");
+        assert_eq!(map_stop_reason("tool_use"), "tool_calls");
+        // Unknown reasons pass through unchanged.
+        assert_eq!(map_stop_reason("refusal"), "refusal");
+    }
+
+    #[tokio::test]
+    async fn test_streaming_maps_max_tokens_to_length() -> Result<()> {
+        use tokio::pin;
+        use tokio_stream::StreamExt;
+
+        // A native Anthropic stream truncated at the output-length limit ends
+        // with a message_delta whose delta.stop_reason == "max_tokens". The
+        // emitted ProviderUsage must carry finish_reason == "length" so the
+        // agent loop can auto-continue instead of stopping silently mid-sentence.
+        let lines = vec![
+            r#"data: {"type":"message_start","message":{"id":"msg_1","model":"claude-sonnet-4-20250514","usage":{"input_tokens":10,"output_tokens":1}}}"#,
+            r#"data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Counting: 1, 2, 3"}}"#,
+            r#"data: {"type":"content_block_stop","index":0}"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"max_tokens","stop_sequence":null},"usage":{"output_tokens":8}}"#,
+            r#"data: {"type":"message_stop"}"#,
+        ];
+        let response_stream = tokio_stream::iter(lines.into_iter().map(|l| Ok(l.to_string())));
+        let messages = response_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut seen_length = false;
+        while let Some(Ok((_message, usage))) = messages.next().await {
+            if let Some(u) = usage {
+                if u.finish_reason.as_deref() == Some("length") {
+                    seen_length = true;
+                }
+            }
+        }
+        assert!(
+            seen_length,
+            "expected ProviderUsage.finish_reason == Some(\"length\") on a max_tokens stream"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_streaming_natural_stop_is_not_length() -> Result<()> {
+        use tokio::pin;
+        use tokio_stream::StreamExt;
+
+        // A natural completion reports stop_reason == "end_turn"; it must NOT be
+        // reported as a length-truncation, or the agent loop would auto-continue
+        // a turn that finished on its own.
+        let lines = vec![
+            r#"data: {"type":"message_start","message":{"id":"msg_2","model":"claude-sonnet-4-20250514","usage":{"input_tokens":5,"output_tokens":1}}}"#,
+            r#"data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#,
+            r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}"#,
+            r#"data: {"type":"message_stop"}"#,
+        ];
+        let response_stream = tokio_stream::iter(lines.into_iter().map(|l| Ok(l.to_string())));
+        let messages = response_to_streaming_message(response_stream);
+        pin!(messages);
+
+        let mut saw_stop = false;
+        while let Some(Ok((_message, usage))) = messages.next().await {
+            if let Some(u) = usage {
+                assert_ne!(
+                    u.finish_reason.as_deref(),
+                    Some("length"),
+                    "natural stop must not be reported as length-truncation"
+                );
+                if u.finish_reason.as_deref() == Some("stop") {
+                    saw_stop = true;
+                }
+            }
+        }
+        assert!(
+            saw_stop,
+            "expected finish_reason == Some(\"stop\") on end_turn"
+        );
+        Ok(())
     }
 }
