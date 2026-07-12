@@ -1126,7 +1126,7 @@ impl DeveloperServer {
                 .await
                 .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e, None))?;
             return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Started background job {id}. It keeps running across tool calls. Use shell_wait with this job_id to watch for completion, shell_output to peek, or shell_kill to stop it."
+                "Started background job {id}. It keeps running across tool calls. Use shell_wait with this job_id to watch for completion, shell_output to peek, shell_kill to stop it, or shell_list to see every background job."
             ))]));
         }
 
@@ -1222,6 +1222,15 @@ impl DeveloperServer {
             .kill(&params.0.job_id)
             .await
             .map_err(|e| ErrorData::new(ErrorCode::INVALID_PARAMS, e, None))?;
+        Ok(CallToolResult::success(vec![Content::text(out)]))
+    }
+
+    #[tool(
+        name = "shell_list",
+        description = "List every background shell job (started by shell with background=true) with its job_id, label, status (running or the exit result), runtime, whether it has unread output, and the command. Use this to rediscover a job_id you've lost or to see everything you have running before you shell_wait/shell_output/shell_kill."
+    )]
+    pub async fn shell_list(&self) -> Result<CallToolResult, ErrorData> {
+        let out = self.background_jobs.list().await;
         Ok(CallToolResult::success(vec![Content::text(out)]))
     }
 
