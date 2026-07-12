@@ -1,0 +1,10 @@
+I drove the built app in a browser. It looks excellent (masthead, seed-profile stat tiles, per-column missingness chart, severity-ranked issues table, blocking ui_ask remediation modal) and the ask→apply→ask mechanism works. But there is ONE real loop bug — fix ONLY this, minimally, then build_app.
+
+BUG: applying a remediation on the top issue does NOT mark it resolved, so the agent keeps re-asking the SAME rank-1 issue (issue-fraud-imbalance / is_fraud) instead of descending to rank 2, 3, …. Evidence: after I clicked "Apply decision" on rank 1, the next ui_ask was again about rank 1 (is_fraud, 98% one-class), and the Change log stayed at "Step 0 — baseline health score 58/100" — it never appended a Step 1 with the applied decision, the health-score delta, or the new residual severity.
+
+FIX (system_prompt via configure_app, and src/main.ts if needed):
+1. After each ui_ask reply, the agent MUST: (a) record the decision by appending a new numbered Step to @region:log via ui_render (Step N — issue id, chosen action, health-score before→after, residual severity), (b) mark that issue resolved so it is NOT asked again (track resolved issue-ids in ui_state, e.g. resolvedIssues: [...]), (c) recompute/raise the health score, and (d) select the NEXT-highest UNRESOLVED issue whose severity is above the stop threshold and ask about THAT one — never re-ask a resolved issue.
+2. Stop the loop (no more ui_ask) once no unresolved issue has severity ≥ the stop threshold; then ui_render a final "triage complete — health score X/100" summary into @region:summary or @region:log.
+3. Make the decision-gate line in @region:decision always name the issue currently under decision (rank + id + severity), and update it each step.
+
+Keep the beautiful dashboard as-is. build_app when done; do not launch.

@@ -95,6 +95,50 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
         }
     }
 
+    // (3) Theme-adaptive text: a hardcoded text color (a hex/rgb literal in a
+    // `color:` that isn't a `var(--br-*)`) won't adapt when the app is themed,
+    // so it goes invisible (dark-on-dark / light-on-light). Warn so the model
+    // switches to the design tokens. Heuristic: look for `color:#…`/`color:rgb`
+    // that isn't immediately a `var(`.
+    let hardcoded_text_color = {
+        let hay = index.replace(' ', "");
+        let hay_l = hay.to_lowercase();
+        let mut hit = false;
+        for pat in ["color:#", "color:rgb", "color:hsl"] {
+            let mut from = 0;
+            while let Some(p) = hay_l[from..].find(pat) {
+                let at = from + p;
+                // skip `background-color`/`border-color` — only bare `color:`
+                let preceded_by_dash = at > 0 && hay_l.as_bytes()[at - 1] == b'-';
+                if !preceded_by_dash {
+                    hit = true;
+                    break;
+                }
+                from = at + pat.len();
+            }
+            if hit {
+                break;
+            }
+        }
+        hit
+    };
+    if hardcoded_text_color {
+        warning(&mut out, "index.html hardcodes a text color (color:#… / color:rgb(…)). It won't adapt to the app theme and can go invisible (dark-on-dark). Use the design tokens: color: var(--br-text) for body text, var(--br-text-muted) for secondary text.");
+    }
+    // A *surface* token used as a text color (color:var(--br-muted|bg|surface|
+    // medium|strong)) is near-background in both themes → invisible. The intended
+    // text tokens are --br-text / --br-text-muted.
+    let surface_as_text = {
+        let hay = index.replace(' ', "").to_lowercase();
+        ["color:var(--br-muted)", "color:var(--br-bg)", "color:var(--br-surface)",
+         "color:var(--br-medium)", "color:var(--br-strong)"]
+            .iter()
+            .any(|p| hay.contains(p))
+    };
+    if surface_as_text {
+        warning(&mut out, "index.html uses a SURFACE token as a text color (e.g. color: var(--br-muted)). Surface tokens are near-background in both themes, so the text is invisible. Use color: var(--br-text) or var(--br-text-muted).");
+    }
+
     // (1) Backend wiring through the App SDK / agent protocol.
     if !main.contains("./sdk") {
         error(&mut out, "src/main.ts must `import { createApp } from \"./sdk\"` — that's how the app reaches the BioRouter backend.");
@@ -1095,6 +1139,40 @@ br.run("go", "#missing");
         assert!(formatted.contains("external <script"), "{formatted}");
         assert!(formatted.contains("non-local import"), "{formatted}");
         assert!(formatted.contains("#missing"), "{formatted}");
+    }
+
+    /// H6: a hardcoded text color won't adapt to the theme and can go invisible.
+    #[test]
+    fn lint_warns_on_hardcoded_text_color_but_not_theme_tokens() {
+        let mk = |html: &str| {
+            let dir = TempDir::new().unwrap();
+            std::fs::create_dir_all(dir.path().join("src")).unwrap();
+            std::fs::write(dir.path().join("index.html"), html).unwrap();
+            std::fs::write(
+                dir.path().join("src/main.ts"),
+                "import { createApp } from \"./sdk\";\ncreateApp();\n",
+            )
+            .unwrap();
+            format_lint(&lint_app(dir.path()))
+        };
+        // Hardcoded text color → warned.
+        let bad = mk(r#"<html><body><p style="color:#282217">hi</p></body></html>"#);
+        assert!(bad.contains("hardcodes a text color"), "{bad}");
+        // rgb() form too.
+        let bad2 = mk(r#"<html><body><p style="color: rgb(40,34,23)">hi</p></body></html>"#);
+        assert!(bad2.contains("hardcodes a text color"), "{bad2}");
+        // Theme token → NOT warned; and background-color hardcodes are not text.
+        let good = mk(
+            r#"<html><body><p style="color:var(--br-text)">hi</p>
+               <div style="background-color:#fff">x</div></body></html>"#,
+        );
+        assert!(!good.contains("hardcodes a text color"), "{good}");
+        // A SURFACE token used as text color → its own warning.
+        let surf = mk(r#"<html><body><p style="color: var(--br-muted)">hi</p></body></html>"#);
+        assert!(surf.contains("SURFACE token as a text color"), "{surf}");
+        // …but a surface token as a *background* is fine.
+        let okbg = mk(r#"<html><body><div style="background: var(--br-muted)">x</div></body></html>"#);
+        assert!(!okbg.contains("SURFACE token as a text color"), "{okbg}");
     }
 
     #[test]

@@ -523,6 +523,14 @@ impl AgentDrafterServer {
             only when it would materially change the result; otherwise use a calm,
             readable BioRouter-native style and keep it easy to revise.
 
+            THEME TOKENS — colour every piece of text with the design tokens, never
+            a hardcoded hex/rgb. Use `var(--br-text)` for primary text,
+            `var(--br-text-muted)` for secondary/placeholder text, `var(--br-surface)`
+            / `var(--br-bg)` for backgrounds, `var(--br-border)` for lines. A
+            hardcoded `color:#333` looks fine while you author in light mode but goes
+            invisible when the app is themed dark. The app renders light by default;
+            the agent may switch it with `ui_theme`.
+
             AGENT DESIGN CONTRACT — before or while authoring an agentic app,
             make the agent's operational choices explicit:
             - preferred provider/model and generation settings (`model.settings`);
@@ -644,6 +652,33 @@ impl AgentDrafterServer {
             rather than describing results in prose. Prefer `ui_ask` over asking
             a question in text and waiting for the next message. Set
             `capabilities.ui.enabled = false` only for deliberately text-only apps.
+
+            RUN GUARD — do NOT fire an agent turn (`br.run`/`br.prompt`) until the
+            user has supplied the minimum input the task needs. Never call the
+            agent on page boot with an empty form, and guard every control handler
+            (`if (selected.length < 2) return;`, `if (!query.trim()) return;`).
+            An agent turn on an empty/underspecified state wastes a round trip,
+            renders a confusing "nothing selected" result, and — because turns in
+            one app session run one at a time — a stuck empty turn blocks the real
+            turn queued behind it. Handle empty/partial states locally in the page
+            (a "pick 2 models to compare" placeholder); only prompt the agent once
+            there is real work. Also pass the user's current selection/state
+            explicitly in the run prompt — do not make the agent call `ui_describe`
+            to discover what the user chose (`ui_describe` is for verifying your
+            own render, not for reading user input).
+
+            ITERATIVE LOOPS — for an app that works through a list one item at a
+            time (triage a ranked issue list, quiz through sub-skills, resolve
+            findings), the agent's system_prompt MUST track progress in `ui_state`
+            and never re-offer a finished item. Each turn: (1) pick the next
+            UNRESOLVED item (persist a `resolved`/`done` id set in `ui_state` and
+            skip anything already in it); (2) act on it; (3) append a numbered
+            step to the visible log (`ui_render` a "Step N — item, choice, score
+            before→after" line) so the user sees the state advance; (4) define and
+            check a clear termination condition (e.g. "stop when no unresolved item
+            is above threshold") and render a final summary when done. Without an
+            explicit resolved-set the model re-asks the same top item forever and
+            the loop never advances — spell this out in the prompt.
 
             BUILD HARNESS / guardrails: `build_app` (and `lint_app`) run a
             validation harness on whatever you generate and report findings. It

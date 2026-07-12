@@ -1,0 +1,10 @@
+I drove the built app in a browser and found one concrete interaction bug. Everything else (layout, chips, theme) looks great — fix ONLY this, minimally, then build_app.
+
+BUG: the app fires an agent turn on page boot with an EMPTY roster, and again on every slider/profile change regardless of roster size. On load, `runAgent()` runs with `selected = []`, so the agent gets "Selected models: none", renders "the arena is empty / no selected models yet" into @region:compare and @region:verdict, and loops ui_state. Because agent turns in one session run one at a time, that stuck empty boot turn blocks the REAL turn: after I click "Demo: ResNet vs ViT" (which correctly puts resnet50 + vit-b16 in the arena), the dashboard STAYS stuck on "the arena is empty" and never draws the radar/table/verdict.
+
+FIX (src/main.ts only):
+1. Add a guard at the top of `runAgent()`: if `selected.length < 2`, do NOT call `br.run`. Instead render a local, non-agent placeholder into @region:compare and @region:verdict telling the user to add at least 2 models to compare (plain DOM text, no agent call). Return early.
+2. Remove the boot-time `runAgent()` call at the end of the file (or rely on the new guard so boot with an empty roster never prompts the agent). The first real agent turn should happen when the user seeds/drops a 2nd model.
+3. Keep passing the selected roster + metrics inside the prompt (you already do). Do not add a ui_describe step.
+
+After this, clicking "Demo: ResNet vs ViT" must produce a real comparison dashboard (radar/grouped chart + sortable table + Pareto highlights) and a plain-English verdict, and must NEVER say the arena is empty when 2+ models are selected. build_app when done; do not launch.

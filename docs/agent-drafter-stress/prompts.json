@@ -1,0 +1,1197 @@
+[
+  {
+    "id": "caravan-route-broker",
+    "title": "Caravan Route Broker",
+    "domain": "games, geospatial & interactive worlds",
+    "interaction": "click-to-compose a map route + what-if sliders",
+    "patterns": [
+      "dashboard",
+      "simulation",
+      "attention-direction"
+    ],
+    "requirement": "Build a Silk Road trade-route planner. The page exposes a `@route-canvas` region seeded with clickable city markers (Kashgar, Samarkand, Merv, Baghdad, Aleppo, each with x/y coords), a `@controls` region holding a 'caravan size' slider (5-40 camels), a 'hired guards' slider (0-10), and per-good buy/sell checkboxes, plus an empty `@ledger` region. When the user clicks cities in sequence, the page writes the ordered stops into ui_state; on each change the agent recomputes per-leg gold (e.g. silk bought at 40g in Kashgar sells 120g in Baghdad), bandit expected-loss as a function of leg risk and guard count, and water/food depletion over each leg's day-count, then uses ui_panel into `@ledger` to render a dashboard of stat tiles (net gold, total days, survival risk %), a ui_chart line of cumulative cash across legs, and a table of what to buy and sell in each city. It calls ui_highlight to pulse the single riskiest leg red on the canvas and ui_notify when projected water hits zero before the next oasis. Moving either slider re-runs the whole what-if and re-renders the dashboard, so a tester can drop guards from 6 to 1 and watch expected profit fall as the highlighted danger leg intensifies. The loop continues as the user reorders stops, inserts a detour city, or toggles which goods to carry."
+  },
+  {
+    "id": "hyperparam-what-if-lab",
+    "title": "Hyperparameter What-If Lab",
+    "domain": "data science & ML engineering",
+    "interaction": "slider what-if that recomputes predicted learning curves live",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "The page exposes @region:sliders (range sliders for learning_rate, batch_size, dropout, weight_decay, epochs, plus an optimizer select), @region:curves, @region:metrics, and @region:advice. On load the agent calls ui_layout('sidebar'), mounts a ui_panel into @region:curves with a predicted train/val loss ui_chart(line), and ui_render's stat tiles (predicted val acc, overfit gap, est. train time) into @region:metrics. Whenever the user drags a slider the page posts the config via ui_state; the agent recomputes a heuristic surrogate (e.g., raising LR from 3e-4 to 3e-2 widens the train/val gap and destabilizes the curve) and re-renders the line chart plus stats, using ui_highlight to pulse whichever stat degraded (overfit gap turning red). If two knobs push into a known-bad regime (high LR with dropout 0) it ui_notify's a warning and ui_theme shifts the accent to a caution hue, writing the diagnosis into @region:advice. Concrete: start LR=3e-4, batch=32, dropout=0.1 \u2192 val acc ~0.91; slide dropout to 0.6 and the agent redraws the curve flattening with a 'val acc 0.87 (underfitting)' stat. The loop continues turn after turn as the user hunts the sweet spot."
+  },
+  {
+    "id": "palette-tension-lab",
+    "title": "Palette Tension Lab",
+    "domain": "creative, design & writing",
+    "interaction": "slider what-if that recomputes an accessible color system live",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Expose three author regions: @region:base holding a seed color input plus sliders for hue-spread, saturation, and temperature and a harmony select (analogous/complementary/triadic); @region:grid for a contrast matrix; and @region:preview for a live UI specimen. On each slider commit the agent derives a six-swatch palette, computes WCAG contrast ratios for every text-on-background pairing, renders a contrast table plus a ui_chart bar of AA/AAA pass-fail counts into @region:grid, and mounts a specimen card (button, card, body text) into @region:preview via ui_theme using the seed as accent. Any swatch pairing that fails AA gets a ui_highlight pulse on both swatches, and the agent posts a ui_notify tallying failures. The loop: the tester starts at seed #2F6D8C with triadic harmony, then drags the temperature slider warmer \u2014 the agent recomputes, re-renders the grid, re-themes the preview, and warns 'ochre-on-cream now fails AA (3.9:1).' State (seed, slider values) lives in ui_state so every nudge re-enters the same simulation."
+  },
+  {
+    "id": "incident-triage-war-room",
+    "title": "Incident Triage War Room",
+    "domain": "operations, logistics & incident response",
+    "interaction": "ui_ask incident-command interview driving a live dashboard",
+    "patterns": [
+      "dashboard",
+      "feedback-loop",
+      "attention-direction"
+    ],
+    "requirement": "The page exposes a dashboard with author regions @masthead (a stat row: severity, error rate, duration, blast radius), @runbook (a checklist card), @timeline (an event ribbon), and @comms (a draft status update). The user pastes a raw alert such as 'Payment API p99 latency 4200ms, error-rate 12%, 3 of 8 hosts unhealthy, started 14:03 UTC'; the agent calls ui_layout('dashboard'), parses it into ui_stat tiles in @masthead, and runs the incident-command interview one decision at a time with ui_ask \u2014 'Declare incident? (SEV1/SEV2/SEV3)', 'Page secondary on-call?', 'Open a bridge?' \u2014 blocking on each answer and branching. After each answer it ui_render's the next runbook step into @runbook, appends the action to @timeline, ui_highlight's the affected service in pulse-red, and fires ui_notify toasts for paging. Declaring SEV1 escalates ui_theme to a red 'critical' accent and drafts a stakeholder update into @comms; a later downgrade relaxes both. The loop continues turn by turn until the operator marks the incident mitigated, at which point the agent composes a closeout summary from the accumulated timeline. This keeps the LLM, the backend, and the on-call human in one command cycle rather than a single canned response."
+  },
+  {
+    "id": "portfolio-stress-lab",
+    "title": "Portfolio Stress Lab",
+    "domain": "finance / portfolio risk & scenario analysis",
+    "interaction": "slider what-if with scenario shocks",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Expose an author @weights region with five sliders (US equity, intl equity, bonds, gold, cash) constrained to sum to 100%, an @scenario region with a select of historical shocks (2008 GFC, 2020 COVID crash, 2022 rate shock, custom), and an empty @dashboard region plus a 'Stress' submit button. On submit the agent applies each asset's historical shock beta to the current weights and computes portfolio shock return, max drawdown, 95% VaR, and estimated recovery months, then calls ui_layout('dashboard') and composes it: ui_panel stat tiles for shock loss / VaR / drawdown into @dashboard, a ui_chart line of the stressed equity curve vs baseline, and a ui_chart bar of loss contribution by asset. It uses ui_highlight to pulse the single asset contributing the most loss, ui_notify when VaR breaches a -15% threshold, and ui_state to remember weights so a scenario change re-runs against the same book. The loop: the user nudges any slider or picks a new scenario, the agent re-runs the shock math and re-renders the whole dashboard. Concrete test: 60/20/10/5/5 under the 2022 rate shock should surface a ~-18% drawdown with bonds contributing an outsized loss, and the bonds bar should pulse."
+  },
+  {
+    "id": "circuit-bench-sandbox",
+    "title": "Circuit Bench Sandbox",
+    "domain": "Electrical engineering / physics",
+    "interaction": "drag-to-compose netlist that the agent re-solves and annotates on every edit",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction",
+      "feedback-loop"
+    ],
+    "requirement": "The page exposes three author regions: @parts-tray (draggable chips for DC source, resistor, capacitor, LED, and ground, each with an inline value field), @breadboard (a droppable node grid where the user wires components), and @meter-panel (an empty readout column). The user drags parts onto @breadboard and connects nodes \u2014 e.g. a 9 V source feeding a 1 kOhm then a 2.2 kOhm resistor to ground \u2014 and every drop or value edit pushes the current netlist through ui_state. On each change the agent runs nodal analysis, then uses ui_render to overlay per-node voltage labels and branch-current arrows inside @breadboard, ui_panel to mount a measurements table plus stat tiles (loop current ~2.81 mA, total power ~25 mW) into @meter-panel, and ui_chart to draw the RC charging curve whenever a capacitor is present. It calls ui_highlight to pulse any component dissipating beyond its rating (a 1/8 W resistor at 0.3 W) and fires ui_notify with the fix. If a node is left floating the agent uses ui_ask to make the user designate a ground before re-solving, keeping user, Biorouter backend, and agent in a continuous edit-solve-annotate loop."
+  },
+  {
+    "id": "decision-autopsy-board",
+    "title": "Decision Autopsy Board",
+    "domain": "meeting decisions & action tracking",
+    "interaction": "sequential ui_ask form loop that fills a live dashboard",
+    "patterns": [
+      "dashboard",
+      "feedback-loop",
+      "attention-direction"
+    ],
+    "requirement": "Expose a masthead with a large textarea and an Analyze button, plus author regions @region:decisions, @region:actions, @region:open-questions, and @region:health. When the user pastes raw meeting notes and clicks Analyze, the agent calls ui_layout('dashboard') and composes the board: ui_panel a Decision / Rationale / Confidence table into @region:decisions, ui_panel an Owner / Task / Due / Status table into @region:actions, ui_render a markdown list into @region:open-questions, and ui_panel stat tiles (# decisions, # unowned actions, # blocked) into @region:health. It then ui_highlight (pulse) every action row that has no owner and starts a ui_ask feedback loop, asking one unowned action at a time \u2014 'Who owns \"update the investor deck\" and by when?' with an input+date form \u2014 writing each answer back into the actions table, clearing that highlight, and recomputing the health tiles each turn. When the last owner is assigned it ui_notify a success toast and ui_theme the accent to green. Example: pasting 'We decided to delay launch to Q3. Someone must update the investor deck. Open question: do we still hit the compliance deadline?' yields 1 decision, 1 unowned action, and 1 open question, and the agent asks who owns the deck update."
+  },
+  {
+    "id": "pk-dose-navigator",
+    "title": "PK/PD Dose Navigator",
+    "domain": "clinical pharmacology / therapeutic drug monitoring",
+    "interaction": "slider what-if over a live PK model",
+    "patterns": [
+      "simulation",
+      "attention-direction",
+      "dashboard"
+    ],
+    "requirement": "The page exposes a @controls region with sliders (dose mg, interval h, patient weight kg, creatinine clearance mL/min, infusion time) plus a drug select (vancomycin, gentamicin, tobramycin), a @curve region for a concentration-time chart, a @metrics region of stat tiles (Cmax, trough/Cmin, AUC24, %T>MIC), and a @regimen region for a dosing table. Whenever the user moves a slider the page posts the values via ui_state; the agent recomputes a one/two-compartment PK model (clearance scaled to CrCl and weight), then calls ui_chart to redraw the 48h concentration curve, ui_render to refresh the stat tiles, and ui_highlight to pulse the trough tile red when it crosses the nephrotoxic band (e.g. vancomycin trough >20 mg/L) or the AUC tile when AUC24 leaves the 400-600 target window. It also drops a ui_notify toast summarizing target attainment, and when a regimen misses target it writes an adjusted regimen into the @regimen table. Concrete: vancomycin 1000 mg q12h, 80 kg, CrCl 60 predicts trough ~18 mg/L and AUC24 ~520; dragging the interval to q8h pushes the trough to ~24 and the trough tile flashes with a de-escalation suggestion. The loop is drag slider -> recompute model -> re-render curve/tiles -> attention shift, repeating every input change."
+  },
+  {
+    "id": "mastery-ladder-quiz",
+    "title": "Mastery Ladder Quiz",
+    "domain": "education & adaptive learning",
+    "interaction": "ui_ask adaptive-difficulty quiz loop with a live mastery board",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "dashboard"
+    ],
+    "requirement": "Expose three author regions: a sidebar @region:masterboard, a central @region:question, and a bottom @region:history strip; open with ui_layout('sidebar'). The agent serves one multiple-choice item at a time via ui_ask at a difficulty level held in ui_state (e.g. level 3 of 5 within topic 'cell biology'), and after each submit it updates ui_state.streak plus per-sub-skill correctness, recomputes an ability estimate, and steps difficulty up on two correct in a row or down on a miss. It then ui_render's the masterboard as a radar chart across sub-skills (membranes, energy, division, genetics) with progress bars, and appends the answered item to @region:history with a green/red badge. When any sub-skill crosses 80% it ui_notify's a 'mastered' toast and ui_highlight's that radar spoke. Concrete drive: the student answers three mitochondria items correctly so the agent climbs to level 5, then misses an ATP-synthase item and drops to level 4 while the 'energy' spoke visibly dips. The loop ends when all sub-skills are green or the student clicks a 'finish' button, at which point the agent ui_panel's a session summary."
+  },
+  {
+    "id": "civic-budget-tradeoff-lab",
+    "title": "Civic Budget Trade-off Lab",
+    "domain": "civic / public finance",
+    "interaction": "slider what-if budget allocation with live consequence recompute",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "The HTML exposes a `@sliders` region with one range input per department (Police, Schools, Transit, Parks, Housing, Sanitation) constrained to a fixed $1.2B cap, plus a `@ledger` region and an `@impact` region. On load the agent calls ui_layout('dashboard') and ui_panel to seed a balanced baseline, then on every slider change the page pushes the new allocation into ui_state; the agent recomputes per-department service outcomes (e.g., Transit -$40M -> 3 bus lines cut, +8-min avg commute), the running surplus/deficit, and a 'who is hurt most' tally. It re-renders a ui_chart (stacked bar of this-year vs. prior-year allocation) into `@ledger` and ui_stat cards plus a ui_table of concrete consequences into `@impact`, and uses ui_highlight to pulse any department pushed below its mandated minimum and ui_notify when the budget tips into deficit. If the user zeroes a legally-mandated service the agent fires ui_ask ('Sanitation is below the health-code floor - cut Parks or accept a deficit?') and branches on the answer. The loop repeats every drag: reallocate -> backend recomputes -> dashboard and highlights update so trade-offs are felt live. Example: dragging Schools from $300M to $420M should raise a deficit toast and highlight Housing as the newly starved line."
+  },
+  {
+    "id": "faction-forge",
+    "title": "Faction Forge",
+    "domain": "games, geospatial & interactive worlds",
+    "interaction": "ui_ask worldbuilding interview + adaptive diplomacy loop",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "dashboard"
+    ],
+    "requirement": "Build a fantasy-world faction simulator that grows from an interview. On first turn the agent uses ui_ask to collect the world's name and then, in a loop, up to four factions (name, core resource, chief grievance, military strength 1-10), blocking on each submission. Once seeded it composes a dashboard via ui_panel: a ui_graph relationship network where edge color encodes alliance vs. rivalry, stat tiles for each faction's power, and a tension table of flashpoints (e.g. 'Ironhold and Saltmere both claim the Copper Fen'). Each subsequent turn the agent ui_asks the player a single diplomatic decision (broker peace, arm a proxy, seize territory, stay neutral) and simulates the consequence \u2014 shifting powers, redrawing graph edges, spawning a new grievance \u2014 while accumulating the player's choices in ui_state as an alignment vector (warmonger vs. diplomat vs. mercantile). It adapts: a player who keeps choosing force triggers escalating arms-race events and a red ui_theme accent, while a diplomat unlocks council events; ui_highlight focuses the graph node that just changed allegiance. A tester can run three turns and watch the network and event tone bend toward their revealed play pattern."
+  },
+  {
+    "id": "model-arena-leaderboard",
+    "title": "Model Arena Leaderboard",
+    "domain": "data science & ML engineering",
+    "interaction": "drag model chips into an arena to compose a head-to-head dashboard",
+    "patterns": [
+      "dashboard",
+      "feedback-loop"
+    ],
+    "requirement": "The HTML exposes @region:bench (a shelf of draggable model chips: resnet50, vit-b16, efficientnet-b3, convnext-t), a drop zone @region:arena, @region:compare, and @region:verdict. The user drags 2-4 chips into the arena; each drop posts the model id via ui_state. The agent composes a comparison dashboard: a ui_panel into @region:compare holding a radar ui_chart across accuracy/latency/params/memory/robustness, a sortable ui_table of raw metrics, and stat tiles for the current leader. As chips are added or removed the agent recomputes the Pareto front, uses ui_highlight to outline the non-dominated models, and ui_render's a plain-English verdict into @region:verdict. Concrete: drop resnet50 (76.1% / 4.1ms) and vit-b16 (81.1% / 8.7ms) and the agent shows ViT ahead on accuracy but ResNet on latency and marks both Pareto-optimal; add efficientnet-b3 and it flags it dominated and greys the chip. Each new leader triggers a ui_notify so the head-to-head evolves as the user reshuffles the roster."
+  },
+  {
+    "id": "narrative-arc-atelier",
+    "title": "Narrative Arc Atelier",
+    "domain": "creative, design & writing",
+    "interaction": "drag beats onto a timeline while a tension curve and cast graph recompute",
+    "patterns": [
+      "dashboard",
+      "simulation",
+      "attention-direction"
+    ],
+    "requirement": "Lay out @region:beats as a 12-slot Save-the-Cat timeline fed by a draggable beat-card tray, @region:tension for a line chart, and @region:cast for a character graph, with a genre select and a per-beat tension slider (0-10). As the writer drags 'Midpoint' and 'All Is Lost' onto slots and sets tension values, the agent recomputes the pacing curve and re-renders it as a ui_chart line into @region:tension, updates a ui_graph of which characters appear in which beats into @region:cast, and flags a sagging middle by ui_highlighting beats 5-7 when their average tension drops below threshold. Concrete drive: load a thriller with Midpoint tension at 4, see the sag warning, then raise Midpoint to 8 \u2014 the agent re-renders the curve, clears the highlight, and posts ui_notify 'pacing recovered, act-two momentum restored.' The whole board persists in ui_state so each drag or slider change is a fresh what-if the agent reacts to across turns."
+  },
+  {
+    "id": "supply-shock-simulator",
+    "title": "Supply Shock Simulator",
+    "domain": "operations, logistics & incident response",
+    "interaction": "slider what-if recompute across SKUs",
+    "patterns": [
+      "simulation",
+      "dashboard"
+    ],
+    "requirement": "Author region @controls holds four labeled sliders \u2014 supplier lead time (7-56 days), demand spike (0-200%), port-closure duration (0-21 days), and safety-stock weeks (0-8) \u2014 plus a 'reset baseline' button, while @panels holds the results. Seed with 5 SKUs (baseline lead time 14d, demand 1000 units/wk, on-hand 3000). On every slider change the page writes ui_state and the agent recomputes days-of-cover, projected stockout date, and required reorder quantity per SKU, then re-renders a ui_chart projected-inventory curve and a ui_table ranking SKUs by stockout risk into @panels. Any SKU that goes negative within the horizon gets ui_highlight red plus a ui_notify warning, and the agent narrates which single lever moved total risk the most so the user can find the cheapest mitigation. For example, dragging lead time to 28d and demand to +50% should flip two SKUs to 'stockout in ~3 weeks' and set their reorder-now flag. The what-if loop is continuous: the operator keeps nudging levers and the dashboard re-derives the whole risk picture each time."
+  },
+  {
+    "id": "cashflow-envelope-coach",
+    "title": "Cashflow Envelope Coach",
+    "domain": "personal finance / budgeting & cash-flow",
+    "interaction": "sequential ui_ask intake with behavior-adaptive rebalancing",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking"
+    ],
+    "requirement": "Provide an @intake region for forms, an @envelopes region for budget cards, and an @summary region for totals. The agent gathers inputs with a chain of blocking ui_ask forms \u2014 first monthly take-home pay, then a repeatable fixed-bills form, then a checkbox list of goals (emergency fund, debt payoff, vacation) \u2014 branching on each answer before asking the next. It then builds a zero-based envelope budget (a 50/30/20 baseline adjusted to the declared goals), rendering envelope cards with progress widgets into @envelopes, a stat row (leftover, savings rate) and an allocation pie into @summary. It stores every user edit in ui_state and tracks which envelopes the user repeatedly trims, adapting future recommendations ('you cut groceries twice, so I pre-lowered that envelope'). The loop: the user edits any envelope via an input+submit, the agent rebalances the remaining envelopes to keep the budget zeroed and re-renders, warning via ui_notify when savings rate drops below a floor. Concrete test: $5,000 take-home minus $2,200 fixed yields a proposed $900 savings envelope; the user drops it to $600, the agent reallocates $300 to debt and toasts that the savings rate fell to 12%."
+  },
+  {
+    "id": "hohmann-transfer-planner",
+    "title": "Hohmann Transfer Planner",
+    "domain": "Aerospace / orbital mechanics",
+    "interaction": "slider what-if with a min-fuel vs min-time ui_ask branch",
+    "patterns": [
+      "simulation",
+      "feedback-loop",
+      "dashboard"
+    ],
+    "requirement": "Author regions are @controls (sliders for departure altitude r1, target altitude r2, and plane-change inclination di), @orbit-view (an SVG showing Earth plus parking, transfer, and target ellipses), and @budget (a delta-v breakdown). The user sets r1 = 400 km LEO and r2 = 35,786 km GEO; each slider move pushes values through ui_state. The agent computes both Hohmann burns, transfer time, and total delta-v, then uses ui_render to draw the transfer ellipse into @orbit-view scaled to the inputs, ui_panel to mount a delta-v budget table plus stat tiles (burn1, burn2, TOF ~5.3 h) into @budget, and ui_chart to plot a delta-v-versus-target-altitude sweep. Before optimizing it uses ui_ask to ask 'prioritize minimum fuel or minimum time?' and branches to a bi-elliptic vs direct solution, then uses ui_highlight to flag the regime where a large plane change makes bi-elliptic cheaper. The loop is: move a slider, agent recomputes, agent re-renders the orbit and budget."
+  },
+  {
+    "id": "okr-confidence-cockpit",
+    "title": "OKR Confidence Cockpit",
+    "domain": "OKR / goal cockpit with what-if forecasting",
+    "interaction": "slider what-if that recomputes goal health in real time",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Expose @region:objectives (objective cards, each with 0-100 progress sliders per key result and a 3-way confidence pill), @region:rollup, and @region:narrative. The agent seeds or ingests three objectives of three key results each, composing a ui_panel per objective with its sliders, a ui_chart attainment gauge into @region:rollup, and a ui_panel heatmap (objective x KR, colored by confidence) beside it. Whenever the user drags a KR slider the page writes ui_state and the agent recomputes that objective's confidence-weighted attainment and end-of-quarter forecast, re-renders the gauge and heatmap, ui_highlight (focus) any objective that drops into the at-risk band (attainment < 40 with low confidence), and updates a short 'what changed' note in @region:narrative. If the overall forecast dips below target it ui_theme the accent to amber and ui_notify which objective became the binding constraint. Example: dragging 'Grow trial signups' from 70 to 30 flips 'Expand top of funnel' red, drops the gauge 62 to 48, turns its heatmap cell amber, and the narrative reads 'Funnel is now the binding constraint.'"
+  },
+  {
+    "id": "bayesian-dx-consult",
+    "title": "Bayesian Differential Consult",
+    "domain": "differential diagnosis / clinical reasoning",
+    "interaction": "sequential ui_ask feedback loop",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "attention-direction"
+    ],
+    "requirement": "Author regions are @differential (a ranked list of candidate diagnoses, each with a probability bar and a likelihood-ratio chip), @evidence (a running log of findings the clinician confirmed or denied), and @next (where the current question mounts). The user seeds a one-line presentation such as '34F, 3 weeks fatigue + palpitations + 4 kg weight loss'; the agent builds a prior differential (hyperthyroidism, anxiety, anemia, pheochromocytoma, arrhythmia) and renders it with ui_panel and ui_chart. Each turn it picks the single most discriminating finding and uses ui_ask to render a present/absent/unknown form (e.g. 'Fine resting tremor?'); when the user submits, the agent applies that finding's likelihood ratio, re-sorts the differential, ui_highlight pulses any diagnosis that just crossed a decision threshold, and it appends the answer to @evidence. It accumulates the yes/no pattern in ui_state so it never re-asks a covered finding and always chooses the next question by information gain, stopping when the leader passes ~85% posterior and then rendering a suggested-workup card. The loop is ask -> answer -> re-rank -> next question, with the backend carrying the growing evidence state across many turns."
+  },
+  {
+    "id": "concept-web-weaver",
+    "title": "Concept Web Weaver",
+    "domain": "education & adaptive learning",
+    "interaction": "drag-to-compose concept map diffed live against an expert map",
+    "patterns": [
+      "feedback-loop",
+      "attention-direction",
+      "dashboard"
+    ],
+    "requirement": "Expose a @region:canvas holding a palette of draggable concept chips (for 'photosynthesis': Light, Chlorophyll, CO2, Water, Glucose, O2, Calvin Cycle), a sidebar @region:coach, and a @region:score. The user drags chips onto the canvas and draws directed links between them; each link and node position posts into ui_state.graph. After every edit the agent compares the learner's graph to a stored expert concept map and re-renders the canvas via ui_graph, coloring correct links green, missing expert links as dashed ghost edges, and incorrect links red, then ui_highlight's the single most important missing link and writes a Socratic hint into @region:coach ('what molecule actually absorbs the light?'). A ui_stat pair in @region:score shows coverage % and precision so the dashboard tracks progress. Concrete drive: the user links Light directly to Glucose; the agent flags it red, ghosts in Light->Chlorophyll->Calvin Cycle->Glucose, and nudges toward the intermediate. When coverage reaches 100% the agent calls ui_theme to a success accent and ui_panel's a completion card."
+  },
+  {
+    "id": "argument-cartographer",
+    "title": "Argument Cartographer",
+    "domain": "social / discourse & rhetoric",
+    "interaction": "drag/click-to-compose argument graph the agent scores and critiques",
+    "patterns": [
+      "dashboard",
+      "attention-direction",
+      "feedback-loop"
+    ],
+    "requirement": "The page exposes a `@canvas` region hosting a node/edge argument map, a `@composer` row (text input + a node-type select of Claim / Evidence / Rebuttal / Assumption + an 'add link' button to draw support/attack edges), and a `@scorecard` region. As the user submits nodes and links, the page writes the evolving structure to ui_state; the agent renders it with ui_graph (green support edges, red attack edges), computes each claim's dialectical strength (support minus successful rebuttal), and flags likely fallacies (an Evidence node with no source -> 'unsupported assertion'; a Rebuttal that restates its target -> 'circular'). It posts a ui_chart bar of claim strengths and a ui_table of detected fallacies into `@scorecard`, and uses ui_highlight to focus the single weakest load-bearing claim (highest downstream dependence, lowest support). When the user clicks a node the agent uses ui_ask to offer targeted moves ('This claim rests on one anecdote - add a statistic, concede, or reframe?') and re-scores after they pick. Example: entering 'Remote work lowers productivity' as a Claim backed only by 'my team slacked off' should highlight it as weak and suggest steelmanning. The loop is add/link/click -> agent re-scores and redirects attention to the next weak point."
+  },
+  {
+    "id": "bazaar-tycoon",
+    "title": "Bazaar Tycoon",
+    "domain": "games, geospatial & interactive worlds",
+    "interaction": "supply/demand sliders driving a live market simulation",
+    "patterns": [
+      "simulation",
+      "dashboard"
+    ],
+    "requirement": "Build a medieval market-economy game centered on live price simulation. The page has a `@market-board` region (a price table for six goods \u2014 grain, cloth, iron, spice, wine, salt \u2014 plus a ui_chart line of each good's price over the last ten simulated days) and a `@ledger` region showing gold, inventory stats, and net worth. Controls in a `@trading-desk` region give a per-good buy/sell quantity slider and a 'haggle aggressiveness' slider (0-100), plus a 'advance day' button. When the user sets quantities and advances, the agent runs a supply/demand model with per-good price elasticity and injects rival-merchant behavior and random events (a caravan flood crashing spice, a blight spiking grain), recomputes every price, updates the player's gold and holdings, and re-renders the board. It uses ui_notify to flag a price crash or a windfall and ui_highlight to outline the good that moved most that day. Because prices react to the player's own volume, dumping 200 units of cloth visibly depresses cloth \u2014 a tester can verify the what-if by over-selling and watching the price line bend down and the next day's stat tiles reflect the loss."
+  },
+  {
+    "id": "data-quality-triage",
+    "title": "Data Quality Triage Room",
+    "domain": "data science & ML engineering",
+    "interaction": "ui_ask remediation loop that walks issues one decision at a time",
+    "patterns": [
+      "dashboard",
+      "feedback-loop",
+      "attention-direction"
+    ],
+    "requirement": "The page exposes @region:summary, @region:issues, @region:decision, and @region:log, seeded with a dataset profile (e.g., a 12-column customer_churn.csv with 7% nulls in 'age', a skewed 'tenure', and 98% one-class 'is_fraud'). The agent composes a data-quality dashboard: a ui_panel into @region:summary with stat tiles (rows, dup %, null %, class balance) and a per-column missingness ui_chart(bar), then a ranked ui_table of issues into @region:issues sorted by severity. For each top issue it uses ui_ask to render a form in @region:decision \u2014 e.g., \"'age' has 7% nulls: [impute median] [drop rows] [flag & keep]\" \u2014 and BLOCKS until the user submits; the choice returns mid-turn, the agent applies it, appends to a ui_render change-log in @region:log, recomputes the health score, and advances to the next issue. ui_highlight focuses the row currently under decision and ui_theme greens up as the health score climbs. The loop ends when remaining severity drops below a threshold and the agent ui_notify's a clean bill."
+  },
+  {
+    "id": "brand-genome-interview",
+    "title": "Brand Genome Interview",
+    "domain": "creative, design & writing",
+    "interaction": "branching ui_ask interview that composes a brand dashboard",
+    "patterns": [
+      "feedback-loop",
+      "dashboard"
+    ],
+    "requirement": "Keep the HTML minimal \u2014 a title and one output region @region:brand \u2014 and drive everything through a chain of ui_ask forms that BLOCK for each answer. Q1 asks for audience (select), Q2 places the brand on playful-serious and classic-modern axes (two sliders in the form), Q3 asks for two admired brands (inputs), and the answers branch the path: 'serious + classic' leads to a heritage question, 'playful + modern' leads to a boldness question. After about five asks the agent composes a brand dashboard into @region:brand: a palette panel, a type-pairing panel, a voice-attributes stat panel, a one-sentence positioning text card, and a do/don't table. A 'refine voice' button re-opens a targeted ui_ask and recomposes only the voice panel, so the interview loop can revisit any facet. Example run: audience 'indie game devs', playful 8 / modern 9, admires Figma and Discord \u2014 the agent returns a punchy electric palette and a grotesque + mono type pairing."
+  },
+  {
+    "id": "shift-mosaic-scheduler",
+    "title": "Shift Mosaic Scheduler",
+    "domain": "operations, logistics & incident response",
+    "interaction": "drag-to-compose staffing board with adaptive gap-filling",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "attention-direction"
+    ],
+    "requirement": "The HTML exposes @roster (draggable staff chips tagged with role and max hours, e.g. 'Ana RN 36h', 'Ben LPN 40h'), @grid (a 7-day x 3-shift day/eve/night board of drop targets), and @scorecard. Each time the user drops a chip onto a shift cell the page reports the assignment via ui_state and the agent re-evaluates coverage minimums, required skill mix, overtime, and a fairness index, rendering ui_stat coverage% and a ui_chart of hours-per-person into @scorecard. Understaffed or skill-illegal cells get ui_highlight amber/red with a ui_notify explaining the violation ('Night Wed: 1 RN, needs 2'). The agent also tracks the running pattern in ui_state \u2014 if the operator repeatedly leaves nights thin it proactively surfaces that tendency and, via ui_ask, offers to auto-complete the remaining gaps subject to a max-overtime the user sets. Accepting makes the agent ui_render a proposed set of fills the user can keep or drag-override, and the cycle repeats as more chips are placed. The board is a living negotiation between the operator's drags and the agent's coverage math."
+  },
+  {
+    "id": "option-payoff-forge",
+    "title": "Option Payoff Forge",
+    "domain": "markets / derivatives & option strategies",
+    "interaction": "click-to-compose legs with live payoff recompute",
+    "patterns": [
+      "feedback-loop",
+      "simulation",
+      "dashboard"
+    ],
+    "requirement": "Render a @legbuilder region with four buttons (Buy Call, Sell Call, Buy Put, Sell Put) that each open a small strike/premium/quantity input, a live table of current legs, and a spot-price slider; plus a @payoff chart region and a @greeks stat region. The agent keeps the leg list in ui_state and on every add/remove recomputes the combined payoff across a spot range, breakevens, max profit/loss, net debit/credit, and aggregate delta/theta/vega. It renders a ui_chart line for the payoff curve with the zero line, a table of legs, and stat tiles for max P/L and breakevens, then pattern-matches the legs to a named structure (vertical spread, straddle, iron condor) and announces it via ui_notify. As the user drags the spot slider the agent marks current P/L and ui_highlights the breakeven region of the chart. The loop: adding or removing a leg re-renders the payoff and re-identifies the structure. Concrete test: Buy 100-strike call @2.50 plus Sell 110-strike call @1.00 should be labeled 'Bull Call Spread' with max profit $750 above 110 and breakeven 101.50 highlighted."
+  },
+  {
+    "id": "stoichiometry-reactor-bench",
+    "title": "Stoichiometry Reactor Bench",
+    "domain": "Chemistry",
+    "interaction": "ui_ask form loop that balances, finds the limiting reagent, then re-explores",
+    "patterns": [
+      "feedback-loop",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "The page declares three regions: @equation (the balanced reaction display), @yield-board (stat tiles plus a per-species table), and @consumption (a chart). The agent opens the turn by using ui_ask to render a form collecting reactants, amounts, and the target product \u2014 for example 4.0 g H2 plus 32 g O2 forming H2O. It balances the reaction (2 H2 + O2 -> 2 H2O), identifies the limiting reagent (O2), and computes theoretical yield and excess remaining, then uses ui_render to write the balanced equation with coefficients into @equation, ui_panel to mount stat tiles (limiting reagent, yield 36 g, percent excess) and a mole table into @yield-board, and ui_chart to plot reactant consumption as the amounts scale. It uses ui_highlight to mark the limiting species, then uses ui_ask again \u2014 'explore a different limiting reagent or add excess?' \u2014 and re-runs the whole computation, so successive forms keep the user and agent cycling through what-if reaction conditions."
+  },
+  {
+    "id": "evidence-mosaic",
+    "title": "Evidence Mosaic",
+    "domain": "literature-synthesis board",
+    "interaction": "drag claims into agree/tension buckets, agent re-synthesizes",
+    "patterns": [
+      "dashboard",
+      "feedback-loop",
+      "attention-direction"
+    ],
+    "requirement": "Expose @region:inbox (staged claim cards), three drop-zones @region:supports / @region:tension / @region:unsorted, plus @region:synthesis and @region:map. The user pastes a set of abstracts or findings and the agent splits them into draggable claim cards in the inbox. As the user drags each card into a bucket (or clicks a card to have the agent suggest one), the page posts the arrangement as ui_state; the agent re-reads it, updates a ui_graph in @region:map (claim nodes, edges = agree/contradict), and rewrites a running ui_render synthesis in @region:synthesis that separates the consensus from the contested points. It ui_highlight (pulse red) any claim that contradicts the current majority and ui_notify when a genuinely contested cluster forms, and when asked it names the next claim to place and ui_highlight its suggested bucket. Example: three abstracts say 'intermittent fasting improves HbA1c' and one says 'no significant effect'; dragging them in builds a 4-node graph with one contradiction edge and a synthesis noting 3:1 support with the null result flagged."
+  },
+  {
+    "id": "cohort-forge",
+    "title": "Cohort Forge",
+    "domain": "cohort explorer / observational study design",
+    "interaction": "drag-to-compose inclusion/exclusion builder",
+    "patterns": [
+      "dashboard",
+      "feedback-loop"
+    ],
+    "requirement": "The HTML lays out a @criteria shelf of draggable chips (age>=65, HbA1c>7.0%, on metformin, eGFR<60, prior MI, current smoker), two drop zones @include and @exclude, and a @dashboard region. As the user drags chips between the buckets and clicks Apply, the page emits the current criteria set via ui_state; the agent queries a synthetic cohort table, computes the resulting N, and uses ui_layout dashboard mode to compose coordinated panels: an attrition funnel (base N shrinking after each criterion), an age histogram via ui_chart, a sex/comorbidity breakdown table, and stat tiles for median age, %female, and mean HbA1c. If a combination drops N below a usable floor (say <50) the agent fires ui_notify and ui_highlight on the offending chip and suggests relaxing it. Concrete: dragging age>=65 + HbA1c>7.0% + eGFR<60 into Include collapses a 10,000-patient base to N=214, with the funnel showing exactly where each filter cut. The loop re-runs the whole dashboard composition every time the user reshapes the buckets."
+  },
+  {
+    "id": "retention-forecast-lab",
+    "title": "Retention Forecast Lab",
+    "domain": "education & adaptive learning",
+    "interaction": "slider what-if simulation of a spaced-repetition schedule",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Expose a @region:controls with sliders for daily-study-minutes (5-120), deck-size (20-500 cards), and target-retention (80-99%) plus a card-difficulty select, alongside a @region:curves and a @region:calendar. On every slider change the page writes ui_state and the agent recomputes an SM-2/Ebbinghaus forgetting model: expected recall across 30 days, projected daily review load in minutes, and each card's next-due date. It ui_render's @region:curves with a line chart (retention vs days, current settings overlaid on proposed) and a bar chart of daily review minutes, and paints @region:calendar as a heatmap of upcoming review load. When projected daily load exceeds the study budget the agent ui_notify's the overage ('over budget by 18 min/day') and ui_highlight's the slider driving it. Concrete drive: raising deck-size from 100 to 300 at 20 min/day turns the calendar red, and the agent recommends dropping target-retention to 85% or lifting the budget to 35 min/day. Nothing is ever 'submitted' \u2014 every change simply re-simulates and re-renders."
+  },
+  {
+    "id": "open-response-theme-lab",
+    "title": "Open-Response Theme Lab",
+    "domain": "social / survey research",
+    "interaction": "click-to-drill theme dashboard that adapts to the user's attention",
+    "patterns": [
+      "dashboard",
+      "feedback-loop",
+      "behavior-tracking"
+    ],
+    "requirement": "The HTML has an `@intake` region with a large textarea (one free-text survey answer per line) plus a 'load sample dataset' button, a `@themes` region, and a `@drill` region. On submit the agent clusters the responses into themes and lays out ui_panel + ui_chart (donut of theme share) + ui_table (theme, count, avg sentiment, exemplar quote) into `@themes` via ui_layout('sidebar'). Clicking a theme row sets ui_state.selectedTheme; the agent renders a drill panel into `@drill` with representative verbatims, a sentiment histogram, and 2-3 suggested follow-up survey questions, using ui_highlight to tie the clicked row to its drill panel. The agent tracks in ui_state which themes the user drills into and how long they dwell, and after a few drills it re-ranks the theme list to surface the user's apparent priorities and ui_notifies a draft executive summary weighted toward them. Example: pasting 30 employee-engagement comments yields themes like 'Compensation', 'Manager trust', 'Remote flexibility'; drilling Compensation twice makes the agent lead the summary with pay. The loop: paste -> cluster dashboard -> click to drill -> agent adapts ranking and summary to the user's pattern."
+  },
+  {
+    "id": "wanderlust-router",
+    "title": "Wanderlust Router",
+    "domain": "games, geospatial & interactive worlds",
+    "interaction": "ui_ask ratings that re-optimize the remaining itinerary",
+    "patterns": [
+      "behavior-tracking",
+      "feedback-loop",
+      "dashboard"
+    ],
+    "requirement": "Build an adaptive city-itinerary optimizer. The user submits a city and trip length (e.g. 'Kyoto, 4 days') via an input in the `@brief` region; the agent composes a day-by-day dashboard into `@itinerary`: a stops-per-day timeline table, a running budget stat, a walking-distance stat, and a ui_chart pie of activity categories (temples, food, nature, shopping). After presenting day 1 it uses ui_ask to collect a quick rating \u2014 which stops the user loved, whether the pace felt right, budget concern yes/no \u2014 and blocks until answered. It stores an evolving preference vector in ui_state (e.g. +temples, -long-walks, budget-sensitive) and re-optimizes only the not-yet-locked remaining days to match, swapping stops and rebalancing the category pie. Each swapped stop is announced with ui_highlight so the change is legible, and ui_notify summarizes 'traded 2 shrines for a food-market crawl to cut walking.' A tester can rate day 1 as 'too much walking, loved the food' and confirm days 2-4 shift toward closer, food-heavy stops with the walking stat dropping."
+  },
+  {
+    "id": "feature-importance-explorer",
+    "title": "Feature Importance Explorer",
+    "domain": "data science & ML engineering",
+    "interaction": "click-to-drill exploration that tracks and adapts to what you probe",
+    "patterns": [
+      "behavior-tracking",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "The page exposes @region:ranking, @region:detail, and @region:trail. The agent opens with a global feature-importance ui_chart(bar) in @region:ranking for a gradient-boosted churn model (contract_type 0.28, tenure 0.21, monthly_charges 0.16, support_tickets 0.09, ...). The user clicks any feature bar and the agent drills in: a ui_panel into @region:detail with a partial-dependence ui_chart(line), a SHAP-style beeswarm description, and interaction notes with the top co-feature. It keeps ui_state of every feature opened and the order, and after 3-4 clicks it adapts \u2014 surfacing a 'you keep probing billing features; here's their combined effect' synthesis, reordering the ranking to bubble up unexplored-but-important features, and ui_highlight pulsing the next suggested feature. A breadcrumb of explored features ui_render's into @region:trail. Concrete: click tenure \u2192 PDP showing churn risk dropping after month 12; then click monthly_charges \u2192 the agent notes their interaction and nudges you toward the untouched 'support_tickets'."
+  },
+  {
+    "id": "prosody-forge",
+    "title": "Prosody Forge",
+    "domain": "creative, design & writing",
+    "interaction": "paste verse, switch target form, and re-score meter and rhyme",
+    "patterns": [
+      "dashboard",
+      "simulation",
+      "attention-direction"
+    ],
+    "requirement": "Provide @region:text with a textarea for verse, @region:scan for a scansion table, and @region:rhyme for a rhyme graph, plus a form-target select (Sonnet / Haiku / Ballad / Free) and a strictness slider. When the poet pastes lines the agent scans each into syllables with stressed/unstressed marks, renders a per-line stress-pattern heatmap table into @region:scan, and builds a ui_graph where lines are nodes and rhyme pairs are edges into @region:rhyme, then scores conformance to the chosen form. The what-if: switch the target from Free to Sonnet and the agent re-scores against iambic pentameter and ABAB, ui_highlights the exact lines that break the meter or scheme, and posts ui_notify 'line 3 runs to 11 syllables; no volta detected at line 9.' Drive it with the quatrain 'The winter light falls thin across the sill / and pools like water on the kitchen floor / I hold my coffee, waiting for the still / that never comes, and never came before' \u2014 expect a near-iambic pass with a flagged feminine ending."
+  },
+  {
+    "id": "sla-heat-console",
+    "title": "SLA Heat Console",
+    "domain": "operations, logistics & incident response",
+    "interaction": "click-to-triage queue that re-ranks to the operator's revealed priorities",
+    "patterns": [
+      "behavior-tracking",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Author regions are @queue (a ticket table), @trends (burn-down charts), and @focus (the recommended next action). The agent ingests a queue of ~20 tickets, each with priority, category, opened-at, and SLA target, and computes time-to-breach, rendering a ui_table sorted by breach ETA and a ui_chart of breaches-by-category into @trends. The user works the queue by clicking a ticket's action \u2014 triage, escalate, defer, or resolve \u2014 and every click is written to ui_state. The agent tracks the accumulated pattern (which categories and severities this operator consistently prioritizes or defers) and continuously re-ranks the queue to match, ui_highlight'ing the single next-best ticket in @focus with a one-line justification. When a ticket crosses into imminent-breach it fires ui_notify and bumps ui_theme density to compact so more of the queue is visible. Over a session the agent's recommendation in @focus should visibly drift away from the static SLA sort toward the user's revealed priorities, demonstrating adaptation rather than a fixed ranking."
+  },
+  {
+    "id": "recession-radar",
+    "title": "Recession Radar",
+    "domain": "economics / macro-indicator tracking",
+    "interaction": "click-to-drill dashboard the agent composes from indicator picks",
+    "patterns": [
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Expose a @picker region with a checkbox list of macro indicators (10y-2y yield curve, unemployment trend, PMI, credit spreads, real retail sales, initial claims), a @grid region for the dashboard, and a @verdict banner region. When the user checks indicators the agent calls ui_layout('dashboard') and composes one ui_panel per chosen indicator into @grid \u2014 each a sparkline ui_chart plus a stat with the current value and a colored badge (expansion / warning / contraction). It scores an aggregate recession-probability gauge, writes a regime verdict into @verdict, shifts ui_theme accent toward amber then red as aggregate risk rises, and ui_highlights whichever indicator most recently flipped negative. Clicking an indicator's panel drills in: the agent renders that series' fuller history and explains why it is flashing. The loop: adding or removing indicators recomposes the grid and re-scores the gauge. Concrete test: with an inverted curve (-0.4), rising initial claims, and PMI 47, the gauge should read ~62% recession odds, the theme should go amber, the curve panel should pulse, and the verdict should read 'late-cycle warning.'"
+  },
+  {
+    "id": "ashby-materials-selector",
+    "title": "Ashby Materials Selector",
+    "domain": "Materials science / engineering design",
+    "interaction": "click-to-drill Ashby dashboard that learns which properties the user keeps tightening",
+    "patterns": [
+      "dashboard",
+      "attention-direction",
+      "behavior-tracking"
+    ],
+    "requirement": "Regions are @constraints (sliders and checkboxes for max density, min yield strength, max cost, plus an application selector), @ashby-chart (a log-log scatter of Young's modulus versus density), and @shortlist (a ranked table). The user sets 'density < 3 g/cc, strength > 200 MPa, minimize cost' for a bike frame and each change flows through ui_state. The agent filters a ~40-material database, uses ui_chart to draw the Ashby scatter with the feasible region shaded, ui_highlight to outline the Pareto-optimal candidates (6061-Al, Ti-6Al-4V, CFRP), and ui_panel to mount a ranked shortlist with a merit index into @shortlist. Clicking a point makes the agent use ui_panel to drill into that material's full property card. Crucially, the agent uses ui_state to remember which constraints the user repeatedly tightens and adapts both the merit-index weighting and its narration to that revealed preference (e.g. after the user keeps lowering the cost cap, it re-weights toward cost and says so)."
+  },
+  {
+    "id": "rival-radar-matrix",
+    "title": "Rival Radar Matrix",
+    "domain": "competitive-intelligence matrix",
+    "interaction": "click-a-cell to drill plus a ship-this-feature what-if toggle",
+    "patterns": [
+      "dashboard",
+      "feedback-loop",
+      "simulation",
+      "attention-direction"
+    ],
+    "requirement": "Expose @region:setup (inputs for your product, up to five competitors, and the comparison dimensions), @region:matrix, @region:drill, and @region:gaps. The agent builds a ui_panel matrix (competitors x dimensions with cells rated as strong/partial/none) into @region:matrix and ui_stat tiles for your wins / losses / ties into @region:gaps. Clicking any cell makes the agent ui_render a drill panel in @region:drill with the evidence behind that rating and a suggested counter-move, and ui_highlight the whole column so the user sees where that rival is strongest. A what-if checkbox 'assume we ship <feature>' makes the agent recompute the affected row, re-color the cells, update the win/loss stat tiles, and ui_notify how many competitive gaps that would close. Example: a Notion vs Obsidian vs Roam matrix over 'offline, graph view, price' \u2014 clicking our 'graph view' cell drills into why it is only partial, and toggling 'assume we ship native graph' flips two cells and closes one gap."
+  },
+  {
+    "id": "trial-power-studio",
+    "title": "Trial Power Studio",
+    "domain": "clinical trial design / biostatistics",
+    "interaction": "slider what-if with a ui_ask endpoint branch",
+    "patterns": [
+      "simulation",
+      "feedback-loop",
+      "dashboard"
+    ],
+    "requirement": "Regions: @design controls (sliders for effect size/delta, baseline rate, alpha, power target, allocation ratio, dropout %), @power for a power-vs-N curve, @sample for stat tiles (N per arm, total N, expected events), and @timeline for an enrollment Gantt bar. On first run the agent uses ui_ask to choose the endpoint framework (superiority vs non-inferiority, continuous vs binary), which branches the formula it uses for the rest of the session. Thereafter every slider move re-triggers the agent to recompute required sample size and achieved power, redraw the power curve with the current operating point marked, refresh the N tiles, and rescale the enrollment timeline given a monthly accrual rate. ui_highlight flags when the design becomes infeasible (e.g. N per arm exceeds site capacity) and ui_notify summarizes the trade-off. Concrete: binary endpoint, control rate 20%, absolute delta 8%, alpha 0.05, power 0.8 yields ~377/arm; sliding delta down to 5% recomputes to ~957/arm and stretches the timeline from 18 to 40 months. The loop is adjust slider -> recompute -> re-render curve/tiles/timeline, with the ui_ask branch set once up front."
+  },
+  {
+    "id": "misconception-x-ray",
+    "title": "Misconception X-Ray",
+    "domain": "education & adaptive learning",
+    "interaction": "step-by-step ui_ask diagnosis that pinpoints and drills the exact error",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "attention-direction"
+    ],
+    "requirement": "Expose a @region:worksheet showing a multi-step problem with one input slot per step (e.g. 'compute 3/4 - 2/3': find common denominator, convert both, subtract) and a sidebar @region:diagnosis. The agent walks the student through with ui_ask one step at a time, recording each entered value in ui_state.steps and checking it against both the correct value and a library of known misconception signatures. On a wrong step it ui_highlight's that exact slot in red, names the bug in @region:diagnosis ('you subtracted numerators and denominators separately'), and branches to a targeted micro-question rather than advancing. It accumulates which misconception classes the learner trips on across problems in ui_state.profile, so later problems pre-empt the learner's frequent error. Concrete drive: the student answers the subtraction step as 1/1; the agent recognizes the 'add/subtract across' bug, highlights it, and drills equivalent-denominator conversion before resuming. The diagnosis panel keeps a running list of confirmed vs cleared misconceptions as badges."
+  },
+  {
+    "id": "salary-negotiation-dojo",
+    "title": "Salary Negotiation Dojo",
+    "domain": "behavioral / negotiation",
+    "interaction": "ui_ask round-based negotiation against an adaptive AI counterpart",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "simulation"
+    ],
+    "requirement": "The page opens with a `@setup` region (inputs: role, current offer, your target, your BATNA, market band) and, after setup, a `@table` region for the live negotiation plus a `@meter` region. The agent computes and ui_panels a ZOPA/BATNA visualization (ui_chart range bar showing your target, their likely reservation price, and the overlap), then role-plays the hiring manager. Each round it uses ui_ask to present the counterpart's offer and rationale and to collect your response (a form: counter-amount, justification text, and a tactic select of anchor / concede / bundle / walk-threat); it then simulates the counterpart reacting and updates a concession-trajectory ui_chart and a 'deal probability' ui_stat in `@meter`. Across rounds it tracks your behavioral pattern in ui_state (concede too fast? over-anchor? never justify?) and adapts the counterpart's toughness plus a running coaching note, using ui_highlight to flag the exact moment you left money on the table. Example: countering a $150k offer with $148k on round one triggers a 'you barely moved the anchor' coaching flag and a tougher counterpart next round. The loop is offer -> agent counters, re-scores, and coaches -> next round until deal or walk."
+  },
+  {
+    "id": "serengeti-balance",
+    "title": "Serengeti Balance",
+    "domain": "games, geospatial & interactive worlds",
+    "interaction": "ecosystem sliders with instant population recompute",
+    "patterns": [
+      "simulation",
+      "attention-direction"
+    ],
+    "requirement": "Build a predator-prey ecosystem what-if lab. A `@sim-stage` region holds four labeled sliders \u2014 grass regrowth rate, gazelle birth rate, lion predation efficiency, and drought severity \u2014 plus a 'seasons to simulate' input (default 60). On any slider change the agent runs a multi-species Lotka-Volterra-style simulation across the seasons and renders into `@readout`: a ui_chart line of grass, gazelle, and lion populations over time, a ui_graph food-web (grass\u2192gazelle\u2192lion) whose node sizes track final abundance, and stability badges (stable / oscillating / collapse). When any species crashes to extinction the agent uses ui_highlight to pulse that node and flips ui_theme to a red 'ecosystem collapse' accent, then ui_notify names the trigger ('lions starved 8 seasons after gazelle crash'). Sliders are the sole driver, so a tester can push predation efficiency high and watch a boom-bust oscillation tip into a full collapse cascade, then dial drought down and see the system re-stabilize on the next recompute. The whole thing is a continuous what-if loop with no forms to fill."
+  },
+  {
+    "id": "prompt-eval-arbiter",
+    "title": "Prompt Eval Arbiter",
+    "domain": "data science & ML engineering",
+    "interaction": "ui_ask judging loop that infers your rubric weights and recalibrates",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "dashboard"
+    ],
+    "requirement": "The page exposes @region:cases, @region:board, @region:judge, and @region:weights, seeded with a 6-case summarization suite of model A vs model B outputs. The agent lays out a leaderboard: a ui_panel into @region:board with per-criterion stat tiles (faithfulness, concision, tone) and a bar ui_chart of A-vs-B win rates. For each case it uses ui_ask in @region:judge to show both outputs side by side and collect the human verdict ('A better / B better / tie' plus a rubric slider), BLOCKING until submit. It accumulates ui_state of the human's choices, detects the rater's revealed priorities (e.g., they consistently favor concision over completeness), adapts the aggregate scoring weights, re-renders the board, and ui_render's the inferred rubric into @region:weights. When a human verdict disagrees with the model-judge it ui_notify's the conflict and ui_highlight marks the contested case. The loop runs case by case until the suite is judged and a calibrated winner is declared."
+  },
+  {
+    "id": "voiceprint-copy-lab",
+    "title": "Voiceprint Copy Lab",
+    "domain": "creative, design & writing",
+    "interaction": "click-to-pick microcopy A/B rounds that train a learned voiceprint",
+    "patterns": [
+      "behavior-tracking",
+      "feedback-loop"
+    ],
+    "requirement": "Show @region:arena with two-to-four clickable microcopy variant cards and @region:voiceprint with a learned-voice panel, plus a context input and a 'next round' button. The agent generates variants that deliberately differ on tone (playful vs formal), length, and emoji use for a given context like 'checkout CTA for a meditation app'; the user clicks their favorite each round. Each pick is accumulated in ui_state as a voiceprint vector, and the agent adapts the next round toward the emerging preference while rendering a radar of tone axes plus a confidence progress bar into @region:voiceprint. After about four rounds the confidence bar fills, the agent writes a 'your voice' summary card, and generates three final on-brand variants that match the learned profile. The loop is the whole point: early rounds are exploratory and wide, later rounds narrow because the agent is tracking the accumulated pattern of what this user keeps choosing."
+  },
+  {
+    "id": "fault-tree-detective",
+    "title": "Fault Tree Detective",
+    "domain": "operations, logistics & incident response",
+    "interaction": "ui_ask information-gain diagnostic loop over a causal graph",
+    "patterns": [
+      "feedback-loop",
+      "attention-direction",
+      "behavior-tracking"
+    ],
+    "requirement": "The page exposes @graph (a causal hypothesis network), @evidence (facts gathered so far), and @confidence (a stat plus progress bar). The user states a symptom such as 'checkout returned 500s spiking to 30% right after the 14:00 deploy'. The agent seeds a ui_graph of candidate causes (bad deploy, DB saturation, dependency timeout, cache stampede, config drift) linked to the symptom, then runs a diagnostic loop: it uses ui_ask to pose the single most-discriminating yes/no question ('Did DB active connections hit the pool ceiling? Y/N'), and on the answer it prunes or reweights branches, re-renders the graph, appends the fact to @evidence, and updates the ui_confidence stat. It ui_highlight's the surviving most-probable path and dims eliminated nodes so attention tracks the live hypothesis. Each question is chosen to maximize information gain given prior answers, and the loop continues until one root cause exceeds 80% confidence, at which point the agent ui_render's a remediation card. The accumulated answer history shapes which questions come next, so the interrogation is genuinely adaptive."
+  },
+  {
+    "id": "fire-monte-carlo",
+    "title": "FIRE Monte Carlo Simulator",
+    "domain": "personal finance / retirement planning",
+    "interaction": "slider what-if driving a Monte Carlo success probability",
+    "patterns": [
+      "simulation",
+      "feedback-loop",
+      "attention-direction"
+    ],
+    "requirement": "Provide a @levers region with sliders (current age, retirement age, current savings, monthly contribution, expected return, withdrawal rate), an @outcome region for a fan chart and success gauge, and an @notes region. The agent first asks once via ui_ask for target annual retirement spend and risk appetite, then on every slider change runs a Monte Carlo of ~500 return paths and renders a fan chart of balance percentiles, a success-probability gauge, and stat tiles (median nest egg, 10th-percentile depletion age) into @outcome. It ui_highlights the gauge and fires ui_notify when success crosses 90%, and stores the first run in ui_state so subsequent runs annotate 'vs baseline: +8% success.' The loop: the user drags any lever, the agent reruns the simulation and re-renders with the delta called out. Concrete test: age 32, retire 55, $80k saved, $2k/mo, 7% return, 4% withdrawal yields ~74% success; raising contribution to $2.6k/mo pushes it to ~88%, the gauge pulses green, and a toast reads 'you crossed into safe territory.'"
+  },
+  {
+    "id": "active-filter-design-lab",
+    "title": "Active Filter Design Lab",
+    "domain": "Signal processing / analog electronics",
+    "interaction": "slider what-if that redraws Bode and time-domain plots and flags instability",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Author regions: @filter-controls (a type selector LP/HP/BP plus sliders for cutoff fc, order n, and Q), @bode (magnitude and phase plots), and @time-domain (input versus filtered waveform). The user picks a 2nd-order low-pass at fc = 1 kHz, Q = 0.707, and each slider move pushes state through ui_state. The agent computes the transfer function's poles and zeros, uses ui_chart to draw the Bode magnitude and phase into @bode and the response to a chosen test input (a 1 kHz + 5 kHz sum) into @time-domain, and ui_panel to mount stats (-3 dB point, phase margin, group delay). It uses ui_highlight to shade the passband and stopband and mark the cutoff, and ui_notify to warn if a pole crosses into the right-half plane (unstable). Every slider move recomputes the response and re-renders both plots, a tight what-if loop between user, backend, and agent."
+  },
+  {
+    "id": "roadmap-triage-lab",
+    "title": "Roadmap Triage Lab",
+    "domain": "roadmap prioritizer with capacity constraint",
+    "interaction": "weight sliders + lock-a-feature that re-solves the cut line",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "feedback-loop",
+      "attention-direction"
+    ],
+    "requirement": "Expose @region:weights (sliders for Reach / Impact / Confidence / Effort plus a numeric sprint-capacity field), @region:backlog, @region:cutline, and @region:chart. The user pastes about eight features with rough R/I/C/E numbers; the agent computes RICE scores and renders a ranked ui_panel table into @region:backlog with a horizontal capacity cut line, a ui_chart score bar into @region:chart, and stats of items-above-line and total effort. Dragging any weight slider recomputes every score, reorders the list, moves the cut line, and ui_highlight (flash) any item that crossed the line on that recompute; clicking 'lock' on a feature pins it above the line and the agent re-solves the remaining capacity around it, ui_notify when committed effort exceeds capacity. As the list grows it ui_theme to compact density. Example: raising the Effort weight pushes a large 'SSO' item below the line and pulls two quick wins up, and then locking 'SSO' forces two small items back out to fit capacity."
+  },
+  {
+    "id": "variant-verdict-board",
+    "title": "Variant Verdict Board",
+    "domain": "clinical genomics / variant curation",
+    "interaction": "click-to-classify with adaptive queue re-ranking",
+    "patterns": [
+      "behavior-tracking",
+      "feedback-loop",
+      "dashboard"
+    ],
+    "requirement": "A @queue region shows a sortable table of candidate variants (gene, HGVS, consequence, gnomAD AF, CADD, ClinVar stars, in-house count); clicking a row opens a @curation region where the agent lays out the ACMG criteria it can auto-fire (PVS1, PM2, PP3, BS1, ...), computes a classification (Pathogenic / Likely Pathogenic / VUS / Benign), and ui_highlight pulses the criteria that drove the verdict. The clinician confirms, overrides, or downgrades; the agent records each decision in ui_state and tracks the user's implicit thresholds (e.g. they keep calling AF>0.5% benign, or they distrust PP3-only missense calls). It then re-sorts the remaining @queue to surface the variants most likely to fit the user's emerging pattern next, and updates a @stats panel of session throughput (classified so far, %VUS, agreement-with-ClinVar). Concrete: BRCA2 c.5946delT auto-fires PVS1+PM2 -> Likely Pathogenic; after the user twice downgrades PP3-only missense to VUS, the board demotes similar missense and promotes truncating variants to the top. The loop is click -> auto-verdict -> user decision -> learn -> re-rank the queue."
+  },
+  {
+    "id": "curriculum-forge",
+    "title": "Curriculum Forge",
+    "domain": "education & adaptive learning",
+    "interaction": "drag learning objectives into a week grid with DAG + cognitive-load simulation",
+    "patterns": [
+      "dashboard",
+      "simulation",
+      "feedback-loop"
+    ],
+    "requirement": "Expose a @region:backlog of draggable learning-objective chips (each tagged with prerequisites and an estimated load, e.g. 'Derivatives \u2014 req: Limits, 4h'), an 8-week @region:plan grid, and a @region:analytics. As the user drags objectives into week cells the page updates ui_state.plan; the agent rebuilds the prerequisite DAG via ui_graph, draws a red back-edge for any objective scheduled before its prerequisite, and simulates weekly cognitive load, re-rendering @region:analytics as a per-week load bar chart against a capacity line. If a week exceeds capacity or an ordering is invalid the agent ui_highlight's that cell and ui_notify's the conflict, then proposes the earliest valid week. Concrete drive: dropping 'Integrals' into week 2 while 'Derivatives' sits in week 4 draws a red back-edge and the agent suggests moving Integrals to week 5. When the whole plan is valid and under capacity, the agent ui_panel's a 'ready to teach' summary listing the ordered syllabus."
+  },
+  {
+    "id": "fair-districts-studio",
+    "title": "Fair Districts Studio",
+    "domain": "civic / electoral fairness",
+    "interaction": "drag precincts into districts with live gerrymander-detection simulation",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "The HTML renders a `@grid` region as a 6x6 map of precincts, each tagged with population and partisan lean (e.g., 60/40 Blue), a `@districts` legend region, and a `@metrics` region; the user drags precincts to assign each to one of 4 districts. On every assignment the page writes the district map to ui_state and the agent recomputes population balance (max deviation %), compactness, seats-vs-votes, and the efficiency gap, rendering them as ui_stat cards plus a ui_chart (seats won vs. statewide vote share) into `@metrics`. It uses ui_highlight to outline any district that is non-contiguous or that visibly cracks/packs a bloc, and ui_theme to shade the map by the currently selected fairness lens. When the user completes a valid full map the agent uses ui_ask ('Optimize for proportionality, competitiveness, or incumbent protection?') then simulates a suggested precinct swap, previewing the metric change before the user commits. Example: packing all Blue precincts into one district should spike the efficiency gap and pulse a 'packing detected' warning. The loop: drag precinct -> recompute fairness dashboard -> agent highlights the gerrymander and proposes a corrective swap."
+  },
+  {
+    "id": "labyrinth-cartographer",
+    "title": "Labyrinth Cartographer",
+    "domain": "games, geospatial & interactive worlds",
+    "interaction": "click-to-draw a path on a generated maze with a live solver",
+    "patterns": [
+      "feedback-loop",
+      "attention-direction",
+      "behavior-tracking"
+    ],
+    "requirement": "Build a maze puzzle generator with an interactive solver board. The user picks grid size (e.g. 12x12) and difficulty in the `@setup` region; the agent generates a solvable maze and renders it as a clickable cell grid in the `@maze-board` region with a marked start and exit. The user clicks adjacent cells to draw their own route; after each click the agent validates the partial path and uses ui_highlight to flag an illegal move (through a wall) or a dead-end branch, and ui_notify to confirm 'reached the exit in 34 steps' on completion. A 'hint' button reveals the next optimal cell, and a 'solve' button pulses the shortest path cell-by-cell via sequential ui_highlight. The agent tracks solve time, wrong moves, and hint count in ui_state and uses that accumulated pattern to size the next maze \u2014 many hints yields a gentler layout, a fast clean solve yields a larger, trap-heavier one \u2014 reporting the adaptation in a small stats card. A tester can deliberately hit three dead-ends, watch them flash, request a solve, and then see the next generated maze scale to their measured skill."
+  },
+  {
+    "id": "decision-threshold-tuner",
+    "title": "Decision Threshold Tuner",
+    "domain": "data science & ML engineering",
+    "interaction": "slider what-if over the decision threshold with a cost-aware recommendation",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "The page exposes @region:slider (a decision-threshold slider 0-1 and an FP:FN cost-ratio input), @region:matrix, @region:curves, and @region:reco, seeded with a binary classifier's held-out score distribution (e.g., 500 fraud scores). The agent renders a confusion matrix as a stat/ui_table grid in @region:matrix with precision/recall/F1 stat tiles, plus ROC and PR ui_chart(line) figures in @region:curves marking the current operating point. As the user drags the threshold slider the page posts the value; the agent recomputes TP/FP/TN/FN, precision, recall, F1, and expected cost, re-renders the matrix, and moves the operating-point marker, using ui_highlight to pulse whichever metric crosses a target (recall dipping below 0.90). Setting the FP:FN ratio to 1:10 makes the agent recommend the cost-optimal threshold and ui_notify + ui_render the rationale into @region:reco. Concrete: threshold 0.5 \u2192 precision 0.82 / recall 0.71; drag to 0.3 \u2192 recall jumps to 0.90, precision falls to 0.66, and the agent flags the tradeoff as it re-renders."
+  },
+  {
+    "id": "moodboard-composer",
+    "title": "Moodboard Composer",
+    "domain": "creative, design & writing",
+    "interaction": "drag proposed tiles onto a grid; the agent reads the composition and re-themes",
+    "patterns": [
+      "dashboard",
+      "feedback-loop",
+      "attention-direction"
+    ],
+    "requirement": "Expose @region:tray as a palette of agent-proposed tiles (color swatches, texture words, imagery keywords, and type specimens), @region:board as a 4x4 drop grid, and @region:read as a synthesis panel, with a brief input and a vibe select. The agent seeds the tray from a brief such as 'warm nostalgic neighborhood bakery'; the user drags six to eight tiles onto the board, and the agent reads the composition to derive a cohesive palette and adjective cluster, names one missing element, and re-themes the entire page via ui_theme to match the emerging direction. Any tile that clashes with the dominant direction gets a ui_highlight, and the synthesis panel updates its palette, keywords, and a cohesion stat. Drive it by swapping a cool-slate tile for a terracotta one \u2014 the agent re-derives, warms the page theme, raises the cohesion stat, and posts ui_notify 'palette unified around clay and cream; consider adding a serif for warmth.' The board layout persists in ui_state so every drag is a fresh read."
+  },
+  {
+    "id": "last-mile-dispatch-board",
+    "title": "Last-Mile Dispatch Board",
+    "domain": "operations, logistics & incident response",
+    "interaction": "drag stops onto trucks with a traffic what-if toggle",
+    "patterns": [
+      "simulation",
+      "feedback-loop",
+      "attention-direction"
+    ],
+    "requirement": "Author regions: @stops (unassigned deliveries as draggable cards, each with a zone, time window, and parcel count), @trucks (three vehicle lanes, capacity 8 each), and @readout (per-truck metrics). Seed with 12 stops across zones N/S/E and 3 trucks. When the user drags a stop into a truck lane the agent recomputes that truck's sequenced route, total ETA, mileage, and capacity utilization, re-rendering a ui_chart of load balance across the three trucks and ui_stat totals into @readout. Over-capacity or time-window-miss assignments get ui_highlight red plus a ui_notify. A 'rush-hour' toggle in @readout re-simulates every ETA with congestion multipliers so the user can pressure-test the same plan under traffic, and the agent flags which trucks now blow their last window. The agent may also propose a swap ('move stop #7 from Truck B to Truck C to save 14 min') that the user accepts by dragging, closing the loop between the operator's hands and the agent's routing math."
+  },
+  {
+    "id": "valuation-sandbox",
+    "title": "DCF Valuation Sandbox",
+    "domain": "markets / equity valuation",
+    "interaction": "what-if inputs recompute a model plus a 2-D sensitivity grid",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Expose an @assumptions region with inputs for revenue, 5-year revenue growth, operating margin, tax rate, WACC, terminal growth, shares outstanding, and current price; a @model dashboard region; and a @sensitivity region. On submit the agent runs a five-year discounted-cash-flow model \u2014 projecting and discounting FCF, adding a terminal value \u2014 to derive intrinsic value per share and upside versus current price, then composes a dashboard: a ui_chart bar/waterfall of PV of cash flows plus terminal value, stat tiles (fair value, upside %, implied EV/EBITDA), and a WACC-by-terminal-growth sensitivity heat table rendered as a table with conditional coloring. It ui_highlights the sensitivity cell matching the live assumptions and fires ui_notify when intrinsic value flips from over- to under-valued. The what-if loop: the user bumps any assumption, the agent re-runs the model and recolors the sensitivity grid. Concrete test: $10B revenue, 12% growth, 25% margin, 9% WACC, 2.5% terminal, 500M shares against a $150 price yields a ~$180 fair value labeled '23% undervalued,' with the 9%/2.5% cell highlighted."
+  },
+  {
+    "id": "cantilever-load-studio",
+    "title": "Cantilever Load Studio",
+    "domain": "Structural / civil engineering",
+    "interaction": "drag supports and load arrows onto a beam; agent recomputes diagrams and safety",
+    "patterns": [
+      "simulation",
+      "attention-direction",
+      "dashboard",
+      "feedback-loop"
+    ],
+    "requirement": "Regions are @beam-canvas (a beam onto which the user drops supports and load arrows), @diagrams (shear and moment charts), and @verdict (a safety stat panel). The user drags a fixed support at x = 0 and a 5 kN point load at the 3 m free end of a steel I-beam, plus a 2 kN/m distributed load, and each drag updates ui_state. The agent computes reactions, the shear and bending-moment diagrams, max deflection, and peak bending stress, then uses ui_chart to draw V(x) and M(x) into @diagrams and ui_panel to mount stats (max moment 21 kN-m, delta-max, factor of safety) into @verdict. It uses ui_highlight to pin the max-moment location on the beam, and ui_theme to flip the accent to red with a ui_notify when the factor of safety drops below 1. Each drag or removal triggers a full recompute-and-re-render, keeping the design loop live."
+  },
+  {
+    "id": "question-sharpener",
+    "title": "Research Question Sharpener",
+    "domain": "research-question refiner",
+    "interaction": "adaptive Socratic ui_ask loop that narrows scope",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "attention-direction"
+    ],
+    "requirement": "Expose @region:current (the working question, shown large), @region:tree (refinement history), @region:scaffold (a PICO/scope panel), and @region:critique. The user types a fuzzy question and the agent runs a Socratic ui_ask loop, offering one sharp choice per turn as a select+input ('Population: all adults, or a subgroup?'). After each answer it rewrites the question in @region:current, appends the branch to a ui_graph refinement tree in @region:tree, fills the ui_panel scaffold slots (Population / Intervention / Comparator / Outcome / Timeframe) as they resolve, and ui_highlight the still-empty scaffold slot it will ask about next. It tracks whether the user keeps broadening or narrowing each dimension and adapts later questions to that pattern, and when the scaffold is complete it renders a feasibility critique and ui_notify done. Example: 'does fasting help diabetes?' becomes, after asking population then comparator, 'In adults with type-2 diabetes, does 16:8 intermittent fasting vs standard care improve HbA1c at 6 months?' with 4 of 5 slots filled and Comparator highlighted as the next ask."
+  },
+  {
+    "id": "omics-pathway-atlas",
+    "title": "Omics Pathway Atlas",
+    "domain": "transcriptomics / pathway & network analysis",
+    "interaction": "click-to-drill coordinated dashboard",
+    "patterns": [
+      "dashboard",
+      "feedback-loop",
+      "attention-direction"
+    ],
+    "requirement": "The user pastes or names a differential-expression result (gene, log2FC, p-value) and the agent composes a multi-panel dashboard: a @volcano region (ui_chart scatter with significance thresholds), a @pathways region (a bar/table of enriched GO/KEGG terms with FDR), a @network region (ui_graph of leading-edge genes and their interactions), and a @summary stat strip (# DEGs up/down, top pathway, % variance explained). Clicking a pathway bar makes the agent ui_highlight that term's member genes in the volcano, rebuild the @network to just that pathway's subgraph, and refresh a @detail card of top drivers; clicking a gene in the network drills to its neighbors and connected pathways. All panels stay coordinated so a selection in one recolors and recomposes the others. Concrete: a breast-cancer DE set lights up 'cell cycle' and 'DNA replication'; clicking 'cell cycle' highlights CCNB1/CDK1/MKI67 as up-regulated points and redraws the network around them. The loop is select -> highlight + recompose linked panels -> drill deeper."
+  },
+  {
+    "id": "socratic-summit",
+    "title": "Socratic Summit",
+    "domain": "education & adaptive learning",
+    "interaction": "Socratic ui_ask dialectic that adapts scaffolding to a reasoning ladder",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "attention-direction"
+    ],
+    "requirement": "Expose a @region:dialogue thread and a @region:ladder listing the reasoning milestones needed to reach a target insight (for 'why do seasons happen?': rejects distance-to-sun, identifies axial tilt, connects tilt to insolation angle, explains hemispheric opposition). The agent never states the answer; it uses ui_ask to pose one guiding question at a time, reads the free-text reply, decides which ladder rung (if any) was reached, and checks it off via ui_state and ui_render. It tracks the learner's recurring misconceptions and reasoning style in ui_state and adapts the next question's scaffolding \u2014 more concrete and hand-held if two replies stall on the same rung. ui_highlight pulses the rung just unlocked and ui_notify celebrates reaching the summit. Concrete drive: the student says 'summer is when Earth is closest to the sun'; the agent doesn't correct outright but asks 'then why is it winter in Australia during our summer?' and waits, only advancing the ladder once the tilt idea appears. The loop ends when every rung is checked."
+  },
+  {
+    "id": "townhall-consensus-synth",
+    "title": "Town Hall Consensus Synthesizer",
+    "domain": "civic / public consultation",
+    "interaction": "click-cluster drill with agenda behavior-tracking and balance nudges",
+    "patterns": [
+      "dashboard",
+      "feedback-loop",
+      "behavior-tracking"
+    ],
+    "requirement": "The page exposes an `@import` region (textarea for pasted public comments + a 'load sample hearing' button), a `@map` region, and a `@brief` region. On submit the agent buckets comments into Consensus / Contested / Fringe and by topic, rendering a ui_chart (agree-disagree diverging bar per topic) plus a ui_graph clustering the comments into `@map` via ui_layout('split'). Clicking a cluster sets ui_state.focusCluster; the agent surfaces representative quotes from both sides, a steel-manned summary of each position, and a draft public-response paragraph into `@brief`, using ui_highlight to link cluster to brief. As the user pins clusters into a meeting agenda (a button on each cluster), the agent tracks the pinned set in ui_state, infers the user's priorities and ideological tilt, and ui_notifies if the emerging agenda systematically omits a well-supported minority view. Example: 40 comments on a bike-lane proposal split into 'safety' (consensus-pro), 'parking loss' (contested), and 'bikes are political' (fringe); pinning only pro clusters triggers a balance nudge. The loop: import -> consensus map -> click/pin clusters -> agent drafts responses and audits the agenda the user is assembling."
+  },
+  {
+    "id": "hex-dominion-advisor",
+    "title": "Hex Dominion Advisor",
+    "domain": "games, geospatial & interactive worlds",
+    "interaction": "per-turn ui_ask strategy decisions on a 4X hex map",
+    "patterns": [
+      "dashboard",
+      "feedback-loop",
+      "behavior-tracking"
+    ],
+    "requirement": "Build a 4X strategy turn-advisor over a small hex map. The agent composes a command dashboard: a `@map` region showing owned vs. neutral vs. rival hexes with resource icons, a `@stats` region with tiles for gold/science/food per turn, a tech-tree progress bar, and a threat table ranking rival empires. Each turn it uses ui_ask to collect the player's move (expand to a named hex, invest in tech, raise an army, or open diplomacy) and blocks on the choice. It then simulates the two AI empires' responses \u2014 they expand, declare, or trade \u2014 updates hex ownership and the stat tiles, and uses ui_highlight to focus the contested border that shifted plus ui_notify for events ('Vael Dominion fortified the river ford'). The agent records the player's decision mix in ui_state (expansionist vs. tall-and-tech vs. warlike) and tailors its written advice each turn to counter the rivals given that revealed style. A tester can play three turns choosing 'expand' every time and watch the advisor start warning about overextension and the AI empires ganging on the sprawling border it keeps highlighting."
+  },
+  {
+    "id": "drift-war-room",
+    "title": "Drift Monitoring War Room",
+    "domain": "data science & ML engineering",
+    "interaction": "click-to-triage alert stream where the agent learns your dispositions and retunes alerting",
+    "patterns": [
+      "behavior-tracking",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "The page exposes @region:feed (a stream of feature-drift alerts each with ack/snooze/escalate buttons), @region:panels, and @region:policy. The agent composes a monitoring dashboard: a ui_panel into @region:panels with a per-feature PSI/KL drift ui_chart(line) over time and stat tiles (features drifting, worst PSI, prediction-volume delta). Alerts arrive in @region:feed (e.g., 'income PSI 0.27 up', \"category 'web' share +14%\") and the user acks, snoozes, or escalates each. The agent keeps ui_state of the disposition history and adapts: features the user repeatedly snoozes get down-ranked and their thresholds loosened, while an escalation tightens sensitivity and pins that feature's chart to the top via ui_layout and ui_highlight. It periodically ui_notify's a summary (\"you've snoozed 'device_type' 3 times \u2014 mute below PSI 0.3?\") and uses ui_ask to request permission to update the alert policy shown in @region:policy. The ongoing triage stream is the loop, and the agent's surfacing order visibly reshapes to the user's demonstrated priorities."
+  },
+  {
+    "id": "name-genome-lab",
+    "title": "Name Genome Lab",
+    "domain": "creative, design & writing",
+    "interaction": "thumb candidate names to teach the agent your naming taste",
+    "patterns": [
+      "behavior-tracking",
+      "feedback-loop",
+      "dashboard"
+    ],
+    "requirement": "Render @region:candidates as a table of generated product names each with mini-scores (syllable count, phonetic softness, morphology, metaphor family) and @region:taste as a learned-preference panel, plus a category input and a morphology select (invented / compound / real-word / metaphor). The agent generates eight candidates for a brief like 'a calm sleep-tracking app'; the user gives each a thumbs-up or thumbs-down button. Every rating accumulates into a taste vector in ui_state \u2014 for example the agent notices you reward two-syllable soft compounds and punish hard-consonant invented words \u2014 and it adapts the next batch, rendering a taste-profile stat panel plus a ui_chart bar of which attributes you keep rewarding into @region:taste. After enough signal the agent presents a ranked shortlist with a one-line rationale per name grounded in your revealed taste. The multi-turn loop is behavior-tracking: batch three should look measurably more like 'you' than batch one, and the agent should say so."
+  },
+  {
+    "id": "on-call-signal-tuner",
+    "title": "On-Call Signal Tuner",
+    "domain": "operations, logistics & incident response",
+    "interaction": "ack/snooze/escalate behavior that trains suppression rules",
+    "patterns": [
+      "behavior-tracking",
+      "feedback-loop",
+      "simulation"
+    ],
+    "requirement": "The page exposes @stream (incoming alerts arriving as rows with source, type, and severity), per-alert @actions (Ack / Snooze / Escalate), and @profile (the responder's behavioral stats and a before/after noise chart). Alerts stream in \u2014 e.g. 'DiskWarn host-42', 'LatencyP99 api-gw', 'CertExpiry soon' \u2014 and every Ack/Snooze/Escalate the user performs is accumulated in ui_state. The agent continuously infers which alert types are noise for THIS responder (repeatedly snoozed, never escalated) versus real signal, and after enough evidence proposes concrete suppression or routing rules via ui_ask ('Suppress DiskWarn under 85%? this would have muted 14 of the last 20 pages'). Accepting a rule makes the agent re-score the live stream, dim suppressed alerts, and re-render a ui_chart of projected page volume before versus after plus a ui_stat 'noise reduced 62%'. The app is a behavior-driven feedback loop where the agent's model of the user sharpens with every interaction, and the simulated 'if this rule had been on' projection lets the operator judge each rule before committing."
+  },
+  {
+    "id": "risk-appetite-profiler",
+    "title": "Risk Appetite Profiler",
+    "domain": "finance / behavioral risk profiling",
+    "interaction": "adaptive branching ui_ask that builds a profile from choices",
+    "patterns": [
+      "behavior-tracking",
+      "feedback-loop"
+    ],
+    "requirement": "Provide a @scenario region for the current question card and a @profile region for an evolving radar chart and badges. The agent runs an adaptive questionnaire entirely through blocking ui_ask calls, presenting one concrete financial choice per turn (for example, 'Your portfolio drops 25% in a month \u2014 sell, hold, or buy more?' or a gamble 'Guaranteed $500 vs a 50% chance of $1,200'). Each answer updates a ui_state score across four dimensions (loss aversion, horizon, liquidity need, volatility comfort), and the agent picks the NEXT question from the accumulated pattern \u2014 a panicky answer triggers a follow-up probing capacity versus tolerance rather than a fixed script. It renders a live radar of the four dimensions plus badges that fill in as confidence grows, and after roughly six questions composes a final profile panel (archetype plus a suggested allocation pie) and ui_highlights the dimension driving the recommendation. The behavior-tracking loop is the point: the later questions and the final allocation are contingent on the sequence of earlier choices, so two testers who diverge on question two get different paths and different archetypes."
+  },
+  {
+    "id": "carbon-pathway-simulator",
+    "title": "Carbon Pathway Simulator",
+    "domain": "Climate science / environmental engineering",
+    "interaction": "slider what-if with scenario-compare memory the agent narrates",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "behavior-tracking"
+    ],
+    "requirement": "Regions: @levers (sliders for annual emissions cut percent, peak year, CDR deployment in GtCO2/yr, and climate sensitivity), @projection (temperature anomaly versus year), and @scorecard (2100 stats plus a saved-scenarios list). The user sets 3%/yr cuts peaking in 2030 with 5 Gt/yr CDR, flowing through ui_state. The agent runs a simple carbon-cycle plus energy-balance model, uses ui_chart to plot the temperature and cumulative-emissions pathways into @projection, and ui_panel to mount 2100 warming, remaining carbon budget, and overshoot year into @scorecard. It uses ui_highlight to mark the year the pathway crosses 1.5 C and 2 C. Crucially, the agent uses ui_state to store every scenario the user runs, and when a new one is run it uses ui_chart to overlay it against the saved set and narrates the trade-off ('this cuts peak warming 0.3 C versus your 2030 run but needs double the CDR'), building an accumulating compare-scenarios history."
+  },
+  {
+    "id": "deep-work-ledger",
+    "title": "Deep Work Ledger",
+    "domain": "focus-session behavior tracker",
+    "interaction": "click-to-log sessions that build an adapting coaching profile",
+    "patterns": [
+      "behavior-tracking",
+      "dashboard",
+      "feedback-loop",
+      "attention-direction"
+    ],
+    "requirement": "Expose @region:tracker (Start/Stop focus buttons, a task/tag input, and a +interruption tally button), @region:today, @region:patterns, and @region:coach. Every Start/Stop or +interruption click writes the session log to ui_state; the agent appends the session, re-renders a ui_chart timeline of today's focus blocks into @region:today, and updates ui_stat tiles (deep minutes, average block length, interruptions per hour). The behavior-tracking core is a rolling profile in @region:patterns ('your longest blocks are before 11am; Slack is your top interruption') that the agent refines as more sessions accumulate, driving an adaptive suggestion in @region:coach. When a block beats a personal best it ui_highlight/pulses the tile and ui_notify; when interruptions spike it ui_theme to a calmer accent and recommends a specific protected window. Example: after three focused morning blocks and two interruption-riddled afternoon ones, the coach panel recommends 'protect 9-11am, batch Slack to 2pm' and the patterns panel updates its stated best window as later sessions land."
+  },
+  {
+    "id": "sepsis-timeline-scrubber",
+    "title": "Sepsis Timeline Scrubber",
+    "domain": "critical care / early-warning scoring",
+    "interaction": "time-scrubber simulation with intervention what-if",
+    "patterns": [
+      "simulation",
+      "attention-direction",
+      "dashboard"
+    ],
+    "requirement": "Regions: @scrubber (a time slider / play control over an ICU stay), @vitals (a multi-series line chart of HR, MAP, RR, temp, SpO2, lactate), @scores (stat tiles for SOFA, qSOFA, NEWS2, shock index), and @events (an intervention log). As the clinician scrubs the timeline the page posts the current hour via ui_state; the agent recomputes the severity scores at that timepoint, redraws the vitals up to the cursor, ui_highlight pulses any score tile crossing a red threshold (lactate >4, MAP <65, qSOFA >=2), and switches ui_theme to an alert accent during a deterioration window. A what-if toggle lets the user apply a hypothetical intervention (e.g. a 30 mL/kg fluid bolus at hour 6) and the agent re-simulates the downstream MAP/lactate trajectory and re-scores. Concrete: scrubbing to hour 8 shows MAP 58, lactate 4.2, qSOFA 3, so the score panel flashes and a 'septic shock window' banner appears; applying the bolus flattens the lactate curve on re-render. The loop is scrub or toggle -> recompute scores -> re-render vitals + attention shift."
+  },
+  {
+    "id": "study-roi-simulator",
+    "title": "Study ROI Simulator",
+    "domain": "education & adaptive learning",
+    "interaction": "slider study-hour allocation what-if that surfaces the highest-return course",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Expose an @region:inputs with an editable course table (current grade, credit weight, remaining assignment weight) and one 'extra hours/week' slider per course (0-15), plus a @region:projection and a @region:advice. Whenever a grade cell is edited or a slider moves, the page writes ui_state and the agent recomputes each course's projected final grade under a diminishing-returns model and the resulting overall GPA, re-rendering @region:projection with a before/after GPA stat and a bar chart of marginal GPA-points-per-hour by course. It ui_highlight's the single highest-ROI course (steepest marginal return) and writes a plain-language recommendation into @region:advice ('2 more hours in Chemistry beats 6 in History'). Concrete drive: with Chemistry at 71% carrying a heavy final and History at 89%, sliding the weekly budget to 6 hours makes the agent concentrate 5 hours on Chemistry, project GPA 3.1->3.4, and highlight Chemistry's bar. Everything is what-if \u2014 no plan is committed, the agent just re-simulates on each change."
+  },
+  {
+    "id": "deliberation-drift-room",
+    "title": "Deliberation Drift Room",
+    "domain": "behavioral / deliberation & persuasion",
+    "interaction": "multi-round Socratic ui_ask that tracks opinion drift and adapts its attacks",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "attention-direction"
+    ],
+    "requirement": "The HTML shows a `@dilemma` region (a select of preset moral/policy dilemmas plus a custom textarea), a `@dialog` region, and a `@drift` region. After the user picks a dilemma the agent uses ui_ask each round to collect their position on a 1-7 scale plus a one-line justification, then plays a targeted devil's advocate that steelmans the strongest counter to the user's specific reasoning rather than generic objections. It records each round's (position, confidence, justification) in ui_state and renders a ui_chart line of opinion drift over rounds plus a ui_stat of 'confidence volatility' into `@drift`, using ui_highlight to mark the round where the stance moved most and to focus the justification that proved fragile. The agent tracks which argument types actually move this user (data vs. values vs. analogy) and concentrates future challenges there. After about five rounds it ui_panels a reflection card summarizing whether the user updated on evidence or dug in. Example: on 'should cities ban cars downtown?', a user starting at 6 who slides to 3 after an equity argument gets that round highlighted and future prompts leaning on equity framings. The loop: state position -> agent challenges the weak point -> re-poll -> drift chart and adaptation."
+  },
+  {
+    "id": "crawl-forge",
+    "title": "Crawl Forge",
+    "domain": "games, geospatial & interactive worlds",
+    "interaction": "drag monsters/traps into rooms with live difficulty balancing",
+    "patterns": [
+      "simulation",
+      "attention-direction",
+      "dashboard"
+    ],
+    "requirement": "Build a tabletop dungeon-encounter designer and difficulty balancer. The page shows a `@dungeon` region of three room slots and a `@palette` region of draggable elements (goblin CR 1/4, ogre CR 2, spike trap, treasure chest, boss), plus a party setup input (e.g. '4 players, level 3'). As the user drags elements into rooms, the agent computes each room's encounter difficulty budget against the party, estimates TPK probability and expected rounds via a monte-carlo-ish model, and totals loot value, rendering a balance dashboard: per-room stat tiles, a ui_chart bar of challenge-vs-target per room, and a pacing table. It uses ui_highlight to outline rooms that are wildly over- or under-tuned (red for deadly, gray for trivial) and ui_notify to summarize 'Room 2 is a likely TPK.' A 'balance it' button makes the agent auto-adjust monster counts and re-render as an explicit before/after what-if of the difficulty numbers. A tester can stack three ogres into one room, see it flash deadly with an 82% TPK stat, click balance, and watch it recompose into a survivable fight."
+  },
+  {
+    "id": "fairness-audit-console",
+    "title": "Fairness Audit Console",
+    "domain": "data science & ML engineering",
+    "interaction": "ui_ask-configured audit loop that drills groups and applies remedies",
+    "patterns": [
+      "feedback-loop",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "The page exposes @region:setup, @region:disparity, @region:groups, and @region:remedy. The agent begins with ui_ask in @region:setup to learn which protected attributes and fairness criterion matter (e.g., 'audit by [sex][age band][region]; target: [equal opportunity][demographic parity]'), BLOCKING on the form. It then composes a disparity dashboard: a ui_panel into @region:disparity with grouped-bar ui_chart of selected-rate / TPR / FPR per group and stat tiles for the largest gap, plus a per-group ui_table in @region:groups. It ui_highlight's the group with the worst disparity and ui_theme shifts to a caution accent if any gap breaches the 80%-rule. When the user clicks a flagged group the agent drills into its confusion breakdown and uses ui_ask to offer remedies (reweight / per-group threshold / drop proxy feature) rendered into @region:remedy, then re-runs and re-renders the deltas. Concrete: choose sex + equal-opportunity \u2192 TPR 0.88 (male) vs 0.74 (female), gap flagged; apply per-group thresholds and the agent shows the gap shrinking to 0.03 with a ui_notify confirmation."
+  },
+  {
+    "id": "layout-critique-coach",
+    "title": "Layout Critique Coach",
+    "domain": "creative, design & writing",
+    "interaction": "a guided attention walk that spotlights one design issue at a time",
+    "patterns": [
+      "attention-direction",
+      "feedback-loop"
+    ],
+    "requirement": "Provide @region:canvas holding an agent-built representative layout, @region:notes for a ranked critique list, and @region:focus for a single-issue spotlight, with a template select (landing / poster / email), a 'next issue' button, and a severity filter. The user picks a template or describes their own layout; the agent renders a representative mock into @region:canvas, runs a hierarchy/contrast/spacing critique, and produces a severity-ranked issue list in @region:notes. Then it enters a guided walk: each 'next issue' click makes the agent ui_highlight (focus + pulse) the offending element, use ui_layout to show a before/after split in @region:focus, and explain the specific fix \u2014 attention-direction is the core interaction, not a side effect. Drive it with a SaaS landing hero that has four competing CTAs: issue one spotlights the CTA cluster and dims the rest, issue two moves the focus to a 2.8:1 subhead contrast failure. The walk continues issue by issue until the list is exhausted, and the severity filter re-orders which issues the walk visits."
+  },
+  {
+    "id": "postmortem-timeline-forge",
+    "title": "Post-Mortem Timeline Forge",
+    "domain": "operations, logistics & incident response",
+    "interaction": "structured retro conducted entirely through ui_ask",
+    "patterns": [
+      "feedback-loop",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Author regions: @timeline (a horizontal event ribbon), @factors (contributing versus mitigating tags), and @actions (a follow-ups table). Starting from a one-line incident title, the agent conducts a structured retro entirely through ui_ask, one question per turn \u2014 'What was the first signal, and at what time?', 'When did a human first acknowledge?', 'What made it worse?', 'What stopped the bleeding?' \u2014 placing each answer as a dated node on @timeline and tagging it into @factors. It computes and ui_stat's the derived intervals (time-to-detect, time-to-mitigate, time-to-resolve), and once the ribbon is populated it ui_highlight's the largest gap (usually detection) as the key improvement area. It then ui_render's an action-items table with owners into @actions and, via a final ui_ask, lets the user accept or edit each item. The finished dashboard is a full incident report the user assembled by answering questions rather than typing prose, with the agent composing the artifact from the accumulated answers turn by turn."
+  },
+  {
+    "id": "tilt-journal-coach",
+    "title": "Tilt Journal Coach",
+    "domain": "markets / trading psychology & behavior tracking",
+    "interaction": "log-driven behavior tracking that reshapes coaching",
+    "patterns": [
+      "behavior-tracking",
+      "attention-direction"
+    ],
+    "requirement": "Render an @entry region with a log-a-trade form (ticker, direction, size, an entry-emotion select of calm / FOMO / revenge / bored, and P/L), a @history table region, and an @insights coach region. Each submit appends to a ui_state journal, after which the agent recomputes behavioral metrics \u2014 win rate by emotion, average size when 'revenge' versus 'calm,' overtrading days, time-of-day clustering \u2014 and re-renders the recent-trades table, a ui_chart bar of P/L by emotion, and a coach panel whose advice adapts to the accumulated pattern (e.g., 'your revenge trades are 3x larger and lose 70% \u2014 capping size when tilted would have saved $2,100'). It ui_highlights the emotion row costing the most, cools the ui_theme toward a calm palette when it detects a tilt streak, and fires ui_notify after three trades in one day. The loop is pure behavior tracking: each new logged trade re-shapes the metrics and the coaching. Concrete test: a fifth trade tagged 'revenge' at -$400 should trigger a two-loss-tilt-streak flag, pulse the revenge row, and toast 'step away \u2014 your last 3 tilt trades all lost.'"
+  },
+  {
+    "id": "pid-tuning-dojo",
+    "title": "PID Tuning Dojo",
+    "domain": "Control systems engineering",
+    "interaction": "slider tuning plus an auto-tune ui_ask that adapts to the user's habits",
+    "patterns": [
+      "feedback-loop",
+      "simulation",
+      "behavior-tracking"
+    ],
+    "requirement": "Author regions: @plant (a selector for thermal oven / DC motor / quadrotor altitude), @gains (Kp, Ki, Kd sliders), @response (a step-response chart), and @metrics (overshoot and settling stats). The user picks the DC motor and sets Kp = 4, Ki = 1.2, Kd = 0.1, pushing state through ui_state. The agent simulates the closed-loop step response, uses ui_chart to draw it into @response, ui_panel to mount overshoot percent, settling time, and steady-state error into @metrics, and ui_highlight to mark the overshoot peak. The agent uses ui_state to track the full sequence of gain edits and the user's apparent target, and after a few attempts uses ui_ask to offer 'want me to auto-tune toward under 5% overshoot?' then proposes gains and re-simulates. It adapts its coaching to the user's pattern \u2014 for instance, if they repeatedly over-crank Kp, it warns about that tendency before they do it again."
+  },
+  {
+    "id": "weekly-review-cartographer",
+    "title": "Weekly Review Cartographer",
+    "domain": "GTD weekly-review workspace",
+    "interaction": "click-to-triage status chips with a closing commitment ask",
+    "patterns": [
+      "feedback-loop",
+      "dashboard",
+      "behavior-tracking",
+      "attention-direction"
+    ],
+    "requirement": "Expose @region:progress (a review-steps checklist), @region:inbox, @region:projects, @region:map, and @region:commit. The user pastes a brain-dump of tasks and projects, and the agent renders them as inbox cards each carrying clickable status chips (Active / Someday / Waiting / Done). Each chip click posts ui_state; the agent sorts the item into a ui_panel Projects board (Active / Someday / Waiting columns), shrinks the ui_render inbox, advances the @region:progress checklist, and grows a ui_graph in @region:map linking projects to their next actions. It tracks which projects have repeatedly been deferred or have no next action across the dump and ui_highlight those as stalled, and for any item the user marks Active without a next action it ui_ask 'what's the very next action?'. When the inbox hits zero it renders the week's three committed next-actions into @region:commit and ui_notify 'inbox to zero.' Example: a 12-item dump triages into 5 active / 4 someday / 3 waiting, two projects with no next action get flagged stalled, and the commit panel surfaces the top three."
+  },
+  {
+    "id": "triage-screener-active-learning",
+    "title": "Evidence Triage Screener",
+    "domain": "systematic review / evidence synthesis",
+    "interaction": "swipe-decision active-learning loop",
+    "patterns": [
+      "behavior-tracking",
+      "feedback-loop",
+      "attention-direction"
+    ],
+    "requirement": "A @current region shows one study's title + abstract with Include / Exclude / Maybe buttons and a reason input; a @queue region lists the remaining abstracts ranked by predicted relevance; a @progress region tracks screened count, include rate, and estimated recall. The user states the review question and PICO (e.g. 'RCTs of SGLT2 inhibitors on HF hospitalization in T2D adults'); each decision is captured in ui_state, and the agent updates a lightweight relevance model from the accumulating include/exclude features (keywords, study type, population), then re-ranks the @queue so likely-includes float to the top and ui_highlight marks the ones matching the learned pattern. It periodically surfaces a rationale card ('you exclude non-RCTs and pediatric studies, so I deprioritized 42 of them') and flags borderline abstracts for a second look. Concrete: after the user excludes three observational cohort abstracts, the agent demotes all observational studies and promotes double-blind RCTs to the top of the queue. The loop is decide -> learn from the accumulated pattern -> re-rank -> present the next abstract."
+  },
+  {
+    "id": "reading-ladder-calibrator",
+    "title": "Reading Ladder Calibrator",
+    "domain": "education & adaptive learning",
+    "interaction": "adaptive reading-level ui_ask loop that tunes passage complexity to comprehension",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "dashboard"
+    ],
+    "requirement": "Expose a @region:passage, a @region:quiz, and a sidebar @region:meter with a reading-level gauge. The agent presents a short passage at an estimated level (e.g. Lexile ~800), then uses ui_ask to pose two or three comprehension questions spanning main-idea, vocabulary-in-context, and inference, scoring each. It tracks per-question-type accuracy across the session in ui_state and adjusts the next passage's complexity up if the reader aces inference, or down with a brief vocabulary pre-teach if they miss literal questions. After each round it ui_render's @region:meter with the current estimated level, a trend line, and a per-skill breakdown, and ui_highlight's the weakest comprehension skill. Concrete drive: the reader nails main-idea but misses two inference questions across two rounds; the agent holds the level, injects an inference-strategy tip, and selects an inference-rich next passage rather than climbing. The loop runs a fixed number of rounds or until the level stabilizes, ending with a summary panel."
+  },
+  {
+    "id": "bias-audit-journal",
+    "title": "Bias Audit Journal",
+    "domain": "behavioral / decision hygiene",
+    "interaction": "adaptive ui_ask interview building a live bias profile",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "dashboard"
+    ],
+    "requirement": "The page exposes a `@decision` region (textarea to describe a decision you're weighing plus inputs for the competing options), an `@interview` region, and a `@profile` region. The agent runs a structured ui_ask interview - one probing question at a time (e.g., 'What evidence would change your mind?', 'What did the option you rejected have going for it?') - and after each answer scores signals of specific biases (confirmation, sunk-cost, anchoring, availability, overconfidence) into ui_state. It renders a live ui_chart (radar of bias exposure) plus a ui_table (bias, trigger quote, debiasing prompt) into `@profile`, and crucially chooses the next question adaptively to probe whichever biases currently score highest, using ui_highlight to spotlight the dominant one. When a bias crosses a threshold the agent ui_notifies a concrete debiasing move (pre-mortem, reference-class forecast, steelman the alternative) and re-asks the core decision to see whether the user's confidence recalibrates. Example: 'I should keep funding this project because we've already spent $2M' should spike sunk-cost, spotlight it, and trigger a pre-mortem prompt. The loop: answer -> bias radar updates -> agent targets the next question at your weak spot -> debias -> recheck."
+  },
+  {
+    "id": "metropolis-zoner",
+    "title": "Metropolis Zoner",
+    "domain": "games, geospatial & interactive worlds",
+    "interaction": "paint zoning tiles on a grid with a live city simulation",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Build a city-builder zoning sandbox on an interactive grid. The `@city-grid` region is an 8x8 clickable tile map; a `@brush` region lets the user pick a zone type (residential, commercial, industrial, park, road) and paint tiles. After each paint stroke the agent simulates the city \u2014 traffic flow along roads, pollution spread from industry, land value, tax revenue, and citizen happiness \u2014 and renders a dashboard into `@stats`: stat tiles (population, happiness %, monthly budget), a ui_chart line of happiness over simulated years, and a demand table (is the city short on jobs or homes?). It uses ui_highlight to flag gridlocked intersections and pollution hotspots on the grid, and shifts ui_theme from a warm palette toward a toxic tint as citywide pollution climbs, with ui_notify calling out milestones ('unemployment over 20%'). Because the simulation reruns on every stroke, a tester can wall a residential block behind heavy industry and watch happiness and land value slump while the poisoned tiles light up, then drop in parks and see the trend line recover."
+  },
+  {
+    "id": "feature-pipeline-composer",
+    "title": "Feature Pipeline Composer",
+    "domain": "data science & ML engineering",
+    "interaction": "drag-to-compose transform pipeline with live distribution simulation",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "feedback-loop"
+    ],
+    "requirement": "The page exposes @region:blocks (draggable transform blocks: log-scale, standardize, one-hot, target-encode, winsorize, PCA, SMOTE), a sequential @region:pipeline drop lane, @region:effect, and @region:health. The user drags transform blocks into the pipeline lane in order and each drop or reorder posts the ordered pipeline via ui_state. The agent simulates the pipeline on a sample profile and re-renders the effect: a ui_panel into @region:effect with before/after distribution ui_chart(bar histogram) for a chosen column and stat tiles (skew, cardinality, feature count, leakage risk), updating on every edit. It validates ordering and uses ui_highlight and ui_notify to warn on foot-guns (SMOTE before the train/test split, standardize before one-hot, target-encode risking leakage), ui_render-ing a pipeline-health verdict into @region:health. Concrete: drag winsorize then standardize onto 'monthly_charges' and the agent shows skew dropping 1.8 \u2192 0.2; insert target-encode on 'zip' and it flags leakage and suggests K-fold encoding, keeping the composed pipeline and its simulated effect in lockstep as the user rearranges blocks."
+  },
+  {
+    "id": "logline-doctor",
+    "title": "Logline Doctor",
+    "domain": "creative, design & writing",
+    "interaction": "a ui_ask refinement loop that scores five story dimensions on a radar",
+    "patterns": [
+      "feedback-loop",
+      "dashboard"
+    ],
+    "requirement": "Lay out @region:logline for the evolving one-sentence pitch, @region:radar for a five-axis radar (protagonist clarity, want, obstacle, stakes, ironic hook), and @region:log for a revision-history table, with a genre select and a 'tighten' button. The agent drives via ui_ask, asking one targeted question at a time \u2014 who is the protagonist, what do they want, what stands in the way, what is at stake, what is the ironic twist \u2014 and after each blocking answer it rewrites the logline, re-renders the radar as that dimension firms up, and appends the new version to the history table. Seed it with just 'a chef': across five asks the logline grows into 'a burned-out three-star chef must cook for the food critic who ended her career \u2014 without knowing it's him.' When all five axes are scored the user hits 'tighten' and the agent proposes a punchier cut and re-scores, and any weak axis can be revisited by re-opening its ui_ask. The dashboard and the ask loop stay in lockstep every turn."
+  },
+  {
+    "id": "warehouse-throughput-lab",
+    "title": "Warehouse Throughput Lab",
+    "domain": "operations, logistics & incident response",
+    "interaction": "slider what-if that surfaces the moving bottleneck",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Author region @levers holds sliders for pickers on shift (5-60), dock doors open (2-12), inbound order volume (1k-10k/day), and automation coverage (0-100%), plus a 'peak season' preset; @panels holds the model output. The agent treats the facility as a staged queueing system (receive -> pick -> pack -> ship) and on every lever change recomputes throughput (orders/hour), utilization per stage, backlog growth, and labor cost, re-rendering a ui_chart of stage utilization and a ui_stat row (throughput, backlog, cost/order) into @panels. Crucially it identifies the current bottleneck stage by theory-of-constraints and ui_highlight's it, with a one-line note on the cheapest lever to relieve it. For example, 20 pickers, 6 doors, and 5000 orders/day should peg dock doors as the constraint and suggest opening two more before adding pickers. Hitting the peak-season preset bumps volume so the operator can stress-test staffing, and the agent re-narrates how the bottleneck moves, keeping the what-if loop tightly coupled to attention."
+  },
+  {
+    "id": "rate-setter-war-room",
+    "title": "Rate Setter War Room",
+    "domain": "economics / monetary policy simulation",
+    "interaction": "multi-turn central-banker simulation with compounding consequences",
+    "patterns": [
+      "simulation",
+      "feedback-loop",
+      "attention-direction"
+    ],
+    "requirement": "The user plays central banker: expose a @dial region with a policy-rate slider and a 'Set rate for this quarter' submit button, an @economy dashboard region, and a @timeline history region. Each quarter, given the chosen rate, the agent advances a small macro simulation (Phillips-curve / Taylor-rule dynamics with lags) updating inflation, unemployment, GDP growth, and a market-confidence reading, then re-renders a dashboard (inflation-vs-target line, unemployment line, GDP bar, confidence gauge) and appends the decision and its outcome to a running timeline chart. It injects news shocks via ui_notify (oil spike, banking stress) that the user must respond to next quarter, ui_highlights any indicator breaching a mandate threshold, and reddens the ui_theme if a recession or runaway inflation triggers. The loop runs multi-turn: the user sets a rate each quarter, the agent simulates and re-renders, and consequences compound across roughly eight quarters toward a scored soft-landing / stagflation / recession outcome held in ui_state. Concrete test: with inflation at 6%, hiking to 5.5% eases next-quarter inflation to ~4.8% but lifts unemployment to ~5.2%, the timeline logs it, and a toast reads 'soft-landing narrative holding.'"
+  },
+  {
+    "id": "spectral-id-detective",
+    "title": "Spectral ID Detective",
+    "domain": "Analytical chemistry / spectroscopy",
+    "interaction": "ui_ask interrogation of a spectrum that tracks which clues the user misreads",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "attention-direction"
+    ],
+    "requirement": "Regions are @spectrum (an IR or mass-spec plot), @clue-log (accumulated deductions), and @guess (the final-structure submission form). The agent presents an unknown compound's IR spectrum via ui_chart into @spectrum \u2014 e.g. a strong ~1715 cm-1 C=O band, a broad 2500-3300 cm-1 O-H, and a molecular ion at m/z = 60 \u2014 then uses ui_ask to ask which functional group each flagged band implies. On each answer it reacts, uses ui_render to write confirmed and eliminated groups into @clue-log, and ui_highlight to point at the next diagnostic band. It uses ui_state to track which clues the user misreads (for example repeatedly confusing a ketone C=O with an acid C=O) and adapts the difficulty and the phrasing of subsequent hints to that pattern, narrowing the candidate set until the user submits a final structure (acetic acid) and the agent scores the deduction path."
+  },
+  {
+    "id": "zettel-weaver",
+    "title": "Zettel Weaver",
+    "domain": "knowledge-graph note synthesizer",
+    "interaction": "click-a-node to expand and accept suggested links",
+    "patterns": [
+      "dashboard",
+      "feedback-loop",
+      "attention-direction"
+    ],
+    "requirement": "Expose @region:paste (notes in), @region:graph, @region:node (focused-note detail), and @region:gaps. The user pastes several atomic notes; the agent extracts concepts and builds a ui_graph of note and concept nodes (edges = shared concept or explicit link) into @region:graph, with ui_stat tiles (notes, links, orphans) in @region:gaps. Clicking any node makes the agent ui_render that note's detail plus its neighbors and a 'suggested links to notes X, Y (because\u2026)' block in @region:node, and ui_highlight the suggested target nodes in the graph; accepting a suggestion adds the edge and recomputes the orphan count. The agent continuously ui_highlight orphan notes with no links and proposes a bridging concept to connect the two largest disconnected clusters, ui_notify once the graph becomes fully connected. Example: pasting six notes on attention, memory, and spaced repetition yields a graph with one orphan note on 'sleep'; clicking it, the agent suggests linking it to 'memory consolidation,' and accepting drops the orphan count to zero."
+  },
+  {
+    "id": "polypharmacy-deprescribe-board",
+    "title": "Polypharmacy Deprescribing Board",
+    "domain": "geriatrics / medication safety",
+    "interaction": "interaction-graph plus ui_ask accept/reject loop",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "dashboard"
+    ],
+    "requirement": "The user assembles a medication list in a @meds region (add drug + dose chips); the agent builds an @interactions region as a ui_graph where nodes are drugs and edges are flagged interactions (severity-colored), a @burden region of stat tiles (anticholinergic burden score, sedative load, renal-risk count, total pill count), and a @plan region. Each turn the agent proposes one deprescribing or substitution step via ui_ask ('Taper amitriptyline: high anticholinergic burden in an 82-year-old; accept / modify / decline?'), and on the user's answer it recomputes the interaction graph and burden tiles, with ui_highlight fading the removed node and its edges. It tracks in ui_state which drug classes the user tends to accept or refuse and orders later suggestions to fit that pattern, stopping once burden falls below target and rendering a final reconciled list in @plan. Concrete: a list with amitriptyline + oxybutynin + diphenhydramine shows an anticholinergic burden of 9 and a dense interaction cluster; accepting two swaps drops the score to 3 and dissolves the cluster. The loop is propose -> user decides -> recompute graph/burden -> next tailored proposal."
+  },
+  {
+    "id": "recall-heatmap-drill",
+    "title": "Recall Heatmap Drill",
+    "domain": "education & adaptive learning",
+    "interaction": "click-to-drill mastery heatmap that adapts to accumulated recall behavior",
+    "patterns": [
+      "behavior-tracking",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Expose a @region:heatmap rendering the deck as a grid of cells colored by mastery from ui_state per-card history (red=lapsed, amber=learning, green=strong), a central @region:drill, and a @region:stats. The user clicks any cell or a 'drill weakest cluster' button; the agent pulls that card or cluster into @region:drill, shows the prompt, and on reveal ui_ask's a self-graded 'got it / missed it' that updates the card's ease and interval and recolors its heatmap cell live. It tracks streaks, review timing, and which semantic tags cluster as weak (e.g. 'irregular preterite verbs'), surfacing that pattern in @region:stats as a bar chart and ui_highlight'ing the weakest tag-cluster on the heatmap. Concrete drive: the user clicks a red cluster of Spanish irregular verbs, misses 'supe', the cell stays red, and the stats panel promotes 'irregular preterite' to the top weak tag with a recommended focused session. The user drives entirely by clicking cells while the dashboard reshapes itself around their accumulated performance."
+  },
+  {
+    "id": "whip-count-war-room",
+    "title": "Whip-Count War Room",
+    "domain": "civic / legislative strategy",
+    "interaction": "drag legislators across vote columns with amendment what-if simulation",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "The HTML lays out a `@roster` region as three columns (Yes / Undecided / No) seeded with about 15 legislator cards, each showing party, district lean, and a top issue, plus a `@tally` region and a `@levers` region. Dragging a card between columns updates ui_state; the agent recomputes the whip count against the passage threshold, renders a ui_chart (votes vs. needed) and a ui_stat ('+2 to pass') into `@tally`, and uses ui_highlight to spotlight the pivotal swing members whose flip changes the outcome. In `@levers` the agent proposes concrete amendments and trades (each a button) and, on click or hover, simulates which undecideds would move and at what cost to your existing Yes bloc, previewing the new tally before commit. It uses ui_ask when two strategies conflict ('Amendment A wins Rep. Diaz but loses your progressive flank - proceed?') and branches on the answer. Example: a bill at 48/50 with 4 undecided should highlight the two cheapest-to-flip members and propose a rural-carveout amendment that moves them. The loop: drag to whip -> live tally and pivotal highlight -> agent simulates amendment levers -> commit or ask."
+  },
+  {
+    "id": "risk-cartel",
+    "title": "Risk Cartel",
+    "domain": "games, geospatial & interactive worlds",
+    "interaction": "click-to-attack a territory map against an AI that learns your style",
+    "patterns": [
+      "behavior-tracking",
+      "feedback-loop",
+      "dashboard"
+    ],
+    "requirement": "Build a territory-conquest game where the agent is an adaptive opponent. The `@war-map` region shows ~10 connected regions across three continents with troop counts and ownership colors; the user clicks an owned region then an adjacent enemy region to attack, or clicks to place reinforcements. The agent resolves combat with dice-odds probability, updates troop counts and ownership, uses ui_notify for the battle result and ui_highlight to trace the shifting front line. It composes a war-room dashboard in `@warroom`: continent-control bars (ui_chart), troop-total stat tiles, and a threat table. Crucially, it records the player's strategy in ui_state \u2014 do they turtle or blitz, which continent they favor, whether they over-commit \u2014 and adapts its own AI moves to counter, reinforcing the front the player keeps hitting and opening a second front where the player is thin. A tester can spend three turns hammering one border and watch the AI stop defending elsewhere, fortify exactly that border, and open a flanking push into the continent the player abandoned, with the war-room table calling out the new pressure."
+  },
+  {
+    "id": "serving-cost-simulator",
+    "title": "Serving Cost & Latency Simulator",
+    "domain": "data science & ML engineering",
+    "interaction": "slider what-if over deployment knobs that redraws the cost/latency frontier",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "The page exposes @region:knobs (sliders and selects for replicas, batch size, quantization int8/fp16/fp32, GPU type, and target QPS), @region:frontier, and @region:budget, seeded with a base model profile (a 7B LLM at ~40ms/token fp16 on an A10). The agent renders a serving dashboard: a ui_panel into @region:frontier with a latency-vs-throughput ui_chart(line) and stat tiles (p99 latency, max QPS, $/1k requests, monthly cost, GPU utilization). As the user turns any knob the page posts the config; the agent recomputes a queueing/throughput model (int8 ~1.7x throughput and lower cost with a small quality caveat; more replicas cut queue latency but raise cost) and re-renders the frontier plus cost tiles, using ui_highlight to flash p99 when it breaches an SLA line. When monthly cost exceeds a stated budget the agent ui_notify's and ui_render's the cheapest SLA-meeting config into @region:budget. Concrete: 2 replicas fp16 batch 8 \u2192 p99 320ms, $2.4k/mo; switch to int8 + batch 16 \u2192 p99 210ms, $1.5k/mo and the agent flags the quality caveat as the frontier redraws."
+  },
+  {
+    "id": "type-pairing-studio",
+    "title": "Type Pairing Studio",
+    "domain": "creative, design & writing",
+    "interaction": "select and slide vibe controls to re-rank live type-pairing recommendations",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Expose @region:controls with a heading-vibe select (geometric / humanist / serif-display), a body-vibe select, and contrast, formality, and era sliders; @region:specimens with live specimen cards showing H1, body, and caption in each candidate pairing; and @region:score with a scorecard. On any control change the agent recommends three font pairings matching the settings, renders real-text specimen panels into @region:specimens, scores each on contrast, harmony, and legibility into a table plus a ui_chart bar in @region:score, and ui_highlights the recommended pick. The what-if: start at humanist heading / low contrast, then drag the contrast slider high \u2014 the agent re-ranks the pairings, swaps the specimen panels, moves the highlight to the new winner, and posts ui_notify 'now favoring a serif-display + grotesque pairing for stronger hierarchy.' All control values persist in ui_state so each adjustment re-enters the same recommendation simulation rather than starting over."
+  },
+  {
+    "id": "disaster-resource-allocator",
+    "title": "Disaster Resource Allocator",
+    "domain": "operations, logistics & incident response",
+    "interaction": "drag scarce assets onto zones with ui_ask command decisions",
+    "patterns": [
+      "feedback-loop",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Author regions: @zones (a grid of affected areas, each a card with casualty count, access status, and current coverage), @assets (draggable pools of ambulances, medical crews, and shelter beds), and @status (an unmet-need and response-time summary). Seed with 4 zones \u2014 e.g. Zone C: 60 casualties, road access severed \u2014 and deliberately scarce assets. The user drags assets onto zones; each allocation makes the agent recompute coverage ratio, projected response time, and total unmet need, rendering ui_stat totals and a ui_chart of unmet-need-by-zone into @status and ui_highlight'ing any zone still critically under-resourced. When a hard trade-off appears the agent uses ui_ask to force a command decision ('Zone C road out and 60 casualties \u2014 reroute ground units 40 min or request air evac?'), and it periodically injects a fresh casualty report via ui_notify that shifts priorities and forces reallocation. The loop continues as a living exercise where scarce assets, changing conditions, and the agent's prompts keep the operator deciding rather than reading a static plan."
+  },
+  {
+    "id": "cap-table-dilution-lab",
+    "title": "Cap Table Dilution Lab",
+    "domain": "finance / startup equity & venture financing",
+    "interaction": "add-round composition with what-if dilution re-cascade",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "feedback-loop"
+    ],
+    "requirement": "Expose a @rounds region with buttons to add funding events (Founders, SAFE, Seed, Series A, Series B, Option Pool), each opening inputs for amount raised, pre/post valuation, and pool %, plus a list of added rounds; an @ownership dashboard region; and a @waterfall region with a user-set exit-value input. The agent keeps an ordered ui_state stack of rounds and after each addition recomputes the fully-diluted cap table, rendering a stacked bar or pie of ownership by stakeholder across rounds, stat tiles (founder %, latest post-money, price per share), and an exit-waterfall table of payouts at the entered exit value accounting for liquidation preferences. It ui_highlights the founder wedge as it shrinks and fires ui_notify when founder ownership crosses below 50% or an option-pool top-up dilutes existing holders. The what-if loop: the user edits any prior round's terms or the exit value, and the agent re-cascades dilution through all later rounds and re-renders both the ownership dashboard and the waterfall. Concrete test: Founders 100% \u2192 SAFE $1M at an $8M cap \u2192 Seed $3M at $12M pre with a 20% pool \u2192 Series A $10M at $40M pre drops founders to ~48%, pulses the founder wedge, and toasts 'founders now minority.'"
+  },
+  {
+    "id": "rankine-cycle-composer",
+    "title": "Rankine Cycle Composer",
+    "domain": "Thermodynamics / mechanical engineering",
+    "interaction": "drag-to-compose a thermodynamic cycle the agent re-solves on a T-s diagram",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction",
+      "feedback-loop"
+    ],
+    "requirement": "Author regions: @cycle-builder (a canvas where the user drags boiler, turbine, condenser, and pump blocks into a loop and sets each block's pressure and temperature), @ts-diagram (a T-s plot), and @performance (an efficiency dashboard). The user composes a steam Rankine cycle with the boiler at 8 MPa / 500 C and the condenser at 10 kPa; each block edit updates ui_state. The agent computes the four state-point enthalpies, net work, heat input, thermal efficiency, and back-work ratio, then uses ui_render to place the state points on the ui_chart T-s diagram in @ts-diagram and ui_panel to mount stats plus a state-point table (eta ~35%) into @performance. It uses ui_highlight to mark the process with the largest exergy loss and ui_notify to warn if turbine-exit steam quality falls below 0.88 (blade erosion). Adding a reheat or regeneration block recomputes and re-renders, and the agent uses ui_ask to offer 'add a reheat stage to boost efficiency?' to drive the next iteration."
+  },
+  {
+    "id": "tradeoff-arena",
+    "title": "Tradeoff Arena",
+    "domain": "weighted decision matrix with sensitivity analysis",
+    "interaction": "drag criteria to reweight, agent runs flip-the-winner sensitivity",
+    "patterns": [
+      "feedback-loop",
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Expose @region:options (2-5 option columns), @region:criteria (draggable criterion chips reorderable by importance with a per-criterion weight nudge), @region:matrix, @region:verdict, and @region:sensitivity. The user enters options (e.g., three job offers or three vendors) and criteria; the agent builds a scored ui_panel matrix (option x criterion) with a ui_chart stacked bar of weighted contributions into @region:matrix and a ui_render verdict naming the current winner into @region:verdict. Dragging criteria to reorder or nudging a weight recomputes weighted totals, re-renders the bars, and updates the verdict, ui_notify on any winner flip. The signature feature is a sensitivity simulation in @region:sensitivity: the agent computes how much each criterion's weight would have to move to flip the winner and ui_highlight the criterion the decision is most fragile to ('Salary is doing all the work; drop its weight 15% and Offer B wins'); once a winner survives \u00b120% weight swings it ui_theme the accent green as a robust pick. Example: three vendors scored on price/support/security \u2014 dragging 'security' above 'price' flips the winner from A to C, and the sensitivity panel marks the decision fragile until support weight is also raised."
+  },
+  {
+    "id": "biomarker-threshold-lab",
+    "title": "Biomarker Threshold Lab",
+    "domain": "diagnostics / biomarker cutoff evaluation",
+    "interaction": "threshold slider / ROC what-if",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "Regions: @distributions (overlaid diseased vs healthy score histograms with a draggable cutoff line), @roc (an ROC curve with the current operating point marked), @confusion (a 2x2 TP/FP/FN/TN table), and @metrics (stat tiles for sensitivity, specificity, PPV, NPV, LR+, and Youden J). The user drags the cutoff or moves a slider and the page posts the threshold via ui_state; the agent recomputes every operating metric at that cutoff, redraws the confusion matrix, moves the ROC operating point, and ui_highlight pulses whichever metric the user is optimizing. A ui_ask sets the clinical context (disease prevalence and the cost ratio of false-negative vs false-positive), which shifts the agent's recommended optimal threshold (Youden vs cost-weighted) and drops a ui_notify when the user's manual cutoff diverges from the recommendation. Concrete: a troponin-like marker at cutoff 0.04 gives sensitivity 0.92 / specificity 0.78; sliding to 0.10 raises specificity to 0.94 but sensitivity falls to 0.71, and under a 10:1 FN:FP cost the agent flags the higher cutoff as unsafe and highlights the sensitivity tile. The loop is drag threshold -> recompute all metrics -> re-render panels + attention shift, with the ui_ask cost context reshaping the recommendation."
+  },
+  {
+    "id": "protege-tutor-lab",
+    "title": "Protege Tutor Lab",
+    "domain": "education & adaptive learning",
+    "interaction": "learning-by-teaching with an AI protege whose belief meters adapt to your explanations",
+    "patterns": [
+      "feedback-loop",
+      "behavior-tracking",
+      "dashboard"
+    ],
+    "requirement": "Cast the learner as the teacher: expose an @region:avatar showing an AI 'student' with a set of belief meters on a topic (Newton's third law), several deliberately wrong (belief 'heavier objects fall faster' at 80%), a @region:teach explanation input, and a @region:transcript. The human types explanations; the agent role-plays the confused student, updating each belief meter in ui_state based on whether the explanation actually targeted it, and asks a naive follow-up via ui_ask ('but if I drop a bowling ball and a feather...?'). Well-aimed explanations swing a misconception meter from red toward green and log a milestone in the transcript, while vague ones leave it stuck and the avatar stays confused. The agent tracks which misconceptions the teacher has and hasn't addressed in ui_state and steers its student-questions toward the untouched ones; ui_highlight pulses a meter when it flips and ui_notify fires when the student 'gets it'. Concrete drive: the teacher explains equal-and-opposite forces, so the 'action-reaction cancels out' meter turns green while 'heavier falls faster' stays red, prompting the avatar to raise the feather-vs-ball question. The avatar's overall understanding % is the win condition."
+  },
+  {
+    "id": "stance-coalition-compass",
+    "title": "Stance Coalition Compass",
+    "domain": "social / political sociology",
+    "interaction": "multi-axis stance sliders mapping to a live coalition space",
+    "patterns": [
+      "simulation",
+      "dashboard",
+      "attention-direction"
+    ],
+    "requirement": "The page exposes an `@axes` region with 5 labeled policy sliders (economic, social, environmental, security, institutional-trust, each -10..+10), a `@map` region, and a `@coalitions` region. As the user moves any slider the page writes the 5-vector to ui_state; the agent places the user as a point in a 2D coalition space via ui_graph/scatter, computes distance to a set of named coalition archetypes (e.g., 'Eco-populist', 'Market liberal', 'Communitarian'), and renders a ui_chart (nearest-coalition affinity bars) plus a ui_table (issue -> which coalition you agree/clash with) into `@coalitions`. It uses ui_highlight to pulse the coalition you're closest to and, as you drag, ui_notifies the moment a slider move crosses a realignment boundary ('moving security +4 just flipped your nearest ally from Eco-populist to Communitarian'). It uses ui_ask to run a what-if ('Which single issue are you least willing to compromise?') and locks that axis while showing the best-fit coalition given the constraint. Example: starting centrist then dragging environmental to +9 snaps the nearest coalition to Eco-populist and highlights security as your biggest clash. The loop: move slider -> recompute coalition map -> agent redirects attention to your realignment and trade-offs."
+  }
+]
