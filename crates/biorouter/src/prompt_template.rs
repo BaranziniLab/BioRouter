@@ -18,6 +18,7 @@ static CORE_PROMPTS_DIR: Dir = include_dir!("$CARGO_MANIFEST_DIR/src/prompts");
 /// `src/prompts/`.
 const _PROMPT_RECOMPILE_TRACKERS: &[&str] = &[
     include_str!("prompts/system.md"),
+    include_str!("prompts/system_small_local.md"),
     include_str!("prompts/subagent_system.md"),
     include_str!("prompts/plan.md"),
     include_str!("prompts/workflow.md"),
