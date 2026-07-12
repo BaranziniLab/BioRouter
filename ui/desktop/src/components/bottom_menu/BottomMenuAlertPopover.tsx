@@ -20,6 +20,16 @@ export default function BottomMenuAlertPopover({ alerts }: AlertPopoverProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
 
+  const closePopover = useCallback(() => {
+    setIsOpen(false);
+    setWasAutoShown(false);
+    setIsHovered(false);
+    if (hideTimerRef.current) {
+      clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  }, []);
+
   // Calculate popover position
   const calculatePosition = useCallback(() => {
     if (!triggerRef.current || !popoverRef.current) return;
@@ -133,57 +143,50 @@ export default function BottomMenuAlertPopover({ alerts }: AlertPopoverProps) {
     }
   }, [isHovered, isOpen, startHideTimer, wasAutoShown]);
 
-  // Handle click outside - but not when editing threshold
+  // Dismiss consistently without swallowing the outside control's own click.
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      // Check if we're clicking on an input or button inside the popover
-      const target = event.target as HTMLElement;
-      const isInteractiveElement =
-        target.tagName === 'INPUT' ||
-        target.tagName === 'BUTTON' ||
-        target.closest('button') !== null ||
-        target.closest('input') !== null;
+      const target = event.target as Node;
+      if (popoverRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      closePopover();
+    };
 
-      if (
-        popoverRef.current &&
-        !popoverRef.current.contains(event.target as Node) &&
-        !isInteractiveElement
-      ) {
-        setIsOpen(false);
-        setWasAutoShown(false);
-      }
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      closePopover();
+      triggerRef.current?.focus();
     };
 
     if (isOpen) {
-      // Use mouseup instead of mousedown to allow button clicks to complete
       document.addEventListener('mouseup', handleClickOutside);
+      document.addEventListener('keydown', handleEscape);
     }
 
     return () => {
       document.removeEventListener('mouseup', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
     };
-  }, [isOpen]);
+  }, [closePopover, isOpen]);
 
   // Listen for custom event to hide the popover
   useEffect(() => {
     const handleHidePopover = () => {
-      if (isOpen) {
-        setIsOpen(false);
-        setWasAutoShown(false);
-        setIsHovered(false);
-        // Clear any pending hide timer
-        if (hideTimerRef.current) {
-          clearTimeout(hideTimerRef.current);
-          hideTimerRef.current = null;
-        }
-      }
+      if (isOpen) closePopover();
     };
 
     window.addEventListener('hide-alert-popover', handleHidePopover);
     return () => {
       window.removeEventListener('hide-alert-popover', handleHidePopover);
     };
-  }, [isOpen]);
+  }, [closePopover, isOpen]);
+
+  useEffect(
+    () => () => {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    },
+    []
+  );
 
   // Use shouldShowIndicator instead of alerts.length for rendering decision
   if (!shouldShowIndicator) {
@@ -204,15 +207,15 @@ export default function BottomMenuAlertPopover({ alerts }: AlertPopoverProps) {
       <div className="relative">
         <button
           ref={triggerRef}
+          type="button"
           className="cursor-pointer flex items-center justify-center min-w-5 min-h-5 rounded hover:bg-background-muted"
-          onClick={() => {
-            setIsOpen(true);
-          }}
+          aria-label="Show notifications"
+          aria-haspopup="dialog"
+          aria-expanded={isOpen}
+          onClick={() => (isOpen ? closePopover() : setIsOpen(true))}
           onMouseEnter={() => {
-            setIsOpen(true);
             setIsHovered(true);
-            setWasAutoShown(false);
-            if (hideTimerRef.current) {
+            if (isOpen && hideTimerRef.current) {
               clearTimeout(hideTimerRef.current);
             }
           }}
@@ -236,6 +239,8 @@ export default function BottomMenuAlertPopover({ alerts }: AlertPopoverProps) {
       {isOpen && (
         <div
           ref={popoverRef}
+          role="dialog"
+          aria-label="Notifications"
           className="biorouter-popover-surface fixed w-[275px] p-0 rounded-xl overflow-hidden bg-background-default z-[var(--z-dropdown)] pointer-events-auto text-left"
           style={{
             top: `${popoverPosition.top}px`,
@@ -255,7 +260,7 @@ export default function BottomMenuAlertPopover({ alerts }: AlertPopoverProps) {
         >
           <div className="flex flex-col">
             {alerts.map((alert, index) => (
-              <div key={index} className={cn(index > 0 && 'border-t border-white/20')}>
+              <div key={index} className={cn(index > 0 && 'border-t border-border-subtle')}>
                 <AlertBox alert={alert} />
               </div>
             ))}

@@ -144,12 +144,13 @@ impl DashboardTheme {
 /// honours it and the report propagates it down to every panel.
 fn inject_forced_theme(html: String, theme: &str) -> String {
     let tag = format!("<script>window.__BR_VIZ_THEME__=\"{theme}\";</script>");
-    match html.find("<head>") {
-        Some(idx) => {
+    match html.split_once("<head>") {
+        Some((before, after)) => {
             let mut out = String::with_capacity(html.len() + tag.len());
-            out.push_str(&html[..idx + "<head>".len()]);
+            out.push_str(before);
+            out.push_str("<head>");
             out.push_str(&tag);
-            out.push_str(&html[idx + "<head>".len()..]);
+            out.push_str(after);
             out
         }
         None => format!("{tag}{html}"),

@@ -75,8 +75,8 @@ export function ImportSessionModal({ isOpen, onClose, onImport }: ImportSessionM
   );
 
   return (
-    <Dialog open={isOpen} onOpenChange={(open) => !open && handleClose()}>
-      <DialogContent className="sm:max-w-[480px]">
+    <Dialog open={isOpen} onOpenChange={(open) => !open && !isSubmitting && handleClose()}>
+      <DialogContent dismissible={!isSubmitting} className="sm:max-w-[480px]">
         <DialogHeader>
           <DialogTitle>Import Session</DialogTitle>
           <DialogDescription>

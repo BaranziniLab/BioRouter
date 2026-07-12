@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
 import {
   listSchedules,
@@ -38,6 +38,8 @@ import {
   scheduleDisplayName,
 } from '../../utils/builtins';
 import { ReadableContent } from '../Layout/ReadableContent';
+import { ConfirmationModal } from '../ui/ConfirmationModal';
+import { EmptyState } from '../ui/empty-state';
 
 interface SchedulesViewProps {
   onClose?: () => void;
@@ -74,12 +76,14 @@ const ScheduleCard: React.FC<{
   const formattedLastRun = formatToLocalDateWithTimezone(job.last_run);
 
   return (
-    <div
-      className="biorouter-list-row group py-3 px-3 cursor-pointer"
-      onClick={() => onNavigateToDetail(job.id)}
-    >
+    <div className="biorouter-list-row group py-3 px-3">
       <div className="flex justify-between items-start gap-3">
-        <div className="min-w-0 flex-1">
+        <button
+          type="button"
+          className="min-w-0 flex-1 cursor-pointer rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+          onClick={() => onNavigateToDetail(job.id)}
+          aria-label={`View schedule ${scheduleDisplayName(job.id)}`}
+        >
           <div className="flex items-center gap-1.5">
             <h3 className="text-sm text-text-default truncate max-w-[50vw]" title={job.id}>
               {scheduleDisplayName(job.id)}
@@ -104,9 +108,9 @@ const ScheduleCard: React.FC<{
           <div className="flex items-center text-[11px] text-text-subtle mt-1">
             <span>Last run: {formattedLastRun}</span>
           </div>
-        </div>
+        </button>
 
-        <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center gap-1 shrink-0 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
           {!job.currently_running && (
             <>
               <Button
@@ -119,6 +123,7 @@ const ScheduleCard: React.FC<{
                 size="sm"
                 className="h-7 w-7 p-0"
                 title="Edit"
+                aria-label={`Edit ${scheduleDisplayName(job.id)}`}
               >
                 <Edit className="w-3.5 h-3.5" />
               </Button>
@@ -136,6 +141,7 @@ const ScheduleCard: React.FC<{
                 size="sm"
                 className="h-7 w-7 p-0"
                 title={job.paused ? 'Resume' : 'Pause'}
+                aria-label={`${job.paused ? 'Resume' : 'Pause'} ${scheduleDisplayName(job.id)}`}
               >
                 {job.paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
               </Button>
@@ -153,6 +159,7 @@ const ScheduleCard: React.FC<{
                 size="sm"
                 className="h-7 w-7 p-0"
                 title="Inspect"
+                aria-label={`Inspect ${scheduleDisplayName(job.id)}`}
               >
                 <Eye className="w-3.5 h-3.5" />
               </Button>
@@ -166,6 +173,7 @@ const ScheduleCard: React.FC<{
                 size="sm"
                 className="h-7 w-7 p-0"
                 title="Kill"
+                aria-label={`Kill ${scheduleDisplayName(job.id)}`}
               >
                 <Square className="w-3.5 h-3.5" />
               </Button>
@@ -181,6 +189,7 @@ const ScheduleCard: React.FC<{
             size="sm"
             className="h-7 w-7 p-0 text-text-danger hover:bg-background-danger/10"
             title="Delete"
+            aria-label={`Delete ${scheduleDisplayName(job.id)}`}
           >
             <TrashIcon className="w-3.5 h-3.5" />
           </Button>
@@ -201,7 +210,21 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
   const [editingSchedule, setEditingSchedule] = useState<ScheduledJob | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [actionsInProgress, setActionsInProgress] = useState<Set<string>>(new Set());
+  const actionsInProgressRef = useRef<Set<string>>(new Set());
   const [viewingScheduleId, setViewingScheduleId] = useState<string | null>(null);
+  const [scheduleToDeleteId, setScheduleToDeleteId] = useState<string | null>(null);
+
+  const beginAction = (id: string) => {
+    if (actionsInProgressRef.current.has(id)) return false;
+    actionsInProgressRef.current.add(id);
+    setActionsInProgress(new Set(actionsInProgressRef.current));
+    return true;
+  };
+
+  const finishAction = (id: string) => {
+    actionsInProgressRef.current.delete(id);
+    setActionsInProgress(new Set(actionsInProgressRef.current));
+  };
 
   const fetchSchedules = async () => {
     setIsLoading(true);
@@ -281,9 +304,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
   };
 
   const handleDeleteSchedule = async (id: string) => {
-    if (!window.confirm(`Are you sure you want to delete schedule "${id}"?`)) return;
-
-    setActionsInProgress((prev) => new Set(prev).add(id));
+    if (!beginAction(id)) return;
     if (viewingScheduleId === id) setViewingScheduleId(null);
     setApiError(null);
 
@@ -295,16 +316,13 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       const errorMsg = error instanceof Error ? error.message : `Unknown error deleting "${id}".`;
       setApiError(errorMsg);
     } finally {
-      setActionsInProgress((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(id);
-        return newSet;
-      });
+      finishAction(id);
+      setScheduleToDeleteId(null);
     }
   };
 
   const handlePauseSchedule = async (id: string) => {
-    setActionsInProgress((prev) => new Set(prev).add(id));
+    if (!beginAction(id)) return;
     setApiError(null);
 
     try {
@@ -323,16 +341,12 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
         msg: errorMsg,
       });
     } finally {
-      setActionsInProgress((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(id);
-        return newSet;
-      });
+      finishAction(id);
     }
   };
 
   const handleUnpauseSchedule = async (id: string) => {
-    setActionsInProgress((prev) => new Set(prev).add(id));
+    if (!beginAction(id)) return;
     setApiError(null);
 
     try {
@@ -351,16 +365,12 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
         msg: errorMsg,
       });
     } finally {
-      setActionsInProgress((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(id);
-        return newSet;
-      });
+      finishAction(id);
     }
   };
 
   const handleKillRunningJob = async (id: string) => {
-    setActionsInProgress((prev) => new Set(prev).add(id));
+    if (!beginAction(id)) return;
     setApiError(null);
 
     try {
@@ -380,16 +390,12 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
         msg: errorMsg,
       });
     } finally {
-      setActionsInProgress((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(id);
-        return newSet;
-      });
+      finishAction(id);
     }
   };
 
   const handleInspectRunningJob = async (id: string) => {
-    setActionsInProgress((prev) => new Set(prev).add(id));
+    if (!beginAction(id)) return;
     setApiError(null);
 
     try {
@@ -418,11 +424,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
         msg: errorMsg,
       });
     } finally {
-      setActionsInProgress((prev) => {
-        const newSet = new Set(prev);
-        newSet.delete(id);
-        return newSet;
-      });
+      finishAction(id);
     }
   };
 
@@ -493,10 +495,22 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
                 )}
 
                 {!isLoading && !apiError && schedules.length === 0 && (
-                  <div className="flex flex-col pt-4 pb-12">
-                    <CircleDotDashed className="h-5 w-5 text-text-muted mb-3.5" />
-                    <p className="text-base text-text-muted mb-2">No schedules yet</p>
-                  </div>
+                  <EmptyState
+                    icon={CircleDotDashed}
+                    title="No schedules yet"
+                    description="Create a schedule to run a saved workflow automatically at the time you choose."
+                    actions={
+                      <Button
+                        onClick={() => {
+                          setSubmitApiError(null);
+                          setIsModalOpen(true);
+                        }}
+                      >
+                        <Plus className="h-4 w-4" />
+                        Create schedule
+                      </Button>
+                    }
+                  />
                 )}
 
                 {!isLoading && schedules.length > 0 && (
@@ -515,7 +529,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
                         onUnpause={handleUnpauseSchedule}
                         onKill={handleKillRunningJob}
                         onInspect={handleInspectRunningJob}
-                        onDelete={handleDeleteSchedule}
+                        onDelete={setScheduleToDeleteId}
                         actionInProgress={actionsInProgress.has(job.id) || isSubmitting}
                       />
                     ))}
@@ -538,6 +552,17 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
         schedule={editingSchedule}
         isLoadingExternally={isSubmitting}
         apiErrorExternally={submitApiError}
+      />
+      <ConfirmationModal
+        isOpen={scheduleToDeleteId !== null}
+        title={`Delete "${scheduleToDeleteId ?? ''}"?`}
+        message="This permanently removes the schedule and its run configuration. This action cannot be undone."
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        confirmVariant="destructive"
+        isSubmitting={scheduleToDeleteId !== null && actionsInProgress.has(scheduleToDeleteId)}
+        onConfirm={() => scheduleToDeleteId && void handleDeleteSchedule(scheduleToDeleteId)}
+        onCancel={() => setScheduleToDeleteId(null)}
       />
     </>
   );

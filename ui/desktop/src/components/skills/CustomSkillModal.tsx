@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Button } from '../ui/button';
 import { parseSkillFrontmatter, toSlug, BIOROUTER_SKILLS_DIR } from './skillUtils';
 import { toastSuccess, toastError } from '../../toasts';
+import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
 
 const TEMPLATE = `---
 name: example-skill
@@ -35,6 +36,7 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
   const [isSaving, setIsSaving] = useState(false);
 
   const handleSave = async () => {
+    if (isSaving) return;
     const parsed = parseSkillFrontmatter(content);
     if (!parsed) {
       setError('File must have valid YAML frontmatter with "name" and "description" fields.');
@@ -45,26 +47,34 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
 
     const slug = toSlug(parsed.name);
     const destFolder = `${BIOROUTER_SKILLS_DIR}/${slug}`;
-    await window.electron.ensureDirectory(destFolder);
-    const ok = await window.electron.writeFile(`${destFolder}/SKILL.md`, content);
-    setIsSaving(false);
-    if (ok) {
-      toastSuccess({ title: parsed.name, msg: 'Skill saved to BioRouter Skills' });
-      onSaved();
-      onClose();
-    } else {
-      toastError({ title: 'Save failed', msg: `Could not write to ${destFolder}/SKILL.md` });
+    try {
+      await window.electron.ensureDirectory(destFolder);
+      const ok = await window.electron.writeFile(`${destFolder}/SKILL.md`, content);
+      if (ok) {
+        toastSuccess({ title: parsed.name, msg: 'Skill saved to BioRouter Skills' });
+        onSaved();
+        onClose();
+      } else {
+        toastError({ title: 'Save failed', msg: `Could not write to ${destFolder}/SKILL.md` });
+      }
+    } catch (error) {
+      toastError({
+        title: 'Save failed',
+        msg: error instanceof Error ? error.message : `Could not write to ${destFolder}/SKILL.md`,
+      });
+    } finally {
+      setIsSaving(false);
     }
   };
 
   return (
-    <div className="biorouter-modal-overlay fixed inset-0 z-50 flex items-center justify-center">
-      <div className="biorouter-modal-surface bg-background-default w-[640px] max-h-[85vh] flex flex-col overflow-hidden">
-        <div className="px-6 pt-5 pb-4 border-b border-border-subtle flex items-center justify-between">
-          <h2 className="text-base font-semibold">Add Custom Skill</h2>
-          <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={onClose}>
-            ✕
-          </Button>
+    <Dialog open onOpenChange={(open) => !open && !isSaving && onClose()}>
+      <DialogContent
+        dismissible={!isSaving}
+        className="flex max-h-[85vh] w-[640px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(100%-2rem)] md:max-w-[640px]"
+      >
+        <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
+          <DialogTitle>Add Custom Skill</DialogTitle>
         </div>
 
         <div className="p-6 flex flex-col gap-3 flex-1 overflow-hidden">
@@ -87,14 +97,14 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
         </div>
 
         <div className="px-6 py-4 border-t border-border-subtle flex justify-end gap-2">
-          <Button variant="outline" onClick={onClose}>
+          <Button variant="outline" onClick={onClose} disabled={isSaving}>
             Cancel
           </Button>
           <Button variant="default" onClick={handleSave} disabled={isSaving}>
             {isSaving ? 'Saving…' : 'Save Skill'}
           </Button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

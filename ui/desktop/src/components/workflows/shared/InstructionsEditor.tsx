@@ -1,7 +1,6 @@
 import React, { useState } from 'react';
-import { X } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
-import { useEscapeKey } from '../../../hooks/useEscapeKey';
+import { Dialog, DialogContent, DialogTitle } from '../../ui/dialog';
 
 interface InstructionsEditorProps {
   isOpen: boolean;
@@ -19,7 +18,6 @@ export default function InstructionsEditor({
   error,
 }: InstructionsEditorProps) {
   const [localValue, setLocalValue] = useState(value);
-  useEscapeKey(isOpen, onClose);
 
   React.useEffect(() => {
     if (isOpen) {
@@ -64,21 +62,10 @@ Use {{parameter_name}} syntax for any user-provided values.`;
   if (!isOpen) return null;
 
   return (
-    <div
-      className="biorouter-modal-overlay fixed inset-0 z-[400] flex items-center justify-center"
-      onClick={(e) => {
-        // Close modal when clicking backdrop
-        if (e.target === e.currentTarget) {
-          handleCancel();
-        }
-      }}
-    >
-      <div className="biorouter-modal-surface bg-background-default p-6 w-[900px] max-w-[90vw] max-h-[90vh] overflow-hidden flex flex-col">
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-semibold text-text-default">Instructions Editor</h3>
-          <Button type="button" variant="ghost" size="sm" onClick={handleCancel}>
-            <X className="w-4 h-4" />
-          </Button>
+    <Dialog open={isOpen} onOpenChange={(open) => !open && handleCancel()}>
+      <DialogContent className="flex max-h-[90vh] w-[900px] max-w-[90vw] flex-col overflow-hidden sm:max-w-[90vw] lg:max-w-[900px]">
+        <div className="mb-4 pr-8">
+          <DialogTitle>Instructions Editor</DialogTitle>
         </div>
 
         <div className="flex-1 flex flex-col min-h-0">
@@ -120,7 +107,7 @@ Use {{parameter_name}} syntax for any user-provided values.`;
             Save Instructions
           </Button>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

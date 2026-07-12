@@ -5,6 +5,8 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../../ui/sheet';
 import { useKnowledge } from '../KnowledgeContext';
 import { useHistory } from '../hooks/useHistory';
 import { ChangeKindChip } from './ChangeKindChip';
+import { ConfirmationModal } from '../../ui/ConfirmationModal';
+import { toastError } from '../../../toasts';
 
 interface Props {
   open: boolean;
@@ -34,6 +36,7 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
   const { history, loading, error, restore } = useHistory(activeKbId);
   const [activeKinds, setActiveKinds] = useState<Set<ChangeKind>>(new Set(ALL_KINDS));
   const [restoring, setRestoring] = useState<string | null>(null);
+  const [entryToRestore, setEntryToRestore] = useState<HistoryEntry | null>(null);
 
   const filtered = useMemo(
     () => history.filter((h) => activeKinds.has(h.kind)),
@@ -49,23 +52,22 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
     });
   }
 
-  async function handleRestore(entry: HistoryEntry) {
-    if (
-      !window.confirm(
-        `Restore knowledge base to ${entry.commit_sha.slice(0, 7)}? A new revert commit will be created.`
-      )
-    ) {
-      return;
-    }
+  async function confirmRestore() {
+    const entry = entryToRestore;
+    if (!entry || restoring) return;
     setRestoring(entry.commit_sha);
     try {
       await restore(entry.commit_sha);
       triggerGraphRefresh();
       onRestored();
     } catch (err) {
-      window.alert(`Restore failed: ${err instanceof Error ? err.message : String(err)}`);
+      toastError({
+        title: 'Restore failed',
+        msg: err instanceof Error ? err.message : String(err),
+      });
     } finally {
       setRestoring(null);
+      setEntryToRestore(null);
     }
   }
 
@@ -122,7 +124,7 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
                   <Button
                     variant="outline"
                     size="xs"
-                    onClick={() => void handleRestore(entry)}
+                    onClick={() => setEntryToRestore(entry)}
                     disabled={restoring !== null}
                   >
                     {restoring === entry.commit_sha ? 'Restoring…' : 'Restore'}
@@ -132,6 +134,16 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
             ))}
         </div>
       </SheetContent>
+      <ConfirmationModal
+        isOpen={entryToRestore !== null}
+        title="Restore knowledge base?"
+        message={`Restore to ${entryToRestore?.commit_sha.slice(0, 7) ?? ''}? A new revert commit will be created.`}
+        confirmLabel="Restore"
+        cancelLabel="Cancel"
+        isSubmitting={restoring !== null}
+        onConfirm={() => void confirmRestore()}
+        onCancel={() => setEntryToRestore(null)}
+      />
     </Sheet>
   );
 }

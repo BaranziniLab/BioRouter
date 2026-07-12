@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { createPortal } from 'react-dom';
 import { useForm } from '@tanstack/react-form';
 import { Workflow, WorkflowKnowledgeBases } from '../../workflow';
-import { X, Save, Play, Loader2 } from '../icons/app-icons';
+import { Save, Play, Loader2 } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { WorkflowFormFields } from './shared/WorkflowFormFields';
 import { WorkflowFormData } from './shared/workflowFormSchema';
@@ -13,6 +12,7 @@ import { saveWorkflow } from '../../workflow/workflow_management';
 import type { ExtensionConfig, Manifest } from '../../api';
 import { ALL_SKILL_DIRS, loadSkillsFromDirs } from '../skills/skillUtils';
 import type { WorkflowResourceItem } from './shared/WorkflowResourcePicker';
+import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
 
 interface CreateWorkflowFromSessionModalProps {
   isOpen: boolean;
@@ -72,6 +72,8 @@ export default function CreateWorkflowFromSessionModal({
   // Analyze messages and prefill form when modal opens
   useEffect(() => {
     if (isOpen && sessionId && !hasAnalyzed) {
+      let cancelled = false;
+      let completionTimeout: ReturnType<typeof setTimeout> | undefined;
       setIsAnalyzing(true);
 
       // Create a sequence of analysis stages for better UX
@@ -94,6 +96,7 @@ export default function CreateWorkflowFromSessionModal({
 
       // Pre-select session extensions immediately — independent of workflow analysis
       getSessionExtensions({ path: { session_id: sessionId }, throwOnError: false }).then((res) => {
+        if (cancelled) return;
         if (res.data?.extensions) {
           setWorkflowExtensions(res.data.extensions);
         }
@@ -103,6 +106,7 @@ export default function CreateWorkflowFromSessionModal({
         listBases({ throwOnError: false }),
         getActive({ query: { session_id: sessionId }, throwOnError: false }),
       ]).then(([basesRes, activeRes]) => {
+        if (cancelled) return;
         const bases: Manifest[] = basesRes.data ?? [];
         const hidden = new Set(activeRes.data?.hidden_kbs ?? []);
         const visible = bases.filter((base) => !hidden.has(base.id)).map((base) => base.id);
@@ -124,6 +128,7 @@ export default function CreateWorkflowFromSessionModal({
 
       loadSkillsFromDirs(ALL_SKILL_DIRS)
         .then(({ singles, bundles }) => {
+          if (cancelled) return;
           const bundleItems: WorkflowResourceItem[] = bundles.map((bundle) => ({
             id: bundle.bundleName,
             label: bundle.bundleName,
@@ -138,6 +143,7 @@ export default function CreateWorkflowFromSessionModal({
           setSkillItems([...bundleItems, ...singleItems]);
         })
         .catch((error) => {
+          if (cancelled) return;
           console.warn('Failed to load workflow skills:', error);
           setSkillItems([]);
         });
@@ -148,6 +154,7 @@ export default function CreateWorkflowFromSessionModal({
         throwOnError: true,
       })
         .then((response) => {
+          if (cancelled) return;
           clearInterval(stageInterval);
           setAnalysisStage('Complete!');
 
@@ -199,21 +206,30 @@ export default function CreateWorkflowFromSessionModal({
           } else {
             console.error('No workflow in response:', response);
           }
-          setHasAnalyzed(true);
         })
         .catch((error) => {
+          if (cancelled) return;
           console.error('Failed to analyze messages:', error);
           setAnalysisStage('Analysis failed');
         })
         .finally(() => {
+          if (cancelled) return;
           clearInterval(stageInterval);
-          setHasAnalyzed(true);
-          setTimeout(() => {
+          completionTimeout = setTimeout(() => {
+            if (cancelled) return;
+            setHasAnalyzed(true);
             setIsAnalyzing(false);
             setAnalysisStage('');
           }, 500);
         });
+
+      return () => {
+        cancelled = true;
+        clearInterval(stageInterval);
+        if (completionTimeout) clearTimeout(completionTimeout);
+      };
     }
+    return undefined;
   }, [isOpen, sessionId, hasAnalyzed, form]);
 
   // Reset state when modal closes
@@ -259,7 +275,7 @@ export default function CreateWorkflowFromSessionModal({
   }, [form]);
 
   const handleCreateWorkflow = async (formData: WorkflowFormData, runAfterSave = false) => {
-    if (!isFormValid) {
+    if (isCreating || !isFormValid) {
       return;
     }
 
@@ -368,53 +384,26 @@ export default function CreateWorkflowFromSessionModal({
     }
   };
 
-  // ESC-to-close — survives tiny chat windows in dashboard mode where the
-  // in-modal close button can be off-screen.
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
-
   if (!isOpen) return null;
 
-  // Portal to document.body so the fixed overlay anchors to the viewport
-  // instead of the dashboard's transformed world layer (translate3d on
-  // an ancestor turns `fixed` into a constrained containing block).
-  return createPortal(
-    <div
-      className="biorouter-modal-overlay fixed inset-0 z-[400] flex items-center justify-center p-4"
-      data-testid="create-workflow-modal"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="biorouter-modal-surface flex h-full max-h-[90vh] w-full max-w-4xl flex-col bg-background-default overflow-hidden">
+  return (
+    <Dialog open={isOpen} onOpenChange={(open) => !open && !isCreating && onClose()}>
+      <DialogContent
+        dismissible={!isCreating}
+        className="flex h-full max-h-[90vh] w-full max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:max-w-[calc(100%-2rem)] lg:max-w-4xl"
+        data-testid="create-workflow-modal"
+      >
         {/* Header */}
         <div
-          className="flex shrink-0 items-center justify-between px-6 pb-3 pt-5"
+          className="flex shrink-0 items-center justify-between px-6 pb-3 pt-5 pr-14"
           data-testid="modal-header"
         >
           <div>
-            <h2 className="text-base font-semibold text-text-default">
-              Create Workflow from Session
-            </h2>
+            <DialogTitle>Create Workflow from Session</DialogTitle>
             <p className="text-xs text-text-muted mt-0.5">
               Create a reusable workflow based on your current conversation
             </p>
           </div>
-          <Button
-            onClick={onClose}
-            variant="ghost"
-            size="sm"
-            className="rounded-md p-1.5 transition-colors hover:bg-background-medium"
-            data-testid="close-button"
-          >
-            <X className="w-4 h-4" />
-          </Button>
         </div>
 
         {/* Content */}
@@ -481,6 +470,7 @@ export default function CreateWorkflowFromSessionModal({
           <Button
             onClick={onClose}
             variant="ghost"
+            disabled={isCreating}
             className="rounded-md px-4 py-2 text-text-muted transition-colors hover:bg-background-medium"
             data-testid="cancel-button"
           >
@@ -514,8 +504,7 @@ export default function CreateWorkflowFromSessionModal({
             </div>
           )}
         </div>
-      </div>
-    </div>,
-    document.body
+      </DialogContent>
+    </Dialog>
   );
 }

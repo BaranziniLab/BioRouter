@@ -181,16 +181,18 @@ export function IngestPanel() {
       const data = res.data;
       if (!data?.ok) {
         setDigestState('idle');
-        window.alert(
-          `Model unreachable: ${data?.error ?? 'unknown'}\n\nPlease switch to a different model.`
-        );
+        toastError({
+          title: 'Model unreachable',
+          msg: `${data?.error ?? 'Unknown model error'}. Please switch to a different model.`,
+        });
         return;
       }
     } catch (err) {
       setDigestState('idle');
-      window.alert(
-        `Model check failed: ${err instanceof Error ? err.message : String(err)}\n\nPlease verify your provider's credentials and try a different model.`
-      );
+      toastError({
+        title: 'Model check failed',
+        msg: `${err instanceof Error ? err.message : String(err)}. Verify your provider credentials and try a different model.`,
+      });
       return;
     }
 

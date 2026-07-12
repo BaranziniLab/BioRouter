@@ -89,6 +89,41 @@ describe('ArtifactViewer', () => {
     expect(screen.queryByText(/read-only artifact preview/i)).not.toBeInTheDocument();
   });
 
+  it('shields every preview surface from pointer input while the panel is resizing', async () => {
+    installElectronMock();
+
+    const { rerender } = render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{
+            kind: 'html',
+            title: 'interactive.html',
+            html: '<!doctype html><html><body><button>Inside frame</button></body></html>',
+          }}
+          isResizing
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    expect(await screen.findByTestId('artifact-resize-shield')).toBeInTheDocument();
+
+    rerender(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'analysis.sql', path: '/tmp/analysis.sql' }}
+          isResizing
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    await waitFor(() => expect(window.electron.readArtifactFile).toHaveBeenCalled());
+    expect(screen.getByTestId('artifact-resize-shield')).toBeInTheDocument();
+  });
+
   it('loads generated text files with syntax-highlighted preview', async () => {
     installElectronMock();
 
@@ -175,6 +210,45 @@ describe('ArtifactViewer', () => {
     // A quoted field keeps its comma instead of splitting into a new column.
     expect(screen.getByRole('cell', { name: 'TP53, alias' })).toBeInTheDocument();
     expect(screen.getAllByRole('row')).toHaveLength(3);
+  });
+
+  it('renders a written HTML file with a Preview/Raw toggle', async () => {
+    installElectronMock();
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'html',
+      title: 'report.html',
+      path: '/work/report.html',
+      mimeType: 'text/html',
+      text: '<!doctype html><html><body><h1>Volcano</h1></body></html>',
+      size: 60,
+      found: true,
+    });
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{ kind: 'file', title: 'report.html', path: '/work/report.html' }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    // Like markdown, an HTML file offers both a rendered Preview and the raw source.
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'Preview' })).toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Raw' })).toBeInTheDocument();
+
+    // Preview by default: rendered inside a sandboxed iframe.
+    const frame = screen.getByTestId('artifact-viewer').querySelector('iframe');
+    expect(frame).toHaveAttribute('sandbox');
+
+    // Raw shows the HTML source itself.
+    await userEvent.click(screen.getByRole('button', { name: 'Raw' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('artifact-viewer').textContent).toContain('Volcano');
+    });
   });
 
   it('keeps a code file on the syntax-highlighted path with no view toggle', async () => {

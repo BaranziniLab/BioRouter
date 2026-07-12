@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { createPortal } from 'react-dom';
 import { useForm } from '@tanstack/react-form';
 import { Workflow, generateDeepLink, Parameter } from '../../workflow';
-import { Check, ExternalLink, Play, Save, X } from '../icons/app-icons';
+import { Check, ExternalLink, Play, Save } from '../icons/app-icons';
 import Copy from '../icons/Copy';
 import { ExtensionConfig } from '../ConfigContext';
 import { Button } from '../ui/button';
@@ -12,6 +11,7 @@ import { WorkflowFormFields } from './shared/WorkflowFormFields';
 import { WorkflowFormData } from './shared/workflowFormSchema';
 import { toastSuccess, toastError } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
+import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
 
 interface CreateEditWorkflowModalProps {
   isOpen: boolean;
@@ -280,6 +280,7 @@ export default function CreateEditWorkflowModal({
   };
 
   const handleSaveWorkflowClick = async () => {
+    if (isSaving) return;
     if (!validateForm()) {
       toastError({
         title: 'Validation Failed',
@@ -314,6 +315,7 @@ export default function CreateEditWorkflowModal({
   };
 
   const handleSaveAndRunWorkflowClick = async () => {
+    if (isSaving) return;
     if (!validateForm()) {
       toastError({
         title: 'Validation Failed',
@@ -358,38 +360,18 @@ export default function CreateEditWorkflowModal({
     }
   };
 
-  // ESC-to-close: ensures the modal stays dismissible even when its host
-  // chat window is too small to show the in-modal Close button (matters
-  // most in dashboard mode where chat windows can be shrunk down).
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose(false);
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
-
   if (!isOpen) return null;
 
-  // Portal to document.body so the modal escapes any ancestor that
-  // establishes a containing block for `fixed` (the dashboard world
-  // layer uses translate3d + will-change, which would otherwise clip
-  // the overlay to the small chat window).
-  return createPortal(
-    <div
-      className="biorouter-modal-overlay fixed inset-0 z-[400] flex items-center justify-center"
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose(false);
-      }}
-    >
-      <div className="biorouter-modal-surface bg-background-default w-[90vw] max-w-4xl h-[90vh] flex flex-col overflow-hidden">
+  return (
+    <Dialog open={isOpen} onOpenChange={(open) => !open && !isSaving && onClose(false)}>
+      <DialogContent
+        dismissible={!isSaving}
+        className="flex h-[90vh] w-[90vw] max-w-4xl flex-col gap-0 overflow-hidden p-0 sm:max-w-[90vw] lg:max-w-4xl"
+      >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-5 border-b border-border-subtle flex-shrink-0">
+        <div className="flex items-center justify-between px-6 py-5 pr-14 border-b border-border-subtle flex-shrink-0">
           <div>
-            <h1 className="text-base font-semibold text-text-default">
-              {isCreateMode ? 'Create Workflow' : 'Edit Workflow'}
-            </h1>
+            <DialogTitle>{isCreateMode ? 'Create Workflow' : 'Edit Workflow'}</DialogTitle>
             <p className="text-xs text-text-muted mt-0.5">
               {isCreateMode
                 ? 'Define agent behavior and capabilities for reusable chat sessions.'
@@ -405,14 +387,6 @@ export default function CreateEditWorkflowModal({
               </a>
             </p>
           </div>
-          <Button
-            onClick={() => onClose(false)}
-            variant="ghost"
-            size="sm"
-            className="p-1.5 hover:bg-background-medium rounded-lg transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </Button>
         </div>
 
         {/* Content */}
@@ -476,6 +450,7 @@ export default function CreateEditWorkflowModal({
           <Button
             onClick={() => onClose(false)}
             variant="ghost"
+            disabled={isSaving}
             className="px-4 py-2 text-text-muted rounded-lg hover:bg-background-medium transition-colors"
           >
             Close
@@ -504,8 +479,7 @@ export default function CreateEditWorkflowModal({
             </Button>
           </div>
         </div>
-      </div>
-    </div>,
-    document.body
+      </DialogContent>
+    </Dialog>
   );
 }

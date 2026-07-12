@@ -24,32 +24,23 @@
   box-shadow: inset 0 0 0 1px var(--color-yellow-100);
 }
 
-@keyframes expandDown {
-  from {
-    max-height: 0;
-  }
-  to {
-    max-height: var(--search-bar-height);
-  }
-}
-
-@keyframes collapseUp {
-  from {
-    max-height: var(--search-bar-height);
-  }
-  to {
-    max-height: 0;
-  }
+.search-bar-enter,
+.search-bar-exit {
+  --search-bar-height: 72px;
+  overflow: hidden;
+  transition: max-height 150ms ease-out;
 }
 
 .search-bar-enter {
-  --search-bar-height: 72px;
-  animation: expandDown 0.15s ease-out forwards;
-  overflow: hidden;
+  max-height: var(--search-bar-height);
 }
 
 .search-bar-exit {
-  --search-bar-height: 72px;
-  animation: collapseUp 0.15s ease-out forwards;
-  overflow: hidden;
+  max-height: 0;
+}
+
+@starting-style {
+  .search-bar-enter {
+    max-height: 0;
+  }
 }
