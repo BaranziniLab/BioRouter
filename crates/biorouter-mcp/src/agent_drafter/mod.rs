@@ -43,7 +43,10 @@ use std::path::PathBuf;
 /// the same way `knowledge::server` does).
 const SESSION_ID_META_KEY: &str = "biorouter-session-id";
 
-use manifest::{Capabilities, GuardrailsConfig, ModelSettings, Orchestration, ReliabilityConfig};
+use manifest::{
+    ActionDecl, Capabilities, ComponentDecl, GuardrailsConfig, ModelSettings, Orchestration,
+    ReliabilityConfig, SignalDecl, SurfaceDecl,
+};
 use store::{AgentConfig, ArtifactKind, ArtifactStore, Manifest, ModelSelection};
 
 /// Optional suggestions only. Apps are **provider-agnostic**: by default an app
@@ -105,6 +108,15 @@ pub struct CreateAppParams {
     /// Short description of what the app does.
     #[serde(default)]
     pub description: String,
+    /// Starter archetype (Apps SDK v2): "explorer", "dashboard", "workbench",
+    /// "wizard", "canvas", or "chat". Omit to infer one from the title +
+    /// description (a non-chat archetype unless the brief asks for a chat /
+    /// assistant / Q&A). When the caller supplies no `html`/`src/main.ts`, the
+    /// chosen archetype seeds a working, lint-clean index.html + src/main.ts and
+    /// the matching declared `surface` (actions / signals / components /
+    /// state_schema). Only shapes agentic apps; static apps ignore it.
+    #[serde(default)]
+    pub archetype: Option<String>,
     /// "agentic" (default — wired to a BioRouter agent) or "static".
     #[serde(default)]
     pub kind: Option<String>,
@@ -154,6 +166,343 @@ pub struct CreateAppParams {
     /// Durable/resumable per-app sessions. Omit to keep the default enabled.
     #[serde(default)]
     pub durable_session: Option<bool>,
+}
+
+// ---------------------------------------------------------------------------
+// Archetype starters (Apps SDK v2, Pillar 6 — design §3.6)
+// ---------------------------------------------------------------------------
+
+/// HTML-escape a title/description before substituting it into a starter
+/// template. (`render::html_escape` is private to `render`, so mirror it here
+/// for the archetype path.)
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// The starter archetype a fresh agentic app is seeded from. Each non-`Chat`
+/// archetype ships a distinct `index.html` + `src/main.ts` (under
+/// `templates/starters/<archetype>/`) plus a declared manifest `surface`, so a
+/// new app is a *working, lint-clean example of that shape* rather than a chat
+/// box — the structural answer to "every generated app is a chatbot" (design
+/// §2.3 item 1, §3.6). `Chat` is today's default template, kept as one option.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Archetype {
+    /// Network/graph the agent renders + inspector + search.
+    Explorer,
+    /// KPI grid bound to shared state + a refresh action.
+    Dashboard,
+    /// Data table + row-select signal + a bound detail panel.
+    Workbench,
+    /// Staged form that writes shared state, then submits.
+    Wizard,
+    /// Author-registered draw surface + agent-called actions (the avatar shape).
+    Canvas,
+    /// The pre-v2 default: a chat card wired to the agent.
+    Chat,
+}
+
+impl Archetype {
+    /// Parse an explicit `archetype` argument (case-insensitive).
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "explorer" => Some(Self::Explorer),
+            "dashboard" => Some(Self::Dashboard),
+            "workbench" => Some(Self::Workbench),
+            "wizard" => Some(Self::Wizard),
+            "canvas" => Some(Self::Canvas),
+            "chat" => Some(Self::Chat),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Explorer => "explorer",
+            Self::Dashboard => "dashboard",
+            Self::Workbench => "workbench",
+            Self::Wizard => "wizard",
+            Self::Canvas => "canvas",
+            Self::Chat => "chat",
+        }
+    }
+
+    /// Infer an archetype from the title + description when the caller didn't
+    /// pick one. Keywords match against whole words by prefix (so "metrics" →
+    /// "metric", "simulation" → "simulat"), which avoids false hits like
+    /// "platform" matching "form". The fallback is `Dashboard`; `Chat` is chosen
+    /// only when the brief actually asks for a chat / assistant / Q&A.
+    pub fn infer(title: &str, description: &str) -> Self {
+        let hay = format!("{title} {description}").to_lowercase();
+        let words: Vec<&str> = hay
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| !w.is_empty())
+            .collect();
+        let has = |kws: &[&str]| words.iter().any(|w| kws.iter().any(|k| w.starts_with(k)));
+        if has(&["graph", "network", "explore"]) {
+            Self::Explorer
+        } else if has(&["dashboard", "metric", "kpi"]) {
+            Self::Dashboard
+        } else if has(&["table", "cohort", "browse", "workbench"]) {
+            Self::Workbench
+        } else if has(&["wizard", "form", "survey", "questionnaire", "intake"]) {
+            Self::Wizard
+        } else if has(&["canvas", "scene", "avatar", "game", "simulat", "animat"]) {
+            Self::Canvas
+        } else if has(&["chat", "assistant", "chatbot", "conversation", "qa"])
+            || hay.contains("q&a")
+        {
+            Self::Chat
+        } else {
+            Self::Dashboard
+        }
+    }
+
+    /// The starter `index.html` (with `{{TITLE}}` / `{{DESCRIPTION}}`
+    /// placeholders) for a non-chat archetype. `Chat` returns `None` — it reuses
+    /// the default `render::starter`.
+    fn index_template(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Explorer => include_str!("templates/starters/explorer/index.html"),
+            Self::Dashboard => include_str!("templates/starters/dashboard/index.html"),
+            Self::Workbench => include_str!("templates/starters/workbench/index.html"),
+            Self::Wizard => include_str!("templates/starters/wizard/index.html"),
+            Self::Canvas => include_str!("templates/starters/canvas/index.html"),
+            Self::Chat => return None,
+        })
+    }
+
+    /// The starter `src/main.ts` for a non-chat archetype. `Chat` returns `None`
+    /// — it reuses `bundle::default_sources`.
+    fn main_ts(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Explorer => include_str!("templates/starters/explorer/main.ts"),
+            Self::Dashboard => include_str!("templates/starters/dashboard/main.ts"),
+            Self::Workbench => include_str!("templates/starters/workbench/main.ts"),
+            Self::Wizard => include_str!("templates/starters/wizard/main.ts"),
+            Self::Canvas => include_str!("templates/starters/canvas/main.ts"),
+            Self::Chat => return None,
+        })
+    }
+
+    /// Render the starter index HTML with the title/description substituted
+    /// (`None` for `Chat`).
+    fn index_html(self, title: &str, description: &str) -> Option<String> {
+        self.index_template().map(|t| {
+            t.replace("{{TITLE}}", &escape_html(title))
+                .replace("{{DESCRIPTION}}", &escape_html(description))
+        })
+    }
+
+    /// The manifest `surface` seeded for this archetype: the actions / signals /
+    /// components / state_schema its starter `main.ts` registers, so the agent's
+    /// `app_call`s, subscriptions, and component instances validate server-side
+    /// and the seeded project lints clean. This is a small in-code table (the
+    /// authoritative source), NOT parsed from the template header comments.
+    /// `Chat` declares nothing (identical to a v1 app).
+    fn surface(self) -> SurfaceDecl {
+        use serde_json::json;
+        let action = |name: &str, description: &str, params: serde_json::Value| ActionDecl {
+            name: name.into(),
+            description: description.into(),
+            params,
+        };
+        let signal = |name: &str, payload: serde_json::Value| SignalDecl {
+            name: name.into(),
+            payload: Some(payload),
+            ..Default::default()
+        };
+        match self {
+            Self::Explorer => SurfaceDecl {
+                state_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string" },
+                        "selection": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "label": { "type": "string" },
+                                "type": { "type": "string" }
+                            }
+                        }
+                    }
+                })),
+                actions: vec![action(
+                    "focus_node",
+                    "Center and select a graph node.",
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string" },
+                            "label": { "type": "string" },
+                            "type": { "type": "string" }
+                        },
+                        "required": ["id"]
+                    }),
+                )],
+                signals: vec![
+                    signal(
+                        "node_selected",
+                        json!({ "type": "object", "properties": { "id": { "type": "string" } } }),
+                    ),
+                    signal(
+                        "search_submitted",
+                        json!({ "type": "object", "properties": { "query": { "type": "string" } } }),
+                    ),
+                ],
+                components: vec![],
+            },
+            Self::Dashboard => SurfaceDecl {
+                state_schema: Some(json!({
+                    "type": "object",
+                    "properties": { "metrics": { "type": "object" } }
+                })),
+                actions: vec![action(
+                    "set_metric",
+                    "Write one KPI tile into shared state.",
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "key": { "type": "string" },
+                            "value": {},
+                            "delta": {}
+                        },
+                        "required": ["key"]
+                    }),
+                )],
+                signals: vec![signal(
+                    "refresh_requested",
+                    json!({ "type": "object", "properties": { "at": { "type": "number" } } }),
+                )],
+                components: vec![],
+            },
+            Self::Workbench => SurfaceDecl {
+                state_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "filter": { "type": "string" },
+                        "detail": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "title": { "type": "string" },
+                                "body": { "type": "string" }
+                            }
+                        }
+                    }
+                })),
+                actions: vec![action(
+                    "open_row",
+                    "Open one table row into the detail panel.",
+                    json!({
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string" },
+                            "title": { "type": "string" },
+                            "body": { "type": "string" }
+                        },
+                        "required": ["id"]
+                    }),
+                )],
+                signals: vec![
+                    signal(
+                        "row_selected",
+                        json!({ "type": "object", "properties": { "id": { "type": "string" } } }),
+                    ),
+                    signal(
+                        "filter_changed",
+                        json!({ "type": "object", "properties": { "filter": { "type": "string" } } }),
+                    ),
+                ],
+                components: vec![],
+            },
+            Self::Wizard => SurfaceDecl {
+                state_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "step": { "type": "integer" },
+                        "form": {
+                            "type": "object",
+                            "properties": {
+                                "name": { "type": "string" },
+                                "goal": { "type": "string" }
+                            }
+                        }
+                    }
+                })),
+                actions: vec![action(
+                    "go_to_step",
+                    "Move the wizard to a stage.",
+                    json!({
+                        "type": "object",
+                        "properties": { "step": { "type": "integer", "minimum": 1, "maximum": 2 } },
+                        "required": ["step"]
+                    }),
+                )],
+                signals: vec![
+                    signal(
+                        "step_changed",
+                        json!({ "type": "object", "properties": { "step": { "type": "integer" } } }),
+                    ),
+                    signal(
+                        "submitted",
+                        json!({ "type": "object", "properties": { "name": { "type": "string" } } }),
+                    ),
+                ],
+                components: vec![],
+            },
+            Self::Canvas => SurfaceDecl {
+                state_schema: Some(json!({
+                    "type": "object",
+                    "properties": {
+                        "scene": {
+                            "type": "object",
+                            "properties": {
+                                "x": { "type": "number" },
+                                "y": { "type": "number" }
+                            }
+                        }
+                    }
+                })),
+                actions: vec![
+                    action(
+                        "move_avatar",
+                        "Move the avatar on the grid.",
+                        json!({
+                            "type": "object",
+                            "properties": {
+                                "direction": { "enum": ["up", "down", "left", "right"] },
+                                "steps": { "type": "integer", "minimum": 1, "maximum": 20 }
+                            },
+                            "required": ["direction"]
+                        }),
+                    ),
+                    action("reset_scene", "Return the avatar to center.", json!({})),
+                ],
+                signals: vec![signal(
+                    "avatar_moved",
+                    json!({
+                        "type": "object",
+                        "properties": { "x": { "type": "number" }, "y": { "type": "number" } }
+                    }),
+                )],
+                components: vec![ComponentDecl {
+                    name: "scene".into(),
+                    props: json!({
+                        "type": "object",
+                        "properties": {
+                            "x": { "type": "number" },
+                            "y": { "type": "number" }
+                        }
+                    }),
+                }],
+            },
+            Self::Chat => SurfaceDecl::default(),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -505,6 +854,96 @@ impl AgentDrafterServer {
               auto-mount a chat panel into any element with `data-br-chat`.
             - `dist/app.js` — the esbuild bundle (produced by `build_app`).
 
+            ARCHETYPES FIRST — the #1 rule: do NOT make every app a chat box.
+            `create_app` seeds a starter **archetype** (pass `archetype`, or one
+            is inferred from the title/description). Each non-chat archetype ships
+            a working, lint-clean `index.html` + `src/main.ts` + a declared
+            `surface` you then extend — teaching by example. Pick the shape that
+            fits the task:
+            - `explorer`  — a graph/network the agent renders + inspector + search.
+            - `dashboard` — a KPI grid bound to shared state + a refresh action.
+            - `workbench` — a data table + row-select signal + a bound detail panel.
+            - `wizard`    — a staged form that writes state, then submits.
+            - `canvas`    — an author-registered draw surface + agent-called
+              actions (the avatar / scene / simulation shape).
+            - `chat`      — today's chat card; pick it ONLY for a pure
+              assistant/Q&A. `chat` is one option among six, never the default.
+            One compact exemplar per archetype (the starter files are the full
+            version — read/extend them, don't rewrite from scratch):
+              // explorer: agent centers a node; the inspector is bound to it.
+              br.actions.register("focus_node", (a) => br.state.set("/selection", a));
+              // dashboard: agent writes a KPI tile; the bound grid re-renders it.
+              br.actions.register("set_metric", (m) => br.state.set("/metrics/"+m.key, m));
+              // workbench: agent opens a row into the bound detail panel.
+              br.actions.register("open_row", (r) => br.state.set("/detail", r));
+              // wizard: submit sends a typed turn carrying the collected form.
+              submit.onclick = () => br.call("submit", {{ name, goal }});
+              // canvas: agent moves the avatar; the scene redraws from /scene.
+              br.actions.register("move_avatar", (a) => world.move(a.direction, a.steps));
+              // chat: the default — createApp() auto-mounts a [data-br-chat] panel.
+
+            DECLARE THE SURFACE — an app's contract is `manifest.surface` (seed it
+            in `create_app`, or edit the seeded one). Registrations in `main.ts`
+            must match the declarations exactly — typed actions/components fail
+            closed:
+            - `actions`     — verbs the AGENT may call (`app_call`). Register each
+              with `br.actions.register("name", fn)`; the handler's return value
+              resolves the agent's tool call.
+            - `signals`     — app→agent notifications the agent may subscribe to.
+              Emit with `br.signals.emit("name", payload)`; every emitted name
+              must be declared.
+            - `components`  — custom catalog kinds you draw. Register with
+              `br.components.register("name", {{ mount, update? }})`; props are
+              agent-controlled (untrusted) — render via textContent, not innerHTML.
+            - `state_schema`— JSON Schema for the shared state doc. Declare one
+              whenever you use `data-br-bind`, so the agent's writes are validated.
+
+            WIRE TYPED CALLS, NOT PROMPT STRINGS — when the app declares actions,
+            drive the agent with structured data, not hand-assembled English:
+              const r = await br.call("rank_genes", {{ cohort, top: 10 }}); // typed
+            Keep `br.run(prompt, '#out')` for genuine natural-language asks
+            ("explain this selection") and to stream markdown into a result
+            surface — but do NOT concatenate control state into a prompt string
+            when a typed action/call fits. The agent invokes your actions via
+            `app_call`; you never parse prose to discover intent.
+
+            SHARED REACTIVE STATE + BINDINGS — one JSON state document both sides
+            write:
+              <span data-br-bind="/cohort/count"></span>   // re-renders on write
+              br.state.set("/cohort/count", 42);            // author write (agent too)
+            Bindings are a non-executing sink (textContent / safe attributes only).
+            Bind the parts of the UI the agent should keep live; the runtime
+            re-renders only the bound nodes, so focus/scroll/input survive.
+
+            THE DYNAVIS RULE — after fulfilling a natural-language request that
+            CHANGED a parameter, emit a *persistent bound control* for it, so the
+            user refines by direct manipulation instead of re-prompting. E.g.
+            after "make the KM curve use a 90-day window", `ui_patch` in a slider
+            bound to `/plot/km_window`. NL bootstraps; a synthesized control
+            refines — the single most user-validated GenUI pattern. Reach for it
+            every time a prompt tuned a knob.
+
+            PRESENCE & NARRATION — make agent UI changes legible, not startling:
+            - The SDK renders an ambient activity chip for every `ui_*` frame;
+              give `ui_highlight` a `narrate` note ("scoring the top variants…").
+            - Observe, don't hijack: agent updates MARK rather than steal focus
+              (no auto-scroll unless you pass `scroll:true`).
+            - Prefer `ui_ask` (blocking) for a required answer; `ui_suggest`
+              (dismissible chips) for optional nudges.
+
+            PUBLICATION FIGURES — for a real scientific figure (volcano, Manhattan,
+            Kaplan-Meier, Sankey, chord, map, Mermaid…) have the agent emit a
+            `ui_figure` (an Auto Visualiser fragment) into your results region,
+            rather than a hand-rolled chart. Reserve the lighter `ui_chart` /
+            `ui_graph` for quick inline glances.
+
+            THEME PACK — choose a `theme` pack that fits the domain instead of
+            shipping the default light theme everywhere: `biorouter` (default),
+            `clinical`, `lab-notebook`, `terminal`, `journal`, `midnight` (each
+            with a dark variant). Compose within the pack's tokens; for
+            distinctive, non-generic layouts within the token system, consult the
+            **frontend-design** skill.
+
             DESIGN CONTRACT — the user's requested product design is the source of
             truth. Do not force a pre-designed app pattern, dashboard structure, or
             visual style when the user specified something else. BioRouter injects
@@ -551,15 +990,17 @@ impl AgentDrafterServer {
             Driving the agent from `src/main.ts`:
               import {{ createApp }} from "./sdk";
               const br = createApp({{ autoChat: false }});   // false → build your OWN UI
-              await br.run("...prompt...", '#out');            // stream markdown+visuals into the result element
+              const r = await br.call("act", {{ arg: 1 }});   // typed turn + structured result
+              await br.run("...prompt...", '#out');            // stream markdown+visuals into a result element
               const text = await br.ask("...");               // collect full reply as a string
               await br.prompt("...", {{ images: [{{ mimeType, data }}] }}); // multimodal
+              br.actions.register("verb", (args) => {{ /* agent-called */ }}); // app_call handler
+              br.signals.emit("event", payload);              // notify a subscribed agent
               br.on("message", (e) => {{ if (e.type === "message") {{}} }}); // low-level stream
 
-            VARY THE INTERFACE — do NOT make every app a chat box. Prefer a custom
-            UI driven by `createApp({{ autoChat: false }})` and wire controls to
-            `br.run(prompt, target)`. The design system provides themed,
-            BioRouter-native controls — use a mix that fits the task:
+            CONTROL PALETTE — the starter archetypes already wire a custom UI; when
+            you add or replace controls, use the themed, BioRouter-native ones and
+            wire them to `br.call(...)` / `br.run(...)` — a mix that fits the task:
             - buttons / button grids: `br-btn`, `br-grid`
             - dropdowns: `<select class="br-select">`
             - sliders: `<input type="range" class="br-slider">` (+ `br-slider-val`)
@@ -569,13 +1010,15 @@ impl AgentDrafterServer {
             - drag & drop: `br-dropzone` (drop files/text) and `br-draglist`/`br-dragitem` (reorder)
             - region/map pick: `br-mapgrid`/`br-region` (clickable cells; no external map lib)
             - results: a `<div class="br-output" data-placeholder="…">` target for `br.run`
-            Build the prompt from the control state (slider values, selected
-            chips, dropdown choice, dragged order, clicked region, dropped text)
-            and call `br.run(...)` on `change`/`click`/`drop`. Each new app should
-            look and interact differently from the others.
+            On `change`/`click`/`drop`: prefer a typed `br.call(action, args)` or
+            an emitted signal built from the control state; fall back to
+            `br.run(...)` only for a genuine natural-language ask. Each app should
+            look and interact differently from the others — the archetypes make
+            that the default, not an afterthought.
 
             Typical workflow:
-            1. `create_app` (title, description, optional html/files, system_prompt,
+            1. `create_app` (title, description, `archetype`, optional html/files,
+              system_prompt,
               greeting, model, extensions, skills, knowledge_base, capabilities,
               guardrails, reliability, orchestration, output_type). A preview card
               is shown to the user.
@@ -692,6 +1135,12 @@ impl AgentDrafterServer {
             4. Observable: long-running agent work exposes a visible progress
                surface (`br.run`, `[data-br-chat]`, `br-run-status`, or
                `mountTimeline`) so users can debug step-by-step execution.
+            5. Surface integrity (SDK v2, fail-closed): every `actions.register` /
+               `components.register` name must be declared in `manifest.surface`
+               and vice-versa; emitted signal names must be declared;
+               `data-br-bind*` bindings want a `state_schema`; component props may
+               not flow into innerHTML. The seeded starters already satisfy this —
+               keep declarations and registrations in lockstep when you extend them.
             Always `build_app` after editing `src/`, address the harness findings,
             and verify via `launch_app` before `export_app`.
         "#};
@@ -787,21 +1236,61 @@ impl AgentDrafterServer {
             })?,
             None => ArtifactKind::Agentic,
         };
-        let entry = "index.html";
-        let entry_html = p
-            .html
-            .unwrap_or_else(|| render::starter(&p.title, &p.description));
+        // Resolve the starter archetype (Apps SDK v2, §3.6). Explicit wins;
+        // otherwise infer from the brief. Archetypes only shape *agentic* apps
+        // (static apps have no `src/main.ts`); `chat` reproduces the pre-v2
+        // default so existing behavior is unchanged.
+        let archetype = match p.archetype.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+            Some(a) => Archetype::parse(a).ok_or_else(|| {
+                err(
+                    ErrorCode::INVALID_PARAMS,
+                    "archetype must be one of: explorer, dashboard, workbench, wizard, canvas, chat",
+                )
+            })?,
+            None => Archetype::infer(&p.title, &p.description),
+        };
 
-        // Compose file set: entry + default TS sources + caller overrides.
-        let mut files: Vec<(String, String)> = vec![(entry.to_string(), entry_html)];
+        let entry = "index.html";
         let provided: std::collections::HashSet<&str> =
             p.files.iter().map(|f| f.path.as_str()).collect();
+        let main_provided = provided.contains("src/main.ts");
+        // A starter's index.html + src/main.ts + surface are a matched set. Seed
+        // them only when the caller supplied NEITHER html NOR src/main.ts — if
+        // they override one, seeding the other from the archetype would mismatch
+        // (an id the paired file references wouldn't exist). Otherwise fall back
+        // to the pre-v2 default (their html / render::starter + default main.ts,
+        // no surface).
+        let use_starter = kind == ArtifactKind::Agentic
+            && archetype != Archetype::Chat
+            && p.html.is_none()
+            && !main_provided;
+
+        // Entry HTML: caller's html wins; else the archetype starter (when the
+        // whole set is seeded); else the default chat starter.
+        let entry_html = match p.html {
+            Some(h) => h,
+            None if use_starter => archetype
+                .index_html(&p.title, &p.description)
+                .unwrap_or_else(|| render::starter(&p.title, &p.description)),
+            None => render::starter(&p.title, &p.description),
+        };
+
+        // Compose file set: entry + default TS sources + caller overrides. When
+        // the starter set is seeded, swap the default `src/main.ts` for the
+        // archetype's starter main.ts.
+        let mut files: Vec<(String, String)> = vec![(entry.to_string(), entry_html)];
         if kind == ArtifactKind::Agentic {
             for (path, content) in bundle::default_sources() {
                 let ps = path.to_string_lossy().to_string();
-                if ps != entry && !provided.contains(ps.as_str()) {
-                    files.push((ps, content));
+                if ps == entry || provided.contains(ps.as_str()) {
+                    continue;
                 }
+                let content = if ps == "src/main.ts" && use_starter {
+                    archetype.main_ts().map(str::to_string).unwrap_or(content)
+                } else {
+                    content
+                };
+                files.push((ps, content));
             }
         }
         for f in p.files {
@@ -858,6 +1347,11 @@ impl AgentDrafterServer {
                 agent.durable_session = Some(durable);
             }
             manifest.agent = Some(agent);
+            // Seed the archetype's declared surface so the starter main.ts's
+            // actions/signals/components validate server-side (and lint clean).
+            if use_starter {
+                manifest.surface = archetype.surface();
+            }
             store.save_manifest(&manifest).map_err(internal)?;
         } else if session_id.is_some() {
             // Static apps were already persisted by `create`; re-save so the
@@ -865,10 +1359,15 @@ impl AgentDrafterServer {
             store.save_manifest(&manifest).map_err(internal)?;
         }
 
+        let arch_note = if kind == ArtifactKind::Agentic {
+            format!(" [{} archetype]", archetype.as_str())
+        } else {
+            String::new()
+        };
         self.card_result(
             &manifest,
             &format!(
-                "Created {kind:?} app '{}' (id: {}). Author src/main.ts and index.html, then build_app + launch_app.",
+                "Created {kind:?} app '{}' (id: {}){arch_note}. Author src/main.ts and index.html, then build_app + launch_app.",
                 manifest.title, manifest.id
             ),
         )
@@ -1399,6 +1898,7 @@ mod tests {
             title: title.into(),
             id: None,
             description: String::new(),
+            archetype: None,
             kind: kind.map(|k| k.to_string()),
             html: None,
             files: vec![],
@@ -2162,5 +2662,169 @@ br.run("hello", "#missing");
             }))
             .await
             .is_err());
+    }
+
+    // ── Archetype starters (Apps SDK v2, Pillar 6) ─────────────────────────────
+
+    /// The killer test: creating an app for every archetype seeds the matching
+    /// starter and the seeded project lints with **no ERROR-level findings**.
+    #[tokio::test]
+    async fn starters_seed_and_lint_clean_for_every_archetype() {
+        let (_d, s) = server();
+        // (archetype, distinguishing index badge, distinguishing main.ts marker)
+        let cases = [
+            ("explorer", "Explorer", "focus_node"),
+            ("dashboard", "Dashboard", "set_metric"),
+            ("workbench", "Workbench", "open_row"),
+            ("wizard", "Wizard", "go_to_step"),
+            ("canvas", "Canvas", "move_avatar"),
+            ("chat", "BioRouter App", "createApp();"),
+        ];
+        for (arch, badge, marker) in cases {
+            let id = format!("app-{arch}");
+            let mut p = create("Starter", None);
+            p.id = Some(id.clone());
+            p.archetype = Some(arch.to_string());
+            s.create_app_inner(p, None).await.unwrap();
+
+            let index = s.store().read_file(&id, "index.html").unwrap();
+            let main = s.store().read_file(&id, "src/main.ts").unwrap();
+            assert!(index.contains(badge), "{arch}: index missing '{badge}'");
+            assert!(main.contains(marker), "{arch}: main.ts missing '{marker}'");
+
+            let findings = bundle::lint_app(&s.store().artifact_dir(&id));
+            let errors: Vec<String> = findings
+                .iter()
+                .filter(|f| f.level == bundle::LintLevel::Error)
+                .map(|f| f.msg.clone())
+                .collect();
+            assert!(errors.is_empty(), "{arch}: lint errors: {errors:#?}");
+        }
+    }
+
+    #[test]
+    fn infers_archetype_from_brief() {
+        assert_eq!(
+            Archetype::infer("Gene network explorer", ""),
+            Archetype::Explorer
+        );
+        assert_eq!(
+            Archetype::infer("Trial metrics dashboard", ""),
+            Archetype::Dashboard
+        );
+        assert_eq!(
+            Archetype::infer("Cohort browser", "browse the sample table"),
+            Archetype::Workbench
+        );
+        assert_eq!(
+            Archetype::infer("Intake wizard", "a short survey form"),
+            Archetype::Wizard
+        );
+        assert_eq!(
+            Archetype::infer("Avatar scene", "a little game"),
+            Archetype::Canvas
+        );
+        assert_eq!(
+            Archetype::infer("Lab helper", "a chat Q&A assistant"),
+            Archetype::Chat
+        );
+        // No keyword → dashboard, never chat by default.
+        assert_eq!(
+            Archetype::infer("Baranzini tool", "a helpful thing"),
+            Archetype::Dashboard
+        );
+        // Whole-word prefix matching: "platform"/"perform" must NOT hit "form".
+        assert_eq!(
+            Archetype::infer("Analytics platform", "perform well"),
+            Archetype::Dashboard
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_archetype_overrides_inference() {
+        let (_d, s) = server();
+        // Title screams "dashboard", but the caller explicitly asked for canvas.
+        let mut p = create("Trial metrics dashboard", None);
+        p.id = Some("override".into());
+        p.archetype = Some("canvas".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let index = s.store().read_file("override", "index.html").unwrap();
+        assert!(index.contains("Canvas"));
+        let m = s.store().load_manifest("override").unwrap();
+        assert!(
+            m.surface.components.iter().any(|c| c.name == "scene"),
+            "canvas must seed the scene component"
+        );
+
+        // A bogus archetype is a clean INVALID_PARAMS, not a panic.
+        let mut bad = create("X", None);
+        bad.archetype = Some("spaceship".into());
+        assert!(s.create_app_inner(bad, None).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn chat_default_preserved_for_chatty_prompts() {
+        let (_d, s) = server();
+        let mut p = create("Support assistant", None);
+        p.id = Some("chatty".into());
+        s.create_app_inner(p, None).await.unwrap();
+
+        let index = s.store().read_file("chatty", "index.html").unwrap();
+        assert!(index.contains("data-br-chat"), "chat keeps the chat card");
+        let main = s.store().read_file("chatty", "src/main.ts").unwrap();
+        assert!(
+            main.contains("createApp();"),
+            "chat keeps the default main.ts"
+        );
+        let m = s.store().load_manifest("chatty").unwrap();
+        assert!(m.surface.is_empty(), "chat declares no v2 surface");
+    }
+
+    #[tokio::test]
+    async fn surface_seeded_for_canvas_and_explorer() {
+        let (_d, s) = server();
+
+        let mut c = create("Simulation", None);
+        c.id = Some("sim".into());
+        c.archetype = Some("canvas".into());
+        s.create_app_inner(c, None).await.unwrap();
+        let cm = s.store().load_manifest("sim").unwrap();
+        assert!(cm.surface.components.iter().any(|c| c.name == "scene"));
+        assert!(cm.surface.actions.iter().any(|a| a.name == "move_avatar"));
+        assert!(cm.surface.actions.iter().any(|a| a.name == "reset_scene"));
+        assert!(cm
+            .surface
+            .signals
+            .iter()
+            .any(|sig| sig.name == "avatar_moved"));
+        assert!(cm.surface.state_schema.is_some());
+
+        let mut e = create("Graph tool", None);
+        e.id = Some("graph".into());
+        e.archetype = Some("explorer".into());
+        s.create_app_inner(e, None).await.unwrap();
+        let em = s.store().load_manifest("graph").unwrap();
+        assert!(em.surface.actions.iter().any(|a| a.name == "focus_node"));
+        assert!(em
+            .surface
+            .signals
+            .iter()
+            .any(|sig| sig.name == "search_submitted"));
+        assert!(em.surface.state_schema.is_some());
+
+        // A caller-supplied main.ts must NOT get a mismatched surface stamped on.
+        let mut byo = create("Bring your own", None);
+        byo.id = Some("byo".into());
+        byo.archetype = Some("canvas".into());
+        byo.files = vec![FileSpec {
+            path: "src/main.ts".into(),
+            content: "import { createApp } from \"./sdk\";\ncreateApp();\n".into(),
+        }];
+        s.create_app_inner(byo, None).await.unwrap();
+        assert!(
+            s.store().load_manifest("byo").unwrap().surface.is_empty(),
+            "no surface when the caller supplies their own main.ts"
+        );
     }
 }
