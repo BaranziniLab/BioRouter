@@ -214,7 +214,7 @@ async fn stream_event(
 pub async fn reply(
     State(state): State<Arc<AppState>>,
     Json(request): Json<ChatRequest>,
-) -> Result<SseResponse, StatusCode> {
+) -> axum::response::Response {
     let session_start = std::time::Instant::now();
 
     tracing::info!(
@@ -225,6 +225,32 @@ pub async fn reply(
     );
 
     let session_id = request.session_id.clone();
+
+    // Server-enforced single-turn-per-session lock (BR-33; also serializes the
+    // per-session check-compact-persist path of BR-16). Two concurrent `/reply`
+    // calls for one session would share one `Arc<Agent>`, confirmation channel,
+    // and soft-interrupt queue, interleaving/duplicating output and doubling
+    // token spend. Reject the duplicate with 409 instead of corrupting state;
+    // the guard is released when the reply task ends (drops below).
+    let turn_guard = match state.try_begin_turn(&session_id) {
+        Ok(guard) => guard,
+        Err(running_turn_id) => {
+            tracing::warn!(
+                "Rejected concurrent /reply for session {}: turn {} already in flight",
+                session_id,
+                running_turn_id
+            );
+            return (
+                StatusCode::CONFLICT,
+                Json(serde_json::json!({
+                    "type": "Error",
+                    "error": "A turn is already in progress for this session.",
+                    "running_turn_id": running_turn_id,
+                })),
+            )
+                .into_response();
+        }
+    };
 
     if let Some(workflow_name) = request.workflow_name.clone() {
         if state.mark_workflow_run_if_absent(&session_id).await {
@@ -255,6 +281,9 @@ pub async fn reply(
     let task_tx = tx.clone();
 
     let _handle = tokio::spawn(async move {
+        // Holds the per-session turn lock for the lifetime of this reply stream;
+        // dropped (releasing the session) when the task ends.
+        let _turn_guard = turn_guard;
         // Mark an interactive turn in progress for the lifetime of this reply
         // stream so the scheduler defers background jobs while the user is
         // mid-conversation (dropped when the stream task ends).
@@ -482,7 +511,7 @@ pub async fn reply(
         )
         .await;
     });
-    Ok(SseResponse::new(stream))
+    SseResponse::new(stream).into_response()
 }
 
 /// Request body for the soft-interrupt route.
@@ -541,6 +570,74 @@ mod tests {
                         user_message: Message::user().with_text("test message"),
                         conversation_so_far: None,
                         session_id: "test-session".to_string(),
+                        workflow_name: None,
+                        workflow_version: None,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap();
+
+            let response = app.oneshot(request).await.unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test_reply_rejects_concurrent_turn() {
+            let state = AppState::new().await.unwrap();
+
+            // Simulate a turn already in flight for this session. The guard owns
+            // its own Arc into the shared active-turns map, so it stays valid
+            // after `state` is moved into `routes`.
+            let _guard = state
+                .try_begin_turn("busy-session")
+                .expect("first turn acquires the lock");
+
+            let app = routes(state);
+
+            let request = Request::builder()
+                .uri("/reply")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("x-secret-key", "test-secret")
+                .body(Body::from(
+                    serde_json::to_string(&ChatRequest {
+                        user_message: Message::user().with_text("second message"),
+                        conversation_so_far: None,
+                        session_id: "busy-session".to_string(),
+                        workflow_name: None,
+                        workflow_version: None,
+                    })
+                    .unwrap(),
+                ))
+                .unwrap();
+
+            let response = app.oneshot(request).await.unwrap();
+
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn test_reply_allows_new_turn_after_guard_dropped() {
+            let state = AppState::new().await.unwrap();
+
+            // A turn that has ended (guard dropped) must not block the next one.
+            {
+                let _guard = state.try_begin_turn("recycled-session").unwrap();
+            }
+
+            let app = routes(state);
+
+            let request = Request::builder()
+                .uri("/reply")
+                .method("POST")
+                .header("content-type", "application/json")
+                .header("x-secret-key", "test-secret")
+                .body(Body::from(
+                    serde_json::to_string(&ChatRequest {
+                        user_message: Message::user().with_text("fresh message"),
+                        conversation_so_far: None,
+                        session_id: "recycled-session".to_string(),
                         workflow_name: None,
                         workflow_version: None,
                     })
