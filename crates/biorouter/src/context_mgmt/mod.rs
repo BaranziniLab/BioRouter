@@ -6,7 +6,7 @@ use crate::providers::base::{Provider, ProviderUsage};
 use crate::providers::errors::ProviderError;
 use crate::{config::Config, token_counter::create_token_counter};
 use anyhow::Result;
-use rmcp::model::Role;
+use rmcp::model::{Role, Tool};
 use serde::Serialize;
 use tracing::{debug, info};
 
@@ -165,11 +165,20 @@ pub async fn compact_messages(
 }
 
 /// Check if messages exceed the auto-compaction threshold
+///
+/// `cold_path_context` supplies the system prompt and tool schemas for the
+/// fallback token estimate that runs when the provider hasn't reported usage
+/// yet (a session's first turn, or providers that never report usage). They are
+/// frequently the two largest contributors to a request, so omitting them
+/// systematically undercounts and lets such a session slip past the real
+/// context window without compacting (BR-15). Pass `None` only when they are
+/// genuinely unavailable — the estimate then falls back to messages-only.
 pub async fn check_if_compaction_needed(
     provider: &dyn Provider,
     conversation: &Conversation,
     threshold_override: Option<f64>,
     session: &crate::session::Session,
+    cold_path_context: Option<(&str, &[Tool])>,
 ) -> Result<bool> {
     let messages = conversation.messages();
     let config = Config::global();
@@ -188,22 +197,38 @@ pub async fn check_if_compaction_needed(
                 .await
                 .map_err(|e| anyhow::anyhow!("Failed to create token counter: {}", e))?;
 
+            // BR-15: the fallback estimate must include the system prompt and tool
+            // schemas — frequently the two largest contributors — or it undercounts
+            // badly. Fall back to empty (the old behaviour) only when the caller
+            // couldn't supply them. For a toolshim model the tools are folded into
+            // the system prompt and the tool list is empty; both are passed through
+            // verbatim, so the count is correct either way.
+            let (system_prompt, tools): (String, Vec<Tool>) = match cold_path_context {
+                Some((system, tools)) => (system.to_string(), tools.to_vec()),
+                None => (String::new(), Vec::new()),
+            };
+
+            // o200k under-counts non-OpenAI tokenizers, so inflate the raw
+            // estimate by a small, conservative per-provider margin to keep the
+            // trigger calibrated across providers.
+            let calibration = crate::token_counter::provider_token_calibration(provider.get_name());
+
             // tiktoken BPE over the whole history is CPU-bound. This runs at the
             // top of reply() on a session's first turn (or for providers that
             // don't report usage). Offload it to the blocking pool so it never
             // stalls an async runtime worker. Clone the agent-visible messages to
             // move into the task (cold path only — the happy path uses the
-            // provider-reported `session.total_tokens` above).
+            // provider-reported `session.total_tokens` above). Count once over the
+            // whole request rather than per message so the +3 reply primer is only
+            // added a single time.
             let owned: Vec<Message> = messages
                 .iter()
                 .filter(|m| m.is_agent_visible())
                 .cloned()
                 .collect();
             let total = tokio::task::spawn_blocking(move || {
-                owned
-                    .iter()
-                    .map(|msg| token_counter.count_chat_tokens("", std::slice::from_ref(msg), &[]))
-                    .sum::<usize>()
+                let raw = token_counter.count_chat_tokens(&system_prompt, &owned, &tools);
+                ((raw as f64) * calibration).ceil() as usize
             })
             .await
             .map_err(|e| anyhow::anyhow!("Token counting task failed: {}", e))?;
@@ -591,6 +616,50 @@ mod tests {
             result.is_ok(),
             "Should succeed with progressive removal: {:?}",
             result.err()
+        );
+    }
+
+    /// BR-15: the cold-path estimate (no provider-reported usage) must fold in
+    /// the system prompt and tool schemas. A conversation that is comfortably
+    /// under the window on messages alone must trip the threshold once the
+    /// system prompt + tools are included.
+    #[tokio::test]
+    async fn test_cold_path_estimate_includes_system_and_tools() {
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 1000);
+        // No provider-reported usage → the fallback estimate runs.
+        let session = crate::session::Session {
+            total_tokens: None,
+            ..Default::default()
+        };
+        let conversation =
+            Conversation::new_unvalidated(vec![Message::user().with_text("hello there")]);
+
+        // Messages-only estimate: a two-word user turn is far under 80% of 1000.
+        let without =
+            check_if_compaction_needed(&provider, &conversation, Some(0.8), &session, None)
+                .await
+                .unwrap();
+        assert!(!without, "tiny message alone should not trip the threshold");
+
+        // A large system prompt plus a tool pushes the same conversation over.
+        let big_system = "word ".repeat(1200);
+        let tool = Tool::new(
+            "big_tool".to_string(),
+            "A tool with a long description ".repeat(20),
+            std::sync::Arc::new(serde_json::Map::new()),
+        );
+        let with = check_if_compaction_needed(
+            &provider,
+            &conversation,
+            Some(0.8),
+            &session,
+            Some((big_system.as_str(), std::slice::from_ref(&tool))),
+        )
+        .await
+        .unwrap();
+        assert!(
+            with,
+            "including the system prompt + tool schemas should trip the threshold"
         );
     }
 }

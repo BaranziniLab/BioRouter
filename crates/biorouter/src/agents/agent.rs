@@ -1597,11 +1597,30 @@ impl Agent {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Session {} has no conversation", session_config.id))?;
 
+        // BR-15: on the cold path (a session's first turn, or a provider that
+        // doesn't report usage) the token estimate needs the system prompt and
+        // tool schemas or it undercounts badly. Assemble them only when needed —
+        // the happy path reads session.total_tokens and shouldn't pay for
+        // tool/prompt assembly here (the reply loop re-does it anyway).
+        let cold_path_tools_and_prompt = if session.total_tokens.is_none() {
+            Some(
+                self.prepare_tools_and_prompt(&session_config.id, &session.working_dir)
+                    .await?,
+            )
+        } else {
+            None
+        };
+
         let needs_auto_compact = check_if_compaction_needed(
             self.provider().await?.as_ref(),
             &conversation,
             None,
             &session,
+            cold_path_tools_and_prompt
+                .as_ref()
+                .map(|(tools, _toolshim, system_prompt)| {
+                    (system_prompt.as_str(), tools.as_slice())
+                }),
         )
         .await?;
 
