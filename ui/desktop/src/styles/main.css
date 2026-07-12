@@ -1394,8 +1394,16 @@ em > code.bg-inline-code {
   animation-timing-function: var(--ease-out);
 }
 
+/* The route surface is square where it meets the sidebar — clip its crossfade
+   snapshot to a square too, otherwise it briefly renders with a 16px rounded
+   corner that snaps flat when the transition ends (a visible flash on every
+   panel switch). Only the composer, which really is a rounded card, keeps 16px. */
 ::view-transition-old(biorouter-route-surface),
-::view-transition-new(biorouter-route-surface),
+::view-transition-new(biorouter-route-surface) {
+  border-radius: 0;
+  overflow: clip;
+}
+
 ::view-transition-old(biorouter-composer),
 ::view-transition-new(biorouter-composer) {
   border-radius: 16px;

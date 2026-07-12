@@ -98,15 +98,19 @@ const AppLayoutContent: React.FC = () => {
     <div className="flex flex-1 w-full relative animate-fade-in">
       {!shouldHideButtons && (
         <div className={`${headerPadding} absolute top-3 z-[120] flex items-center`}>
+          {/* All three chrome icons share one size (sm / 32px) and the same calm
+              surface-shift hover as the rest of the app's icon buttons — the
+              trigger no longer scales/borders differently from its neighbours. */}
           <SidebarTrigger
+            size="sm"
             shape="round"
-            className={`no-drag hover:border-border-strong hover:text-text-default hover:!bg-background-medium hover:scale-105`}
+            className="no-drag hover:!bg-background-medium"
           />
           <Button
             onClick={handleNewWindow}
             className="no-drag hover:!bg-background-medium"
             variant="ghost"
-            size="xs"
+            size="sm"
             shape="round"
             title="Start a new session in a new window"
           >
@@ -118,7 +122,7 @@ const AppLayoutContent: React.FC = () => {
               location.pathname === '/dashboard' ? 'bg-background-medium' : ''
             }`}
             variant="ghost"
-            size="xs"
+            size="sm"
             shape="round"
             title={location.pathname === '/dashboard' ? 'Exit Dashboard' : 'Open Dashboard'}
           >
