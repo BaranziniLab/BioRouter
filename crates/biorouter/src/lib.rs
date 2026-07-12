@@ -2,6 +2,7 @@ pub mod action_required_manager;
 pub mod agents;
 pub mod biorouter_apps;
 pub mod config;
+pub mod context_budget;
 pub mod context_mgmt;
 pub mod conversation;
 pub mod execution;

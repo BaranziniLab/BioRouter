@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::config::paths::Paths;
+use crate::context_budget::{max_hints_file_tokens, truncate_to_tokens};
 use crate::hints::import_files::read_referenced_files;
 
 pub const BIOROUTER_HINTS_FILENAME: &str = ".biorouterhints";
@@ -59,6 +60,11 @@ pub fn load_hint_files(
     let mut global_hints_contents = Vec::with_capacity(hints_filenames.len());
     let mut local_hints_contents = Vec::with_capacity(hints_filenames.len());
 
+    // BR-2: per-file cap (Codex's `project_doc_max_bytes` analog). Bounds a
+    // single runaway hint file before the combined string is built; the total
+    // budget across all injected blocks is enforced later in `prompt_manager`.
+    let max_file_tokens = max_hints_file_tokens();
+
     for hints_filename in hints_filenames {
         let global_hints_path = Paths::in_config_dir(hints_filename);
         if global_hints_path.is_file() {
@@ -72,7 +78,11 @@ pub fn load_hint_files(
                 ignore_patterns,
             );
             if !expanded_content.is_empty() {
-                global_hints_contents.push(expanded_content);
+                global_hints_contents.push(truncate_to_tokens(
+                    &expanded_content,
+                    max_file_tokens,
+                    &format!("hints:{}", global_hints_path.display()),
+                ));
             }
         }
     }
@@ -94,7 +104,11 @@ pub fn load_hint_files(
                     ignore_patterns,
                 );
                 if !expanded_content.is_empty() {
-                    local_hints_contents.push(expanded_content);
+                    local_hints_contents.push(truncate_to_tokens(
+                        &expanded_content,
+                        max_file_tokens,
+                        &format!("hints:{}", hints_path.display()),
+                    ));
                 }
             }
         }
