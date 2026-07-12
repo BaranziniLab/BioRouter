@@ -1,8 +1,9 @@
 use crate::config::paths::Paths;
-use crate::conversation::message::Message;
+use crate::conversation::message::{Message, MessageContent, MessageMetadata};
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
 use crate::providers::base::{Provider, MSG_COUNT_FOR_SESSION_NAME_GENERATION};
+use crate::session::chat_fts;
 use crate::session::extension_data::ExtensionData;
 use crate::workflow::Workflow;
 use anyhow::Result;
@@ -18,9 +19,38 @@ use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 10;
+pub const CURRENT_SCHEMA_VERSION: i32 = 11;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
+
+/// FTS5 mirror of user-visible message text, used for relevance-ranked chat
+/// recall (BR-17). It is a contentful FTS5 table (it stores the flattened
+/// text) maintained from Rust at the message write sites, because the searchable
+/// text is a derived flattening of `content_json`, not a raw column, so SQLite
+/// content-sync triggers can't produce it. `message_id`/`session_id` are stored
+/// UNINDEXED so recall can join back to `messages`/`sessions` and delete a
+/// session's rows on the compaction rewrite.
+const MESSAGES_FTS_DDL: &str = r#"
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    text,
+    session_id UNINDEXED,
+    message_id UNINDEXED,
+    tokenize = 'porter unicode61'
+)
+"#;
+
+const MESSAGES_FTS_INSERT: &str =
+    "INSERT INTO messages_fts (text, session_id, message_id) VALUES (?, ?, ?)";
+
+/// Whether a stored message should be indexed for recall. Recall searches what
+/// the *user* saw, so only `user_visible` messages are indexed. A row with no
+/// (or unparseable) metadata predates the flag and defaults to visible.
+fn message_is_user_visible(metadata_json: Option<&str>) -> bool {
+    metadata_json
+        .and_then(|json| serde_json::from_str::<MessageMetadata>(json).ok())
+        .map(|meta| meta.user_visible)
+        .unwrap_or(true)
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, ToSchema, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
@@ -1146,6 +1176,10 @@ impl SessionStorage {
         sqlx::query("CREATE INDEX idx_messages_timestamp ON messages(timestamp)")
             .execute(pool)
             .await?;
+
+        // FTS5 index for relevance-ranked chat recall (BR-17). See migration 11
+        // for details; a fresh DB starts already indexed.
+        sqlx::query(MESSAGES_FTS_DDL).execute(pool).await?;
         sqlx::query("CREATE INDEX idx_sessions_updated ON sessions(updated_at DESC)")
             .execute(pool)
             .await?;
@@ -1504,6 +1538,42 @@ impl SessionStorage {
                 .execute(pool)
                 .await?;
             }
+            11 => {
+                // FTS5 full-text index over user-visible message text for
+                // relevance-ranked (bm25) chat recall, replacing the old
+                // substring `LIKE` scan (BR-17). Additive and idempotent; an
+                // older binary opening a v11 DB simply ignores messages_fts and
+                // recall degrades to the `LIKE` fallback.
+                sqlx::query(MESSAGES_FTS_DDL).execute(pool).await?;
+
+                // One-time backfill from existing messages. O(n) once, in the
+                // spirit of migration 10's token_events backfill.
+                let rows = sqlx::query_as::<_, (i64, String, String, Option<String>)>(
+                    "SELECT id, session_id, content_json, metadata_json FROM messages",
+                )
+                .fetch_all(pool)
+                .await?;
+
+                for (id, session_id, content_json, metadata_json) in rows {
+                    if !message_is_user_visible(metadata_json.as_deref()) {
+                        continue;
+                    }
+                    let Ok(content) = serde_json::from_str::<Vec<MessageContent>>(&content_json)
+                    else {
+                        continue;
+                    };
+                    let text = chat_fts::extract_searchable_text(&content);
+                    if text.is_empty() {
+                        continue;
+                    }
+                    sqlx::query(MESSAGES_FTS_INSERT)
+                        .bind(&text)
+                        .bind(&session_id)
+                        .bind(id)
+                        .execute(pool)
+                        .await?;
+                }
+            }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
             }
@@ -1846,7 +1916,7 @@ impl SessionStorage {
 
         let metadata_json = serde_json::to_string(&message.metadata)?;
 
-        sqlx::query(
+        let insert = sqlx::query(
             r#"
             INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json)
             VALUES (?, ?, ?, ?, ?)
@@ -1860,12 +1930,40 @@ impl SessionStorage {
         .execute(&mut *tx)
         .await?;
 
+        // Keep the FTS recall index in sync with the new row (BR-17).
+        Self::index_message_fts(&mut tx, session_id, insert.last_insert_rowid(), message).await?;
+
         sqlx::query("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?")
             .bind(session_id)
             .execute(&mut *tx)
             .await?;
 
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Insert one message's flattened text into the FTS recall index, within
+    /// the caller's transaction. Only user-visible, non-empty messages are
+    /// indexed (BR-17).
+    async fn index_message_fts(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        session_id: &str,
+        message_id: i64,
+        message: &Message,
+    ) -> Result<()> {
+        if !message.metadata.user_visible {
+            return Ok(());
+        }
+        let text = chat_fts::extract_searchable_text(&message.content);
+        if text.is_empty() {
+            return Ok(());
+        }
+        sqlx::query(MESSAGES_FTS_INSERT)
+            .bind(&text)
+            .bind(session_id)
+            .bind(message_id)
+            .execute(&mut **tx)
+            .await?;
         Ok(())
     }
 
@@ -1881,10 +1979,18 @@ impl SessionStorage {
             .execute(&mut *tx)
             .await?;
 
+        // Rebuild the FTS recall index for this session in lockstep with the
+        // message rewrite, so a compacted/edited session stays searchable
+        // without double-counting (BR-17).
+        sqlx::query("DELETE FROM messages_fts WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+
         for message in conversation.messages() {
             let metadata_json = serde_json::to_string(&message.metadata)?;
 
-            sqlx::query(
+            let insert = sqlx::query(
                 r#"
             INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json)
             VALUES (?, ?, ?, ?, ?)
@@ -1897,6 +2003,9 @@ impl SessionStorage {
             .bind(metadata_json)
             .execute(&mut *tx)
             .await?;
+
+            Self::index_message_fts(&mut tx, session_id, insert.last_insert_rowid(), message)
+                .await?;
         }
 
         tx.commit().await?;
@@ -3486,6 +3595,248 @@ mod tests {
             .unwrap()
             .as_concat_text();
         assert_eq!(last, "answer 0");
+    }
+
+    // ---- BR-17: FTS5 relevance-ranked chat recall ----
+
+    #[tokio::test]
+    async fn chat_recall_fts_ranks_by_relevance_not_recency() {
+        // The exact case the old recency `LIKE` scan got wrong: an older
+        // session that matches every query term must outrank a newer session
+        // that matches only one of them.
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let relevant = sm
+            .create_session(
+                PathBuf::from("/tmp/a"),
+                "relevant".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.add_message(
+            &relevant.id,
+            &umsg(
+                1,
+                "quantum entanglement experiment results were significant",
+            ),
+        )
+        .await
+        .unwrap();
+
+        // Added later, so it is the more *recent* session.
+        let recent = sm
+            .create_session(PathBuf::from("/tmp/b"), "recent".into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.add_message(
+            &recent.id,
+            &umsg(2, "quantum mechanics is a broad topic in physics"),
+        )
+        .await
+        .unwrap();
+
+        let res = sm
+            .search_chat_history("quantum entanglement experiment", None, None, None, None)
+            .await
+            .unwrap();
+
+        assert_eq!(res.results.len(), 2, "both sessions mention 'quantum'");
+        assert_eq!(
+            res.results[0].session_id, relevant.id,
+            "the fully-matching session must rank first under bm25"
+        );
+    }
+
+    #[tokio::test]
+    async fn chat_recall_fts_sanitizes_operator_query() {
+        // A query containing FTS operators must not raise a syntax error; it is
+        // treated as literal terms.
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let s = sm
+            .create_session(PathBuf::from("/tmp/a"), "s".into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.add_message(&s.id, &umsg(1, "the CFTR gene and cystic fibrosis"))
+            .await
+            .unwrap();
+
+        // Would be a malformed MATCH expression if passed through unsanitized.
+        let res = sm
+            .search_chat_history("CFTR AND (fibrosis*", None, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(res.results.len(), 1);
+        assert_eq!(res.results[0].session_id, s.id);
+    }
+
+    #[tokio::test]
+    async fn chat_recall_fts_stays_in_sync_on_replace_conversation() {
+        // The compaction/edit rewrite (DELETE + reinsert) must keep the FTS
+        // index consistent — the old text drops out, the new text is findable.
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let s = sm
+            .create_session(PathBuf::from("/tmp/a"), "s".into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.add_message(&s.id, &umsg(1, "photosynthesis in chloroplasts"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            sm.search_chat_history("photosynthesis", None, None, None, None)
+                .await
+                .unwrap()
+                .results
+                .len(),
+            1
+        );
+
+        // Rewrite the conversation with entirely different text.
+        let convo = Conversation::new_unvalidated(vec![umsg(2, "glycolysis in the cytoplasm")]);
+        sm.replace_conversation(&s.id, &convo).await.unwrap();
+
+        // Old term is gone, new term is present — index tracked the rewrite.
+        assert!(sm
+            .search_chat_history("photosynthesis", None, None, None, None)
+            .await
+            .unwrap()
+            .results
+            .is_empty());
+        assert_eq!(
+            sm.search_chat_history("glycolysis", None, None, None, None)
+                .await
+                .unwrap()
+                .results
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn migration_11_backfills_fts_index() {
+        // Production upgrade: a pre-v11 DB with existing messages gets an FTS
+        // index built by migration 11's backfill, so recall works on history
+        // that predates the feature.
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+
+        let content_json =
+            serde_json::to_string(&vec![MessageContent::text("mitochondria powerhouse cell")])
+                .unwrap();
+
+        {
+            let opts = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(opts)
+                .await
+                .unwrap();
+
+            sqlx::query("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+                .execute(&pool).await.unwrap();
+            for v in 1..=7 {
+                sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+                    .bind(v)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query(
+                r#"CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+                    user_set_name BOOLEAN DEFAULT FALSE, session_type TEXT NOT NULL DEFAULT 'user', working_dir TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    extension_data TEXT DEFAULT '{}', total_tokens INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+                    accumulated_total_tokens INTEGER, accumulated_input_tokens INTEGER, accumulated_output_tokens INTEGER,
+                    schedule_id TEXT, workflow_json TEXT, user_workflow_values_json TEXT, provider_name TEXT, model_config_json TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            sqlx::query(
+                r#"CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    role TEXT NOT NULL, content_json TEXT NOT NULL, created_timestamp INTEGER NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, tokens INTEGER, metadata_json TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO sessions (id, name, working_dir) VALUES ('20240101_1', 'old', '/tmp/old')")
+                .execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO messages (session_id, role, content_json, created_timestamp) VALUES ('20240101_1', 'user', ?, 1)")
+                .bind(&content_json)
+                .execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+
+        // Opening the real manager migrates 8→11, building messages_fts.
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let res = sm
+            .search_chat_history("mitochondria", None, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(res.results.len(), 1, "backfilled message is searchable");
+        assert_eq!(res.results[0].session_id, "20240101_1");
+    }
+
+    #[tokio::test]
+    async fn chat_recall_falls_back_to_like_without_fts_table() {
+        // A DB lacking messages_fts (older/partial migration) must still return
+        // recall results via the legacy `LIKE` scan rather than erroring.
+        use crate::session::chat_history_search::ChatHistorySearch;
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join("nofts.db");
+        let content_json =
+            serde_json::to_string(&vec![MessageContent::text("ribosome translation")]).unwrap();
+
+        let opts = SqliteConnectOptions::new()
+            .filename(&db_path)
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, description TEXT DEFAULT '', working_dir TEXT DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content_json TEXT, created_timestamp INTEGER, timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO sessions (id) VALUES ('s1')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO messages (session_id, role, content_json, created_timestamp) VALUES ('s1', 'user', ?, 1)")
+            .bind(&content_json)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let res = ChatHistorySearch::new(&pool, "ribosome", None, None, None, None)
+            .execute()
+            .await
+            .unwrap();
+        assert_eq!(
+            res.results.len(),
+            1,
+            "LIKE fallback still finds the message"
+        );
+        assert_eq!(res.results[0].session_id, "s1");
     }
 }
 
