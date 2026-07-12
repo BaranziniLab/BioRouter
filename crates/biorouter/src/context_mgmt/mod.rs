@@ -8,6 +8,7 @@ use crate::{config::Config, token_counter::create_token_counter};
 use anyhow::Result;
 use rmcp::model::{Role, Tool};
 use serde::Serialize;
+use std::sync::Arc;
 use tracing::{debug, info, warn};
 
 pub const DEFAULT_COMPACTION_THRESHOLD: f64 = 0.8;
@@ -42,6 +43,13 @@ const MANDATED_SUMMARY_SECTIONS: [&str; 8] = [
 /// older prefix is summarized. Overridable with `BIOROUTER_COMPACT_KEEP_LAST_TURNS`;
 /// set it to `0` to restore the legacy summarize-everything behaviour.
 pub const DEFAULT_COMPACT_KEEP_LAST_TURNS: usize = 4;
+
+/// BR-12: default state of eager (background, between-turns) compaction. When on,
+/// a turn that ends over the compaction threshold kicks off a `tokio::spawn`
+/// compaction that swaps in the summarized history before the *next* turn, so
+/// the user never waits on a summarization LLM round-trip. `BIOROUTER_EAGER_COMPACT=false`
+/// restores the pre-BR-12 synchronous-only path (compaction blocks the next turn).
+pub const DEFAULT_EAGER_COMPACTION_ENABLED: bool = true;
 
 /// BR-11: approximate characters per token, used only to turn the summarizer
 /// model's token-based context limit into a character budget for the truncation
@@ -510,6 +518,127 @@ pub async fn check_if_compaction_needed(
     );
 
     Ok(needs_compaction)
+}
+
+/// BR-12: outcome of a background eager-compaction attempt. Returned for logging
+/// and tests; the caller (a detached `tokio::spawn`) does nothing with it beyond
+/// tracing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EagerCompactionOutcome {
+    /// Post-turn usage was under the threshold, so nothing was compacted.
+    NotNeeded,
+    /// The older prefix was summarized and the compacted history swapped in.
+    Swapped,
+    /// The conversation changed between the snapshot and the swap (a new turn
+    /// began while the summarizer ran), so the stale result was discarded. The
+    /// next turn's synchronous fallback will compact instead.
+    Aborted,
+}
+
+/// BR-12: is eager (background, between-turns) compaction enabled? Default on
+/// ([`DEFAULT_EAGER_COMPACTION_ENABLED`]); `BIOROUTER_EAGER_COMPACT=false`
+/// restores the pre-BR-12 synchronous-only path.
+pub fn eager_compaction_enabled() -> bool {
+    Config::global()
+        .get_param::<bool>("BIOROUTER_EAGER_COMPACT")
+        .unwrap_or(DEFAULT_EAGER_COMPACTION_ENABLED)
+}
+
+/// BR-12: a background compaction may only be swapped in when the conversation it
+/// was computed from has not been mutated since the snapshot — i.e. no turn
+/// appended messages while the summarizer ran. [`replace_conversation`] DELETEs +
+/// reinserts the *entire* message set, so swapping a stale snapshot would
+/// silently drop any messages a concurrent turn added. History is append-only
+/// between turns, so an unchanged message count is a sufficient (and cheap)
+/// freshness check.
+///
+/// [`replace_conversation`]: crate::session::SessionManager::replace_conversation
+pub fn eager_swap_is_safe(snapshot_len: usize, current_len: usize) -> bool {
+    snapshot_len == current_len
+}
+
+/// BR-12: compute and swap in a compaction off the user-visible critical path.
+///
+/// Spawned as a detached background task at the turn boundary. The expensive
+/// summarization LLM round-trip happens *here*, between turns, so the next turn
+/// starts from an already-compacted history instead of stalling on it. The
+/// synchronous check at the top of `reply()` stays as the fallback for when this
+/// hasn't landed yet (a huge single turn, a fast follow-up message, or a failed
+/// background task) — that is the "keep a synchronous fallback" phasing BR-12
+/// calls for.
+///
+/// Race-safe against a live turn: the compacted conversation is only persisted
+/// when the stored conversation is unchanged since the snapshot (see
+/// [`eager_swap_is_safe`]); otherwise the result is discarded and the next turn's
+/// synchronous fallback handles it. Callers must additionally serialize eager
+/// compactions per session (only one in flight) so two summarizers don't both
+/// try to swap.
+/// `on_before_compact` runs exactly once, only when compaction is actually about
+/// to happen (the threshold check passed) and just before the summarization call.
+/// The caller uses it to fire the `PreCompact` hook so — unlike firing it around
+/// every turn boundary — it never fires on a turn that ends under budget.
+pub async fn run_eager_compaction(
+    provider: Arc<dyn Provider>,
+    session_manager: Arc<crate::session::SessionManager>,
+    session_config: crate::agents::types::SessionConfig,
+    threshold: f64,
+    on_before_compact: impl FnOnce(),
+) -> Result<EagerCompactionOutcome> {
+    let session = session_manager
+        .get_session(&session_config.id, true)
+        .await?;
+    let Some(conversation) = session.conversation.clone() else {
+        return Ok(EagerCompactionOutcome::NotNeeded);
+    };
+
+    // Re-check the threshold against fresh, provider-reported usage. On the happy
+    // path `session.total_tokens` was just written by the completed turn, so no
+    // cold-path system/tool estimate is needed (pass `None`).
+    if !check_if_compaction_needed(
+        provider.as_ref(),
+        &conversation,
+        Some(threshold),
+        &session,
+        None,
+    )
+    .await?
+    {
+        return Ok(EagerCompactionOutcome::NotNeeded);
+    }
+
+    let snapshot_len = conversation.messages().len();
+
+    on_before_compact();
+    let (compacted, usage) = compact_messages(provider.as_ref(), &conversation, false).await?;
+
+    // Re-load and only swap when no turn mutated the conversation while we
+    // summarized — otherwise the DELETE+reinsert would clobber the new messages.
+    let current_len = session_manager
+        .get_session(&session_config.id, true)
+        .await?
+        .conversation
+        .as_ref()
+        .map_or(0, |c| c.messages().len());
+    if !eager_swap_is_safe(snapshot_len, current_len) {
+        debug!(
+            "BR-12: eager compaction aborted for session {} (len {} -> {}); a turn started under it",
+            session_config.id, snapshot_len, current_len
+        );
+        return Ok(EagerCompactionOutcome::Aborted);
+    }
+
+    session_manager
+        .replace_conversation(&session_config.id, &compacted)
+        .await?;
+    crate::agents::reply_parts::apply_session_metrics(
+        &session_manager,
+        &session_config,
+        &usage,
+        true,
+    )
+    .await?;
+
+    Ok(EagerCompactionOutcome::Swapped)
 }
 
 fn filter_tool_responses<'a>(messages: &[&'a Message], remove_percent: u32) -> Vec<&'a Message> {
@@ -1664,6 +1793,164 @@ mod tests {
             summary_msg.role,
             Role::User,
             "summary must be a User-role message so fix_lead_trail keeps it"
+        );
+    }
+
+    // ---- BR-12: eager (background, between-turns) compaction ----
+
+    #[test]
+    fn test_eager_swap_is_safe_only_when_len_unchanged() {
+        // Unchanged length: no turn appended since the snapshot → safe to swap.
+        assert!(eager_swap_is_safe(10, 10));
+        // A message was appended by a racing turn → swapping the stale snapshot
+        // would DELETE+reinsert over it, so it must be refused.
+        assert!(!eager_swap_is_safe(10, 11));
+        // Defensive: any divergence at all is unsafe.
+        assert!(!eager_swap_is_safe(10, 9));
+    }
+
+    /// Build a `SessionManager` backed by a throwaway temp dir + a session
+    /// preloaded with `messages`, its live gauge set to `total_tokens`.
+    async fn eager_test_session(
+        messages: Vec<Message>,
+        total_tokens: i32,
+    ) -> (
+        tempfile::TempDir,
+        Arc<crate::session::SessionManager>,
+        String,
+    ) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = manager
+            .create_session(
+                std::path::PathBuf::from("/tmp"),
+                "eager-test".to_string(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        for m in &messages {
+            manager.add_message(&session.id, m).await.unwrap();
+        }
+        manager
+            .update(&session.id)
+            .total_tokens(Some(total_tokens))
+            .apply()
+            .await
+            .unwrap();
+        (temp, manager, session.id)
+    }
+
+    fn eager_session_config(id: &str) -> crate::agents::types::SessionConfig {
+        crate::agents::types::SessionConfig {
+            id: id.to_string(),
+            schedule_id: None,
+            max_turns: None,
+            max_tool_calls: None,
+            retry_config: None,
+        }
+    }
+
+    /// A multi-turn history that ends over budget is compacted and swapped in by
+    /// the background routine, off the reply() critical path.
+    #[tokio::test]
+    async fn test_run_eager_compaction_swaps_over_threshold() {
+        // Six plain user-prompt turns so the recent-window path (keep_last_turns
+        // default 4) has an older prefix to summarize.
+        let mut messages = Vec::new();
+        for i in 0..6 {
+            messages.push(Message::user().with_text(format!("question {i}")));
+            messages.push(Message::assistant().with_text(format!("answer {i}")));
+        }
+        let (_temp, manager, id) = eager_test_session(messages, 90).await;
+
+        // context_limit 100, total_tokens 90 -> 0.9 ratio, over the 0.8 threshold.
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider::new(
+            Message::assistant().with_text("<mock summary>"),
+            100,
+        ));
+
+        let before_compact = std::sync::atomic::AtomicBool::new(false);
+        let outcome = run_eager_compaction(
+            provider,
+            Arc::clone(&manager),
+            eager_session_config(&id),
+            0.8,
+            || before_compact.store(true, std::sync::atomic::Ordering::SeqCst),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, EagerCompactionOutcome::Swapped);
+        assert!(
+            before_compact.load(std::sync::atomic::Ordering::SeqCst),
+            "on_before_compact (PreCompact) must fire when compaction proceeds"
+        );
+
+        let reloaded = manager
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert!(
+            reloaded.messages().iter().any(|m| !m.is_agent_visible()),
+            "the summarized prefix should be flipped agent-invisible"
+        );
+        assert!(
+            reloaded.messages().iter().any(|m| m.content.iter().any(
+                |c| matches!(c, MessageContent::Text(t) if t.text.contains("<mock summary>"))
+            )),
+            "the compacted history should carry the summary"
+        );
+    }
+
+    /// A session comfortably under budget is left untouched — no summarization
+    /// call, no swap.
+    #[tokio::test]
+    async fn test_run_eager_compaction_noop_under_threshold() {
+        let messages = vec![
+            Message::user().with_text("hi"),
+            Message::assistant().with_text("hello"),
+        ];
+        let (_temp, manager, id) = eager_test_session(messages, 10).await;
+
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider::new(
+            Message::assistant().with_text("<mock summary>"),
+            100,
+        ));
+
+        let before_compact = std::sync::atomic::AtomicBool::new(false);
+        let outcome = run_eager_compaction(
+            provider,
+            Arc::clone(&manager),
+            eager_session_config(&id),
+            0.8,
+            || before_compact.store(true, std::sync::atomic::Ordering::SeqCst),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, EagerCompactionOutcome::NotNeeded);
+        assert!(
+            !before_compact.load(std::sync::atomic::Ordering::SeqCst),
+            "PreCompact must not fire when the session is under budget"
+        );
+
+        let reloaded = manager
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(
+            reloaded.messages().len(),
+            2,
+            "an under-budget session must not be rewritten"
+        );
+        assert!(
+            reloaded.messages().iter().all(|m| m.is_agent_visible()),
+            "nothing should be hidden when compaction did not run"
         );
     }
 }
