@@ -1,5 +1,6 @@
 pub mod classification_client;
 pub mod patterns;
+pub mod policy;
 pub mod scanner;
 pub mod security_inspector;
 
@@ -56,6 +57,21 @@ impl SecurityManager {
         config
             .get_param::<bool>("SECURITY_PROMPT_ENABLED")
             .unwrap_or(false)
+    }
+
+    /// Whether the auditable command policy engine (BR-21) governs commands.
+    ///
+    /// On by default (a strict improvement over the old off-by-default scanner);
+    /// `SECURITY_COMMAND_POLICY=off` disables it for a nervous rollout, leaving
+    /// only the non-bypassable BR-20 catastrophic floor. Any other value (e.g.
+    /// the default `enforce`) keeps it on.
+    pub fn is_command_policy_enabled(&self) -> bool {
+        let config = Config::global();
+
+        match config.get_param::<String>("SECURITY_COMMAND_POLICY") {
+            Ok(v) => !v.trim().eq_ignore_ascii_case("off"),
+            Err(_) => true,
+        }
     }
 
     fn is_ml_scanning_enabled(&self) -> bool {
@@ -246,8 +262,18 @@ impl Default for SecurityManager {
 /// command-like to scan (so file contents written by an editor are not screened).
 fn command_text(tool_call: &CallToolRequestParams) -> Option<String> {
     let args = tool_call.arguments.as_ref()?;
-    let name = tool_call.name.to_ascii_lowercase();
-    let shell_like = SHELL_TOOL_HINTS.iter().any(|hint| name.contains(hint));
+    command_text_from(&tool_call.name, args)
+}
+
+/// Same as [`command_text`] but from a tool name + its argument map, so the
+/// policy engine (which is handed `tool_name` + a `serde_json::Value`) can reuse
+/// the exact command-extraction rules the catastrophic denylist uses.
+pub(crate) fn command_text_from(
+    name: &str,
+    args: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    let name_lc = name.to_ascii_lowercase();
+    let shell_like = SHELL_TOOL_HINTS.iter().any(|hint| name_lc.contains(hint));
 
     let mut parts: Vec<String> = Vec::new();
     for (key, value) in args.iter() {
