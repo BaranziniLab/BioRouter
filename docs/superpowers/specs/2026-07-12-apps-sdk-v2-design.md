@@ -93,7 +93,7 @@ From the deep-read of `agent_drafter/` and ~110 real generated apps:
    └──────────────────────────────────────────────────────────────────────┘
 ```
 
-Seven pillars, each independently shippable, ordered by leverage.
+Eight pillars, each independently shippable, ordered by leverage.
 
 ### 3.1 Pillar 1 — The App Contract: typed surface, both directions
 
@@ -238,6 +238,18 @@ Every new power maps onto the existing capability lattice (deny-by-default excep
 
 Unchanged and reaffirmed: vault plaintext never in frames; path-jailed stores; `.vault/` excluded from export; mutating HTTP requires the secret; structured validation of every agent-emitted frame stays server-side in `control.rs` (weak local models get correction messages, not blank panels).
 
+### 3.8 Pillar 8 — Multi-agent apps: named profiles, delegation, collaborative & adversarial patterns
+
+One agent per app is the v1 shape, but multi-agent is already half-present: `orchestration.sub_agents` is **wired today** — declared sub-agents are materialized as engine recipes (`apps.rs:708-737`, `materialize_subagent_recipe`) and exposed to the primary agent as **agents-as-tools** via the core subagent tool (`crates/biorouter/src/agents/subagent_tool.rs`, with its own concurrency cap), and the SDK already renders `handoff{from,to}` frames in the timeline. What's missing is everything *outside* that façade: the app can't address a specific agent, can't run two agents in parallel, can't give a panel its own agent. v2 adds **named agent profiles**:
+
+- **Manifest:** the dormant `orchestration.agents: HashMap<String, AgentConfig>` map (already in `manifest.rs`) becomes the vehicle. The existing `agent` block is the `main` profile; each additional profile carries its own system prompt, model/route, extensions, skills, KB — and a capability set that must be a **subset** of the app's grants.
+- **Sessions & transport:** each profile gets its own session (keyed `app:<id>:<client_id>:<profile>`) and turn loop; frames are multiplexed over the *same* WebSocket with an optional `agent` field (omitted = `main`), so reconnect/replay semantics are unchanged.
+- **App side:** `br.agent("critic")` returns a scoped facade (`call`/`run`/`prompt`/`on`). Turns on *different* profiles run in parallel (bounded: default max 3 concurrent per app); turns on the same profile stay serialized. This is what lets a dashboard refresh three panels through three worker profiles concurrently, or a "Debate" button fan the same question out to two differently-prompted profiles and render both answers side by side — **author-orchestrated collaboration**, no new protocol concepts.
+- **Agent side:** alongside the shipped sub-agents-as-tools path, `main` gets a `consult { agent, prompt }` tool to invoke a named profile mid-turn — **agent-orchestrated collaboration**. The canonical adversarial pattern (generator produces, skeptic refutes, only survivors render) becomes: `main` drafts → `consult{agent:"critic"}` → revise → `ui_patch`.
+- **UI authority & presence:** only `main` holds `ui_*`/appcontrol by default; a worker profile gets UI control only if its profile says `ui:true`, and its panels/presence chips are attributed ("Critic · reviewing evidence ⋯") so the user always knows *which* agent is acting. Signals/autorun budgets are per-app, not per-profile (no budget multiplication).
+- **Patterns unlocked:** adversarial review (generator + critic), panel-of-judges scoring, pipeline stages (extract → analyze → visualize) each owned by a profile tuned to its task — including **different models per role** (a local model triaging, an institutional model touching PHI, a frontier model writing the synthesis), which is exactly BioRouter's provider-integration strength applied inside one app.
+- **Boundaries:** profiles live in-process in `biorouterd` (the `biorouter-acp` protocol remains the layer for *cross-process* agent orchestration, and `br.workflow.run` in v2.1 the layer for declarative DAGs). Two simultaneous turns on the *same* profile remain out of scope.
+
 ## 4. Worked examples (what becomes possible)
 
 **A. Knowledge-graph explorer (BioOKF-Studio-class, ~50 lines of authored code).** `explorer` starter + `br.kb.graph()` → `network` component; `node_selected` signal subscribed by the agent → agent `br.kb.page()`s the node and `ui_patch`es the inspector panel with a `markdown` component + a `figure` (Kaplan-Meier from Auto Visualiser) when relevant; user asks "focus on demyelination" → agent calls `app_call{focus_node}`. The presence chip narrates each step. Every piece is a declared, typed, gated primitive — no eval bridge, no bespoke renderer, no polling.
@@ -245,6 +257,8 @@ Unchanged and reaffirmed: vault plaintext never in frames; path-jailed stores; `
 **B. Avatar / scene control ("move the avatar up").** `canvas` starter: author registers a `canvas` component with a `world` model in shared state (`/avatar/position`), plus actions `move_avatar`, `speak`. The user types "walk to the door and greet"; the agent plans and emits `app_call{move_avatar,…}`, `app_call{speak,…}`; state patches animate the canvas; `collision` signals flow back if subscribed. The agent never writes runtime code — it drives declared verbs, exactly like BioOKF's `selectNode` but generated from the manifest. (Voice input is not an SDK primitive in v2; text NL covers the ask.)
 
 **C. Cohort dashboard on institutional data.** `dashboard` starter + `data.sources[omop]` + model route `institutional` (provider-class-constrained, §3.4); KPI grid bound to `/cohort/*` state paths; the agent refreshes via SQL tools and `ui_patch_state`; a dragged age-slider fires a debounced, superseding `br.call("refresh_cohort", {age_range})` with `output_schema`, so results land as data in bound components — zero markdown re-parsing.
+
+**D. Adversarial evidence review (multi-agent).** Two profiles: `reviewer` (institutional model, `br.kb` read on the lab's KB) and `skeptic` (system prompt: "refute every claim; demand provenance"). The user drops in a manuscript claim; author code fans out `br.agent("reviewer").call(...)` and, on its result, `br.agent("skeptic").call(...)`; surviving evidence renders into a `table` with per-row provenance, refuted items into a struck-through `log` panel — the BioOKF "epistemic status is visible" principle, produced by an adversarial pair. Alternatively the whole loop runs agent-side: `main` drafts and `consult{agent:"skeptic"}`s before ever touching the UI.
 
 ## 5. Compatibility & migration
 
@@ -268,7 +282,7 @@ Unchanged and reaffirmed: vault plaintext never in frames; path-jailed stores; `
 - **CLI:** apps are browser-rendered by design; the CLI gets `biorouter apps list|open|serve` parity (launch daemon, print/open the URL — matching how `launch_app` already behaves in CLI contexts). In-terminal (ratatui) rendering of catalog UIs is out of scope.
 - **A Tauri/desktop shell for apps** — apps stay browser-served by `biorouterd` (and inside the Electron Applications tab). Studio's vibrancy/PTY/Finder affordances are not portable SDK primitives.
 - **CRDTs** — single ordering authority (the server) + JSON Patch suffices; apps are single-user per-client (§3.7). Revisit only if collaborative editing becomes a requirement.
-- **Multi-agent-per-app / parallel turns** — one agent, one turn at a time remains; `app_call` + signals + debounce/supersede cover the dashboard-refresh cases that motivated it.
+- **Multi-agent apps are IN scope** (Pillar 8, §3.8): named agent profiles with parallel turns *across* profiles, `consult` for agent-orchestrated collaboration, and the already-shipped sub-agents-as-tools path. Still out: two simultaneous turns on the *same* profile, and cross-process orchestration (that's `biorouter-acp`'s layer).
 - **Voice input** — not an SDK primitive in v2.
 - **Workflows & scheduled refresh** — v2.1 (§3.4).
 - **Provider-level structured output** (a `response_format` channel in the `Provider` trait) — not required; the `emit_result` tool mechanism covers v2 (§3.1) and can be swapped later.
@@ -282,4 +296,5 @@ Unchanged and reaffirmed: vault plaintext never in frames; path-jailed stores; `
 | Custom components reintroduce Family-A fragility at runtime | They execute *author* code written once at build time; the agent only supplies schema-validated props (extraction fails closed); authors are linted against prop-fed sinks |
 | Indirect prompt injection via app payloads | Untrusted-data envelope + per-field caps + scoped capabilities (§3.5/§3.7); acknowledged as residual risk, mitigated by minimization not trust |
 | Signal floods burn tokens | Declaration-level `coalesce_ms`, server-side rate caps, queue-only default, autorun off by default with budgets |
+| Multi-agent profiles multiply cost and complexity | Per-app concurrent-turn cap (default 3), per-app (not per-profile) signal/autorun budgets, profile capabilities ⊆ app capabilities, presence attribution per agent; sub-agents-as-tools already ships and stays the low-cost default |
 | Two renderers drift (markdown fences vs catalog) | Fenced ```chart/```graph become sugar that lowers to catalog instances internally; one renderer |
