@@ -1931,7 +1931,15 @@ impl SessionStorage {
         .await?;
 
         // Keep the FTS recall index in sync with the new row (BR-17).
-        Self::index_message_fts(&mut tx, session_id, insert.last_insert_rowid(), message).await?;
+        let fts_available = Self::messages_fts_exists(&mut *tx).await;
+        Self::index_message_fts(
+            &mut tx,
+            session_id,
+            insert.last_insert_rowid(),
+            message,
+            fts_available,
+        )
+        .await?;
 
         sqlx::query("UPDATE sessions SET updated_at = datetime('now') WHERE id = ?")
             .bind(session_id)
@@ -1942,16 +1950,35 @@ impl SessionStorage {
         Ok(())
     }
 
+    /// True when the FTS5 mirror table exists (created by schema migration 11).
+    /// The read path guards on this too; a DB that reached its version without
+    /// `messages_fts` (e.g. a future migration renumber, or a partial upgrade)
+    /// must degrade gracefully instead of hard-failing every message save.
+    async fn messages_fts_exists<'e, E>(executor: E) -> bool
+    where
+        E: sqlx::Executor<'e, Database = Sqlite>,
+    {
+        sqlx::query_scalar::<_, i64>(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='messages_fts'",
+        )
+        .fetch_one(executor)
+        .await
+        .map(|c| c > 0)
+        .unwrap_or(false)
+    }
+
     /// Insert one message's flattened text into the FTS recall index, within
     /// the caller's transaction. Only user-visible, non-empty messages are
-    /// indexed (BR-17).
+    /// indexed (BR-17). `fts_available` is resolved once by the caller so a
+    /// bulk rewrite doesn't re-probe the catalog per message.
     async fn index_message_fts(
         tx: &mut sqlx::Transaction<'_, Sqlite>,
         session_id: &str,
         message_id: i64,
         message: &Message,
+        fts_available: bool,
     ) -> Result<()> {
-        if !message.metadata.user_visible {
+        if !fts_available || !message.metadata.user_visible {
             return Ok(());
         }
         let text = chat_fts::extract_searchable_text(&message.content);
@@ -1981,11 +2008,15 @@ impl SessionStorage {
 
         // Rebuild the FTS recall index for this session in lockstep with the
         // message rewrite, so a compacted/edited session stays searchable
-        // without double-counting (BR-17).
-        sqlx::query("DELETE FROM messages_fts WHERE session_id = ?")
-            .bind(session_id)
-            .execute(&mut *tx)
-            .await?;
+        // without double-counting (BR-17). Skip entirely when the mirror table
+        // is absent so message rewrites still succeed on such a DB.
+        let fts_available = Self::messages_fts_exists(&mut *tx).await;
+        if fts_available {
+            sqlx::query("DELETE FROM messages_fts WHERE session_id = ?")
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await?;
+        }
 
         for message in conversation.messages() {
             let metadata_json = serde_json::to_string(&message.metadata)?;
@@ -2004,8 +2035,14 @@ impl SessionStorage {
             .execute(&mut *tx)
             .await?;
 
-            Self::index_message_fts(&mut tx, session_id, insert.last_insert_rowid(), message)
-                .await?;
+            Self::index_message_fts(
+                &mut tx,
+                session_id,
+                insert.last_insert_rowid(),
+                message,
+                fts_available,
+            )
+            .await?;
         }
 
         tx.commit().await?;
