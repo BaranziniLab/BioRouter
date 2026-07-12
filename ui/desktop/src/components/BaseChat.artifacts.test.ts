@@ -158,7 +158,7 @@ describe('collectArtifactsFromMessages', () => {
     ];
     // Force the resource URI to carry an invalid percent-escape.
     (
-      messages[1].content[0] as {
+      messages[1].content[0] as unknown as {
         toolResult: { value: { content: Array<{ resource: { uri: string } }> } };
       }
     ).toolResult.value.content[0].resource.uri = 'ui://charts/effect 50% panel.html';
