@@ -44,6 +44,27 @@ pub async fn run_complete_subagent_task(
 ) -> SubagentResult {
     let session_manager = config.session_manager.clone();
 
+    // Surface this subagent in the process-wide "active work" view (BR-42) for
+    // the run's whole lifetime. The guard deregisters on drop, so an early
+    // return or panic never leaks a phantom "still running" entry. Cancel routes
+    // to the run's cancellation token when one was supplied.
+    let _active_work = {
+        use biorouter_mcp::active_work::{ActiveWorkGuard, ActiveWorkKind};
+        let title = subagent_work_title(&workflow);
+        let cancel = cancellation_token.clone().map(|token| {
+            let cancel: std::sync::Arc<dyn Fn() + Send + Sync> =
+                std::sync::Arc::new(move || token.cancel());
+            cancel
+        });
+        ActiveWorkGuard::register(
+            ActiveWorkKind::Subagent,
+            title,
+            Some(format!("child session {session_id}")),
+            Some(task_config.parent_session_id.clone()),
+            cancel,
+        )
+    };
+
     let (messages, final_output) = match get_agent_messages(
         config,
         workflow,
@@ -60,6 +81,24 @@ pub async fn run_complete_subagent_task(
     let mut result = SubagentResult::from_conversation(&messages, final_output, return_last_only);
     result.tokens = fetch_subagent_tokens(&session_manager, &session_id).await;
     result
+}
+
+/// A short, human-readable label for the active-work view: the subagent's task
+/// prompt (or, failing that, its instructions), collapsed to one line and
+/// truncated. Falls back to a generic label when the workflow carries neither.
+fn subagent_work_title(workflow: &Workflow) -> String {
+    let raw = workflow
+        .prompt
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .or(workflow.instructions.as_deref())
+        .unwrap_or("subagent task");
+    let one_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut title: String = one_line.chars().take(120).collect();
+    if one_line.chars().count() > 120 {
+        title.push('…');
+    }
+    title
 }
 
 /// Read the child session's lifetime token totals for the result envelope.

@@ -20,6 +20,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::sync::{watch, Mutex};
 
 use super::shell::{configure_shell_command, ShellConfig};
+use crate::active_work::{active_work, ActiveWorkKind};
 
 /// Cap a single job's captured output so a runaway process cannot exhaust
 /// memory. Matches the foreground shell's 400 KB ceiling.
@@ -146,11 +147,30 @@ impl BackgroundJobs {
             spawn_reader(err, output.clone());
         }
 
+        // Surface this job in the process-wide "active work" view (BR-42) with a
+        // cancel action that kills its process group, and deregister it when the
+        // supervisor sees it reach a terminal state below.
+        let reg_id = {
+            let killed_for_cancel = killed.clone();
+            let pid_for_cancel = pid;
+            active_work().register(
+                ActiveWorkKind::BackgroundJob,
+                format!("{id}: {label}"),
+                Some(command.to_string()),
+                None,
+                Some(Arc::new(move || {
+                    killed_for_cancel.store(true, Ordering::SeqCst);
+                    kill_process_group(pid_for_cancel);
+                })),
+            )
+        };
+
         // Supervisor: own the child so it is not dropped (and thus not killed)
         // when the tool returns; record the terminal status from the OS.
         let status_for_sup = status.clone();
         let killed_for_sup = killed.clone();
         let pid_for_sup = pid;
+        let reg_id_for_sup = reg_id.clone();
         tokio::spawn(async move {
             let wait_result = child.wait().await;
             let terminal = if killed_for_sup.load(Ordering::SeqCst) {
@@ -166,10 +186,12 @@ impl BackgroundJobs {
             };
             *status_for_sup.lock().await = terminal;
             // The job reached a terminal state under our supervision, so it is
-            // no longer an orphan candidate — drop its run-dir record.
+            // no longer an orphan candidate — drop its run-dir record — and it is
+            // no longer "active work".
             if let Some(pid) = pid_for_sup {
                 remove_job_pidfile(pid);
             }
+            active_work().deregister(&reg_id_for_sup);
             let _ = done_tx.send(true);
         });
 
