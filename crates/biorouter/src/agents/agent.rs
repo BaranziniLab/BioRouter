@@ -705,6 +705,157 @@ impl Agent {
         }
     }
 
+    /// Assemble the per-turn model context by injecting MOIM ("message of the
+    /// moment") into a clone of the live conversation, leaving persisted history untouched.
+    async fn assemble_turn_context(
+        &self,
+        session_id: &str,
+        conversation: &Conversation,
+        working_dir: &std::path::Path,
+    ) -> Conversation {
+        super::moim::inject_moim(
+            session_id,
+            conversation.clone(),
+            &self.extension_manager,
+            working_dir,
+        )
+        .await
+    }
+
+    /// Run the per-tool inspection gauntlet (inspectors → permission judge →
+    /// extension-enable tracking) and eagerly dispatch approved/denied tools,
+    /// returning the inspection results, permission verdict, enable-extension
+    /// request ids, and the pending tool futures.
+    async fn inspect_and_gate_tool_requests(
+        &self,
+        remaining_requests: &[ToolRequest],
+        conversation: &Conversation,
+        biorouter_mode: BioRouterMode,
+        session: &Session,
+        request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+        cancel_token: Option<CancellationToken>,
+    ) -> Result<(
+        Vec<InspectionResult>,
+        PermissionCheckResult,
+        Vec<String>,
+        Vec<(String, ToolStream)>,
+    )> {
+        // Run all tool inspectors
+        let inspection_results = self
+            .tool_inspection_manager
+            .inspect_tools(
+                remaining_requests,
+                conversation.messages(),
+                biorouter_mode,
+                session,
+            )
+            .await?;
+
+        let permission_check_result = self
+            .tool_inspection_manager
+            .process_inspection_results_with_permission_inspector(
+                remaining_requests,
+                &inspection_results,
+            )
+            .unwrap_or_else(|| {
+                let mut result = PermissionCheckResult {
+                    approved: vec![],
+                    needs_approval: vec![],
+                    denied: vec![],
+                };
+                result
+                    .needs_approval
+                    .extend(remaining_requests.iter().cloned());
+                result
+            });
+
+        // Track extension requests
+        let mut enable_extension_request_ids = vec![];
+        for request in remaining_requests {
+            if let Ok(tool_call) = &request.tool_call {
+                if tool_call.name == MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE {
+                    enable_extension_request_ids.push(request.id.clone());
+                }
+            }
+        }
+
+        let tool_futures = self
+            .handle_approved_and_denied_tools(
+                &permission_check_result,
+                request_to_response_map,
+                cancel_token,
+                session,
+                &inspection_results,
+            )
+            .await?;
+
+        Ok((
+            inspection_results,
+            permission_check_result,
+            enable_extension_request_ids,
+            tool_futures,
+        ))
+    }
+
+    /// Integrate one completed tool result: validate it before persistence, note
+    /// extension-install failures, record it for PostToolUse hooks, and write it
+    /// into the request's response slot.
+    async fn integrate_tool_result(
+        &self,
+        request_id: String,
+        output: ToolResult<CallToolResult>,
+        enable_extension_request_ids: &[String],
+        request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+        request_metadata: &HashMap<String, Option<ProviderMetadata>>,
+        all_install_successful: &mut bool,
+        post_tool_results: &mut Vec<(String, Option<Value>, Option<String>)>,
+    ) {
+        let output = call_tool_result::validate(output);
+
+        if enable_extension_request_ids.contains(&request_id) && output.is_err() {
+            *all_install_successful = false;
+        }
+        {
+            let (response_value, error_text) = match &output {
+                Ok(res) => {
+                    let value = serde_json::to_value(res).ok();
+                    if res.is_error == Some(true) {
+                        let text = value
+                            .as_ref()
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "tool returned an error".to_string());
+                        (value, Some(text))
+                    } else {
+                        (value, None)
+                    }
+                }
+                Err(e) => (None, Some(e.to_string())),
+            };
+            post_tool_results.push((request_id.clone(), response_value, error_text));
+        }
+        if let Some(response_msg) = request_to_response_map.get(&request_id) {
+            let metadata = request_metadata.get(&request_id).and_then(|m| m.as_ref());
+            let mut response = response_msg.lock().await;
+            *response = response
+                .clone()
+                .with_tool_response_with_metadata(request_id, output, metadata);
+        }
+    }
+
+    /// Record this turn's provider usage exactly once for token accounting
+    /// (no-op when the turn reported none, e.g. an error before the first usage chunk).
+    async fn record_turn_usage(
+        &self,
+        session_config: &SessionConfig,
+        turn_usage: Option<crate::providers::base::ProviderUsage>,
+    ) -> Result<()> {
+        if let Some(usage) = turn_usage {
+            self.update_session_metrics(session_config, &usage, false)
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn handle_approved_and_denied_tools(
         &self,
         permission_check_result: &PermissionCheckResult,
@@ -1625,12 +1776,9 @@ impl Agent {
                     yield AgentEvent::Message(m);
                 }
 
-                let conversation_with_moim = super::moim::inject_moim(
-                    &session_config.id,
-                    conversation.clone(),
-                    &self.extension_manager,
-                    &working_dir,
-                ).await;
+                let conversation_with_moim = self
+                    .assemble_turn_context(&session_config.id, &conversation, &working_dir)
+                    .await;
 
                 let mut stream = Self::stream_response_from_provider(
                     self.provider().await?,
@@ -1755,47 +1903,18 @@ impl Agent {
                                         }
                                     }
                                 } else {
-                                    // Run all tool inspectors
-                                    let inspection_results = self.tool_inspection_manager
-                                        .inspect_tools(
-                                            &remaining_requests,
-                                            conversation.messages(),
-                                            biorouter_mode,
-                                            &session,
-                                        )
-                                        .await?;
-
-                                    let permission_check_result = self.tool_inspection_manager
-                                        .process_inspection_results_with_permission_inspector(
-                                            &remaining_requests,
-                                            &inspection_results,
-                                        )
-                                        .unwrap_or_else(|| {
-                                            let mut result = PermissionCheckResult {
-                                                approved: vec![],
-                                                needs_approval: vec![],
-                                                denied: vec![],
-                                            };
-                                            result.needs_approval.extend(remaining_requests.iter().cloned());
-                                            result
-                                        });
-
-                                    // Track extension requests
-                                    let mut enable_extension_request_ids = vec![];
-                                    for request in &remaining_requests {
-                                        if let Ok(tool_call) = &request.tool_call {
-                                            if tool_call.name == MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE {
-                                                enable_extension_request_ids.push(request.id.clone());
-                                            }
-                                        }
-                                    }
-
-                                    let mut tool_futures = self.handle_approved_and_denied_tools(
-                                        &permission_check_result,
+                                    let (
+                                        inspection_results,
+                                        permission_check_result,
+                                        enable_extension_request_ids,
+                                        mut tool_futures,
+                                    ) = self.inspect_and_gate_tool_requests(
+                                        &remaining_requests,
+                                        &conversation,
+                                        biorouter_mode,
+                                        &session,
                                         &request_to_response_map,
                                         cancel_token.clone(),
-                                        &session,
-                                        &inspection_results,
                                     ).await?;
 
                                     let tool_futures_arc = Arc::new(Mutex::new(tool_futures));
@@ -1841,36 +1960,15 @@ impl Agent {
 
                                         match item {
                                             ToolStreamItem::Result(output) => {
-                                                let output = call_tool_result::validate(output);
-
-                                                if enable_extension_request_ids.contains(&request_id)
-                                                    && output.is_err()
-                                                {
-                                                    all_install_successful = false;
-                                                }
-                                                {
-                                                    let (response_value, error_text) = match &output {
-                                                        Ok(res) => {
-                                                            let value = serde_json::to_value(res).ok();
-                                                            if res.is_error == Some(true) {
-                                                                let text = value
-                                                                    .as_ref()
-                                                                    .map(|v| v.to_string())
-                                                                    .unwrap_or_else(|| "tool returned an error".to_string());
-                                                                (value, Some(text))
-                                                            } else {
-                                                                (value, None)
-                                                            }
-                                                        }
-                                                        Err(e) => (None, Some(e.to_string())),
-                                                    };
-                                                    post_tool_results.push((request_id.clone(), response_value, error_text));
-                                                }
-                                                if let Some(response_msg) = request_to_response_map.get(&request_id) {
-                                                    let metadata = request_metadata.get(&request_id).and_then(|m| m.as_ref());
-                                                    let mut response = response_msg.lock().await;
-                                                    *response = response.clone().with_tool_response_with_metadata(request_id, output, metadata);
-                                                }
+                                                self.integrate_tool_result(
+                                                    request_id,
+                                                    output,
+                                                    &enable_extension_request_ids,
+                                                    &request_to_response_map,
+                                                    &request_metadata,
+                                                    &mut all_install_successful,
+                                                    &mut post_tool_results,
+                                                ).await;
                                             }
                                             ToolStreamItem::Message(msg) => {
                                                 yield AgentEvent::McpNotification((request_id, msg));
@@ -2067,9 +2165,7 @@ impl Agent {
                 // Record the turn exactly once, whether the stream finished, was
                 // cancelled, or errored out. The provider still processed (and
                 // billed) whatever it reported.
-                if let Some(usage) = turn_usage.take() {
-                    self.update_session_metrics(&session_config, &usage, false).await?;
-                }
+                self.record_turn_usage(&session_config, turn_usage.take()).await?;
 
                 if tools_updated {
                     (tools, toolshim_tools, system_prompt) =
