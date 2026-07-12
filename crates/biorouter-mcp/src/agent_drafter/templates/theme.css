@@ -744,3 +744,34 @@ body.br-has-dock-bottom { padding-bottom: var(--br-dock-h); }
 
 /* Author-registered component container */
 .br-component { display: block; min-height: 8px; }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Presence chip (Apps SDK v2, Pillar 5 — §3.5)
+   An ambient "AI is acting" pill, fixed bottom-left. Token-driven so it adapts
+   to every theme pack. It must never intercept clicks or steal focus, so it is
+   `pointer-events: none` and not focusable. Shown by the SDK for agent-driven
+   `ui_*` frames (and `br.ui.presence(...)`), and fades ~2.5s after the last one.
+   ───────────────────────────────────────────────────────────────────────────── */
+.br-presence {
+  position: fixed; z-index: 55; left: 16px; bottom: 16px;
+  max-width: min(60vw, 380px);
+  display: inline-flex; align-items: center; gap: 7px;
+  padding: 6px 12px;
+  font-family: var(--br-font); font-size: 0.78rem; line-height: 1.3; font-weight: 500;
+  color: var(--br-text); background: var(--br-surface);
+  border: 1px solid color-mix(in srgb, var(--br-border) 60%, transparent);
+  border-radius: 999px; box-shadow: var(--br-shadow-pop);
+  pointer-events: none; /* never intercept clicks or steal focus */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  opacity: 0; transform: translateY(4px);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+.br-presence::before {
+  content: ""; flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--br-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--br-accent) 22%, transparent);
+}
+.br-presence--on { opacity: 1; transform: translateY(0); }
+@media (prefers-reduced-motion: reduce) {
+  .br-presence { transition: none; }
+}

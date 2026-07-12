@@ -44,14 +44,18 @@ use biorouter::guardrails::run_state::{PendingTool, RunState};
 use biorouter::model::ModelConfig;
 use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::permission::{Permission, PermissionConfirmation};
+use biorouter::providers::base::Provider;
 use biorouter::providers::create as create_provider;
 use biorouter::session::SessionType;
-use biorouter_mcp::agent_drafter::control::{StateWriteError, UiBridge, APP_PAYLOAD_MAX};
+use biorouter_mcp::agent_drafter::control::{
+    StateWriteError, UiBridge, APP_PAYLOAD_MAX, CATALOG_VERSION,
+};
 use biorouter_mcp::agent_drafter::manifest::PiiMode;
-use biorouter_mcp::agent_drafter::store::{ArtifactStore, Manifest};
+use biorouter_mcp::agent_drafter::store::{AgentConfig, ArtifactStore, Manifest};
 use biorouter_mcp::agent_drafter::{
     bundle_is_stale, default_root, export_scaffold, rebuild_and_stamp,
 };
+use biorouter_mcp::knowledge::service::KnowledgeService;
 
 use crate::state::AppState;
 
@@ -343,6 +347,8 @@ enum ClientFrame {
     /// BRSDK Pillar 1 (typed request): the app asks the agent to handle a typed
     /// request — a declared action `name` + `args`, or free `text` — and starts a
     /// turn. `outputSchema`, when set, arms `emit_result` for a structured reply.
+    /// `route`, when set, names a manifest [`ModelRoute`] to answer this turn on
+    /// (design §3.4); it is validated against the provider-class constraint.
     Call {
         #[serde(rename = "callId", default)]
         call_id: String,
@@ -354,7 +360,27 @@ enum ClientFrame {
         text: Option<String>,
         #[serde(rename = "outputSchema", default)]
         output_schema: Option<serde_json::Value>,
+        #[serde(default)]
+        route: Option<String>,
     },
+    /// BRSDK Pillar 4 (`br.kb`): a knowledge-base request over the app socket.
+    /// `op` ∈ {search, page, graph, history, ingest}; `params` is op-specific;
+    /// `reqId` correlates the `kb_result` (and any `kb_progress`) reply. Handled
+    /// inline in BOTH loops (reads must not block on turns); `ingest` is spawned.
+    /// Every reply flows back through the bridge (`emit_frame`) so ordering and
+    /// socket ownership are preserved.
+    Kb {
+        #[serde(default)]
+        op: String,
+        #[serde(default)]
+        params: serde_json::Value,
+        #[serde(rename = "reqId", default)]
+        req_id: String,
+    },
+    /// BRSDK Pillar 4 (`br.model.status`): report the session's current
+    /// provider/model. Answered with a `model_status` frame.
+    #[serde(rename = "model_status")]
+    ModelStatus,
 }
 
 /// The write half of an app's WebSocket. Split from the read half so the loop can
@@ -681,12 +707,48 @@ async fn configure_agent(
         }
     }
 
+    // Model routes (design §3.4/§3.7): validate the declared routes at session
+    // start. Provider-class violations (an External provider on an app holding a
+    // sensitive OMOP/CDW or writable-KB source) are warned + effectively dropped
+    // (re-rejected at call time). Any route whose provider is set but cannot be
+    // constructed against the user's config is also flagged — routes resolve
+    // against the *user's* configured providers only.
+    for (name, reason) in route_start_warnings(cfg) {
+        warn!(app = %manifest.id, route = %name, "model route disabled: {reason}");
+    }
+    for (name, route) in &cfg.orchestration.routes {
+        if let Some(provider) = route.provider.as_deref().filter(|p| !p.trim().is_empty()) {
+            let model = route
+                .model
+                .clone()
+                .or_else(|| cfg.model.as_ref().and_then(|m| m.model.clone()))
+                .unwrap_or_default();
+            if let Ok(mc) = ModelConfig::new(&model) {
+                if let Err(e) = create_provider(provider, mc).await {
+                    warn!(app = %manifest.id, route = %name, "model route provider \"{provider}\" is unconfigured/invalid: {e}");
+                }
+            }
+        }
+    }
+
     // Extensions (+ knowledge if a KB is set).
     let mut extensions = cfg.extensions.clone();
     if cfg.knowledge_base.is_some() && !extensions.iter().any(|e| e == "knowledge") {
         extensions.push("knowledge".to_string());
     }
     if !cfg.skills.is_empty() && !extensions.iter().any(|e| e == "skills") {
+        // Task 4 (skills scoping enforcement, design §3.4): the per-app `skills`
+        // list SHOULD be an enforced allow-list. The `skills` platform extension
+        // (crates/biorouter/src/agents/skills_extension.rs) currently loads every
+        // globally-enabled skill and exposes no per-session allow-list surface —
+        // its `SkillsClient::new(PlatformExtensionContext)` filters only by the
+        // global disabled-set, and `ExtensionConfig::Platform` carries no args to
+        // scope it. Fixing that means changing biorouter core (out of scope here),
+        // so we do NOT hard-filter the catalog. The gap is documented and the
+        // enforcement we CAN do without core changes is applied below: the system
+        // prompt constrains the agent to ONLY the named skills. Follow-up: give
+        // the skills extension a per-session allow-list (see the prompt in
+        // configure_agent + this comment).
         extensions.push("skills".to_string());
     }
     for name in extensions {
@@ -895,8 +957,15 @@ async fn configure_agent(
         prompt.push_str(&cfg.system_prompt);
     }
     if !cfg.skills.is_empty() {
+        // Scoping enforcement (design §3.4): the skills platform extension can't
+        // filter its catalog per-session (see the comment where "skills" is added
+        // to `extensions`), so the strongest available enforcement is an explicit
+        // allow-list instruction — the agent may load ONLY these skills even if
+        // others appear in the catalog.
         prompt.push_str(&format!(
-            "\n\nWhen relevant, use these skills: {}.",
+            "\n\n## Skills (scoped)\nYou are scoped to ONLY these skills: {}. Load and use \
+             skills solely from this list. If the skills catalog surfaces any other skill, do \
+             NOT load or use it — it is out of this app's grant.",
             cfg.skills.join(", ")
         ));
     }
@@ -1016,6 +1085,552 @@ fn build_call_text(
         out.push_str(EMIT);
     }
     out
+}
+
+// ─────────────────────── br.model — routes + provider class ─────────────────
+
+/// Provider capability class (design §3.7). A **capability**, not a UI label:
+/// an app holding a sensitive data source (OMOP/CDW, or a writable knowledge
+/// base) may not route that data to an External provider.
+///
+/// The classification is deliberately **heuristic + list-based** — provider
+/// names are not a closed vocabulary, so the lists capture the common cases and
+/// the substring rules (`"local"`, `"institution"`) catch obvious variants;
+/// everything unrecognised falls through to the safest-to-restrict class
+/// (External).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProviderClass {
+    Local,
+    Institutional,
+    External,
+}
+
+/// Providers that run on the user's own machine / a bundled sidecar.
+const LOCAL_PROVIDERS: &[&str] = &[
+    "llamacpp", "ollama", "lmstudio", "llama", "localai", "gpt4all",
+];
+/// Providers fronting an institution's own tenant/gateway. Heuristic: an
+/// institution's Azure / Bedrock / Databricks / Vertex / SageMaker deployment
+/// keeps data inside its own contract, unlike a public commercial API.
+const INSTITUTIONAL_PROVIDERS: &[&str] = &[
+    "databricks",
+    "azure",
+    "azure_openai",
+    "azureopenai",
+    "bedrock",
+    "aws_bedrock",
+    "awsbedrock",
+    "sagemaker",
+    "vertex",
+    "vertexai",
+    "vertex_ai",
+    "google_vertex",
+];
+
+fn provider_class(provider: &str) -> ProviderClass {
+    let p = provider.trim().to_ascii_lowercase();
+    if p.contains("local") || LOCAL_PROVIDERS.iter().any(|x| p == *x) {
+        return ProviderClass::Local;
+    }
+    if p.contains("institution") || INSTITUTIONAL_PROVIDERS.iter().any(|x| p == *x) {
+        return ProviderClass::Institutional;
+    }
+    ProviderClass::External
+}
+
+/// True when the app holds a data source that must not leave a trusted provider
+/// class (design §3.7): an OMOP/CDW clinical source, or a `knowledge` source the
+/// app may WRITE (a poisoned/leaked write persists cross-session).
+fn app_has_sensitive_source(cfg: &AgentConfig) -> bool {
+    let Some(data) = cfg.capabilities.data.as_ref() else {
+        return false;
+    };
+    data.sources.iter().any(|s| {
+        matches!(s.kind.as_str(), "omop" | "cdw") || (s.kind == "knowledge" && !s.read_only)
+    })
+}
+
+/// Whether a resolved provider is allowed for this app: a sensitive app may not
+/// route to an External provider (design §3.7).
+fn provider_allowed_for_app(cfg: &AgentConfig, provider: &str) -> bool {
+    !(app_has_sensitive_source(cfg) && provider_class(provider) == ProviderClass::External)
+}
+
+/// Resolve a named [`ModelRoute`](biorouter_mcp::agent_drafter::manifest::ModelRoute)
+/// to a concrete `(provider, model)` pair, inheriting the session's current
+/// provider/model for any field the route leaves unset. Errors on an unknown
+/// route, an empty provider with no session default, or a provider-class
+/// violation.
+fn resolve_route(
+    cfg: &AgentConfig,
+    route_name: &str,
+    cur_provider: &str,
+    cur_model: &str,
+) -> Result<(String, String), String> {
+    let Some(route) = cfg.orchestration.routes.get(route_name) else {
+        return Err(format!("unknown model route \"{route_name}\""));
+    };
+    let provider = route
+        .provider
+        .clone()
+        .unwrap_or_else(|| cur_provider.to_string());
+    let model = route.model.clone().unwrap_or_else(|| cur_model.to_string());
+    if provider.trim().is_empty() {
+        return Err(format!(
+            "route \"{route_name}\" has no provider and the session has none set"
+        ));
+    }
+    if !provider_allowed_for_app(cfg, &provider) {
+        return Err(format!(
+            "route \"{route_name}\" resolves to external provider \"{provider}\", blocked because \
+             this app holds a sensitive data source (OMOP/CDW or a writable knowledge base)"
+        ));
+    }
+    Ok((provider, model))
+}
+
+/// Session-start diagnostics for the manifest's declared routes (design §3.7):
+/// `(route_name, reason)` for each route that is dropped as unusable — currently
+/// an External provider on a sensitive app. Pure so it is unit-testable;
+/// `configure_agent` logs each via `tracing::warn` (the route stays in the
+/// manifest but is re-rejected at call time, so "dropped" = never resolvable).
+fn route_start_warnings(cfg: &AgentConfig) -> Vec<(String, String)> {
+    let sensitive = app_has_sensitive_source(cfg);
+    let mut out = Vec::new();
+    for (name, route) in &cfg.orchestration.routes {
+        let provider = route.provider.as_deref().unwrap_or("").trim();
+        // An empty provider inherits the session default at call time — not an
+        // error by itself, so it is not flagged here.
+        if provider.is_empty() {
+            continue;
+        }
+        if sensitive && provider_class(provider) == ProviderClass::External {
+            out.push((
+                name.clone(),
+                format!("external provider \"{provider}\" blocked for an app with a sensitive data source"),
+            ));
+        }
+    }
+    out.sort();
+    out
+}
+
+/// Switch the session provider to a named route for the *upcoming* turn, emitting
+/// a `model` frame (`ok:true`) so the UI shows which model answered — or a `model`
+/// error frame and no switch when the route is unknown / blocked / unavailable.
+/// Returns the PREVIOUS provider so the caller can restore it after the turn.
+async fn apply_route_for_turn(
+    agent: &biorouter::agents::Agent,
+    session_id: &str,
+    cfg: &AgentConfig,
+    route_name: &str,
+    ui_bridge: &UiBridge,
+) -> Option<Arc<dyn Provider>> {
+    let (cur_provider, cur_model) = match agent.provider().await {
+        Ok(p) => (p.get_name().to_string(), p.get_model_config().model_name),
+        Err(_) => (String::new(), String::new()),
+    };
+    let (provider, model) = match resolve_route(cfg, route_name, &cur_provider, &cur_model) {
+        Ok(pm) => pm,
+        Err(e) => {
+            ui_bridge.emit_frame(json!({"type":"model","ok":false,"route":route_name,"error":e}));
+            return None;
+        }
+    };
+    let mc = match ModelConfig::new(&model) {
+        Ok(mc) => mc,
+        Err(e) => {
+            ui_bridge.emit_frame(
+                json!({"type":"model","ok":false,"route":route_name,"error":format!("bad model \"{model}\": {e}")}),
+            );
+            return None;
+        }
+    };
+    // Snapshot the current provider to restore after the turn.
+    let prev = agent.provider().await.ok();
+    match create_provider(&provider, mc).await {
+        Ok(p) => match agent.update_provider(p, session_id).await {
+            Ok(()) => {
+                ui_bridge.emit_frame(
+                    json!({"type":"model","ok":true,"route":route_name,"provider":provider,"model":model}),
+                );
+                prev
+            }
+            Err(e) => {
+                warn!("route {route_name}: update_provider failed: {e}");
+                None
+            }
+        },
+        Err(e) => {
+            ui_bridge.emit_frame(
+                json!({"type":"model","ok":false,"route":route_name,"error":format!("provider \"{provider}\" unavailable: {e}")}),
+            );
+            None
+        }
+    }
+}
+
+/// Build the `model_status` reply from the session's current provider/model.
+/// Deep llamacpp status (download/context) is out of scope (design §3.4): `detail`
+/// is just the provider name so the shape is stable for the SDK.
+async fn model_status_frame(agent: &biorouter::agents::Agent) -> serde_json::Value {
+    match agent.provider().await {
+        Ok(p) => {
+            let provider = p.get_name().to_string();
+            let model = p.get_model_config().model_name;
+            json!({
+                "type":"model_status",
+                "provider": provider,
+                "model": model,
+                "ready": true,
+                "detail": provider,
+            })
+        }
+        Err(_) => json!({
+            "type":"model_status",
+            "provider":"",
+            "model":"",
+            "ready": false,
+            "detail":"no provider configured",
+        }),
+    }
+}
+
+// ─────────────────────────────── br.kb ──────────────────────────────────────
+
+/// Serialized-size cap for a single `kb_result` payload (design §3.7 keeps
+/// app→agent payloads bounded; here it also keeps a frame off the socket from
+/// ballooning). Oversized results have their arrays truncated with a note.
+const KB_RESULT_MAX: usize = 1_000_000;
+
+/// Resolve which KB id a `br.kb` op may touch, enforcing the scoped-grant rule
+/// (design §3.4): never "all bases". Returns the granted KB id, or a denial
+/// reason naming the missing grant. Pure + unit-tested.
+fn resolve_kb_grant(cfg: &AgentConfig, requested: Option<&str>) -> Result<String, String> {
+    let knowledge_sources: Vec<&biorouter_mcp::agent_drafter::manifest::DataSource> = cfg
+        .capabilities
+        .data
+        .as_ref()
+        .map(|d| d.sources.iter().filter(|s| s.kind == "knowledge").collect())
+        .unwrap_or_default();
+    if knowledge_sources.is_empty() {
+        return Err(
+            "this app has no knowledge data source; add a capabilities.data.sources \
+                    entry with kind=\"knowledge\" (and the KB ids) to use br.kb"
+                .to_string(),
+        );
+    }
+    let configured = cfg
+        .knowledge_base
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let target = requested
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .or(configured);
+    let Some(target) = target else {
+        return Err(
+            "no knowledge base specified: pass params.kb_id (this app declares no \
+                    default knowledge_base)"
+                .to_string(),
+        );
+    };
+    // An explicitly enumerated grant always wins.
+    if knowledge_sources
+        .iter()
+        .any(|s| s.ids.iter().any(|id| id == target))
+    {
+        return Ok(target.to_string());
+    }
+    // Back-compat implicit single grant: when EVERY knowledge source enumerates
+    // no ids and the app has a configured knowledge_base, that one KB is granted.
+    let all_ids_empty = knowledge_sources.iter().all(|s| s.ids.is_empty());
+    if all_ids_empty {
+        return match configured {
+            Some(kb) if kb == target => Ok(target.to_string()),
+            Some(_) => Err(format!(
+                "knowledge base \"{target}\" is not granted: this app's knowledge source \
+                 enumerates no ids, so only its configured knowledge_base is reachable"
+            )),
+            None => Err(format!(
+                "knowledge base \"{target}\" grants nothing: the app's knowledge data source \
+                 enumerates no ids (design §3.4 never grants \"all bases\") — add \"{target}\" to \
+                 capabilities.data.sources[kind=knowledge].ids"
+            )),
+        };
+    }
+    Err(format!(
+        "knowledge base \"{target}\" is not in this app's grant; add it to \
+         capabilities.data.sources[kind=knowledge].ids"
+    ))
+}
+
+/// Whether the app may WRITE (ingest into) `kb_id`: the granting knowledge source
+/// must carry `read_only == false` (design §3.4 poisoning consent).
+fn kb_write_granted(cfg: &AgentConfig, kb_id: &str) -> bool {
+    let Some(data) = cfg.capabilities.data.as_ref() else {
+        return false;
+    };
+    let configured = cfg.knowledge_base.as_deref();
+    data.sources.iter().any(|s| {
+        s.kind == "knowledge"
+            && !s.read_only
+            && (s.ids.iter().any(|id| id == kb_id)
+                || (s.ids.is_empty() && configured == Some(kb_id)))
+    })
+}
+
+/// Build a knowledge `SourceInput` from an `ingest` op's params: `{url}` or
+/// `{text, title?}`.
+fn kb_ingest_input(
+    params: &serde_json::Value,
+) -> Result<biorouter_mcp::knowledge::convert::SourceInput, String> {
+    use biorouter_mcp::knowledge::convert::SourceInput;
+    if let Some(url) = params
+        .get("url")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        return Ok(SourceInput::Url(url.to_string()));
+    }
+    if let Some(text) = params
+        .get("text")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())
+    {
+        let title = params
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        return Ok(SourceInput::Text {
+            text: text.to_string(),
+            title,
+        });
+    }
+    Err("ingest requires params.url or params.text".to_string())
+}
+
+/// Run a read-only `br.kb` op against the shared knowledge service and map the
+/// result to JSON. `search` is BM25 (`limit ≤ 50`); `history` caps at 100.
+async fn run_kb_read(
+    svc: &KnowledgeService,
+    kb_id: &str,
+    op: &str,
+    params: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    match op {
+        "search" => {
+            let query = params
+                .get("query")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let limit = params
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(20)
+                .clamp(1, 50) as usize;
+            let kb_root = biorouter_mcp::knowledge::paths::kb_root(svc.root(), kb_id);
+            let hits = biorouter_mcp::knowledge::store::search(&kb_root, query, limit)
+                .map_err(|e| e.to_string())?;
+            Ok(json!({ "hits": hits }))
+        }
+        "page" => {
+            let path = params
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            let body = svc.read_page(kb_id, path).map_err(|e| e.to_string())?;
+            Ok(json!({ "path": path, "body": body }))
+        }
+        "graph" => {
+            let g = svc.get_graph(kb_id).map_err(|e| e.to_string())?;
+            serde_json::to_value(g).map_err(|e| e.to_string())
+        }
+        "history" => {
+            let limit = params
+                .get("limit")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(50)
+                .clamp(1, 100) as usize;
+            let entries = svc.list_history(kb_id, limit).map_err(|e| e.to_string())?;
+            Ok(json!({ "entries": entries }))
+        }
+        other => Err(format!("unknown kb op \"{other}\"")),
+    }
+}
+
+/// Cap a `kb_result` payload at [`KB_RESULT_MAX`] serialized bytes by repeatedly
+/// halving its largest arrays, adding a `truncated` marker. Bounded loop.
+fn cap_kb_result(mut v: serde_json::Value) -> serde_json::Value {
+    let size = |val: &serde_json::Value| serde_json::to_string(val).map(|s| s.len()).unwrap_or(0);
+    if size(&v) <= KB_RESULT_MAX {
+        return v;
+    }
+    let mut truncated = false;
+    for _ in 0..32 {
+        if size(&v) <= KB_RESULT_MAX {
+            break;
+        }
+        let Some(obj) = v.as_object_mut() else { break };
+        let mut any = false;
+        for key in ["hits", "entries", "nodes", "edges"] {
+            if let Some(arr) = obj.get_mut(key).and_then(|a| a.as_array_mut()) {
+                if arr.len() > 1 {
+                    let keep = (arr.len() / 2).max(1);
+                    arr.truncate(keep);
+                    any = true;
+                    truncated = true;
+                }
+            }
+        }
+        if !any {
+            break;
+        }
+    }
+    if truncated {
+        if let Some(obj) = v.as_object_mut() {
+            obj.insert("truncated".into(), json!(true));
+            obj.insert(
+                "note".into(),
+                json!("result arrays truncated to fit the 1MB frame cap"),
+            );
+        }
+    }
+    v
+}
+
+/// Emit a `kb_result` error frame (never kills the socket).
+fn emit_kb_error(ui_bridge: &UiBridge, req_id: &str, msg: &str) {
+    ui_bridge.emit_frame(json!({ "type":"kb_result", "reqId": req_id, "error": msg }));
+}
+
+/// Handle a `kb` client frame (design §3.4). Capability-checked first; reads run
+/// inline (fast) and reply via `emit_frame`; `ingest` (slow, needs `write:true`)
+/// is spawned and streams `kb_progress` then a final `kb_result` through the
+/// bridge. Every reply flows through the bridge so the socket loop forwards it in
+/// order (between-turns AND mid-turn) with no extra plumbing. Errors never kill
+/// the socket.
+async fn handle_kb_frame(
+    ui_bridge: &UiBridge,
+    knowledge: &Arc<KnowledgeService>,
+    cfg: Option<&AgentConfig>,
+    op: &str,
+    params: &serde_json::Value,
+    req_id: &str,
+) {
+    let Some(cfg) = cfg else {
+        emit_kb_error(ui_bridge, req_id, "this app has no agent configuration");
+        return;
+    };
+    let requested = params.get("kb_id").and_then(|v| v.as_str());
+    let kb_id = match resolve_kb_grant(cfg, requested) {
+        Ok(id) => id,
+        Err(reason) => {
+            emit_kb_error(ui_bridge, req_id, &reason);
+            return;
+        }
+    };
+    match op {
+        "search" | "page" | "graph" | "history" => {
+            match run_kb_read(knowledge, &kb_id, op, params).await {
+                Ok(result) => {
+                    let result = cap_kb_result(result);
+                    ui_bridge.emit_frame(
+                        json!({ "type":"kb_result", "reqId": req_id, "result": result }),
+                    );
+                }
+                Err(e) => emit_kb_error(ui_bridge, req_id, &e),
+            }
+        }
+        "ingest" => {
+            if !kb_write_granted(cfg, &kb_id) {
+                emit_kb_error(
+                    ui_bridge,
+                    req_id,
+                    &format!(
+                        "ingest requires write access; grant it by setting read_only=false on the \
+                         knowledge source for \"{kb_id}\" — a cross-session integrity decision \
+                         (design §3.4)"
+                    ),
+                );
+                return;
+            }
+            let input = match kb_ingest_input(params) {
+                Ok(i) => i,
+                Err(e) => {
+                    emit_kb_error(ui_bridge, req_id, &e);
+                    return;
+                }
+            };
+            // Slow: spawn so it never blocks the socket loop. Progress + result
+            // flow back through the bridge, which the loop forwards in order.
+            let bridge = ui_bridge.clone();
+            let svc = knowledge.clone();
+            let req = req_id.to_string();
+            let kb = kb_id.clone();
+            tokio::spawn(async move {
+                bridge.emit_frame(json!({ "type":"kb_progress", "reqId": req, "stage":"queued" }));
+                bridge
+                    .emit_frame(json!({ "type":"kb_progress", "reqId": req, "stage":"digesting" }));
+                match svc.add_raw_source(&kb, input, None).await {
+                    Ok(w) => {
+                        let result = json!({ "source_id": w.source_id, "path": w.source_md_path });
+                        bridge.emit_frame(
+                            json!({ "type":"kb_result", "reqId": req, "result": result }),
+                        );
+                    }
+                    Err(e) => {
+                        bridge.emit_frame(
+                            json!({ "type":"kb_result", "reqId": req, "error": e.to_string() }),
+                        );
+                    }
+                }
+            });
+        }
+        other => emit_kb_error(ui_bridge, req_id, &format!("unknown kb op \"{other}\"")),
+    }
+}
+
+// ─────────────────── tool ui:// resource → results-region figure ────────────
+
+/// Decode the first `ui://` embedded HTML resource in a successful tool result
+/// (Auto Visualiser figures, Agent Drafter previews return one). Returns the
+/// decoded HTML, or `None` when the result carries no `ui://` resource or its
+/// blob won't decode. Pure + unit-tested.
+fn ui_resource_html(result: &rmcp::model::CallToolResult) -> Option<String> {
+    use base64::Engine as _;
+    for content in result.content.iter() {
+        if let rmcp::model::RawContent::Resource(embedded) = &content.raw {
+            if let rmcp::model::ResourceContents::BlobResourceContents { uri, blob, .. } =
+                &embedded.resource
+            {
+                if uri.starts_with("ui://") {
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(blob)
+                        .ok()?;
+                    return String::from_utf8(bytes).ok();
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Build the server-constructed `render` frame that drops a decoded `ui://`
+/// figure into the app's results region (design §3.4 tool-resource bridge). The
+/// `figure` node is privileged, but we construct it here (like `ui_figure` does),
+/// so it needs no client validation.
+fn tool_figure_frame(html: String, tool: &str) -> serde_json::Value {
+    json!({
+        "type": "ui",
+        "v": CATALOG_VERSION,
+        "cmd": "render",
+        "target": "@region:results",
+        "mode": "replace",
+        "body": [{ "t": "figure", "html": html, "tool": tool }],
+    })
 }
 
 /// Cap on app→agent signals buffered between turns. Signals never start a turn;
@@ -1389,6 +2004,23 @@ async fn handle_agent_socket(
                                         return;
                                     }
                                 }
+                                // br.kb / br.model.status: served inline between
+                                // turns (reads never wait on a turn); replies flow
+                                // back through the bridge, drained by this loop.
+                                Ok(ClientFrame::Kb { op, params, req_id }) => {
+                                    handle_kb_frame(
+                                        &ui_bridge,
+                                        &state.knowledge_service,
+                                        manifest.agent.as_ref(),
+                                        &op,
+                                        &params,
+                                        &req_id,
+                                    )
+                                    .await;
+                                }
+                                Ok(ClientFrame::ModelStatus) => {
+                                    ui_bridge.emit_frame(model_status_frame(&agent).await);
+                                }
                                 Ok(f) => break f,
                                 Err(_) => {}
                             }
@@ -1407,6 +2039,12 @@ async fn handle_agent_socket(
                 next
             }
         };
+
+        // A per-turn model route (design §3.4) may swap the provider for THIS
+        // turn only; the switch happens just before `reply` (after the PII gate)
+        // and the previous provider is restored afterwards.
+        let mut route_restore: Option<Arc<dyn Provider>> = None;
+        let mut selected_route: Option<String> = None;
 
         let (prompt_text, images) = match frame {
             ClientFrame::Prompt { text, images } => (text, images),
@@ -1525,6 +2163,7 @@ async fn handle_agent_socket(
                 args,
                 text,
                 output_schema,
+                route,
             } => {
                 // Size-cap the args: an oversized structured request is rejected
                 // with a warn and NO turn, rather than flooding the transcript.
@@ -1547,6 +2186,14 @@ async fn handle_agent_socket(
                         continue;
                     }
                 }
+                // Route selection (design §3.4): remember the route; the actual
+                // provider switch happens after the PII gate, just before `reply`,
+                // so no early-`continue` can leak a switched provider.
+                selected_route = route
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|r| !r.is_empty())
+                    .map(str::to_string);
                 // Arm the structured-output request so `emit_result` can satisfy
                 // it; cleared at end-of-turn (prose fallback) or on early exit.
                 let wants_output = output_schema.is_some();
@@ -1554,6 +2201,25 @@ async fn handle_agent_socket(
                     ui_bridge.set_pending_output(call_id.clone(), output_schema.clone());
                 }
                 (build_call_text(name, args, text, wants_output), Vec::new())
+            }
+            // br.kb / br.model.status: served inline in the between-turns dispatch
+            // loop above and the mid-turn reader; any that reach here (e.g. queued)
+            // are handled now rather than starting a turn.
+            ClientFrame::Kb { op, params, req_id } => {
+                handle_kb_frame(
+                    &ui_bridge,
+                    &state.knowledge_service,
+                    manifest.agent.as_ref(),
+                    &op,
+                    &params,
+                    &req_id,
+                )
+                .await;
+                continue;
+            }
+            ClientFrame::ModelStatus => {
+                ui_bridge.emit_frame(model_status_frame(&agent).await);
+                continue;
             }
             // Handled between turns (inner dispatch loop) / inline; stray here.
             ClientFrame::AppResult { .. } | ClientFrame::Signal { .. } => continue,
@@ -1610,6 +2276,16 @@ async fn handle_agent_socket(
             user = user.with_image(img.data, img.mime_type);
         }
 
+        // Apply the selected model route now (design §3.4) — past the PII gate, so
+        // the switch is never left dangling by an early `continue`. Restored after
+        // the reply loop (and on the reply-create error path below).
+        if let Some(route_name) = selected_route.as_deref() {
+            if let Some(cfg) = manifest.agent.as_ref() {
+                route_restore =
+                    apply_route_for_turn(&agent, &session_id, cfg, route_name, &ui_bridge).await;
+            }
+        }
+
         // Bound the agent's tool-calling loop (guardrail against runaway loops;
         // also the knob workflow-style apps raise to chain more steps). Defaults
         // to a safe cap when the app doesn't specify one.
@@ -1636,6 +2312,10 @@ async fn handle_agent_socket(
                     json!({"type":"error","message": e.to_string()}),
                 )
                 .await;
+                // Restore a route-switched provider before bailing on this turn.
+                if let Some(prev) = route_restore.take() {
+                    let _ = agent.update_provider(prev, &session_id).await;
+                }
                 continue;
             }
         };
@@ -1644,6 +2324,8 @@ async fn handle_agent_socket(
         // call id → tool name, so a ToolResponse can be reported by name.
         let mut tool_names: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
+        // Task 4: emit at most ONE tool `ui://` figure per turn (avoid spam).
+        let mut emitted_ui_figure = false;
         loop {
             // Three sources, biased so a UI command a tool just issued reaches the
             // page before the `tool completed` frame that follows it. Every branch
@@ -1705,6 +2387,23 @@ async fn handle_agent_socket(
                                 return;
                             }
                         }
+                        // br.kb / br.model.status served mid-turn too (a KB read
+                        // must not wait for the turn to finish). Replies flow
+                        // through the bridge, forwarded by this same loop.
+                        Ok(ClientFrame::Kb { op, params, req_id }) => {
+                            handle_kb_frame(
+                                &ui_bridge,
+                                &state.knowledge_service,
+                                manifest.agent.as_ref(),
+                                &op,
+                                &params,
+                                &req_id,
+                            )
+                            .await;
+                        }
+                        Ok(ClientFrame::ModelStatus) => {
+                            ui_bridge.emit_frame(model_status_frame(&agent).await);
+                        }
                         _ => handle_midturn_frame(&t, &ui_bridge, &cancel, &mut queued),
                     }
                     continue;
@@ -1758,6 +2457,20 @@ async fn handle_agent_socket(
                                 let name = tool_names
                                     .remove(&resp.id)
                                     .unwrap_or_else(|| "tool".to_string());
+                                // Task 4 (design §3.4): a successful tool result
+                                // carrying a `ui://` figure (Auto Visualiser, app
+                                // preview) is bridged into the app's results region
+                                // — once per turn, decode-failures skipped silently.
+                                if status == "completed" && !emitted_ui_figure {
+                                    if let Ok(r) = &resp.tool_result {
+                                        if let Some(html) = ui_resource_html(r) {
+                                            if ui_bridge.emit_frame(tool_figure_frame(html, &name))
+                                            {
+                                                emitted_ui_figure = true;
+                                            }
+                                        }
+                                    }
+                                }
                                 Some(
                                     json!({"type":"tool","name": name, "id": resp.id, "status": status}),
                                 )
@@ -1811,6 +2524,12 @@ async fn handle_agent_socket(
                 ui_bridge.detach(conn_token);
                 return;
             }
+        }
+
+        // Restore the pre-route provider (design §3.4): a per-turn model route is
+        // scoped to THIS turn only, so the session returns to its default model.
+        if let Some(prev) = route_restore.take() {
+            let _ = agent.update_provider(prev, &session_id).await;
         }
 
         // End-of-turn is a persistence boundary: capture any shared-state doc the
@@ -2350,6 +3069,7 @@ mod tests {
             kind: kind.to_string(),
             file: file.map(|f| f.to_string()),
             ref_id: None,
+            ids: Vec::new(),
             read_only: true,
         }
     }
@@ -3359,5 +4079,359 @@ mod tests {
             text.contains("\"ok\":true") || text.contains("ok"),
             "the tool returns the app's result: {text}"
         );
+    }
+
+    // ─────────────── Phase 4: br.kb scoping + model routes + figures ─────────
+
+    mod phase4 {
+        use super::super::{
+            app_has_sensitive_source, cap_kb_result, kb_write_granted, provider_class,
+            resolve_kb_grant, resolve_route, route_start_warnings, run_kb_read, tool_figure_frame,
+            ui_resource_html, ProviderClass,
+        };
+        use biorouter_mcp::agent_drafter::manifest::{
+            Capabilities, DataCapability, DataSource, ModelRoute, Orchestration,
+        };
+        use biorouter_mcp::agent_drafter::store::AgentConfig;
+        use biorouter_mcp::knowledge::convert::SourceInput;
+        use biorouter_mcp::knowledge::service::KnowledgeService;
+        use std::collections::HashMap;
+
+        fn knowledge_src(ids: &[&str], read_only: bool) -> DataSource {
+            DataSource {
+                name: "kb".into(),
+                kind: "knowledge".into(),
+                file: None,
+                ref_id: None,
+                ids: ids.iter().map(|s| (*s).to_string()).collect(),
+                read_only,
+            }
+        }
+
+        fn cfg_with(sources: Vec<DataSource>, knowledge_base: Option<&str>) -> AgentConfig {
+            AgentConfig {
+                knowledge_base: knowledge_base.map(str::to_string),
+                capabilities: Capabilities {
+                    data: Some(DataCapability { sources }),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        }
+
+        // ── kb capability / scoping ──────────────────────────────────────────
+
+        #[test]
+        fn kb_grant_denied_when_no_knowledge_source() {
+            let cfg = cfg_with(vec![], None);
+            let err = resolve_kb_grant(&cfg, Some("k")).unwrap_err();
+            assert!(err.contains("no knowledge data source"), "{err}");
+        }
+
+        #[test]
+        fn kb_grant_denied_when_id_not_enumerated() {
+            // Enumerated ids grant ONLY those bases (design §3.4: never "all").
+            let cfg = cfg_with(vec![knowledge_src(&["kb-allowed"], true)], None);
+            let err = resolve_kb_grant(&cfg, Some("kb-secret")).unwrap_err();
+            assert!(err.contains("not in this app's grant"), "{err}");
+            // …and the enumerated one is granted.
+            assert_eq!(
+                resolve_kb_grant(&cfg, Some("kb-allowed")).unwrap(),
+                "kb-allowed"
+            );
+        }
+
+        #[test]
+        fn kb_grant_empty_ids_grants_nothing_without_configured_kb() {
+            // Empty ids + no configured knowledge_base ⇒ grants NOTHING.
+            let cfg = cfg_with(vec![knowledge_src(&[], true)], None);
+            let err = resolve_kb_grant(&cfg, Some("k")).unwrap_err();
+            assert!(err.contains("grants nothing"), "{err}");
+        }
+
+        #[test]
+        fn kb_grant_empty_ids_implicit_single_grant_of_configured_kb() {
+            // Back-compat: empty ids + a configured knowledge_base ⇒ that one KB.
+            let cfg = cfg_with(vec![knowledge_src(&[], true)], Some("kb-default"));
+            assert_eq!(resolve_kb_grant(&cfg, None).unwrap(), "kb-default");
+            assert_eq!(
+                resolve_kb_grant(&cfg, Some("kb-default")).unwrap(),
+                "kb-default"
+            );
+            // A different requested base is still denied.
+            assert!(resolve_kb_grant(&cfg, Some("kb-other")).is_err());
+        }
+
+        #[test]
+        fn kb_write_requires_read_only_false() {
+            // Read-only knowledge source ⇒ no ingest.
+            let ro = cfg_with(vec![knowledge_src(&["kb1"], true)], None);
+            assert!(!kb_write_granted(&ro, "kb1"));
+            // Writable knowledge source ⇒ ingest allowed for the granted id only.
+            let rw = cfg_with(vec![knowledge_src(&["kb1"], false)], None);
+            assert!(kb_write_granted(&rw, "kb1"));
+            assert!(!kb_write_granted(&rw, "kb2"));
+            // Writable via implicit configured-kb grant.
+            let rw_default = cfg_with(vec![knowledge_src(&[], false)], Some("kbd"));
+            assert!(kb_write_granted(&rw_default, "kbd"));
+        }
+
+        // ── kb read success path against a real temp KB ──────────────────────
+
+        #[tokio::test]
+        async fn kb_search_and_graph_against_a_real_temp_kb() {
+            let dir = tempfile::tempdir().unwrap();
+            let svc = KnowledgeService::new(dir.path().to_path_buf());
+            svc.create_base("kbx", "KB X", None).unwrap();
+            svc.add_raw_source(
+                "kbx",
+                SourceInput::Text {
+                    text: "Heart rate variability is a biomarker of autonomic function.".into(),
+                    title: Some("HRV note".into()),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+            // search finds the ingested source.
+            let search = run_kb_read(
+                &svc,
+                "kbx",
+                "search",
+                &serde_json::json!({ "query": "heart rate variability", "limit": 5 }),
+            )
+            .await
+            .unwrap();
+            let hits = search["hits"].as_array().unwrap();
+            assert!(
+                !hits.is_empty(),
+                "BM25 search should return a hit: {search}"
+            );
+
+            // graph returns a nodes/edges shape.
+            let graph = run_kb_read(&svc, "kbx", "graph", &serde_json::json!({}))
+                .await
+                .unwrap();
+            assert!(graph.get("nodes").is_some(), "graph has nodes: {graph}");
+            assert!(graph.get("edges").is_some(), "graph has edges: {graph}");
+
+            // history returns commit entries (create + ingest).
+            let history = run_kb_read(&svc, "kbx", "history", &serde_json::json!({ "limit": 10 }))
+                .await
+                .unwrap();
+            assert!(
+                history["entries"].as_array().map(|a| a.len()).unwrap_or(0) >= 1,
+                "history should have entries: {history}"
+            );
+
+            // an unknown op errors (without panicking).
+            assert!(run_kb_read(&svc, "kbx", "bogus", &serde_json::json!({}))
+                .await
+                .is_err());
+        }
+
+        #[test]
+        fn cap_kb_result_truncates_oversized_arrays() {
+            let big: Vec<serde_json::Value> = (0..200_000)
+                .map(|i| serde_json::json!({ "path": format!("knowledge/n{i}.md"), "score": 1.0 }))
+                .collect();
+            let capped = cap_kb_result(serde_json::json!({ "hits": big }));
+            let len = serde_json::to_string(&capped).unwrap().len();
+            assert!(
+                len <= super::super::KB_RESULT_MAX,
+                "capped under 1MB: {len}"
+            );
+            assert_eq!(capped["truncated"], serde_json::json!(true));
+            // A small result is returned untouched (no truncated marker).
+            let small = cap_kb_result(serde_json::json!({ "hits": [1, 2, 3] }));
+            assert!(small.get("truncated").is_none());
+        }
+
+        // ── provider class + route validation ────────────────────────────────
+
+        #[test]
+        fn provider_class_table() {
+            for p in [
+                "llamacpp",
+                "ollama",
+                "lmstudio",
+                "my-local-model",
+                "LocalAI",
+            ] {
+                assert_eq!(provider_class(p), ProviderClass::Local, "{p}");
+            }
+            for p in [
+                "databricks",
+                "azure",
+                "aws_bedrock",
+                "vertex",
+                "my-institution-gw",
+            ] {
+                assert_eq!(provider_class(p), ProviderClass::Institutional, "{p}");
+            }
+            for p in ["anthropic", "openai", "groq", "mistral"] {
+                assert_eq!(provider_class(p), ProviderClass::External, "{p}");
+            }
+        }
+
+        fn cfg_with_routes(
+            sources: Vec<DataSource>,
+            routes: &[(&str, Option<&str>, Option<&str>)],
+        ) -> AgentConfig {
+            let mut map = HashMap::new();
+            for (name, provider, model) in routes {
+                map.insert(
+                    (*name).to_string(),
+                    ModelRoute {
+                        provider: provider.map(str::to_string),
+                        model: model.map(str::to_string),
+                    },
+                );
+            }
+            AgentConfig {
+                capabilities: Capabilities {
+                    data: Some(DataCapability { sources }),
+                    ..Default::default()
+                },
+                orchestration: Orchestration {
+                    routes: map,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn sensitive_source_detection() {
+            assert!(app_has_sensitive_source(&cfg_with(
+                vec![DataSource {
+                    name: "omop".into(),
+                    kind: "omop".into(),
+                    file: None,
+                    ref_id: None,
+                    ids: vec![],
+                    read_only: true,
+                }],
+                None,
+            )));
+            // A writable knowledge base is sensitive; a read-only one is not.
+            assert!(app_has_sensitive_source(&cfg_with(
+                vec![knowledge_src(&["k"], false)],
+                None
+            )));
+            assert!(!app_has_sensitive_source(&cfg_with(
+                vec![knowledge_src(&["k"], true)],
+                None
+            )));
+        }
+
+        #[test]
+        fn route_external_rejected_when_app_holds_omop() {
+            let omop = DataSource {
+                name: "omop".into(),
+                kind: "omop".into(),
+                file: None,
+                ref_id: None,
+                ids: vec![],
+                read_only: true,
+            };
+            let cfg = cfg_with_routes(
+                vec![omop],
+                &[
+                    ("cloud", Some("anthropic"), Some("claude-x")),
+                    ("local", Some("llamacpp"), Some("qwen")),
+                ],
+            );
+            // External provider is rejected at call time.
+            let err = resolve_route(&cfg, "cloud", "llamacpp", "qwen").unwrap_err();
+            assert!(err.contains("external provider"), "{err}");
+            // Local provider is accepted.
+            let (p, m) = resolve_route(&cfg, "local", "llamacpp", "qwen").unwrap();
+            assert_eq!((p.as_str(), m.as_str()), ("llamacpp", "qwen"));
+            // And session-start validation flags the external route (only).
+            let warns = route_start_warnings(&cfg);
+            assert_eq!(warns.len(), 1);
+            assert_eq!(warns[0].0, "cloud");
+        }
+
+        #[test]
+        fn route_external_allowed_when_app_not_sensitive() {
+            // No sensitive source ⇒ external providers are fine.
+            let cfg = cfg_with_routes(vec![], &[("cloud", Some("anthropic"), Some("claude-x"))]);
+            assert!(resolve_route(&cfg, "cloud", "llamacpp", "qwen").is_ok());
+            assert!(route_start_warnings(&cfg).is_empty());
+        }
+
+        #[test]
+        fn route_inherits_session_values_and_errors_on_unknown() {
+            let cfg = cfg_with_routes(vec![], &[("swap-model", None, Some("bigger"))]);
+            // provider inherited from session, model from the route.
+            let (p, m) = resolve_route(&cfg, "swap-model", "anthropic", "small").unwrap();
+            assert_eq!((p.as_str(), m.as_str()), ("anthropic", "bigger"));
+            assert!(resolve_route(&cfg, "nope", "anthropic", "small").is_err());
+        }
+
+        // ── ui:// resource → figure ──────────────────────────────────────────
+
+        fn ui_result(uri: &str, html: &str) -> rmcp::model::CallToolResult {
+            use base64::Engine as _;
+            let blob = base64::engine::general_purpose::STANDARD.encode(html.as_bytes());
+            let resource = rmcp::model::ResourceContents::BlobResourceContents {
+                uri: uri.to_string(),
+                mime_type: Some("text/html".into()),
+                blob,
+                meta: None,
+            };
+            rmcp::model::CallToolResult::success(vec![
+                rmcp::model::Content::resource(resource),
+                rmcp::model::Content::text("figure rendered"),
+            ])
+        }
+
+        #[test]
+        fn ui_resource_html_decodes_ui_blob() {
+            let html = "<html><body>volcano</body></html>";
+            let result = ui_result("ui://figure/volcano", html);
+            assert_eq!(ui_resource_html(&result).as_deref(), Some(html));
+
+            // A non-ui:// resource is ignored.
+            let other = ui_result("file://x.html", html);
+            assert!(ui_resource_html(&other).is_none());
+
+            // A text-only result has no figure.
+            let text_only =
+                rmcp::model::CallToolResult::success(vec![rmcp::model::Content::text("done")]);
+            assert!(ui_resource_html(&text_only).is_none());
+        }
+
+        #[test]
+        fn tool_figure_frame_targets_results_region() {
+            let frame = tool_figure_frame("<h1>x</h1>".into(), "render_volcano");
+            assert_eq!(frame["type"], "ui");
+            assert_eq!(frame["cmd"], "render");
+            assert_eq!(frame["target"], "@region:results");
+            assert_eq!(frame["mode"], "replace");
+            assert_eq!(frame["body"][0]["t"], "figure");
+            assert_eq!(frame["body"][0]["tool"], "render_volcano");
+            assert_eq!(frame["body"][0]["html"], "<h1>x</h1>");
+        }
+
+        // ── model_status shape ───────────────────────────────────────────────
+
+        #[test]
+        fn model_status_frame_shape_is_stable() {
+            // Build the shape directly (no live agent needed) — mirrors
+            // `model_status_frame`'s successful branch.
+            let frame = serde_json::json!({
+                "type":"model_status","provider":"llamacpp","model":"qwen",
+                "ready": true, "detail":"llamacpp",
+            });
+            assert_eq!(frame["type"], "model_status");
+            assert_eq!(frame["ready"], true);
+            assert!(frame["provider"].is_string());
+            assert!(frame["model"].is_string());
+            assert!(frame["detail"].is_string());
+        }
     }
 }

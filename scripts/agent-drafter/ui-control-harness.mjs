@@ -693,6 +693,12 @@ async function runSelftest() {
     const r = received.find((f) => f.type === "app_result" && f.callId === "ac3");
     check("a throwing handler yields an app_result error string", !!r && r.error === "kaboom", JSON.stringify(r));
   }
+  // The same throw ALSO rides the ui_error feedback loop (where:"action:<name>").
+  const gotActionErr = await waitFor(() => received.some((f) => f.type === "ui_error" && f.where === "action:boom"));
+  {
+    const ue = received.find((f) => f.type === "ui_error" && f.where === "action:boom");
+    check("a throwing action ALSO posts a ui_error {where:action:boom, message}", gotActionErr && !!ue && typeof ue.message === "string" && ue.message.length > 0, JSON.stringify(ue));
+  }
   emitUi({ cmd: "app_call", callId: "ac4", action: "big" });
   await waitFor(() => received.some((f) => f.type === "app_result" && f.callId === "ac4"));
   {
@@ -1030,6 +1036,173 @@ async function runSelftest() {
     netDump
   );
   check("graphToNetwork is defensive about a non-graph input (empty spec)", win.eval("(function(){var n=window.BioRouter.kb.graphToNetwork(null);return n.nodes.length===0&&n.edges.length===0;})()"));
+
+  // ── Scenario S: theme pack frame sets data-br-pack; unknown ignored ────────
+  emitUi({ cmd: "theme", pack: "clinical" });
+  await waitFor(() => doc.documentElement.getAttribute("data-br-pack") === "clinical");
+  check(
+    "theme pack sets data-br-pack on <html>",
+    doc.documentElement.getAttribute("data-br-pack") === "clinical",
+    doc.documentElement.getAttribute("data-br-pack")
+  );
+  {
+    const warnBefore = warnLog.length;
+    emitUi({ cmd: "theme", pack: "nonsense-pack" });
+    await delay(80);
+    check(
+      "an unknown theme pack is ignored (data-br-pack unchanged)",
+      doc.documentElement.getAttribute("data-br-pack") === "clinical",
+      doc.documentElement.getAttribute("data-br-pack")
+    );
+    check(
+      "an unknown theme pack is warned",
+      warnLog.slice(warnBefore).some((w) => /unknown theme pack/i.test(w)),
+      warnLog.slice(warnBefore).join(" | ")
+    );
+  }
+
+  // ── Scenario T: layout areas → grid; missing named area warns once ─────────
+  {
+    const warnBefore = warnLog.length;
+    emitUi({ cmd: "layout", areas: ["header header", "sidebar results"], sizes: ["200px", "1fr"] });
+    await waitFor(() => (doc.body.style.getPropertyValue("grid-template-areas") || "").indexOf("results") >= 0);
+    const areas = doc.body.style.getPropertyValue("grid-template-areas") || "";
+    check(
+      "layout areas builds grid-template-areas on the main container",
+      /"header header"/.test(areas) && /"sidebar results"/.test(areas),
+      areas
+    );
+    check("layout sets display:grid on the main container", doc.body.style.getPropertyValue("display") === "grid", doc.body.style.getPropertyValue("display"));
+    const cols = doc.body.style.getPropertyValue("grid-template-columns") || "";
+    check("layout sizes → grid-template-columns (defaults honored)", cols.indexOf("200px") >= 0 && cols.indexOf("1fr") >= 0, cols);
+    check(
+      "a named area with a matching [data-br-region] gets grid-area assigned",
+      (doc.querySelector('[data-br-region="results"]').style.getPropertyValue("grid-area") || "") === "results",
+      doc.querySelector('[data-br-region="results"]').style.getPropertyValue("grid-area")
+    );
+    check(
+      "a missing named area (header/sidebar) warns",
+      warnLog.slice(warnBefore).some((w) => /layout area has no matching element/i.test(w)),
+      warnLog.slice(warnBefore).join(" | ")
+    );
+  }
+
+  // ── Scenario U: presence chip appears on a panel frame; narrate is verbatim ─
+  emitUi({ cmd: "panel", id: "pres1", title: "Cohort", place: "@region:results", body: [{ t: "text", value: "hi" }] });
+  await waitFor(() => doc.querySelector("[data-br-panel='pres1']"));
+  {
+    const chip = doc.querySelector(".br-presence");
+    check("a panel frame flashes the presence chip", !!chip && chip.classList.contains("br-presence--on"), chip && chip.className);
+    const text = win.eval("window.BioRouter.ui.presenceText()");
+    check("derived presence text is 'AI · updating panel <title>'", text === "AI · updating panel Cohort", JSON.stringify(text));
+  }
+  emitUi({ cmd: "render", target: "@region:results", body: [{ t: "text", value: "x" }], narrate: "Building your cohort view" });
+  await waitFor(() => win.eval("window.BioRouter.ui.presenceText()") === "Building your cohort view");
+  {
+    const chip = doc.querySelector(".br-presence");
+    check("a frame's narrate string is shown verbatim in the presence chip", (chip && chip.textContent) === "Building your cohort view" && win.eval("window.BioRouter.ui.presenceText()") === "Building your cohort view", chip && chip.textContent);
+  }
+  check(
+    "br.ui.presence(msg) lets authors show the chip directly",
+    (function () {
+      win.eval("window.BioRouter.ui.presence('Author note here');");
+      return doc.querySelector(".br-presence").textContent === "Author note here" && win.eval("window.BioRouter.ui.presenceText()") === "Author note here";
+    })(),
+    doc.querySelector(".br-presence") && doc.querySelector(".br-presence").textContent
+  );
+
+  // ── Scenario V: ui_suggest — chips render, click sends prompt, x/Escape drop ─
+  emitUi({
+    cmd: "suggest",
+    target: "@region:results",
+    chips: [
+      { label: "Show KM", prompt: "show the kaplan meier" },
+      { label: "Filter by age" },
+      { label: "c3", prompt: "c3" },
+      { label: "c4", prompt: "c4" },
+      { label: "c5", prompt: "c5" },
+      { label: "c6-over-cap", prompt: "c6" },
+      { label: "c7-over-cap", prompt: "c7" },
+    ],
+  });
+  await waitFor(() => doc.querySelector(".br-suggest"));
+  {
+    const chips = doc.querySelectorAll(".br-suggest .br-suggest__chip");
+    check("ui_suggest renders chip buttons capped at 5 (7 requested → 5)", chips.length === 5, "count=" + chips.length);
+    check("ui_suggest renders a dismiss (×) control", !!doc.querySelector(".br-suggest .br-suggest__x"));
+  }
+  const baseSuggest = received.length;
+  win.eval("document.querySelector('.br-suggest .br-suggest__chip').click();");
+  await waitFor(() => received.slice(baseSuggest).some((f) => f.type === "prompt"));
+  {
+    const pf = received.slice(baseSuggest).find((f) => f.type === "prompt");
+    check("clicking a chip sends its prompt via br.prompt", !!pf && pf.text === "show the kaplan meier", JSON.stringify(pf));
+    check("clicking a chip dismisses the suggestion row", !doc.querySelector(".br-suggest"), "row still present");
+  }
+  // Escape dismisses a fresh row.
+  emitUi({ cmd: "suggest", target: "@region:results", chips: [{ label: "again", prompt: "again" }] });
+  await waitFor(() => doc.querySelector(".br-suggest"));
+  win.eval("document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' }));");
+  await waitFor(() => !doc.querySelector(".br-suggest"));
+  check("Escape dismisses the suggestion row", !doc.querySelector(".br-suggest"));
+  // The × button dismisses too.
+  emitUi({ cmd: "suggest", target: "@region:results", chips: [{ label: "z", prompt: "z" }] });
+  await waitFor(() => doc.querySelector(".br-suggest"));
+  win.eval("document.querySelector('.br-suggest .br-suggest__x').click();");
+  await waitFor(() => !doc.querySelector(".br-suggest"));
+  check("the × control dismisses the suggestion row", !doc.querySelector(".br-suggest"));
+
+  // ── Scenario W: ui_error feedback loop — placeholder + one frame, rate limit ─
+  // Jump the SDK's clock past the 30s ui_error window so this block starts with a
+  // fresh rate-limit budget (an earlier action throw already used one slot).
+  const advance = (ms) => {
+    const base = win.Date.now();
+    win.Date.now = () => base + ms;
+  };
+  advance(60000);
+  // W1: a single throwing component mount → neutral placeholder + exactly one ui_error.
+  win.eval("window.BioRouter.components.register('crashOne', { mount: function () { throw new Error('mount-boom'); } });");
+  const baseW1 = received.length;
+  emitUi({ cmd: "render", target: "@region:results", body: [{ t: "component", id: "co1", name: "crashOne", props: {} }] });
+  await waitFor(() => doc.querySelector(".br-unknown-widget[data-br-iid='co1']"));
+  check("a throwing component mount renders the neutral placeholder in place", !!doc.querySelector(".br-unknown-widget[data-br-iid='co1']"));
+  {
+    const errs = received.slice(baseW1).filter((f) => f.type === "ui_error" && f.where === "component:crashOne");
+    check("a throwing component mount posts EXACTLY ONE ui_error", errs.length === 1, "count=" + errs.length);
+    check("the ui_error carries where/instance/message", errs.length === 1 && errs[0].where === "component:crashOne" && errs[0].instance === "co1" && /mount-boom/.test(String(errs[0].message)), JSON.stringify(errs[0]));
+  }
+  // W2: rate limit — 5 rapid errors within the window yield ≤3 ui_error frames.
+  advance(120000); // fresh window again
+  win.eval("window.BioRouter.components.register('crashRate', { mount: function () { throw new Error('rate-boom'); } });");
+  const baseW2 = received.length;
+  emitUi({
+    cmd: "render",
+    target: "@region:results",
+    body: [
+      { t: "component", id: "cr1", name: "crashRate", props: {} },
+      { t: "component", id: "cr2", name: "crashRate", props: {} },
+      { t: "component", id: "cr3", name: "crashRate", props: {} },
+      { t: "component", id: "cr4", name: "crashRate", props: {} },
+      { t: "component", id: "cr5", name: "crashRate", props: {} },
+    ],
+  });
+  await waitFor(() => doc.querySelectorAll(".br-unknown-widget[data-br-iid^='cr']").length === 5);
+  await delay(60);
+  {
+    const errs = received.slice(baseW2).filter((f) => f.type === "ui_error" && f.where === "component:crashRate");
+    check("5 rapid render errors are rate-limited to ≤3 ui_error frames", errs.length <= 3 && errs.length >= 1, "count=" + errs.length);
+    check("all 5 failing instances still render a neutral placeholder", doc.querySelectorAll(".br-unknown-widget[data-br-iid^='cr']").length === 5);
+  }
+  // W3: after the window frees up, the next frame carries droppedCount for the drops.
+  advance(180000); // window free again; 2 were dropped in W2
+  win.eval("window.BioRouter.components.register('crashDrop', { mount: function () { throw new Error('drop-boom'); } });");
+  const baseW3 = received.length;
+  emitUi({ cmd: "render", target: "@region:results", body: [{ t: "component", id: "cd1", name: "crashDrop", props: {} }] });
+  await waitFor(() => received.slice(baseW3).some((f) => f.type === "ui_error"));
+  {
+    const ue = received.slice(baseW3).find((f) => f.type === "ui_error");
+    check("the next ui_error after drops carries droppedCount (=2)", !!ue && ue.droppedCount === 2, JSON.stringify(ue));
+  }
 
   dom.window.close();
   log(failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`);

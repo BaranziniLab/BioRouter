@@ -214,6 +214,24 @@ pub struct DataSource {
     /// For extension-backed sources: the extension / KB id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ref_id: Option<String>,
+    /// The **specific** ids this source scopes the app to (design §3.4). For
+    /// `kind="knowledge"` these are the knowledge-base id(s) the app may touch —
+    /// an app is NEVER granted "all bases". Two consequences the `br.kb`
+    /// handler enforces:
+    /// - empty `ids` + `kind="knowledge"` grants **NOTHING** by itself (the kb
+    ///   ops reply with an error that explains this) — the only exception is the
+    ///   back-compat implicit single grant of the agent's configured
+    ///   `knowledge_base`, if one is set.
+    /// - a KB id that is not enumerated here is denied, even if it exists.
+    #[serde(default)]
+    pub ids: Vec<String>,
+    /// `true` (default) = read-only. Setting it `false` grants **write** access
+    /// (e.g. `br.kb.ingest`), which is a *separately and prominently consented*
+    /// decision, not a checkbox (design §3.4): a poisoned ingest persists in a
+    /// git-backed KB that other sessions and agents read, so write access is a
+    /// cross-session integrity decision. The `br.kb` handler therefore requires
+    /// `read_only == false` on the granting knowledge source before it will run
+    /// an `ingest`.
     #[serde(default = "yes")]
     pub read_only: bool,
 }
@@ -475,6 +493,28 @@ pub struct WorkflowManifest {
     pub steps: Vec<WorkflowStep>,
 }
 
+/// A named model **route** (design §3.4 `agent.routes`): a light provider/model
+/// profile (`"fast"`, `"deep"`, `"local_only"`, …) that a `call` / `br.call`
+/// can select per invocation. Unlike an orchestration *agent profile* (a full
+/// [`AgentConfig`]), a route only redirects which provider/model answers the
+/// turn — it carries no separate prompt/extensions/skills.
+///
+/// Both fields are optional: an absent field inherits the session's current
+/// value (so `{"model": "…"}` keeps the provider and swaps the model, and
+/// `{"provider": "…"}` keeps the model and swaps the provider). Routes resolve
+/// against the *user's* configured providers only — apps never carry keys — and
+/// are subject to the provider-class constraint (design §3.7): an app holding a
+/// sensitive data source (`omop`/`cdw`, or a `knowledge` source with
+/// `read_only == false`) cannot route that data to an external commercial
+/// provider.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelRoute {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
 /// Multi-agent orchestration: sub-agents-as-tools, handoff targets, and
 /// declarative workflows. Handoff targets are full `AgentConfig`s (recursion is
 /// bounded by the author and the empty-by-default maps).
@@ -486,6 +526,13 @@ pub struct Orchestration {
     pub agents: HashMap<String, AgentConfig>,
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub workflows: HashMap<String, WorkflowManifest>,
+    /// Named model routes (design §3.4 `agent.routes`) a `call`/`br.call` may
+    /// select per invocation. Homed here (rather than as a bare `AgentConfig`
+    /// field) so the whole model-profile surface lives in one manifest module;
+    /// the manifest path is `agent.orchestration.routes`. Empty ⇒ no routes,
+    /// and a `call` without a `route` runs on the session's default provider.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub routes: HashMap<String, ModelRoute>,
     /// Defer tool-schema loading until `tool_search` activates them.
     #[serde(default)]
     pub lazy_tools: bool,

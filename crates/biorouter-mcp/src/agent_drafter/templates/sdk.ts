@@ -461,6 +461,11 @@ export class BioRouterClient {
   private readySeen = false;
   // Callers parked on `br.model.status()` until the reply (or a 10s timeout).
   private modelStatusWaiters: PendingModelStatus[] = [];
+  // ── SDK v2 Phase 6: ui_error feedback loop ──
+  // Send-times of recent `ui_error` frames (rolling 30s window) + a count of
+  // errors dropped since the last delivered frame (rides the next one).
+  private uiErrorTimes: number[] = [];
+  private uiErrorDropped = 0;
 
   constructor(config: AppConfig) {
     this.config = config;
@@ -1024,6 +1029,45 @@ export class BioRouterClient {
     return this.send(frame);
   }
 
+  /** Report a catalog render / component / action-handler error to the agent as
+   *  a structured `ui_error` frame, so it can repair its own UI. Rate-limited to
+   *  3 frames per rolling 30 s; beyond that, errors are dropped and counted, and
+   *  the count rides the next delivered frame as `droppedCount`. Never throws —
+   *  an error in the error path must never break the socket or the runtime.
+   *
+   *  `where` is `widget:<kind>` | `component:<name>` | `action:<name>`; `message`
+   *  is `String(err)` capped at 500 chars; `instance` (optional) is the id. */
+  reportUiError(where: string, message: string, instance?: string): void {
+    try {
+      const now = Date.now();
+      const cutoff = now - 30000;
+      const kept: number[] = [];
+      for (const t of this.uiErrorTimes) {
+        if (t > cutoff) kept.push(t);
+      }
+      this.uiErrorTimes = kept;
+      if (this.uiErrorTimes.length >= 3) {
+        this.uiErrorDropped++;
+        return;
+      }
+      this.uiErrorTimes.push(now);
+      const dropped = this.uiErrorDropped;
+      this.uiErrorDropped = 0;
+      // JSON.stringify drops the `undefined` fields, so absent instance /
+      // droppedCount never ride the wire.
+      const frame = {
+        type: "ui_error",
+        where: where,
+        message: message,
+        instance: instance,
+        droppedCount: dropped > 0 ? dropped : undefined,
+      };
+      this.send(frame);
+    } catch {
+      /* reporting must never throw */
+    }
+  }
+
   /** Send a raw client frame if the socket is open; returns whether it went. */
   private send(frame: unknown): boolean {
     if (this.ws && this.ws.readyState === 1 /* WebSocket.OPEN */) {
@@ -1298,6 +1342,8 @@ export class BioRouterClient {
           const emsg =
             err && (err as Error).message ? String((err as Error).message) : "action handler failed";
           this.send({ type: "app_result", callId: callId, error: emsg });
+          // Also surface it on the ui_error feedback loop (rate-limited).
+          this.reportUiError("action:" + action, errText(err));
         }
       );
   }
@@ -3896,6 +3942,26 @@ export interface UiCommand {
   callId?: string;
   action?: string;
   args?: unknown;
+  // ── theme packs + layout grammar (SDK v2 Phase 5, §3.6) ──
+  // `theme` gains `pack` (a curated token set); `layout` gains `areas`/`sizes`
+  // (a bounded grid grammar) alongside the existing preset aliases.
+  pack?: string;
+  areas?: unknown[];
+  sizes?: unknown[];
+  // ── presence layer (SDK v2 Phase 5, §3.5) ──
+  // Any agent frame may carry `narrate` — shown verbatim in the presence chip.
+  narrate?: string;
+  // ── ui_suggest (SDK v2 §3.5): non-blocking mixed-initiative chips ──
+  chips?: SuggestChip[];
+  // The clicked chip's label, carried on the synthetic `suggest` command the
+  // runtime hands `onCommand` when a chip has no prompt of its own.
+  label?: string;
+}
+
+/** One `ui_suggest` chip: a label plus an optional prompt to send on click. */
+export interface SuggestChip {
+  label: string;
+  prompt?: string;
 }
 
 export interface AskFieldSpec {
@@ -3912,6 +3978,7 @@ export interface AskFieldSpec {
 // `(cmd: UiCommand) => void` annotation would survive into the emitted JS.
 type StateListener = (state: Record<string, unknown>) => void;
 type CommandListener = (cmd: UiCommand) => void;
+type KeyHandler = (e: KeyboardEvent) => void;
 type FieldGetters = Map<string, () => string | boolean>;
 // Same reason: `br.state` callback/return types go through named aliases so the
 // fallback stripper drops the annotation (an inline `(v: unknown) => void` has
@@ -4176,6 +4243,100 @@ function isSafeBindUrl(u: string): boolean {
   return /^https:/i.test(s) || /^mailto:/i.test(s);
 }
 
+// ── theme packs (SDK v2 Phase 5, §3.6) ───────────────────────────────────────
+// The curated pack ids. `biorouter` is the base (no `data-br-pack` overrides in
+// theme.css); the other five are token-set layers. An unknown pack is ignored.
+const KNOWN_PACKS: Record<string, boolean> = {
+  biorouter: true,
+  clinical: true,
+  "lab-notebook": true,
+  terminal: true,
+  journal: true,
+  midnight: true,
+};
+
+// ── layout grammar (SDK v2 Phase 5, §3.6) ────────────────────────────────────
+// A bounded column-size vocabulary so the agent cannot inject raw CSS. A number
+// becomes `<n>fr`; a recognised `<n><unit>` / keyword passes through; anything
+// else (and any gap) defaults to `1fr`.
+function sizeToken(v: unknown): string {
+  if (typeof v === "number" && isFinite(v) && v > 0) return v + "fr";
+  if (typeof v === "string") {
+    const s = v.trim();
+    if (/^\d+(\.\d+)?(fr|px|%|em|rem|vw|vh|ch)$/.test(s)) return s;
+    if (s === "auto" || s === "min-content" || s === "max-content") return s;
+  }
+  return "1fr";
+}
+
+/** The unique grid-area names across the rows, in first-seen order, skipping the
+ *  `.` empty-cell token. */
+function uniqueAreaNames(rows: string[]): string[] {
+  const seen: AnyRecord = {};
+  const out: string[] = [];
+  for (const r of rows) {
+    for (const tok of r.split(/\s+/)) {
+      if (!tok || tok === ".") continue;
+      if (!seen[tok]) {
+        seen[tok] = true;
+        out.push(tok);
+      }
+    }
+  }
+  return out;
+}
+
+// ── presence layer (SDK v2 Phase 5, §3.5) ────────────────────────────────────
+// Which agent-driven commands surface the ambient activity chip, and the verb
+// phrase each shows (unless the frame carried a verbatim `narrate`).
+const PRESENCE_CMDS: Record<string, boolean> = {
+  panel: true,
+  render: true,
+  patch: true,
+  state: true,
+  theme: true,
+  layout: true,
+  notify: true,
+  highlight: true,
+  figure: true,
+};
+
+/** Trim an `@region:`/`@panel:`/`@` target or title down to a short label. */
+function presenceLabel(s: string): string {
+  let t = String(s || "").trim();
+  if (t.indexOf("@region:") === 0) t = t.slice(8);
+  else if (t.indexOf("@panel:") === 0) t = t.slice(7);
+  else if (t.charAt(0) === "@") t = t.slice(1);
+  if (t.length > 48) t = t.slice(0, 47) + "…";
+  return t;
+}
+
+/** The chip text for an agent-driven command (before any `narrate` override). */
+function presenceTextFor(cmd: UiCommand): string {
+  const c = cmd.cmd;
+  if (c === "panel") return "AI · updating panel " + presenceLabel(cmd.title || cmd.id || "");
+  if (c === "render") return "AI · updating " + presenceLabel(cmd.target || "view");
+  if (c === "patch") return "AI · updating the view";
+  if (c === "state") return "AI · updating data";
+  if (c === "theme") return "AI · restyling";
+  if (c === "layout") return "AI · rearranging the layout";
+  if (c === "notify") return "AI · " + presenceLabel(cmd.message || "notice");
+  if (c === "highlight") return "AI · highlighting " + presenceLabel(cmd.target || "");
+  if (c === "figure") return "AI · rendering a figure";
+  return "AI · working";
+}
+
+/** `String(err)` capped at 500 chars, for a `ui_error` frame (never throws). */
+function errText(e: unknown): string {
+  let s = "error";
+  try {
+    s = String(e);
+  } catch {
+    s = "error";
+  }
+  return s.slice(0, 500);
+}
+
 export class UiRuntime {
   private client: BioRouterClient;
   /** The agent's shared state bag (mirrors the state doc when it is an object;
@@ -4201,6 +4362,14 @@ export class UiRuntime {
   private componentReg: ComponentRegistry = new ComponentRegistry();
   // Whether the `node_selected` auto-signal document listener is installed.
   private netSignalWired = false;
+  // ── presence layer (§3.5): the ambient agent-activity chip ──
+  private presenceEl: HTMLElement | null = null;
+  private presenceTimer: ReturnType<typeof setTimeout> | null = null;
+  private presenceMsg: string | null = null;
+  // ── ui_suggest (§3.5): one live suggestion row + its Escape handler ──
+  private suggestRow: HTMLElement | null = null;
+  private suggestHostEl: HTMLElement | null = null;
+  private suggestKey: KeyHandler | null = null;
 
   constructor(client: BioRouterClient) {
     this.client = client;
@@ -4280,6 +4449,170 @@ export class UiRuntime {
     }
   }
 
+  // ── presence layer (§3.5) ──────────────────────────────────────────────────
+
+  /** Flash the ambient agent-activity chip for an applied ui frame. `narrate`
+   *  (verbatim) wins; otherwise a per-command phrase. Nothing shows for a frame
+   *  outside the presence set that carries no narration. */
+  private notePresence(cmd: UiCommand): void {
+    if (typeof cmd.narrate === "string" && cmd.narrate) {
+      this.presence(cmd.narrate);
+    } else if (PRESENCE_CMDS[cmd.cmd]) {
+      this.presence(presenceTextFor(cmd));
+    }
+  }
+
+  /** Show the ambient agent-activity chip with `msg`; it fades ~2.5 s after the
+   *  last update. Exposed as `br.ui.presence(msg)` for authors, and called by the
+   *  runtime for every agent-driven frame. The chip never intercepts clicks or
+   *  steals focus (CSS `pointer-events: none`, not focusable). */
+  presence(msg: string): void {
+    const text = msg == null ? "" : String(msg);
+    if (!text) return;
+    const chip = this.presenceChip();
+    if (!chip) return;
+    chip.textContent = text;
+    chip.classList.add("br-presence--on");
+    this.presenceMsg = text;
+    if (this.presenceTimer != null) {
+      try {
+        clearTimeout(this.presenceTimer);
+      } catch {
+        /* ignore */
+      }
+    }
+    try {
+      this.presenceTimer = setTimeout(() => this.fadePresence(), 2500);
+    } catch {
+      /* no timers (non-browser host) */
+    }
+  }
+
+  /** The current chip text, or `null` when hidden. A test/inspection hook. */
+  presenceText(): string | null {
+    return this.presenceMsg;
+  }
+
+  private presenceChip(): HTMLElement | null {
+    if (this.presenceEl && this.presenceEl.isConnected) return this.presenceEl;
+    if (!document.body) return null;
+    const el = document.createElement("div");
+    el.className = "br-presence";
+    el.setAttribute("data-br-presence", "1");
+    el.setAttribute("aria-hidden", "true");
+    document.body.appendChild(el);
+    this.presenceEl = el;
+    return el;
+  }
+
+  private fadePresence(): void {
+    this.presenceMsg = null;
+    this.presenceTimer = null;
+    if (this.presenceEl) this.presenceEl.classList.remove("br-presence--on");
+  }
+
+  // ── ui_suggest (§3.5): non-blocking suggestion chips ───────────────────────
+
+  /** Render up to five dismissible suggestion chips. Clicking a chip sends its
+   *  `prompt` via `br.prompt` (or, when it has none, hands `onCommand` a synthetic
+   *  `suggest` command carrying the label). Escape or the × dismisses them all. */
+  private applySuggest(cmd: UiCommand): void {
+    const raw = Array.isArray(cmd.chips) ? cmd.chips : [];
+    const chips = raw.slice(0, 5);
+    // Only one suggestion row at a time; a new one supersedes the old.
+    this.dismissSuggest();
+    if (!chips.length) return;
+    const host = (cmd.target ? this.resolveTarget(cmd.target) : null) || this.suggestHost();
+    if (!host) return;
+
+    const row = document.createElement("div");
+    row.className = "br-suggest";
+    row.setAttribute("data-br-suggest", "1");
+    // Styled inline (theme.css carries only the presence chip): a pill bar of
+    // themed buttons that re-enables pointer events inside the fixed host.
+    row.style.cssText =
+      "display:inline-flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 10px;pointer-events:auto;" +
+      "background:var(--br-surface);border:1px solid var(--br-border);border-radius:999px;box-shadow:var(--br-shadow-pop);max-width:100%;";
+    for (const chip of chips) {
+      const label = chip && chip.label != null ? String(chip.label) : "";
+      const prompt = chip && typeof chip.prompt === "string" ? chip.prompt : "";
+      const b = document.createElement("button");
+      b.className = "br-btn br-btn--secondary br-suggest__chip";
+      b.type = "button";
+      b.textContent = label;
+      b.addEventListener("click", () => {
+        this.dismissSuggest();
+        if (prompt) {
+          // Fire-and-forget: the streamed answer arrives via the usual events.
+          this.client.prompt(prompt).catch(() => undefined);
+        } else {
+          this.fireSuggestCommand(label);
+        }
+      });
+      row.appendChild(b);
+    }
+    const x = document.createElement("button");
+    x.className = "br-btn br-btn--ghost br-suggest__x";
+    x.type = "button";
+    x.setAttribute("aria-label", "Dismiss suggestions");
+    x.textContent = "×";
+    x.addEventListener("click", () => this.dismissSuggest());
+    row.appendChild(x);
+    host.appendChild(row);
+    this.suggestRow = row;
+
+    const onKey: KeyHandler = (e) => {
+      if (e && e.key === "Escape") this.dismissSuggest();
+    };
+    this.suggestKey = onKey;
+    try {
+      document.addEventListener("keydown", onKey);
+    } catch {
+      /* no document */
+    }
+  }
+
+  /** Hand author `onCommand` listeners a synthetic `suggest` command for a chip
+   *  that had no prompt of its own (author-owned handling). */
+  private fireSuggestCommand(label: string): void {
+    const synthetic: UiCommand = { cmd: "suggest", label: label };
+    for (const fn of this.commandListeners) {
+      try {
+        fn(synthetic);
+      } catch {
+        /* listener errors are non-fatal */
+      }
+    }
+  }
+
+  private dismissSuggest(): void {
+    if (this.suggestRow) {
+      if (this.suggestRow.parentElement) this.suggestRow.remove();
+      this.suggestRow = null;
+    }
+    if (this.suggestKey) {
+      try {
+        document.removeEventListener("keydown", this.suggestKey);
+      } catch {
+        /* ignore */
+      }
+      this.suggestKey = null;
+    }
+  }
+
+  private suggestHost(): HTMLElement | null {
+    if (this.suggestHostEl && this.suggestHostEl.isConnected) return this.suggestHostEl;
+    if (!document.body) return null;
+    const el = document.createElement("div");
+    el.className = "br-suggest-host";
+    // Fixed, bottom-centered, click-through except over the chip row itself.
+    el.style.cssText =
+      "position:fixed;left:16px;right:16px;bottom:16px;z-index:58;display:flex;justify-content:center;pointer-events:none;";
+    document.body.appendChild(el);
+    this.suggestHostEl = el;
+    return el;
+  }
+
   /** Apply one agent command. Unknown commands are ignored, not fatal. */
   apply(cmd: UiCommand): void {
     for (const fn of this.commandListeners) {
@@ -4289,6 +4622,10 @@ export class UiRuntime {
         /* listener errors are non-fatal */
       }
     }
+    // Presence: an agent-driven frame flashes the ambient activity chip. A
+    // verbatim `narrate` always wins; otherwise a per-command phrase. User
+    // actions never reach here (this only runs for server-pushed `ui` frames).
+    this.notePresence(cmd);
     try {
       switch (cmd.cmd) {
         case "panel":
@@ -4314,6 +4651,9 @@ export class UiRuntime {
           break;
         case "state":
           this.applyState(cmd);
+          break;
+        case "suggest":
+          this.applySuggest(cmd);
           break;
         case "ask":
           this.applyAsk(cmd);
@@ -4525,9 +4865,23 @@ export class UiRuntime {
     return gen;
   }
 
+  /** Render a widget node, catching a throwing renderer: a neutral placeholder
+   *  goes in its place and one (rate-limited) `ui_error` is posted, so a bad
+   *  node never breaks the render or the socket. Component-mount errors report
+   *  themselves inside `mountComponent`, so this stays a single report per node. */
+  private renderNode(node: WidgetNode, ctx: WidgetContext): HTMLElement {
+    try {
+      return renderWidget(node, ctx);
+    } catch (e) {
+      const kind = String((node as UnknownWidget).t || "widget");
+      this.client.reportUiError("widget:" + kind, errText(e), (node as NodeWithId).id);
+      return unknownWidgetEl(kind);
+    }
+  }
+
   /** Render one node standalone (own ctx), tag it, but do NOT register it. */
   private buildInstanceEl(node: WidgetNode, id: string): HTMLElement {
-    const el = renderWidget(node, this.makeCtx(id));
+    const el = this.renderNode(node, this.makeCtx(id));
     el.setAttribute("data-br-iid", id);
     return el;
   }
@@ -4542,7 +4896,7 @@ export class UiRuntime {
     }
     const ctx = this.makeCtx(widgetId);
     for (const node of nodes) {
-      const el = renderWidget(node, ctx);
+      const el = this.renderNode(node, ctx);
       const id = this.nodeId(node);
       el.setAttribute("data-br-iid", id);
       this.instances.set(id, { node: node, el: el });
@@ -4567,7 +4921,7 @@ export class UiRuntime {
       if (existing[id] && this.instances.has(id)) {
         this.morphInstance(id, node);
       } else {
-        const el = renderWidget(node, ctx);
+        const el = this.renderNode(node, ctx);
         el.setAttribute("data-br-iid", id);
         this.instances.set(id, { node: node, el: el });
         host.appendChild(el);
@@ -4751,8 +5105,11 @@ export class UiRuntime {
     el.setAttribute("data-br-component", String(name));
     try {
       def.mount(el, props, this.componentCtx(id));
-    } catch {
-      /* author mount errors are non-fatal */
+    } catch (e) {
+      // A throwing mount degrades to the neutral placeholder + one ui_error
+      // (returning null makes renderWidget render the placeholder in place).
+      this.client.reportUiError("component:" + name, errText(e), id);
+      return null;
     }
     return el;
   }
@@ -4766,16 +5123,16 @@ export class UiRuntime {
     if (def && typeof def.update === "function" && sameName) {
       try {
         def.update(el, nn.props, on.props);
-      } catch {
-        /* author update errors are non-fatal */
+      } catch (e) {
+        this.client.reportUiError("component:" + name, errText(e), id);
       }
     } else {
       el.innerHTML = "";
       if (def) {
         try {
           def.mount(el, nn.props, this.componentCtx(id));
-        } catch {
-          /* ignore */
+        } catch (e) {
+          this.client.reportUiError("component:" + name, errText(e), id);
         }
       } else {
         el.appendChild(unknownWidgetEl("component:" + name));
@@ -4874,6 +5231,7 @@ export class UiRuntime {
 
   private applyTheme(cmd: UiCommand): void {
     const root = document.documentElement;
+    if (typeof cmd.pack === "string") this.applyPack(cmd.pack, root);
     if (cmd.accent) root.style.setProperty("--br-accent", cmd.accent);
     if (cmd.mode) {
       if (cmd.mode === "auto") root.removeAttribute("data-br-theme");
@@ -4882,7 +5240,36 @@ export class UiRuntime {
     if (cmd.density) root.setAttribute("data-br-density", cmd.density);
   }
 
+  /** Switch the active theme pack. Validated against the curated set — an unknown
+   *  pack is ignored with a warning. A dark-native pack advertises its intended
+   *  color mode via the `--br-forced-mode` custom property; honor it by setting
+   *  `data-br-theme` so text stays legible. */
+  private applyPack(pack: string, root: HTMLElement): void {
+    if (!KNOWN_PACKS[pack]) {
+      try {
+        console.warn("[BioRouter] ignoring unknown theme pack: " + pack);
+      } catch {
+        /* console may be unavailable */
+      }
+      return;
+    }
+    root.setAttribute("data-br-pack", pack);
+    let forced = "";
+    try {
+      forced = window.getComputedStyle(root).getPropertyValue("--br-forced-mode").trim();
+    } catch {
+      forced = "";
+    }
+    if (forced === "light" || forced === "dark") root.setAttribute("data-br-theme", forced);
+  }
+
   private applyLayout(cmd: UiCommand): void {
+    // Layout grammar (SDK v2 §3.6): when `areas` is present, build a CSS grid on
+    // the app's main container. The five named presets keep working unchanged.
+    if (Array.isArray(cmd.areas) && cmd.areas.length) {
+      this.applyGridLayout(cmd);
+      return;
+    }
     const preset = cmd.preset || "single";
     document.body.setAttribute("data-br-layout", preset);
 
@@ -4918,6 +5305,59 @@ export class UiRuntime {
       el.classList.toggle("br-dock--grid", preset === "dashboard");
     }
     this.syncDockVisibility();
+  }
+
+  /** Build a CSS grid on the main container from a bounded `areas`/`sizes` grammar.
+   *  Rows are strings ("a b") or arrays (["a","b"]); columns default to `1fr`.
+   *  Each named area is assigned to the element with `data-br-region="<area>"` or
+   *  `id="<area>"`; a missing element is warned (once per name) and skipped. */
+  private applyGridLayout(cmd: UiCommand): void {
+    const rows: string[] = [];
+    for (const r of cmd.areas || []) {
+      if (typeof r === "string") {
+        const s = r.trim();
+        if (s) rows.push(s);
+      } else if (Array.isArray(r)) {
+        const s = r.map((x) => String(x)).join(" ").trim();
+        if (s) rows.push(s);
+      }
+    }
+    if (!rows.length) return;
+    const host = this.mainHost();
+    host.style.setProperty("display", "grid");
+    host.style.setProperty("grid-template-areas", rows.map((r) => '"' + r + '"').join(" "));
+
+    let colCount = 0;
+    for (const r of rows) {
+      const n = r.split(/\s+/).filter((t) => t).length;
+      if (n > colCount) colCount = n;
+    }
+    const sizes = Array.isArray(cmd.sizes) ? cmd.sizes : [];
+    const cols: string[] = [];
+    for (let i = 0; i < colCount; i++) cols.push(sizeToken(sizes[i]));
+    host.style.setProperty("grid-template-columns", cols.join(" "));
+
+    const warned: AnyRecord = {};
+    for (const name of uniqueAreaNames(rows)) {
+      const el = this.findAreaElement(name);
+      if (el) {
+        el.style.setProperty("grid-area", name);
+      } else if (!warned[name]) {
+        warned[name] = true;
+        try {
+          console.warn("[BioRouter] layout area has no matching element: " + name);
+        } catch {
+          /* console may be unavailable */
+        }
+      }
+    }
+  }
+
+  /** The element for a named grid area: `data-br-region="<name>"` or `id`. */
+  private findAreaElement(name: string): HTMLElement | null {
+    const byRegion = document.querySelector<HTMLElement>('[data-br-region="' + cssEscape(name) + '"]');
+    if (byRegion) return byRegion;
+    return document.getElementById(name);
   }
 
   private toasts(): HTMLElement {
