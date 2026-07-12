@@ -810,8 +810,18 @@ impl Agent {
         request_metadata: &HashMap<String, Option<ProviderMetadata>>,
         all_install_successful: &mut bool,
         post_tool_results: &mut Vec<(String, Option<Value>, Option<String>)>,
+        tool_output_guardrail: crate::guardrails::tool_output::ToolOutputGuardrailMode,
     ) {
         let output = call_tool_result::validate(output);
+
+        // Scan tool output for injection markers + PII/PHI before it re-enters
+        // the model context. Default policy is annotate-only (never blocks or
+        // drops content); masking is opt-in. Off is a zero-cost pass-through.
+        let (output, guardrail_summary) =
+            crate::guardrails::tool_output::guard_tool_result(output, tool_output_guardrail);
+        if let Some(summary) = &guardrail_summary {
+            debug!(request_id = %request_id, "tool-output guardrail flagged: {summary}");
+        }
 
         if enable_extension_request_ids.contains(&request_id) && output.is_err() {
             *all_install_successful = false;
@@ -1728,6 +1738,10 @@ impl Agent {
             // Consecutive auto-continues of a length-truncated turn; reset on any
             // tool call (real progress). Bounds the continue-on-truncation guard.
             let mut truncation_continuations = 0u32;
+            // Resolve the tool-output guardrail policy once per reply (config
+            // reads touch the filesystem, so we avoid doing it per tool result).
+            let tool_output_guardrail =
+                crate::guardrails::tool_output::ToolOutputGuardrailMode::from_config();
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -1969,6 +1983,7 @@ impl Agent {
                                                     &request_metadata,
                                                     &mut all_install_successful,
                                                     &mut post_tool_results,
+                                                    tool_output_guardrail,
                                                 ).await;
                                             }
                                             ToolStreamItem::Message(msg) => {

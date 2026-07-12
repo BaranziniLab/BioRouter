@@ -5,7 +5,14 @@ use std::io::Write;
 
 const LARGE_TEXT_THRESHOLD: usize = 200_000;
 
-/// Process tool response and handle large text content
+/// Process tool response and handle large text content.
+///
+/// Runs at dispatch time, *before* the tool-output guardrail
+/// (`guardrails::tool_output`, applied in `Agent::integrate_tool_result`).
+/// Oversized blobs are offloaded to a temp file and replaced with a short
+/// reference message here, so the guardrail never has to scan a 200 KB payload;
+/// that content is instead scanned when the model reads the file back through a
+/// later tool call.
 pub fn process_tool_response(
     response: Result<CallToolResult, ErrorData>,
 ) -> Result<CallToolResult, ErrorData> {
