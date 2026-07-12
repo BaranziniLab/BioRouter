@@ -11,7 +11,7 @@
 //! so the agent can keep watching while the job stays alive.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -93,6 +93,9 @@ pub struct BackgroundJobs {
 
 impl BackgroundJobs {
     pub fn new() -> Self {
+        // Reap background jobs orphaned by a previously-crashed Biorouter
+        // process before we start tracking new ones (see "orphan reaping").
+        reap_orphans();
         Self {
             jobs: Mutex::new(HashMap::new()),
             next_id: AtomicU64::new(1),
@@ -123,6 +126,14 @@ impl BackgroundJobs {
             .map_err(|e| format!("failed to start command: {e}"))?;
         let pid = child.id();
 
+        // Record this job's process-group-leader pid to the run dir so a future
+        // Biorouter process can reap it if we crash before it finishes; the
+        // supervisor removes the record once the job exits (see "orphan
+        // reaping"). kill_on_drop(false) means nothing else would clean it up.
+        if let Some(pid) = pid {
+            record_job_pidfile(pid);
+        }
+
         let status = Arc::new(Mutex::new(JobStatus::Running));
         let output = Arc::new(Mutex::new(Output::default()));
         let killed = Arc::new(AtomicBool::new(false));
@@ -139,6 +150,7 @@ impl BackgroundJobs {
         // when the tool returns; record the terminal status from the OS.
         let status_for_sup = status.clone();
         let killed_for_sup = killed.clone();
+        let pid_for_sup = pid;
         tokio::spawn(async move {
             let wait_result = child.wait().await;
             let terminal = if killed_for_sup.load(Ordering::SeqCst) {
@@ -153,6 +165,11 @@ impl BackgroundJobs {
                 }
             };
             *status_for_sup.lock().await = terminal;
+            // The job reached a terminal state under our supervision, so it is
+            // no longer an orphan candidate — drop its run-dir record.
+            if let Some(pid) = pid_for_sup {
+                remove_job_pidfile(pid);
+            }
             let _ = done_tx.send(true);
         });
 
@@ -319,9 +336,204 @@ fn kill_process_group(pid: Option<u32>) {
     }
 }
 
+// ── orphan reaping ──────────────────────────────────────────────────────────
+// Background jobs are spawned with `kill_on_drop(false)` so they outlive the
+// tool call that started them — but that also means a daemon crash orphans the
+// whole process group with no supervisor left to reap it. Mirror the llama.cpp
+// sidecar's pid-file scheme (`llamacpp_sidecar.rs`): record each job's
+// process-group-leader pid under a run dir keyed by *this* process's pid, and
+// on the next `BackgroundJobs::new()` in any Biorouter process, kill the process
+// groups recorded by processes that no longer exist. Records of still-living
+// parents (e.g. a CLI and the desktop app running side by side) are left alone,
+// so a live daemon's jobs are never reaped out from under it.
+//
+// Unlike the sidecar (one child), a Biorouter process can own many background
+// jobs, so there is one file per job: `<parent-pid>-<child-pid>.pid`.
+
+/// Directory holding the per-job pid files. Honors `BIOROUTER_DEVELOPER_RUN_DIR`
+/// (tests point it at a scratch dir); otherwise `<data>/developer/run`.
+fn run_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("BIOROUTER_DEVELOPER_RUN_DIR") {
+        return PathBuf::from(dir);
+    }
+    use etcetera::AppStrategy;
+    etcetera::choose_app_strategy(crate::APP_STRATEGY.clone())
+        .map(|s| s.data_dir().join("developer/run"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("biorouter/developer/run"))
+}
+
+fn pidfile_name(parent: u32, child: u32) -> String {
+    format!("{parent}-{child}.pid")
+}
+
+fn record_job_pidfile(child: u32) {
+    record_pidfile_in(&run_dir(), std::process::id(), child);
+}
+
+fn remove_job_pidfile(child: u32) {
+    remove_pidfile_in(&run_dir(), std::process::id(), child);
+}
+
+fn record_pidfile_in(dir: &Path, parent: u32, child: u32) {
+    if std::fs::create_dir_all(dir).is_ok() {
+        let _ = std::fs::write(dir.join(pidfile_name(parent, child)), child.to_string());
+    }
+}
+
+fn remove_pidfile_in(dir: &Path, parent: u32, child: u32) {
+    let _ = std::fs::remove_file(dir.join(pidfile_name(parent, child)));
+}
+
+/// Kill background-job process groups recorded by Biorouter processes that are
+/// no longer alive, then delete their pid files. Best-effort and idempotent.
+fn reap_orphans() {
+    reap_orphans_in(&run_dir());
+}
+
+/// Returns the child pids whose process groups were killed (for tests).
+fn reap_orphans_in(dir: &Path) -> Vec<u32> {
+    let mut reaped = Vec::new();
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return reaped;
+    };
+    let me = std::process::id();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("pid") {
+            continue;
+        }
+        // Filename is `<parent>-<child>.pid`; the child pid is also stored in
+        // the file body (source of truth, matching the sidecar), with the
+        // filename as a fallback.
+        let stem = path.file_stem().and_then(|s| s.to_str());
+        let parent: Option<u32> = stem
+            .and_then(|s| s.split('-').next())
+            .and_then(|s| s.parse().ok());
+        let child: Option<u32> = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .or_else(|| {
+                stem.and_then(|s| s.split('-').nth(1))
+                    .and_then(|s| s.parse().ok())
+            });
+        let (Some(parent), Some(child)) = (parent, child) else {
+            let _ = std::fs::remove_file(&path);
+            continue;
+        };
+        // Never touch a record owned by this process or any still-living one.
+        if parent == me || pid_alive(parent) {
+            continue;
+        }
+        if pid_alive(child) && is_group_leader(child) {
+            tracing::info!(
+                "Reaping orphaned background job process group {child} left by exited Biorouter process {parent}"
+            );
+            kill_orphan_group(child);
+            reaped.push(child);
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+    reaped
+}
+
+/// Whether `pid` currently names a live process.
+fn pid_alive(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // kill(pid, 0): 0 => exists; EPERM => exists but not ours; ESRCH => gone.
+        if unsafe { libc::kill(pid as i32, 0) } == 0 {
+            return true;
+        }
+        std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    }
+    #[cfg(windows)]
+    {
+        std::process::Command::new("tasklist")
+            .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).contains(&format!("\"{pid}\"")))
+            .unwrap_or(false)
+    }
+}
+
+/// PID-reuse guard: only reap a recorded child if it is still a process-group
+/// leader (pgid == pid), which every background job is (`process_group(0)`).
+/// A random reused pid is very unlikely to also lead its own group, so this
+/// stands in for the sidecar's process-name check (background commands have no
+/// fixed name to match against).
+#[cfg(unix)]
+fn is_group_leader(pid: u32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-o", "pgid=", "-p", &pid.to_string()])
+        .output()
+        .ok()
+        .and_then(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse::<u32>()
+                .ok()
+        })
+        .map(|pgid| pgid == pid)
+        .unwrap_or(false)
+}
+
+#[cfg(windows)]
+fn is_group_leader(_pid: u32) -> bool {
+    // No cheap pgid equivalent on Windows; rely on liveness + `taskkill /T`.
+    true
+}
+
+/// Force-kill the whole process group led by `pid` (these are known orphans, so
+/// go straight to SIGKILL rather than the graceful SIGTERM-then-SIGKILL a live
+/// `shell_kill` uses).
+fn kill_orphan_group(pid: u32) {
+    #[cfg(unix)]
+    {
+        unsafe { libc::kill(-(pid as i32), libc::SIGKILL) };
+    }
+    #[cfg(windows)]
+    {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Point the pid-file run dir at a per-binary scratch dir (set once) so the
+    /// test suite never reaps or records against the real `<data>/developer/run`
+    /// — that could kill a developer's actual background jobs during `cargo
+    /// test`. Every test that builds a `BackgroundJobs` must go through this.
+    fn ensure_test_run_dir() -> &'static Path {
+        static DIR: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        DIR.get_or_init(|| {
+            let d = std::env::temp_dir().join(format!("br-dev-run-tests-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&d);
+            std::env::set_var("BIOROUTER_DEVELOPER_RUN_DIR", &d);
+            d
+        })
+    }
+
+    fn new_jobs() -> BackgroundJobs {
+        ensure_test_run_dir();
+        BackgroundJobs::new()
+    }
+
+    /// A fresh, isolated scratch dir for hermetic reaping tests that pass the
+    /// dir explicitly and must not share state with other tests.
+    fn scratch_run_dir(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let d =
+            std::env::temp_dir().join(format!("br-dev-run-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
 
     async fn wait_terminal(jobs: &BackgroundJobs, id: &str, max_ms: u64) -> JobStatus {
         let job = jobs.job(id).await.unwrap();
@@ -337,7 +549,7 @@ mod tests {
 
     #[tokio::test]
     async fn start_lists_and_completes_with_output() {
-        let jobs = BackgroundJobs::new();
+        let jobs = new_jobs();
         let id = jobs.spawn("echo hello-bg", None, None).await.unwrap();
         assert!(jobs.list().await.contains(&id));
         assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Exited(0));
@@ -347,7 +559,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_reports_command_status_and_unread_output() {
-        let jobs = BackgroundJobs::new();
+        let jobs = new_jobs();
         let id = jobs.spawn("echo listme", None, None).await.unwrap();
         assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Exited(0));
 
@@ -380,20 +592,20 @@ mod tests {
 
     #[tokio::test]
     async fn list_is_empty_message_with_no_jobs() {
-        let jobs = BackgroundJobs::new();
+        let jobs = new_jobs();
         assert_eq!(jobs.list().await, "No background jobs.");
     }
 
     #[tokio::test]
     async fn nonzero_exit_code_is_surfaced() {
-        let jobs = BackgroundJobs::new();
+        let jobs = new_jobs();
         let id = jobs.spawn("exit 3", None, None).await.unwrap();
         assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Exited(3));
     }
 
     #[tokio::test]
     async fn output_is_incremental() {
-        let jobs = BackgroundJobs::new();
+        let jobs = new_jobs();
         let id = jobs
             .spawn("echo first; sleep 0.3; echo second", None, None)
             .await
@@ -410,7 +622,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_returns_early_on_completion() {
-        let jobs = BackgroundJobs::new();
+        let jobs = new_jobs();
         let id = jobs.spawn("echo done", None, None).await.unwrap();
         let started = Instant::now();
         let out = jobs.wait(&id, 30).await.unwrap();
@@ -420,7 +632,7 @@ mod tests {
 
     #[tokio::test]
     async fn wait_times_out_without_killing_then_kill_works() {
-        let jobs = BackgroundJobs::new();
+        let jobs = new_jobs();
         let id = jobs.spawn("sleep 30", None, None).await.unwrap();
         let out = jobs.wait(&id, 1).await.unwrap();
         assert!(out.contains("Still running"), "wait result: {out}");
@@ -435,9 +647,128 @@ mod tests {
 
     #[tokio::test]
     async fn unknown_job_is_clean_error() {
-        let jobs = BackgroundJobs::new();
+        let jobs = new_jobs();
         assert!(jobs.snapshot("job-nope").await.is_err());
         assert!(jobs.wait("job-nope", 1).await.is_err());
         assert!(jobs.kill("job-nope").await.is_err());
+    }
+
+    // ── orphan reaping ──────────────────────────────────────────────────────
+
+    #[cfg(unix)]
+    fn spawn_group_leader_sleep() -> std::process::Child {
+        use std::os::unix::process::CommandExt;
+        // Own process group so pgid == pid, matching how real jobs are spawned.
+        // Return the Child so the test can `wait()` it (clearing the zombie a
+        // SIGKILL leaves behind, since this process — unlike a dead daemon,
+        // whose orphans reparent to init — stays alive to parent it).
+        std::process::Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .expect("spawn sleep")
+    }
+
+    #[cfg(unix)]
+    fn dead_pid() -> u32 {
+        let mut child = std::process::Command::new("true")
+            .spawn()
+            .expect("spawn true");
+        let pid = child.id();
+        let _ = child.wait(); // reap it, so kill(pid, 0) => ESRCH
+        pid
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reap_kills_orphan_of_dead_parent_and_spares_live_parent() {
+        let dir = scratch_run_dir("reap");
+
+        // Orphan whose recorded parent is gone → must be reaped.
+        let mut orphan_child = spawn_group_leader_sleep();
+        let orphan = orphan_child.id();
+        let dead_parent = dead_pid();
+        record_pidfile_in(&dir, dead_parent, orphan);
+
+        // Job whose recorded parent (this process) is alive → must be spared.
+        let mut live = spawn_group_leader_sleep();
+        let live_child = live.id();
+        record_pidfile_in(&dir, std::process::id(), live_child);
+
+        let reaped = reap_orphans_in(&dir);
+
+        assert!(
+            reaped.contains(&orphan),
+            "orphan of a dead parent should be reaped, got {reaped:?}"
+        );
+        // The reaper SIGKILLed the group; reap the zombie so the pid is freed.
+        let _ = orphan_child.wait();
+        assert!(!pid_alive(orphan), "orphan should be dead after reaping");
+        assert!(
+            !dir.join(pidfile_name(dead_parent, orphan)).exists(),
+            "orphan pid file should be removed after reaping"
+        );
+
+        assert!(
+            !reaped.contains(&live_child) && pid_alive(live_child),
+            "job of a still-living parent must not be reaped"
+        );
+        assert!(
+            matches!(live.try_wait(), Ok(None)),
+            "live-parent job must still be running"
+        );
+        assert!(
+            dir.join(pidfile_name(std::process::id(), live_child))
+                .exists(),
+            "live-parent pid file must be kept"
+        );
+
+        let _ = live.kill();
+        let _ = live.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reap_removes_malformed_pidfiles() {
+        let dir = scratch_run_dir("malformed");
+        std::fs::write(dir.join("not-a-pid.pid"), "garbage").unwrap();
+        std::fs::write(dir.join("keep.txt"), "123").unwrap(); // non-.pid, ignored
+        reap_orphans_in(&dir);
+        assert!(
+            !dir.join("not-a-pid.pid").exists(),
+            "unparseable pid file should be swept"
+        );
+        assert!(
+            dir.join("keep.txt").exists(),
+            "non-.pid files must be left alone"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_records_pidfile_and_terminal_removes_it() {
+        let dir = ensure_test_run_dir().to_path_buf();
+        let jobs = new_jobs();
+        let id = jobs.spawn("sleep 30", None, None).await.unwrap();
+        let pid = jobs.job(&id).await.unwrap().pid.unwrap();
+
+        let pidfile = dir.join(pidfile_name(std::process::id(), pid));
+        assert!(pidfile.exists(), "spawn should record a pid file");
+
+        jobs.kill(&id).await.unwrap();
+        assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Killed);
+
+        // The supervisor removes the record once the job reaches a terminal state.
+        let mut gone = false;
+        for _ in 0..120 {
+            if !pidfile.exists() {
+                gone = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        assert!(gone, "terminal job should remove its pid file");
     }
 }
