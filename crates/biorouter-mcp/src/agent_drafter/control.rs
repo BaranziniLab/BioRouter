@@ -118,6 +118,9 @@ struct BridgeInner {
     panels: Mutex<Vec<String>>,
     /// Last surface report the browser sent (regions, element ids, title).
     surface: Mutex<Option<Value>>,
+    /// Fingerprint of the last `ui_describe` payload, so a repeat says "unchanged"
+    /// (H3: nudges the model to stop re-polling within a turn).
+    last_describe: Mutex<Option<String>>,
     seq: AtomicU64,
 }
 
@@ -142,6 +145,7 @@ impl UiBridge {
                 state: Mutex::new(serde_json::Map::new()),
                 panels: Mutex::new(Vec::new()),
                 surface: Mutex::new(None),
+                last_describe: Mutex::new(None),
                 seq: AtomicU64::new(0),
             }),
         }
@@ -414,35 +418,59 @@ fn validate_chart(spec: &Value) -> Result<(), String> {
             return Err(format!("chart type \"{t}\" must be bar, line, or pie"));
         }
     }
-    let data = obj
-        .get("data")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "chart spec needs a \"data\" array of {label, value}".to_string())?;
-    if data.is_empty() {
-        return Err("chart \"data\" is empty".to_string());
-    }
-    if data.len() > MAX_CHART_POINTS {
-        return Err(format!(
-            "chart has {} points; cap is {MAX_CHART_POINTS}",
-            data.len()
-        ));
-    }
-    for (i, p) in data.iter().enumerate() {
-        let po = p
-            .as_object()
-            .ok_or_else(|| format!("chart data[{i}] must be an object"))?;
-        if !po.get("label").is_some_and(Value::is_string) {
-            return Err(format!("chart data[{i}] needs a string \"label\""));
+    // Validate one series' data array (the shared inner shape).
+    let check_data = |data: &Vec<Value>, where_: &str| -> Result<(), String> {
+        if data.is_empty() {
+            return Err(format!("chart {where_} is empty"));
         }
-        let v = po
-            .get("value")
-            .and_then(Value::as_f64)
-            .ok_or_else(|| format!("chart data[{i}] needs a numeric \"value\""))?;
-        if !v.is_finite() {
-            return Err(format!("chart data[{i}].value must be finite"));
+        if data.len() > MAX_CHART_POINTS {
+            return Err(format!(
+                "chart {where_} has {} points; cap is {MAX_CHART_POINTS}",
+                data.len()
+            ));
         }
+        for (i, p) in data.iter().enumerate() {
+            let po = p
+                .as_object()
+                .ok_or_else(|| format!("chart {where_}[{i}] must be an object"))?;
+            if !po.get("label").is_some_and(Value::is_string) {
+                return Err(format!("chart {where_}[{i}] needs a string \"label\""));
+            }
+            let v = po
+                .get("value")
+                .and_then(Value::as_f64)
+                .ok_or_else(|| format!("chart {where_}[{i}] needs a numeric \"value\""))?;
+            if !v.is_finite() {
+                return Err(format!("chart {where_}[{i}].value must be finite"));
+            }
+        }
+        Ok(())
+    };
+    // Multi-series (`series:[{name,data}]`) OR single (`data:[…]`).
+    if let Some(series) = obj.get("series").and_then(Value::as_array) {
+        if series.is_empty() {
+            return Err("chart \"series\" is empty".to_string());
+        }
+        if series.len() > 12 {
+            return Err(format!("chart has {} series; cap is 12", series.len()));
+        }
+        for (si, s) in series.iter().enumerate() {
+            let so = s
+                .as_object()
+                .ok_or_else(|| format!("chart series[{si}] must be an object with \"data\""))?;
+            let data = so
+                .get("data")
+                .and_then(Value::as_array)
+                .ok_or_else(|| format!("chart series[{si}] needs a \"data\" array of {{label, value}}"))?;
+            check_data(data, &format!("series[{si}].data"))?;
+        }
+        return Ok(());
     }
-    Ok(())
+    let data = obj.get("data").and_then(Value::as_array).ok_or_else(|| {
+        "chart spec needs a \"data\" array of {label, value} (or \"series\":[{name, data}] for multiple lines)"
+            .to_string()
+    })?;
+    check_data(data, "data")
 }
 
 fn validate_graph(spec: &Value) -> Result<(), String> {
@@ -574,8 +602,12 @@ pub struct PanelParams {
     /// Heading shown on the panel.
     #[serde(default)]
     pub title: Option<String>,
-    /// Where to mount it: "dock" (default; a right-hand drawer the SDK always
-    /// provides), "left", "right", "bottom", "main", or "modal".
+    /// Where to mount it. Either an SDK dock slot — "dock" (default; a right-hand
+    /// drawer the SDK always provides), "left", "right", "bottom", "main", or
+    /// "modal" — OR a target that names part of the author's page:
+    /// "@region:<name>" (an author-declared `data-br-region`), "@panel:<id>", or
+    /// a CSS selector. Use a `@region:` target to drop a titled dashboard card
+    /// straight into a region the app author laid out.
     #[serde(default)]
     pub place: Option<String>,
     /// The panel contents: an array of widget nodes. See the tool description
@@ -827,7 +859,27 @@ impl AppControlServer {
                 "maxPanels": self.cap.max_panels,
             },
         });
-        ok_text(serde_json::to_string_pretty(&out).unwrap_or_default())
+        let body = serde_json::to_string_pretty(&out).unwrap_or_default();
+        // If nothing about the page changed since the last describe, say so — the
+        // model shouldn't burn turn budget re-polling a stable surface.
+        let unchanged = self
+            .bridge
+            .inner
+            .last_describe
+            .lock()
+            .map(|prev| prev.as_deref() == Some(body.as_str()))
+            .unwrap_or(false);
+        if let Ok(mut prev) = self.bridge.inner.last_describe.lock() {
+            *prev = Some(body.clone());
+        }
+        if unchanged {
+            ok_text(format!(
+                "(Surface unchanged since your last ui_describe — no need to call it \
+                 again this turn.)\n{body}"
+            ))
+        } else {
+            ok_text(body)
+        }
     }
 
     #[tool(
@@ -844,12 +896,17 @@ impl AppControlServer {
                        {\"t\":\"divider\"}\n\
                        {\"t\":\"progress\",\"value\":0.62,\"label\":\"…\"}\n\
                        {\"t\":\"table\",\"columns\":[…],\"rows\":[[…],[…]]}\n\
-                       {\"t\":\"chart\",\"spec\":{\"type\":\"bar\",\"title\":\"…\",\"data\":[{\"label\":\"A\",\"value\":1}]}}\n\
+                       {\"t\":\"chart\",\"spec\":{\"type\":\"bar\",\"title\":\"…\",\"data\":[{\"label\":\"A\",\"value\":1}]}}  (or \"series\":[{\"name\":\"train\",\"data\":[…]},…] for multiple lines)\n\
                        {\"t\":\"graph\",\"spec\":{\"nodes\":[{\"id\":\"A\"}],\"edges\":[{\"source\":\"A\",\"target\":\"B\"}]}}\n\
                        {\"t\":\"input\"|\"select\"|\"checkbox\",\"name\":\"…\",\"label\":\"…\"}\n\
                        {\"t\":\"button\",\"label\":\"Run\",\"action\":\"run\",\"submit\":true}\n\
                        A `button` sends its action (and, with submit:true, the form fields) \
-                       back to you as your next turn."
+                       back to you as your next turn.\n\n\
+                       `place` picks where it mounts: a dock slot (\"dock\" default / \
+                       \"left\" / \"right\" / \"bottom\" / \"main\" / \"modal\"), OR a target \
+                       naming the author's own layout — \"@region:<name>\", \"@panel:<id>\", \
+                       or a CSS selector. To fill a region the author declared (e.g. \
+                       @region:dashboard), pass it as `place` directly."
     )]
     pub async fn ui_panel(
         &self,
@@ -867,12 +924,16 @@ impl AppControlServer {
             return ok_text(format!("Removed panel \"{id}\"."));
         }
 
+        // `place` is either an SDK-owned dock slot (dock/left/right/bottom/main/
+        // modal) OR a target that names part of the author's page — `@region:x`,
+        // `@panel:x`, `@main`, or a CSS selector — in which case the panel's card
+        // mounts *into* that element. The latter is the overwhelmingly common
+        // "put a titled dashboard into @region:dashboard" case; rejecting it made
+        // the model burn 5–7 retries before falling back to `ui_render`.
         let place = p.place.as_deref().unwrap_or("dock");
-        if !PANEL_PLACES.contains(&place) {
-            return Err(invalid(format!(
-                "\"place\" must be one of: {}",
-                PANEL_PLACES.join(", ")
-            )));
+        let is_target = place.starts_with('@') || !PANEL_PLACES.contains(&place);
+        if is_target {
+            validate_target(place)?;
         }
 
         let body = match (&p.body, &p.markdown) {
@@ -937,8 +998,12 @@ impl AppControlServer {
 
     #[tool(
         name = "ui_chart",
-        description = "Draw a bar/line/pie chart in the app. \
-                       spec: {\"type\":\"bar\",\"title\":\"…\",\"data\":[{\"label\":\"A\",\"value\":12}]}. \
+        description = "Draw a bar/line/pie chart in the app.\n\
+                       Single series: {\"type\":\"bar\",\"title\":\"…\",\"data\":[{\"label\":\"A\",\"value\":12}]}.\n\
+                       Multiple series on one axis (e.g. train vs validation loss, actual vs forecast, \
+                       two arms): {\"type\":\"line\",\"title\":\"…\",\"series\":[{\"name\":\"train\",\
+                       \"data\":[{\"label\":\"e1\",\"value\":0.9}, …]},{\"name\":\"val\",\"data\":[…]}]} — \
+                       overlaid lines / grouped bars with a legend, series index-aligned by label. \
                        Omit `target` to put it in a dock panel."
     )]
     pub async fn ui_chart(
@@ -1108,6 +1173,10 @@ impl AppControlServer {
         &self,
         Parameters(p): Parameters<StateParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        // Track whether anything actually changed, so an identical repeat becomes
+        // a cheap no-op that tells the model to stop re-sending it (H3: models
+        // cascade ui_state with unchanged values and exhaust the turn budget).
+        let mut changed = false;
         if let Some(set) = &p.set {
             let set = unstringify(set);
             let obj = set
@@ -1115,14 +1184,19 @@ impl AppControlServer {
                 .ok_or_else(|| invalid(want_json("set", "a JSON object", r#"{"gene":"TP53"}"#)))?;
             if let Ok(mut s) = self.bridge.inner.state.lock() {
                 for (k, v) in obj {
-                    s.insert(k.clone(), v.clone());
+                    if s.get(k) != Some(v) {
+                        changed = true;
+                        s.insert(k.clone(), v.clone());
+                    }
                 }
             }
         }
         if let Some(remove) = &p.remove {
             if let Ok(mut s) = self.bridge.inner.state.lock() {
                 for k in remove {
-                    s.remove(k);
+                    if s.remove(k).is_some() {
+                        changed = true;
+                    }
                 }
             }
         }
@@ -1133,11 +1207,22 @@ impl AppControlServer {
             .lock()
             .map(|s| Value::Object(s.clone()))
             .unwrap_or(Value::Null);
-        if p.set.is_some() || p.remove.is_some() {
+        // Only touch the page when the bag actually moved. An unchanged call
+        // emits no frame and says so, so the model doesn't keep re-sending it.
+        if changed {
             self.bridge
                 .emit(json!({ "cmd": "state", "state": snapshot }))?;
+            ok_text(serde_json::to_string(&snapshot).unwrap_or_default())
+        } else if p.set.is_none() && p.remove.is_none() {
+            // A read: return the current bag.
+            ok_text(serde_json::to_string(&snapshot).unwrap_or_default())
+        } else {
+            ok_text(format!(
+                "No change — the state bag already holds these values, so nothing was \
+                 re-sent. Current state: {}",
+                serde_json::to_string(&snapshot).unwrap_or_default()
+            ))
         }
-        ok_text(serde_json::to_string(&snapshot).unwrap_or_default())
     }
 
     #[tool(
@@ -1326,7 +1411,13 @@ pub fn ui_system_prompt(cap: &UiCapability) -> String {
          Call `ui_describe` once, up front, so you render into regions that actually exist. \
          Panels are addressed by a stable `id`: reuse the id to refresh a panel in place rather \
          than stacking near-duplicates. Then keep your prose short — say what changed and why it \
-         matters, not what the panel already shows.",
+         matters, not what the panel already shows.\n\n\
+         Be economical with tool calls — you have a bounded number of actions per turn. Call \
+         `ui_describe` ONCE (the page rarely changes mid-turn). Do NOT re-send `ui_state` values \
+         you already set — set a key only when it actually changes; identical repeats do nothing \
+         and waste the budget. Batch your UI updates: build each panel/chart once with its final \
+         content rather than nudging it repeatedly. A turn is for acting on the user's input, not \
+         for polling the page.",
     );
     if !cap.allow_ask {
         s.push_str("\n\nNote: `ui_ask` is disabled for this app.");
@@ -1392,6 +1483,32 @@ mod tests {
         assert!(validate_chart(&json!({"data":[{"label":"a","value":1.5}]})).is_ok());
     }
 
+    /// H2: multi-series charts (train vs val loss, comparisons, forecasts).
+    #[test]
+    fn accepts_multi_series_charts() {
+        let ok = json!({"type":"line","title":"Loss","series":[
+            {"name":"train","data":[{"label":"e1","value":0.9},{"label":"e2","value":0.5}]},
+            {"name":"val","data":[{"label":"e1","value":1.0},{"label":"e2","value":0.7}]}
+        ]});
+        assert!(validate_chart(&ok).is_ok(), "two-series line must validate");
+        // a series missing its data array is a precise error
+        let bad = json!({"type":"line","series":[{"name":"x"}]});
+        let e = bad_err(&bad);
+        assert!(e.contains("series[0]") && e.contains("data"), "{e}");
+        // a non-finite point inside a series is caught with a series-scoped path
+        let nf = json!({"series":[{"name":"a","data":[{"label":"p","value":1}]},
+                                  {"name":"b","data":[{"label":"p","value":"NaN"}]}]});
+        assert!(bad_err(&nf).contains("series[1].data"));
+        // empty series array rejected
+        assert!(validate_chart(&json!({"series":[]})).is_err());
+        // the single-series error now points the model at `series` too
+        assert!(bad_err(&json!({"type":"bar"})).contains("series"));
+    }
+
+    fn bad_err(spec: &Value) -> String {
+        validate_chart(spec).unwrap_err()
+    }
+
     #[test]
     fn widget_depth_and_node_budget_are_bounded() {
         // Build a chain deeper than MAX_WIDGET_DEPTH.
@@ -1433,6 +1550,49 @@ mod tests {
         assert_eq!(cmd["cmd"], "panel");
         assert_eq!(cmd["id"], "summary");
         assert_eq!(cmd["place"], "dock");
+    }
+
+    /// H1: a real model (GPT-5.5) naturally mounts a dashboard into an author
+    /// region with `place:"@region:dashboard"`. That used to be rejected
+    /// ("must be one of: dock, left, …") and cost 5–7 retries. It must be
+    /// accepted and passed through as the place.
+    #[tokio::test]
+    async fn panel_accepts_a_region_target_as_place() {
+        let (s, mut rx) = server();
+        let r = s
+            .ui_panel(Parameters(PanelParams {
+                id: "sentiment-dashboard".into(),
+                title: Some("Sentiment".into()),
+                place: Some("@region:dashboard".into()),
+                body: Some(json!([{"t":"row","children":[{"t":"stat","label":"Positive","value":2}]}])),
+                markdown: None,
+                collapsible: Some(false),
+                remove: None,
+            }))
+            .await
+            .expect("a @region: place must be accepted");
+        assert!(text_of(&r).contains("dashboard"));
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd["place"], "@region:dashboard");
+    }
+
+    #[tokio::test]
+    async fn panel_still_rejects_an_empty_place_target() {
+        let (s, _rx) = server();
+        // An empty/whitespace place is neither a dock slot nor a valid target.
+        let e = s
+            .ui_panel(Parameters(PanelParams {
+                id: "x".into(),
+                title: None,
+                place: Some("   ".into()),
+                body: Some(json!([{"t":"text","value":"y"}])),
+                markdown: None,
+                collapsible: None,
+                remove: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.to_lowercase().contains("empty") || e.message.contains("target"));
     }
 
     #[tokio::test]
@@ -1547,6 +1707,43 @@ mod tests {
             .await
             .unwrap();
         assert!(!text_of(&r).contains("TP53"));
+    }
+
+    /// H3: re-sending the SAME state is a cheap no-op that emits no frame and
+    /// tells the model so — this is what breaks the ui_state cascade that
+    /// exhausts the turn budget.
+    #[tokio::test]
+    async fn state_noop_when_unchanged_emits_nothing() {
+        let (s, mut rx) = server();
+        s.ui_state(Parameters(StateParams { set: Some(json!({"dose": 1000})), remove: None }))
+            .await
+            .unwrap();
+        assert_eq!(rx.try_recv().unwrap()["cmd"], "state"); // first change emits
+
+        // identical re-send: no frame, "no change" message
+        let r = s
+            .ui_state(Parameters(StateParams { set: Some(json!({"dose": 1000})), remove: None }))
+            .await
+            .unwrap();
+        assert!(text_of(&r).to_lowercase().contains("no change"), "{}", text_of(&r));
+        assert!(rx.try_recv().is_err(), "an unchanged ui_state must emit no frame");
+
+        // a real change emits again
+        s.ui_state(Parameters(StateParams { set: Some(json!({"dose": 1250})), remove: None }))
+            .await
+            .unwrap();
+        assert_eq!(rx.try_recv().unwrap()["state"]["dose"], 1250);
+    }
+
+    /// H3: a repeated ui_describe over an unchanged page is flagged so the model
+    /// stops re-polling.
+    #[tokio::test]
+    async fn describe_flags_an_unchanged_repeat() {
+        let (s, _rx) = server();
+        let first = text_of(&s.ui_describe(Parameters(DescribeParams {})).await.unwrap());
+        assert!(!first.to_lowercase().contains("unchanged"));
+        let second = text_of(&s.ui_describe(Parameters(DescribeParams {})).await.unwrap());
+        assert!(second.to_lowercase().contains("unchanged"), "{second}");
     }
 
     #[tokio::test]

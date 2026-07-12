@@ -35,6 +35,10 @@ export interface AppConfig {
   autoChat?: boolean;
   /** Mount the agent-driven UI runtime (panels, charts, highlights). Default on. */
   ui?: boolean;
+  /** Initial theme: "light" (default, deterministic), "dark", or "auto"
+   *  (follow the viewer's OS). Left unset → light, so authored colors render as
+   *  intended regardless of the viewer's OS. The agent's `ui_theme` overrides. */
+  theme?: "light" | "dark" | "auto";
 }
 
 export interface ImageInput {
@@ -249,6 +253,10 @@ export class BioRouterClient {
         const ws = await openSocket(url);
         this.ws = ws;
         this.activeEndpoint = base;
+        // We're connected — clear any stale "no backend" banner a prior failed
+        // attempt (or an earlier reconnect) may have left on the page. A working
+        // app must never show a backend-unreachable error.
+        clearBackendError();
         ws.onerror = () => {
           this.emit({ type: "error", message: "connection error" });
           this.settleActive(new Error("connection error"));
@@ -655,10 +663,17 @@ interface ChartPoint {
   label: string;
   value: number;
 }
+interface ChartSeries {
+  name?: string;
+  data: ChartPoint[];
+}
 interface ChartSpec {
   type?: "bar" | "line" | "pie";
   title?: string;
-  data: ChartPoint[];
+  // Single series (unchanged) …
+  data?: ChartPoint[];
+  // … or several named series sharing an x-axis (loss curves, comparisons, …).
+  series?: ChartSeries[];
 }
 
 interface GraphNode {
@@ -690,6 +705,33 @@ interface GraphPoint {
  * SVG, themed with BioRouter tokens. Supports "bar" (default) and "line".
  * Returns a quiet placeholder on malformed/partial JSON (streaming-safe).
  */
+const CHART_PALETTE = [
+  "var(--br-coral)",
+  "var(--br-accent)",
+  "var(--br-n400)",
+  "var(--br-green)",
+  "var(--br-n500)",
+  "var(--br-n300)",
+];
+
+/** Normalize a chart spec into a list of series, each cleaned of non-finite
+ *  points. Accepts single-series `data` OR multi-series `series`. */
+function normalizeSeries(spec: ChartSpec): ChartSeries[] {
+  const clean = (pts: ChartPoint[] | undefined): ChartPoint[] =>
+    Array.isArray(pts) ? pts.filter((d) => d && isFinite(d.value)) : [];
+  if (Array.isArray(spec.series) && spec.series.length) {
+    return spec.series.map((s) => ({ name: s.name, data: clean(s.data) })).filter((s) => s.data.length);
+  }
+  const d = clean(spec.data);
+  return d.length ? [{ data: d }] : [];
+}
+
+/**
+ * Render an AI-generated chart from a ```chart JSON block into dependency-free
+ * SVG, themed with BioRouter tokens. Supports bar / line / pie, single-series
+ * (`data`) or multi-series (`series` — grouped bars or overlaid lines with a
+ * legend). Returns a quiet placeholder on malformed/partial JSON (streaming-safe).
+ */
 export function renderChart(json: string): string {
   let spec: ChartSpec;
   try {
@@ -697,29 +739,30 @@ export function renderChart(json: string): string {
   } catch {
     return '<div class="br-chart br-chart--pending"></div>';
   }
-  const data = Array.isArray(spec?.data) ? spec.data.filter((d) => d && isFinite(d.value)) : [];
-  if (!data.length) return '<div class="br-chart br-chart--pending"></div>';
+  const series = normalizeSeries(spec);
+  if (!series.length) return '<div class="br-chart br-chart--pending"></div>';
+  const multi = series.length > 1;
+  // Categories = the labels of the longest series (series are index-aligned).
+  const cats = series.reduce((a, s) => (s.data.length > a.length ? s.data : a), series[0].data).map((d) => d.label);
+  const n = cats.length;
+
+  const legendW = multi ? 96 : 0;
   const W = 520;
   const H = 240;
   const padL = 44;
   const padB = 48;
   const padT = spec.title ? 28 : 12;
-  const max = Math.max(...data.map((d) => d.value), 0);
-  const min = Math.min(...data.map((d) => d.value), 0);
+  const allVals = series.flatMap((s) => s.data.map((d) => d.value));
+  const max = Math.max(...allVals, 0);
+  const min = Math.min(...allVals, 0);
   const span = max - min || 1;
-  const plotW = W - padL - 12;
+  const plotW = W - padL - 12 - legendW;
   const plotH = H - padT - padB;
-  const x = (i: number) => padL + (plotW * (i + 0.5)) / data.length;
+  const x = (i: number) => padL + (plotW * (i + 0.5)) / Math.max(n, 1);
   const y = (v: number) => padT + plotH * (1 - (v - min) / span);
   const esc = (s: string) => escapeHtml(String(s));
-  const palette = [
-    "var(--br-coral)",
-    "var(--br-accent)",
-    "var(--br-n400)",
-    "var(--br-green)",
-    "var(--br-n500)",
-    "var(--br-n300)",
-  ];
+  const palette = CHART_PALETTE;
+  const color = (i: number) => palette[i % palette.length];
   const title = spec.title
     ? `<text x="${W / 2}" y="18" font-size="12" font-weight="600" text-anchor="middle" fill="var(--br-text)">${esc(
         spec.title
@@ -728,8 +771,21 @@ export function renderChart(json: string): string {
   const svg = (inner: string) =>
     `<div class="br-chart"><svg viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" role="img">${title}${inner}</svg></div>`;
 
-  // Pie chart: slices + legend, no axes.
+  // Legend (multi-series line/bar): named swatches on the right.
+  const seriesLegend = multi
+    ? series
+        .map((s, si) => {
+          const name = s.name || `series ${si + 1}`;
+          return `<g transform="translate(${W - legendW + 4},${padT + 6 + si * 18})"><rect width="11" height="11" rx="2" fill="${color(
+            si
+          )}"/><text x="16" y="10" font-size="11" fill="var(--br-text)">${esc(name).slice(0, 14)}</text></g>`;
+        })
+        .join("")
+    : "";
+
+  // Pie: single series (the first), slices + percentage legend, no axes.
   if (spec.type === "pie") {
+    const data = series[0].data;
     const total = data.reduce((s, d) => s + Math.max(d.value, 0), 0) || 1;
     const cx = 130;
     const cy = padT + (H - padT - 12) / 2;
@@ -746,21 +802,18 @@ export function renderChart(json: string): string {
       const y1 = cy + r * Math.sin(a1);
       slices +=
         frac >= 0.999
-          ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${palette[i % palette.length]}"/>`
+          ? `<circle cx="${cx}" cy="${cy}" r="${r}" fill="${color(i)}"/>`
           : `<path d="M${cx},${cy} L${x0.toFixed(1)},${y0.toFixed(1)} A${r},${r} 0 ${large} 1 ${x1.toFixed(
               1
-            )},${y1.toFixed(1)} Z" fill="${palette[i % palette.length]}" stroke="var(--br-surface)" stroke-width="1"/>`;
+            )},${y1.toFixed(1)} Z" fill="${color(i)}" stroke="var(--br-surface)" stroke-width="1"/>`;
       a0 = a1;
     });
     const legend = data
       .map((d, i) => {
         const pct = Math.round((Math.max(d.value, 0) / total) * 100);
-        return `<g transform="translate(${cx + r + 28},${padT + 6 + i * 18})"><rect width="11" height="11" rx="2" fill="${
-          palette[i % palette.length]
-        }"/><text x="16" y="10" font-size="11" fill="var(--br-text)">${esc(d.label).slice(
-          0,
-          20
-        )} (${pct}%)</text></g>`;
+        return `<g transform="translate(${cx + r + 28},${padT + 6 + i * 18})"><rect width="11" height="11" rx="2" fill="${color(
+          i
+        )}"/><text x="16" y="10" font-size="11" fill="var(--br-text)">${esc(d.label).slice(0, 20)} (${pct}%)</text></g>`;
       })
       .join("");
     return svg(slices + legend);
@@ -768,40 +821,49 @@ export function renderChart(json: string): string {
 
   let body = "";
   if (spec.type === "line") {
-    const pts = data.map((d, i) => `${x(i).toFixed(1)},${y(d.value).toFixed(1)}`).join(" ");
-    body += `<polyline fill="none" stroke="var(--br-coral)" stroke-width="2.5" points="${pts}"/>`;
-    body += data
-      .map((d, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(d.value).toFixed(1)}" r="3" fill="var(--br-accent)"/>`)
-      .join("");
+    // One overlaid polyline (+ markers) per series.
+    series.forEach((s, si) => {
+      const pts = s.data.map((d, i) => `${x(i).toFixed(1)},${y(d.value).toFixed(1)}`).join(" ");
+      const stroke = color(si);
+      body += `<polyline fill="none" stroke="${stroke}" stroke-width="2.5" points="${pts}"/>`;
+      body += s.data
+        .map((d, i) => `<circle cx="${x(i).toFixed(1)}" cy="${y(d.value).toFixed(1)}" r="3" fill="${stroke}"/>`)
+        .join("");
+    });
   } else {
-    const bw = Math.min((plotW / data.length) * 0.62, 56);
-    body += data
-      .map((d, i) => {
-        const bx = x(i) - bw / 2;
-        const by = y(Math.max(d.value, 0));
-        const bh = Math.abs(y(d.value) - y(0));
-        return `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${bw.toFixed(
-          1
-        )}" height="${bh.toFixed(1)}" rx="3" fill="${palette[i % palette.length]}"/>`;
-      })
-      .join("");
+    // Grouped bars: within each category, one bar per series side by side.
+    const groupW = Math.min((plotW / Math.max(n, 1)) * 0.72, 64);
+    const bw = groupW / series.length;
+    series.forEach((s, si) => {
+      body += s.data
+        .map((d, i) => {
+          const bx = x(i) - groupW / 2 + si * bw;
+          const by = y(Math.max(d.value, 0));
+          const bh = Math.abs(y(d.value) - y(0));
+          const fill = multi ? color(si) : color(i);
+          return `<rect x="${bx.toFixed(1)}" y="${by.toFixed(1)}" width="${bw.toFixed(1)}" height="${bh.toFixed(
+            1
+          )}" rx="2" fill="${fill}"/>`;
+        })
+        .join("");
+    });
   }
   // x labels (truncated, centered) + baseline + y-max tick.
-  const labels = data
+  const labels = cats
     .map(
-      (d, i) =>
+      (lab, i) =>
         `<text x="${x(i).toFixed(1)}" y="${H - padB + 16}" font-size="10" text-anchor="middle" fill="var(--br-text-muted)">${esc(
-          d.label
+          lab
         ).slice(0, 10)}</text>`
     )
     .join("");
-  const axis = `<line x1="${padL}" y1="${y(0).toFixed(1)}" x2="${W - 12}" y2="${y(0).toFixed(
+  const axis = `<line x1="${padL}" y1="${y(0).toFixed(1)}" x2="${W - 12 - legendW}" y2="${y(0).toFixed(
     1
   )}" stroke="var(--br-border)"/>`;
   const yMax = `<text x="${padL - 6}" y="${(y(max) + 4).toFixed(
     1
   )}" font-size="10" text-anchor="end" fill="var(--br-text-muted)">${esc(String(max))}</text>`;
-  return svg(axis + body + labels + yMax);
+  return svg(axis + body + labels + yMax + seriesLegend);
 }
 
 function parseGraphEdges(text: string): ParsedGraph {
@@ -1697,10 +1759,28 @@ export class UiRuntime {
     this.renderInto(body, cmd.body || [], id);
     panel.appendChild(body);
 
-    // Replace in place so a refreshed dashboard doesn't jump to the bottom.
+    // Where does it mount? A dock slot, "modal"/"main", or — the common case —
+    // a TARGET (`@region:x`, `@panel:x`, a selector) so a titled dashboard card
+    // lands inside the author's own region. A same-id panel is replaced in place
+    // so a refreshed dashboard doesn't jump around.
+    const DOCK_SLOTS = ["dock", "left", "right", "bottom"];
+    const isTarget = place.indexOf("@") === 0 || DOCK_SLOTS.indexOf(place) < 0 && place !== "modal" && place !== "main";
     const prev = this.panels.get(id);
     if (prev && prev.parentElement) {
       prev.parentElement.replaceChild(panel, prev);
+    } else if (isTarget) {
+      const host = this.resolveTarget(place);
+      if (host) {
+        host.appendChild(panel);
+      } else {
+        // Named a region/selector that isn't there — say so, don't vanish.
+        this.applyNotify({
+          cmd: "notify",
+          message: `The agent tried to mount panel "${id}" into "${place}", which this app does not have.`,
+          level: "warn",
+        });
+        this.dock("dock").appendChild(panel);
+      }
     } else if (place === "modal") {
       this.modal().appendChild(panel);
     } else if (place === "main") {
@@ -2168,6 +2248,17 @@ export function createApp(overrides: Partial<AppConfig> = {}): BioRouterClient {
   const client = new BioRouterClient(cfg);
   window.BioRouter = client;
 
+  // Render deterministically as the app was authored (light) rather than
+  // following the *viewer's* OS theme. Models compose and eyeball apps in light
+  // mode and routinely hardcode light-appropriate text colors; a dark-OS viewer
+  // would otherwise get invisible dark-on-dark masthead/placeholder text. The
+  // agent's `ui_theme` still switches this deliberately, and an app can opt back
+  // into follow-OS by setting `theme: "auto"` in its config.
+  const root = document.documentElement;
+  if (cfg.theme !== "auto" && !root.hasAttribute("data-br-theme")) {
+    root.setAttribute("data-br-theme", cfg.theme === "dark" ? "dark" : "light");
+  }
+
   // Connect eagerly so agent-driven UI works in apps that never call prompt()
   // (a dashboard the agent populates on load), and so a dead backend surfaces
   // immediately as a banner instead of on the user's first click.
@@ -2205,4 +2296,10 @@ export function mountBackendError(message: string): void {
   bar.appendChild(title);
   bar.appendChild(body);
   document.body.insertBefore(bar, document.body.firstChild);
+}
+
+/** Remove the backend-unreachable banner once a connection succeeds. */
+export function clearBackendError(): void {
+  const bar = document.querySelector("[data-br-backend-error]");
+  if (bar) bar.remove();
 }
