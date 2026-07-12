@@ -1284,6 +1284,32 @@ impl ExtensionManager {
             }
         }
 
+        // BR-23: central secret-redaction boundary. The `.biorouterignore`/secret
+        // deny set used to live only inside the Developer MCP server, so any other
+        // extension (compute, files, a third-party MCP, a different shell wrapper)
+        // could read a `.env`/private-key/cloud-credential file that the deny set
+        // forbids. Enforce it here — the single choke point every tool call flows
+        // through — so no extension can bypass it. The scan is conservative: it
+        // only blocks when an argument names a secret file that actually exists on
+        // disk (see `SecretGuard::find_denied_path`).
+        if let Some(args) = tool_call.arguments.as_ref() {
+            let cwd = self.resolve_working_dir().await;
+            let guard = biorouter_mcp::secret_guard::SecretGuard::for_dir(&cwd);
+            if let Some(denied) = guard.find_denied_path(args) {
+                return Err(ErrorData::new(
+                    ErrorCode::INVALID_PARAMS,
+                    format!(
+                        "Access to '{}' is blocked: it matches a secret/credential deny pattern \
+                         (.env, private key, or cloud credentials). Add a negation to \
+                         .biorouterignore to allow it.",
+                        denied
+                    ),
+                    None,
+                )
+                .into());
+            }
+        }
+
         let arguments = tool_call.arguments.clone();
         let client = client.clone();
         let notifications_receiver = client.lock().await.subscribe().await;
@@ -1983,6 +2009,57 @@ mod tests {
         } else {
             panic!("Expected ErrorData with ErrorCode::RESOURCE_NOT_FOUND");
         }
+    }
+
+    // BR-23: the central secret-redaction boundary must block a tool call that
+    // references an existing secret file, no matter which extension owns the tool.
+    #[tokio::test]
+    async fn test_dispatch_blocks_secret_file_access() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join(".env"), "SECRET=1").unwrap();
+
+        let extension_manager =
+            ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        extension_manager
+            .set_working_dir(temp_dir.path().to_path_buf())
+            .await;
+        extension_manager
+            .add_mock_extension(
+                "test_client".to_string(),
+                Arc::new(Mutex::new(Box::new(MockClient {}))),
+            )
+            .await;
+
+        // A tool from an arbitrary extension that reads the existing .env is denied
+        // at dispatch, before the tool ever runs.
+        let secret_call = CallToolRequestParams {
+            task: None,
+            name: "test_client__tool".to_string().into(),
+            arguments: Some(object!({"path": ".env"})),
+            meta: None,
+        };
+        let result = extension_manager
+            .dispatch_tool_call("test-session-id", secret_call, CancellationToken::default())
+            .await;
+        match result {
+            Err(err) => {
+                let tool_err = err.downcast_ref::<ErrorData>().expect("Expected ErrorData");
+                assert_eq!(tool_err.code, ErrorCode::INVALID_PARAMS);
+            }
+            Ok(_) => panic!("expected the secret-file access to be blocked at dispatch"),
+        }
+
+        // A benign, non-existent path is not blocked.
+        let benign_call = CallToolRequestParams {
+            task: None,
+            name: "test_client__tool".to_string().into(),
+            arguments: Some(object!({"path": "notes.txt"})),
+            meta: None,
+        };
+        let result = extension_manager
+            .dispatch_tool_call("test-session-id", benign_call, CancellationToken::default())
+            .await;
+        assert!(result.is_ok(), "benign path must not be blocked");
     }
 
     #[tokio::test]
