@@ -9,7 +9,7 @@ import {
   type SkillCategory,
 } from './registry';
 import { installRegistrySkill } from './installSkill';
-import { useEscapeKey } from '../../hooks/useEscapeKey';
+import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
 
 interface Props {
   onClose: () => void;
@@ -36,7 +36,6 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [installing, setInstalling] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  useEscapeKey(true, onClose);
 
   useEffect(() => {
     let cancelled = false;
@@ -90,7 +89,7 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
     });
 
   const handleInstall = async () => {
-    if (!registry || selected.size === 0) return;
+    if (installing || !registry || selected.size === 0) return;
     const targets = registry.skills.filter((s) => selected.has(s.id) && !isInstalled(s));
     setInstalling(true);
     setProgress({ done: 0, total: targets.length });
@@ -98,8 +97,14 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
     const failures: string[] = [];
     let done = 0;
     for (const skill of targets) {
-      const res = await installRegistrySkill(skill);
-      if (!res.ok) failures.push(`${res.name}: ${res.error ?? 'failed'}`);
+      try {
+        const res = await installRegistrySkill(skill);
+        if (!res.ok) failures.push(`${res.name}: ${res.error ?? 'failed'}`);
+      } catch (error) {
+        failures.push(
+          `${skill.name}: ${error instanceof Error ? error.message : 'installation failed'}`
+        );
+      }
       done += 1;
       setProgress({ done, total: targets.length });
     }
@@ -131,12 +136,15 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
   const selectedCount = selected.size;
 
   return (
-    <div className="biorouter-modal-overlay fixed inset-0 z-[var(--z-overlay)] flex items-center justify-center">
-      <div className="biorouter-modal-surface bg-background-default z-[var(--z-modal)] w-[720px] max-w-[92vw] max-h-[86vh] flex flex-col overflow-hidden">
+    <Dialog open onOpenChange={(open) => !open && !installing && onClose()}>
+      <DialogContent
+        dismissible={!installing}
+        className="flex max-h-[86vh] w-[720px] max-w-[92vw] flex-col gap-0 overflow-hidden p-0 sm:max-w-[92vw] lg:max-w-[720px]"
+      >
         {/* Header */}
-        <div className="px-6 pt-5 pb-4 border-b border-border-subtle flex items-start justify-between gap-4">
+        <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
           <div>
-            <h2 className="text-base font-semibold">Browse Skills</h2>
+            <DialogTitle>Browse Skills</DialogTitle>
             <p className="text-xs text-text-muted mt-0.5">
               Install skills from the BioRouter marketplace. Select as many as you like — skills
               need no setup.
@@ -145,9 +153,6 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
               )}
             </p>
           </div>
-          <Button variant="ghost" size="sm" className="h-7 w-7 p-0 flex-shrink-0" onClick={onClose}>
-            ✕
-          </Button>
         </div>
 
         {/* Controls */}
@@ -297,7 +302,7 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
             </Button>
           </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

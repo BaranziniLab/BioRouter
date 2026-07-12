@@ -20,7 +20,7 @@ import {
   shell,
   Tray,
 } from 'electron';
-import { pathToFileURL, fileURLToPath, format as formatUrl, URLSearchParams } from 'node:url';
+import { pathToFileURL, format as formatUrl, URLSearchParams } from 'node:url';
 import { Buffer } from 'node:buffer';
 import { isIP } from 'node:net';
 import dns from 'node:dns/promises';
@@ -72,6 +72,8 @@ import {
   SPAWN_ENV,
 } from './utils/dependencyChecker';
 import { runExtensionUpdateCheck, scheduleExtensionUpdateCheck } from './utils/extensionUpdater';
+import { isAllowedRendererPermission, isAppOrigin } from './utils/permissionPolicy';
+import { injectArtifactBrowserCsp, injectArtifactHostTheme } from './utils/artifactSecurity';
 import { Client, createClient, createConfig } from './api/client';
 import { BioRouterApp } from './api';
 import installExtension, { REACT_DEVELOPER_TOOLS } from 'electron-devtools-installer';
@@ -168,32 +170,6 @@ export function isExternallyOpenableUrl(candidate: string): boolean {
   try {
     const { protocol } = new URL(candidate);
     return protocol === 'http:' || protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Where the renderer legitimately lives: the Vite dev server in development,
- * and the packaged renderer bundle (a `file://` directory) in production.
- */
-export function isAppOrigin(candidate: string, appUrl: URL): boolean {
-  let url: URL;
-  try {
-    url = new URL(candidate);
-  } catch {
-    return false;
-  }
-
-  if (appUrl.protocol !== 'file:') return url.origin === appUrl.origin;
-
-  // Packaged build: allow the renderer bundle's own directory, nothing else.
-  if (url.protocol !== 'file:') return false;
-  try {
-    const entry = fileURLToPath(appUrl);
-    const rendererDir = path.dirname(entry);
-    const target = path.resolve(fileURLToPath(url));
-    return target === entry || target.startsWith(rendererDir + path.sep);
   } catch {
     return false;
   }
@@ -927,6 +903,7 @@ const createChat = async (
     width: initialBounds?.width ?? mainWindowState.width,
     height: initialBounds?.height ?? mainWindowState.height,
     minWidth: 720,
+    minHeight: 480,
     resizable: true,
     useContentSize: true,
     show: windowOptions?.show ?? true,
@@ -3108,11 +3085,13 @@ type TerminalSession = {
   write: (data: string) => void;
   resize: (cols: number, rows: number) => void;
   dispose: () => void;
+  removeOwnerDestroyedListener: () => void;
 };
 
 type NodePtyModule = typeof import('node-pty');
 
 const terminalSessions = new Map<string, TerminalSession>();
+const MAX_TERMINAL_SESSIONS_PER_OWNER = 8;
 let nodePtyModule: NodePtyModule | null | undefined;
 
 function terminalSize(value: unknown, fallback: number, min: number, max: number): number {
@@ -3136,7 +3115,7 @@ function terminalShell(): { shellPath: string; ptyArgs: string[]; processArgs: s
   };
 }
 
-function terminalEnv(): NodeJS.ProcessEnv {
+function terminalEnv(): Record<string, string | undefined> {
   return {
     ...SPAWN_ENV,
     COLORTERM: 'truecolor',
@@ -3160,6 +3139,7 @@ function disposeTerminalSession(sessionId: string) {
   const session = terminalSessions.get(sessionId);
   if (!session) return false;
   terminalSessions.delete(sessionId);
+  session.removeOwnerDestroyedListener();
   try {
     session.dispose();
   } catch (error) {
@@ -3231,6 +3211,20 @@ function registerCliInstallHandlers() {
     const { shellPath, ptyArgs, processArgs } = terminalShell();
     const sessionId = crypto.randomUUID();
     const owner = event.sender;
+    let didExit = false;
+
+    const registerSession = (
+      session: Omit<TerminalSession, 'removeOwnerDestroyedListener'>
+    ): void => {
+      const handleOwnerDestroyed = () => disposeTerminalSession(sessionId);
+      owner.once('destroyed', handleOwnerDestroyed);
+      terminalSessions.set(sessionId, {
+        ...session,
+        removeOwnerDestroyedListener: () => {
+          owner.removeListener('destroyed', handleOwnerDestroyed);
+        },
+      });
+    };
 
     const sendData = (data: string) => {
       if (!owner.isDestroyed()) {
@@ -3238,7 +3232,11 @@ function registerCliInstallHandlers() {
       }
     };
     const sendExit = (exitCode: number | null, signal?: string | number | null) => {
+      if (didExit) return;
+      didExit = true;
+      const session = terminalSessions.get(sessionId);
       terminalSessions.delete(sessionId);
+      session?.removeOwnerDestroyedListener();
       if (!owner.isDestroyed()) {
         owner.send('terminal:exit', {
           sessionId,
@@ -3250,6 +3248,15 @@ function registerCliInstallHandlers() {
 
     try {
       const pty = await loadNodePty();
+      const ownerSessionCount = Array.from(terminalSessions.values()).filter(
+        (session) => session.ownerId === owner.id
+      ).length;
+      if (ownerSessionCount >= MAX_TERMINAL_SESSIONS_PER_OWNER) {
+        return {
+          success: false,
+          error: `A window can run at most ${MAX_TERMINAL_SESSIONS_PER_OWNER} terminal sessions.`,
+        };
+      }
       if (pty) {
         const ptyProcess = pty.spawn(shellPath, ptyArgs, {
           cols,
@@ -3264,7 +3271,7 @@ function registerCliInstallHandlers() {
           exitDisposer.dispose();
           sendExit(exitCode, signal);
         });
-        terminalSessions.set(sessionId, {
+        registerSession({
           backend: 'pty',
           cwd,
           ownerId: owner.id,
@@ -3276,12 +3283,12 @@ function registerCliInstallHandlers() {
             );
           },
           dispose: () => {
+            didExit = true;
             dataDisposer.dispose();
             exitDisposer.dispose();
             ptyProcess.kill();
           },
         });
-        owner.once('destroyed', () => disposeTerminalSession(sessionId));
         return { success: true, sessionId, cwd, backend: 'pty' as const };
       }
 
@@ -3293,14 +3300,18 @@ function registerCliInstallHandlers() {
       });
       child.stdout.setEncoding('utf8');
       child.stderr.setEncoding('utf8');
-      child.stdout.on('data', sendData);
-      child.stderr.on('data', sendData);
-      child.on('close', (code, signal) => sendExit(code, signal));
-      child.on('error', (error) => {
+      const handleStdout = (data: string) => sendData(data);
+      const handleStderr = (data: string) => sendData(data);
+      const handleClose = (code: number | null, signal: string | null) => sendExit(code, signal);
+      const handleError = (error: Error) => {
         sendData(`\r\n${error.message}\r\n`);
         sendExit(1, null);
-      });
-      terminalSessions.set(sessionId, {
+      };
+      child.stdout.on('data', handleStdout);
+      child.stderr.on('data', handleStderr);
+      child.on('close', handleClose);
+      child.on('error', handleError);
+      registerSession({
         backend: 'process',
         cwd,
         ownerId: owner.id,
@@ -3309,10 +3320,14 @@ function registerCliInstallHandlers() {
         },
         resize: () => {},
         dispose: () => {
+          didExit = true;
+          child.stdout.removeListener('data', handleStdout);
+          child.stderr.removeListener('data', handleStderr);
+          child.removeListener('close', handleClose);
+          child.removeListener('error', handleError);
           child.kill();
         },
       });
-      owner.once('destroyed', () => disposeTerminalSession(sessionId));
       return { success: true, sessionId, cwd, backend: 'process' as const };
     } catch (error) {
       return { success: false, error: (error as Error).message };
@@ -3867,17 +3882,24 @@ async function appMain() {
   registerDependencyIpcHandlers();
   registerCliInstallHandlers();
 
-  // Handle microphone permission requests
-  session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
-    console.log('Permission requested:', permission);
-    // Allow microphone and media access
-    if (permission === 'media') {
-      callback(true);
-    } else {
-      // Default behavior for other permissions
-      callback(true);
+  const appEntryUrl = rendererEntryUrl();
+  session.defaultSession.setPermissionCheckHandler(
+    (_webContents, permission, requestingOrigin, details) =>
+      isAllowedRendererPermission(
+        permission,
+        details.requestingUrl || requestingOrigin,
+        appEntryUrl,
+        [details.mediaType ?? 'unknown']
+      )
+  );
+  session.defaultSession.setPermissionRequestHandler(
+    (_webContents, permission, callback, details) => {
+      const mediaTypes = 'mediaTypes' in details ? (details.mediaTypes ?? []) : [];
+      callback(
+        isAllowedRendererPermission(permission, details.requestingUrl, appEntryUrl, mediaTypes)
+      );
     }
-  });
+  );
 
   const buildConnectSrc = (): string => {
     const sources = [
@@ -4407,17 +4429,6 @@ async function appMain() {
     html: await prepareArtifactHtml(payload.html),
   }));
 
-  // Auto Visualiser figures/reports resolve their theme from a query string OR
-  // `window.__BR_VIZ_HOST_THEME__`. A file:// page keeps its query, but we inject
-  // the global too so the browser-opened artifact matches the app theme even if a
-  // browser drops the file:// query. A tool-baked `window.__BR_VIZ_THEME__` still wins.
-  const injectHostTheme = (html: string, theme: 'light' | 'dark'): string => {
-    const tag = `<script>window.__BR_VIZ_HOST_THEME__=${JSON.stringify(theme)};</script>`;
-    const marker = '<head>';
-    const idx = html.indexOf(marker);
-    return idx === -1 ? tag + html : html.slice(0, idx + marker.length) + tag + html.slice(idx + marker.length);
-  };
-
   const writeArtifactTempFile = async (html: string): Promise<string> => {
     const artifactDir = path.join(os.tmpdir(), 'biorouter-artifacts');
     await fs.mkdir(artifactDir, { recursive: true });
@@ -4509,8 +4520,8 @@ async function appMain() {
       return openArtifactInWindow(payload);
     }
     try {
-      const html = injectHostTheme(
-        await prepareArtifactHtml(payload.html),
+      const html = injectArtifactHostTheme(
+        injectArtifactBrowserCsp(await prepareArtifactHtml(payload.html)),
         payload.theme === 'dark' ? 'dark' : 'light'
       );
       const artifactFile = await writeArtifactTempFile(html);

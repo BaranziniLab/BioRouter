@@ -1,0 +1,45 @@
+import { describe, expect, it } from 'vitest';
+import { isAllowedRendererPermission, isAppOrigin } from './permissionPolicy';
+
+describe('permissionPolicy', () => {
+  it('matches only the configured development renderer origin', () => {
+    const appUrl = new URL('http://localhost:5173/');
+    expect(isAppOrigin('http://localhost:5173/pair', appUrl)).toBe(true);
+    expect(isAppOrigin('http://127.0.0.1:5173/', appUrl)).toBe(false);
+    expect(isAppOrigin('https://example.com/', appUrl)).toBe(false);
+  });
+
+  it('keeps packaged artifact files outside the renderer directory', () => {
+    const appUrl = new URL(
+      'file:///Applications/BioRouter.app/Contents/Resources/renderer/index.html'
+    );
+    expect(
+      isAppOrigin(
+        'file:///Applications/BioRouter.app/Contents/Resources/renderer/assets/app.js',
+        appUrl
+      )
+    ).toBe(true);
+    expect(isAppOrigin('file:///tmp/biorouter-artifacts/artifact-1.html', appUrl)).toBe(false);
+  });
+
+  it('allows only audio capture requested by BioRouter itself', () => {
+    const appUrl = new URL('http://localhost:5173/');
+    expect(
+      isAllowedRendererPermission('media', 'http://localhost:5173/pair', appUrl, ['audio'])
+    ).toBe(true);
+    expect(
+      isAllowedRendererPermission('media', 'http://localhost:5173/pair', appUrl, ['video'])
+    ).toBe(false);
+    expect(
+      isAllowedRendererPermission('media', 'http://localhost:5173/pair', appUrl, ['audio', 'video'])
+    ).toBe(false);
+    expect(isAllowedRendererPermission('geolocation', 'http://localhost:5173/', appUrl, [])).toBe(
+      false
+    );
+    expect(
+      isAllowedRendererPermission('media', 'file:///tmp/biorouter-artifacts/evil.html', appUrl, [
+        'audio',
+      ])
+    ).toBe(false);
+  });
+});

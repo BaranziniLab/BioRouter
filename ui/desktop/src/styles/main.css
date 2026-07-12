@@ -400,8 +400,7 @@
 
   /* Shadows shift from warm brown to navy tint; flat-by-default is unchanged. */
   --shadow-default: 0px 1px 3px 0px rgba(5, 32, 73, 0.08), 0px 0px 1px 0px rgba(5, 32, 73, 0.14);
-  --shadow-composer:
-    0px 2px 6px -1px rgba(5, 32, 73, 0.1), 0px 1px 2px 0px rgba(5, 32, 73, 0.06);
+  --shadow-composer: 0px 2px 6px -1px rgba(5, 32, 73, 0.1), 0px 1px 2px 0px rgba(5, 32, 73, 0.06);
   --shadow-popover: 0px 8px 24px 0px rgba(5, 32, 73, 0.12), 0px 0px 1px 0px rgba(5, 32, 73, 0.18);
   --shadow-modal:
     0px 22px 60px -18px rgba(5, 32, 73, 0.24), 0px 8px 24px -18px rgba(5, 32, 73, 0.16),
@@ -691,17 +690,6 @@
   to {
     opacity: 1;
     transform: translateY(0);
-  }
-}
-
-@keyframes biorouter-route-morph-in {
-  from {
-    opacity: 0;
-    transform: translate3d(0, 8px, 0) scale(0.98);
-  }
-  to {
-    opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
   }
 }
 
@@ -1184,19 +1172,24 @@ body.biorouter-sidebar-compact [data-slot='sidebar-container'] {
   box-shadow: var(--shadow-popover);
 }
 
-body.biorouter-window-resizing .biorouter-route-surface,
 body.biorouter-window-resizing .biorouter-sidebar-inset-depth,
 body.biorouter-window-resizing .biorouter-sidebar-shell,
 body.biorouter-window-resizing [data-slot='sidebar-gap'],
 body.biorouter-window-resizing [data-testid='artifact-viewer'] {
-  /* Only suppress TRANSITIONS during resize. Do NOT set `animation: none` here:
-     the route surface carries a one-shot entrance animation, and toggling its
-     animation-name to none (on resize) and back (when this class is removed
-     ~180ms after resize settles) RESTARTS that entrance — the whole main screen
-     re-ran its fade-from-transparent, reading as a reload/flicker after every
-     resize. Leaving the animation-name untouched keeps it from restarting.
-     (These elements animate via transitions anyway, so nothing is lost.) */
+  /* Resize-driven geometry should track the pointer instead of lagging behind it. */
   transition-duration: 0ms !important;
+}
+
+@media (max-height: 520px) {
+  .biorouter-clean-conversation {
+    align-items: flex-start;
+    padding-top: 56px;
+    padding-bottom: 16px;
+  }
+
+  .biorouter-clean-conversation-content {
+    transform: none;
+  }
 }
 
 /* P6 — inline code is MONOSPACE. It was `var(--font-sans)` (Arial), so every
@@ -1376,60 +1369,9 @@ em > code.bg-inline-code {
   contain: layout style paint;
 }
 
-.biorouter-route-surface {
-  animation: biorouter-route-morph-in var(--motion-slow) var(--ease-out);
-  view-transition-name: biorouter-route-surface;
-}
-
-.biorouter-composer-view-transition {
-  view-transition-name: biorouter-composer;
-}
-
 .biorouter-composer-motion {
   transform-origin: top left;
   will-change: transform, opacity;
-}
-
-/* Keep view transitions INTERRUPTIBLE: the crossfade overlay must not eat
-   clicks. Without this, clicking a second sidebar tab while the first tab's
-   ~260ms transition is still running lands on the snapshot overlay instead of
-   the real (already-updated) sidebar, so the second navigation never fires and
-   the user is stuck on the first tab. pointer-events:none lets the click reach
-   the live DOM, which starts a new transition — the browser auto-skips the
-   in-flight one, so the second tab always wins. The user can stop and re-pick a
-   tab at any moment. */
-::view-transition,
-::view-transition-group(*),
-::view-transition-image-pair(*),
-::view-transition-old(*),
-::view-transition-new(*) {
-  pointer-events: none;
-}
-
-::view-transition-group(biorouter-route-surface) {
-  animation-duration: var(--motion-slow);
-  animation-timing-function: var(--ease-out);
-}
-
-::view-transition-group(biorouter-composer) {
-  animation-duration: var(--motion-slow);
-  animation-timing-function: var(--ease-out);
-}
-
-/* The route surface is square where it meets the sidebar — clip its crossfade
-   snapshot to a square too, otherwise it briefly renders with a 16px rounded
-   corner that snaps flat when the transition ends (a visible flash on every
-   panel switch). Only the composer, which really is a rounded card, keeps 16px. */
-::view-transition-old(biorouter-route-surface),
-::view-transition-new(biorouter-route-surface) {
-  border-radius: 0;
-  overflow: clip;
-}
-
-::view-transition-old(biorouter-composer),
-::view-transition-new(biorouter-composer) {
-  border-radius: 16px;
-  overflow: clip;
 }
 
 /* Non-blocking page transitions */
@@ -1451,7 +1393,6 @@ em > code.bg-inline-code {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .biorouter-route-surface,
   .page-transition {
     animation: none;
   }

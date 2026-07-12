@@ -307,8 +307,11 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
   };
 
   return (
-    <Dialog open={modalState.isOpen} onOpenChange={(open) => !open && dismissModal()}>
-      <DialogContent className="sm:max-w-[500px]">
+    <Dialog
+      open={modalState.isOpen}
+      onOpenChange={(open) => !open && !modalState.isPending && dismissModal()}
+    >
+      <DialogContent dismissible={!modalState.isPending} className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle className={getTitleClassName()}>{config.title}</DialogTitle>
           <DialogDescription className="text-left whitespace-pre-wrap min-w-0 [overflow-wrap:anywhere]">

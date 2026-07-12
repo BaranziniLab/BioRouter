@@ -13,6 +13,7 @@ import {
 } from '../../ui/dialog';
 import { Input } from '../../ui/input';
 import { Switch } from '../../ui/switch';
+import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import BuiltInBadge from '../../ui/BuiltInBadge';
 import { BUILTIN_RECREATED_TITLE, isBuiltinKnowledgeBase } from '../../../utils/builtins';
 import { useKnowledge } from '../KnowledgeContext';
@@ -31,6 +32,7 @@ export function KBSelectorPalette({ onClose }: Props) {
   const [draft, setDraft] = useState('');
   const [draftMode, setDraftMode] = useState<DraftMode>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [baseToDelete, setBaseToDelete] = useState<Manifest | null>(null);
   const [error, setError] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const importRef = useRef<HTMLInputElement>(null);
@@ -132,14 +134,14 @@ export function KBSelectorPalette({ onClose }: Props) {
     }
   }
 
-  async function handleRemove(base: Manifest) {
-    if (!window.confirm(`Delete knowledge base "${base.name}"? This cannot be undone.`)) {
-      return;
-    }
+  async function handleRemove() {
+    if (!baseToDelete || busyId !== null) return;
+    const base = baseToDelete;
     setError(null);
     setBusyId(base.id);
     try {
       await remove(base.id);
+      setBaseToDelete(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -176,222 +178,248 @@ export function KBSelectorPalette({ onClose }: Props) {
   }
 
   return (
-    <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="sm:max-w-[760px] p-0 overflow-hidden">
-        <DialogHeader className="px-6 pt-6 pb-0">
-          <DialogTitle>Knowledge Bases</DialogTitle>
-          <DialogDescription>
-            Focus one knowledge base for graphing and ingest while choosing which ones stay visible
-            to chat discovery.
-          </DialogDescription>
-        </DialogHeader>
+    <>
+      <Dialog open onOpenChange={(open) => !open && busyId === null && onClose()}>
+        <DialogContent
+          dismissible={busyId === null}
+          className="sm:max-w-[760px] p-0 overflow-hidden"
+        >
+          <DialogHeader className="px-6 pt-6 pb-0">
+            <DialogTitle>Knowledge Bases</DialogTitle>
+            <DialogDescription>
+              Focus one knowledge base for graphing and ingest while choosing which ones stay
+              visible to chat discovery.
+            </DialogDescription>
+          </DialogHeader>
 
-        <div className="px-6 py-4 border-b border-border-subtle">
-          <div className="flex h-9 items-center gap-2 rounded-md border border-border-input bg-background-default px-3 transition-colors hover:border-border-strong focus-within:border-border-strong">
-            <Search className="h-4 w-4 text-text-muted" strokeWidth={1.5} />
-            <input
-              data-testid="knowledge-kb-search"
-              ref={searchRef}
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search knowledge bases"
-              className="flex-1 bg-transparent text-sm outline-none placeholder:text-text-muted"
-            />
+          <div className="px-6 py-4 border-b border-border-subtle">
+            <div className="flex h-9 items-center gap-2 rounded-md border border-border-input bg-background-default px-3 transition-colors hover:border-border-strong focus-within:border-border-strong">
+              <Search className="h-4 w-4 text-text-muted" strokeWidth={1.5} />
+              <input
+                data-testid="knowledge-kb-search"
+                ref={searchRef}
+                type="text"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search knowledge bases"
+                className="flex-1 bg-transparent text-sm outline-none placeholder:text-text-muted"
+              />
+            </div>
+
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                data-testid="knowledge-kb-create"
+                type="button"
+                variant="default"
+                size="sm"
+                onClick={startCreate}
+              >
+                <FolderPlus className="mr-1.5 h-4 w-4" strokeWidth={1.5} />
+                Create Knowledge Base
+              </Button>
+              <Button
+                data-testid="knowledge-kb-import"
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => importRef.current?.click()}
+                disabled={busyId === '__import'}
+              >
+                <FolderInput className="mr-1.5 h-4 w-4" strokeWidth={1.5} />
+                {busyId === '__import' ? 'Importing…' : 'Import from .brkb'}
+              </Button>
+              <input
+                ref={importRef}
+                type="file"
+                accept=".brkb"
+                className="hidden"
+                onChange={(e) => {
+                  const file = e.target.files?.[0] ?? null;
+                  void handleImport(file);
+                  e.target.value = '';
+                }}
+              />
+            </div>
+
+            {draftMode && (
+              <div className="biorouter-modal-panel mt-4 rounded-xl p-4">
+                <div className="mb-2 text-sm font-medium">
+                  {draftMode.kind === 'create'
+                    ? 'Name your new knowledge base'
+                    : `Rename "${draftMode.base.name}"`}
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <Input
+                    data-testid="knowledge-kb-name-input"
+                    type="text"
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        void submitDraft();
+                      }
+                    }}
+                    placeholder="Knowledge base name"
+                    className="flex-1"
+                  />
+                  <div className="flex gap-2">
+                    <Button type="button" variant="outline" size="sm" onClick={resetDraft}>
+                      Cancel
+                    </Button>
+                    <Button
+                      data-testid="knowledge-kb-submit"
+                      type="button"
+                      size="sm"
+                      onClick={() => void submitDraft()}
+                    >
+                      {draftMode.kind === 'create' ? 'Create' : 'Save'}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {error && <div className="mt-3 text-sm text-text-danger">{error}</div>}
           </div>
 
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="max-h-[420px] overflow-y-auto px-4 py-4">
+            {filtered.length === 0 ? (
+              <div className="biorouter-modal-panel rounded-xl px-4 py-10 text-center text-sm text-text-muted">
+                No knowledge bases match this search.
+              </div>
+            ) : (
+              <div className="biorouter-list-shell">
+                {filtered.map((base) => {
+                  const isActive = activeKbId === base.id;
+                  const isBusy = busyId === base.id;
+                  const hidden = hiddenKbIds.includes(base.id);
+
+                  return (
+                    <div
+                      key={base.id}
+                      className={`biorouter-list-row flex items-center gap-3 px-3 py-2 transition-colors ${isActive ? 'bg-background-medium' : ''}`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveKbId(base.id);
+                          onClose();
+                        }}
+                        className="flex min-w-0 flex-1 items-center gap-3 text-left"
+                      >
+                        <span
+                          className="h-3 w-3 rounded-full border border-border-subtle"
+                          style={{ background: base.color }}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <div className="truncate text-sm font-medium text-text-default">
+                              {base.name}
+                            </div>
+                            {isBuiltinKnowledgeBase(base.id) && (
+                              <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
+                            )}
+                            {hidden && (
+                              <Badge uppercase className="text-[10px]">
+                                Hidden from chat
+                              </Badge>
+                            )}
+                          </div>
+                          <div className="truncate text-[11px] font-mono text-text-muted">
+                            {base.id}
+                          </div>
+                        </div>
+                        {isActive && (
+                          <Badge uppercase tone="accent" className="text-[10px]">
+                            Focused
+                          </Badge>
+                        )}
+                      </button>
+
+                      <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 rounded-md border border-border-subtle bg-background-default px-2 py-1">
+                          <EyeOff className="h-3.5 w-3.5 text-text-muted" strokeWidth={1.5} />
+                          <Switch
+                            checked={!hidden}
+                            onCheckedChange={() => toggleKbHidden(base.id)}
+                            variant="mono"
+                            aria-label={`Toggle chat discovery for ${base.name}`}
+                          />
+                        </div>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 px-2"
+                          onClick={() => void handleExport(base)}
+                          disabled={isBusy}
+                          title="Export as .brkb"
+                          aria-label={`Export ${base.name} as .brkb`}
+                        >
+                          <Download className="h-4 w-4" strokeWidth={1.5} />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 px-2"
+                          onClick={() => startRename(base)}
+                          disabled={isBusy}
+                          title="Rename knowledge base"
+                          aria-label={`Rename ${base.name}`}
+                        >
+                          <Pencil className="h-4 w-4" strokeWidth={1.5} />
+                        </Button>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 px-2 text-text-danger hover:text-text-danger/80"
+                          onClick={() => setBaseToDelete(base)}
+                          disabled={isBusy}
+                          title="Delete knowledge base"
+                          aria-label={`Delete ${base.name}`}
+                        >
+                          <Trash2 className="h-4 w-4" strokeWidth={1.5} />
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <DialogFooter className="border-t border-border-subtle px-6 py-4 sm:justify-between">
+            <div className="text-xs text-text-muted">
+              Tip: focus a knowledge base here for editing and ingest. Hidden knowledge bases stay
+              available here even when chats stop searching them by default.
+            </div>
             <Button
-              data-testid="knowledge-kb-create"
-              type="button"
-              variant="default"
-              size="sm"
-              onClick={startCreate}
-            >
-              <FolderPlus className="mr-1.5 h-4 w-4" strokeWidth={1.5} />
-              Create Knowledge Base
-            </Button>
-            <Button
-              data-testid="knowledge-kb-import"
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => importRef.current?.click()}
-              disabled={busyId === '__import'}
+              onClick={onClose}
+              disabled={busyId !== null}
             >
-              <FolderInput className="mr-1.5 h-4 w-4" strokeWidth={1.5} />
-              {busyId === '__import' ? 'Importing…' : 'Import from .brkb'}
+              Close
             </Button>
-            <input
-              ref={importRef}
-              type="file"
-              accept=".brkb"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0] ?? null;
-                void handleImport(file);
-                e.target.value = '';
-              }}
-            />
-          </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
-          {draftMode && (
-            <div className="biorouter-modal-panel mt-4 rounded-xl p-4">
-              <div className="mb-2 text-sm font-medium">
-                {draftMode.kind === 'create'
-                  ? 'Name your new knowledge base'
-                  : `Rename "${draftMode.base.name}"`}
-              </div>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <Input
-                  data-testid="knowledge-kb-name-input"
-                  type="text"
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      void submitDraft();
-                    }
-                  }}
-                  placeholder="Knowledge base name"
-                  className="flex-1"
-                />
-                <div className="flex gap-2">
-                  <Button type="button" variant="outline" size="sm" onClick={resetDraft}>
-                    Cancel
-                  </Button>
-                  <Button
-                    data-testid="knowledge-kb-submit"
-                    type="button"
-                    size="sm"
-                    onClick={() => void submitDraft()}
-                  >
-                    {draftMode.kind === 'create' ? 'Create' : 'Save'}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {error && <div className="mt-3 text-sm text-text-danger">{error}</div>}
-        </div>
-
-        <div className="max-h-[420px] overflow-y-auto px-4 py-4">
-          {filtered.length === 0 ? (
-            <div className="biorouter-modal-panel rounded-xl px-4 py-10 text-center text-sm text-text-muted">
-              No knowledge bases match this search.
-            </div>
-          ) : (
-            <div className="biorouter-list-shell">
-              {filtered.map((base) => {
-                const isActive = activeKbId === base.id;
-                const isBusy = busyId === base.id;
-                const hidden = hiddenKbIds.includes(base.id);
-
-                return (
-                  <div
-                    key={base.id}
-                    className={`biorouter-list-row flex items-center gap-3 px-3 py-2 transition-colors ${isActive ? 'bg-background-medium' : ''}`}
-                  >
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveKbId(base.id);
-                        onClose();
-                      }}
-                      className="flex min-w-0 flex-1 items-center gap-3 text-left"
-                    >
-                      <span
-                        className="h-3 w-3 rounded-full border border-border-subtle"
-                        style={{ background: base.color }}
-                      />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <div className="truncate text-sm font-medium text-text-default">
-                            {base.name}
-                          </div>
-                          {isBuiltinKnowledgeBase(base.id) && (
-                            <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
-                          )}
-                          {hidden && (
-                            <Badge uppercase className="text-[10px]">
-                              Hidden from chat
-                            </Badge>
-                          )}
-                        </div>
-                        <div className="truncate text-[11px] font-mono text-text-muted">
-                          {base.id}
-                        </div>
-                      </div>
-                      {isActive && (
-                        <Badge uppercase tone="accent" className="text-[10px]">
-                          Focused
-                        </Badge>
-                      )}
-                    </button>
-
-                    <div className="flex items-center gap-2">
-                      <div className="flex items-center gap-2 rounded-md border border-border-subtle bg-background-default px-2 py-1">
-                        <EyeOff className="h-3.5 w-3.5 text-text-muted" strokeWidth={1.5} />
-                        <Switch
-                          checked={!hidden}
-                          onCheckedChange={() => toggleKbHidden(base.id)}
-                          variant="mono"
-                          aria-label={`Toggle chat discovery for ${base.name}`}
-                        />
-                      </div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 px-2"
-                        onClick={() => void handleExport(base)}
-                        disabled={isBusy}
-                        title="Export as .brkb"
-                      >
-                        <Download className="h-4 w-4" strokeWidth={1.5} />
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 px-2"
-                        onClick={() => startRename(base)}
-                        disabled={isBusy}
-                        title="Rename knowledge base"
-                      >
-                        <Pencil className="h-4 w-4" strokeWidth={1.5} />
-                      </Button>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 px-2 text-text-danger hover:text-text-danger/80"
-                        onClick={() => void handleRemove(base)}
-                        disabled={isBusy}
-                        title="Delete knowledge base"
-                      >
-                        <Trash2 className="h-4 w-4" strokeWidth={1.5} />
-                      </Button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
-        <DialogFooter className="border-t border-border-subtle px-6 py-4 sm:justify-between">
-          <div className="text-xs text-text-muted">
-            Tip: focus a knowledge base here for editing and ingest. Hidden knowledge bases stay
-            available here even when chats stop searching them by default.
-          </div>
-          <Button type="button" variant="outline" size="sm" onClick={onClose}>
-            Close
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      <ConfirmationModal
+        isOpen={baseToDelete !== null}
+        title={`Delete "${baseToDelete?.name ?? ''}"?`}
+        message="This permanently removes the knowledge base and cannot be undone."
+        confirmLabel="Delete"
+        cancelLabel="Cancel"
+        confirmVariant="destructive"
+        isSubmitting={baseToDelete !== null && busyId === baseToDelete.id}
+        onConfirm={() => void handleRemove()}
+        onCancel={() => setBaseToDelete(null)}
+      />
+    </>
   );
 }

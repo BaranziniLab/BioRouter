@@ -5,7 +5,7 @@ import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Button } from '../ui/button';
 import { Plus } from '../icons/app-icons';
 import { GPSIcon } from '../ui/icons';
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import kebabCase from 'lodash/kebabCase';
 import ExtensionModal from '../settings/extensions/modal/ExtensionModal';
 import {
@@ -27,6 +27,10 @@ export type ExtensionsViewOptions = {
   brxtFilePath?: string;
 };
 
+export function getExtensionScrollBehavior(): 'auto' | 'smooth' {
+  return window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth';
+}
+
 export default function ExtensionsView({
   viewOptions,
 }: {
@@ -41,6 +45,9 @@ export default function ExtensionsView({
   const [brxtPreloadedPath, setBrxtPreloadedPath] = useState<string | undefined>(undefined);
   const [refreshKey, setRefreshKey] = useState(0);
   const [searchTerm, setSearchTerm] = useState('');
+  const scrollTimerRef = useRef<number | null>(null);
+  const highlightTimerRef = useRef<number | null>(null);
+  const highlightedElementRef = useRef<HTMLElement | null>(null);
   const { addExtension, getExtensions } = useConfig();
 
   // Track configured extension names so Browse can flag what's already installed.
@@ -64,30 +71,45 @@ export default function ExtensionsView({
     }
   }, [viewOptions.deepLinkConfig, viewOptions.showEnvVars]);
 
-  const scrollToExtension = (extensionName: string) => {
-    setTimeout(() => {
+  const scrollToExtension = useCallback((extensionName: string) => {
+    if (scrollTimerRef.current !== null) window.clearTimeout(scrollTimerRef.current);
+    if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
+    if (highlightedElementRef.current) highlightedElementRef.current.style.boxShadow = '';
+
+    scrollTimerRef.current = window.setTimeout(() => {
+      scrollTimerRef.current = null;
       const element = document.getElementById(`extension-${kebabCase(extensionName)}`);
       if (element) {
         element.scrollIntoView({
-          behavior: 'smooth',
+          behavior: getExtensionScrollBehavior(),
           block: 'center',
         });
-        // Add a subtle, temporary coral highlight ring
+        highlightedElementRef.current = element;
         element.style.boxShadow =
           '0 0 0 2px color-mix(in srgb, var(--color-block-teal) 45%, transparent)';
-        setTimeout(() => {
+        highlightTimerRef.current = window.setTimeout(() => {
+          highlightTimerRef.current = null;
           element.style.boxShadow = '';
+          if (highlightedElementRef.current === element) highlightedElementRef.current = null;
         }, 2000);
       }
     }, 200);
-  };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (scrollTimerRef.current !== null) window.clearTimeout(scrollTimerRef.current);
+      if (highlightTimerRef.current !== null) window.clearTimeout(highlightTimerRef.current);
+      if (highlightedElementRef.current) highlightedElementRef.current.style.boxShadow = '';
+    };
+  }, []);
 
   // Scroll to extension whenever extensionId is provided (after refresh)
   useEffect(() => {
     if (viewOptions.deepLinkConfig?.name && refreshKey > 0) {
       scrollToExtension(viewOptions.deepLinkConfig?.name);
     }
-  }, [viewOptions.deepLinkConfig?.name, refreshKey]);
+  }, [refreshKey, scrollToExtension, viewOptions.deepLinkConfig?.name]);
 
   // Open BrxtInstallModal automatically when a file path is pre-loaded via IPC
   useEffect(() => {

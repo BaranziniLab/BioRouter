@@ -95,7 +95,9 @@ export interface StartBiorouterdOptions {
   externalBiorouterd?: ExternalBiorouterdConfig;
 }
 
-export const startBiorouterd = async (options: StartBiorouterdOptions): Promise<BiorouterdResult> => {
+export const startBiorouterd = async (
+  options: StartBiorouterdOptions
+): Promise<BiorouterdResult> => {
   const { app, serverSecret, dir: inputDir, env = {}, externalBiorouterd } = options;
   const isWindows = process.platform === 'win32';
   const homeDir = os.homedir();
@@ -133,7 +135,8 @@ export const startBiorouterd = async (options: StartBiorouterdOptions): Promise<
     BIOROUTER_SERVER__SECRET_KEY: serverSecret,
     // Dev Electron rebuilds should not trigger macOS Keychain prompts; packaged
     // builds keep the normal OS credential-store behavior.
-    BIOROUTER_DISABLE_KEYRING: process.env.BIOROUTER_DISABLE_KEYRING ?? (!app.isPackaged ? 'true' : undefined),
+    BIOROUTER_DISABLE_KEYRING:
+      process.env.BIOROUTER_DISABLE_KEYRING ?? (!app.isPackaged ? 'true' : undefined),
     // Default Auto Visualiser to CDN-referenced assets so each figure's persisted
     // HTML blob is a few KB instead of megabytes of inlined D3/Chart.js/Leaflet/
     // Mermaid — keeps figure-heavy sessions light in the renderer heap and SQLite.
@@ -143,7 +146,10 @@ export const startBiorouterd = async (options: StartBiorouterdOptions): Promise<
     ...env,
   } as BiorouterProcessEnv;
 
-  const processEnv: BiorouterProcessEnv = { ...process.env, ...additionalEnv } as BiorouterProcessEnv;
+  const processEnv: BiorouterProcessEnv = {
+    ...process.env,
+    ...additionalEnv,
+  } as BiorouterProcessEnv;
 
   if (isWindows && !resolvedBiorouterdPath.toLowerCase().endsWith('.exe')) {
     biorouterdPath = resolvedBiorouterdPath + '.exe';
@@ -160,22 +166,6 @@ export const startBiorouterd = async (options: StartBiorouterdOptions): Promise<
     detached: isWindows,
     shell: false,
   };
-
-  const safeSpawnOptions = {
-    ...spawnOptions,
-    env: Object.keys(spawnOptions.env || {}).reduce(
-      (acc, key) => {
-        if (key.includes('SECRET') || key.includes('PASSWORD') || key.includes('TOKEN')) {
-          acc[key] = '[REDACTED]';
-        } else {
-          acc[key] = spawnOptions.env![key] || '';
-        }
-        return acc;
-      },
-      {} as Record<string, string>
-    ),
-  };
-  log.info('Spawn options:', JSON.stringify(safeSpawnOptions, null, 2));
 
   const safeArgs = ['agent'];
 

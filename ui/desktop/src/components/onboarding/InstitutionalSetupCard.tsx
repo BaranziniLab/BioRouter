@@ -103,15 +103,24 @@ export default function InstitutionalSetupCard({
   };
 
   return (
-    <section className="py-7 border-b border-border-default">
+    <section
+      aria-labelledby="institutional-setup-title"
+      className="min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-card p-5 sm:p-6"
+    >
       <OnboardingSectionLabel category="institutional" label="Institutional · UCSF Versa API" />
-      <h2 className="text-base font-medium text-text-default mt-2">UCSF-hosted models</h2>
+      <h2 id="institutional-setup-title" className="mt-2 text-base font-medium text-text-default">
+        UCSF-hosted models
+      </h2>
       <p className="text-sm text-text-muted mt-1 mb-5 leading-relaxed">
         Use UCSF-hosted models through the Versa unified API. Best for UCSF affiliates.
       </p>
 
       {/* Tab toggle */}
-      <div className="inline-flex rounded-md bg-background-medium p-0.5 mb-4">
+      <div
+        role="tablist"
+        aria-label="UCSF-hosted provider"
+        className="mb-4 grid w-full grid-cols-2 rounded-md bg-background-medium p-0.5 sm:inline-grid sm:w-auto"
+      >
         {TABS.map((tab) => (
           <button
             key={tab.id}
@@ -120,7 +129,9 @@ export default function InstitutionalSetupCard({
               setFlavor(tab.id);
               setError(null);
             }}
-            className={`px-3 h-7 text-xs rounded transition-colors duration-150 ${flavor === tab.id ? 'bg-background-default text-text-default' : 'text-text-muted hover:text-text-default'}`}
+            role="tab"
+            aria-selected={flavor === tab.id}
+            className={`h-7 min-w-0 truncate rounded px-2 text-xs transition-colors duration-150 sm:px-3 ${flavor === tab.id ? 'bg-background-default text-text-default' : 'text-text-muted hover:text-text-default'}`}
           >
             {tab.label}
           </button>
@@ -129,8 +140,14 @@ export default function InstitutionalSetupCard({
 
       {flavor === 'azure' ? (
         <div>
-          <label className="block text-xs font-medium text-text-default mb-1.5">API Key</label>
+          <label
+            htmlFor="versa-azure-api-key"
+            className="mb-1.5 block text-xs font-medium text-text-default"
+          >
+            API Key
+          </label>
           <input
+            id="versa-azure-api-key"
             type="password"
             value={azureApiKey}
             onChange={(e) => setAzureApiKey(e.target.value)}
@@ -145,10 +162,14 @@ export default function InstitutionalSetupCard({
       ) : (
         <div className="space-y-3">
           <div>
-            <label className="block text-xs font-medium text-text-default mb-1.5">
+            <label
+              htmlFor="versa-bedrock-access-key"
+              className="mb-1.5 block text-xs font-medium text-text-default"
+            >
               Access Key ID
             </label>
             <input
+              id="versa-bedrock-access-key"
               type="password"
               value={bedrockAccessKey}
               onChange={(e) => setBedrockAccessKey(e.target.value)}
@@ -158,10 +179,14 @@ export default function InstitutionalSetupCard({
             />
           </div>
           <div>
-            <label className="block text-xs font-medium text-text-default mb-1.5">
+            <label
+              htmlFor="versa-bedrock-secret-key"
+              className="mb-1.5 block text-xs font-medium text-text-default"
+            >
               Secret Access Key
             </label>
             <input
+              id="versa-bedrock-secret-key"
               type="password"
               value={bedrockSecretKey}
               onChange={(e) => setBedrockSecretKey(e.target.value)}
@@ -253,8 +278,8 @@ export default function InstitutionalSetupCard({
         </CollapsibleContent>
       </Collapsible>
 
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-3 mt-5">
-        <Button onClick={handleSubmit} disabled={!canSubmit} className="h-9 px-4">
+      <div className="mt-5 flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-4 sm:gap-y-3">
+        <Button onClick={handleSubmit} disabled={!canSubmit} className="h-9 w-full px-4 sm:w-auto">
           {isLoading ? (
             <div className="w-4 h-4 border-2 border-current border-t-transparent rounded-full animate-spin" />
           ) : (
@@ -267,7 +292,7 @@ export default function InstitutionalSetupCard({
         <button
           type="button"
           onClick={() => navigate('/welcome', { replace: true })}
-          className="text-xs text-text-muted hover:text-text-default transition-colors duration-150"
+          className="w-full py-1 text-center text-xs text-text-muted transition-colors duration-150 hover:text-text-default sm:w-auto sm:text-left"
         >
           View all institutional providers →
         </button>

@@ -519,8 +519,8 @@ function BaseChatContent({
   const artifactPanelCloseTimerRef = useRef<number | null>(null);
   const artifactPanelOpenFrameRef = useRef<number | null>(null);
   const artifactPanelResizeFrameRef = useRef<number | null>(null);
-  const artifactPanelEnsureFrameRef = useRef<number | null>(null);
   const pendingArtifactPanelWidthRef = useRef<number | null>(null);
+  const artifactPanelResizeCleanupRef = useRef<(() => void) | null>(null);
   const artifactPanelWidthUserSetRef = useRef(false);
   const reportedArtifactRenderErrorsRef = useRef<Set<string>>(new Set());
   const pendingArtifactRenderFeedbackRef = useRef<Message | null>(null);
@@ -531,7 +531,9 @@ function BaseChatContent({
   const knownArtifactKeysRef = useRef<Set<string>>(new Set());
   const artifactInitialScanDoneRef = useRef(false);
   const composerMotionRef = useRef<HTMLDivElement>(null);
-  const pendingComposerRectRef = useRef<DOMRect | null>(null);
+  const pendingComposerRectRef = useRef<ReturnType<HTMLDivElement['getBoundingClientRect']> | null>(
+    null
+  );
 
   const isMobile = useIsMobile();
   const { state: sidebarState } = useSidebar();
@@ -575,6 +577,7 @@ function BaseChatContent({
 
   // Reset auto-submit flag when session changes
   useEffect(() => {
+    artifactPanelResizeCleanupRef.current?.();
     hasAutoSubmittedRef.current = false;
     setPresentedArtifact(null);
     setIsArtifactPanelOpen(false);
@@ -600,9 +603,7 @@ function BaseChatContent({
       if (artifactPanelResizeFrameRef.current) {
         window.cancelAnimationFrame(artifactPanelResizeFrameRef.current);
       }
-      if (artifactPanelEnsureFrameRef.current) {
-        window.cancelAnimationFrame(artifactPanelEnsureFrameRef.current);
-      }
+      artifactPanelResizeCleanupRef.current?.();
     };
   }, []);
 
@@ -627,9 +628,10 @@ function BaseChatContent({
         artifactPanelOpenFrameRef.current = null;
       }
 
-      artifactPanelWidthUserSetRef.current = false;
-
-      await ensureArtifactPanelFits();
+      if (!presentedArtifact) {
+        artifactPanelWidthUserSetRef.current = false;
+        await ensureArtifactPanelFits();
+      }
 
       setPresentedArtifact(artifact);
 
@@ -648,6 +650,8 @@ function BaseChatContent({
   );
 
   const handleCloseArtifactPanel = useCallback(() => {
+    artifactPanelResizeCleanupRef.current?.();
+    setIsArtifactPanelResizing(false);
     setIsArtifactPanelOpen(false);
 
     if (artifactPanelCloseTimerRef.current) {
@@ -660,31 +664,6 @@ function BaseChatContent({
       setIsArtifactPanelResizing(false);
     }, ARTIFACT_PANEL_EXIT_MS);
   }, []);
-
-  useEffect(() => {
-    const splitPane = splitPaneRef.current;
-    if (!splitPane) return;
-
-    const updateArtifactFitState = () => {
-      if (!presentedArtifact || isMobile) return;
-      if (artifactPanelEnsureFrameRef.current !== null) return;
-      artifactPanelEnsureFrameRef.current = window.requestAnimationFrame(() => {
-        artifactPanelEnsureFrameRef.current = null;
-        void ensureArtifactPanelFits();
-      });
-    };
-
-    updateArtifactFitState();
-
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', updateArtifactFitState);
-      return () => window.removeEventListener('resize', updateArtifactFitState);
-    }
-
-    const resizeObserver = new ResizeObserver(updateArtifactFitState);
-    resizeObserver.observe(splitPane);
-    return () => resizeObserver.disconnect();
-  }, [ensureArtifactPanelFits, isMobile, presentedArtifact]);
 
   const getMaxArtifactPanelWidth = useCallback(() => {
     const containerWidth = splitPaneRef.current?.clientWidth ?? window.innerWidth;
@@ -738,20 +717,33 @@ function BaseChatContent({
       event.preventDefault();
       event.stopPropagation();
 
+      artifactPanelResizeCleanupRef.current?.();
+
       const startX = event.clientX;
       const startWidth = artifactPanelWidth ?? getDefaultArtifactPanelWidth();
       const previousCursor = document.body.style.cursor;
       const previousUserSelect = document.body.style.userSelect;
+      const resizeHandle = event.currentTarget;
+      const pointerId = event.pointerId;
+      let finished = false;
+
+      try {
+        resizeHandle.setPointerCapture(pointerId);
+      } catch {
+        // Global listeners below still keep the resize usable when capture is unavailable.
+      }
 
       setIsArtifactPanelResizing(true);
       artifactPanelWidthUserSetRef.current = true;
+      pendingArtifactPanelWidthRef.current = null;
       document.body.style.cursor = 'col-resize';
       document.body.style.userSelect = 'none';
 
       const applyPendingWidth = () => {
         artifactPanelResizeFrameRef.current = null;
-        if (pendingArtifactPanelWidthRef.current === null) return;
-        setArtifactPanelWidth(pendingArtifactPanelWidthRef.current);
+        const nextWidth = pendingArtifactPanelWidthRef.current;
+        pendingArtifactPanelWidthRef.current = null;
+        if (nextWidth !== null) setArtifactPanelWidth(nextWidth);
       };
 
       const scheduleWidth = (nextWidth: number) => {
@@ -760,31 +752,57 @@ function BaseChatContent({
         artifactPanelResizeFrameRef.current = window.requestAnimationFrame(applyPendingWidth);
       };
 
-      const handleMove = (moveEvent: PointerEvent) => {
+      const handleMove = (moveEvent: globalThis.PointerEvent) => {
+        if (moveEvent.pointerId !== pointerId) return;
         const nextWidth = startWidth - (moveEvent.clientX - startX);
         scheduleWidth(clampArtifactPanelWidth(nextWidth, getMaxArtifactPanelWidth()));
       };
 
-      const handleEnd = () => {
+      const finishResize = (commitPendingWidth: boolean, updateState: boolean) => {
+        if (finished) return;
+        finished = true;
         if (artifactPanelResizeFrameRef.current !== null) {
           window.cancelAnimationFrame(artifactPanelResizeFrameRef.current);
           artifactPanelResizeFrameRef.current = null;
         }
-        if (pendingArtifactPanelWidthRef.current !== null) {
+        if (commitPendingWidth && pendingArtifactPanelWidthRef.current !== null) {
           setArtifactPanelWidth(pendingArtifactPanelWidthRef.current);
-          pendingArtifactPanelWidthRef.current = null;
         }
-        setIsArtifactPanelResizing(false);
+        pendingArtifactPanelWidthRef.current = null;
+        if (updateState) setIsArtifactPanelResizing(false);
         document.body.style.cursor = previousCursor;
         document.body.style.userSelect = previousUserSelect;
         window.removeEventListener('pointermove', handleMove);
         window.removeEventListener('pointerup', handleEnd);
         window.removeEventListener('pointercancel', handleEnd);
+        window.removeEventListener('blur', handleWindowBlur);
+        resizeHandle.removeEventListener('lostpointercapture', handleLostPointerCapture);
+        try {
+          if (resizeHandle.hasPointerCapture(pointerId))
+            resizeHandle.releasePointerCapture(pointerId);
+        } catch {
+          // The element may have left the document while the pointer was outside the window.
+        }
+        artifactPanelResizeCleanupRef.current = null;
       };
+
+      const handleEnd = (endEvent: globalThis.PointerEvent) => {
+        if (endEvent.pointerId !== pointerId) return;
+        finishResize(true, true);
+      };
+
+      const handleWindowBlur = () => finishResize(true, true);
+      const handleLostPointerCapture = (lostEvent: globalThis.PointerEvent) => {
+        if (lostEvent.pointerId === pointerId) finishResize(true, true);
+      };
+
+      artifactPanelResizeCleanupRef.current = () => finishResize(false, false);
 
       window.addEventListener('pointermove', handleMove);
       window.addEventListener('pointerup', handleEnd);
       window.addEventListener('pointercancel', handleEnd);
+      window.addEventListener('blur', handleWindowBlur);
+      resizeHandle.addEventListener('lostpointercapture', handleLostPointerCapture);
     },
     [artifactPanelWidth, getDefaultArtifactPanelWidth, getMaxArtifactPanelWidth, isMobile]
   );
@@ -941,7 +959,7 @@ function BaseChatContent({
       hasAutoSubmittedRef.current = true;
       handleSubmit('');
     }
-  }, [session, initialMessage, searchParams, handleSubmit, navigate, location]);
+  }, [session, initialMessage, initialAttachments, searchParams, handleSubmit, navigate, location]);
 
   // Resolve session-scoped vision capability whenever the session's bound
   // provider or model changes. Falls back to null (== use global context) if
@@ -1225,14 +1243,17 @@ function BaseChatContent({
   useEffect(() => {
     onSessionUpdateRef.current = onSessionUpdate;
   }, [onSessionUpdate]);
+  const sessionUpdateId = session?.id;
+  const sessionUpdateName = session?.name;
+  const sessionUpdateUserSetName = session?.user_set_name;
   useEffect(() => {
-    if (!session) return;
+    if (!sessionUpdateId || sessionUpdateName === undefined) return;
     onSessionUpdateRef.current?.({
-      id: session.id,
-      name: session.name,
-      userSetName: session.user_set_name ?? false,
+      id: sessionUpdateId,
+      name: sessionUpdateName,
+      userSetName: sessionUpdateUserSetName ?? false,
     });
-  }, [session?.id, session?.name, session?.user_set_name]);
+  }, [sessionUpdateId, sessionUpdateName, sessionUpdateUserSetName]);
 
   const handleRename = async (newName: string) => {
     if (onRenameSession) {
@@ -1380,9 +1401,7 @@ function BaseChatContent({
                 onClick={handleWorkflowReviewAction}
               >
                 <Pipeline className="h-3.5 w-3.5 shrink-0" />
-                <span className="whitespace-nowrap">
-                  {workflow ? 'Workflow' : 'Make workflow'}
-                </span>
+                <span className="whitespace-nowrap">{workflow ? 'Workflow' : 'Make workflow'}</span>
               </Button>
               <Button
                 type="button"
@@ -1574,12 +1593,12 @@ function BaseChatContent({
               )}
               {isCleanConversation ? (
                 <div
-                  className="flex-1 min-h-0 flex items-center justify-center px-4 py-10 sm:px-6 sm:py-16"
+                  className="biorouter-clean-conversation flex-1 min-h-0 flex items-center justify-center overflow-y-auto px-4 py-10 sm:px-6 sm:py-16"
                   onDrop={handleDrop}
                   onDragOver={handleDragOver}
                   data-drop-zone="true"
                 >
-                  <div className="w-full max-w-[760px] flex flex-col items-center gap-6 -translate-y-10 sm:-translate-y-12">
+                  <div className="biorouter-clean-conversation-content w-full max-w-[760px] flex flex-col items-center gap-6 -translate-y-10 sm:-translate-y-12">
                     <Greeting
                       key={sessionId}
                       className={cn(

@@ -1,7 +1,6 @@
 import React, { useState, useEffect, PropsWithChildren, useCallback, useRef } from 'react';
 import SearchBar from './SearchBar';
 import { SearchHighlighter } from '../../utils/searchHighlighter';
-import debounce from 'lodash/debounce';
 import '../../styles/search.css';
 
 /**
@@ -51,16 +50,29 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
     null
   ) as React.RefObject<HTMLInputElement>;
   const highlighterRef = React.useRef<SearchHighlighter | null>(null);
+  const highlightTimerRef = React.useRef<number | null>(null);
   const containerRef = React.useRef<SearchContainerElement | null>(null);
   const lastSearchRef = React.useRef<{ term: string; caseSensitive: boolean }>({
     term: '',
     caseSensitive: false,
   });
 
-  // Create debounced highlight function
-  const debouncedHighlight = useCallback(
-    (term: string, caseSensitive: boolean, highlighter: SearchHighlighter) => {
+  const scheduleHighlight = useCallback(
+    (term: string, caseSensitive: boolean, highlighter: SearchHighlighter, immediate = false) => {
+      if (highlightTimerRef.current !== null) {
+        window.clearTimeout(highlightTimerRef.current);
+        highlightTimerRef.current = null;
+      }
+
       const performHighlight = () => {
+        if (
+          highlighterRef.current !== highlighter ||
+          lastSearchRef.current.term !== term ||
+          lastSearchRef.current.caseSensitive !== caseSensitive
+        ) {
+          return;
+        }
+
         const highlights = highlighter.highlight(term, caseSensitive);
         const count = highlights.length;
 
@@ -75,22 +87,15 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
         }
       };
 
-      // If this is a case sensitivity change (same term, different case setting),
-      // execute immediately
-      if (
-        term === lastSearchRef.current.term &&
-        caseSensitive !== lastSearchRef.current.caseSensitive
-      ) {
+      if (immediate) {
         performHighlight();
         return;
       }
 
-      // Create a debounced version of performHighlight
-      const debouncedFn = debounce(performHighlight, 150);
-      debouncedFn();
-
-      // Store the debounced function for potential cancellation
-      return debouncedFn;
+      highlightTimerRef.current = window.setTimeout(() => {
+        highlightTimerRef.current = null;
+        performHighlight();
+      }, 150);
     },
     []
   );
@@ -115,6 +120,10 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
 
       // If empty, clear everything and return
       if (!term) {
+        if (highlightTimerRef.current !== null) {
+          window.clearTimeout(highlightTimerRef.current);
+          highlightTimerRef.current = null;
+        }
         setInternalSearchResults(null);
         if (highlighterRef.current) {
           highlighterRef.current.clearHighlights();
@@ -127,7 +136,7 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
 
       // For case sensitivity changes, reuse existing highlighter
       if (isCaseChange && highlighterRef.current) {
-        debouncedHighlight(term, caseSensitive, highlighterRef.current);
+        scheduleHighlight(term, caseSensitive, highlighterRef.current, true);
         return;
       }
 
@@ -154,9 +163,9 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
         }
       });
 
-      debouncedHighlight(term, caseSensitive, highlighterRef.current);
+      scheduleHighlight(term, caseSensitive, highlighterRef.current);
     },
-    [debouncedHighlight, onSearch]
+    [onSearch, scheduleHighlight]
   );
 
   /**
@@ -287,6 +296,9 @@ export const SearchView: React.FC<PropsWithChildren<SearchViewProps>> = ({
   // Clean up highlighter on unmount
   useEffect(() => {
     return () => {
+      if (highlightTimerRef.current !== null) {
+        window.clearTimeout(highlightTimerRef.current);
+      }
       if (highlighterRef.current) {
         highlighterRef.current.destroy();
         highlighterRef.current = null;

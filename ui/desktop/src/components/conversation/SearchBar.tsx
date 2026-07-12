@@ -45,6 +45,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   const internalInputRef = React.useRef<HTMLInputElement>(null);
   const inputRef = externalInputRef || internalInputRef;
   const debouncedSearchRef = useRef<ReturnType<typeof debounce> | null>(null);
+  const closeTimerRef = useRef<number | null>(null);
 
   // Create debounced search function
   useEffect(() => {
@@ -62,6 +63,12 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   useEffect(() => {
     inputRef.current?.focus();
   }, [inputRef]);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimerRef.current !== null) window.clearTimeout(closeTimerRef.current);
+    };
+  }, []);
 
   // Handle changes to initialSearchTerm
   useEffect(() => {
@@ -134,12 +141,43 @@ export const SearchBar: React.FC<SearchBarProps> = ({
     inputRef.current?.focus();
   };
 
+  const cancelClose = React.useCallback(() => {
+    if (!isExiting) return;
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    setIsExiting(false);
+  }, [isExiting]);
+
+  useEffect(() => {
+    if (!isExiting) return;
+
+    const handleFindAgain = (event: globalThis.KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && !event.shiftKey && event.key.toLowerCase() === 'f') {
+        cancelClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleFindAgain);
+    return () => window.removeEventListener('keydown', handleFindAgain);
+  }, [cancelClose, isExiting]);
+
   const handleClose = () => {
+    if (isExiting) return;
     setIsExiting(true);
-    debouncedSearchRef.current?.cancel(); // Cancel any pending searches
-    setTimeout(() => {
+    inputRef.current?.blur();
+    debouncedSearchRef.current?.cancel();
+
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
       onClose();
-    }, 150); // Match animation duration
+      return;
+    }
+
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null;
+      onClose();
+    }, 150);
   };
 
   const hasResults = searchResults && searchResults.count > 0;
@@ -162,6 +200,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
               value={searchTerm}
               onChange={handleSearch}
               onKeyDown={handleKeyDown}
+              onFocus={cancelClose}
               placeholder={placeholder}
               className="no-drag w-full text-sm pl-9 pr-24 py-3 bg-background-default text-text-default placeholder:text-text-muted"
             />

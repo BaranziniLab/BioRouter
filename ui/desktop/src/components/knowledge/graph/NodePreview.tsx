@@ -1,5 +1,5 @@
 // ui/desktop/src/components/knowledge/graph/NodePreview.tsx
-import { useMemo } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { FileCode2, X } from 'lucide-react';
 import type { GraphNode } from '../../../api/types.gen';
 import MarkdownContent from '../../MarkdownContent';
@@ -34,9 +34,36 @@ function splitFrontmatter(content: string): { frontmatter: string | null; body: 
 export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
   const { content, loading, error } = usePagePreview(kbId, node.path, previewSha);
   const parsed = useMemo(() => splitFrontmatter(content ?? ''), [content]);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const onCloseRef = useRef(onClose);
+
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+
+  useEffect(() => {
+    const handlePointerDown = (event: globalThis.PointerEvent) => {
+      if (!panelRef.current?.contains(event.target as Node)) onCloseRef.current();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onCloseRef.current();
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, []);
 
   return (
-    <div className="absolute top-12 right-4 z-10 flex max-h-[calc(100%-5rem)] w-[360px] flex-col overflow-hidden rounded-2xl border border-border-subtle bg-background-default shadow-popover">
+    <div
+      ref={panelRef}
+      role="dialog"
+      aria-label={`Preview ${prettyLabel(node.label, node.kind)}`}
+      className="absolute top-12 right-4 z-10 flex max-h-[calc(100%-5rem)] w-[min(360px,calc(100%-2rem))] flex-col overflow-hidden rounded-2xl border border-border-subtle bg-background-default shadow-popover"
+    >
       <div className="flex items-center justify-between border-b border-border-subtle bg-background-muted px-4 py-3">
         <div className="flex items-center gap-2 min-w-0">
           <span
@@ -53,7 +80,13 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
             </div>
           </div>
         </div>
-        <Button variant="ghost" size="sm" onClick={onClose} className="flex-shrink-0">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={onClose}
+          className="flex-shrink-0"
+          aria-label="Close preview"
+        >
           <X className="h-4 w-4" strokeWidth={1.5} />
         </Button>
       </div>
