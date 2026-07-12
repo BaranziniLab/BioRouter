@@ -13,7 +13,6 @@ use crate::agents::types::{
 use crate::config::Config;
 use crate::conversation::message::Message;
 use crate::conversation::Conversation;
-use crate::tool_monitor::RepetitionInspector;
 
 /// Result of a retry logic evaluation
 #[derive(Debug, Clone, PartialEq)]
@@ -40,8 +39,6 @@ const BIOROUTER_WORKFLOW_ON_FAILURE_TIMEOUT_SECONDS: &str =
 pub struct RetryManager {
     /// Current number of retry attempts
     attempts: Arc<Mutex<u32>>,
-    /// Optional repetition inspector for reset operations
-    repetition_inspector: Option<Arc<Mutex<Option<RepetitionInspector>>>>,
 }
 
 impl Default for RetryManager {
@@ -55,17 +52,6 @@ impl RetryManager {
     pub fn new() -> Self {
         Self {
             attempts: Arc::new(Mutex::new(0)),
-            repetition_inspector: None,
-        }
-    }
-
-    /// Create a new retry manager with repetition inspector
-    pub fn with_repetition_inspector(
-        repetition_inspector: Arc<Mutex<Option<RepetitionInspector>>>,
-    ) -> Self {
-        Self {
-            attempts: Arc::new(Mutex::new(0)),
-            repetition_inspector: Some(repetition_inspector),
         }
     }
 
@@ -73,13 +59,6 @@ impl RetryManager {
     pub async fn reset_attempts(&self) {
         let mut attempts = self.attempts.lock().await;
         *attempts = 0;
-
-        // Reset repetition inspector if available
-        if let Some(inspector) = &self.repetition_inspector {
-            if let Some(inspector) = inspector.lock().await.as_mut() {
-                inspector.reset();
-            }
-        }
     }
 
     /// Increment the retry attempts counter and return the new value
