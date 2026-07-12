@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod docker;
 pub mod local;
+pub mod seatbelt;
 
 pub use docker::DockerSandbox;
 pub use local::LocalProcessSandbox;
