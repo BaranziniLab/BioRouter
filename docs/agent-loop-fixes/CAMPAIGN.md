@@ -28,12 +28,12 @@ before merging.
 
 | Wave | Cluster | Branch | Proposals | Status |
 |---|---|---|---|---|
-| 0 | Foundation + seams + designs | `agent-loop-wave0` | BR-46, 25, 36, 38, 20, 39, 34, 26, 4, 33 (+BR-16 subsumed); agent.rs seam refactor; design docs BR-43/54/21/17/45/65 | **in progress** |
-| 1 | Compaction & memory | `agent-loop-compaction` | BR-10, 11, 12, 13, 14, 15, 17 | pending |
-| 1 | Security & guardrails | `agent-loop-security` | BR-21, 22, 23, 64, 65 | pending |
-| 1 | Checkpoints & VCS | `agent-loop-checkpoints` | BR-43, 44, 45 | pending |
-| 1 | Long-running & processes | `agent-loop-processes` | BR-37, 40, 41, 42 | pending |
-| 1 | Context & prompts | `agent-loop-context` | BR-1, 2, 3, 5, 8, 9, 60 | pending |
+| 0 | Foundation + seams + designs | `agent-loop-wave0` | BR-46, 25, 36, 38, 20, 39, 34, 26, 4, 33 (+BR-16 subsumed); agent.rs seam refactor; design docs BR-43/54/21/17/45/65 | **merged 129589ba — gate GREEN** |
+| 1 | Compaction & memory | `agent-loop-compaction` | BR-15, 10, 11, 13, 14, 12, 17 | **in progress** |
+| 1 | Security & guardrails | `agent-loop-security` | BR-22, 23, 21, 65, 64 | **in progress** |
+| 1 | Checkpoints & VCS | `agent-loop-checkpoints` | BR-43, 44, 45 | **in progress** |
+| 1 | Long-running & processes | `agent-loop-processes` | BR-37, 40, 41, 42 | **in progress** |
+| 1 | Context & prompts | `agent-loop-context` | BR-5, 2, 9, 8, 3, 60, 1 | **in progress** |
 | 2 | Loop, stuck & budgets | `agent-loop-loopdet` | BR-29, 30, 31, 32, 35, 66, 67 | pending |
 | 2 | Hooks & permissions | `agent-loop-hooks` | BR-18, 19, 24, 27, 28, 63 | pending |
 | 2 | Server & cancel | `agent-loop-server` | BR-33 follow-ups, 52, 61, 62, 6, 7 | pending |
@@ -48,6 +48,7 @@ builds on BR-33 (wave 0); BR-16 is subsumed by BR-33; BR-47 builds on BR-19.
 - **2026-07-12** — Campaign started. Integration branch cut from `main`
   (24cdc3a2) + review corpus merged (a409e7d7). Baseline full-workspace test
   run started. Wave 0 workflow launched.
+- **2026-07-12** — Wave 0 MERGED (129589ba): 10 BRs + seams + 6 designs, gate GREEN (zero new failures; lib 782 vs 755, mcp 584 vs 582, server 50/49 vs 47/46). Evidence: wave0.md. Wave 1 launched: 5 cluster worktrees off 129589ba.
 - **2026-07-12** — Baseline complete: **53 suites ok, 1 pre-existing failure**
   — `test_anthropic_provider` (`crates/biorouter/tests/providers.rs:251`, a
   *live-API* test asserting oversized input yields `ContextLengthExceeded`;
