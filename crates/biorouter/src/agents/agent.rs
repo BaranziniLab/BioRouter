@@ -800,6 +800,7 @@ impl Agent {
     /// Integrate one completed tool result: validate it before persistence, note
     /// extension-install failures, record it for PostToolUse hooks, and write it
     /// into the request's response slot.
+    #[allow(clippy::too_many_arguments)]
     async fn integrate_tool_result(
         &self,
         request_id: String,
