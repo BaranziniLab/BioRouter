@@ -41,7 +41,9 @@ use crate::conversation::message::{
 };
 use crate::conversation::tool_result_serde::call_tool_result;
 use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
+use crate::managed::ManagedPolicy;
 use crate::mcp_utils::ToolResult;
+use crate::permission::managed_inspector::ManagedPolicyInspector;
 use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
 use crate::permission::PermissionConfirmation;
@@ -249,7 +251,13 @@ impl Agent {
 
         let session_manager = Arc::clone(&config.session_manager);
         let permission_manager = Arc::clone(&config.permission_manager);
-        let hooks_manager = Arc::new(crate::hooks::HooksManager::new(provider.clone()));
+        // Load the managed/enterprise policy once at startup and share it across
+        // the hooks manager and the tool inspectors (BR-65).
+        let managed = ManagedPolicy::load();
+        let hooks_manager = Arc::new(crate::hooks::HooksManager::new_with_managed(
+            provider.clone(),
+            Arc::clone(&managed),
+        ));
         Self {
             provider: provider.clone(),
             config,
@@ -267,6 +275,7 @@ impl Agent {
             tool_inspection_manager: Self::create_tool_inspection_manager(
                 permission_manager,
                 Arc::clone(&hooks_manager),
+                Arc::clone(&managed),
             ),
             hooks_manager,
             goals: Default::default(),
@@ -346,10 +355,18 @@ impl Agent {
     fn create_tool_inspection_manager(
         permission_manager: Arc<PermissionManager>,
         hooks_manager: Arc<crate::hooks::HooksManager>,
+        managed: Arc<ManagedPolicy>,
     ) -> ToolInspectionManager {
         let mut tool_inspection_manager = ToolInspectionManager::new();
 
-        // Add security inspector (highest priority - runs first)
+        // Managed/enterprise policy inspector (highest priority - runs first).
+        // Its Deny/Ask verdicts ride the escalation-only merge and win over
+        // every later inspector, including Auto mode's blanket Allow. Inert
+        // (skipped) when no trusted managed file is present (BR-65).
+        tool_inspection_manager
+            .add_inspector(Box::new(ManagedPolicyInspector::new(Arc::clone(&managed))));
+
+        // Add security inspector (runs after managed)
         tool_inspection_manager.add_inspector(Box::new(SecurityInspector::new()));
 
         // Add permission inspector (medium-high priority)
@@ -357,6 +374,7 @@ impl Agent {
             std::collections::HashSet::new(), // readonly tools - will be populated from extension manager
             std::collections::HashSet::new(), // regular tools - will be populated from extension manager
             permission_manager,
+            managed,
         )));
 
         // Add repetition inspector (lower priority - basic repetition checking)
@@ -2865,6 +2883,10 @@ mod tests {
         assert!(
             inspector_names.contains(&"security"),
             "Tool inspection manager should contain security inspector"
+        );
+        assert!(
+            inspector_names.contains(&"managed"),
+            "Tool inspection manager should contain managed policy inspector"
         );
 
         Ok(())
