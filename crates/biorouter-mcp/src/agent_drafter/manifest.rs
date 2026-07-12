@@ -463,3 +463,109 @@ pub struct Orchestration {
     #[serde(default)]
     pub lazy_tools: bool,
 }
+
+// ───────────────────────────── Surface (SDK v2) ────────────────────────────
+
+fn default_coalesce_ms() -> u64 {
+    250
+}
+fn empty_object() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+fn is_empty_object(v: &serde_json::Value) -> bool {
+    v.is_null() || v.as_object().is_some_and(serde_json::Map::is_empty)
+}
+
+/// The declared **app contract** (Apps SDK v2, Pillar 1): the typed surface an
+/// app exposes to its agent and vice-versa. Every field defaults, so a manifest
+/// written before this block existed deserializes exactly as a v1 manifest did
+/// (an absent `surface` is indistinguishable from an empty one).
+///
+/// Only the shape is defined here; the behavior lands per phase:
+/// - `state_schema` — the shared state document's JSON Schema (Pillar 2, Phase 1;
+///   validated server-side when present, default structural caps otherwise).
+/// - `actions` — app verbs the agent may call via `app_call` (Pillar 1, Phase 3).
+/// - `signals` — app→agent notifications the agent may subscribe to (Phase 3).
+/// - `components` — custom catalog components the app registers (Pillar 3, Phase 2).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SurfaceDecl {
+    /// JSON Schema for the shared state document. When present it is enforced
+    /// server-side; when absent the default structural caps still apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_schema: Option<serde_json::Value>,
+    /// App-defined verbs the AGENT may invoke (`app_call`). The author registers
+    /// handlers in `main.ts`; the SDK enforces that registrations match these
+    /// declarations at build/lint time. Declared now, consumed in Phase 3.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<ActionDecl>,
+    /// App→agent notifications the agent may subscribe to. Declared now,
+    /// consumed in Phase 3.
+    ///
+    /// Deliberately named `signals`, **not** `events`, to avoid colliding with
+    /// [`Capabilities::events`], which already exists with the *opposite*
+    /// direction: `Capabilities.events` is the agent-lifecycle stream pushed
+    /// **to** the app via `br.on()` (advertised as `event:<name>` tokens),
+    /// whereas these `signals` flow app **to** agent. Keeping the two names
+    /// distinct keeps the two channels independent and unambiguous.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signals: Vec<SignalDecl>,
+    /// Custom catalog components the app registers (Pillar 3). Declared now,
+    /// consumed in Phase 2.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub components: Vec<ComponentDecl>,
+}
+
+impl SurfaceDecl {
+    /// True when nothing is declared — used to keep a v1 manifest from gaining a
+    /// `surface: {}` key when re-serialized.
+    pub fn is_empty(&self) -> bool {
+        self.state_schema.is_none()
+            && self.actions.is_empty()
+            && self.signals.is_empty()
+            && self.components.is_empty()
+    }
+}
+
+/// An app-defined verb the agent may call (via the `app_call` tool).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ActionDecl {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// JSON Schema for the action's arguments (`{}` → unconstrained).
+    #[serde(default = "empty_object", skip_serializing_if = "is_empty_object")]
+    pub params: serde_json::Value,
+}
+
+/// An app→agent notification the agent may subscribe to. See [`SurfaceDecl::signals`]
+/// for why these are "signals" and not "events".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignalDecl {
+    pub name: String,
+    /// JSON Schema for the signal payload (`None` → unconstrained).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
+    /// Minimum milliseconds between deliveries of this signal (server-side
+    /// coalescing / rate cap).
+    #[serde(default = "default_coalesce_ms")]
+    pub coalesce_ms: u64,
+}
+
+impl Default for SignalDecl {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            payload: None,
+            coalesce_ms: default_coalesce_ms(),
+        }
+    }
+}
+
+/// A custom catalog component the app registers (Pillar 3).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ComponentDecl {
+    pub name: String,
+    /// JSON Schema for the component props (`{}` → unconstrained).
+    #[serde(default = "empty_object", skip_serializing_if = "is_empty_object")]
+    pub props: serde_json::Value,
+}

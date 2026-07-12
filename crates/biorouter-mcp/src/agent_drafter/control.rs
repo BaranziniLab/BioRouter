@@ -35,7 +35,25 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 
-use super::manifest::UiCapability;
+use super::manifest::{SurfaceDecl, UiCapability};
+
+/// Catalog / protocol version stamped onto every `ui` frame (`"v"`), so an older
+/// SDK can feature-detect and ignore frames it doesn't understand. Bump when the
+/// frame vocabulary changes in a backward-incompatible way.
+pub const CATALOG_VERSION: u64 = 1;
+
+// ── Shared state document caps (Apps SDK v2, Pillar 2) ──────────────────────
+// Enforced after every mutation so an unschema'd app can't become an unbounded
+// injection / DoS path; a violating mutation is rejected and the doc is left
+// unchanged.
+/// Max serialized size of the whole state document.
+pub const STATE_MAX_BYTES: usize = 262_144;
+/// Max operations in a single RFC-6902 patch.
+pub const STATE_MAX_PATCH_OPS: usize = 64;
+/// Max nesting depth of the state document.
+pub const STATE_MAX_DEPTH: usize = 8;
+/// Max total object keys across the whole state document.
+pub const STATE_MAX_KEYS: usize = 2000;
 
 /// Widget node kinds the client SDK's `renderWidget` understands. Kept in sync
 /// with `templates/sdk.ts` (`WidgetNode`). Validated server-side so a malformed
@@ -84,6 +102,126 @@ fn ok_text(msg: impl Into<String>) -> Result<CallToolResult, ErrorData> {
 }
 
 // ---------------------------------------------------------------------------
+// Shared state document (Apps SDK v2, Pillar 2)
+// ---------------------------------------------------------------------------
+
+/// The single shared JSON state document for one app session, plus its version
+/// counter. Both the agent (`ui_state` / `ui_patch_state`) and the browser
+/// (`state_write`) mutate it; the server (this bridge) is the ordering authority
+/// that bumps `version` on every accepted change.
+struct StateDoc {
+    doc: Value,
+    version: u64,
+}
+
+impl Default for StateDoc {
+    fn default() -> Self {
+        Self {
+            doc: Value::Object(serde_json::Map::new()),
+            version: 0,
+        }
+    }
+}
+
+/// Why a client-originated state write was refused.
+#[derive(Debug)]
+pub enum StateWriteError {
+    /// `base_version` did not match the server's version. Carries the current
+    /// authoritative `(doc, version)` so the server can push a fresh snapshot to
+    /// the out-of-date client.
+    Conflict(Value, u64),
+    /// The write was malformed or would violate the state caps; the doc is
+    /// unchanged. The message is safe to relay.
+    Invalid(String),
+}
+
+/// Enforce the structural caps on a candidate state document. Called after every
+/// mutation, against the post-mutation value, so a violation rejects the change.
+fn validate_state_doc(doc: &Value) -> Result<(), String> {
+    let bytes = serde_json::to_vec(doc)
+        .map(|b| b.len())
+        .unwrap_or(usize::MAX);
+    if bytes > STATE_MAX_BYTES {
+        return Err(format!(
+            "state document is {bytes} bytes; cap is {STATE_MAX_BYTES}"
+        ));
+    }
+    let mut keys = 0usize;
+    walk_state_doc(doc, 1, &mut keys)
+}
+
+/// Depth + total-key-count check. `depth` is 1 for the root value; each level of
+/// object/array nesting adds one.
+fn walk_state_doc(v: &Value, depth: usize, keys: &mut usize) -> Result<(), String> {
+    if depth > STATE_MAX_DEPTH {
+        return Err(format!(
+            "state document is nested deeper than {STATE_MAX_DEPTH} levels"
+        ));
+    }
+    match v {
+        Value::Object(map) => {
+            *keys += map.len();
+            if *keys > STATE_MAX_KEYS {
+                return Err(format!("state document exceeds {STATE_MAX_KEYS} keys"));
+            }
+            for child in map.values() {
+                walk_state_doc(child, depth + 1, keys)?;
+            }
+        }
+        Value::Array(arr) => {
+            for child in arr {
+                walk_state_doc(child, depth + 1, keys)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Set `value` at an RFC-6901 JSON Pointer within `root`, creating intermediate
+/// objects as needed. An empty pointer replaces the whole document. Returns an
+/// error only when the path runs *through* an existing non-object node.
+fn pointer_set(root: &mut Value, pointer: &str, value: Value) -> Result<(), String> {
+    if pointer.is_empty() {
+        *root = value;
+        return Ok(());
+    }
+    if !pointer.starts_with('/') {
+        return Err(format!(
+            "JSON pointer must be empty or start with '/', got {pointer:?}"
+        ));
+    }
+    let tokens: Vec<String> = pointer[1..]
+        .split('/')
+        .map(|t| t.replace("~1", "/").replace("~0", "~"))
+        .collect();
+    let n = tokens.len();
+    let mut cur = root;
+    for (i, tok) in tokens.into_iter().enumerate() {
+        let obj = object_for_set(cur)?;
+        if i + 1 == n {
+            obj.insert(tok, value);
+            return Ok(());
+        }
+        cur = obj
+            .entry(tok)
+            .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    }
+    Ok(())
+}
+
+/// Coerce a node into a mutable object for pointer-set: `null` becomes a fresh
+/// object (so absent intermediates are created), anything else must already be
+/// an object.
+fn object_for_set(v: &mut Value) -> Result<&mut serde_json::Map<String, Value>, String> {
+    if v.is_null() {
+        *v = Value::Object(serde_json::Map::new());
+    }
+    v.as_object_mut()
+        .ok_or_else(|| "cannot set through a non-object node in the state document".to_string())
+}
+
+// ---------------------------------------------------------------------------
 // Bridge: tools → WebSocket, and WebSocket → parked `ui_ask` tools
 // ---------------------------------------------------------------------------
 
@@ -112,8 +250,10 @@ struct BridgeInner {
     generation: AtomicU64,
     /// `requestId` → responder for a parked `ui_ask`.
     pending: Mutex<HashMap<String, oneshot::Sender<Value>>>,
-    /// Mirror of the app's key/value state bag (`ui_state`).
-    state: Mutex<serde_json::Map<String, Value>>,
+    /// The app session's shared state document + version. Both the agent
+    /// (`ui_state` / `ui_patch_state`) and the browser (`state_write`) mutate it;
+    /// this bridge is the ordering authority.
+    state: Mutex<StateDoc>,
     /// Panel ids currently mounted, oldest first.
     panels: Mutex<Vec<String>>,
     /// Last surface report the browser sent (regions, element ids, title).
@@ -142,7 +282,7 @@ impl UiBridge {
                 tx: Mutex::new(None),
                 generation: AtomicU64::new(0),
                 pending: Mutex::new(HashMap::new()),
-                state: Mutex::new(serde_json::Map::new()),
+                state: Mutex::new(StateDoc::default()),
                 panels: Mutex::new(Vec::new()),
                 surface: Mutex::new(None),
                 last_describe: Mutex::new(None),
@@ -172,14 +312,15 @@ impl UiBridge {
         if let Ok(mut s) = self.inner.surface.lock() {
             *s = None;
         }
-        let state = self
-            .inner
-            .state
-            .lock()
-            .map(|s| s.clone())
-            .unwrap_or_default();
-        if !state.is_empty() {
-            let _ = self.emit(json!({ "cmd": "state", "state": Value::Object(state) }));
+        let (doc, version) = self.state_snapshot();
+        let has_state = version > 0 || doc.as_object().map(|m| !m.is_empty()).unwrap_or(false);
+        if has_state {
+            let _ = self.emit(json!({
+                "cmd": "state",
+                "mode": "snapshot",
+                "doc": doc,
+                "version": version,
+            }));
         }
         (rx, ConnToken(gen))
     }
@@ -207,6 +348,9 @@ impl UiBridge {
     fn emit(&self, mut cmd: Value) -> Result<(), ErrorData> {
         if let Some(obj) = cmd.as_object_mut() {
             obj.insert("type".into(), json!("ui"));
+            // Stamp the catalog version on every ui frame so an older SDK can
+            // feature-detect and ignore frames it doesn't understand.
+            obj.insert("v".into(), json!(CATALOG_VERSION));
         }
         let gone = || {
             ErrorData::new(
@@ -225,6 +369,104 @@ impl UiBridge {
         if let Ok(mut s) = self.inner.surface.lock() {
             *s = Some(surface);
         }
+    }
+
+    /// The current shared state document and its version. The server uses this to
+    /// send a fresh `snapshot` on connect and to persist the doc.
+    pub fn state_snapshot(&self) -> (Value, u64) {
+        self.inner
+            .state
+            .lock()
+            .map(|s| (s.doc.clone(), s.version))
+            .unwrap_or_else(|_| (Value::Object(serde_json::Map::new()), 0))
+    }
+
+    /// Seed the state document from durable persistence. Applies **only** while
+    /// the session is still fresh (`version == 0`), so a restore can never clobber
+    /// live in-session state; call it before the first [`attach`](Self::attach).
+    pub fn seed_state(&self, doc: Value, version: u64) {
+        if let Ok(mut s) = self.inner.state.lock() {
+            if s.version == 0 {
+                s.doc = doc;
+                s.version = version;
+            }
+        }
+    }
+
+    /// Apply a browser-originated state write (from a `state_write` frame). The
+    /// caller passes exactly one of `set` (a JSON Pointer + value) or `patch` (an
+    /// RFC-6902 op array). `base_version` must match the server's current version
+    /// (last-writer-wins with an optimistic-concurrency check); a mismatch returns
+    /// [`StateWriteError::Conflict`] carrying the authoritative `(doc, version)` so
+    /// the server can resnapshot the client. On success returns the RFC-6902 ops
+    /// actually applied (for rebroadcast) and the new version.
+    pub fn apply_client_write(
+        &self,
+        set: Option<(String, Value)>,
+        patch: Option<Value>,
+        base_version: u64,
+    ) -> Result<(Value, u64), StateWriteError> {
+        let mut guard =
+            self.inner.state.lock().map_err(|_| {
+                StateWriteError::Invalid("the app state is unavailable".to_string())
+            })?;
+        if base_version != guard.version {
+            return Err(StateWriteError::Conflict(guard.doc.clone(), guard.version));
+        }
+
+        // Mutate a clone; commit only once it validates, so a rejected write
+        // leaves the live document untouched.
+        let mut next = guard.doc.clone();
+        let applied_ops: Value = match (set, patch) {
+            (Some(_), Some(_)) => {
+                return Err(StateWriteError::Invalid(
+                    "provide either \"set\" or \"patch\", not both".to_string(),
+                ))
+            }
+            (None, None) => {
+                return Err(StateWriteError::Invalid(
+                    "a state_write needs a \"set\" or a \"patch\"".to_string(),
+                ))
+            }
+            (Some((pointer, value)), None) => {
+                pointer_set(&mut next, &pointer, value.clone())
+                    .map_err(StateWriteError::Invalid)?;
+                // Rebroadcast the set as a single RFC-6902 add (JSON Pointer
+                // semantics: add creates or replaces the member).
+                json!([{ "op": "add", "path": pointer, "value": value }])
+            }
+            (None, Some(patch)) => {
+                let ops = patch.as_array().ok_or_else(|| {
+                    StateWriteError::Invalid(
+                        "\"patch\" must be an array of RFC-6902 operations".to_string(),
+                    )
+                })?;
+                if ops.len() > STATE_MAX_PATCH_OPS {
+                    return Err(StateWriteError::Invalid(format!(
+                        "\"patch\" has {} operations; cap is {STATE_MAX_PATCH_OPS}",
+                        ops.len()
+                    )));
+                }
+                let parsed: json_patch::Patch =
+                    serde_json::from_value(patch.clone()).map_err(|e| {
+                        StateWriteError::Invalid(format!(
+                            "\"patch\" is not a valid RFC-6902 JSON Patch: {e}"
+                        ))
+                    })?;
+                json_patch::patch(&mut next, &parsed).map_err(|e| {
+                    StateWriteError::Invalid(format!(
+                        "\"patch\" could not be applied to the current state: {e}"
+                    ))
+                })?;
+                patch
+            }
+        };
+
+        validate_state_doc(&next).map_err(StateWriteError::Invalid)?;
+        let new_version = guard.version + 1;
+        guard.doc = next;
+        guard.version = new_version;
+        Ok((applied_ops, new_version))
     }
 
     /// Resolve a parked `ui_ask`. Returns whether a tool was actually waiting.
@@ -458,10 +700,9 @@ fn validate_chart(spec: &Value) -> Result<(), String> {
             let so = s
                 .as_object()
                 .ok_or_else(|| format!("chart series[{si}] must be an object with \"data\""))?;
-            let data = so
-                .get("data")
-                .and_then(Value::as_array)
-                .ok_or_else(|| format!("chart series[{si}] needs a \"data\" array of {{label, value}}"))?;
+            let data = so.get("data").and_then(Value::as_array).ok_or_else(|| {
+                format!("chart series[{si}] needs a \"data\" array of {{label, value}}")
+            })?;
             check_data(data, &format!("series[{si}].data"))?;
         }
         return Ok(());
@@ -718,12 +959,19 @@ pub struct NotifyParams {
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 pub struct StateParams {
-    /// Keys to set/overwrite in the app's shared state bag.
+    /// Keys to set/overwrite in the app's shared state document (merged at the root).
     #[serde(default)]
     pub set: Option<Value>,
-    /// Keys to delete.
+    /// Top-level keys to delete.
     #[serde(default)]
     pub remove: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+pub struct PatchStateParams {
+    /// An RFC-6902 JSON Patch: an array of operation objects, e.g.
+    /// `[{"op":"add","path":"/cohort/count","value":42}]`. Capped at 64 ops.
+    pub patch: Value,
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -775,14 +1023,18 @@ pub struct AppControlServer {
     tool_router: ToolRouter<Self>,
     bridge: UiBridge,
     cap: UiCapability,
+    /// The app's declared surface (state schema, actions, signals, components),
+    /// reported to the model via `ui_describe`.
+    surface: SurfaceDecl,
 }
 
 impl AppControlServer {
-    pub fn new(bridge: UiBridge, cap: UiCapability) -> Self {
+    pub fn new(bridge: UiBridge, cap: UiCapability, surface: SurfaceDecl) -> Self {
         Self {
             tool_router: Self::tool_router(),
             bridge,
             cap,
+            surface,
         }
     }
 
@@ -790,6 +1042,30 @@ impl AppControlServer {
         invalid(format!(
             "this app does not grant {what}; ask the user to enable it in the app's manifest"
         ))
+    }
+
+    /// The app's declared surface, shaped for `ui_describe`: the actions the
+    /// agent may call, the signals it may subscribe to, the custom components,
+    /// and whether a state schema is declared.
+    fn declared_surface(&self) -> Value {
+        let s = &self.surface;
+        json!({
+            "actions": s.actions.iter().map(|a| json!({
+                "name": a.name,
+                "description": a.description,
+                "params": a.params,
+            })).collect::<Vec<_>>(),
+            "signals": s.signals.iter().map(|sig| json!({
+                "name": sig.name,
+                "payload": sig.payload,
+                "coalesceMs": sig.coalesce_ms,
+            })).collect::<Vec<_>>(),
+            "components": s.components.iter().map(|c| json!({
+                "name": c.name,
+                "props": c.props,
+            })).collect::<Vec<_>>(),
+            "hasStateSchema": s.state_schema.is_some(),
+        })
     }
 
     /// Track a panel id, evicting the oldest when over the cap so a runaway loop
@@ -841,17 +1117,19 @@ impl AppControlServer {
             .lock()
             .map(|p| p.clone())
             .unwrap_or_default();
-        let state = self
-            .bridge
-            .inner
-            .state
-            .lock()
-            .map(|s| Value::Object(s.clone()))
-            .unwrap_or(Value::Null);
+        let (doc, version) = self.bridge.state_snapshot();
+        let keys: Vec<String> = doc
+            .as_object()
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
         let out = json!({
             "surface": surface,
             "panels": panels,
-            "state": state,
+            "state": {
+                "version": version,
+                "keys": keys,
+            },
+            "declared": self.declared_surface(),
             "allowed": {
                 "theme": self.cap.allow_theme,
                 "layout": self.cap.allow_layout,
@@ -1165,9 +1443,11 @@ impl AppControlServer {
 
     #[tool(
         name = "ui_state",
-        description = "Read/write the app's shared state bag. Keys you set are mirrored into \
-                       the page (`br.ui.state`), so the app's own code can react. Returns the \
-                       full state after the update."
+        description = "Read/write the app's shared state document by top-level key. Keys you set \
+                       are merged into the document and mirrored into the page (`br.state`), so \
+                       the app's own code and bound elements react. Returns the full document \
+                       after the update. For surgical edits to nested paths, prefer \
+                       `ui_patch_state`."
     )]
     pub async fn ui_state(
         &self,
@@ -1176,53 +1456,136 @@ impl AppControlServer {
         // Track whether anything actually changed, so an identical repeat becomes
         // a cheap no-op that tells the model to stop re-sending it (H3: models
         // cascade ui_state with unchanged values and exhaust the turn budget).
-        let mut changed = false;
-        if let Some(set) = &p.set {
-            let set = unstringify(set);
-            let obj = set
-                .as_object()
-                .ok_or_else(|| invalid(want_json("set", "a JSON object", r#"{"gene":"TP53"}"#)))?;
-            if let Ok(mut s) = self.bridge.inner.state.lock() {
-                for (k, v) in obj {
-                    if s.get(k) != Some(v) {
-                        changed = true;
-                        s.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-        }
-        if let Some(remove) = &p.remove {
-            if let Ok(mut s) = self.bridge.inner.state.lock() {
-                for k in remove {
-                    if s.remove(k).is_some() {
-                        changed = true;
-                    }
-                }
-            }
-        }
-        let snapshot = self
+        let mut guard = self
             .bridge
             .inner
             .state
             .lock()
-            .map(|s| Value::Object(s.clone()))
-            .unwrap_or(Value::Null);
-        // Only touch the page when the bag actually moved. An unchanged call
+            .map_err(|_| invalid("the app state is unavailable"))?;
+
+        // Merge into a clone so a cap violation rejects the change and leaves the
+        // live document untouched. The document is always an object at the root.
+        let mut next = if guard.doc.is_object() {
+            guard.doc.clone()
+        } else {
+            json!({})
+        };
+        let obj = next.as_object_mut().expect("normalized to an object");
+        let mut changed = false;
+        if let Some(set) = &p.set {
+            let set = unstringify(set);
+            let set_obj = set
+                .as_object()
+                .ok_or_else(|| invalid(want_json("set", "a JSON object", r#"{"gene":"TP53"}"#)))?;
+            for (k, v) in set_obj {
+                if obj.get(k) != Some(v) {
+                    changed = true;
+                    obj.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        if let Some(remove) = &p.remove {
+            for k in remove {
+                if obj.remove(k).is_some() {
+                    changed = true;
+                }
+            }
+        }
+
+        let version = if changed {
+            validate_state_doc(&next).map_err(invalid)?;
+            guard.doc = next;
+            guard.version += 1;
+            guard.version
+        } else {
+            guard.version
+        };
+        let snapshot = guard.doc.clone();
+        drop(guard);
+
+        // Only touch the page when the document actually moved. An unchanged call
         // emits no frame and says so, so the model doesn't keep re-sending it.
         if changed {
-            self.bridge
-                .emit(json!({ "cmd": "state", "state": snapshot }))?;
+            self.bridge.emit(json!({
+                "cmd": "state",
+                "mode": "snapshot",
+                "doc": snapshot,
+                "version": version,
+            }))?;
             ok_text(serde_json::to_string(&snapshot).unwrap_or_default())
         } else if p.set.is_none() && p.remove.is_none() {
-            // A read: return the current bag.
+            // A read: return the current document.
             ok_text(serde_json::to_string(&snapshot).unwrap_or_default())
         } else {
             ok_text(format!(
-                "No change — the state bag already holds these values, so nothing was \
+                "No change — the state document already holds these values, so nothing was \
                  re-sent. Current state: {}",
                 serde_json::to_string(&snapshot).unwrap_or_default()
             ))
         }
+    }
+
+    #[tool(
+        name = "ui_patch_state",
+        description = "Apply an RFC-6902 JSON Patch to the app's shared state document — an array \
+                       of operations, e.g. [{\"op\":\"add\",\"path\":\"/cohort/count\",\"value\":42}]. \
+                       Capped at 64 operations. Bumps the document version and pushes the delta to \
+                       the page (bound elements re-render). Prefer this over `ui_state` for \
+                       surgical updates to nested paths."
+    )]
+    pub async fn ui_patch_state(
+        &self,
+        Parameters(p): Parameters<PatchStateParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let patch = unstringify(&p.patch);
+        let ops = patch.as_array().ok_or_else(|| {
+            invalid(want_json(
+                "patch",
+                "an array of RFC-6902 operations",
+                r#"[{"op":"add","path":"/count","value":3}]"#,
+            ))
+        })?;
+        if ops.is_empty() {
+            return Err(invalid("\"patch\" must contain at least one operation"));
+        }
+        if ops.len() > STATE_MAX_PATCH_OPS {
+            return Err(invalid(format!(
+                "\"patch\" has {} operations; cap is {STATE_MAX_PATCH_OPS}",
+                ops.len()
+            )));
+        }
+        let parsed: json_patch::Patch = serde_json::from_value(patch.clone())
+            .map_err(|e| invalid(format!("\"patch\" is not a valid RFC-6902 JSON Patch: {e}")))?;
+
+        let mut guard = self
+            .bridge
+            .inner
+            .state
+            .lock()
+            .map_err(|_| invalid("the app state is unavailable"))?;
+        // Apply against a clone; commit only once it applies and validates, so a
+        // rejected patch leaves the live document untouched.
+        let mut next = guard.doc.clone();
+        json_patch::patch(&mut next, &parsed).map_err(|e| {
+            invalid(format!(
+                "\"patch\" could not be applied to the current state: {e}"
+            ))
+        })?;
+        validate_state_doc(&next).map_err(invalid)?;
+        guard.doc = next;
+        guard.version += 1;
+        let version = guard.version;
+        drop(guard);
+
+        self.bridge.emit(json!({
+            "cmd": "state",
+            "mode": "patch",
+            "patch": patch,
+            "version": version,
+        }))?;
+        ok_text(
+            serde_json::to_string(&json!({ "ok": true, "version": version })).unwrap_or_default(),
+        )
     }
 
     #[tool(
@@ -1436,9 +1799,18 @@ mod tests {
     use super::*;
 
     fn server() -> (AppControlServer, mpsc::UnboundedReceiver<Value>) {
+        server_with_surface(SurfaceDecl::default())
+    }
+
+    fn server_with_surface(
+        surface: SurfaceDecl,
+    ) -> (AppControlServer, mpsc::UnboundedReceiver<Value>) {
         let bridge = UiBridge::new();
         let (rx, _tok) = bridge.attach();
-        (AppControlServer::new(bridge, UiCapability::default()), rx)
+        (
+            AppControlServer::new(bridge, UiCapability::default(), surface),
+            rx,
+        )
     }
 
     fn text_of(r: &CallToolResult) -> String {
@@ -1564,7 +1936,9 @@ mod tests {
                 id: "sentiment-dashboard".into(),
                 title: Some("Sentiment".into()),
                 place: Some("@region:dashboard".into()),
-                body: Some(json!([{"t":"row","children":[{"t":"stat","label":"Positive","value":2}]}])),
+                body: Some(
+                    json!([{"t":"row","children":[{"t":"stat","label":"Positive","value":2}]}]),
+                ),
                 markdown: None,
                 collapsible: Some(false),
                 remove: None,
@@ -1622,7 +1996,7 @@ mod tests {
             max_panels: 2,
             ..Default::default()
         };
-        let s = AppControlServer::new(bridge, cap);
+        let s = AppControlServer::new(bridge, cap, SurfaceDecl::default());
         for id in ["a", "b", "c"] {
             s.ui_panel(Parameters(PanelParams {
                 id: id.into(),
@@ -1666,7 +2040,7 @@ mod tests {
             allow_layout: false,
             ..Default::default()
         };
-        let s = AppControlServer::new(bridge, cap);
+        let s = AppControlServer::new(bridge, cap, SurfaceDecl::default());
         assert!(s
             .ui_theme(Parameters(ThemeParams {
                 accent: None,
@@ -1697,7 +2071,9 @@ mod tests {
         assert!(text_of(&r).contains("TP53"));
         let cmd = rx.try_recv().unwrap();
         assert_eq!(cmd["cmd"], "state");
-        assert_eq!(cmd["state"]["gene"], "TP53");
+        assert_eq!(cmd["mode"], "snapshot");
+        assert_eq!(cmd["doc"]["gene"], "TP53");
+        assert_eq!(cmd["version"], 1);
 
         let r = s
             .ui_state(Parameters(StateParams {
@@ -1715,24 +2091,40 @@ mod tests {
     #[tokio::test]
     async fn state_noop_when_unchanged_emits_nothing() {
         let (s, mut rx) = server();
-        s.ui_state(Parameters(StateParams { set: Some(json!({"dose": 1000})), remove: None }))
-            .await
-            .unwrap();
+        s.ui_state(Parameters(StateParams {
+            set: Some(json!({"dose": 1000})),
+            remove: None,
+        }))
+        .await
+        .unwrap();
         assert_eq!(rx.try_recv().unwrap()["cmd"], "state"); // first change emits
 
         // identical re-send: no frame, "no change" message
         let r = s
-            .ui_state(Parameters(StateParams { set: Some(json!({"dose": 1000})), remove: None }))
+            .ui_state(Parameters(StateParams {
+                set: Some(json!({"dose": 1000})),
+                remove: None,
+            }))
             .await
             .unwrap();
-        assert!(text_of(&r).to_lowercase().contains("no change"), "{}", text_of(&r));
-        assert!(rx.try_recv().is_err(), "an unchanged ui_state must emit no frame");
+        assert!(
+            text_of(&r).to_lowercase().contains("no change"),
+            "{}",
+            text_of(&r)
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "an unchanged ui_state must emit no frame"
+        );
 
         // a real change emits again
-        s.ui_state(Parameters(StateParams { set: Some(json!({"dose": 1250})), remove: None }))
-            .await
-            .unwrap();
-        assert_eq!(rx.try_recv().unwrap()["state"]["dose"], 1250);
+        s.ui_state(Parameters(StateParams {
+            set: Some(json!({"dose": 1250})),
+            remove: None,
+        }))
+        .await
+        .unwrap();
+        assert_eq!(rx.try_recv().unwrap()["doc"]["dose"], 1250);
     }
 
     /// H3: a repeated ui_describe over an unchanged page is flagged so the model
@@ -1750,7 +2142,11 @@ mod tests {
     async fn ask_parks_then_resolves_with_the_users_payload() {
         let bridge = UiBridge::new();
         let (mut rx, _tok) = bridge.attach();
-        let s = AppControlServer::new(bridge.clone(), UiCapability::default());
+        let s = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
 
         let task = tokio::spawn(async move {
             s.ui_ask(Parameters(AskParams {
@@ -1787,7 +2183,11 @@ mod tests {
     async fn ask_returns_a_usable_result_when_the_user_dismisses() {
         let bridge = UiBridge::new();
         let (mut rx, _tok) = bridge.attach();
-        let s = AppControlServer::new(bridge.clone(), UiCapability::default());
+        let s = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
         let task = tokio::spawn(async move {
             s.ui_ask(Parameters(AskParams {
                 prompt: "?".into(),
@@ -1840,7 +2240,11 @@ mod tests {
     async fn rebinding_the_bridge_keeps_a_reused_server_working() {
         let bridge = UiBridge::new();
         let (first, _tok1) = bridge.attach();
-        let s = AppControlServer::new(bridge.clone(), UiCapability::default());
+        let s = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
 
         // The browser reloads: old channel dropped, new one attached.
         drop(first);
@@ -1866,7 +2270,11 @@ mod tests {
     async fn a_stale_detach_after_reattach_is_a_noop() {
         let bridge = UiBridge::new();
         let (_first_rx, first_tok) = bridge.attach();
-        let s = AppControlServer::new(bridge.clone(), UiCapability::default());
+        let s = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
 
         // Browser reloads: fresh connection attaches…
         let (mut second_rx, _second_tok) = bridge.attach();
@@ -1925,7 +2333,11 @@ mod tests {
     async fn attach_resets_panels_and_replays_state() {
         let bridge = UiBridge::new();
         let (mut first, _tok1) = bridge.attach();
-        let s = AppControlServer::new(bridge.clone(), UiCapability::default());
+        let s = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
         s.ui_state(Parameters(StateParams {
             set: Some(json!({"gene":"BRCA1"})),
             remove: None,
@@ -1946,10 +2358,12 @@ mod tests {
         while first.try_recv().is_ok() {}
 
         let (mut second, _tok2) = bridge.attach();
-        // State is replayed to the fresh page…
+        // State is replayed to the fresh page as one snapshot frame…
         let replay = second.try_recv().unwrap();
         assert_eq!(replay["cmd"], "state");
-        assert_eq!(replay["state"]["gene"], "BRCA1");
+        assert_eq!(replay["mode"], "snapshot");
+        assert_eq!(replay["doc"]["gene"], "BRCA1");
+        assert_eq!(replay["v"], 1);
         // …and the panel registry starts empty again.
         let r = s.ui_describe(Parameters(DescribeParams {})).await.unwrap();
         let described: Value = serde_json::from_str(&text_of(&r)).unwrap();
@@ -1960,7 +2374,11 @@ mod tests {
     async fn detach_unblocks_a_parked_ask() {
         let bridge = UiBridge::new();
         let (mut rx, tok) = bridge.attach();
-        let s = AppControlServer::new(bridge.clone(), UiCapability::default());
+        let s = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
         let task = tokio::spawn(async move {
             s.ui_ask(Parameters(AskParams {
                 prompt: "?".into(),
@@ -2050,7 +2468,11 @@ mod tests {
     async fn describe_reports_surface_panels_and_state() {
         let bridge = UiBridge::new();
         let (_rx, _tok) = bridge.attach();
-        let s = AppControlServer::new(bridge.clone(), UiCapability::default());
+        let s = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
         bridge.set_surface(json!({"regions":["results"],"ids":["out"]}));
         s.ui_panel(Parameters(PanelParams {
             id: "p1".into(),
@@ -2121,7 +2543,7 @@ mod tests {
         }))
         .await
         .unwrap();
-        assert_eq!(rx.try_recv().unwrap()["state"]["gene"], "TP53");
+        assert_eq!(rx.try_recv().unwrap()["doc"]["gene"], "TP53");
     }
 
     /// A string that isn't JSON at all still fails — but with a message that
@@ -2203,5 +2625,225 @@ mod tests {
         assert_eq!(cmd["place"], "dock");
         assert_eq!(cmd["title"], "Counts");
         assert_eq!(cmd["body"][0]["t"], "chart");
+    }
+
+    // ── Apps SDK v2: shared state document ──────────────────────────────────
+
+    /// Every emitted ui frame is stamped with the catalog version.
+    #[tokio::test]
+    async fn ui_frames_carry_the_catalog_version() {
+        let (s, mut rx) = server();
+        s.ui_notify(Parameters(NotifyParams {
+            message: "hi".into(),
+            level: None,
+            timeout_ms: None,
+        }))
+        .await
+        .unwrap();
+        assert_eq!(rx.try_recv().unwrap()["v"], CATALOG_VERSION);
+    }
+
+    #[tokio::test]
+    async fn patch_state_applies_and_bumps_version() {
+        let bridge = UiBridge::new();
+        let (mut rx, _tok) = bridge.attach();
+        let s = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
+        let r = s
+            .ui_patch_state(Parameters(PatchStateParams {
+                patch: json!([{"op":"add","path":"/count","value":3}]),
+            }))
+            .await
+            .unwrap();
+        assert!(text_of(&r).contains("\"version\":1"), "{}", text_of(&r));
+        assert!(text_of(&r).contains("\"ok\":true"), "{}", text_of(&r));
+
+        let cmd = rx.try_recv().unwrap();
+        assert_eq!(cmd["cmd"], "state");
+        assert_eq!(cmd["mode"], "patch");
+        assert_eq!(cmd["version"], 1);
+        assert_eq!(cmd["patch"][0]["op"], "add");
+        assert_eq!(cmd["v"], CATALOG_VERSION);
+
+        let (doc, version) = bridge.state_snapshot();
+        assert_eq!(doc["count"], 3);
+        assert_eq!(version, 1);
+    }
+
+    #[tokio::test]
+    async fn patch_state_rejects_too_many_ops() {
+        let (s, _rx) = server();
+        let ops: Vec<Value> = (0..(STATE_MAX_PATCH_OPS + 1))
+            .map(|i| json!({"op":"add","path":format!("/k{i}"),"value":i}))
+            .collect();
+        let e = s
+            .ui_patch_state(Parameters(PatchStateParams { patch: json!(ops) }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("cap is 64"), "{}", e.message);
+    }
+
+    #[test]
+    fn validate_state_doc_enforces_the_size_cap() {
+        let big = "x".repeat(STATE_MAX_BYTES + 1_000);
+        let e = validate_state_doc(&json!({ "blob": big })).unwrap_err();
+        assert!(e.contains("bytes"), "{e}");
+        assert!(validate_state_doc(&json!({ "a": 1 })).is_ok());
+    }
+
+    #[test]
+    fn validate_state_doc_enforces_the_depth_cap() {
+        // Nest well past the depth cap.
+        let mut v = json!(1);
+        for _ in 0..(STATE_MAX_DEPTH + 4) {
+            v = json!({ "n": v });
+        }
+        let e = validate_state_doc(&v).unwrap_err();
+        assert!(e.contains("nested deeper"), "{e}");
+        // A shallow document is fine.
+        assert!(validate_state_doc(&json!({ "a": { "b": 1 } })).is_ok());
+    }
+
+    /// A patch that would blow a cap is rejected and the live document is left
+    /// untouched (applied against a clone, committed only when valid).
+    #[tokio::test]
+    async fn patch_state_over_cap_leaves_the_doc_unchanged() {
+        let bridge = UiBridge::new();
+        let (_rx, _tok) = bridge.attach();
+        let s = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
+        let big = "x".repeat(STATE_MAX_BYTES + 1_000);
+        let e = s
+            .ui_patch_state(Parameters(PatchStateParams {
+                patch: json!([{"op":"add","path":"/blob","value":big}]),
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("bytes"), "{}", e.message);
+        let (doc, version) = bridge.state_snapshot();
+        assert_eq!(version, 0, "a rejected patch must not bump the version");
+        assert!(doc.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn client_write_conflict_returns_the_current_doc() {
+        let bridge = UiBridge::new();
+        // First write advances the version to 1.
+        let (_ops, v1) = bridge
+            .apply_client_write(Some(("/x".into(), json!(1))), None, 0)
+            .expect("first write applies");
+        assert_eq!(v1, 1);
+        // A stale write against base_version 0 conflicts and hands back the truth.
+        match bridge.apply_client_write(Some(("/y".into(), json!(2))), None, 0) {
+            Err(StateWriteError::Conflict(doc, ver)) => {
+                assert_eq!(ver, 1);
+                assert_eq!(doc["x"], 1);
+                assert!(doc.get("y").is_none(), "the losing write must not apply");
+            }
+            other => panic!("expected a Conflict, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn client_write_pointer_set_creates_intermediate_objects() {
+        let bridge = UiBridge::new();
+        let (ops, ver) = bridge
+            .apply_client_write(Some(("/a/b/c".into(), json!(5))), None, 0)
+            .expect("pointer set applies");
+        assert_eq!(ver, 1);
+        assert_eq!(ops[0]["op"], "add");
+        assert_eq!(ops[0]["path"], "/a/b/c");
+        let (doc, _) = bridge.state_snapshot();
+        assert_eq!(doc["a"]["b"]["c"], 5);
+    }
+
+    #[test]
+    fn client_write_patch_round_trips() {
+        let bridge = UiBridge::new();
+        let (ops, ver) = bridge
+            .apply_client_write(
+                None,
+                Some(json!([{"op":"add","path":"/hits","value":42}])),
+                0,
+            )
+            .expect("patch applies");
+        assert_eq!(ver, 1);
+        assert_eq!(ops[0]["value"], 42);
+        assert_eq!(bridge.state_snapshot().0["hits"], 42);
+    }
+
+    #[test]
+    fn seed_state_only_applies_while_fresh() {
+        let bridge = UiBridge::new();
+        bridge.seed_state(json!({ "a": 1 }), 7);
+        let (doc, ver) = bridge.state_snapshot();
+        assert_eq!(ver, 7);
+        assert_eq!(doc["a"], 1);
+        // A second seed on a non-fresh doc is ignored.
+        bridge.seed_state(json!({ "b": 2 }), 99);
+        let (doc2, ver2) = bridge.state_snapshot();
+        assert_eq!(ver2, 7);
+        assert!(doc2.get("b").is_none());
+    }
+
+    /// A reconnect replays a single snapshot frame (not a `ui_state` bag), and
+    /// only when there is state worth sending.
+    #[tokio::test]
+    async fn attach_replays_a_state_snapshot() {
+        let bridge = UiBridge::new();
+        // A fresh, empty session replays nothing.
+        let (mut empty, _t0) = bridge.attach();
+        assert!(empty.try_recv().is_err());
+
+        bridge.seed_state(json!({ "gene": "BRCA1" }), 3);
+        let (mut rx, _t1) = bridge.attach();
+        let frame = rx.try_recv().unwrap();
+        assert_eq!(frame["cmd"], "state");
+        assert_eq!(frame["mode"], "snapshot");
+        assert_eq!(frame["doc"]["gene"], "BRCA1");
+        assert_eq!(frame["version"], 3);
+        assert_eq!(frame["v"], CATALOG_VERSION);
+    }
+
+    #[tokio::test]
+    async fn describe_reports_the_declared_surface() {
+        use crate::agent_drafter::manifest::{ActionDecl, ComponentDecl, SignalDecl};
+        let surface = SurfaceDecl {
+            state_schema: Some(json!({ "type": "object" })),
+            actions: vec![ActionDecl {
+                name: "move_avatar".into(),
+                description: "Move the avatar".into(),
+                params: json!({ "type": "object" }),
+            }],
+            signals: vec![SignalDecl {
+                name: "node_selected".into(),
+                payload: None,
+                coalesce_ms: 250,
+            }],
+            components: vec![ComponentDecl {
+                name: "pathway_map".into(),
+                props: json!({}),
+            }],
+        };
+        let (s, _rx) = server_with_surface(surface);
+        let r = s.ui_describe(Parameters(DescribeParams {})).await.unwrap();
+        let d: Value = serde_json::from_str(&text_of(&r)).unwrap();
+        assert_eq!(d["declared"]["hasStateSchema"], true);
+        assert_eq!(d["declared"]["actions"][0]["name"], "move_avatar");
+        assert_eq!(
+            d["declared"]["actions"][0]["description"],
+            "Move the avatar"
+        );
+        assert_eq!(d["declared"]["signals"][0]["name"], "node_selected");
+        assert_eq!(d["declared"]["signals"][0]["coalesceMs"], 250);
+        assert_eq!(d["declared"]["components"][0]["name"], "pathway_map");
+        assert_eq!(d["state"]["version"], 0);
+        assert!(d["state"]["keys"].as_array().unwrap().is_empty());
     }
 }

@@ -10,7 +10,7 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use super::manifest::{
-    Capabilities, GuardrailsConfig, ModelSettings, Orchestration, ReliabilityConfig,
+    Capabilities, GuardrailsConfig, ModelSettings, Orchestration, ReliabilityConfig, SurfaceDecl,
 };
 
 /// Whether an artifact embeds live agent capability.
@@ -162,6 +162,11 @@ pub struct Manifest {
     /// app there. Apps created before this was recorded have `None`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
+    /// The declared app contract (Apps SDK v2): typed state schema, actions,
+    /// signals, and custom components. Absent/empty → a v1 app with no declared
+    /// surface, which deserializes and re-serializes unchanged.
+    #[serde(default, skip_serializing_if = "SurfaceDecl::is_empty")]
+    pub surface: SurfaceDecl,
 }
 
 fn now_secs() -> u64 {
@@ -293,6 +298,7 @@ impl ArtifactStore {
             built_at: None,
             sdk_hash: None,
             session_id: None,
+            surface: SurfaceDecl::default(),
         };
         self.save_manifest(&manifest)?;
         for (path, content) in files {
@@ -338,6 +344,7 @@ impl ArtifactStore {
             built_at: None,
             sdk_hash: None,
             session_id: None,
+            surface: SurfaceDecl::default(),
         };
         self.save_manifest(&manifest)?;
         for (path, content) in files {

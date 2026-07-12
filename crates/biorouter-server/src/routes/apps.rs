@@ -46,7 +46,7 @@ use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::permission::{Permission, PermissionConfirmation};
 use biorouter::providers::create as create_provider;
 use biorouter::session::SessionType;
-use biorouter_mcp::agent_drafter::control::UiBridge;
+use biorouter_mcp::agent_drafter::control::{StateWriteError, UiBridge};
 use biorouter_mcp::agent_drafter::manifest::PiiMode;
 use biorouter_mcp::agent_drafter::store::{ArtifactStore, Manifest};
 use biorouter_mcp::agent_drafter::{
@@ -118,11 +118,15 @@ async fn serve_index(Path(id): Path<String>) -> Response {
         Err(_) => return (StatusCode::NOT_FOUND, "entry missing").into_response(),
     };
     let base_href = format!("/apps/{id}/");
+    // Embed this daemon's per-app socket token so the served page can
+    // authenticate its agent WebSocket (checked in `agent_ws`).
+    let ws_token = ws_token_for(&id);
     let html = biorouter_mcp::agent_drafter::render::assemble_app(
         &manifest,
         &entry_html,
         Some(&base_href),
         None,
+        Some(&ws_token),
     );
     ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
 }
@@ -204,15 +208,21 @@ async fn agent_ws(
     // This socket runs full agent turns and carries its own tool-approval
     // frames, so whoever reaches it can prompt the agent and then approve the
     // agent's own tool calls. It is exempt from the secret-key middleware (a
-    // browser-opened app cannot set request headers), and CORS does not govern
-    // WebSocket handshakes -- so the origin has to be checked right here, or a
-    // page on any web origin can drive it against the loopback port.
-    if let Some(origin) = headers.get(axum::http::header::ORIGIN) {
-        let origin = origin.to_str().unwrap_or_default();
-        if !super::is_local_origin(origin) {
-            tracing::warn!(%origin, app = %id, "rejected cross-origin app agent WebSocket");
-            return (StatusCode::FORBIDDEN, "cross-origin connect rejected").into_response();
-        }
+    // browser-opened app cannot set request headers), so authority comes from
+    // two checks here: the loopback-origin check (CORS does not govern WS
+    // handshakes) AND the per-app socket token minted in `serve_index`.
+    //
+    // Compat: an already-built bundle is rebuilt on sdk_hash drift before being
+    // served (see `serve_index`), so every page THIS daemon serves gets the
+    // current sdk.ts and this run's token. A page held open from a *previous*
+    // daemon run reconnects with a stale token → 403 and must reload.
+    let origin = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|o| o.to_str().ok());
+    let expected = ws_token_for(&id);
+    if let Err(reason) = check_ws_auth(origin, params.get("token").map(String::as_str), &expected) {
+        tracing::warn!(origin = origin.unwrap_or("<none>"), app = %id, "rejected app agent WebSocket: {reason}");
+        return (StatusCode::FORBIDDEN, reason).into_response();
     }
 
     let manifest = match store().load_manifest(&id) {
@@ -296,6 +306,19 @@ enum ClientFrame {
         #[serde(default)]
         surface: serde_json::Value,
     },
+    /// BRSDK shared state (Pillar 2): a browser-originated write to the shared
+    /// state document. Exactly one of `set` (a `{"path","value"}` JSON-Pointer
+    /// write) or `patch` (an RFC-6902 op array); `baseVersion` is the client's
+    /// last-seen version for the optimistic-concurrency check.
+    #[serde(rename = "state_write")]
+    StateWrite {
+        #[serde(default)]
+        set: Option<serde_json::Value>,
+        #[serde(default)]
+        patch: Option<serde_json::Value>,
+        #[serde(rename = "baseVersion", default)]
+        base_version: u64,
+    },
 }
 
 /// The write half of an app's WebSocket. Split from the read half so the loop can
@@ -332,6 +355,62 @@ fn ui_bridge_for(session_id: &str) -> UiBridge {
     map.entry(session_id.to_string())
         .or_insert_with(UiBridge::new)
         .clone()
+}
+
+/// Per-app agent-socket tokens, minted lazily and cached for the daemon's
+/// lifetime. The token gives the WebSocket real authority (in v2 it can drive
+/// state and call app actions), so "same machine" is no longer enough — a page
+/// must also present the token this daemon embedded in it.
+///
+/// Tokens are per-daemon-run **by design**: they never touch disk, so a fresh
+/// daemon mints fresh tokens. `serve_index` rebuilds a stale bundle before
+/// serving (sdk_hash drift), so every page this daemon serves carries this
+/// run's token. A page left open from a *previous* daemon run reconnects with a
+/// stale token and gets 403 — it must reload to pick up the current one.
+static APP_WS_TOKENS: LazyLock<Mutex<std::collections::HashMap<String, String>>> =
+    LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// The agent-socket token for `app_id`, generating a random 32-hex-char one on
+/// first use and returning the cached value afterwards.
+fn ws_token_for(app_id: &str) -> String {
+    let mut map = match APP_WS_TOKENS.lock() {
+        Ok(m) => m,
+        Err(p) => p.into_inner(),
+    };
+    map.entry(app_id.to_string())
+        .or_insert_with(|| {
+            // 16 random bytes → 32 hex chars, matching the crate's existing
+            // token convention (see `tunnel::generate_secret`).
+            let bytes: [u8; 16] = rand::random();
+            hex::encode(bytes)
+        })
+        .clone()
+}
+
+/// Validate an app-agent WebSocket upgrade. Two independent gates, both required:
+///
+/// 1. **Origin (defense in depth).** CORS does not govern WS handshakes and any
+///    web page can open a cross-origin WebSocket, so a browser-set `Origin` must
+///    be a loopback origin this daemon serves — otherwise a page on any web
+///    origin could drive the loopback agent (CSWSH). A non-browser client sends
+///    no `Origin`; it is allowed past this gate (the token still guards it).
+/// 2. **Per-app socket token.** `?token=…` must equal this daemon's token for the
+///    app. This is what upgrades the socket from "same machine" to "served by
+///    this daemon", now that the socket carries real authority.
+fn check_ws_auth(
+    origin: Option<&str>,
+    token: Option<&str>,
+    expected: &str,
+) -> Result<(), &'static str> {
+    if let Some(origin) = origin {
+        if !super::is_local_origin(origin) {
+            return Err("cross-origin connect rejected");
+        }
+    }
+    if token != Some(expected) {
+        return Err("missing or invalid app socket token");
+    }
+    Ok(())
 }
 
 /// User-controlled opt-in for the BRSDK safety frameworks. **Default ALL OFF.**
@@ -672,6 +751,7 @@ async fn configure_agent(
         let server = biorouter_mcp::agent_drafter::control::AppControlServer::new(
             ui_bridge.clone(),
             cfg.capabilities.ui.clone(),
+            manifest.surface.clone(),
         );
         if let Err(e) = agent
             .extension_manager
@@ -857,6 +937,11 @@ fn handle_midturn_frame(
             // A parked `ui_ask` must not survive the turn it belongs to.
             ui_bridge.cancel_all();
         }
+        // `state_write` must send its ack on the socket, which this sync helper
+        // has no handle to — the reply loop applies it inline (via
+        // `apply_state_write`) before delegating here. One reaching us is stray;
+        // never queue it as a new turn.
+        ClientFrame::StateWrite { .. } => {}
         // Consumed inline by `handle_action_required` during an approval pause;
         // arriving here they are stray.
         ClientFrame::Approve { .. } | ClientFrame::Reject { .. } => {}
@@ -949,6 +1034,16 @@ async fn handle_agent_socket(
     // afterwards). `attach` must precede `configure_agent` so a replayed state
     // command lands in the new channel.
     let ui_bridge = ui_bridge_for(&session_id);
+
+    // Restore any durable shared-state doc BEFORE attaching. `seed_state` no-ops
+    // unless the bridge is pristine (version == 0), so a warm bridge (a reconnect
+    // to a still-live in-memory session) keeps its live state, while a cold one
+    // (fresh daemon, resumed session) is seeded from disk — which `attach` then
+    // replays to the page as a snapshot.
+    if let Some(ps) = load_ui_state(&state, &session_id).await {
+        ui_bridge.seed_state(ps.doc, ps.version);
+    }
+
     let (mut ui_rx, conn_token) = ui_bridge.attach();
 
     configure_agent(&agent, &state, &session_id, &manifest, &ui_bridge).await;
@@ -957,6 +1052,7 @@ async fn handle_agent_socket(
     // don't understand and new apps can feature-detect. Deny-by-default — only
     // capabilities the manifest declared are advertised.
     let capabilities = advertised_app_capabilities(&manifest, BrsdkSettings::current());
+    let (_, state_version) = ui_bridge.state_snapshot();
     if !send_json(
         &mut socket_tx,
         json!({
@@ -966,6 +1062,9 @@ async fn handle_agent_socket(
             "sessionId": session_id,
             "resumed": resumed,
             "messageCount": message_count,
+            // Catalog + state versions let the SDK feature-detect and reconcile.
+            "catalogVersion": biorouter_mcp::agent_drafter::control::CATALOG_VERSION,
+            "stateVersion": state_version,
         }),
     )
     .await
@@ -1003,6 +1102,26 @@ async fn handle_agent_socket(
                                 }
                                 // Outside a turn nothing is parked on it.
                                 Ok(ClientFrame::UiReply { .. }) => {}
+                                Ok(ClientFrame::StateWrite {
+                                    set,
+                                    patch,
+                                    base_version,
+                                }) => {
+                                    if !apply_state_write(
+                                        &mut socket_tx,
+                                        &ui_bridge,
+                                        &state,
+                                        &session_id,
+                                        set,
+                                        patch,
+                                        base_version,
+                                    )
+                                    .await
+                                    {
+                                        ui_bridge.detach(conn_token);
+                                        return;
+                                    }
+                                }
                                 Ok(f) => break f,
                                 Err(_) => {}
                             }
@@ -1010,6 +1129,7 @@ async fn handle_agent_socket(
                         TurnWake::Client(Some(Ok(WsMessage::Close(_))))
                         | TurnWake::Client(Some(Err(_)))
                         | TurnWake::Client(None) => {
+                            save_ui_state(&state, &session_id, &ui_bridge).await;
                             ui_bridge.detach(conn_token);
                             return;
                         }
@@ -1066,6 +1186,29 @@ async fn handle_agent_socket(
             ClientFrame::UiReply { .. } => continue,
             ClientFrame::UiSurface { surface } => {
                 ui_bridge.set_surface(surface);
+                continue;
+            }
+            // Normally handled inline by the between-turns dispatch loop above;
+            // this arm keeps the match exhaustive and covers any queued write.
+            ClientFrame::StateWrite {
+                set,
+                patch,
+                base_version,
+            } => {
+                if !apply_state_write(
+                    &mut socket_tx,
+                    &ui_bridge,
+                    &state,
+                    &session_id,
+                    set,
+                    patch,
+                    base_version,
+                )
+                .await
+                {
+                    ui_bridge.detach(conn_token);
+                    return;
+                }
                 continue;
             }
             ClientFrame::ModelSelect { provider, model } => {
@@ -1213,7 +1356,33 @@ async fn handle_agent_socket(
                     continue;
                 }
                 TurnWake::Client(Some(Ok(WsMessage::Text(t)))) => {
-                    handle_midturn_frame(&t, &ui_bridge, &cancel, &mut queued);
+                    // `state_write` must ack on the socket, and `handle_midturn_frame`
+                    // is sync with no socket — apply it here, on the socket-owning
+                    // task, before delegating the rest.
+                    if let Ok(ClientFrame::StateWrite {
+                        set,
+                        patch,
+                        base_version,
+                    }) = serde_json::from_str::<ClientFrame>(&t)
+                    {
+                        if !apply_state_write(
+                            &mut socket_tx,
+                            &ui_bridge,
+                            &state,
+                            &session_id,
+                            set,
+                            patch,
+                            base_version,
+                        )
+                        .await
+                        {
+                            cancel.cancel();
+                            ui_bridge.detach(conn_token);
+                            return;
+                        }
+                    } else {
+                        handle_midturn_frame(&t, &ui_bridge, &cancel, &mut queued);
+                    }
                     continue;
                 }
                 TurnWake::Client(Some(Ok(WsMessage::Close(_))))
@@ -1222,6 +1391,7 @@ async fn handle_agent_socket(
                     // The page went away mid-turn: stop the agent and unblock any
                     // `ui_ask` it left parked, rather than leaking a live turn.
                     cancel.cancel();
+                    save_ui_state(&state, &session_id, &ui_bridge).await;
                     ui_bridge.detach(conn_token);
                     return;
                 }
@@ -1313,10 +1483,17 @@ async fn handle_agent_socket(
         // `prompt()` promise resolves (tests and app code both rely on that).
         while let Ok(cmd) = ui_rx.try_recv() {
             if !send_json(&mut socket_tx, cmd).await {
+                save_ui_state(&state, &session_id, &ui_bridge).await;
                 ui_bridge.detach(conn_token);
                 return;
             }
         }
+
+        // End-of-turn is a persistence boundary: capture any shared-state doc the
+        // turn's agent-driven `ui_state` frames built (we can't hook control.rs's
+        // per-frame mutations, so we snapshot here). Bounds writes to turn
+        // granularity.
+        save_ui_state(&state, &session_id, &ui_bridge).await;
 
         // Reply loop ended — trigger the best-effort LLM session rename. Always
         // runs here regardless of how the loop exited, so app sessions get a
@@ -1416,6 +1593,128 @@ async fn load_run_state(state: &AppState, session_id: &str) -> Option<RunState> 
     let sm = state.session_manager();
     let sd = sm.get_session(session_id, false).await.ok()?;
     RunState::load_from(&sd.extension_data)
+}
+
+/// Durable snapshot of an app's shared state document (Pillar 2). Persisted into
+/// the session's `extension_data` (which the session DB already round-trips), so
+/// a reload restores what the agent and the page built together — no dedicated
+/// schema migration. Mirrors the [`RunState`] persistence pattern.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedUiState {
+    doc: serde_json::Value,
+    version: u64,
+}
+
+/// Pseudo-extension key the UI-state snapshot lives under (like `RUN_STATE_KEY`).
+const UI_STATE_KEY: &str = "brsdk_ui_state";
+const UI_STATE_VER: &str = "1";
+
+impl PersistedUiState {
+    fn store_into(&self, data: &mut biorouter::session::ExtensionData) {
+        if let Ok(v) = serde_json::to_value(self) {
+            data.set_extension_state(UI_STATE_KEY, UI_STATE_VER, v);
+        }
+    }
+
+    fn load_from(data: &biorouter::session::ExtensionData) -> Option<PersistedUiState> {
+        let v = data.get_extension_state(UI_STATE_KEY, UI_STATE_VER)?;
+        if v.is_null() {
+            return None;
+        }
+        serde_json::from_value(v.clone()).ok()
+    }
+}
+
+/// Persist the bridge's current shared-state document into the durable session.
+///
+/// We can't hook `control.rs`'s mutations, so instead of persisting on every
+/// change this is called at **interaction boundaries** — after each accepted
+/// client `state_write`, at end-of-turn (which captures a turn's agent-driven
+/// `ui_state` frames), and on socket close — which bounds write frequency to
+/// turn/interaction granularity. Best-effort; a pristine session is skipped so
+/// we never write an empty doc.
+async fn save_ui_state(state: &AppState, session_id: &str, bridge: &UiBridge) {
+    let (doc, version) = bridge.state_snapshot();
+    if version == 0 && doc.as_object().map(|m| m.is_empty()).unwrap_or(true) {
+        return;
+    }
+    let ps = PersistedUiState { doc, version };
+    let sm = state.session_manager();
+    if let Ok(mut sd) = sm.get_session(session_id, false).await {
+        ps.store_into(&mut sd.extension_data);
+        let _ = sm
+            .update(session_id)
+            .extension_data(sd.extension_data)
+            .apply()
+            .await;
+    }
+}
+
+/// Load a persisted shared-state snapshot, if any.
+async fn load_ui_state(state: &AppState, session_id: &str) -> Option<PersistedUiState> {
+    let sm = state.session_manager();
+    let sd = sm.get_session(session_id, false).await.ok()?;
+    PersistedUiState::load_from(&sd.extension_data)
+}
+
+/// Apply a browser-originated `state_write` and answer the client on the socket.
+///
+/// The single source of truth for the write path, called both between turns and
+/// mid-turn (the reply loop) so the two can't drift. `handle_midturn_frame` is
+/// synchronous and has no socket, so a mid-turn write is routed here directly.
+///
+/// - accepted → persist the new doc, then echo the applied RFC-6902 ops as a
+///   `patch` frame so the client reconciles its optimistic copy to the new
+///   version;
+/// - version conflict → resnapshot the client with the authoritative doc;
+/// - invalid → a `notify` warning (the socket stays up).
+///
+/// Returns `false` only when the socket send failed (a dead connection), so the
+/// caller can tear down.
+async fn apply_state_write(
+    socket_tx: &mut WsSink,
+    ui_bridge: &UiBridge,
+    state: &AppState,
+    session_id: &str,
+    set: Option<serde_json::Value>,
+    patch: Option<serde_json::Value>,
+    base_version: u64,
+) -> bool {
+    // Translate the frame's `{"path","value"}` object into the (pointer, value)
+    // tuple the bridge expects. A `set` that is present but malformed (no string
+    // `path`) is an invalid write, not an absent one — say so rather than falling
+    // through to the "needs a set or patch" error.
+    let has_set = set.is_some();
+    let set_tuple = set.and_then(|s| {
+        let path = s.get("path")?.as_str()?.to_string();
+        let value = s.get("value").cloned().unwrap_or(serde_json::Value::Null);
+        Some((path, value))
+    });
+    if has_set && set_tuple.is_none() {
+        return send_json(
+            socket_tx,
+            json!({
+                "type": "ui", "cmd": "notify", "level": "warn",
+                "message": "\"set\" must be an object with a string \"path\"", "v": 1
+            }),
+        )
+        .await;
+    }
+
+    let frame = match ui_bridge.apply_client_write(set_tuple, patch, base_version) {
+        Ok((ops, version)) => {
+            // Persist immediately: an accepted write is an interaction boundary.
+            save_ui_state(state, session_id, ui_bridge).await;
+            json!({"type":"ui","cmd":"state","mode":"patch","patch": ops,"version": version,"v":1})
+        }
+        Err(StateWriteError::Conflict(doc, version)) => {
+            json!({"type":"ui","cmd":"state","mode":"snapshot","doc": doc,"version": version,"v":1})
+        }
+        Err(StateWriteError::Invalid(msg)) => {
+            json!({"type":"ui","cmd":"notify","level":"warn","message": msg,"v":1})
+        }
+    };
+    send_json(socket_tx, frame).await
 }
 
 /// HITL approval at the app boundary. The agent **yields** the ToolConfirmation
@@ -1842,6 +2141,7 @@ mod tests {
             built_at: None,
             sdk_hash: None,
             session_id: None,
+            surface: Default::default(),
         }
     }
 
@@ -2142,12 +2442,16 @@ mod tests {
     #[tokio::test]
     async fn ui_bridge_registry_returns_one_bridge_per_session() {
         use biorouter_mcp::agent_drafter::control::{AppControlServer, NotifyParams};
-        use biorouter_mcp::agent_drafter::manifest::UiCapability;
+        use biorouter_mcp::agent_drafter::manifest::{SurfaceDecl, UiCapability};
         use rmcp::handler::server::wrapper::Parameters;
 
         let first = super::ui_bridge_for("sess-a");
         // A server injected on the first connection holds `first`.
-        let server = AppControlServer::new(first.clone(), UiCapability::default());
+        let server = AppControlServer::new(
+            first.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
 
         // Second connection: same session id → same bridge → rebind its channel.
         let again = super::ui_bridge_for("sess-a");
@@ -2188,12 +2492,16 @@ mod tests {
     #[tokio::test]
     async fn a_parked_ui_ask_is_unparked_by_a_midturn_ui_reply() {
         use biorouter_mcp::agent_drafter::control::{AppControlServer, AskField, AskParams};
-        use biorouter_mcp::agent_drafter::manifest::UiCapability;
+        use biorouter_mcp::agent_drafter::manifest::{SurfaceDecl, UiCapability};
         use rmcp::handler::server::wrapper::Parameters;
 
         let bridge = UiBridge::new();
         let (mut ui_rx, _tok) = bridge.attach();
-        let server = AppControlServer::new(bridge.clone(), UiCapability::default());
+        let server = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
 
         // The agent calls ui_ask; it blocks until the browser answers.
         let asking = tokio::spawn(async move {
@@ -2256,12 +2564,16 @@ mod tests {
     #[tokio::test]
     async fn midturn_cancel_releases_a_parked_ui_ask() {
         use biorouter_mcp::agent_drafter::control::{AppControlServer, AskField, AskParams};
-        use biorouter_mcp::agent_drafter::manifest::UiCapability;
+        use biorouter_mcp::agent_drafter::manifest::{SurfaceDecl, UiCapability};
         use rmcp::handler::server::wrapper::Parameters;
 
         let bridge = UiBridge::new();
         let (mut ui_rx, _tok) = bridge.attach();
-        let server = AppControlServer::new(bridge.clone(), UiCapability::default());
+        let server = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl::default(),
+        );
         let asking = tokio::spawn(async move {
             server
                 .ui_ask(Parameters(AskParams {
@@ -2299,5 +2611,109 @@ mod tests {
             .flat_map(|c| c.as_text().map(|t| t.text.clone()))
             .collect();
         assert!(text.contains("dismissed"), "{text}");
+    }
+
+    // --- WS auth (origin + per-app socket token) --------------------------
+
+    #[test]
+    fn check_ws_auth_enforces_origin_and_token() {
+        use super::check_ws_auth;
+        let expected = "deadbeefcafef00d0123456789abcdef";
+
+        // A cross-origin page is rejected before the token even matters.
+        assert_eq!(
+            check_ws_auth(Some("https://evil.com"), Some(expected), expected),
+            Err("cross-origin connect rejected")
+        );
+
+        // A loopback page with no/ wrong token is rejected.
+        assert_eq!(
+            check_ws_auth(Some("http://localhost:8080"), None, expected),
+            Err("missing or invalid app socket token")
+        );
+        assert_eq!(
+            check_ws_auth(Some("http://127.0.0.1"), Some("nope"), expected),
+            Err("missing or invalid app socket token")
+        );
+
+        // Correct token + a loopback origin is accepted.
+        assert_eq!(
+            check_ws_auth(Some("http://localhost:8080"), Some(expected), expected),
+            Ok(())
+        );
+
+        // Correct token + NO Origin header (a non-browser client) is accepted —
+        // the token is the authority there.
+        assert_eq!(check_ws_auth(None, Some(expected), expected), Ok(()));
+
+        // A missing token still fails even without an Origin header.
+        assert_eq!(
+            check_ws_auth(None, None, expected),
+            Err("missing or invalid app socket token")
+        );
+    }
+
+    #[test]
+    fn ws_token_for_is_stable_per_app_and_distinct_across_apps() {
+        use super::ws_token_for;
+        let a1 = ws_token_for("wsauth-app-a");
+        let a2 = ws_token_for("wsauth-app-a");
+        let b = ws_token_for("wsauth-app-b");
+        assert_eq!(a1, a2, "the same app must get the same token");
+        assert_ne!(a1, b, "different apps must get different tokens");
+        // 16 random bytes → 32 lowercase hex chars.
+        assert_eq!(a1.len(), 32);
+        assert!(a1.bytes().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    // --- shared UI state persistence --------------------------------------
+
+    /// Mirror of `RunState`'s `persists_into_and_loads_from_extension_data`:
+    /// a snapshot must survive a round-trip through a session's `ExtensionData`.
+    #[test]
+    fn ui_state_persists_into_and_loads_from_extension_data() {
+        use super::PersistedUiState;
+        use biorouter::session::ExtensionData;
+
+        let ps = PersistedUiState {
+            doc: serde_json::json!({ "gene": "BRCA1", "hits": 42 }),
+            version: 7,
+        };
+        let mut data = ExtensionData::new();
+        ps.store_into(&mut data);
+
+        let loaded = PersistedUiState::load_from(&data).expect("a stored snapshot must load back");
+        assert_eq!(loaded.version, 7);
+        assert_eq!(loaded.doc["gene"], "BRCA1");
+        assert_eq!(loaded.doc["hits"], 42);
+
+        // An empty / never-stored ExtensionData yields nothing.
+        assert!(PersistedUiState::load_from(&ExtensionData::new()).is_none());
+    }
+
+    #[test]
+    fn state_write_frame_parses_with_set_patch_and_base_version() {
+        // `set` form
+        assert!(matches!(
+            serde_json::from_str::<ClientFrame>(
+                r#"{"type":"state_write","set":{"path":"/x","value":1},"baseVersion":3}"#
+            )
+            .unwrap(),
+            ClientFrame::StateWrite {
+                base_version: 3,
+                ..
+            }
+        ));
+        // `patch` form, default baseVersion → 0
+        assert!(matches!(
+            serde_json::from_str::<ClientFrame>(
+                r#"{"type":"state_write","patch":[{"op":"add","path":"/y","value":2}]}"#
+            )
+            .unwrap(),
+            ClientFrame::StateWrite {
+                base_version: 0,
+                ..
+            }
+        ));
     }
 }
