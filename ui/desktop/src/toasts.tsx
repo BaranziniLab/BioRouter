@@ -1,7 +1,6 @@
 import { toast, ToastOptions } from 'react-toastify';
 import { Button } from './components/ui/button';
-import { Tooltip, TooltipContent, TooltipTrigger } from './components/ui/Tooltip';
-import Copy from './components/icons/Copy';
+import { NotificationContent } from './components/alerts/NotificationSurface';
 import { startNewSession } from './sessions';
 import { useNavigation } from './hooks/useNavigation';
 import {
@@ -106,6 +105,7 @@ class ToastService {
         ),
         isLoading: !isComplete,
         type,
+        icon: false,
         autoClose: isComplete ? 5000 : false,
         closeButton: true,
         closeOnClick: false,
@@ -123,6 +123,7 @@ class ToastService {
           toastId,
           isLoading: !isComplete,
           type,
+          icon: false,
           autoClose: isComplete ? 5000 : false,
           closeButton: true,
           closeOnClick: false, // Prevent closing when clicking to expand/collapse
@@ -166,11 +167,9 @@ type ToastSuccessProps = { title?: string; msg?: string; toastOptions?: ToastOpt
 
 export function toastSuccess({ title, msg, toastOptions = {} }: ToastSuccessProps) {
   return toast.success(
-    <div>
-      {title ? <strong className="font-medium">{title}</strong> : null}
-      {title ? <div>{msg}</div> : null}
-    </div>,
-    { ...commonToastOptions, autoClose: 3000, ...toastOptions }
+    // title AND msg render independently — a message with no title is no longer dropped.
+    <NotificationContent status="success" title={title} message={msg} />,
+    { ...commonToastOptions, icon: false, autoClose: 3000, ...toastOptions }
   );
 }
 
@@ -189,7 +188,6 @@ function ToastErrorContent({
 }: Omit<ToastErrorProps, 'setView'>) {
   const setView = useNavigation();
   const showRecovery = recoverHints && setView;
-  const hasBoth = traceback && showRecovery;
 
   const handleCopyError = async () => {
     if (traceback) {
@@ -201,40 +199,35 @@ function ToastErrorContent({
     }
   };
 
-  return (
-    <div className="flex gap-4 pr-8">
-      <div className="flex-grow">
-        {title && <strong className="font-medium">{title}</strong>}
-        {msg && <div>{msg}</div>}
-      </div>
-      <div className="flex-none flex items-center gap-2">
+  // Actions sit BELOW the message in the shared primitive's action row, so they
+  // can never crowd or slide under the close ×.
+  const actions =
+    showRecovery || traceback ? (
+      <>
         {showRecovery && (
-          <Button onClick={() => startNewSession(getInitialWorkingDir(), recoverHints, setView)}>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => startNewSession(getInitialWorkingDir(), recoverHints, setView)}
+          >
             Ask biorouter
           </Button>
         )}
-        {hasBoth && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button onClick={handleCopyError} shape="round" aria-label="Copy error">
-                <Copy className="h-4 w-4" />
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="z-[10000]">
-              Copy error
-            </TooltipContent>
-          </Tooltip>
+        {traceback && (
+          <Button size="sm" variant="secondary" onClick={handleCopyError}>
+            Copy error
+          </Button>
         )}
-        {traceback && !hasBoth && <Button onClick={handleCopyError}>Copy error</Button>}
-      </div>
-    </div>
-  );
+      </>
+    ) : undefined;
+
+  return <NotificationContent status="error" title={title} message={msg} actions={actions} />;
 }
 
 export function toastError({ title, msg, traceback, recoverHints }: ToastErrorProps) {
   return toast.error(
     <ToastErrorContent title={title} msg={msg} traceback={traceback} recoverHints={recoverHints} />,
-    { ...commonToastOptions, autoClose: traceback ? false : 5000 }
+    { ...commonToastOptions, icon: false, autoClose: traceback ? false : 5000 }
   );
 }
 
@@ -246,10 +239,7 @@ type ToastLoadingProps = {
 
 export function toastLoading({ title, msg, toastOptions }: ToastLoadingProps) {
   return toast.loading(
-    <div>
-      {title ? <strong className="font-medium">{title}</strong> : null}
-      {title ? <div>{msg}</div> : null}
-    </div>,
-    { ...commonToastOptions, autoClose: false, ...toastOptions }
+    <NotificationContent status="loading" title={title} message={msg} />,
+    { ...commonToastOptions, icon: false, autoClose: false, ...toastOptions }
   );
 }

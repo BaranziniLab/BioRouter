@@ -730,25 +730,26 @@
   opacity: 1;
 }
 
-/* Toast close button styling */
-/* The close button is absolutely positioned at right:10px and is 20px wide, so
-   the body must reserve 38px or long messages run underneath it. */
+/* Toast body + close button.
+   The toast body is the SINGLE owner of the close-button gutter: it reserves
+   28px on the inline-end which, added to the toast wrapper's own 12px right
+   padding (p-3), clears the 20px close button positioned at right:10px. Callers
+   (toastSuccess/toastError/GroupedExtensionLoadingToast) add NO per-message
+   `pr-*` — that double-reservation was what let long names / action buttons run
+   under the ×. The NotificationContent primitive lays out the icon + text. */
 .Toastify__toast-body {
-  align-items: center;
-  display: flex;
+  display: block;
   flex: 1 1 auto;
   line-height: 1.35;
   margin: 0;
   min-width: 0;
   padding: 0;
-  padding-inline-end: 38px;
+  padding-inline-end: 28px;
 }
 
-.Toastify__toast-icon {
-  align-self: center;
-  margin-top: 0;
-  margin-inline-end: 10px;
-}
+/* react-toastify's own status icon is disabled (icon: false) — the tinted chip
+   in NotificationContent replaces it and top-aligns with the title, so the
+   floating-icon rule is gone. */
 
 /* The toast is a light-on-light surface in light mode and dark-on-dark in dark
    mode, so its chrome takes the ordinary text tokens. It previously referenced
@@ -761,14 +762,16 @@
 .Toastify__close-button {
   color: var(--text-muted);
   opacity: 0.7;
-  align-self: center !important;
+  align-self: flex-start !important;
   margin: 0 !important;
   padding: 4px;
   position: absolute !important;
   right: 10px !important;
-  top: 50% !important;
+  /* Top-aligned to pair with the title/icon line, not centred against the
+     toast's total height (a centred × floated on tall / expanded toasts). */
+  top: 12px !important;
   bottom: auto !important;
-  transform: translateY(-50%) !important;
+  transform: none !important;
   width: 20px;
   height: 20px;
   display: inline-flex !important;
