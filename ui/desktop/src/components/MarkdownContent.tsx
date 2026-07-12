@@ -280,10 +280,17 @@ const MarkdownContent = memo(function MarkdownContent({
                 </button>
               );
             }
-            // http(s) links resolve to the side preview (iframe) rather than an
-            // external browser. The viewer's expand button hands off to the real
-            // browser for sites that can't be framed.
-            if (href && /^https?:\/\//i.test(href) && onOpenArtifact) {
+            // Loopback/app URLs (the daemon serves BioRouter apps on 127.0.0.1)
+            // can be framed, so preview them inline in the side panel. Public
+            // websites almost always send X-Frame-Options / frame-ancestors and
+            // would render as a BLANK iframe, so those open in the real browser
+            // (via the <a> below) where they actually load.
+            const isLoopbackUrl =
+              !!href &&
+              /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?(?:[/?#]|$)/i.test(
+                href
+              );
+            if (isLoopbackUrl && onOpenArtifact) {
               return (
                 <button
                   type="button"

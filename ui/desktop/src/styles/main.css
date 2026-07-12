@@ -1390,6 +1390,18 @@ em > code.bg-inline-code {
   will-change: transform, opacity;
 }
 
+/* Keep view transitions INTERRUPTIBLE: the crossfade overlay must not eat
+   clicks. Without this, clicking a second sidebar tab while the first tab's
+   ~260ms transition is still running lands on the snapshot overlay instead of
+   the real (already-updated) sidebar, so the second navigation never fires and
+   the user is stuck on the first tab. pointer-events:none lets the click reach
+   the live DOM, which starts a new transition — the browser auto-skips the
+   in-flight one, so the second tab always wins. The user can stop and re-pick a
+   tab at any moment. */
+::view-transition {
+  pointer-events: none;
+}
+
 ::view-transition-group(biorouter-route-surface) {
   animation-duration: var(--motion-slow);
   animation-timing-function: var(--ease-out);
