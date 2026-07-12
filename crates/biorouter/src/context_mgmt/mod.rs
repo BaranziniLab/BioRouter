@@ -12,6 +12,19 @@ use tracing::{debug, info};
 
 pub const DEFAULT_COMPACTION_THRESHOLD: f64 = 0.8;
 
+/// BR-10: number of most-recent turns kept verbatim at compaction; only the
+/// older prefix is summarized. Overridable with `BIOROUTER_COMPACT_KEEP_LAST_TURNS`;
+/// set it to `0` to restore the legacy summarize-everything behaviour.
+pub const DEFAULT_COMPACT_KEEP_LAST_TURNS: usize = 4;
+
+/// Continuation note for the recent-turn window path: the summary covers only
+/// the older prefix, and the most recent turns follow it verbatim.
+const RECENT_WINDOW_CONTINUATION_TEXT: &str =
+    "The message above is a summary of the earlier part of this conversation, which was condensed because a context limit was reached.
+The most recent turns follow it verbatim.
+Do not mention that you read a summary or that summarization occurred.
+Continue the conversation naturally, relying on the summary for older context and the verbatim turns for recent detail.";
+
 const CONVERSATION_CONTINUATION_TEXT: &str =
     "The previous message contains a summary that was prepared because a context limit was reached.
 Do not mention that you read a summary or that conversation summarization occurred.
@@ -52,9 +65,110 @@ pub async fn compact_messages(
     conversation: &Conversation,
     manual_compact: bool,
 ) -> Result<(Conversation, ProviderUsage)> {
+    let keep_last_turns = Config::global()
+        .get_param::<usize>("BIOROUTER_COMPACT_KEEP_LAST_TURNS")
+        .unwrap_or(DEFAULT_COMPACT_KEEP_LAST_TURNS);
+    compact_messages_with_window(provider, conversation, manual_compact, keep_last_turns).await
+}
+
+/// Return the index into `messages` at which the recent verbatim window begins,
+/// or `None` when the recent-turn strategy does not apply — either it is
+/// disabled (`keep_last_turns == 0`), there are not more than `keep_last_turns`
+/// user-prompt turns, or the older prefix has nothing agent-visible to summarize.
+///
+/// A turn boundary is an agent-visible, text-only user message (a genuine user
+/// prompt, not a tool response). Snapping the cut to such a boundary guarantees
+/// tool_request/tool_response pairs stay intact across the boundary and that the
+/// kept window never opens with a dangling tool response.
+fn recent_window_split(messages: &[Message], keep_last_turns: usize) -> Option<usize> {
+    if keep_last_turns == 0 {
+        return None;
+    }
+
+    let is_user_prompt = |msg: &Message| {
+        msg.is_agent_visible()
+            && matches!(msg.role, Role::User)
+            && msg
+                .content
+                .iter()
+                .any(|c| matches!(c, MessageContent::Text(_)))
+            && !msg.content.iter().any(|c| {
+                matches!(
+                    c,
+                    MessageContent::ToolRequest(_) | MessageContent::ToolResponse(_)
+                )
+            })
+    };
+
+    let boundaries: Vec<usize> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, msg)| is_user_prompt(msg))
+        .map(|(idx, _)| idx)
+        .collect();
+
+    // Need strictly more turns than we intend to keep, so the older prefix is
+    // non-empty and there is something to summarize.
+    if boundaries.len() <= keep_last_turns {
+        return None;
+    }
+
+    let split = boundaries[boundaries.len() - keep_last_turns];
+
+    // The older prefix must contain something agent-visible to summarize; a
+    // prefix of only already-invisible messages (e.g. originals from a prior
+    // compaction) would yield an empty/junk summary, so fall back instead.
+    if messages[..split].iter().any(|m| m.is_agent_visible()) {
+        Some(split)
+    } else {
+        None
+    }
+}
+
+async fn compact_messages_with_window(
+    provider: &dyn Provider,
+    conversation: &Conversation,
+    manual_compact: bool,
+    keep_last_turns: usize,
+) -> Result<(Conversation, ProviderUsage)> {
     info!("Performing message compaction");
 
     let messages = conversation.messages();
+
+    // BR-10: keep the most recent turns verbatim and summarize only the older
+    // prefix, snapping the cut to a clean user-turn boundary.
+    if let Some(split) = recent_window_split(messages, keep_last_turns) {
+        let (prefix, kept) = messages.split_at(split);
+
+        let (summary_message, summarization_usage) = do_compact(provider, prefix).await?;
+
+        let mut final_messages: Vec<Message> = Vec::with_capacity(messages.len() + 2);
+
+        // Older prefix: keep in the transcript for the user, hide from the agent.
+        for msg in prefix {
+            let updated_metadata = msg.metadata.with_agent_invisible();
+            final_messages.push(msg.clone().with_metadata(updated_metadata));
+        }
+
+        // Summary of the older prefix (agent-only) + a continuation note.
+        let summary_msg = summary_message.with_metadata(MessageMetadata::agent_only());
+        let continuation_msg = Message::assistant()
+            .with_text(RECENT_WINDOW_CONTINUATION_TEXT)
+            .with_metadata(MessageMetadata::agent_only());
+        let (merged_continuation, _issues) =
+            merge_consecutive_messages(vec![summary_msg, continuation_msg]);
+        final_messages.extend(merged_continuation);
+
+        // Recent turns: kept verbatim (visibility untouched).
+        for msg in kept {
+            final_messages.push(msg.clone());
+        }
+
+        return Ok((
+            Conversation::new_unvalidated(final_messages),
+            summarization_usage,
+        ));
+    }
 
     let has_text_only = |msg: &Message| {
         let has_text = msg
@@ -661,5 +775,188 @@ mod tests {
             with,
             "including the system prompt + tool schemas should trip the threshold"
         );
+    }
+
+    /// BR-10: the split point snaps to genuine user-prompt boundaries and only
+    /// applies when there are strictly more turns than we keep.
+    #[test]
+    fn test_recent_window_split_snaps_to_user_prompt() {
+        let msgs = vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_text("a1"),
+            Message::user().with_text("q2"),
+            Message::assistant().with_text("a2"),
+            Message::user().with_text("q3"),
+            Message::assistant().with_text("a3"),
+        ];
+        // q1@0, q2@2, q3@4 are the three boundaries.
+        assert_eq!(recent_window_split(&msgs, 1), Some(4));
+        assert_eq!(recent_window_split(&msgs, 2), Some(2));
+        // Keeping >= all turns leaves no older prefix to summarize.
+        assert_eq!(recent_window_split(&msgs, 3), None);
+        assert_eq!(recent_window_split(&msgs, 4), None);
+        // Disabled.
+        assert_eq!(recent_window_split(&msgs, 0), None);
+    }
+
+    /// BR-10: a tool-response user message must not count as a turn boundary, so
+    /// the cut never lands between a tool_request and its tool_response.
+    #[test]
+    fn test_recent_window_split_ignores_tool_responses() {
+        let msgs = vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_tool_request(
+                "tool_0",
+                Ok(CallToolRequestParams {
+                    task: None,
+                    name: "read_file".into(),
+                    arguments: None,
+                    meta: None,
+                }),
+            ),
+            Message::user().with_tool_response(
+                "tool_0",
+                Ok(rmcp::model::CallToolResult {
+                    content: vec![RawContent::text("f").no_annotation()],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+            ),
+            Message::assistant().with_text("a1"),
+            Message::user().with_text("q2"),
+            Message::assistant().with_text("a2"),
+        ];
+        // Only q1@0 and q2@4 are boundaries; the tool_response@2 is not.
+        assert_eq!(recent_window_split(&msgs, 1), Some(4));
+    }
+
+    /// BR-10: the most recent N turns stay verbatim (agent-visible) while only
+    /// the older prefix is summarized and flipped agent-invisible.
+    #[tokio::test]
+    async fn test_recent_window_keeps_recent_turns_verbatim() {
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 100_000);
+
+        let mut messages = Vec::new();
+        for i in 1..=4 {
+            messages.push(Message::user().with_text(format!("q{i}")));
+            messages.push(Message::assistant().with_text(format!("a{i}")));
+        }
+        // Turn 5 carries a tool_request/tool_response pair.
+        messages.push(Message::user().with_text("q5"));
+        messages.push(Message::assistant().with_tool_request(
+            "tool_0",
+            Ok(CallToolRequestParams {
+                task: None,
+                name: "read_file".into(),
+                arguments: None,
+                meta: None,
+            }),
+        ));
+        messages.push(Message::user().with_tool_response(
+            "tool_0",
+            Ok(rmcp::model::CallToolResult {
+                content: vec![RawContent::text("f").no_annotation()],
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+        ));
+        messages.push(Message::assistant().with_text("a5"));
+        // Turn 6.
+        messages.push(Message::user().with_text("q6"));
+        messages.push(Message::assistant().with_text("a6"));
+
+        let conversation = Conversation::new_unvalidated(messages);
+        // Keep the last 2 turns verbatim; turns 1-4 become the summarized prefix.
+        let (compacted, _usage) = compact_messages_with_window(&provider, &conversation, false, 2)
+            .await
+            .unwrap();
+
+        let text_of = |m: &Message| -> String {
+            m.content
+                .iter()
+                .filter_map(|c| {
+                    if let MessageContent::Text(t) = c {
+                        Some(t.text.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("")
+        };
+
+        // Older turns are retained in the transcript but hidden from the agent.
+        for label in ["q1", "q2", "q3", "q4", "a1", "a4"] {
+            let msg = compacted
+                .messages()
+                .iter()
+                .find(|m| text_of(m) == label)
+                .unwrap_or_else(|| panic!("{label} missing from transcript"));
+            assert!(
+                !msg.is_agent_visible(),
+                "{label} should be agent-invisible after compaction"
+            );
+        }
+
+        // The prefix summary is agent-visible.
+        let summary = compacted
+            .messages()
+            .iter()
+            .find(|m| text_of(m) == "<mock summary>")
+            .expect("summary present");
+        assert!(summary.is_agent_visible());
+
+        // The recent turns are kept verbatim and stay agent-visible.
+        for label in ["q5", "q6", "a5", "a6"] {
+            let msg = compacted
+                .messages()
+                .iter()
+                .find(|m| text_of(m) == label)
+                .unwrap_or_else(|| panic!("{label} missing"));
+            assert!(
+                msg.is_agent_visible(),
+                "{label} should be kept verbatim (agent-visible)"
+            );
+        }
+
+        // The kept tool_request/tool_response pair both survive, agent-visible.
+        let agent_msgs = compacted.agent_visible_messages();
+        let requests = agent_msgs
+            .iter()
+            .filter(|m| {
+                m.content
+                    .iter()
+                    .any(|c| matches!(c, MessageContent::ToolRequest(_)))
+            })
+            .count();
+        let responses = agent_msgs
+            .iter()
+            .filter(|m| {
+                m.content
+                    .iter()
+                    .any(|c| matches!(c, MessageContent::ToolResponse(_)))
+            })
+            .count();
+        assert_eq!(requests, 1, "kept tool_request should survive");
+        assert_eq!(responses, 1, "kept tool_response should survive");
+    }
+
+    /// BR-10: with too few turns to keep a window, compaction falls back to the
+    /// legacy summarize-everything behaviour (the latest user message survives).
+    #[tokio::test]
+    async fn test_recent_window_falls_back_when_too_few_turns() {
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 1);
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("read hello.txt"),
+            Message::assistant().with_text("done"),
+        ]);
+        // keep_last_turns larger than the number of turns -> fallback path.
+        let (compacted, _usage) = compact_messages_with_window(&provider, &conversation, false, 4)
+            .await
+            .unwrap();
+        let agent_msgs = compacted.agent_visible_messages();
+        Conversation::new(agent_msgs).expect("fallback compaction should validate");
     }
 }
