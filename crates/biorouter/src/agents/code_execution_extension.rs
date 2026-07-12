@@ -937,12 +937,10 @@ impl McpClientTrait for CodeExecutionClient {
 
         let server_list: Vec<_> = servers.into_iter().collect();
 
+        // Keep only the live module inventory here; the batching rule now lives
+        // in system.md's "# Tool Use" so it holds regardless of mode. See BR-4.
         Some(format!(
             indoc::indoc! {r#"
-                ALWAYS batch multiple tool operations into ONE execute_code call.
-                - WRONG: Separate execute_code calls for read file, then write file
-                - RIGHT: One execute_code with a script that reads AND writes
-
                 Modules: {}
 
                 Use the read_module tool to see signatures before calling unfamiliar tools.

@@ -202,14 +202,14 @@ impl McpClientTrait for TodoClient {
             .await
             .ok()?;
 
+        // Only the live task state belongs here; the behavioral rule (plan up
+        // front, keep a todo list) now lives in system.md so it holds even
+        // without this extension. See BR-4.
         match extension_data::TodoState::from_extension_data(&metadata.extension_data) {
             Some(state) if !state.content.trim().is_empty() => {
                 Some(format!("Current tasks and notes:\n{}\n", state.content))
             }
-            _ => Some(
-                "Current tasks and notes:\nOnce given a task, immediately update your todo with all explicit and implicit requirements\n"
-                    .to_string(),
-            ),
+            _ => None,
         }
     }
 }

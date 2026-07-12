@@ -398,6 +398,16 @@ mod tests {
             p.contains("not surprising the user"),
             "missing proactiveness/don't-surprise balance"
         );
+        // Planning/todo discipline (moved here from the todo extension MOIM).
+        assert!(
+            p.contains("plan before acting"),
+            "missing planning/todo discipline"
+        );
+        // Verification-before-completion discipline.
+        assert!(
+            p.contains("Before reporting a task complete, verify it"),
+            "missing verify-before-done discipline"
+        );
         // Safety posture (including the biomedical-accuracy clause).
         assert!(
             p.contains("Never expose, log, or commit secrets"),
