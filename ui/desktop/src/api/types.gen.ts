@@ -31,6 +31,48 @@ export type ActiveKbResponse = {
 };
 
 /**
+ * One active unit of work, kind-tagged so the GUI can render/route uniformly.
+ */
+export type ActiveWorkItemDto = {
+    /**
+     * Whether `POST /active_work/{id}/cancel` can stop it.
+     */
+    cancellable: boolean;
+    /**
+     * Extra context (full command, child session id, workflow source).
+     */
+    detail?: string | null;
+    /**
+     * Unique id; also the handle for `POST /active_work/{id}/cancel`.
+     */
+    id: string;
+    /**
+     * `background_job`, `subagent`, or `scheduled_run`.
+     */
+    kind: string;
+    /**
+     * Wall-clock seconds this item has been running where known.
+     */
+    runningForSeconds?: number | null;
+    /**
+     * Owning/related session id where known.
+     */
+    sessionId?: string | null;
+    /**
+     * RFC3339 start time where known.
+     */
+    startedAt?: string | null;
+    /**
+     * Short human-readable label (command, task prompt, or schedule id).
+     */
+    title: string;
+};
+
+export type ActiveWorkResponse = {
+    items: Array<ActiveWorkItemDto>;
+};
+
+/**
  * The Home heatmap payload.
  */
 export type ActivityWindow = {
@@ -85,6 +127,10 @@ export type CallToolResponse = {
     content: Array<Content>;
     is_error: boolean;
     structured_content?: unknown;
+};
+
+export type CancelActiveWorkResponse = {
+    message: string;
 };
 
 export type ChangeKind = 'ingest' | 'link' | 'flag' | 'query' | 'lint' | 'restore' | 'manual';
@@ -1783,6 +1829,54 @@ export type ConfirmToolActionResponses = {
      */
     200: unknown;
 };
+
+export type ListActiveWorkData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/active_work';
+};
+
+export type ListActiveWorkResponses = {
+    /**
+     * Current background jobs, subagents, and in-flight scheduled runs
+     */
+    200: ActiveWorkResponse;
+};
+
+export type ListActiveWorkResponse = ListActiveWorkResponses[keyof ListActiveWorkResponses];
+
+export type CancelActiveWorkData = {
+    body?: never;
+    path: {
+        /**
+         * Active-work item id from GET /active_work
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/active_work/{id}/cancel';
+};
+
+export type CancelActiveWorkErrors = {
+    /**
+     * No such active-work item
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type CancelActiveWorkResponses = {
+    /**
+     * Cancel requested
+     */
+    200: CancelActiveWorkResponse;
+};
+
+export type CancelActiveWorkResponse2 = CancelActiveWorkResponses[keyof CancelActiveWorkResponses];
 
 export type AgentAddExtensionData = {
     body: AddExtensionRequest;
