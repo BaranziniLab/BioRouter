@@ -2,7 +2,7 @@
 
 **Design:** [`docs/superpowers/specs/2026-07-12-apps-sdk-v2-design.md`](../specs/2026-07-12-apps-sdk-v2-design.md)
 **Date:** 2026-07-12 (revised after adversarial review)
-**Shape:** six phases, each independently shippable and mergeable; every phase ends green (`cargo test -p biorouter-mcp --lib agent_drafter::`, `cargo test -p biorouter-server --lib routes::apps`, `node scripts/agent-drafter/ui-control-harness.mjs`, `tsc` clean) and keeps all v1 apps working.
+**Shape:** six phases, each independently shippable and mergeable; every phase ends green (`cargo test -p biorouter-mcp --lib agent_drafter::`, `cargo test -p biorouter-server --lib routes::apps`, `node scripts/agent-drafter/ui-control-harness.mjs`, `tsc` clean) and keeps all v1 apps working. **Export parity is a per-phase gate (design §3.9):** each phase's acceptance includes the export smoke — the demo app exported via `GET /apps/{id}/export` and launched by `run.sh` against a headless daemon must exercise that phase's new features (state restore, socket token, `ui_patch`, signals, profiles, theme packs) identically to the panel-served app.
 
 Key files, recurring in every phase:
 - `crates/biorouter-mcp/src/agent_drafter/control.rs` — `ui_*` tools, `UiBridge`, frame emission, validation
@@ -116,7 +116,13 @@ The foundation every other pillar builds on. Additive; no behavior change for v1
 5. **Benchmark v2.** Extend `appcheck/benchmark.mjs`: score bound-state paths, declared actions, catalog components, archetype distribution on raw store markup (same honesty rule as v1); wire into the vendored `round2/round3` scripts; record vs the pinned v1 baseline.
 6. **Docs.** (a) rewrite `docs/agent-drafter-apps.md` v2 sections; (b) **human-facing SDK reference** (distinct from author-agent prompts): `br.*` API, `manifest.surface` JSON Schema, frame/protocol reference, capability matrix, custom-component guide, three worked examples as annotated source; (c) CLAUDE.md pointer update; (d) example apps under `scripts/agent-drafter-apps/examples/` (KB explorer, avatar, cohort dashboard).
 7. **CLI parity:** `biorouter apps list|open|serve` (launch daemon, print/open URL). In-terminal rendering stays out of scope.
-8. **Full-matrix verification:** unit + route + harness + `check-ui-app.mjs` live + export runs standalone + Electron Applications tab smoke (`just agent-browser-ui` / debug-app skill).
+8. **Standalone export v2 (design §3.9).**
+   - **Fat export:** `export_app { bundle_daemon: true }` + a checkbox on the panel's existing Export button — stage the platform-matching `biorouterd` into the folder; `biorouter-launch.sh` prefers the bundled binary over PATH; export README documents per-platform choice + macOS quarantine (right-click-Open on first run).
+   - **Socket-token + CSP parity in `serve.mjs`** (with Phase 1's WS auth): the proxy mints/forwards the per-app token and serves the same headers.
+   - **Graceful degradation on foreign machines:** no-provider first run shows the backend banner with a guided setup pointer; missing KB grants feature-detect via `has()` (harness fixture).
+   - **Re-import path:** an edited export re-installs through lint + build; `sdk_hash` drift rebuilds. Foreign-machine capability re-consent per §3.7.
+   - Smoke: Linux fat export boots in a clean container (mirrors the `cli-linux` release smoke); macOS fat export manual checklist.
+9. **Full-matrix verification:** unit + route + harness + `check-ui-app.mjs` live + export runs standalone (thin *and* fat) + Electron Applications tab smoke (`just agent-browser-ui` / debug-app skill).
 
 ---
 

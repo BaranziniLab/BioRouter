@@ -93,7 +93,7 @@ From the deep-read of `agent_drafter/` and ~110 real generated apps:
    └──────────────────────────────────────────────────────────────────────┘
 ```
 
-Eight pillars, each independently shippable, ordered by leverage.
+Nine pillars, each independently shippable, ordered by leverage.
 
 ### 3.1 Pillar 1 — The App Contract: typed surface, both directions
 
@@ -250,6 +250,24 @@ One agent per app is the v1 shape, but multi-agent is already half-present: `orc
 - **Patterns unlocked:** adversarial review (generator + critic), panel-of-judges scoring, pipeline stages (extract → analyze → visualize) each owned by a profile tuned to its task — including **different models per role** (a local model triaging, an institutional model touching PHI, a frontier model writing the synthesis), which is exactly BioRouter's provider-integration strength applied inside one app.
 - **Boundaries:** profiles live in-process in `biorouterd` (the `biorouter-acp` protocol remains the layer for *cross-process* agent orchestration, and `br.workflow.run` in v2.1 the layer for declarative DAGs). Two simultaneous turns on the *same* profile remain out of scope.
 
+### 3.9 Pillar 9 — App lifecycle: Applications-panel round-trip + standalone export
+
+The full lifecycle is a product guarantee, not an implementation detail: **create → appears in the Applications panel → reopen and change it anytime → export as standalone software that runs without opening BioRouter.**
+
+**What already ships (v1) and is retained:** the Applications panel lists every app with launch/delete and a working one-click **Export** (`ApplicationsView.tsx:114-142` → `GET /apps/{id}/export`, which rebuilds a stale bundle first via `export_scaffold`). The exported folder is directly runnable: `run.command` (macOS) / `run.sh` source `biorouter-launch.sh`, which locates or installs `biorouterd`, self-installs the app into the recipient's store, starts the daemon **headlessly**, verifies it, and opens the default browser — the BioRouter GUI never opens. A `serve.mjs` loopback proxy (static files + `/apps/**` incl. the WS upgrade) covers the no-shell path. `.vault/` is excluded; the SDK derives its endpoint from the page origin.
+
+**"Standalone" defined honestly:** the app's intelligence *is* the BioRouter platform — providers, KB, extensions, skills live in `biorouterd`. So standalone means *no BioRouter application (GUI) and no visible BioRouter anything*: a double-clickable folder whose scripts run the daemon as an invisible backend. A generated app with no daemon would have no agent; that trade is inherent and stated.
+
+**v2 additions:**
+
+1. **Export parity is a phase-gate invariant.** Every pillar's features must work identically in the exported form — the strict CSP, the per-app socket token (minted by `serve.mjs`/the launch path), durable state restore (the recipient's session store), multi-agent profiles, `figure` fragments, theme packs. The rule: *if it works in the Applications panel, it works exported.* Each plan phase's acceptance includes the export smoke, not just Phase 6.
+2. **Self-contained "fat" export** (`export_app { bundle_daemon: true }`, also a checkbox on the panel's Export): bundles the platform-matching `biorouterd` binary (~108 MB stripped) inside the folder so a recipient with *nothing* pre-installed can run it — `biorouter-launch.sh` prefers the bundled binary over PATH. Caveats stated in the export README: the bundle is per-platform (pick at export time, default = exporter's platform); on macOS a downloaded folder carries quarantine, so first run may require right-click-Open (the binary itself is Developer-ID signed; per-app notarized packaging is v2.1).
+3. **Keys and config never travel.** The export carries no secrets (vault excluded, provider keys live in the OS credential store) — the app runs against the *recipient's* configured providers. First run on a machine with no provider configured shows the existing backend banner extended with a guided setup pointer; KB-scoped grants referencing bases absent on the recipient's machine degrade gracefully via capability feature-detection (`has()`), never crash.
+4. **Same-machine vs foreign-machine trust.** Self-export re-imported on the same machine reuses existing grants frictionlessly; on any other machine the §3.7 rule applies — the shipped manifest is a capability *request*, re-consented deny-by-default on first run.
+5. **Editability round-trip.** The exported folder remains a readable TS project (the human-facing SDK reference in §5 exists precisely for this); re-importing an edited export re-runs lint + build, and `sdk_hash` drift triggers the rebuild path as usual.
+
+Out of scope (consistent with §7): per-app desktop packaging (.dmg/Tauri wrapper per app) and BAAM marketplace listing — v2.1, gated on the import-re-consent model.
+
 ## 4. Worked examples (what becomes possible)
 
 **A. Knowledge-graph explorer (BioOKF-Studio-class, ~50 lines of authored code).** `explorer` starter + `br.kb.graph()` → `network` component; `node_selected` signal subscribed by the agent → agent `br.kb.page()`s the node and `ui_patch`es the inspector panel with a `markdown` component + a `figure` (Kaplan-Meier from Auto Visualiser) when relevant; user asks "focus on demyelination" → agent calls `app_call{focus_node}`. The presence chip narrates each step. Every piece is a declared, typed, gated primitive — no eval bridge, no bespoke renderer, no polling.
@@ -278,7 +296,7 @@ One agent per app is the v1 shape, but multi-agent is already half-present: `orc
 
 ## 7. Scope decisions (explicit)
 
-- **Distribution:** `export_app` remains the only sharing mechanism in v2. A `.brapp` bundle + one-click install mirroring `.brxt`, and BAAM listing, are the natural v2.1 — **gated on the import-re-consent model in §3.7** (a shared manifest is a request, not a grant). Stated here so it's a decision, not an omission.
+- **Distribution:** standalone export is **first-class in v2** (Pillar 9, §3.9 — panel one-click export, runnable without opening BioRouter, optional bundled daemon). What stays v2.1: `.brapp` bundle + one-click install mirroring `.brxt`, and BAAM listing — **gated on the import-re-consent model in §3.7** (a shared manifest is a request, not a grant).
 - **CLI:** apps are browser-rendered by design; the CLI gets `biorouter apps list|open|serve` parity (launch daemon, print/open the URL — matching how `launch_app` already behaves in CLI contexts). In-terminal (ratatui) rendering of catalog UIs is out of scope.
 - **A Tauri/desktop shell for apps** — apps stay browser-served by `biorouterd` (and inside the Electron Applications tab). Studio's vibrancy/PTY/Finder affordances are not portable SDK primitives.
 - **CRDTs** — single ordering authority (the server) + JSON Patch suffices; apps are single-user per-client (§3.7). Revisit only if collaborative editing becomes a requirement.
