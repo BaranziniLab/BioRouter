@@ -30,6 +30,7 @@ use crate::agents::subagent_tool::{
 };
 use crate::agents::types::SessionConfig;
 use crate::agents::types::{FrontendTool, SharedProvider, ToolResultReceiver};
+use crate::checkpoint::{CheckpointConfig, CheckpointKind, CheckpointManager};
 use crate::config::permission::PermissionManager;
 use crate::config::{BioRouterMode, Config};
 use crate::context_mgmt::{
@@ -178,6 +179,10 @@ pub struct Agent {
     /// cancelling the turn (no lost work, no full context re-send). A plain
     /// `std::Mutex` so callers can push without awaiting the agent's async locks.
     pub(super) soft_interrupts: Arc<std::sync::Mutex<Vec<String>>>,
+    /// BR-43 shadow-git checkpoints: captures the work-tree at turn boundaries so
+    /// `/rewind` can restore files/conversation. `None` when disabled (the
+    /// default) or on the subagent/test paths. Gated by `BIOROUTER_CHECKPOINTS`.
+    pub(super) checkpoints: Option<Arc<CheckpointManager>>,
 }
 
 #[derive(Clone, Debug)]
@@ -250,6 +255,16 @@ impl Agent {
         let session_manager = Arc::clone(&config.session_manager);
         let permission_manager = Arc::clone(&config.permission_manager);
         let hooks_manager = Arc::new(crate::hooks::HooksManager::new(provider.clone()));
+        // BR-43: build the checkpoint manager only when enabled, so the disabled
+        // default path never touches disk. Reads `BIOROUTER_CHECKPOINTS` / caps.
+        let checkpoint_cfg = CheckpointConfig::from_env();
+        let checkpoints = checkpoint_cfg.enabled.then(|| {
+            Arc::new(CheckpointManager::new(
+                crate::config::paths::Paths::data_dir(),
+                Arc::clone(&config.session_manager),
+                checkpoint_cfg,
+            ))
+        });
         Self {
             provider: provider.clone(),
             config,
@@ -273,6 +288,7 @@ impl Agent {
             fallback_scheduler: tokio::sync::OnceCell::new(),
             vault: Mutex::new(None),
             soft_interrupts: Arc::new(std::sync::Mutex::new(Vec::new())),
+            checkpoints,
         }
     }
 
@@ -319,6 +335,29 @@ impl Agent {
     /// The hooks manager driving user-configured lifecycle hooks.
     pub fn hooks_manager(&self) -> Arc<crate::hooks::HooksManager> {
         Arc::clone(&self.hooks_manager)
+    }
+
+    /// The BR-43 checkpoint manager, when checkpoints are enabled.
+    pub fn checkpoints(&self) -> Option<Arc<CheckpointManager>> {
+        self.checkpoints.clone()
+    }
+
+    /// BR-43: snapshot the work-tree at a turn boundary (no-op when disabled).
+    /// Best-effort — a checkpoint failure must never break the reply. `anchor_ts`
+    /// is the `created` timestamp of the user message that opened this turn.
+    pub(super) async fn maybe_checkpoint(
+        &self,
+        session_id: &str,
+        working_dir: &std::path::Path,
+        anchor_ts: i64,
+        kind: CheckpointKind,
+    ) {
+        let Some(cp) = self.checkpoints.as_ref() else {
+            return;
+        };
+        if let Err(e) = cp.snapshot(session_id, working_dir, anchor_ts, kind).await {
+            warn!("BR-43 checkpoint snapshot failed (non-fatal): {e}");
+        }
     }
 
     /// Fire a PreCompact/PostCompact hook (observe-only, fire-and-forget).
@@ -1709,8 +1748,26 @@ impl Agent {
         let session_manager = self.config.session_manager.clone();
 
         let working_dir = session.working_dir.clone();
+        // BR-43: stable anchor for this turn's checkpoints — the `created`
+        // timestamp of the last user message (the same key `truncate_conversation`
+        // uses on restore). Computed once, before the loop mutates `conversation`.
+        let checkpoint_anchor_ts = conversation
+            .messages()
+            .iter()
+            .rev()
+            .find(|m| m.role == rmcp::model::Role::User)
+            .map(|m| m.created)
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
         Ok(Box::pin(async_stream::try_stream! {
             let _ = reply_span.enter();
+            // Pre-turn snapshot: the clean work-tree state as this turn opens, so a
+            // rewind to this turn can undo everything the agent does below.
+            self.maybe_checkpoint(
+                &session_config.id,
+                &working_dir,
+                checkpoint_anchor_ts,
+                CheckpointKind::PreStep,
+            ).await;
             let mut turns_taken = 0u32;
             let max_turns = session_config
                 .max_turns
@@ -2247,6 +2304,17 @@ impl Agent {
                     // and the turn made real progress, so reset the auto-continue streaks.
                     self.hooks_manager.reset_stop_blocks(&session_config.id).await;
                     truncation_continuations = 0;
+
+                    // BR-43: post-step snapshot of the (possibly mutated) work-tree.
+                    // Coarse: any tool-running iteration, relying on the shadow
+                    // repo's tree-sha dedup to drop read-only steps (no row when the
+                    // tree is unchanged).
+                    self.maybe_checkpoint(
+                        &session_config.id,
+                        &working_dir,
+                        checkpoint_anchor_ts,
+                        CheckpointKind::PostStep,
+                    ).await;
                 }
 
                 if exit_chat {

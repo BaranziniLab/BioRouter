@@ -18,7 +18,7 @@ use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 10;
+pub const CURRENT_SCHEMA_VERSION: i32 = 11;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -519,6 +519,37 @@ pub struct SessionTokenCounts {
     pub accumulated_output_tokens: Option<i64>,
 }
 
+/// SQLite row shape for the BR-43 `checkpoints` table, mapped to the public
+/// `checkpoint::CheckpointRecord`.
+#[derive(sqlx::FromRow)]
+struct CheckpointRow {
+    id: String,
+    session_id: String,
+    turn_index: i64,
+    anchor_ts: i64,
+    kind: String,
+    commit_sha: String,
+    tree_sha: String,
+    changed_paths_json: String,
+    created_at: String,
+}
+
+impl CheckpointRow {
+    fn into_record(self) -> Result<crate::checkpoint::CheckpointRecord> {
+        Ok(crate::checkpoint::CheckpointRecord {
+            id: self.id,
+            session_id: self.session_id,
+            turn_index: self.turn_index,
+            anchor_ts: self.anchor_ts,
+            kind: self.kind.parse()?,
+            commit_sha: self.commit_sha,
+            tree_sha: self.tree_sha,
+            changed_paths: serde_json::from_str(&self.changed_paths_json).unwrap_or_default(),
+            created_at: self.created_at,
+        })
+    }
+}
+
 pub struct SessionManager {
     storage: Arc<SessionStorage>,
 }
@@ -678,6 +709,39 @@ impl SessionManager {
         self.storage
             .truncate_conversation(session_id, timestamp)
             .await
+    }
+
+    // BR-43 shadow-git checkpoints: `checkpoints` table access, delegated to
+    // `SessionStorage` (which owns the pool) and called by `CheckpointManager`.
+
+    pub async fn insert_checkpoint(&self, rec: &crate::checkpoint::CheckpointRecord) -> Result<()> {
+        self.storage.insert_checkpoint(rec).await
+    }
+
+    pub async fn list_checkpoints(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::checkpoint::CheckpointRecord>> {
+        self.storage.list_checkpoints(session_id).await
+    }
+
+    pub async fn last_checkpoint(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::checkpoint::CheckpointRecord>> {
+        self.storage.last_checkpoint(session_id).await
+    }
+
+    pub async fn get_checkpoint(
+        &self,
+        session_id: &str,
+        checkpoint_id: &str,
+    ) -> Result<Option<crate::checkpoint::CheckpointRecord>> {
+        self.storage.get_checkpoint(session_id, checkpoint_id).await
+    }
+
+    pub async fn delete_checkpoints(&self, session_id: &str) -> Result<()> {
+        self.storage.delete_checkpoints(session_id).await
     }
 
     pub async fn maybe_update_name(&self, id: &str, provider: Arc<dyn Provider>) -> Result<()> {
@@ -1140,6 +1204,9 @@ impl SessionStorage {
             .execute(pool)
             .await?;
 
+        // BR-43 shadow-git checkpoints (migration 11), created inline for fresh DBs.
+        Self::create_checkpoints_table(pool).await?;
+
         sqlx::query("CREATE INDEX idx_messages_session ON messages(session_id)")
             .execute(pool)
             .await?;
@@ -1504,11 +1571,44 @@ impl SessionStorage {
                 .execute(pool)
                 .await?;
             }
+            11 => {
+                // BR-43 shadow-git checkpoints. Additive side table keyed by the
+                // turn's anchor `created_timestamp` (NOT the positional message
+                // id) so checkpoints survive the future stable-UUID migration.
+                Self::create_checkpoints_table(pool).await?;
+            }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
             }
         }
 
+        Ok(())
+    }
+
+    /// The BR-43 `checkpoints` side table (migration 11 + fresh-DB schema).
+    async fn create_checkpoints_table(pool: &Pool<Sqlite>) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS checkpoints (
+                id TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                turn_index INTEGER NOT NULL,
+                anchor_ts INTEGER NOT NULL,
+                kind TEXT NOT NULL,
+                commit_sha TEXT NOT NULL,
+                tree_sha TEXT NOT NULL,
+                changed_paths_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id, turn_index)",
+        )
+        .execute(pool)
+        .await?;
         Ok(())
     }
 
@@ -2310,6 +2410,90 @@ impl SessionStorage {
         Ok(())
     }
 
+    // BR-43 shadow-git checkpoints: the `checkpoints` side-table CRUD. Kept here
+    // (rather than the `checkpoint` module) because `SessionStorage` owns the
+    // SQLite pool; `CheckpointManager` calls these through `SessionManager`.
+
+    async fn insert_checkpoint(&self, rec: &crate::checkpoint::CheckpointRecord) -> Result<()> {
+        let pool = self.pool().await?;
+        let changed = serde_json::to_string(&rec.changed_paths)?;
+        sqlx::query(
+            r#"INSERT INTO checkpoints
+                (id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha, changed_paths_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#,
+        )
+        .bind(&rec.id)
+        .bind(&rec.session_id)
+        .bind(rec.turn_index)
+        .bind(rec.anchor_ts)
+        .bind(rec.kind.as_str())
+        .bind(&rec.commit_sha)
+        .bind(&rec.tree_sha)
+        .bind(changed)
+        .bind(&rec.created_at)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn list_checkpoints(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<crate::checkpoint::CheckpointRecord>> {
+        let pool = self.pool().await?;
+        let rows = sqlx::query_as::<_, CheckpointRow>(
+            "SELECT id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha, changed_paths_json, created_at
+             FROM checkpoints WHERE session_id = ? ORDER BY turn_index DESC",
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+        rows.into_iter().map(CheckpointRow::into_record).collect()
+    }
+
+    /// The highest-`turn_index` checkpoint, for the next ordinal + `tree_sha`
+    /// dedup baseline.
+    async fn last_checkpoint(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<crate::checkpoint::CheckpointRecord>> {
+        let pool = self.pool().await?;
+        let row = sqlx::query_as::<_, CheckpointRow>(
+            "SELECT id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha, changed_paths_json, created_at
+             FROM checkpoints WHERE session_id = ? ORDER BY turn_index DESC LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_optional(pool)
+        .await?;
+        row.map(CheckpointRow::into_record).transpose()
+    }
+
+    async fn get_checkpoint(
+        &self,
+        session_id: &str,
+        checkpoint_id: &str,
+    ) -> Result<Option<crate::checkpoint::CheckpointRecord>> {
+        let pool = self.pool().await?;
+        let row = sqlx::query_as::<_, CheckpointRow>(
+            "SELECT id, session_id, turn_index, anchor_ts, kind, commit_sha, tree_sha, changed_paths_json, created_at
+             FROM checkpoints WHERE session_id = ? AND id = ?",
+        )
+        .bind(session_id)
+        .bind(checkpoint_id)
+        .fetch_optional(pool)
+        .await?;
+        row.map(CheckpointRow::into_record).transpose()
+    }
+
+    async fn delete_checkpoints(&self, session_id: &str) -> Result<()> {
+        let pool = self.pool().await?;
+        sqlx::query("DELETE FROM checkpoints WHERE session_id = ?")
+            .bind(session_id)
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     async fn search_chat_history(
         &self,
         query: &str,
@@ -2341,6 +2525,46 @@ mod tests {
     use tempfile::TempDir;
 
     const NUM_CONCURRENT_SESSIONS: i32 = 10;
+
+    #[tokio::test]
+    async fn checkpoints_table_crud_roundtrip() {
+        // A fresh DB (create_schema path) must carry the migration-11 `checkpoints`
+        // table, and the CRUD helpers `CheckpointManager` relies on must roundtrip.
+        use crate::checkpoint::{CheckpointKind, CheckpointRecord};
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        assert!(sm.list_checkpoints("s1").await.unwrap().is_empty());
+        assert!(sm.last_checkpoint("s1").await.unwrap().is_none());
+
+        let rec = CheckpointRecord {
+            id: "cp-1".to_string(),
+            session_id: "s1".to_string(),
+            turn_index: 0,
+            anchor_ts: 1234,
+            kind: CheckpointKind::PreStep,
+            commit_sha: "deadbeef".to_string(),
+            tree_sha: "cafef00d".to_string(),
+            changed_paths: vec!["a.txt".to_string()],
+            created_at: "2026-07-12T00:00:00Z".to_string(),
+        };
+        sm.insert_checkpoint(&rec).await.unwrap();
+
+        let listed = sm.list_checkpoints("s1").await.unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].kind, CheckpointKind::PreStep);
+        assert_eq!(listed[0].tree_sha, "cafef00d");
+        assert_eq!(listed[0].changed_paths, vec!["a.txt".to_string()]);
+
+        let got = sm.get_checkpoint("s1", "cp-1").await.unwrap().unwrap();
+        assert_eq!(got.commit_sha, "deadbeef");
+        assert!(sm.get_checkpoint("s1", "missing").await.unwrap().is_none());
+        // Scoped by session.
+        assert!(sm.get_checkpoint("other", "cp-1").await.unwrap().is_none());
+
+        sm.delete_checkpoints("s1").await.unwrap();
+        assert!(sm.list_checkpoints("s1").await.unwrap().is_empty());
+    }
 
     #[tokio::test]
     async fn test_concurrent_session_creation() {
