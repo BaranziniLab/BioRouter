@@ -62,6 +62,10 @@ export interface PromptOptions {
   // its partial text) and start this one instead of queueing behind it.
   debounceMs?: number;
   supersede?: boolean;
+  // SDK v2 (§3.8) multi-agent facade: the worker profile this prompt/run is
+  // scoped to. Set by `br.agent(name)`; rides the outgoing frame as `agent`, and
+  // settles / filters against server frames that carry the same `agent`.
+  agent?: string;
 }
 
 export interface TimelineOptions {
@@ -76,7 +80,7 @@ export interface TimelineSummary {
 
 /** Events emitted while the agent answers a prompt. */
 export type AgentEvent =
-  | { type: "ready"; protocol?: number; capabilities?: string[]; sessionId?: string; resumed?: boolean; messageCount?: number; surface?: ReadySurface }
+  | { type: "ready"; protocol?: number; capabilities?: string[]; sessionId?: string; resumed?: boolean; messageCount?: number; surface?: ReadySurface; profiles?: string[] }
   | { type: "message"; delta: string }
   | { type: "thought"; delta: string }
   | { type: "tool"; name: string; status: string; id?: string }
@@ -110,6 +114,38 @@ type Listener = (ev: AgentEvent) => void;
 // bare `(() => void)` annotation lacks).
 type ResolveFn = () => void;
 type RejectFn = (e: Error) => void;
+
+// ── SDK v2 §3.8: multi-agent client facade ───────────────────────────────────
+/** The optional `agent` routing field any v2 frame (client→server prompt/call,
+ *  or server→client worker stream) may carry. Named so `(ev as AgentTagged)`
+ *  survives the no-esbuild fallback stripper (an inline object-type cast does
+ *  not). */
+interface AgentTagged {
+  agent?: string;
+}
+
+/** A scoped worker handle from `br.agent(name)`: every outgoing prompt/call
+ *  carries `agent:name`, and `on()` fires only for frames whose `agent === name`.
+ *  Named so the annotations strip cleanly. */
+interface AgentFacade {
+  prompt(text: string, opts?: PromptOptions): Promise<void>;
+  ask(text: string, opts?: PromptOptions): Promise<string>;
+  call(nameOrOpts: string | CallOpts, args?: unknown, opts?: CallOpts): Promise<CallResult>;
+  run(text: string, target: HTMLElement | string, opts?: PromptOptions): Promise<string>;
+  on(kind: EventKind, fn: Listener): AgentFacade;
+}
+
+/** A prompt awaiting its terminal `done`/`error`, scoped to one worker profile. */
+interface AgentInflight {
+  resolve: ResolveFn;
+  reject: RejectFn;
+}
+
+/** The routing `agent` of a frame, or `""` for a main-facade frame (no agent). */
+function frameAgent(ev: unknown): string {
+  const a = (ev as AgentTagged).agent;
+  return typeof a === "string" ? a : "";
+}
 
 // ── SDK v2 Phase 3: app.actions / br.call / app.signals ──────────────────────
 // Single-ident named aliases (see note above): a bare inline function/object
@@ -149,6 +185,8 @@ interface CallOpts {
   outputSchema?: unknown;
   debounceMs?: number;
   supersede?: boolean;
+  // SDK v2 §3.8: the worker profile this call is scoped to (set by `br.agent`).
+  agent?: string;
 }
 
 /** What `br.call` resolves to: a structured `value` (from an `output` frame), or
@@ -169,6 +207,8 @@ interface PendingCall {
   textBuf: string;
   settled: boolean;
   superseding: boolean;
+  // SDK v2 §3.8: the worker profile this call is scoped to, if any.
+  agent?: string;
 }
 
 /** A trailing-edge debounce slot for `br.call`, keyed by call-key. */
@@ -466,6 +506,18 @@ export class BioRouterClient {
   // errors dropped since the last delivered frame (rides the next one).
   private uiErrorTimes: number[] = [];
   private uiErrorDropped = 0;
+  // ── SDK v2 §3.8: multi-agent facade ──
+  // Worker profiles the server advertised in `ready.profiles` (empty = none).
+  private declaredAgents: string[] = [];
+  // In-flight worker prompts + calls, keyed by profile, so a worker frame's
+  // `done`/`error` settles the right facade's promise (the main, no-agent path
+  // keeps using `activeResolve`/`activeReject`/`activeCall`).
+  private agentInflight: Map<string, AgentInflight> = new Map();
+  private agentActiveCall: Map<string, PendingCall> = new Map();
+  // Facade-scoped listeners: agent name (or "" for the main facade) → per-kind
+  // buckets. Global `on()` still fires for ALL frames (back-compat); this adds
+  // the filtered routing so `br.agent(x).on()` sees only x's frames.
+  private agentListeners: Map<string, Record<string, Listener[]>> = new Map();
 
   constructor(config: AppConfig) {
     this.config = config;
@@ -524,12 +576,16 @@ export class BioRouterClient {
         clearBackendError();
         ws.onerror = () => {
           this.emit({ type: "error", message: "connection error" });
-          this.settleActive(new Error("connection error"));
+          const err = new Error("connection error");
+          this.settleActive(err);
+          this.rejectAllAgents(err);
         };
         ws.onclose = () => {
           this.readyPromise = null;
           this.ws = null;
-          this.settleActive(new Error("connection closed"));
+          const err = new Error("connection closed");
+          this.settleActive(err);
+          this.rejectAllAgents(err);
         };
         ws.onmessage = (ev) => this.handleFrame(ev.data);
         return;
@@ -573,6 +629,9 @@ export class BioRouterClient {
       if (Array.isArray(msg.capabilities)) this.capabilities = msg.capabilities;
       if (typeof msg.sessionId === "string") this.sessionId = msg.sessionId;
       this.resumed = msg.resumed === true;
+      // Latch the declared worker profiles (§3.8). Absent/empty = none.
+      const profiles = msg.profiles;
+      if (Array.isArray(profiles)) this.declaredAgents = profiles.slice();
       // Latch the advertised signal/action surface (absent on pre-Phase-3
       // servers — tolerated, falling back to the 250 ms default coalescing).
       this.latchSurface(msg.surface);
@@ -589,9 +648,15 @@ export class BioRouterClient {
     // Structured result for a pending `br.call` (matched by callId).
     if (msg.type === "output") this.resolveOutput(msg);
     // Accumulate a `br.call` turn's prose so a turn that ends without an
-    // `output` frame still resolves with its `{text}`.
-    if (msg.type === "message" && this.activeCall && typeof msg.delta === "string") {
-      this.activeCall.textBuf += msg.delta;
+    // `output` frame still resolves with its `{text}`. A worker frame carries
+    // `agent` and feeds that profile's in-flight call; a main frame feeds
+    // `activeCall` (per-agent turn-text accumulation, §3.8).
+    if (msg.type === "message" && typeof msg.delta === "string") {
+      const agent = frameAgent(msg);
+      const pc = agent ? this.agentActiveCall.get(agent) : this.activeCall;
+      if (pc) pc.textBuf += msg.delta;
+      // Presence attribution: a worker's message start shows "<profile> · …".
+      if (agent && this.has("ui")) this.ui.presence(agent + " · responding…");
     }
     // Resolve any pending br.context.tokens() callers.
     if (msg.type === "context") {
@@ -627,15 +692,146 @@ export class BioRouterClient {
         }
       }
     }
+    // Global listeners fire for ALL frames (back-compat); the facade adds the
+    // filtered routing so `br.agent(x).on()` sees only x's frames (§3.8).
     this.emit(msg);
+    this.routeFacade(msg);
+    // Settle the correct facade's in-flight promise by the frame's `agent`.
     if (msg.type === "done") {
-      this.settleActiveCall(null);
-      this.settleActive();
+      const agent = frameAgent(msg);
+      if (agent) {
+        this.settleAgentCall(agent, null);
+        this.settleAgentPrompt(agent);
+      } else {
+        this.settleActiveCall(null);
+        this.settleActive();
+      }
     } else if (msg.type === "error") {
       const err = new Error(msg.message);
-      this.settleActiveCall(err);
-      this.settleActive(err);
+      const agent = frameAgent(msg);
+      if (agent) {
+        this.settleAgentCall(agent, err);
+        this.settleAgentPrompt(agent, err);
+      } else {
+        this.settleActiveCall(err);
+        this.settleActive(err);
+      }
     }
+  }
+
+  // ── SDK v2 §3.8: multi-agent facade ─────────────────────────────────────────
+
+  /** The worker profiles the server declared in its `ready` frame (a copy). */
+  agents(): string[] {
+    return this.declaredAgents.slice();
+  }
+
+  /** A scoped handle for a declared worker profile: `{prompt, ask, call, run, on}`
+   *  where every outgoing prompt/call carries `agent:name`, and `on()` fires only
+   *  for frames whose `agent === name`. An unknown profile (not in
+   *  `ready.profiles`) makes the async methods reject immediately with a clear
+   *  error; `on()` is a harmless no-op (no frame will ever match). */
+  agent(name: string): AgentFacade {
+    const self = this;
+    const facade: AgentFacade = {
+      prompt: (text, opts) => self.agentReject(name) || self.prompt(text, self.withAgent(opts, name)),
+      ask: (text, opts) => self.agentReject(name) || self.ask(text, self.withAgent(opts, name)),
+      call: (nameOrOpts, args, opts) => self.agentReject(name) || self.callWithAgent(name, nameOrOpts, args, opts),
+      run: (text, target, opts) => self.agentReject(name) || self.run(text, target, self.withAgent(opts, name)),
+      on: (kind, fn) => {
+        self.addAgentListener(name, kind, fn);
+        return facade;
+      },
+    };
+    return facade;
+  }
+
+  /** A rejected promise when `name` is not a declared profile, else `null` so the
+   *  caller falls through to the real method. */
+  private agentReject(name: string): Promise<never> | null {
+    if (this.declaredAgents.indexOf(name) >= 0) return null;
+    const known = this.declaredAgents.join(", ") || "(none)";
+    return Promise.reject(
+      new Error('Unknown agent profile "' + name + '". Declared profiles: ' + known + ".")
+    );
+  }
+
+  /** Clone `opts` with `agent` stamped on, for a facade-scoped prompt/run. */
+  private withAgent(opts: PromptOptions | undefined, name: string): PromptOptions {
+    const base = opts || {};
+    return { images: base.images, debounceMs: base.debounceMs, supersede: base.supersede, agent: name };
+  }
+
+  /** Facade-scoped `call`: normalise, stamp the agent, and schedule. */
+  private callWithAgent(
+    name: string,
+    nameOrOpts: string | CallOpts,
+    args: unknown,
+    opts?: CallOpts
+  ): Promise<CallResult> {
+    const o = this.normalizeCall(nameOrOpts, args, opts);
+    o.agent = name;
+    return new Promise((resolve, reject) => {
+      this.scheduleCall(o, resolve, reject);
+    });
+  }
+
+  /** Register a facade-scoped listener (agent name, or "" for the main facade). */
+  private addAgentListener(name: string, kind: EventKind, fn: Listener): void {
+    let buckets = this.agentListeners.get(name);
+    if (!buckets) {
+      buckets = {};
+      this.agentListeners.set(name, buckets);
+    }
+    (buckets[kind] ||= []).push(fn);
+  }
+
+  /** Dispatch a frame to the facade whose name matches its `agent` (or "" for a
+   *  main frame). Errors in a facade listener are non-fatal. */
+  private routeFacade(msg: AgentEvent): void {
+    const buckets = this.agentListeners.get(frameAgent(msg));
+    if (!buckets) return;
+    const arr = buckets[msg.type];
+    if (!arr) return;
+    for (const fn of arr) {
+      try {
+        fn(msg);
+      } catch {
+        /* listener errors are non-fatal */
+      }
+    }
+  }
+
+  /** Settle a worker profile's in-flight prompt (its `done`/`error`). */
+  private settleAgentPrompt(name: string, err?: Error): void {
+    const rec = this.agentInflight.get(name);
+    if (!rec) return;
+    this.agentInflight.delete(name);
+    if (err) rec.reject(err);
+    else rec.resolve();
+  }
+
+  /** Settle a worker profile's in-flight `br.call` (resolve `{text}` on done). */
+  private settleAgentCall(name: string, err: Error | null): void {
+    const pending = this.agentActiveCall.get(name);
+    if (!pending) return;
+    if (err) this.rejectCall(pending, err);
+    else this.resolveCall(pending, { text: pending.textBuf });
+  }
+
+  /** Reject every in-flight worker prompt/call (on socket close/error). */
+  private rejectAllAgents(err: Error): void {
+    const prompts = Array.from(this.agentInflight.values());
+    this.agentInflight.clear();
+    for (const rec of prompts) {
+      try {
+        rec.reject(err);
+      } catch {
+        /* consumer errors are non-fatal */
+      }
+    }
+    const calls = Array.from(this.agentActiveCall.values());
+    for (const pc of calls) this.rejectCall(pc, err);
   }
 
   /**
@@ -1086,11 +1282,17 @@ export class BioRouterClient {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error("Not connected to the BioRouter backend.");
     }
+    const agent = opts.agent;
     return new Promise<void>((resolve, reject) => {
-      this.activeResolve = resolve;
-      this.activeReject = reject;
+      // A worker prompt settles against its own profile's `done`/`error`; the
+      // main (no-agent) prompt keeps using the shared active slots (§3.8).
+      if (agent) this.agentInflight.set(agent, { resolve: resolve, reject: reject });
+      else {
+        this.activeResolve = resolve;
+        this.activeReject = reject;
+      }
       this.ws!.send(
-        JSON.stringify({ type: "prompt", text, images: opts.images || [] })
+        JSON.stringify({ type: "prompt", text, images: opts.images || [], agent: agent })
       );
     });
   }
@@ -1115,8 +1317,12 @@ export class BioRouterClient {
   /** Convenience: collect the full reply for one prompt as a single string. */
   async ask(text: string, opts: PromptOptions = {}): Promise<string> {
     let buf = "";
+    // A worker ask (opts.agent set) accumulates only that profile's deltas; the
+    // main ask accumulates only un-tagged (no-agent) deltas — a no-op filter for
+    // single-agent apps, where no frame carries an `agent` at all (§3.8).
+    const want = opts.agent || "";
     const onMsg: Listener = (ev) => {
-      if (ev.type === "message") buf += ev.delta;
+      if (ev.type === "message" && frameAgent(ev) === want) buf += ev.delta;
     };
     this.on("message", onMsg);
     try {
@@ -1257,15 +1463,18 @@ export class BioRouterClient {
     const statusEl = el.querySelector<HTMLElement>(".br-run-status")!;
     const answerEl = el.querySelector<HTMLElement>(".br-run-answer")!;
     const stopTimeline = mountTimeline(this, statusEl, { maxItems: 18 });
+    // A worker run streams only its profile's frames; a main run streams only
+    // un-tagged frames (a no-op filter for single-agent apps) (§3.8).
+    const want = opts.agent || "";
     const onMsg: Listener = (ev) => {
-      if (ev.type === "message") {
+      if (ev.type === "message" && frameAgent(ev) === want) {
         buf += ev.delta;
         if (handle) handle.partial = buf;
         answerEl.innerHTML = this.renderMarkdown(buf);
       }
     };
     const onTool: Listener = (ev) => {
-      if (ev.type === "tool" && !buf) {
+      if (ev.type === "tool" && frameAgent(ev) === want && !buf) {
         answerEl.innerHTML = `<span class="br-spinner"></span> <span class="br-msg--tool">${ev.name}…</span>`;
       }
     };
@@ -1394,6 +1603,7 @@ export class BioRouterClient {
         outputSchema: extra.outputSchema,
         debounceMs: extra.debounceMs,
         supersede: extra.supersede,
+        agent: extra.agent,
       };
     }
     const base = nameOrOpts || {};
@@ -1404,11 +1614,15 @@ export class BioRouterClient {
       outputSchema: base.outputSchema,
       debounceMs: base.debounceMs,
       supersede: base.supersede,
+      agent: base.agent,
     };
   }
 
   private callKey(o: CallOpts): string {
-    return o.name || o.text || "__call";
+    const base = o.name || o.text || "__call";
+    // Namespace the debounce/supersede key by profile so a worker's calls never
+    // collide with the main agent's on the same name/text (§3.8).
+    return o.agent ? o.agent + "::" + base : base;
   }
 
   private scheduleCall(o: CallOpts, resolve: CallResolve, reject: RejectFn): void {
@@ -1448,12 +1662,16 @@ export class BioRouterClient {
       textBuf: "",
       settled: false,
       superseding: !!o.supersede,
+      agent: o.agent,
     };
     this.pendingCalls.set(callId, pending);
-    this.activeCall = pending;
+    // A worker call streams into its profile's active slot; the main call keeps
+    // the shared one (§3.8).
+    if (o.agent) this.agentActiveCall.set(o.agent, pending);
+    else this.activeCall = pending;
     if (o.supersede) this.callInFlight.set(key, pending);
-    // JSON.stringify drops the `undefined` fields, so name/args or text ride
-    // exactly as populated.
+    // JSON.stringify drops the `undefined` fields, so name/args or text (and the
+    // optional `agent`) ride exactly as populated.
     const frame = {
       type: "call",
       callId: callId,
@@ -1461,6 +1679,7 @@ export class BioRouterClient {
       args: o.args,
       text: o.text,
       outputSchema: o.outputSchema,
+      agent: o.agent,
     };
     if (this.send(frame)) return;
     // Socket not open yet — connect, then send (or reject if still unreachable).
@@ -1480,7 +1699,11 @@ export class BioRouterClient {
   private resolveOutput(msg: AgentEvent): void {
     const frame = msg as OutputFrame;
     const cid = typeof frame.callId === "string" ? frame.callId : "";
-    const pending = cid ? this.pendingCalls.get(cid) : this.activeCall;
+    // No callId → fall back to the active call for this frame's profile (§3.8):
+    // a worker frame settles that worker's call, a main frame settles activeCall.
+    const agent = frameAgent(msg);
+    const fallback = agent ? this.agentActiveCall.get(agent) : this.activeCall;
+    const pending = cid ? this.pendingCalls.get(cid) : fallback;
     if (!pending) return;
     this.resolveCall(pending, { value: frame.value });
   }
@@ -1497,6 +1720,9 @@ export class BioRouterClient {
     pending.settled = true;
     this.pendingCalls.delete(pending.callId);
     if (this.activeCall === pending) this.activeCall = null;
+    if (pending.agent && this.agentActiveCall.get(pending.agent) === pending) {
+      this.agentActiveCall.delete(pending.agent);
+    }
     if (this.callInFlight.get(pending.key) === pending) this.callInFlight.delete(pending.key);
     try {
       pending.resolve(result);
@@ -1510,6 +1736,9 @@ export class BioRouterClient {
     pending.settled = true;
     this.pendingCalls.delete(pending.callId);
     if (this.activeCall === pending) this.activeCall = null;
+    if (pending.agent && this.agentActiveCall.get(pending.agent) === pending) {
+      this.agentActiveCall.delete(pending.agent);
+    }
     if (this.callInFlight.get(pending.key) === pending) this.callInFlight.delete(pending.key);
     try {
       pending.reject(err);
@@ -3951,6 +4180,10 @@ export interface UiCommand {
   // ── presence layer (SDK v2 Phase 5, §3.5) ──
   // Any agent frame may carry `narrate` — shown verbatim in the presence chip.
   narrate?: string;
+  // ── multi-agent (SDK v2 §3.8) ──
+  // A worker profile's ui frame carries `agent`; presence attributes it to that
+  // profile ("<profile> · …") instead of the generic "AI · …".
+  agent?: string;
   // ── ui_suggest (SDK v2 §3.5): non-blocking mixed-initiative chips ──
   chips?: SuggestChip[];
   // The clicked chip's label, carried on the synthetic `suggest` command the
@@ -4311,19 +4544,22 @@ function presenceLabel(s: string): string {
   return t;
 }
 
-/** The chip text for an agent-driven command (before any `narrate` override). */
-function presenceTextFor(cmd: UiCommand): string {
+/** The chip text for an agent-driven command (before any `narrate` override).
+ *  `who` is the actor label — "AI" for the main agent, or a worker profile name
+ *  when the frame carried an `agent` (§3.8). */
+function presenceTextFor(cmd: UiCommand, who: string): string {
+  const p = (who || "AI") + " · ";
   const c = cmd.cmd;
-  if (c === "panel") return "AI · updating panel " + presenceLabel(cmd.title || cmd.id || "");
-  if (c === "render") return "AI · updating " + presenceLabel(cmd.target || "view");
-  if (c === "patch") return "AI · updating the view";
-  if (c === "state") return "AI · updating data";
-  if (c === "theme") return "AI · restyling";
-  if (c === "layout") return "AI · rearranging the layout";
-  if (c === "notify") return "AI · " + presenceLabel(cmd.message || "notice");
-  if (c === "highlight") return "AI · highlighting " + presenceLabel(cmd.target || "");
-  if (c === "figure") return "AI · rendering a figure";
-  return "AI · working";
+  if (c === "panel") return p + "updating panel " + presenceLabel(cmd.title || cmd.id || "");
+  if (c === "render") return p + "updating " + presenceLabel(cmd.target || "view");
+  if (c === "patch") return p + "updating the view";
+  if (c === "state") return p + "updating data";
+  if (c === "theme") return p + "restyling";
+  if (c === "layout") return p + "rearranging the layout";
+  if (c === "notify") return p + presenceLabel(cmd.message || "notice");
+  if (c === "highlight") return p + "highlighting " + presenceLabel(cmd.target || "");
+  if (c === "figure") return p + "rendering a figure";
+  return p + "working";
 }
 
 /** `String(err)` capped at 500 chars, for a `ui_error` frame (never throws). */
@@ -4455,10 +4691,13 @@ export class UiRuntime {
    *  (verbatim) wins; otherwise a per-command phrase. Nothing shows for a frame
    *  outside the presence set that carries no narration. */
   private notePresence(cmd: UiCommand): void {
+    // Attribute a worker profile's frame to that profile ("<profile> · …")
+    // rather than the generic "AI · …" (§3.8).
+    const who = typeof cmd.agent === "string" && cmd.agent ? cmd.agent : "AI";
     if (typeof cmd.narrate === "string" && cmd.narrate) {
-      this.presence(cmd.narrate);
+      this.presence(who === "AI" ? cmd.narrate : who + " · " + cmd.narrate);
     } else if (PRESENCE_CMDS[cmd.cmd]) {
-      this.presence(presenceTextFor(cmd));
+      this.presence(presenceTextFor(cmd, who));
     }
   }
 
@@ -5902,15 +6141,48 @@ export function mountChat(client: BioRouterClient, host: HTMLElement): void {
 }
 
 /**
- * Create (and globally register) the app client from
- * `window.BIOROUTER_APP_CONFIG`. Auto-mounts a chat panel when requested.
+ * Read the app config the served page baked in. Prefers a CSP-friendly
+ * `<script type="application/json" id="biorouter-app-config">` element (its
+ * textContent parsed as JSON) so the page needs no inline executable config;
+ * falls back to the legacy `window.BIOROUTER_APP_CONFIG` global for older pages.
+ * Malformed JSON in the tag is warned about and also falls back to the global.
+ */
+function readAppConfig(): Partial<AppConfig> {
+  try {
+    const el = document.getElementById("biorouter-app-config");
+    const text = el ? el.textContent : "";
+    if (text && text.trim()) {
+      try {
+        const parsed = JSON.parse(text);
+        if (parsed && typeof parsed === "object") return parsed as Partial<AppConfig>;
+      } catch (e) {
+        try {
+          console.warn(
+            "[biorouter] could not parse #biorouter-app-config JSON; falling back to window.BIOROUTER_APP_CONFIG",
+            e
+          );
+        } catch {
+          /* console may be unavailable */
+        }
+      }
+    }
+  } catch {
+    /* no document / getElementById (non-browser host) — use the global */
+  }
+  return window.BIOROUTER_APP_CONFIG || {};
+}
+
+/**
+ * Create (and globally register) the app client from the served page's config
+ * (a `#biorouter-app-config` JSON script tag, or the legacy
+ * `window.BIOROUTER_APP_CONFIG`). Auto-mounts a chat panel when requested.
  */
 export function createApp(overrides: Partial<AppConfig> = {}): BioRouterClient {
   const cfg: AppConfig = {
     appId: "app",
     autoChat: true,
     ui: true,
-    ...(window.BIOROUTER_APP_CONFIG || {}),
+    ...readAppConfig(),
     ...overrides,
   };
   const client = new BioRouterClient(cfg);
