@@ -67,9 +67,6 @@ struct Output {
 
 struct Job {
     label: String,
-    // Read by `list()` (exercised in tests); the listing isn't wired into the
-    // tool surface yet, so the lib build sees it as unused.
-    #[allow(dead_code)]
     command: String,
     started: Instant,
     /// Process-group leader pid (== child pid because we spawn it in its own
@@ -86,7 +83,8 @@ struct Job {
 }
 
 /// Registry of background shell jobs, shared (via `Arc`) by the developer
-/// server's `shell`, `shell_output`, `shell_wait` and `shell_kill` tools.
+/// server's `shell`, `shell_output`, `shell_wait`, `shell_kill` and
+/// `shell_list` tools.
 #[derive(Default)]
 pub struct BackgroundJobs {
     jobs: Mutex<HashMap<String, Arc<Job>>>,
@@ -246,9 +244,9 @@ impl BackgroundJobs {
         Ok(format!("sent kill signal to job {id}"))
     }
 
-    /// One-line summary of every job. Covered by tests; not yet surfaced as a
-    /// tool, so the non-test build sees it as unused.
-    #[allow(dead_code)]
+    /// One-line summary of every background job — id, label, status, runtime,
+    /// whether unread output is waiting, and the command — so the agent can
+    /// rediscover jobs whose `job_id` it has lost. Backs the `shell_list` tool.
     pub async fn list(&self) -> String {
         let jobs = self.jobs.lock().await;
         if jobs.is_empty() {
@@ -260,8 +258,19 @@ impl BackgroundJobs {
         for id in ids {
             let job = &jobs[&id];
             let status = job.status.lock().await.describe();
+            // Peek at the read cursor without draining it, so listing a job
+            // doesn't consume the output a later `shell_output` should return.
+            let new_output = {
+                let out = job.output.lock().await;
+                out.cursor < out.buf.len()
+            };
+            let pending = if new_output {
+                " · new output available"
+            } else {
+                ""
+            };
             lines.push(format!(
-                "- {id} [{}]: {status} ({}s) — `{}`",
+                "- {id} [{}]: {status} ({}s elapsed){pending} — `{}`",
                 job.label,
                 job.started.elapsed().as_secs(),
                 job.command
@@ -334,6 +343,45 @@ mod tests {
         assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Exited(0));
         let snap = jobs.snapshot(&id).await.unwrap();
         assert!(snap.contains("hello-bg"), "snapshot: {snap}");
+    }
+
+    #[tokio::test]
+    async fn list_reports_command_status_and_unread_output() {
+        let jobs = BackgroundJobs::new();
+        let id = jobs.spawn("echo listme", None, None).await.unwrap();
+        assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Exited(0));
+
+        let listing = jobs.list().await;
+        assert!(listing.contains(&id), "listing: {listing}");
+        assert!(
+            listing.contains("echo listme"),
+            "command missing: {listing}"
+        );
+        assert!(
+            listing.contains("exited(0)"),
+            "terminal status missing: {listing}"
+        );
+        assert!(listing.contains("elapsed"), "runtime missing: {listing}");
+        assert!(
+            listing.contains("new output available"),
+            "unread output not flagged: {listing}"
+        );
+
+        // Listing must not drain the cursor; a real read still sees the output,
+        // after which the listing stops flagging it.
+        let drained = BackgroundJobs::drain_new_output(&jobs.job(&id).await.unwrap()).await;
+        assert!(drained.contains("listme"), "drained: {drained}");
+        let listing2 = jobs.list().await;
+        assert!(
+            !listing2.contains("new output available"),
+            "flag should clear after read: {listing2}"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_is_empty_message_with_no_jobs() {
+        let jobs = BackgroundJobs::new();
+        assert_eq!(jobs.list().await, "No background jobs.");
     }
 
     #[tokio::test]
