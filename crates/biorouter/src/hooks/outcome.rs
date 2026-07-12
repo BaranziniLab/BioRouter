@@ -43,11 +43,11 @@ pub fn cap_hook_context(s: &str) -> String {
     let head_end = floor_char_boundary(s, head_len);
     let tail_start = floor_char_boundary(s, s.len() - tail_len).max(head_end);
     let omitted = tail_start - head_end;
-    format!(
-        "{}\n\u{2026}[hook output truncated: {omitted} bytes omitted]\u{2026}\n{}",
-        &s[..head_end],
-        &s[tail_start..]
-    )
+    // `head_end`/`tail_start` are char boundaries (see `floor_char_boundary`), so
+    // these slices always succeed; `get` avoids the `string_slice` lint.
+    let head = s.get(..head_end).unwrap_or_default();
+    let tail = s.get(tail_start..).unwrap_or_default();
+    format!("{head}\n\u{2026}[hook output truncated: {omitted} bytes omitted]\u{2026}\n{tail}")
 }
 
 /// Wrap injected hook context in an explicit, clearly-labeled frame so the model
