@@ -1252,6 +1252,10 @@ struct WorkerHandle {
     agent: Arc<biorouter::agents::Agent>,
     session_id: String,
     max_turns: u32,
+    /// Per-profile consult deadline, when the manifest declares one. `max_turns`
+    /// alone bounds tool calls, not wall clock — a worker can sit inside a single
+    /// slow tool for as long as it likes.
+    consult_timeout_s: Option<u64>,
 }
 
 /// Outcome of validating a manifest's declared worker profiles.
@@ -1599,6 +1603,10 @@ async fn build_worker(
         agent,
         session_id,
         max_turns: cfg.max_turns.unwrap_or(DEFAULT_MAX_TURNS),
+        // A profile's declared wall-clock bound doubles as its consult deadline —
+        // `max_turns` bounds tool CALLS, not time, so a worker can sit inside one
+        // slow tool indefinitely.
+        consult_timeout_s: cfg.consult_timeout_s,
     })
 }
 
@@ -1736,25 +1744,67 @@ async fn run_consult(
         }
     }
     let handle = worker_agents.get(&req.agent).expect("just inserted");
-    // Wall-clock bound so a runaway worker can't wedge the main turn's loop (the
-    // parked `consult` tool has its own outer timeout; this guards the loop side).
+
+    // The LOOP owns the consult deadline. There used to be two: the parked tool
+    // started one before the request even reached us, and this one started strictly
+    // later, so the outer always won and this was dead code — and when the outer
+    // fired, we were still sitting here awaiting the worker, draining nothing, for
+    // another full deadline. The tool now waits deadline + grace, so this timer is
+    // the one that decides.
+    //
+    // Crucially, expiry CANCELS the worker. Before, the abandoned turn kept running
+    // and, when it finally answered, `resolve_consult` found no pending entry and
+    // threw the answer away — paid work, discarded.
+    let deadline = consult_deadline(handle);
+    let worker_cancel = cancel.child_token();
+
     let turn = run_bounded_turn(
         &handle.agent,
         &handle.session_id,
         &req.prompt,
         handle.max_turns,
-        cancel,
+        worker_cancel.clone(),
     );
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(biorouter_mcp::agent_drafter::control::CONSULT_TIMEOUT_S),
-        turn,
-    )
-    .await
-    {
+
+    let started = std::time::Instant::now();
+    match tokio::time::timeout(std::time::Duration::from_secs(deadline), turn).await {
         Ok(Ok(text)) => json!({ "text": cap_text(&text) }),
         Ok(Err(e)) => json!({ "error": e }),
-        Err(_) => json!({ "error": format!("worker profile \"{}\" timed out", req.agent) }),
+        Err(_) => {
+            worker_cancel.cancel();
+            warn!(
+                app = %manifest.id,
+                profile = %req.agent,
+                deadline_s = deadline,
+                "worker profile exceeded its deadline and was cancelled"
+            );
+            json!({
+                "status": "timeout",
+                "agent": req.agent,
+                "elapsed_s": started.elapsed().as_secs().max(deadline),
+            })
+        }
     }
+}
+
+/// How long this worker gets to answer.
+///
+/// Per-profile `max_wall_s` wins; then `BIOROUTER_APP_CONSULT_TIMEOUT_S` for ops;
+/// then the default. Clamped, because an unbounded deadline is how a single slow
+/// worker used to wedge the whole socket loop.
+fn consult_deadline(handle: &WorkerHandle) -> u64 {
+    const MIN: u64 = 5;
+    const MAX: u64 = 600;
+
+    let configured = handle.consult_timeout_s.or_else(|| {
+        std::env::var("BIOROUTER_APP_CONSULT_TIMEOUT_S")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+    });
+
+    configured
+        .unwrap_or(biorouter_mcp::agent_drafter::control::CONSULT_TIMEOUT_S)
+        .clamp(MIN, MAX)
 }
 
 /// Serialize + size-cap a JSON value at [`APP_PAYLOAD_MAX`] bytes, appending a
@@ -3546,6 +3596,10 @@ async fn handle_agent_socket(
         // must block THIS turn's publishing actions — but must not keep blocking
         // once the user supplies the data on the next one.
         ui_bridge.clear_evidence();
+        // Worker profiles that failed to answer this turn. The `done` frame carries
+        // them, so a turn where every consulted worker timed out cannot look
+        // identical to a turn that did the work.
+        let mut timed_out_profiles: Vec<String> = Vec::new();
 
         let cancel = CancellationToken::new();
         let mut stream = match turn_agent
@@ -3615,6 +3669,16 @@ async fn handle_agent_socket(
                         )
                         .await
                     };
+                    if payload.get("status").and_then(|v| v.as_str()) == Some("timeout") {
+                        let who = payload
+                            .get("agent")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(req.agent.as_str())
+                            .to_string();
+                        if !timed_out_profiles.contains(&who) {
+                            timed_out_profiles.push(who);
+                        }
+                    }
                     ui_bridge.resolve_consult(&req.id, payload);
                     continue;
                 }
@@ -3858,8 +3922,22 @@ async fn handle_agent_socket(
             last_turn_ended = Some(Instant::now());
         }
 
-        if !errored && !send_json(&mut socket_tx, stamp_agent(json!({"type":"done"}), stamp)).await
-        {
+        // A turn where the workers produced nothing must not LOOK like a turn that
+        // did the work. The main agent used to receive a soft "did not answer within
+        // 120s" text, ignore it, and complete normally — the page showed a finished
+        // turn with no indication that half its reasoning never happened. The SDK
+        // renders this as a persistent banner, whether or not the model mentions it.
+        let mut done = json!({"type":"done"});
+        if !timed_out_profiles.is_empty() {
+            warn!(
+                app = %manifest.id,
+                profiles = ?timed_out_profiles,
+                "turn completed with worker profiles that never answered"
+            );
+            done["degraded"] = json!(true);
+            done["missingProfiles"] = json!(timed_out_profiles);
+        }
+        if !errored && !send_json(&mut socket_tx, stamp_agent(done, stamp)).await {
             ui_bridge.detach(conn_token);
             return;
         }

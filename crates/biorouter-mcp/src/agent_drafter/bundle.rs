@@ -488,6 +488,65 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
         }
     }
 
+    // ── A drag-only surface is unreachable by anything but a human mouse ──────
+    //
+    // The SDK shipped no drag runtime while theme.css advertised drop zones, so
+    // the model hand-rolled HTML5 `draggable="true"` + `dragstart`/`drop`. HTML5
+    // DnD is not driven by synthetic pointer moves: a coordinate drag from an
+    // automated or assistive pointer produces NO `dragstart`. Spec-009's core
+    // interaction — building a stratum by dragging covariates — could not be
+    // performed by anything except a person with a working mouse.
+    //
+    // `br.dnd.catalog(...)` gives pointer + click + keyboard parity and emits the
+    // declared signal itself. A lint error with no working alternative would just
+    // make the model hand-roll something worse, so the primitive is what makes this
+    // rule fair.
+    let uses_html5_dnd = il.contains("draggable=\"true\"")
+        || il.contains("draggable='true'")
+        || main.contains("dragstart")
+        || main.contains("dataTransfer");
+    let uses_dnd_primitive =
+        main.contains("br.dnd") || main.contains(".dnd.catalog") || il.contains("data-br-dnd");
+    let has_fallback = main.contains("keydown") || main.contains("\"click\"");
+
+    if uses_html5_dnd && !uses_dnd_primitive && !has_fallback {
+        error(
+            &mut out,
+            "this app's drag interaction is HTML5 drag-and-drop with no click or keyboard \
+             fallback, so it is unreachable by keyboard, touch, and any automated or assistive \
+             pointer (synthetic pointer moves do not fire `dragstart`). Use \
+             `br.dnd.catalog({ source, target, signal, onDrop })`, which gives pointer, click \
+             and keyboard parity and emits the declared signal for you.",
+        );
+    } else if uses_html5_dnd && !uses_dnd_primitive {
+        warning(
+            &mut out,
+            "this app hand-rolls HTML5 drag-and-drop. It will not respond to a synthetic or \
+             assistive pointer. Prefer `br.dnd.catalog(...)`.",
+        );
+    }
+
+    // ── A binding with no initial value renders blank on first load ───────────
+    //
+    // Bindings were evaluated against an empty document until the first (paid)
+    // agent turn wrote to it, so every KPI showed blank. That is *why* authors kept
+    // a private local state object — which then diverged from the doc the agent
+    // reads. Declaring `surface.state_initial` is the fix; not declaring it is the
+    // bug's root.
+    if let Some(m) = manifest.as_ref() {
+        let binds_something = il.contains("data-br-bind");
+        if binds_something && m.surface.state_initial.is_none() {
+            warning(
+                &mut out,
+                "index.html has `data-br-bind` bindings but the manifest declares no \
+                 `surface.state_initial`, so every bound element renders BLANK until the first \
+                 agent turn writes to the shared state. Declare the initial document \
+                 (`declare_surface` → `state_initial`) rather than keeping a private local \
+                 `state` object — a local copy silently diverges from the document the agent reads.",
+            );
+        }
+    }
+
     out
 }
 

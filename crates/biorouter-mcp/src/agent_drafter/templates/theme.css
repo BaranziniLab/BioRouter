@@ -387,6 +387,33 @@ code, kbd {
 }
 .br-dropzone.is-over { border-color: var(--br-coral); background: var(--br-medium); color: var(--br-text); }
 
+/* ── br.dnd primitive ──────────────────────────────────────────────────────
+   The SDK had no drag runtime, but this stylesheet already advertised drop
+   zones — so the model hand-rolled HTML5 DnD, which synthetic pointers cannot
+   drive, and the interaction was unreachable by keyboard, touch, or any
+   automated/assistive pointer. `br.dnd.catalog()` gives pointer + click +
+   keyboard parity; these styles dress it. The legacy `.br-dropzone` rules below
+   are kept so existing apps keep their look. */
+[data-br-dnd] [data-br-item] { cursor: grab; touch-action: none; }
+[data-br-dnd] [data-br-item]:focus-visible {
+  outline: 2px solid var(--br-accent); outline-offset: 2px;
+}
+[data-br-dnd] [data-br-item].is-picked {
+  cursor: grabbing;
+  box-shadow: 0 0 0 2px var(--br-accent);
+  opacity: 0.85;
+}
+[data-br-dnd-zone].is-over {
+  border-color: var(--br-accent);
+  background: color-mix(in srgb, var(--br-accent) 12%, var(--br-surface));
+}
+/* Visually hidden, still announced. */
+.br-sr-only {
+  position: absolute; width: 1px; height: 1px;
+  padding: 0; margin: -1px; overflow: hidden;
+  clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0;
+}
+
 /* Draggable list items (reorder) */
 .br-draglist { display: flex; flex-direction: column; gap: 6px; }
 .br-dragitem { display: flex; align-items: center; gap: 10px; padding: 9px 12px; background: var(--br-surface); border: 1px solid var(--br-border); border-radius: var(--br-radius-ctl); cursor: grab; transition: box-shadow 0.12s ease, transform 0.05s ease; }
@@ -484,6 +511,39 @@ tbody tr:nth-child(even) { background: var(--br-muted); }
   box-shadow: var(--br-shadow);
 }
 .br-chart svg, .br-visual svg { display: block; max-width: 100%; height: auto; }
+
+/* ── Plot / figure tokens ──────────────────────────────────────────────────
+   There were NONE. `theme.css` defined no --br-plot-* and no default fill/stroke
+   for SVG, so every authored axis, label and tick was a hardcoded hex — and when
+   `ui_theme` flipped to a dark pack, the surface went dark while the ink stayed
+   dark too. The reported "opaque black blocks" were the predictable consequence.
+
+   These are derived from the pack's own surface tokens, so an SVG that uses them
+   is theme-reactive by construction, in every pack, for free. */
+:root {
+  --br-plot-ink: var(--br-text);
+  --br-plot-muted: var(--br-text-muted, var(--br-text));
+  --br-plot-axis: var(--br-border, currentColor);
+  --br-plot-grid: color-mix(in srgb, var(--br-border, currentColor) 45%, transparent);
+  --br-plot-surface: var(--br-surface);
+  --br-plot-series-1: var(--br-accent);
+  --br-plot-series-2: #4c9f70;
+  --br-plot-series-3: #d1793d;
+  --br-plot-series-4: #7c6bd4;
+  --br-plot-series-5: #c04f7a;
+  --br-plot-series-6: #3f8fa8;
+  --br-plot-series-7: #b3922e;
+  --br-plot-series-8: #6d7480;
+}
+
+/* Authored SVG inherits sane, theme-reactive defaults. An explicit fill/stroke on
+   the element still wins, so this cannot break a figure that already themes itself. */
+.br-chart svg text, .br-visual svg text, [data-br-region] svg text { fill: var(--br-plot-ink); }
+.br-chart svg .axis line, .br-chart svg .axis path,
+.br-visual svg .axis line, .br-visual svg .axis path,
+[data-br-region] svg .axis line, [data-br-region] svg .axis path { stroke: var(--br-plot-axis); }
+.br-chart svg .grid line, .br-visual svg .grid line,
+[data-br-region] svg .grid line { stroke: var(--br-plot-grid); }
 .br-chart--pending, .br-visual--pending { min-height: 44px; background: var(--br-muted); }
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -667,6 +727,41 @@ body.br-has-dock-bottom { padding-bottom: var(--br-dock-h); }
   border-bottom: 1px solid var(--br-danger); color: var(--br-text);
 }
 .br-backend-error strong { display: block; margin-bottom: 2px; }
+
+/* ── Degraded-turn banner (a consulted worker never answered) ──────────────
+   A multi-agent app used to show a confident, finished answer while half its
+   reasoning had silently timed out. This is deliberately hard to miss, and
+   deliberately NOT the model's choice to render. */
+.br-degraded {
+  position: fixed; left: 16px; right: 16px; bottom: 16px; z-index: 60;
+  padding: 12px 16px; font-size: 0.85rem; line-height: 1.5;
+  background: color-mix(in srgb, var(--br-warn, var(--br-danger)) 14%, var(--br-surface));
+  border: 1px solid var(--br-warn, var(--br-danger));
+  border-radius: var(--br-radius, 8px);
+  color: var(--br-text);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 0.18);
+  display: flex; flex-direction: column; gap: 4px;
+}
+.br-degraded strong { font-weight: 600; }
+.br-degraded-dismiss {
+  align-self: flex-start; margin-top: 6px;
+  padding: 4px 10px; font: inherit; font-size: 0.8rem;
+  background: transparent; color: var(--br-text);
+  border: 1px solid var(--br-border, currentColor); border-radius: 6px;
+  cursor: pointer;
+}
+.br-degraded-dismiss:hover { background: color-mix(in srgb, var(--br-text) 8%, transparent); }
+
+/* A run that failed or stalled. Previously this state rendered NOTHING — the
+   control fired, the promise rejected into the void, and the user saw a button
+   that appeared to do nothing at all. */
+.br-run-failed {
+  padding: 10px 12px; margin: 8px 0;
+  font-size: 0.85rem; line-height: 1.5;
+  background: color-mix(in srgb, var(--br-danger) 10%, var(--br-surface));
+  border: 1px solid var(--br-danger); border-radius: var(--br-radius, 8px);
+  color: var(--br-text);
+}
 
 /* ═══════════════════════════════════════════════════════════════════════════
    SDK v2 science pack (markdown / image / kpi / log / plot / network /
