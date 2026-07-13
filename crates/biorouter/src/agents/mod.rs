@@ -35,7 +35,7 @@ pub mod types;
 pub mod vault_refs;
 pub mod workspace_summary;
 
-pub use agent::{Agent, AgentConfig, AgentEvent, ExtensionLoadResult};
+pub use agent::{Agent, AgentConfig, AgentEvent, ConfirmationOutcome, ExtensionLoadResult};
 pub use execute_commands::COMPACT_TRIGGERS;
 pub use extension::ExtensionConfig;
 pub use extension_manager::{normalize, ExtensionManager};
