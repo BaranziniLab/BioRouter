@@ -34,6 +34,9 @@ pub(crate) mod skills_extension;
 pub mod stall;
 pub mod structured_output;
 pub mod subagent_execution_tool;
+// BR-40: the async half — a background `subagent` call returns a handle the
+// parent polls with `subagent_status`, instead of blocking the turn.
+pub mod subagent_handle;
 pub mod subagent_handler;
 pub mod subagent_result;
 mod subagent_task_config;
@@ -51,6 +54,7 @@ pub use execute_commands::COMPACT_TRIGGERS;
 pub use extension::ExtensionConfig;
 pub use extension_manager::{normalize, ExtensionManager};
 pub use prompt_manager::PromptManager;
+pub use subagent_handle::{BackgroundSubagent, HandleSnapshot, HandleState};
 pub use subagent_result::{SubagentResult, SubagentStatus, SubagentTokens};
 pub use subagent_task_config::TaskConfig;
 pub use types::{FrontendTool, RetryConfig, SessionConfig, SuccessCheck};

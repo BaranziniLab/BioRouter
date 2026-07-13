@@ -3,16 +3,19 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::LazyLock;
+use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 use futures::FutureExt;
-use rmcp::model::{ErrorCode, ErrorData, Tool};
+use rmcp::model::{CallToolResult, Content, ErrorCode, ErrorData, Tool};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
+use crate::agents::subagent_handle::{self, BackgroundSubagent, DEFAULT_WAIT_SECS, MAX_WAIT_SECS};
 use crate::agents::subagent_handler::run_complete_subagent_task;
+use crate::agents::subagent_result::SubagentResult;
 use crate::agents::subagent_task_config::TaskConfig;
 use crate::agents::tool_execution::ToolCallResult;
 use crate::agents::AgentConfig;
@@ -22,6 +25,7 @@ use crate::workflow::local_workflows::load_local_workflow_file;
 use crate::workflow::{SubWorkflow, Workflow};
 
 pub const SUBAGENT_TOOL_NAME: &str = "subagent";
+pub const SUBAGENT_STATUS_TOOL_NAME: &str = "subagent_status";
 
 // --- Fork-bomb guard -------------------------------------------------------
 // The model is told it can spawn many subagents in parallel, and a subagent can
@@ -87,6 +91,12 @@ pub struct SubagentParams {
     pub settings: Option<SubagentSettings>,
     #[serde(default = "default_summary")]
     pub summary: bool,
+    /// BR-40: run detached and return a handle immediately instead of blocking
+    /// the parent's turn for the child's whole run. Ignored (and not advertised)
+    /// unless `BIOROUTER_SUBAGENT_BACKGROUND` is on, so the default is the
+    /// historical blocking call.
+    #[serde(default)]
+    pub background: bool,
 }
 
 fn default_summary() -> bool {
@@ -103,7 +113,7 @@ pub struct SubagentSettings {
 pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
     let description = build_tool_description(sub_workflows);
 
-    let schema = json!({
+    let mut schema = json!({
         "type": "object",
         "properties": {
             "instructions": {
@@ -141,11 +151,180 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
         }
     });
 
+    // BR-40: the background parameter only exists when the async-handle path is
+    // enabled — an advertised parameter the tool would then ignore is worse than
+    // no parameter at all.
+    if subagent_handle::background_enabled() {
+        schema["properties"]["background"] = json!({
+            "type": "boolean",
+            "default": false,
+            "description": "If true, start the subagent and return a handle immediately \
+                            instead of waiting for it. Poll it with the `subagent_status` \
+                            tool. Use for long tasks you want to run while you keep working."
+        });
+    }
+
     Tool::new(
         SUBAGENT_TOOL_NAME,
         description,
         schema.as_object().unwrap().clone(),
     )
+}
+
+/// The poll/await half of the spawn→poll model (BR-40). Only listed when
+/// `BIOROUTER_SUBAGENT_BACKGROUND` is on.
+pub fn create_subagent_status_tool() -> Tool {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "handle": {
+                "type": "string",
+                "description": "Handle returned by a background `subagent` call (e.g. \"sub_1\"). Omit to list all background subagents of this session."
+            },
+            "wait": {
+                "type": "boolean",
+                "default": false,
+                "description": "If true, block until the subagent finishes (or `timeout_seconds` elapses) instead of returning its current state."
+            },
+            "timeout_seconds": {
+                "type": "number",
+                "description": "How long to block when `wait` is true. Default 60, max 600. A timeout is not an error — the subagent keeps running and can be polled again."
+            },
+            "cancel": {
+                "type": "boolean",
+                "default": false,
+                "description": "If true, ask the subagent to stop. It finishes with whatever it produced so far."
+            }
+        }
+    });
+
+    Tool::new(
+        SUBAGENT_STATUS_TOOL_NAME,
+        "Check on subagents started with `background: true`: list them, poll one, block until one \
+         finishes, or cancel one. A finished subagent returns the same structured result envelope \
+         a blocking `subagent` call would have returned.",
+        schema.as_object().unwrap().clone(),
+    )
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct SubagentStatusParams {
+    pub handle: Option<String>,
+    #[serde(default)]
+    pub wait: bool,
+    pub timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub cancel: bool,
+}
+
+/// Resolve the requested block, clamped to something a turn can survive.
+fn wait_duration(timeout_seconds: Option<u64>) -> Duration {
+    let secs = timeout_seconds
+        .unwrap_or(DEFAULT_WAIT_SECS)
+        .clamp(1, MAX_WAIT_SECS);
+    Duration::from_secs(secs)
+}
+
+pub fn handle_subagent_status_tool(params: Value, parent_session_id: String) -> ToolCallResult {
+    let parsed: SubagentStatusParams = match serde_json::from_value(params) {
+        Ok(p) => p,
+        Err(e) => {
+            return ToolCallResult::from(Err(ErrorData {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Invalid parameters: {e}")),
+                data: None,
+            }));
+        }
+    };
+
+    ToolCallResult {
+        notification_stream: None,
+        result: Box::new(subagent_status(parsed, parent_session_id).boxed()),
+    }
+}
+
+async fn subagent_status(
+    params: SubagentStatusParams,
+    parent_session_id: String,
+) -> Result<CallToolResult, ErrorData> {
+    let Some(id) = params.handle.clone() else {
+        return Ok(list_handles(&parent_session_id));
+    };
+
+    let handle = subagent_handle::get_for_session(&parent_session_id, &id).ok_or_else(|| {
+        let known: Vec<String> = subagent_handle::list_for_session(&parent_session_id)
+            .iter()
+            .map(|h| h.id.clone())
+            .collect();
+        ErrorData {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(if known.is_empty() {
+                format!("Unknown subagent handle '{id}'. This session has no background subagents.")
+            } else {
+                format!(
+                    "Unknown subagent handle '{id}'. Known handles: {}",
+                    known.join(", ")
+                )
+            }),
+            data: None,
+        }
+    })?;
+
+    if params.cancel {
+        handle.cancel();
+    }
+
+    let finished = if params.wait {
+        handle.wait(wait_duration(params.timeout_seconds)).await
+    } else {
+        handle.result()
+    };
+
+    let snapshot = handle.snapshot();
+    let text = match finished {
+        Some(result) => format!(
+            "Subagent {} finished.\n\n{}",
+            handle.id,
+            result.to_agent_text()
+        ),
+        None if params.cancel => format!(
+            "Cancellation requested for subagent {} ({}). Poll it again to collect its result.",
+            handle.id, handle.title
+        ),
+        None => format!(
+            "Subagent {} is still running ({}s elapsed): {}. \
+             Poll again later, or call again with wait=true to block until it finishes.",
+            handle.id, snapshot.elapsed_seconds, handle.title
+        ),
+    };
+
+    Ok(CallToolResult {
+        content: vec![Content::text(text)],
+        structured_content: serde_json::to_value(&snapshot).ok(),
+        is_error: Some(false),
+        meta: None,
+    })
+}
+
+fn list_handles(parent_session_id: &str) -> CallToolResult {
+    let snapshots: Vec<_> = subagent_handle::list_for_session(parent_session_id)
+        .iter()
+        .map(|h| h.snapshot())
+        .collect();
+
+    let text = if snapshots.is_empty() {
+        "No background subagents have been started in this session.".to_string()
+    } else {
+        let lines: Vec<String> = snapshots.iter().map(|s| s.to_line()).collect();
+        format!("Background subagents:\n{}", lines.join("\n"))
+    };
+
+    CallToolResult {
+        content: vec![Content::text(text)],
+        structured_content: serde_json::to_value(json!({ "subagents": snapshots })).ok(),
+        is_error: Some(false),
+        meta: None,
+    }
 }
 
 fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
@@ -159,6 +338,14 @@ fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
          Use `extensions` to limit which extensions the subagent can use.\n\n\
          For parallel execution, make multiple `subagent` tool calls in the same message.",
     );
+
+    if subagent_handle::background_enabled() {
+        desc.push_str(
+            "\n\nBy default the call blocks until the subagent finishes. For a long task, \
+             pass `background: true` to get a handle back immediately and keep working; \
+             collect the result later with the `subagent_status` tool.",
+        );
+    }
 
     if !sub_workflows.is_empty() {
         desc.push_str("\n\nAvailable subworkflows:");
@@ -296,9 +483,12 @@ async fn execute_subagent(
     cancellation_token: Option<CancellationToken>,
 ) -> Result<rmcp::model::CallToolResult, ErrorData> {
     // Fork-bomb guard: count this spawn, refuse if too many are already in
-    // flight, then throttle concurrency. The guard + permit are held until this
-    // function returns (i.e. the subagent finishes).
-    let (_inflight, inflight_count) = InflightGuard::enter();
+    // flight, then throttle concurrency. The guard + permit are held until the
+    // subagent finishes — on the blocking path that is when this function
+    // returns; on the background path the guard moves into the detached task, so
+    // a storm of background spawns is bounded exactly like a storm of blocking
+    // ones.
+    let (inflight, inflight_count) = InflightGuard::enter();
     let max_inflight = max_inflight_subagents();
     if inflight_count > max_inflight {
         return Err(ErrorData {
@@ -310,33 +500,31 @@ async fn execute_subagent(
             data: None,
         });
     }
+
+    // BR-40: detached run — create the child session (so the handle can name it),
+    // register the handle, and hand it straight back to the parent.
+    if params.background && subagent_handle::background_enabled() {
+        let session = create_subagent_session(&config, working_dir).await?;
+        let task_config = overridden_task_config(task_config, &params).await?;
+        return Ok(spawn_background_subagent(
+            config,
+            workflow,
+            task_config,
+            params.summary,
+            session.id,
+            inflight,
+        ));
+    }
+
     let _permit = SUBAGENT_SEMAPHORE.acquire().await.map_err(|e| ErrorData {
         code: ErrorCode::INTERNAL_ERROR,
         message: Cow::from(format!("Subagent semaphore closed: {e}")),
         data: None,
     })?;
+    let _inflight = inflight;
 
-    let session = config
-        .session_manager
-        .create_session(
-            working_dir,
-            "Subagent task".to_string(),
-            crate::session::session_manager::SessionType::SubAgent,
-        )
-        .await
-        .map_err(|e| ErrorData {
-            code: ErrorCode::INTERNAL_ERROR,
-            message: Cow::from(format!("Failed to create session: {}", e)),
-            data: None,
-        })?;
-
-    let task_config = apply_settings_overrides(task_config, &params)
-        .await
-        .map_err(|e| ErrorData {
-            code: ErrorCode::INVALID_PARAMS,
-            message: Cow::from(e.to_string()),
-            data: None,
-        })?;
+    let session = create_subagent_session(&config, working_dir).await?;
+    let task_config = overridden_task_config(task_config, &params).await?;
 
     // The result envelope encodes success, an incomplete (tool-call-ending)
     // run, or a failure — all as structured content — so this always returns a
@@ -352,6 +540,123 @@ async fn execute_subagent(
     .await;
 
     Ok(result.into_call_tool_result())
+}
+
+async fn create_subagent_session(
+    config: &AgentConfig,
+    working_dir: PathBuf,
+) -> Result<crate::session::Session, ErrorData> {
+    config
+        .session_manager
+        .create_session(
+            working_dir,
+            "Subagent task".to_string(),
+            crate::session::session_manager::SessionType::SubAgent,
+        )
+        .await
+        .map_err(|e| ErrorData {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from(format!("Failed to create session: {}", e)),
+            data: None,
+        })
+}
+
+async fn overridden_task_config(
+    task_config: TaskConfig,
+    params: &SubagentParams,
+) -> Result<TaskConfig, ErrorData> {
+    apply_settings_overrides(task_config, params)
+        .await
+        .map_err(|e| ErrorData {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(e.to_string()),
+            data: None,
+        })
+}
+
+/// Run the subagent on a detached task and return its handle immediately.
+///
+/// The child gets a **fresh** cancellation token rather than the parent turn's:
+/// the whole point of a background subagent is to outlive the turn that started
+/// it, and inheriting the parent's token would kill it the moment that turn
+/// ended. The token stays reachable — `subagent_status { cancel: true }` and the
+/// BR-42 active-work view (registered inside `run_complete_subagent_task`) both
+/// route to it.
+fn spawn_background_subagent(
+    config: AgentConfig,
+    workflow: Workflow,
+    task_config: TaskConfig,
+    summary: bool,
+    child_session_id: String,
+    inflight: InflightGuard,
+) -> CallToolResult {
+    let title = background_title(&workflow);
+    let cancel = CancellationToken::new();
+    let handle = BackgroundSubagent::register(
+        task_config.parent_session_id.clone(),
+        child_session_id.clone(),
+        title.clone(),
+        cancel.clone(),
+    );
+
+    let task_handle = handle.clone();
+    tokio::spawn(async move {
+        // Held for the child's whole life, exactly as on the blocking path.
+        let _inflight = inflight;
+        let _permit = match SUBAGENT_SEMAPHORE.acquire().await {
+            Ok(permit) => permit,
+            Err(e) => {
+                task_handle.complete(SubagentResult::from_error(format!(
+                    "Subagent semaphore closed: {e}"
+                )));
+                return;
+            }
+        };
+
+        let result = run_complete_subagent_task(
+            config,
+            workflow,
+            task_config,
+            summary,
+            child_session_id,
+            Some(cancel),
+        )
+        .await;
+        task_handle.complete(result);
+    });
+
+    let text = format!(
+        "Subagent started in the background.\n\
+         handle: {}\n\
+         task: {}\n\n\
+         It runs independently of this turn. Collect its result with \
+         `subagent_status` — `{{\"handle\": \"{}\"}}` to poll, or \
+         `{{\"handle\": \"{}\", \"wait\": true}}` to block until it finishes.",
+        handle.id, title, handle.id, handle.id
+    );
+
+    CallToolResult {
+        content: vec![Content::text(text)],
+        structured_content: serde_json::to_value(handle.snapshot()).ok(),
+        is_error: Some(false),
+        meta: None,
+    }
+}
+
+/// A short label for the handle list, from the workflow's prompt/instructions.
+fn background_title(workflow: &Workflow) -> String {
+    let raw = workflow
+        .prompt
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .or(workflow.instructions.as_deref())
+        .unwrap_or("subagent task");
+    let one_line = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut title: String = one_line.chars().take(80).collect();
+    if one_line.chars().count() > 80 {
+        title.push('…');
+    }
+    title
 }
 
 fn build_workflow(
@@ -574,5 +879,209 @@ mod tests {
         assert!(params.parameters.is_some());
         assert_eq!(params.extensions, Some(vec!["developer".to_string()]));
         assert!(!params.summary);
+    }
+
+    // --- BR-40: async handle -------------------------------------------------
+
+    #[test]
+    fn background_defaults_off_so_an_ordinary_call_still_blocks() {
+        let params: SubagentParams = serde_json::from_value(json!({
+            "instructions": "do the thing"
+        }))
+        .unwrap();
+        assert!(!params.background);
+    }
+
+    #[test]
+    fn background_param_round_trips() {
+        let params: SubagentParams = serde_json::from_value(json!({
+            "instructions": "long crawl",
+            "background": true
+        }))
+        .unwrap();
+        assert!(params.background);
+    }
+
+    #[test]
+    fn status_tool_schema_exposes_poll_wait_and_cancel() {
+        let tool = create_subagent_status_tool();
+        assert_eq!(tool.name, SUBAGENT_STATUS_TOOL_NAME);
+        let props = tool.input_schema["properties"]
+            .as_object()
+            .expect("object schema");
+        for key in ["handle", "wait", "timeout_seconds", "cancel"] {
+            assert!(props.contains_key(key), "missing '{key}' in status schema");
+        }
+    }
+
+    #[test]
+    fn status_params_default_to_a_plain_poll() {
+        let params: SubagentStatusParams =
+            serde_json::from_value(json!({"handle": "sub_1"})).unwrap();
+        assert_eq!(params.handle.as_deref(), Some("sub_1"));
+        assert!(!params.wait);
+        assert!(!params.cancel);
+        assert!(params.timeout_seconds.is_none());
+    }
+
+    #[test]
+    fn wait_duration_is_clamped() {
+        assert_eq!(wait_duration(None), Duration::from_secs(DEFAULT_WAIT_SECS));
+        assert_eq!(wait_duration(Some(0)), Duration::from_secs(1));
+        assert_eq!(wait_duration(Some(5)), Duration::from_secs(5));
+        assert_eq!(
+            wait_duration(Some(9_999)),
+            Duration::from_secs(MAX_WAIT_SECS)
+        );
+    }
+
+    fn finished_result(text: &str) -> SubagentResult {
+        use crate::conversation::message::Message;
+        use crate::conversation::Conversation;
+        SubagentResult::from_conversation(
+            &Conversation::new_unvalidated(vec![Message::assistant().with_text(text)]),
+            None,
+            true,
+        )
+    }
+
+    async fn call_status(params: Value, session: &str) -> Result<CallToolResult, ErrorData> {
+        let call = handle_subagent_status_tool(params, session.to_string());
+        Box::into_pin(call.result).await
+    }
+
+    fn text_of(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|c| match &c.raw {
+                rmcp::model::RawContent::Text(text) => Some(text.text.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test]
+    async fn status_polls_a_running_handle_then_returns_its_envelope() {
+        let session = "status-poll-session";
+        let handle = BackgroundSubagent::register(
+            session,
+            "child-1",
+            "crawl the corpus",
+            CancellationToken::new(),
+        );
+
+        let running = call_status(json!({"handle": handle.id.clone()}), session)
+            .await
+            .expect("poll succeeds");
+        assert_eq!(running.is_error, Some(false));
+        assert!(text_of(&running).contains("still running"));
+        assert_eq!(
+            running.structured_content.as_ref().unwrap()["state"],
+            "running"
+        );
+
+        handle.complete(finished_result("crawled 40 papers"));
+
+        let done = call_status(json!({"handle": handle.id.clone()}), session)
+            .await
+            .expect("poll succeeds");
+        assert!(text_of(&done).contains("crawled 40 papers"));
+        let structured = done.structured_content.unwrap();
+        assert_eq!(structured["state"], "finished");
+        assert_eq!(structured["result"]["status"], "completed");
+    }
+
+    #[tokio::test]
+    async fn status_wait_blocks_until_the_child_finishes() {
+        let session = "status-wait-session";
+        let handle =
+            BackgroundSubagent::register(session, "child-2", "slow task", CancellationToken::new());
+
+        let waiter = handle.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            waiter.complete(finished_result("slow task done"));
+        });
+
+        let result = call_status(
+            json!({"handle": handle.id.clone(), "wait": true, "timeout_seconds": 5}),
+            session,
+        )
+        .await
+        .expect("wait succeeds");
+        assert!(text_of(&result).contains("slow task done"));
+    }
+
+    #[tokio::test]
+    async fn status_wait_timeout_reports_still_running_not_an_error() {
+        let session = "status-timeout-session";
+        let handle = BackgroundSubagent::register(
+            session,
+            "child-3",
+            "very slow task",
+            CancellationToken::new(),
+        );
+
+        let result = call_status(
+            json!({"handle": handle.id.clone(), "wait": true, "timeout_seconds": 1}),
+            session,
+        )
+        .await
+        .expect("a timeout is not a tool error");
+        assert_eq!(result.is_error, Some(false));
+        assert!(text_of(&result).contains("still running"));
+    }
+
+    #[tokio::test]
+    async fn status_cancel_requests_a_stop() {
+        let session = "status-cancel-session";
+        let token = CancellationToken::new();
+        let handle = BackgroundSubagent::register(session, "child-4", "runaway", token.clone());
+
+        let result = call_status(
+            json!({"handle": handle.id.clone(), "cancel": true}),
+            session,
+        )
+        .await
+        .expect("cancel succeeds");
+        assert!(token.is_cancelled());
+        assert!(text_of(&result).contains("Cancellation requested"));
+    }
+
+    #[tokio::test]
+    async fn status_without_a_handle_lists_this_sessions_subagents_only() {
+        let mine = "status-list-mine";
+        let theirs = "status-list-theirs";
+        let a = BackgroundSubagent::register(mine, "c1", "task A", CancellationToken::new());
+        let _b = BackgroundSubagent::register(theirs, "c2", "task B", CancellationToken::new());
+
+        let listed = call_status(json!({}), mine).await.expect("list succeeds");
+        let text = text_of(&listed);
+        assert!(text.contains(&a.id));
+        assert!(text.contains("task A"));
+        assert!(!text.contains("task B"));
+
+        let empty = call_status(json!({}), "status-list-nobody")
+            .await
+            .expect("list succeeds");
+        assert!(text_of(&empty).contains("No background subagents"));
+    }
+
+    #[tokio::test]
+    async fn status_rejects_a_handle_from_another_session() {
+        let owner = "status-owner-session";
+        let handle =
+            BackgroundSubagent::register(owner, "c5", "private task", CancellationToken::new());
+
+        let err = call_status(
+            json!({"handle": handle.id.clone()}),
+            "status-intruder-session",
+        )
+        .await
+        .expect_err("another session cannot poll this handle");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("Unknown subagent handle"));
     }
 }
