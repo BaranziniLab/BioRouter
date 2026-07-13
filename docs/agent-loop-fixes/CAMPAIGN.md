@@ -34,9 +34,9 @@ before merging.
 | 1 | Checkpoints & VCS | `agent-loop-checkpoints` | BR-43, 44, 45 | **merged — gate GREEN** |
 | 1 | Long-running & processes | `agent-loop-processes` | BR-37, 40, 41, 42 | **merged — gate GREEN** |
 | 1 | Context & prompts | `agent-loop-context` | BR-5, 2, 9, 8, 3, 60, 1 | **merged — gate GREEN** |
-| 2 | Loop, stuck & budgets | `agent-loop-loopdet` | BR-29, 30, 31, 32, 35, 66, 67 | pending |
-| 2 | Hooks & permissions | `agent-loop-hooks` | BR-18, 19, 24, 27, 28, 63 | pending |
-| 2 | Server & cancel | `agent-loop-server` | BR-33 follow-ups, 52, 61, 62, 6, 7 | pending |
+| 2 | Loop, stuck & budgets | `agent-loop-loopdet` | BR-29, 30, 31, 32, 35, 66, 67 | **in progress** |
+| 2 | Hooks & permissions | `agent-loop-hooks` | BR-18, 19, 24, 27, 28, 63 | **in progress** |
+| 2 | Server & cancel | `agent-loop-server` | BR-6, 7, 52, 61, 62 | **in progress** |
 | 3 | Verification & done-ness | `agent-loop-verify` | BR-47, 48, 49, 50, 51 (needs BR-19) | pending |
 | 3 | Runtime & perf tail | `agent-loop-perf` | BR-53, 54, 55, 56, 57, 58, 59 | pending |
 
@@ -45,6 +45,10 @@ builds on BR-33 (wave 0); BR-16 is subsumed by BR-33; BR-47 builds on BR-19.
 
 ## Log
 
+- **2026-07-12** — Gate 1 GREEN: full-workspace suite on merged integration —
+  55 suites ok, 2024 tests passed (baseline 1786; +238 added by waves 0-1),
+  sole failure = pre-existing live-API test_anthropic_provider. Wave 2
+  launched: loopdet / hooks / server clusters off integration @ 70ce551e.
 - **2026-07-12** — Gate 1: all five Wave-1 clusters merged into integration
   (checkpoints c7974c28 → compaction ee43bc0f → security ea6799aa → processes
   c38cf9ba → context 76855c18). Conflict resolutions: session_manager.rs
