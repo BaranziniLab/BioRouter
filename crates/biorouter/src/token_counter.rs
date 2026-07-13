@@ -198,6 +198,23 @@ pub async fn create_token_counter() -> Result<TokenCounter, String> {
     TokenCounter::new().await
 }
 
+static SHARED_COUNTER: OnceCell<Result<Arc<TokenCounter>, String>> = OnceCell::const_new();
+
+/// The process-wide [`TokenCounter`] (BR-56).
+///
+/// `create_token_counter` hands back a counter with an **empty** cache, so every
+/// caller that builds one per call (the compaction check ran on every turn of
+/// every session) re-encodes text it has already seen — the BPE work is real, and
+/// the per-text memo is exactly what makes a repeated history cheap. One shared
+/// counter means the cache survives across turns and sessions. The tokenizer
+/// itself was already shared; only the memo was being thrown away.
+pub async fn shared_token_counter() -> Result<Arc<TokenCounter>, String> {
+    SHARED_COUNTER
+        .get_or_init(|| async { TokenCounter::new().await.map(Arc::new) })
+        .await
+        .clone()
+}
+
 /// Conservative inflation applied to the o200k-based estimate for providers
 /// whose real tokenizer BioRouter does not bundle. See `provider_token_calibration`.
 const NON_OPENAI_TOKEN_MARGIN: f64 = 1.15;

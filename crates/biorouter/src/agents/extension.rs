@@ -6,6 +6,7 @@ use crate::agents::todo_extension;
 use std::collections::HashMap;
 
 use crate::agents::mcp_client::McpClientTrait;
+use crate::agents::mcp_pool::PoolKey;
 use crate::config;
 use crate::config::extensions::name_to_key;
 use crate::config::permission::PermissionLevel;
@@ -460,6 +461,79 @@ impl ExtensionConfig {
     pub fn key(&self) -> String {
         let name = self.name();
         name_to_key(&name)
+    }
+
+    /// The SharedMcpPool identity for this config in a given working directory, or
+    /// `None` if the variant must never be pooled (BR-54). Two configs that return
+    /// equal `PoolKey`s can safely share ONE spawned process.
+    ///
+    /// Not poolable:
+    /// - `Sse` — unsupported transport (errors at spawn anyway).
+    /// - `Platform` — its client captures a `Weak` ref to the *specific*
+    ///   `ExtensionManager` that built it, so it is inherently session-scoped.
+    /// - `Frontend` — not a spawned server (tools are proxied to the frontend).
+    pub fn pool_key(&self, working_dir: &std::path::Path) -> Option<PoolKey> {
+        use std::hash::{Hash, Hasher};
+
+        fn hash_env<H: Hasher>(h: &mut H, envs: &Envs, env_keys: &[String]) {
+            // Values are stable within one daemon (secrets are process-global), so
+            // hashing declared envs + secret key NAMES distinguishes configs
+            // without resolving secrets from the keychain on every key derivation.
+            let mut e: Vec<(String, String)> = envs.get_env().into_iter().collect();
+            e.sort();
+            e.hash(h);
+            let mut k: Vec<String> = env_keys.to_vec();
+            k.sort();
+            k.hash(h);
+        }
+
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        let transport = match self {
+            Self::Stdio {
+                cmd,
+                args,
+                envs,
+                env_keys,
+                ..
+            } => {
+                hash_env(&mut h, envs, env_keys);
+                format!("stdio:{}\u{0}{}", cmd, args.join("\u{0}"))
+            }
+            Self::StreamableHttp {
+                uri,
+                headers,
+                envs,
+                env_keys,
+                ..
+            } => {
+                hash_env(&mut h, envs, env_keys);
+                let mut hs: Vec<(&String, &String)> = headers.iter().collect();
+                hs.sort();
+                hs.hash(&mut h);
+                format!("http:{}", uri)
+            }
+            Self::Builtin { name, .. } => format!("builtin:{}", name),
+            Self::InlinePython {
+                name,
+                code,
+                dependencies,
+                ..
+            } => {
+                let mut deps = dependencies.clone().unwrap_or_default();
+                deps.sort();
+                deps.hash(&mut h);
+                let mut ch = std::collections::hash_map::DefaultHasher::new();
+                code.hash(&mut ch);
+                format!("inline_python:{}\u{0}{:x}", name, ch.finish())
+            }
+            Self::Sse { .. } | Self::Platform { .. } | Self::Frontend { .. } => return None,
+        };
+
+        Some(PoolKey {
+            transport,
+            working_dir: Some(working_dir.to_path_buf()),
+            env_fingerprint: h.finish(),
+        })
     }
 
     /// Get the extension name regardless of variant

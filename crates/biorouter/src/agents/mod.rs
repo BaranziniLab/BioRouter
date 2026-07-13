@@ -20,6 +20,7 @@ pub mod goal;
 pub mod knowledge_tool;
 mod large_response_handler;
 pub mod mcp_client;
+pub mod mcp_pool;
 pub mod mistakes;
 pub mod moim;
 pub mod platform_tools;
@@ -53,6 +54,7 @@ pub mod subagent_result;
 mod subagent_task_config;
 pub mod subagent_tool;
 pub(crate) mod todo_extension;
+pub mod tool_dispatch_limits;
 mod tool_execution;
 // BR-51: the structured tool-error taxonomy every failed tool result is reduced
 // to, so the model and the loop detectors can tell a retryable blip from a hard

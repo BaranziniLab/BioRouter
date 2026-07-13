@@ -173,7 +173,9 @@ impl CheckpointManager {
     /// delete).
     pub async fn gc(&self, session_id: &str) -> Result<()> {
         let dir = self.data_root.join("checkpoints").join(session_id);
-        let _ = std::fs::remove_dir_all(&dir);
+        // BR-57: removing a whole shadow git repo is blocking file I/O — keep
+        // it off the async runtime like the rest of the checkpoint file work.
+        let _ = tokio::task::spawn_blocking(move || std::fs::remove_dir_all(&dir)).await;
         self.session_manager.delete_checkpoints(session_id).await
     }
 }
