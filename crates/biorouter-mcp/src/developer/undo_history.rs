@@ -275,6 +275,11 @@ fn is_device(target: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The persistence tests mutate process-global env vars
+    /// (`BIOROUTER_PERSIST_UNDO`, `BIOROUTER_PATH_ROOT`), which every test thread
+    /// shares. Cargo runs tests in parallel, so they must not overlap.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     use super::*;
     use tempfile::TempDir;
 
@@ -321,6 +326,7 @@ mod tests {
 
     #[test]
     fn persists_across_instances() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = TempDir::new().unwrap();
         std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
         std::env::remove_var("BIOROUTER_PERSIST_UNDO");
@@ -342,6 +348,7 @@ mod tests {
 
     #[test]
     fn persistence_opt_out_stays_in_memory() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let root = TempDir::new().unwrap();
         std::env::set_var("BIOROUTER_PATH_ROOT", root.path());
         std::env::set_var("BIOROUTER_PERSIST_UNDO", "0");

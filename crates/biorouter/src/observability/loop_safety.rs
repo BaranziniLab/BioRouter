@@ -429,12 +429,17 @@ mod tests {
         assert_eq!(json["axis"], "tokens");
         // No field exists that could hold arguments or prose: the object is
         // exactly the redaction-safe surface.
-        let keys: Vec<&str> = json
+        // Sorted: serde_json orders map keys alphabetically (BTreeMap) only when
+        // `preserve_order` is off. `biorouter-server` enables it, and cargo unifies
+        // features workspace-wide, so under a full-workspace build the order is
+        // insertion order instead. The invariant here is the key SET, not its order.
+        let mut keys: Vec<&str> = json
             .as_object()
             .unwrap()
             .keys()
             .map(String::as_str)
             .collect();
+        keys.sort_unstable();
         assert_eq!(
             keys,
             vec!["axis", "count", "kind", "limit", "session_id", "tool"]
