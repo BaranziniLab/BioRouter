@@ -29,6 +29,8 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 
 use rmcp::model::{Tool, ToolAnnotations};
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use crate::config::Config;
 
@@ -38,7 +40,13 @@ use crate::config::Config;
 /// un-gradeable tool sorts above every graded one and a naive `>= threshold`
 /// comparison already fails closed. [`SmartApproveConfig::requires_confirmation`]
 /// still treats `Unknown` explicitly so it can be opted out of.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
+///
+/// BR-63 also ships the grade to the confirmation card, so it is a wire type:
+/// it serialises as `"low" | "medium" | "high" | "unknown"`.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize, ToSchema,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum ToolRisk {
     /// Read-only: retrieves information without mutating data or state.
     Low,

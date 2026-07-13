@@ -472,6 +472,7 @@ impl BioRouterAcpAgent {
                     tool_name,
                     arguments,
                     prompt,
+                    ..
                 } = &action_required.data
                 {
                     self.handle_tool_permission_request(

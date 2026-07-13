@@ -1442,6 +1442,7 @@ async fn handle_action_required(
         tool_name,
         arguments,
         prompt,
+        ..
     } = &ar.data
     else {
         return; // only tool-confirmation approvals are handled here
