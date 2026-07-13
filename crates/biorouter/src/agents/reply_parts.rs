@@ -138,6 +138,15 @@ impl Agent {
         // Stable tool ordering is important for multi session prompt caching.
         tools.sort_by(|a, b| a.name.cmp(&b.name));
 
+        // BR-18: re-grade the risk registry from *this* tool list — the exact set
+        // the model can call from. Doing it here (rather than off the extension
+        // manager alone) means platform, frontend, subagent and final-output tools
+        // are graded too, and a tool that just disappeared (extension disabled,
+        // code-execution filter applied) stops being auto-approvable. Cheap: a
+        // hashmap rebuild over a few dozen already-materialised tools, on a path
+        // that is already doing a `list_tools` + prompt render.
+        self.tool_risks.refresh_from_tools(&tools);
+
         // Prepare system prompt
         let extensions_info = self.extension_manager.get_extensions_info().await;
 
