@@ -431,6 +431,7 @@ mod tests {
                 max_turns: Some(1),
                 max_tool_calls: None,
                 retry_config: None,
+                reasoning_effort: None,
             };
 
             let reply_stream = agent.reply(user_message, session_config, None).await?;
@@ -607,6 +608,7 @@ mod tests {
                 max_turns: Some(100),
                 max_tool_calls: Some(3),
                 retry_config: None,
+                reasoning_effort: None,
             };
 
             let reply_stream = agent.reply(user_message, session_config, None).await?;
@@ -728,6 +730,112 @@ mod tests {
             assert!(
                 manage_tool.is_some(),
                 "manage_extensions tool should be available"
+            );
+        }
+    }
+
+    // BR-63: `/effort quick|normal|deep` — the slash-flag half of the
+    // reasoning-effort control. Sticky per session; unknown values are refused
+    // rather than silently ignored.
+    #[cfg(test)]
+    mod effort_command_tests {
+        use super::*;
+        use biorouter::agents::{ReasoningEffort, SessionConfig};
+
+        fn session_config(id: &str) -> SessionConfig {
+            SessionConfig {
+                id: id.to_string(),
+                schedule_id: None,
+                max_turns: None,
+                max_tool_calls: None,
+                retry_config: None,
+                reasoning_effort: None,
+            }
+        }
+
+        fn notification_text(message: &biorouter::conversation::message::Message) -> String {
+            message
+                .content
+                .iter()
+                .filter_map(|c| c.as_system_notification())
+                .map(|n| n.msg.clone())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        #[tokio::test]
+        async fn effort_command_sets_reports_and_clears_the_session_effort() {
+            let agent = Agent::new();
+            let config = session_config("effort-cmd-session");
+
+            // Default: nothing set, so the loop behaves exactly as before.
+            assert_eq!(
+                agent.reasoning_effort("effort-cmd-session").await,
+                ReasoningEffort::Normal
+            );
+
+            let reply = agent
+                .execute_command("/effort deep", &config)
+                .await
+                .unwrap()
+                .expect("/effort is handled as a command");
+            assert!(notification_text(&reply).contains("deep"));
+            assert_eq!(
+                agent.reasoning_effort("effort-cmd-session").await,
+                ReasoningEffort::Deep
+            );
+
+            // A typo must not silently reset the level.
+            let reply = agent
+                .execute_command("/effort sideways", &config)
+                .await
+                .unwrap()
+                .expect("unknown levels still answer the user");
+            assert!(notification_text(&reply).contains("Unknown effort"));
+            assert_eq!(
+                agent.reasoning_effort("effort-cmd-session").await,
+                ReasoningEffort::Deep
+            );
+
+            // No argument reports the current level without changing it.
+            let reply = agent
+                .execute_command("/effort", &config)
+                .await
+                .unwrap()
+                .expect("bare /effort reports");
+            assert!(notification_text(&reply).contains("deep"));
+            assert_eq!(
+                agent.reasoning_effort("effort-cmd-session").await,
+                ReasoningEffort::Deep
+            );
+
+            // Back to the default.
+            agent
+                .execute_command("/effort normal", &config)
+                .await
+                .unwrap()
+                .expect("normal is a level too");
+            assert_eq!(
+                agent.reasoning_effort("effort-cmd-session").await,
+                ReasoningEffort::Normal
+            );
+        }
+
+        #[tokio::test]
+        async fn effort_is_per_session() {
+            let agent = Agent::new();
+            agent
+                .execute_command("/effort quick", &session_config("session-a"))
+                .await
+                .unwrap();
+
+            assert_eq!(
+                agent.reasoning_effort("session-a").await,
+                ReasoningEffort::Quick
+            );
+            assert_eq!(
+                agent.reasoning_effort("session-b").await,
+                ReasoningEffort::Normal
             );
         }
     }

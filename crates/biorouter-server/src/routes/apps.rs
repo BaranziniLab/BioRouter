@@ -1172,6 +1172,7 @@ async fn handle_agent_socket(
             max_turns: Some(max_turns),
             max_tool_calls: None,
             retry_config: None,
+            reasoning_effort: None,
         };
         let cancel = CancellationToken::new();
         let mut stream = match agent

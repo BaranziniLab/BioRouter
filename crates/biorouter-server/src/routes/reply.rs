@@ -6,7 +6,7 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use biorouter::agents::{AgentEvent, SessionConfig};
+use biorouter::agents::{AgentEvent, ReasoningEffort, SessionConfig};
 use biorouter::conversation::message::{Message, MessageContent, TokenState};
 use biorouter::conversation::Conversation;
 use biorouter::session::SessionManager;
@@ -81,6 +81,11 @@ pub struct ChatRequest {
     session_id: String,
     workflow_name: Option<String>,
     workflow_version: Option<String>,
+    /// BR-63: how hard to think on this turn (`quick` / `normal` / `deep`), as
+    /// picked in the composer. Omitted (the default) leaves the session's own
+    /// `/effort` setting — and, failing that, the model's default depth — alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<ReasoningEffort>,
 }
 
 pub struct SseResponse {
@@ -276,6 +281,7 @@ pub async fn reply(
 
     let user_message = request.user_message;
     let conversation_so_far = request.conversation_so_far;
+    let reasoning_effort = request.reasoning_effort;
 
     let task_cancel = cancel_token.clone();
     let task_tx = tx.clone();
@@ -326,6 +332,9 @@ pub async fn reply(
             max_turns: None,
             max_tool_calls: None,
             retry_config: None,
+            // BR-63: the composer's per-turn effort. `None` (nothing picked)
+            // falls through to the session's `/effort`, then to the default.
+            reasoning_effort,
         };
 
         let mut all_messages = match conversation_so_far {
@@ -572,6 +581,7 @@ mod tests {
                         session_id: "test-session".to_string(),
                         workflow_name: None,
                         workflow_version: None,
+                        reasoning_effort: None,
                     })
                     .unwrap(),
                 ))
@@ -607,6 +617,7 @@ mod tests {
                         session_id: "busy-session".to_string(),
                         workflow_name: None,
                         workflow_version: None,
+                        reasoning_effort: None,
                     })
                     .unwrap(),
                 ))
@@ -640,6 +651,7 @@ mod tests {
                         session_id: "recycled-session".to_string(),
                         workflow_name: None,
                         workflow_version: None,
+                        reasoning_effort: None,
                     })
                     .unwrap(),
                 ))

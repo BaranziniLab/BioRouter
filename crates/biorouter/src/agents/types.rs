@@ -97,4 +97,10 @@ pub struct SessionConfig {
     /// Retry configuration for automated validation and recovery
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_config: Option<RetryConfig>,
+    /// BR-63: how hard to think on this turn (quick / normal / deep). `None`
+    /// falls back to the session's sticky `/effort` setting, and then to
+    /// `Normal` — which is a strict no-op, so an unset effort behaves exactly
+    /// as before. See [`crate::agents::effort`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<crate::agents::effort::ReasoningEffort>,
 }

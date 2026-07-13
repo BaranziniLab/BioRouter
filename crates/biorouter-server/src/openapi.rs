@@ -1,6 +1,7 @@
 use biorouter::agents::extension::Envs;
 use biorouter::agents::extension::ToolInfo;
 use biorouter::agents::ExtensionConfig;
+use biorouter::agents::ReasoningEffort;
 use biorouter::config::permission::PermissionLevel;
 use biorouter::config::ExtensionEntry;
 use biorouter::conversation::Conversation;
@@ -531,6 +532,7 @@ derive_utoipa!(Icon as IconSchema);
         PrincipalType,
         ModelInfo,
         ModelConfig,
+        ReasoningEffort,
         Session,
         SessionInsights,
         ActivityWindow,

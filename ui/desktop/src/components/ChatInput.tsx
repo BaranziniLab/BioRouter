@@ -14,6 +14,7 @@ import ModelsBottomBar from './settings/models/bottom_bar/ModelsBottomBar';
 import { BottomMenuExtensionSelection } from './bottom_menu/BottomMenuExtensionSelection';
 import { BottomMenuSkillSelection } from './bottom_menu/BottomMenuSkillSelection';
 import { BottomMenuKnowledgeSelection } from './bottom_menu/BottomMenuKnowledgeSelection';
+import { BottomMenuReasoningEffort } from './bottom_menu/BottomMenuReasoningEffort';
 import { AlertType, useAlerts } from './alerts';
 import { useConfig } from './ConfigContext';
 import { useModelAndProvider } from './ModelAndProviderContext';
@@ -1638,6 +1639,7 @@ export default function ChatInput({
             <BottomMenuExtensionSelection sessionId={sessionId} />
             <BottomMenuSkillSelection sessionId={sessionId} />
             <BottomMenuKnowledgeSelection />
+            <BottomMenuReasoningEffort />
           </div>
 
           <div className={TOOLBAR_DIVIDER_CLASS} />

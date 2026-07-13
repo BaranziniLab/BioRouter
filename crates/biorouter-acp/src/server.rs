@@ -317,6 +317,7 @@ impl BioRouterAcpAgent {
             toolshim_model: None,
             fast_model: None,
             request_params: None,
+            reasoning_effort: None,
         };
         let provider = create(&provider_name, model_config).await?;
         let biorouter_mode = config
@@ -931,6 +932,7 @@ impl BioRouterAcpAgent {
             max_turns: None,
             max_tool_calls: None,
             retry_config: None,
+            reasoning_effort: None,
         };
 
         let mut stream = self

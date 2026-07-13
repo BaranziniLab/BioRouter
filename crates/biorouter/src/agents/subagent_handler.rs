@@ -216,6 +216,10 @@ fn get_agent_messages(
             max_turns: task_config.max_turns.map(|v| v as u32),
             max_tool_calls: None,
             retry_config: workflow.retry,
+            // Subagents run at the model's default depth; a parent turn's effort
+            // is not inherited (its exploration caps are the parent's, not this
+            // task's). BR-63.
+            reasoning_effort: None,
         };
 
         let mut stream = crate::session_context::with_session_id(Some(session_id.clone()), async {
