@@ -351,3 +351,337 @@ async fn test_soft_stage_is_inert_when_thresholds_collapse() {
     assert_eq!(results[0].tool_request_id, "call_5");
     assert_eq!(results[0].action, InspectionAction::Deny);
 }
+
+// ---------------------------------------------------------------------------
+// BR-30: semantic / near-duplicate / oscillation loop detection
+// ---------------------------------------------------------------------------
+
+use biorouter::tool_monitor::{
+    SemanticLoopConfig, REPETITION_NEAR_DUP_HARD_FINDING_ID, REPETITION_NEAR_DUP_SOFT_FINDING_ID,
+    REPETITION_OSCILLATION_HARD_FINDING_ID, REPETITION_OSCILLATION_SOFT_FINDING_ID,
+};
+use serde_json::json;
+
+/// A tool call with arbitrary arguments (the `tool_call` helper above only
+/// varies an integer `id`).
+fn call_with(name: &str, args: serde_json::Value) -> CallToolRequestParams {
+    CallToolRequestParams {
+        task: None,
+        meta: None,
+        name: name.to_string().into(),
+        arguments: args.as_object().cloned(),
+    }
+}
+
+fn shell(command: &str) -> CallToolRequestParams {
+    call_with("shell", json!({ "command": command }))
+}
+
+async fn inspect(
+    inspector: &RepetitionInspector,
+    requests: &[ToolRequest],
+) -> Vec<biorouter::tool_inspection::InspectionResult> {
+    inspector
+        .inspect(
+            requests,
+            &[],
+            BioRouterMode::Approve,
+            &biorouter::session::Session::default(),
+        )
+        .await
+        .expect("inspection should succeed")
+}
+
+fn requests(calls: Vec<CallToolRequestParams>) -> Vec<ToolRequest> {
+    calls
+        .into_iter()
+        .enumerate()
+        .map(|(index, call)| tool_request(&format!("call_{}", index + 1), call))
+        .collect()
+}
+
+// The BR-30 case the byte-exact guard misses entirely: the model keeps calling
+// the same tool, nudging the arguments by a character each time.
+#[tokio::test]
+async fn test_near_duplicate_arg_tweaks_are_flagged() {
+    let inspector = RepetitionInspector::staged(3, 5);
+
+    let requests = requests(vec![
+        shell("grep -rn 'assemble_turn_context' crates/biorouter/src/agents/"),
+        shell("grep -rn 'assemble_turn_context' crates/biorouter/src/agents"),
+        shell("grep -rn 'assemble_turn_context' crates/biorouter/src/agent"),
+        shell("grep -rn 'assemble_turn_context' crates/biorouter/src/agen"),
+    ]);
+
+    let results = inspect(&inspector, &requests).await;
+
+    assert_eq!(results.len(), 1, "only the 4th call trips the soft stage");
+    assert_eq!(results[0].tool_request_id, "call_4");
+    assert_eq!(results[0].action, InspectionAction::Warn);
+    assert_eq!(
+        results[0].finding_id.as_deref(),
+        Some(REPETITION_NEAR_DUP_SOFT_FINDING_ID)
+    );
+    assert!(results[0].reason.contains("shell"), "{}", results[0].reason);
+    assert!(
+        !results[0].reason.to_lowercase().contains("declined"),
+        "a warning must never claim anyone declined: {}",
+        results[0].reason
+    );
+}
+
+// The false-positive that would make this heuristic unusable: a model working
+// through a list of distinct inputs is making progress, not looping.
+#[tokio::test]
+async fn test_iterating_over_distinct_inputs_is_not_a_loop() {
+    let inspector = RepetitionInspector::staged(3, 5);
+
+    let results = inspect(
+        &inspector,
+        &requests(vec![
+            call_with("read_file", json!({"path": "crates/a.rs"})),
+            call_with("read_file", json!({"path": "crates/b.rs"})),
+            call_with("read_file", json!({"path": "crates/c.rs"})),
+            call_with("read_file", json!({"path": "crates/d.rs"})),
+            call_with("read_file", json!({"path": "crates/e.rs"})),
+            call_with("read_file", json!({"path": "crates/f.rs"})),
+        ]),
+    )
+    .await;
+
+    assert!(
+        results.is_empty(),
+        "distinct targets must not read as repetition: {results:?}"
+    );
+}
+
+// OpenHands' A/B/A/B heuristic: two calls alternating, neither making progress.
+#[tokio::test]
+async fn test_ab_ab_oscillation_is_flagged() {
+    let inspector = RepetitionInspector::staged(3, 5);
+
+    let results = inspect(
+        &inspector,
+        &requests(vec![
+            call_with("read_file", json!({"path": "main.rs"})),
+            shell("cargo build"),
+            call_with("read_file", json!({"path": "main.rs"})),
+            shell("cargo build"),
+        ]),
+    )
+    .await;
+
+    assert_eq!(results.len(), 1, "the 4th call closes the second cycle");
+    assert_eq!(results[0].tool_request_id, "call_4");
+    assert_eq!(results[0].action, InspectionAction::Warn);
+    assert_eq!(
+        results[0].finding_id.as_deref(),
+        Some(REPETITION_OSCILLATION_SOFT_FINDING_ID)
+    );
+    assert!(
+        results[0].reason.contains("alternate"),
+        "{}",
+        results[0].reason
+    );
+}
+
+// The byte-exact guard (BR-29) owns plain repetition; BR-30 must not pile a
+// second nudge onto the same call.
+#[tokio::test]
+async fn test_exact_repeats_get_exactly_one_verdict() {
+    let inspector = RepetitionInspector::staged(3, 5);
+    let call = shell("cargo test");
+
+    let results = inspect(
+        &inspector,
+        &requests(vec![
+            call.clone(),
+            call.clone(),
+            call.clone(),
+            call.clone(),
+            call.clone(),
+            call,
+        ]),
+    )
+    .await;
+
+    assert_eq!(
+        results.len(),
+        4,
+        "one verdict per repeated call: {results:?}"
+    );
+    for result in &results {
+        let finding = result.finding_id.as_deref();
+        assert!(
+            finding == Some(REPETITION_SOFT_FINDING_ID)
+                || finding == Some(REPETITION_HARD_FINDING_ID),
+            "byte-exact repeats belong to the BR-29 guard, got {finding:?}"
+        );
+    }
+}
+
+// Both semantic stages are warn-only by default. Enforcement is opt-in.
+#[tokio::test]
+async fn test_semantic_hard_stops_are_opt_in() {
+    let tweaks = vec![
+        shell("cat /etc/hosts | grep -n biorouter-dev-host"),
+        shell("cat /etc/hosts | grep -n biorouter-dev-hos"),
+        shell("cat /etc/hosts | grep -n biorouter-dev-ho"),
+        shell("cat /etc/hosts | grep -n biorouter-dev-h"),
+    ];
+
+    let default_results = inspect(
+        &RepetitionInspector::staged(3, 5),
+        &requests(tweaks.clone()),
+    )
+    .await;
+    assert!(
+        default_results
+            .iter()
+            .all(|result| result.action == InspectionAction::Warn),
+        "default config must never deny on a heuristic: {default_results:?}"
+    );
+
+    let strict = RepetitionInspector::staged(3, 5).with_semantic(SemanticLoopConfig {
+        near_dup_hard_stop: Some(4),
+        ..SemanticLoopConfig::default()
+    });
+    let strict_results = inspect(&strict, &requests(tweaks)).await;
+
+    assert_eq!(strict_results.len(), 1);
+    assert_eq!(strict_results[0].action, InspectionAction::Deny);
+    assert_eq!(
+        strict_results[0].finding_id.as_deref(),
+        Some(REPETITION_NEAR_DUP_HARD_FINDING_ID)
+    );
+    assert!(
+        strict_results[0].reason.contains("did NOT decline"),
+        "a heuristic stop must still be honest about its cause: {}",
+        strict_results[0].reason
+    );
+}
+
+#[tokio::test]
+async fn test_oscillation_hard_stop_is_opt_in() {
+    let cycle = vec![
+        call_with("read_file", json!({"path": "main.rs"})),
+        shell("cargo build"),
+        call_with("read_file", json!({"path": "main.rs"})),
+        shell("cargo build"),
+    ];
+
+    let strict = RepetitionInspector::staged(3, 5).with_semantic(SemanticLoopConfig {
+        oscillation_hard_stop: Some(4),
+        ..SemanticLoopConfig::default()
+    });
+    let results = inspect(&strict, &requests(cycle)).await;
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].action, InspectionAction::Deny);
+    assert_eq!(
+        results[0].finding_id.as_deref(),
+        Some(REPETITION_OSCILLATION_HARD_FINDING_ID)
+    );
+}
+
+// The whole feature is switchable off, back to byte-exact detection only.
+#[tokio::test]
+async fn test_semantic_detection_can_be_disabled() {
+    let inspector = RepetitionInspector::staged(3, 5).with_semantic(SemanticLoopConfig::disabled());
+
+    let results = inspect(
+        &inspector,
+        &requests(vec![
+            shell("ls /tmp/biorouter-scratch-dir"),
+            shell("ls /tmp/biorouter-scratch-di"),
+            shell("ls /tmp/biorouter-scratch-d"),
+            shell("ls /tmp/biorouter-scratch-"),
+        ]),
+    )
+    .await;
+
+    assert!(
+        results.is_empty(),
+        "semantic detection was off: {results:?}"
+    );
+}
+
+// The heuristics look at the current turn. A genuine user message resets the
+// window; the agent's own (user-role, user-invisible) loop-guard injections and
+// tool responses do not.
+#[tokio::test]
+async fn test_window_resets_on_a_real_user_turn_only() {
+    let inspector = RepetitionInspector::staged(3, 5);
+
+    let earlier: Vec<Message> = [
+        "grep -rn 'fn assemble_turn_context' crates/biorouter/src/agents/",
+        "grep -rn 'fn assemble_turn_context' crates/biorouter/src/agents",
+        "grep -rn 'fn assemble_turn_context' crates/biorouter/src/agent",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(index, command)| {
+        Message::assistant().with_tool_request(format!("hist_{index}"), Ok(shell(command)))
+    })
+    .collect();
+
+    let next = requests(vec![shell(
+        "grep -rn 'fn assemble_turn_context' crates/biorouter/src/agen",
+    )]);
+
+    // Continuing the same turn: the 4th near-duplicate trips the soft stage.
+    let results = inspector
+        .inspect(
+            &next,
+            &earlier,
+            BioRouterMode::Approve,
+            &biorouter::session::Session::default(),
+        )
+        .await
+        .expect("inspection should succeed");
+    assert_eq!(results.len(), 1);
+    assert_eq!(
+        results[0].finding_id.as_deref(),
+        Some(REPETITION_NEAR_DUP_SOFT_FINDING_ID)
+    );
+
+    // A real user turn in between wipes the slate.
+    let mut with_user_turn = earlier.clone();
+    with_user_turn.push(Message::user().with_text("actually, try the other crate"));
+    let results = inspector
+        .inspect(
+            &next,
+            &with_user_turn,
+            BioRouterMode::Approve,
+            &biorouter::session::Session::default(),
+        )
+        .await
+        .expect("inspection should succeed");
+    assert!(
+        results.is_empty(),
+        "a user turn must reset the loop window: {results:?}"
+    );
+
+    // The agent's own loop-guard nudge is user-role but user-invisible — it is
+    // not a user turn and must not launder a loop.
+    let mut with_guard_nudge = earlier;
+    with_guard_nudge.push(
+        Message::user()
+            .with_text("<biorouter-loop-guard>…</biorouter-loop-guard>")
+            .with_visibility(false, true),
+    );
+    let results = inspector
+        .inspect(
+            &next,
+            &with_guard_nudge,
+            BioRouterMode::Approve,
+            &biorouter::session::Session::default(),
+        )
+        .await
+        .expect("inspection should succeed");
+    assert_eq!(
+        results.len(),
+        1,
+        "an agent-authored injection must not reset the window"
+    );
+}

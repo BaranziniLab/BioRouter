@@ -56,7 +56,7 @@ use crate::security::security_inspector::SecurityInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
 use crate::session::{Session, SessionManager, SessionType};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspectionManager};
-use crate::tool_monitor::RepetitionInspector;
+use crate::tool_monitor::{RepetitionInspector, SemanticLoopConfig};
 use crate::utils::is_token_cancelled;
 use crate::workflow::{Author, Response, Settings, SubWorkflow, Workflow};
 use regex::Regex;
@@ -490,6 +490,8 @@ impl Agent {
         // Add repetition inspector (lower priority - basic repetition checking).
         // BR-29: staged — a soft, non-blocking warning first, a hard stop only if
         // the model keeps repeating itself through it.
+        // BR-30: plus the semantic heuristics (near-duplicate arg tweaks, A/B/A/B
+        // oscillation), which are warn-only unless a hard stop is configured.
         let config = Config::global();
         let soft_warn_at = config
             .get_param::<u32>("BIOROUTER_REPETITION_SOFT_WARN")
@@ -497,16 +499,53 @@ impl Agent {
         let hard_stop_at = config
             .get_param::<u32>("BIOROUTER_REPETITION_HARD_STOP")
             .unwrap_or(DEFAULT_REPETITION_HARD_STOP);
-        tool_inspection_manager.add_inspector(Box::new(RepetitionInspector::staged(
-            soft_warn_at,
-            hard_stop_at,
-        )));
+        tool_inspection_manager.add_inspector(Box::new(
+            RepetitionInspector::staged(soft_warn_at, hard_stop_at)
+                .with_semantic(Self::semantic_loop_config(config)),
+        ));
 
         // Add user-configured PreToolUse hooks (runs last)
         tool_inspection_manager
             .add_inspector(Box::new(crate::hooks::HookInspector::new(hooks_manager)));
 
         tool_inspection_manager
+    }
+
+    /// BR-30: resolve the semantic loop-detection config.
+    ///
+    /// Defaults are deliberately warn-only — a heuristic that denies a call it
+    /// misread is worse than one that nudges. Operators who want enforcement set
+    /// `BIOROUTER_LOOP_NEAR_DUP_HARD_STOP` / `BIOROUTER_LOOP_OSCILLATION_HARD_STOP`
+    /// (a value of 0 keeps the stage off).
+    fn semantic_loop_config(config: &Config) -> SemanticLoopConfig {
+        let defaults = SemanticLoopConfig::default();
+        let positive = |value: u32| (value > 0).then_some(value);
+        SemanticLoopConfig {
+            enabled: config
+                .get_param::<bool>("BIOROUTER_LOOP_SEMANTIC_DETECTION")
+                .unwrap_or(defaults.enabled),
+            similarity_threshold: config
+                .get_param::<f32>("BIOROUTER_LOOP_ARG_SIMILARITY")
+                .ok()
+                .filter(|threshold| (0.0..=1.0).contains(threshold))
+                .unwrap_or(defaults.similarity_threshold),
+            near_dup_soft_warn: config
+                .get_param::<u32>("BIOROUTER_LOOP_NEAR_DUP_SOFT_WARN")
+                .ok()
+                .map_or(defaults.near_dup_soft_warn, positive),
+            near_dup_hard_stop: config
+                .get_param::<u32>("BIOROUTER_LOOP_NEAR_DUP_HARD_STOP")
+                .ok()
+                .map_or(defaults.near_dup_hard_stop, positive),
+            oscillation_soft_warn: config
+                .get_param::<u32>("BIOROUTER_LOOP_OSCILLATION_SOFT_WARN")
+                .ok()
+                .map_or(defaults.oscillation_soft_warn, positive),
+            oscillation_hard_stop: config
+                .get_param::<u32>("BIOROUTER_LOOP_OSCILLATION_HARD_STOP")
+                .ok()
+                .map_or(defaults.oscillation_hard_stop, positive),
+        }
     }
 
     /// Reset the retry attempts counter to 0
