@@ -5,7 +5,19 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 source "$ROOT/bin/activate-hermit"
 source /tmp/br-testdrive.env
 
-export BIOROUTER_PATH_ROOT="$ROOT/.br-testdrive/runtime"
+# NOTE: BIOROUTER_PATH_ROOT is deliberately NOT set.
+#
+# Before the Wave 0.1 path fix, `agent_drafter::default_root()` ignored
+# BIOROUTER_PATH_ROOT and resolved through XDG, so this corpus lives at
+# $XDG_CONFIG_HOME/biorouter/agent_drafter. Now that BIOROUTER_PATH_ROOT is honoured
+# (it must be — that is the whole point of the fix, and a cross-crate test pins it to
+# `biorouter::config::Paths`), setting it would point the daemon at
+# <root>/config/agent_drafter instead: a different, EMPTY directory. The agent would
+# see zero apps.
+#
+# XDG_CONFIG_HOME alone gives the same isolation and resolves identically under both
+# the old and the new resolver. Anyone with an existing BIOROUTER_PATH_ROOT-based
+# store must move it from <root>/config/biorouter/ to <root>/config/.
 export XDG_CONFIG_HOME="$ROOT/.br-testdrive/runtime/config"
 export BIOROUTER_PROVIDER=versa_azure
 export BIOROUTER_MODEL=gpt-5.5-2026-04-24

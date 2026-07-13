@@ -24,7 +24,19 @@ source "$ROOT/bin/activate-hermit" >/dev/null
 # Provider credentials. 0600, never echoed — the daemon logs its whole spawn env.
 source /tmp/br-testdrive.env
 
-export BIOROUTER_PATH_ROOT="$ROOT/.br-testdrive/runtime"
+# NOTE: BIOROUTER_PATH_ROOT is deliberately NOT set.
+#
+# Before the Wave 0.1 path fix, `agent_drafter::default_root()` ignored
+# BIOROUTER_PATH_ROOT and resolved through XDG, so this corpus lives at
+# $XDG_CONFIG_HOME/biorouter/agent_drafter. Now that BIOROUTER_PATH_ROOT is honoured
+# (it must be — that is the whole point of the fix, and a cross-crate test pins it to
+# `biorouter::config::Paths`), setting it would point the daemon at
+# <root>/config/agent_drafter instead: a different, EMPTY directory. The agent would
+# see zero apps.
+#
+# XDG_CONFIG_HOME alone gives the same isolation and resolves identically under both
+# the old and the new resolver. Anyone with an existing BIOROUTER_PATH_ROOT-based
+# store must move it from <root>/config/biorouter/ to <root>/config/.
 export XDG_CONFIG_HOME="$ROOT/.br-testdrive/runtime/config"
 export BIOROUTER_PROVIDER=versa_azure
 export BIOROUTER_MODEL=gpt-5.5-2026-04-24
@@ -55,10 +67,13 @@ four defects. Fix all of them, then rebuild.
 
 4. Finally call \`build_app\` and then \`lint_app\`. Report the remaining findings.
 
-Work only on this app. Do not create a new one.
+Work only on this app. Do not create a new one. Use ONLY the agent_drafter tools —
+do not shell out, do not read BioRouter's source, do not create symlinks. If a tool
+rejects something, read the rejection: it names what is actually installed and what
+to do instead.
 EOF
 
 echo "=== repairing $APP with the fixed platform's own agent ==="
-exec /tmp/br-testdrive-target/debug/biorouter run \
+/tmp/br-testdrive-target/debug/biorouter run \
   --with-builtin agent_drafter \
   --text "$PROMPT"

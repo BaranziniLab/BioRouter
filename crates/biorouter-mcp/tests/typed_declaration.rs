@@ -120,3 +120,53 @@ fn a_v1_manifest_gains_no_surface_or_theme_key() {
     );
     assert!(raw.get("requires").is_none(), "nor a `requires` key");
 }
+
+/// `declare_surface(merge: true)` must not silently drop `state_initial`.
+///
+/// It did. The merge branch upserted actions/signals/components and carried
+/// `state_schema` across, but never `state_initial` — so a caller that declared an
+/// initial document got a SUCCESS result and an unchanged manifest.
+///
+/// Found by pointing the fixed platform's own agent at a broken app and watching it
+/// spend 8 extra round-trips re-declaring a value that kept vanishing. Which makes
+/// it the exact bug class this whole campaign is about: a tool that reports success
+/// while doing nothing, leaving the model to thrash against a lie.
+#[test]
+fn merging_a_surface_preserves_the_initial_state_document() {
+    use biorouter_mcp::agent_drafter::declare::SurfaceParam;
+    use biorouter_mcp::agent_drafter::manifest::SurfaceDecl;
+
+    // An app that already declares actions, but no initial state.
+    let mut existing = SurfaceDecl {
+        actions: vec![Default::default()],
+        ..Default::default()
+    };
+    assert!(existing.state_initial.is_none());
+
+    // The caller declares ONLY the initial document, with merge semantics.
+    let incoming: SurfaceParam = serde_json::from_value(serde_json::json!({
+        "state_initial": { "cohort": { "baselineN": 12500 } }
+    }))
+    .unwrap();
+    let incoming = incoming.into_decl();
+
+    // This is the merge `declare_surface(merge: true)` performs.
+    if incoming.state_schema.is_some() {
+        existing.state_schema = incoming.state_schema.clone();
+    }
+    if incoming.state_initial.is_some() {
+        existing.state_initial = incoming.state_initial.clone();
+    }
+
+    assert_eq!(
+        existing.state_initial,
+        Some(serde_json::json!({ "cohort": { "baselineN": 12500 } })),
+        "a merged surface must carry the initial document — dropping it silently is \
+         how the model ends up thrashing against a tool that lies about succeeding"
+    );
+    assert_eq!(
+        existing.actions.len(),
+        1,
+        "and merging must not clobber what was already declared"
+    );
+}

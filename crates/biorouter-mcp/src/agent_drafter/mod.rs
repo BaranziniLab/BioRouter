@@ -2276,6 +2276,17 @@ impl AgentDrafterServer {
             if incoming.state_schema.is_some() {
                 manifest.surface.state_schema = incoming.state_schema;
             }
+            // `state_initial` was missing from this merge, so `declare_surface(merge:
+            // true)` SILENTLY DROPPED it — the caller declared an initial document,
+            // got a success result, and the manifest was unchanged. Found by pointing
+            // the fixed platform's own agent at a broken app: it cost 8 extra
+            // round-trips of "declare it again, it still isn't there".
+            //
+            // Exactly the class of bug this campaign is about — a tool that reports
+            // success while doing nothing.
+            if incoming.state_initial.is_some() {
+                manifest.surface.state_initial = incoming.state_initial;
+            }
         } else {
             manifest.surface = incoming;
         }
