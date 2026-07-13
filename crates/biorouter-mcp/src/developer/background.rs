@@ -123,7 +123,9 @@ impl BackgroundJobs {
         // sanitized git/editor env, own process group) but override
         // kill_on_drop: a background job must survive the tool call returning.
         let shell_config = ShellConfig::default();
-        let mut cmd = configure_shell_command(&shell_config, command, working_dir.as_deref());
+        // Returns Err only under `BIOROUTER_SHELL_SANDBOX=strict` on a host that
+        // cannot provide a full sandbox — refuse to start the job (BR-69).
+        let mut cmd = configure_shell_command(&shell_config, command, working_dir.as_deref())?;
         cmd.kill_on_drop(false);
 
         let mut child = cmd
