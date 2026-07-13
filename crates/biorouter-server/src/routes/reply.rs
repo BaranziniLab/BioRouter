@@ -155,21 +155,23 @@ pub enum MessageEvent {
     Ping,
 }
 
+/// Read the session's token counters straight from the store.
+///
+/// BR-52: this used to run on *every* streamed event — one SQLite query per
+/// token — even though the counters only ever move at a turn/compaction
+/// boundary, so every mid-stream read returned the value the previous one had
+/// already returned. The stream now carries the agent's own
+/// [`AgentEvent::TokenUsage`] snapshot and this remains only for the two places
+/// a DB read is genuinely needed: seeding the state when the stream opens (a
+/// resumed session already has counters) and the authoritative reconciliation on
+/// `Finish`.
 async fn get_token_state(session_manager: &SessionManager, session_id: &str) -> TokenState {
     // Fetch only the token counters — not a full session row plus a
-    // `COUNT(*)` over the messages table — since this runs once per streamed
-    // event on the chat hot path and only the token fields are used here.
+    // `COUNT(*)` over the messages table — since only the token fields are used.
     session_manager
         .get_token_counts(session_id)
         .await
-        .map(|counts| TokenState {
-            input_tokens: counts.input_tokens.unwrap_or(0),
-            output_tokens: counts.output_tokens.unwrap_or(0),
-            total_tokens: counts.total_tokens.unwrap_or(0),
-            accumulated_input_tokens: counts.accumulated_input_tokens.unwrap_or(0),
-            accumulated_output_tokens: counts.accumulated_output_tokens.unwrap_or(0),
-            accumulated_total_tokens: counts.accumulated_total_tokens.unwrap_or(0),
-        })
+        .map(TokenState::from)
         .inspect_err(|e| {
             tracing::warn!(
                 "Failed to fetch session token state for {}: {}",
@@ -328,6 +330,12 @@ pub async fn reply(
             retry_config: None,
         };
 
+        // BR-52: the token state we attach to every streamed event. Seeded from
+        // the session row we just read (free — no extra query) and refreshed only
+        // when the agent tells us the counters moved, which is the only time they
+        // can. Previously every single streamed chunk re-read this from SQLite.
+        let mut token_state = TokenState::from(&session);
+
         let mut all_messages = match conversation_so_far {
             Some(history) => {
                 let conv = Conversation::new_unvalidated(history);
@@ -390,14 +398,20 @@ pub async fn reply(
 
                             all_messages.push(message.clone());
 
-                            let token_state = get_token_state(state.session_manager(), &session_id).await;
-
-                            stream_event(MessageEvent::Message { message, token_state }, &tx, &cancel_token).await;
+                            stream_event(MessageEvent::Message { message, token_state: token_state.clone() }, &tx, &cancel_token).await;
+                        }
+                        Ok(Some(Ok(AgentEvent::TokenUsage(new_token_state)))) => {
+                            // BR-52: the agent wrote the session's counters at a
+                            // turn/compaction boundary and handed us the result.
+                            // Every event we emit from here on carries it — no
+                            // per-event DB read, and no separate SSE frame (the
+                            // wire schema is unchanged, so older clients that only
+                            // read `token_state` off Message/Finish still work).
+                            token_state = new_token_state;
                         }
                         Ok(Some(Ok(AgentEvent::HistoryReplaced(new_messages)))) => {
                             all_messages = new_messages.clone();
-                            let token_state = get_token_state(state.session_manager(), &session_id).await;
-                            stream_event(MessageEvent::UpdateConversation {conversation: new_messages, token_state}, &tx, &cancel_token).await;
+                            stream_event(MessageEvent::UpdateConversation {conversation: new_messages, token_state: token_state.clone()}, &tx, &cancel_token).await;
 
                         }
                         Ok(Some(Ok(AgentEvent::ModelChange { model, mode }))) => {
@@ -499,6 +513,10 @@ pub async fn reply(
             );
         }
 
+        // BR-52: one authoritative read at the end of the turn — the single point
+        // where a client's token readout is reconciled with the store, so nothing
+        // written outside this stream (a background eager compaction, a concurrent
+        // scheduled run) can leave the UI on a stale count.
         let final_token_state = get_token_state(state.session_manager(), &session_id).await;
 
         let _ = stream_event(

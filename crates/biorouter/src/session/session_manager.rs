@@ -1,5 +1,7 @@
 use crate::config::paths::Paths;
-use crate::conversation::message::{new_message_id, Message, MessageContent, MessageMetadata};
+use crate::conversation::message::{
+    new_message_id, Message, MessageContent, MessageMetadata, TokenState,
+};
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
 use crate::providers::base::{Provider, MSG_COUNT_FOR_SESSION_NAME_GENERATION};
@@ -564,6 +566,35 @@ pub struct SessionTokenCounts {
     pub accumulated_total_tokens: Option<i64>,
     pub accumulated_input_tokens: Option<i64>,
     pub accumulated_output_tokens: Option<i64>,
+}
+
+/// BR-52: the one place a session's stored counters become the `TokenState` the
+/// clients see. The agent reads it once per turn boundary and carries it in the
+/// event stream; the server no longer re-derives it per streamed token.
+impl From<SessionTokenCounts> for TokenState {
+    fn from(counts: SessionTokenCounts) -> Self {
+        TokenState {
+            input_tokens: counts.input_tokens.unwrap_or(0),
+            output_tokens: counts.output_tokens.unwrap_or(0),
+            total_tokens: counts.total_tokens.unwrap_or(0),
+            accumulated_input_tokens: counts.accumulated_input_tokens.unwrap_or(0),
+            accumulated_output_tokens: counts.accumulated_output_tokens.unwrap_or(0),
+            accumulated_total_tokens: counts.accumulated_total_tokens.unwrap_or(0),
+        }
+    }
+}
+
+impl From<&Session> for TokenState {
+    fn from(session: &Session) -> Self {
+        TokenState {
+            input_tokens: session.input_tokens.unwrap_or(0),
+            output_tokens: session.output_tokens.unwrap_or(0),
+            total_tokens: session.total_tokens.unwrap_or(0),
+            accumulated_input_tokens: session.accumulated_input_tokens.unwrap_or(0),
+            accumulated_output_tokens: session.accumulated_output_tokens.unwrap_or(0),
+            accumulated_total_tokens: session.accumulated_total_tokens.unwrap_or(0),
+        }
+    }
 }
 
 /// SQLite row shape for the BR-43 `checkpoints` table, mapped to the public
@@ -4179,6 +4210,80 @@ mod tests {
         );
         assert_eq!(counts.total_tokens, Some(4321));
         assert_eq!(counts.accumulated_total_tokens, Some(9999));
+    }
+
+    /// BR-52: both ways of turning stored counters into the `TokenState` clients
+    /// see must agree, since one seeds the SSE stream (from the session row the
+    /// route already read) and the other refreshes it (from the agent's own
+    /// boundary read). If they disagreed, the token readout would jump.
+    #[tokio::test]
+    async fn token_state_from_counts_and_from_session_agree() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let session = seed_session_with_messages(&sm, 1).await;
+        sm.update(&session.id)
+            .total_tokens(Some(4321))
+            .input_tokens(Some(4000))
+            .output_tokens(Some(321))
+            .accumulated_total_tokens(Some(9999))
+            .accumulated_input_tokens(Some(9000))
+            .accumulated_output_tokens(Some(999))
+            .apply()
+            .await
+            .unwrap();
+
+        let full = sm.get_session(&session.id, false).await.unwrap();
+        let from_session = TokenState::from(&full);
+        let from_counts = TokenState::from(sm.get_token_counts(&session.id).await.unwrap());
+
+        assert_eq!(from_session.total_tokens, 4321);
+        assert_eq!(from_session.input_tokens, 4000);
+        assert_eq!(from_session.output_tokens, 321);
+        assert_eq!(from_session.accumulated_total_tokens, 9999);
+        assert_eq!(from_session.accumulated_input_tokens, 9000);
+        assert_eq!(from_session.accumulated_output_tokens, 999);
+
+        assert_eq!(from_counts.total_tokens, from_session.total_tokens);
+        assert_eq!(from_counts.input_tokens, from_session.input_tokens);
+        assert_eq!(from_counts.output_tokens, from_session.output_tokens);
+        assert_eq!(
+            from_counts.accumulated_total_tokens,
+            from_session.accumulated_total_tokens
+        );
+        assert_eq!(
+            from_counts.accumulated_input_tokens,
+            from_session.accumulated_input_tokens
+        );
+        assert_eq!(
+            from_counts.accumulated_output_tokens,
+            from_session.accumulated_output_tokens
+        );
+    }
+
+    /// A brand-new session has NULL counters; both conversions must read as zero
+    /// rather than panicking or surfacing a negative default.
+    #[tokio::test]
+    async fn token_state_of_a_fresh_session_is_zero() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/fresh"),
+                "Fresh".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let state = TokenState::from(&session);
+        assert_eq!(state.total_tokens, 0);
+        assert_eq!(state.accumulated_total_tokens, 0);
+
+        let state = TokenState::from(sm.get_token_counts(&session.id).await.unwrap());
+        assert_eq!(state.total_tokens, 0);
+        assert_eq!(state.accumulated_total_tokens, 0);
     }
 
     #[tokio::test]

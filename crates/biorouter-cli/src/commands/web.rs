@@ -614,6 +614,9 @@ async fn process_message_streaming(
                     Ok(AgentEvent::ModelChange { model, mode }) => {
                         tracing::info!("Model changed to {} in {} mode", model, mode);
                     }
+                    // BR-52: the web bridge reads token counts from the session
+                    // row when it needs them, so the carried snapshot is a no-op here.
+                    Ok(AgentEvent::TokenUsage(_)) => {}
                     Err(e) => {
                         error!("Error in message stream: {}", e);
                         send_error(&sender, &format!("Error: {}", e)).await;
