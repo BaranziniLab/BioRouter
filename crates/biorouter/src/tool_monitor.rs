@@ -1,11 +1,12 @@
 use crate::config::BioRouterMode;
 use crate::conversation::message::{Message, ToolRequest};
+use crate::mcp_utils::ToolResult;
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 use anyhow::Result;
 use async_trait::async_trait;
-use rmcp::model::{CallToolRequestParams, Role};
+use rmcp::model::{CallToolRequestParams, CallToolResult, Role};
 use serde_json::{Map, Value};
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Inspector name used by the repetition guard; the agent keys the honest
 /// "repetition, not user decline" deny message off this.
@@ -26,6 +27,9 @@ pub const REPETITION_NEAR_DUP_HARD_FINDING_ID: &str = "REP-004";
 pub const REPETITION_OSCILLATION_SOFT_FINDING_ID: &str = "REP-005";
 /// BR-30 A/B/A/B oscillation, hard stage (opt-in).
 pub const REPETITION_OSCILLATION_HARD_FINDING_ID: &str = "REP-006";
+/// BR-31 repeated-failing-result guard, hard stage: the next call to a tool that
+/// has already failed the same way `hard_stop_at` times in a row is denied.
+pub const FAILURE_LOOP_HARD_FINDING_ID: &str = "REP-007";
 
 /// Nth consecutive *near*-identical call to the same tool that earns a
 /// non-blocking warning.
@@ -39,8 +43,28 @@ pub const DEFAULT_OSCILLATION_SOFT_WARN: u32 = 4;
 /// not trip the detector.
 pub const DEFAULT_ARG_SIMILARITY_THRESHOLD: f32 = 0.9;
 
+/// BR-31: Nth consecutive failure of the same tool with the same error that earns
+/// a first, hedged nudge.
+pub const DEFAULT_FAILURE_SOFT_WARN: u32 = 3;
+/// BR-31: Nth consecutive identical failure that escalates the nudge to
+/// "you are not making progress; change approach or ask the user".
+pub const DEFAULT_FAILURE_ESCALATE_WARN: u32 = 5;
+/// BR-31: Nth consecutive identical failure after which the *next* call to that
+/// tool is denied outright.
+pub const DEFAULT_FAILURE_HARD_STOP: u32 = 6;
+/// BR-31: how similar two normalized error signatures must be to count as "the
+/// same failure". Lower than the argument threshold because two runs of one
+/// failing command produce near-identical prose, and because the signature is
+/// already normalized (case, whitespace, digit runs).
+pub const DEFAULT_ERROR_SIMILARITY_THRESHOLD: f32 = 0.85;
+
 /// How many recent tool calls the semantic heuristics look back over.
 const LOOP_WINDOW: usize = 20;
+
+/// Longest error prefix kept in a signature. Tool errors can carry a whole
+/// stack trace or a megabyte of stderr; the headline is what identifies the
+/// failure, and comparing the tail is both slow and noisy.
+const MAX_SIGNATURE_LEN: usize = 400;
 
 /// Argument keys whose values are volatile plumbing (request ids, timestamps,
 /// nonces). They differ on every call even when the call is *semantically* the
@@ -109,6 +133,282 @@ impl SemanticLoopConfig {
             ..Self::default()
         }
     }
+}
+
+/// BR-31: configuration for the repeated-failing-result ("no progress") detector.
+///
+/// The three stages are expressed as "the Nth consecutive failure of this tool
+/// with the same error":
+///
+/// * `soft_warn_at` — a hedged nudge is injected right after the failing result.
+/// * `escalate_at` — the nudge becomes an explicit "you are not making progress;
+///   change approach or ask the user".
+/// * `hard_stop_at` — the *next* call to that tool is denied (the failure already
+///   happened; only a future call can be blocked).
+///
+/// Unlike BR-30's heuristics, the hard stage is **on by default**: a run of
+/// identical failures is evidence, not a guess — the tool ran, and it produced
+/// the same error every time. The stop is also self-clearing: the denial is
+/// itself an error with a different signature, so it breaks the streak and the
+/// model gets to try again (and will be stopped again if it resumes the loop).
+#[derive(Debug, Clone)]
+pub struct FailureLoopConfig {
+    /// Master switch.
+    pub enabled: bool,
+    /// Normalized-error-signature similarity at or above which two failures of
+    /// the same tool count as "the same failure". `0.0..=1.0`.
+    pub similarity_threshold: f32,
+    /// Nth consecutive identical failure that earns a nudge. `None` disables.
+    pub soft_warn_at: Option<u32>,
+    /// Nth consecutive identical failure that escalates the nudge. `None` disables.
+    pub escalate_at: Option<u32>,
+    /// Nth consecutive identical failure after which the next call to the tool is
+    /// denied. `None` disables the hard stage (nudge-only).
+    pub hard_stop_at: Option<u32>,
+}
+
+impl Default for FailureLoopConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            similarity_threshold: DEFAULT_ERROR_SIMILARITY_THRESHOLD,
+            soft_warn_at: Some(DEFAULT_FAILURE_SOFT_WARN),
+            escalate_at: Some(DEFAULT_FAILURE_ESCALATE_WARN),
+            hard_stop_at: Some(DEFAULT_FAILURE_HARD_STOP),
+        }
+    }
+}
+
+impl FailureLoopConfig {
+    /// No result-aware detection at all (the pre-BR-31 behavior).
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            ..Self::default()
+        }
+    }
+}
+
+/// BR-31: one completed tool call, reduced to what the no-progress detector
+/// needs — which tool ran, and, if it failed, a normalized signature of its error.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolOutcome {
+    pub tool_name: String,
+    /// `None` when the call succeeded; `Some(signature)` when it failed.
+    pub failure: Option<String>,
+}
+
+/// Normalize an error message into a comparison signature: lowercased,
+/// whitespace-collapsed, digit runs folded to `#`, truncated to the headline.
+///
+/// Folding digits is what makes two runs of the *same* failure compare equal
+/// when the error embeds a pid, a timestamp, a byte offset, or a line number.
+fn error_signature(text: &str) -> String {
+    let collapsed = collapse_whitespace(text).to_lowercase();
+    let mut signature = String::with_capacity(collapsed.len().min(MAX_SIGNATURE_LEN));
+    let mut in_digits = false;
+    for ch in collapsed.chars() {
+        if signature.chars().count() >= MAX_SIGNATURE_LEN {
+            break;
+        }
+        if ch.is_ascii_digit() {
+            if !in_digits {
+                signature.push('#');
+                in_digits = true;
+            }
+        } else {
+            in_digits = false;
+            signature.push(ch);
+        }
+    }
+    signature
+}
+
+/// The error text of a failed tool result, or `None` when it succeeded. A tool
+/// can fail two ways: a transport/protocol `Err`, or an `Ok` result flagged
+/// `is_error` (the MCP "the tool ran and reported a failure" path) — both count.
+fn failure_text(result: &ToolResult<CallToolResult>) -> Option<String> {
+    match result {
+        Err(error) => Some(error.message.to_string()),
+        Ok(call) if call.is_error == Some(true) => {
+            let text = call
+                .content
+                .iter()
+                .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            Some(if text.trim().is_empty() {
+                "tool reported an error with no message".to_string()
+            } else {
+                text
+            })
+        }
+        Ok(_) => None,
+    }
+}
+
+/// Reduce a completed tool result to a [`ToolOutcome`].
+pub fn tool_outcome(tool_name: &str, result: &ToolResult<CallToolResult>) -> ToolOutcome {
+    ToolOutcome {
+        tool_name: tool_name.to_string(),
+        failure: failure_text(result)
+            .as_deref()
+            .map(error_signature)
+            .filter(|signature| !signature.is_empty()),
+    }
+}
+
+/// The outcome of `request_id` as recorded in a tool-response message the agent
+/// has just written (the BR-31 result-collection seam), or `None` when that
+/// message carries no response for it.
+pub fn outcome_from_response_message(
+    tool_name: &str,
+    request_id: &str,
+    message: &Message,
+) -> Option<ToolOutcome> {
+    message
+        .content
+        .iter()
+        .filter_map(|content| content.as_tool_response())
+        .find(|response| response.id == request_id)
+        .map(|response| tool_outcome(tool_name, &response.tool_result))
+}
+
+/// Every completed tool call since the last genuine user turn, in order, paired
+/// with whether it failed. Requests and responses are matched by id, so a batch
+/// of parallel calls is attributed correctly.
+pub fn tool_outcomes_since_last_user_turn(messages: &[Message]) -> Vec<ToolOutcome> {
+    let start = last_user_turn_index(messages);
+    let mut names: HashMap<&str, String> = HashMap::new();
+    let mut outcomes = Vec::new();
+
+    for message in &messages[start..] {
+        for content in &message.content {
+            if let Some(request) = content.as_tool_request() {
+                if let Ok(tool_call) = &request.tool_call {
+                    names.insert(request.id.as_str(), tool_call.name.to_string());
+                }
+            } else if let Some(response) = content.as_tool_response() {
+                let Some(tool_name) = names.get(response.id.as_str()) else {
+                    continue;
+                };
+                outcomes.push(tool_outcome(tool_name, &response.tool_result));
+            }
+        }
+    }
+
+    if outcomes.len() > LOOP_WINDOW {
+        outcomes.drain(..outcomes.len() - LOOP_WINDOW);
+    }
+    outcomes
+}
+
+/// Length of the trailing run of failures of `tool_name` whose error signatures
+/// all match the most recent one. `0` when that tool's last call succeeded, or
+/// when it has not run since the last user turn.
+///
+/// Only that tool's own outcomes are considered, so interleaved work with other
+/// tools neither resets nor hides the streak. A *success* of the tool ends the
+/// run (progress), and so does a failure with a materially different error — a
+/// new error is new information, which is the opposite of being stuck.
+pub fn failing_streak(outcomes: &[ToolOutcome], tool_name: &str, threshold: f32) -> u32 {
+    let mut own = outcomes
+        .iter()
+        .rev()
+        .filter(|outcome| outcome.tool_name == tool_name);
+
+    let Some(signature) = own.next().and_then(|outcome| outcome.failure.as_deref()) else {
+        return 0;
+    };
+
+    let mut streak = 1u32;
+    for outcome in own.take(LOOP_WINDOW) {
+        match outcome.failure.as_deref() {
+            Some(previous) if signatures_match(previous, signature, threshold) => streak += 1,
+            _ => break,
+        }
+    }
+    streak
+}
+
+fn signatures_match(a: &str, b: &str, threshold: f32) -> bool {
+    a == b || string_similarity(a, b) >= threshold
+}
+
+/// BR-31: the nudge (if any) owed to `tool_name` after its latest result, given
+/// every outcome since the last user turn (including the batch that just ran).
+///
+/// Returns `None` below the soft threshold, the hedged nudge between soft and
+/// escalate, and the escalated nudge at or above it. The hard stop is *not*
+/// expressed here — a failure that already happened cannot be un-run; it is
+/// enforced on the next call by [`RepetitionInspector`].
+pub fn failure_loop_nudge(
+    config: &FailureLoopConfig,
+    outcomes: &[ToolOutcome],
+    tool_name: &str,
+) -> Option<String> {
+    if !config.enabled {
+        return None;
+    }
+    let streak = failing_streak(outcomes, tool_name, config.similarity_threshold);
+    let fired = |threshold: Option<u32>| threshold.is_some_and(|at| at > 0 && streak >= at);
+
+    if fired(config.escalate_at) {
+        Some(escalated_failure_nudge(
+            tool_name,
+            streak,
+            config.hard_stop_at,
+        ))
+    } else if fired(config.soft_warn_at) {
+        Some(soft_failure_nudge(tool_name, streak))
+    } else {
+        None
+    }
+}
+
+fn soft_failure_nudge(tool_name: &str, streak: u32) -> String {
+    format!(
+        "No progress: '{tool_name}' has now failed {streak} times in a row with the \
+         same error. Running it again will produce the same error again. Read what the \
+         error actually says and fix its cause, or take a different route — a different \
+         tool, a different input, or stopping to tell the user what is blocking you."
+    )
+}
+
+fn escalated_failure_nudge(tool_name: &str, streak: u32, hard_stop_at: Option<u32>) -> String {
+    let stop_clause = match hard_stop_at {
+        Some(at) if at > streak => format!(
+            " Further calls to '{tool_name}' will be blocked automatically once it has \
+             failed the same way {at} times."
+        ),
+        Some(_) => format!(
+            " The next call to '{tool_name}' will be blocked automatically unless \
+             something changes."
+        ),
+        None => String::new(),
+    };
+    format!(
+        "You are not making progress: '{tool_name}' has failed {streak} times in a row \
+         with the same error, and the earlier warning changed nothing. Stop retrying it. \
+         Do one of these instead: fix the underlying cause the error names, use a \
+         different tool or approach, or stop and ask the user for what you are \
+         missing.{stop_clause}"
+    )
+}
+
+/// The message the model sees in place of the tool result when the no-progress
+/// guard denies a call. Like BR-29's, it states the real reason rather than
+/// claiming the user declined.
+fn failure_stop_reason(tool_name: &str, streak: u32) -> String {
+    format!(
+        "BioRouter did not run this tool call: '{tool_name}' has already failed \
+         {streak} times in a row with the same error, and the warnings changed nothing. \
+         The user did NOT decline it — this is an automatic no-progress guard. Repeating \
+         a call that keeps failing the same way cannot make progress. Fix the cause the \
+         error names, use a different tool or approach, or stop and tell the user exactly \
+         what is blocking you. (If you call '{tool_name}' again and it keeps failing the \
+         same way, it will be stopped again.)"
+    )
 }
 
 // Helper struct for internal tracking
@@ -360,12 +660,12 @@ fn trailing_oscillation_run(seq: &[InternalToolCall]) -> u32 {
     }
 }
 
-/// The tool calls made since the last genuine user turn, capped to the recent
-/// window. Loop-guard nudges and other agent-authored injections are
-/// `Message::user()` with `user_visible == false`, and tool *responses* are also
-/// user-role messages, so neither resets the window.
-fn calls_since_last_user_turn(messages: &[Message]) -> Vec<InternalToolCall> {
-    let start = messages
+/// Index of the first message after the last genuine user turn. Loop-guard
+/// nudges and other agent-authored injections are `Message::user()` with
+/// `user_visible == false`, and tool *responses* are also user-role messages, so
+/// neither resets the window.
+fn last_user_turn_index(messages: &[Message]) -> usize {
+    messages
         .iter()
         .rposition(|message| {
             message.role == Role::User
@@ -376,7 +676,13 @@ fn calls_since_last_user_turn(messages: &[Message]) -> Vec<InternalToolCall> {
                     .any(|content| content.as_tool_response().is_some())
         })
         .map(|index| index + 1)
-        .unwrap_or(0);
+        .unwrap_or(0)
+}
+
+/// The tool calls made since the last genuine user turn, capped to the recent
+/// window.
+fn calls_since_last_user_turn(messages: &[Message]) -> Vec<InternalToolCall> {
+    let start = last_user_turn_index(messages);
 
     let mut calls: Vec<InternalToolCall> = messages[start..]
         .iter()
@@ -407,6 +713,11 @@ fn calls_since_last_user_turn(messages: &[Message]) -> Vec<InternalToolCall> {
 /// BR-30 adds two heuristics on top, over the calls made since the last user
 /// turn: *near-duplicate* repeats (same tool, arguments only tweaked) and
 /// *`A/B/A/B` oscillation*. Both are warn-only by default.
+///
+/// BR-31 adds the result-aware stage: a tool that keeps *failing the same way*
+/// is denied here, on its next call. The nudges that precede that stop are
+/// emitted at the result-collection seam in the agent loop (a failure cannot be
+/// pre-empted — only the call after it can).
 #[derive(Debug)]
 pub struct RepetitionInspector {
     /// Nth identical call in a row that earns a non-blocking warning.
@@ -416,6 +727,8 @@ pub struct RepetitionInspector {
     hard_stop_at: Option<u32>,
     /// BR-30 near-duplicate + oscillation heuristics.
     semantic: SemanticLoopConfig,
+    /// BR-31 repeated-failing-result guard (hard stage only; see above).
+    failure: FailureLoopConfig,
 }
 
 impl RepetitionInspector {
@@ -426,6 +739,7 @@ impl RepetitionInspector {
             soft_warn_at: None,
             hard_stop_at: max_repetitions.map(|max| max.saturating_add(1)),
             semantic: SemanticLoopConfig::disabled(),
+            failure: FailureLoopConfig::disabled(),
         }
     }
 
@@ -439,12 +753,19 @@ impl RepetitionInspector {
             soft_warn_at: Some(soft_warn_at),
             hard_stop_at: Some(hard_stop_at),
             semantic: SemanticLoopConfig::default(),
+            failure: FailureLoopConfig::default(),
         }
     }
 
     /// Replace the BR-30 semantic-loop configuration.
     pub fn with_semantic(mut self, semantic: SemanticLoopConfig) -> Self {
         self.semantic = semantic;
+        self
+    }
+
+    /// Replace the BR-31 repeated-failing-result configuration.
+    pub fn with_failure_loop(mut self, failure: FailureLoopConfig) -> Self {
+        self.failure = failure;
         self
     }
 
@@ -582,6 +903,34 @@ impl RepetitionInspector {
             finding_id: Some(finding_id.to_string()),
         })
     }
+
+    /// BR-31 hard stage: deny a call to a tool that has already failed the same
+    /// way `hard_stop_at` times in a row since the last user turn.
+    fn inspect_failure_loop(
+        &self,
+        tool_request_id: &str,
+        tool_name: &str,
+        outcomes: &[ToolOutcome],
+    ) -> Option<InspectionResult> {
+        if !self.failure.enabled {
+            return None;
+        }
+        let hard_stop_at = self.failure.hard_stop_at.filter(|at| *at > 0)?;
+        let streak = failing_streak(outcomes, tool_name, self.failure.similarity_threshold);
+        if streak < hard_stop_at {
+            return None;
+        }
+
+        Some(InspectionResult {
+            tool_request_id: tool_request_id.to_string(),
+            action: InspectionAction::Deny,
+            reason: failure_stop_reason(tool_name, streak),
+            // The tool ran and failed, every time: this is observed, not guessed.
+            confidence: 1.0,
+            inspector_name: REPETITION_INSPECTOR_NAME.to_string(),
+            finding_id: Some(FAILURE_LOOP_HARD_FINDING_ID.to_string()),
+        })
+    }
 }
 
 #[async_trait]
@@ -602,7 +951,7 @@ impl ToolInspector for RepetitionInspector {
         _session: &crate::session::Session,
     ) -> Result<Vec<InspectionResult>> {
         let mut results = Vec::new();
-        if self.hard_stop_at.is_none() && !self.semantic.enabled {
+        if self.hard_stop_at.is_none() && !self.semantic.enabled && !self.failure.enabled {
             return Ok(results);
         }
 
@@ -627,6 +976,16 @@ impl ToolInspector for RepetitionInspector {
         // calls (the current turn), not the whole transcript.
         let mut window = if self.semantic.enabled {
             calls_since_last_user_turn(messages)
+        } else {
+            Vec::new()
+        };
+
+        // BR-31: what the calls in this turn actually *returned*. Only history is
+        // available here — the batch being inspected has not run yet — which is
+        // exactly right: the guard blocks the call *after* a run of identical
+        // failures.
+        let outcomes = if self.failure.enabled {
+            tool_outcomes_since_last_user_turn(messages)
         } else {
             Vec::new()
         };
@@ -678,17 +1037,20 @@ impl ToolInspector for RepetitionInspector {
                     }
                 });
 
-                // The byte-exact guard wins when it has already spoken for this
-                // request: one verdict per call, no double nudge.
-                match exact_result {
-                    Some(result) => results.push(result),
-                    None => {
-                        if let Some(result) =
-                            self.inspect_semantic(&tool_request.id, &tool_name, &window)
-                        {
-                            results.push(result);
-                        }
-                    }
+                let failure_result =
+                    self.inspect_failure_loop(&tool_request.id, &tool_name, &outcomes);
+
+                // One verdict per call, no double nudge. A Deny outranks a Warn;
+                // between the two denies, the byte-exact guard's is the more
+                // specific proof, so it keeps precedence.
+                let verdict = match (exact_result, failure_result) {
+                    (Some(exact), Some(_)) if exact.action == InspectionAction::Deny => Some(exact),
+                    (_, Some(failure)) => Some(failure),
+                    (Some(exact), None) => Some(exact),
+                    (None, None) => self.inspect_semantic(&tool_request.id, &tool_name, &window),
+                };
+                if let Some(result) = verdict {
+                    results.push(result);
                 }
             }
         }
@@ -865,5 +1227,223 @@ mod tests {
         let a2 = call("poll", object!({"job": "x", "request_id": "3"}).into());
         let b2 = call("wait", object!({"secs": 5, "request_id": "4"}).into());
         assert_eq!(trailing_oscillation_run(&[a1, b1, a2, b2]), 4);
+    }
+
+    // ---------------------------------------------------------------------
+    // BR-31: repeated-failing-result / no-progress detector
+    // ---------------------------------------------------------------------
+
+    fn failed(tool_name: &str, error: &str) -> ToolOutcome {
+        ToolOutcome {
+            tool_name: tool_name.to_string(),
+            failure: Some(error_signature(error)),
+        }
+    }
+
+    fn succeeded(tool_name: &str) -> ToolOutcome {
+        ToolOutcome {
+            tool_name: tool_name.to_string(),
+            failure: None,
+        }
+    }
+
+    fn error_result(text: &str) -> ToolResult<CallToolResult> {
+        Ok(CallToolResult {
+            content: vec![rmcp::model::Content::text(text)],
+            structured_content: None,
+            is_error: Some(true),
+            meta: None,
+        })
+    }
+
+    fn ok_result(text: &str) -> ToolResult<CallToolResult> {
+        Ok(CallToolResult {
+            content: vec![rmcp::model::Content::text(text)],
+            structured_content: None,
+            is_error: Some(false),
+            meta: None,
+        })
+    }
+
+    #[test]
+    fn error_signature_folds_case_whitespace_and_digit_runs() {
+        // The same failure re-run: only a pid and a timestamp differ.
+        let first = error_signature("Error: process 4821 failed at 12:03:44\n  exit code 1");
+        let second = error_signature("error: process 991 failed at 09:17:02   exit code 1");
+        assert_eq!(first, second, "ids and clocks must not fork the signature");
+
+        // A materially different error must not collapse into the same signature.
+        assert_ne!(
+            error_signature("no such file or directory: config.yaml"),
+            error_signature("permission denied: config.yaml")
+        );
+    }
+
+    #[test]
+    fn failing_streak_counts_consecutive_identical_failures_of_one_tool() {
+        let outcomes = vec![
+            failed("shell", "cargo: command not found"),
+            failed("shell", "cargo: command not found"),
+            failed("shell", "cargo: command not found"),
+        ];
+        assert_eq!(
+            failing_streak(&outcomes, "shell", DEFAULT_ERROR_SIMILARITY_THRESHOLD),
+            3
+        );
+        // A tool that never ran has no streak.
+        assert_eq!(
+            failing_streak(&outcomes, "read_file", DEFAULT_ERROR_SIMILARITY_THRESHOLD),
+            0
+        );
+    }
+
+    #[test]
+    fn a_success_or_a_new_error_breaks_the_streak() {
+        // Success is progress.
+        let outcomes = vec![
+            failed("shell", "cargo: command not found"),
+            failed("shell", "cargo: command not found"),
+            succeeded("shell"),
+        ];
+        assert_eq!(
+            failing_streak(&outcomes, "shell", DEFAULT_ERROR_SIMILARITY_THRESHOLD),
+            0
+        );
+
+        // A *different* error is new information — the model learned something.
+        let outcomes = vec![
+            failed("shell", "cargo: command not found"),
+            failed("shell", "cargo: command not found"),
+            failed(
+                "shell",
+                "error[E0433]: failed to resolve: use of undeclared crate",
+            ),
+        ];
+        assert_eq!(
+            failing_streak(&outcomes, "shell", DEFAULT_ERROR_SIMILARITY_THRESHOLD),
+            1
+        );
+    }
+
+    #[test]
+    fn interleaved_other_tools_neither_reset_nor_hide_a_streak() {
+        let outcomes = vec![
+            failed("shell", "cargo: command not found"),
+            succeeded("read_file"),
+            failed("shell", "cargo: command not found"),
+            succeeded("read_file"),
+            failed("shell", "cargo: command not found"),
+        ];
+        assert_eq!(
+            failing_streak(&outcomes, "shell", DEFAULT_ERROR_SIMILARITY_THRESHOLD),
+            3,
+            "a tool's own failures are the streak; other tools are irrelevant"
+        );
+    }
+
+    #[test]
+    fn nudges_escalate_then_hand_off_to_the_hard_stop() {
+        let config = FailureLoopConfig::default();
+        let mut outcomes = vec![failed("shell", "cargo: command not found")];
+        assert!(
+            failure_loop_nudge(&config, &outcomes, "shell").is_none(),
+            "one failure is not a loop"
+        );
+
+        outcomes.push(failed("shell", "cargo: command not found"));
+        assert!(failure_loop_nudge(&config, &outcomes, "shell").is_none());
+
+        outcomes.push(failed("shell", "cargo: command not found"));
+        let soft = failure_loop_nudge(&config, &outcomes, "shell").expect("soft nudge at 3");
+        assert!(soft.starts_with("No progress"), "{soft}");
+        assert!(soft.contains("failed 3 times"), "{soft}");
+
+        outcomes.push(failed("shell", "cargo: command not found"));
+        outcomes.push(failed("shell", "cargo: command not found"));
+        let escalated =
+            failure_loop_nudge(&config, &outcomes, "shell").expect("escalated nudge at 5");
+        assert!(
+            escalated.starts_with("You are not making progress"),
+            "{escalated}"
+        );
+        assert!(
+            escalated.contains("ask the user"),
+            "the escalation must offer the honest way out: {escalated}"
+        );
+        assert!(
+            escalated.contains("blocked automatically"),
+            "the model must be told the stop is coming: {escalated}"
+        );
+    }
+
+    #[test]
+    fn a_disabled_detector_never_nudges() {
+        let outcomes = vec![
+            failed("shell", "boom"),
+            failed("shell", "boom"),
+            failed("shell", "boom"),
+            failed("shell", "boom"),
+        ];
+        assert!(failure_loop_nudge(&FailureLoopConfig::disabled(), &outcomes, "shell").is_none());
+    }
+
+    #[test]
+    fn outcomes_pair_requests_with_responses_and_reset_at_a_user_turn() {
+        let request = |id: &str, name: &str| {
+            Message::assistant().with_tool_request(
+                id,
+                Ok(CallToolRequestParams {
+                    task: None,
+                    meta: None,
+                    name: name.to_string().into(),
+                    arguments: None,
+                }),
+            )
+        };
+
+        let messages = vec![
+            Message::user().with_text("build it"),
+            request("call_1", "shell"),
+            Message::user().with_tool_response("call_1", error_result("cargo: command not found")),
+            request("call_2", "shell"),
+            Message::user().with_tool_response("call_2", ok_result("done")),
+        ];
+
+        let outcomes = tool_outcomes_since_last_user_turn(&messages);
+        assert_eq!(
+            outcomes,
+            vec![
+                failed("shell", "cargo: command not found"),
+                succeeded("shell"),
+            ]
+        );
+
+        // A genuine user turn is a fresh start: whatever failed before it is not
+        // this turn's loop.
+        let mut with_new_turn = messages.clone();
+        with_new_turn.push(Message::user().with_text("try again"));
+        assert!(tool_outcomes_since_last_user_turn(&with_new_turn).is_empty());
+
+        // …but a loop-guard nudge (hidden, agent-authored) must NOT reset it.
+        let mut with_nudge = messages;
+        with_nudge.push(
+            Message::user()
+                .with_text("<biorouter-loop-guard>…</biorouter-loop-guard>")
+                .with_visibility(false, true),
+        );
+        assert_eq!(tool_outcomes_since_last_user_turn(&with_nudge).len(), 2);
+    }
+
+    #[test]
+    fn a_transport_error_counts_as_a_failure() {
+        let outcome = tool_outcome(
+            "shell",
+            &Err(rmcp::model::ErrorData::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                "connection closed",
+                None,
+            )),
+        );
+        assert_eq!(outcome.failure.as_deref(), Some("connection closed"));
     }
 }

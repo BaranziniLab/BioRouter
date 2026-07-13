@@ -56,7 +56,7 @@ use crate::security::security_inspector::SecurityInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
 use crate::session::{Session, SessionManager, SessionType};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspectionManager};
-use crate::tool_monitor::{RepetitionInspector, SemanticLoopConfig};
+use crate::tool_monitor::{FailureLoopConfig, RepetitionInspector, SemanticLoopConfig};
 use crate::utils::is_token_cancelled;
 use crate::workflow::{Author, Response, Settings, SubWorkflow, Workflow};
 use regex::Regex;
@@ -215,6 +215,11 @@ pub struct Agent {
     /// short pointer on later turns so a skill-heavy session doesn't re-pay the
     /// multi-KB body cost every turn. Keyed by session id.
     pub(super) injected_skills: Mutex<HashMap<String, std::collections::HashSet<String>>>,
+    /// BR-31 no-progress detector. The same config the `RepetitionInspector`
+    /// carries: the inspector owns the hard stop (it can only block a *future*
+    /// call), while the reply loop owns the escalating nudges, which it emits at
+    /// the result-collection seam as soon as the failing result lands.
+    pub(super) failure_loop: FailureLoopConfig,
 }
 
 #[derive(Clone, Debug)]
@@ -371,6 +376,7 @@ impl Agent {
             checkpoints,
             eager_compactions: Arc::new(std::sync::Mutex::new(HashSet::new())),
             injected_skills: Mutex::new(HashMap::new()),
+            failure_loop: Self::failure_loop_config(Config::global()),
         }
     }
 
@@ -501,7 +507,8 @@ impl Agent {
             .unwrap_or(DEFAULT_REPETITION_HARD_STOP);
         tool_inspection_manager.add_inspector(Box::new(
             RepetitionInspector::staged(soft_warn_at, hard_stop_at)
-                .with_semantic(Self::semantic_loop_config(config)),
+                .with_semantic(Self::semantic_loop_config(config))
+                .with_failure_loop(Self::failure_loop_config(config)),
         ));
 
         // Add user-configured PreToolUse hooks (runs last)
@@ -546,6 +553,94 @@ impl Agent {
                 .ok()
                 .map_or(defaults.oscillation_hard_stop, positive),
         }
+    }
+
+    /// BR-31: resolve the repeated-failing-result ("no progress") config.
+    ///
+    /// Unlike BR-30's heuristics this ships with its hard stage on: a run of
+    /// identical *failures* is observed evidence, not a similarity guess. Each
+    /// stage is individually disabled by setting it to 0
+    /// (`BIOROUTER_FAILURE_LOOP_HARD_STOP=0` keeps the nudges but never blocks);
+    /// `BIOROUTER_FAILURE_LOOP_DETECTION=false` turns the whole detector off.
+    fn failure_loop_config(config: &Config) -> FailureLoopConfig {
+        let defaults = FailureLoopConfig::default();
+        let positive = |value: u32| (value > 0).then_some(value);
+        FailureLoopConfig {
+            enabled: config
+                .get_param::<bool>("BIOROUTER_FAILURE_LOOP_DETECTION")
+                .unwrap_or(defaults.enabled),
+            similarity_threshold: config
+                .get_param::<f32>("BIOROUTER_FAILURE_ERROR_SIMILARITY")
+                .ok()
+                .filter(|threshold| (0.0..=1.0).contains(threshold))
+                .unwrap_or(defaults.similarity_threshold),
+            soft_warn_at: config
+                .get_param::<u32>("BIOROUTER_FAILURE_LOOP_SOFT_WARN")
+                .ok()
+                .map_or(defaults.soft_warn_at, positive),
+            escalate_at: config
+                .get_param::<u32>("BIOROUTER_FAILURE_LOOP_ESCALATE")
+                .ok()
+                .map_or(defaults.escalate_at, positive),
+            hard_stop_at: config
+                .get_param::<u32>("BIOROUTER_FAILURE_LOOP_HARD_STOP")
+                .ok()
+                .map_or(defaults.hard_stop_at, positive),
+        }
+    }
+
+    /// BR-31 result-collection seam: the escalating no-progress nudges owed to
+    /// this batch's tool results.
+    ///
+    /// Called once the batch's results have been written into the response slots
+    /// by [`Self::integrate_tool_result`], so the model sees "you have failed the
+    /// same way 3 times" attached to the *third* failure — not one provider
+    /// round-trip (and one more wasted call) later.
+    ///
+    /// `history` is the conversation as of the previous iteration; the outcomes of
+    /// the batch that just ran are appended from the response slots, matching the
+    /// exact same request→response pairing the inspector does on the transcript,
+    /// so a streak spans iterations.
+    async fn failure_loop_nudges(
+        &self,
+        history: &[Message],
+        requests: &[ToolRequest],
+        request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+    ) -> Vec<String> {
+        if !self.failure_loop.enabled {
+            return Vec::new();
+        }
+
+        let mut outcomes = crate::tool_monitor::tool_outcomes_since_last_user_turn(history);
+        let mut failed_tools: Vec<String> = Vec::new();
+
+        for request in requests {
+            let Ok(tool_call) = &request.tool_call else {
+                continue;
+            };
+            let Some(slot) = request_to_response_map.get(&request.id) else {
+                continue;
+            };
+            let response = slot.lock().await.clone();
+            let Some(outcome) = crate::tool_monitor::outcome_from_response_message(
+                &tool_call.name,
+                &request.id,
+                &response,
+            ) else {
+                continue;
+            };
+            if outcome.failure.is_some() && !failed_tools.contains(&outcome.tool_name) {
+                failed_tools.push(outcome.tool_name.clone());
+            }
+            outcomes.push(outcome);
+        }
+
+        failed_tools
+            .iter()
+            .filter_map(|tool_name| {
+                crate::tool_monitor::failure_loop_nudge(&self.failure_loop, &outcomes, tool_name)
+            })
+            .collect()
     }
 
     /// Reset the retry attempts counter to 0
@@ -1280,10 +1375,12 @@ impl Agent {
                     // Non-bypassable safety block: the user did not decline, the
                     // command is refused outright, so return the reason directly.
                     Some(result) if result.inspector_name == "security" => result.reason.clone(),
-                    // BR-29: the repetition guard tripped. The user did not
-                    // decline anything — telling the model they did (the old
-                    // DECLINED_RESPONSE) is actively misleading and leaves it
-                    // unable to diagnose the stop. Return the real reason.
+                    // BR-29/BR-31: a loop guard tripped — the call repeated
+                    // itself, or the tool has been failing the same way over and
+                    // over. The user did not decline anything; telling the model
+                    // they did (the old DECLINED_RESPONSE) is actively misleading
+                    // and leaves it unable to diagnose the stop. Return the real
+                    // reason.
                     Some(result)
                         if result.inspector_name
                             == crate::tool_monitor::REPETITION_INSPECTOR_NAME =>
@@ -2316,10 +2413,11 @@ impl Agent {
                                         yield AgentEvent::Message(msg);
                                     }
                                 }
-                                // BR-29: soft-stage advisories (e.g. "you have called this
-                                // tool identically 3 times") gathered from inspection and
-                                // injected after this batch's tool results, so the model
-                                // can break the loop itself before the hard stop.
+                                // Soft-stage advisories injected after this batch's tool
+                                // results so the model can break the loop itself before the
+                                // hard stop: BR-29/BR-30's call-shape warnings, gathered from
+                                // inspection, plus BR-31's no-progress nudges, gathered from
+                                // the results themselves.
                                 let mut loop_warnings: Vec<String> = Vec::new();
 
                                 if biorouter_mode == BioRouterMode::Chat {
@@ -2415,6 +2513,20 @@ impl Agent {
                                             }
                                         }
                                     }
+
+                                    // BR-31: the results are in. If a tool has now failed the
+                                    // same way N times in a row, nudge the model here — with
+                                    // the failing result still in front of it — rather than
+                                    // waiting for it to burn another call. The hard stop for
+                                    // a streak that survives the nudges is enforced by the
+                                    // repetition inspector on the next call.
+                                    loop_warnings.extend(
+                                        self.failure_loop_nudges(
+                                            conversation.messages(),
+                                            &remaining_requests,
+                                            &request_to_response_map,
+                                        ).await,
+                                    );
 
                                     // PostToolUse / PostToolUseFailure hooks (observe-only):
                                     // awaited so injected context lands before the next
@@ -2531,10 +2643,11 @@ impl Agent {
                                     }
                                 }
 
-                                // BR-29 soft stage: the repeated call *ran*; nudge the model
-                                // right after its result so it changes approach before the
-                                // hard stop fires. Model-visible only — this is loop-safety
-                                // plumbing, not something the user needs in the transcript.
+                                // Soft stage (BR-29/30/31): the repeated — or repeatedly
+                                // failing — call *ran*; nudge the model right after its
+                                // result so it changes approach before the hard stop fires.
+                                // Model-visible only — this is loop-safety plumbing, not
+                                // something the user needs in the transcript.
                                 if !loop_warnings.is_empty() {
                                     tracing::info!(
                                         warnings = loop_warnings.len(),
