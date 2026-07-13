@@ -109,9 +109,14 @@ import {
 // callers tint an icon through CSS `color` (className/style) — it only blocks a
 // hex being injected via the `color` prop.
 // ---------------------------------------------------------------------------
-const light =
-  (Icon: LucideIcon): React.FC<LucideProps> =>
-  (props) => <Icon {...props} strokeWidth={1.5} color="currentColor" />;
+const light = (Icon: LucideIcon): React.FC<LucideProps> => {
+  const Wrapped: React.FC<LucideProps> = (props) => (
+    <Icon {...props} strokeWidth={1.5} color="currentColor" />
+  );
+  // Name the wrapper so React DevTools (and react/display-name) can identify it.
+  Wrapped.displayName = `light(${Icon.displayName ?? Icon.name ?? 'Icon'})`;
+  return Wrapped;
+};
 
 // ---------------------------------------------------------------------------
 // Canonical icon sizes (design.md §3.9). Pass as the `size` prop, e.g.

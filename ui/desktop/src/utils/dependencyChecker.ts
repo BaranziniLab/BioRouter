@@ -131,11 +131,15 @@ function detectLinuxDistro(): LinuxDistro {
       content.includes('alma')
     )
       return 'rpm';
-  } catch {}
+  } catch {
+    /* /etc/os-release unreadable — fall through to the file-probe below */
+  }
   try {
     if (fs.existsSync('/etc/debian_version')) return 'deb';
     if (fs.existsSync('/etc/redhat-release')) return 'rpm';
-  } catch {}
+  } catch {
+    /* probe failed — treat the distro family as unknown */
+  }
   return 'unknown';
 }
 
@@ -153,7 +157,9 @@ function probeVersion(cmd: string, args: string[]): string | null {
     if (result.status === 0 && result.stdout) {
       return result.stdout.trim().split('\n')[0].trim();
     }
-  } catch {}
+  } catch {
+    /* command missing or failed to spawn — report the version as unknown */
+  }
   return null;
 }
 
