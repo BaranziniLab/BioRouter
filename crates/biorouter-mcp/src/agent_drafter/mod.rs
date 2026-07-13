@@ -15,14 +15,17 @@
 //! `export_app` produces a standalone runnable TypeScript project.
 
 pub mod bundle;
+pub mod catalog;
 pub mod control;
+pub mod declare;
 pub mod manifest;
 pub mod render;
+pub mod resolved;
 pub mod store;
+pub mod validate;
 pub mod vault;
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use etcetera::{choose_app_strategy, AppStrategy};
 use indoc::formatdoc;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -108,6 +111,18 @@ pub struct CreateAppParams {
     /// Short description of what the app does.
     #[serde(default)]
     pub description: String,
+    /// The app's declared contract: state schema, the actions the AGENT may call
+    /// on the app, the signals the APP sends the agent, and any custom components.
+    ///
+    /// Declare it HERE, at creation. An agentic app whose `src/main.ts` registers
+    /// actions but declares no surface has an agent with no verbs it can call —
+    /// and lint fails it. When you supply your own `html`/`src/main.ts` (the normal
+    /// case for a real spec), nothing else seeds a surface for you.
+    #[serde(default)]
+    pub surface: Option<declare::SurfaceParam>,
+    /// The app's theme pack (+ optional accent / token overrides).
+    #[serde(default)]
+    pub theme: Option<declare::ThemeParam>,
     /// Starter archetype (Apps SDK v2): "explorer", "dashboard", "workbench",
     /// "wizard", "canvas", or "chat". Omit to infer one from the title +
     /// description (a non-chat archetype unless the brief asks for a chat /
@@ -524,9 +539,20 @@ pub struct ConfigureAppParams {
     /// Replace the skills list.
     #[serde(default)]
     pub skills: Option<Vec<String>>,
-    /// Set (or clear, with empty string) the knowledge base id.
+    /// Set (or clear, with empty string) the knowledge base id. Must name a
+    /// knowledge base that is actually installed — call `list_platform_catalog`
+    /// first. An id that does not exist here is rejected; use `requires` to record
+    /// the need instead.
     #[serde(default)]
     pub knowledge_base: Option<String>,
+    /// Platform capabilities this app needs that may not exist on this install.
+    ///
+    /// Use this instead of inventing an id. `[{"kind":"knowledge_base",
+    /// "id":"clinvar","reason":"variant annotations"}]` says "this app wants a
+    /// ClinVar KB" honestly; configuring `knowledge_base: "clinvar"` when no such
+    /// KB exists arms tools scoped to nothing and fails the app's first turn.
+    #[serde(default)]
+    pub requires: Option<Vec<crate::agent_drafter::store::Requirement>>,
     /// Bound the agent's tool-calling loop per message. Raise this for
     /// workflow-style apps that chain many tool calls; lower it to keep apps
     /// snappy. Unset → a safe server default.
@@ -597,6 +623,93 @@ pub struct ReadAppParams {
     /// File to read. If omitted, returns the manifest.
     #[serde(default)]
     pub path: Option<String>,
+    /// Manifest view (ignored when `path` is set):
+    /// - `"resolved"` (default) — a canonical, fully-populated skeleton: every
+    ///   optional block present, the theme pack resolved, and `_server_managed`
+    ///   naming the keys you must not write. Edit this.
+    /// - `"raw"` — the bytes exactly as stored on disk (a diff against defaults,
+    ///   so a field holding its default value is *absent*, not visible).
+    #[serde(default)]
+    pub view: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeclareSurfaceParams {
+    /// App id.
+    pub id: String,
+    /// The contract to declare.
+    pub surface: declare::SurfaceParam,
+    /// `true` upserts actions/signals/components by name (leaving others alone);
+    /// `false` (default) replaces the whole surface.
+    #[serde(default)]
+    pub merge: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetThemeParams {
+    /// App id.
+    pub id: String,
+    /// Theme pack (+ optional accent / token overrides).
+    pub theme: declare::ThemeParam,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ProfileParam {
+    /// The profile KEY. This is what `consult(agent: "<key>")` targets, so it must
+    /// be a stable identifier: lowercase letters, digits and underscores only
+    /// (`prosecutor`, `fine_mapper`). A capitalised or spaced key is rejected —
+    /// the lookup is an exact match, and a display-name key silently fails to
+    /// resolve at runtime. Put the display name in `description`.
+    pub key: String,
+    /// Human-readable name/role, shown in the UI. Free-form.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The worker's system prompt.
+    pub system_prompt: String,
+    /// Provider + model for this worker. Omit to inherit the app's.
+    #[serde(default)]
+    pub model: Option<ModelParam>,
+    /// Extensions this worker may use. Must exist on this install.
+    #[serde(default)]
+    pub extensions: Vec<String>,
+    /// Skills this worker may use. Must be installed.
+    #[serde(default)]
+    pub skills: Vec<String>,
+    /// Bound on this worker's tool-calling loop.
+    #[serde(default)]
+    pub max_turns: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DeclareProfilesParams {
+    /// App id.
+    pub id: String,
+    /// The worker profiles. Replaces any existing profiles unless merge=true.
+    pub agents: Vec<ProfileParam>,
+    /// `true` upserts by key; `false` (default) replaces the whole set.
+    #[serde(default)]
+    pub merge: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SetRoutesParams {
+    /// App id.
+    pub id: String,
+    /// The named model routes. Replaces any existing routes.
+    pub routes: Vec<declare::RouteParam>,
+}
+
+/// Replace entries with a matching name, append the rest. Used by
+/// `declare_surface(merge: true)` so an author can add one action without
+/// re-sending the whole contract.
+fn upsert_by_name<T>(existing: &mut Vec<T>, incoming: Vec<T>, key: impl Fn(&T) -> String) {
+    for item in incoming {
+        let k = key(&item);
+        match existing.iter().position(|e| key(e) == k) {
+            Some(i) => existing[i] = item,
+            None => existing.push(item),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -654,12 +767,11 @@ impl Default for AgentDrafterServer {
     }
 }
 
-/// Shared default store root (`~/.config/biorouter/agent_drafter`). Public so the
-/// server's `/apps` routes resolve the same location.
+/// Shared default store root (`<config>/agent_drafter`). Public so the server's
+/// `/apps` routes resolve the same location. Honours `BIOROUTER_PATH_ROOT` via
+/// [`crate::paths`], so a sandboxed run never writes into the user's global store.
 pub fn default_root() -> PathBuf {
-    choose_app_strategy(crate::APP_STRATEGY.clone())
-        .map(|s| s.in_config_dir("agent_drafter"))
-        .unwrap_or_else(|_| PathBuf::from(".config/biorouter/agent_drafter"))
+    crate::paths::in_config_dir("agent_drafter")
 }
 
 fn err(code: ErrorCode, msg: impl Into<String>) -> ErrorData {
@@ -843,7 +955,7 @@ pub fn export_scaffold(
 /// stages them — only *external* extensions are recorded as registry references
 /// in `export.json`. Hardcoded (with this comment) because the app manifest only
 /// stores extension *names*, not whether each is built in.
-const BUILTIN_EXTENSION_NAMES: &[&str] = &[
+pub(crate) const BUILTIN_EXTENSION_NAMES: &[&str] = &[
     "developer",
     "computercontroller",
     "autovisualiser",
@@ -881,9 +993,7 @@ fn skills_root_for_export() -> PathBuf {
             return PathBuf::from(dir);
         }
     }
-    choose_app_strategy(crate::APP_STRATEGY.clone())
-        .map(|s| s.in_config_dir("skills"))
-        .unwrap_or_else(|_| PathBuf::from(".config/biorouter/skills"))
+    crate::paths::in_config_dir("skills")
 }
 
 /// Locate a `biorouterd` binary to bundle for a fat export. This code runs
@@ -1375,6 +1485,19 @@ impl AgentDrafterServer {
             Use `list_apps`, `read_app`, and `preview_app` to inspect existing apps —
             you can query and modify any previously-built app.
 
+            KNOW YOUR ENVIRONMENT BEFORE YOU CONFIGURE IT. Call
+            `list_platform_catalog` before naming any knowledge base, skill, or
+            extension. It returns exactly what this install has. Ids that are not
+            in it are REJECTED — configuring a knowledge base or skill that does
+            not exist arms tools scoped to nothing and makes the app fail on its
+            first turn. If the app needs something this machine does not have,
+            that is fine and normal: leave the id unset and record the need in
+            `requires` (e.g.
+            `[{{"kind":"knowledge_base","id":"clinvar","reason":"variant annotations"}}]`).
+            The user is shown the unmet requirement honestly. NEVER invent an id
+            to express a need — `requires` is what that is for. (In particular
+            `br.kb` is the CLIENT API your app calls at runtime, never an id.)
+
             WORKFLOW-STYLE APPS (multi-step agentic loops, not just chat): every
             user message runs BioRouter's full agent loop — the agent can call
             many tools in sequence and reason over the results before replying, so
@@ -1690,11 +1813,44 @@ impl AgentDrafterServer {
             if let Some(durable) = p.durable_session {
                 agent.durable_session = Some(durable);
             }
+
+            // Same write-boundary rule as `configure_app`: an id that does not
+            // exist on this install cannot be saved. Rejecting here (rather than
+            // discovering it at runtime) is what stops the app from being born
+            // with tools armed against nothing.
+            let catalog = catalog::Catalog::discover();
+            validate::check_all(
+                agent.knowledge_base.as_deref(),
+                &agent.skills,
+                &agent.extensions,
+                &catalog,
+            )
+            .map_err(|e| err(ErrorCode::INVALID_PARAMS, e))?;
+
             manifest.agent = Some(agent);
-            // Seed the archetype's declared surface so the starter main.ts's
-            // actions/signals/components validate server-side (and lint clean).
-            if use_starter {
+
+            // Seed the declared surface.
+            //
+            // Precedence: a caller-supplied `surface` always wins; otherwise the
+            // archetype's surface, but ONLY when we also seeded the archetype's
+            // code (a surface declaring actions that the caller's own `main.ts`
+            // never registers is worse than none — lint fails it immediately).
+            //
+            // This used to be gated on `use_starter` alone, which is false whenever
+            // the caller supplies its own index.html — i.e. every one of the 18
+            // apps in the test drive. They all began life with `surface: {}` and
+            // were forced into a manifest-rewrite guessing loop by a fail-closed
+            // lint. A caller that owns the code must now DECLARE the contract;
+            // `lint_app` errors if it registers actions without declaring them.
+            if let Some(surface) = p.surface {
+                if !surface.is_empty() {
+                    manifest.surface = surface.into_decl();
+                }
+            } else if use_starter {
                 manifest.surface = archetype.surface();
+            }
+            if let Some(theme) = p.theme {
+                manifest.theme = theme.into_config();
             }
             store.save_manifest(&manifest).map_err(internal)?;
         } else if session_id.is_some() {
@@ -1752,6 +1908,21 @@ impl AgentDrafterServer {
         if let Some(kb) = p.knowledge_base {
             agent.knowledge_base = Some(kb).filter(|s| !s.trim().is_empty());
         }
+        if let Some(req) = p.requires {
+            agent.requires = req;
+        }
+
+        // An id that does not exist here cannot be saved. The catalog is what
+        // makes this checkable; the error names what IS installed so the retry is
+        // grounded rather than another guess.
+        let catalog = catalog::Catalog::discover();
+        validate::check_all(
+            agent.knowledge_base.as_deref(),
+            &agent.skills,
+            &agent.extensions,
+            &catalog,
+        )
+        .map_err(|e| err(ErrorCode::INVALID_PARAMS, e))?;
         if let Some(mt) = p.max_turns {
             agent.max_turns = Some(mt).filter(|&n| n > 0);
         }
@@ -1835,10 +2006,14 @@ impl AgentDrafterServer {
         };
 
         if path == "manifest.json" {
-            let parsed: Manifest = serde_json::from_str(&updated_content).map_err(|e| {
+            let mut parsed: Manifest = serde_json::from_str(&updated_content).map_err(|e| {
                 err(
                     ErrorCode::INVALID_PARAMS,
-                    format!("manifest.json must be valid Agent Drafter manifest JSON: {e}"),
+                    format!(
+                        "manifest.json must be valid Agent Drafter manifest JSON: {e}. \
+                         Read it back with `read_app` (the default resolved view shows every \
+                         field, including ones holding their default) and edit that."
+                    ),
                 )
             })?;
             if parsed.id != p.id {
@@ -1850,6 +2025,44 @@ impl AgentDrafterServer {
                     ),
                 ));
             }
+
+            // MERGE, don't replace. The raw bytes used to be written verbatim, so
+            // any server-owned field the caller omitted was silently destroyed:
+            // `built_at` and `sdk_hash` (the app then looked unbuilt and its
+            // vendored SDK unfingerprinted), `session_id` (the GUI lost the
+            // originating conversation), and a truthful `created_at`. A model
+            // composing a manifest has no way to know these values and no business
+            // inventing them — so we restore them from disk regardless of what it
+            // wrote.
+            let on_disk = store
+                .load_manifest(&p.id)
+                .map_err(|e| err(ErrorCode::INVALID_PARAMS, format!("no app '{}': {e}", p.id)))?;
+            parsed.id = on_disk.id.clone();
+            parsed.created_at = on_disk.created_at;
+            parsed.built_at = on_disk.built_at;
+            parsed.sdk_hash = on_disk.sdk_hash.clone();
+            parsed.session_id = on_disk.session_id.clone();
+
+            // Same write-boundary rule as create/configure: a manifest cannot name
+            // a knowledge base, skill, or extension that does not exist here.
+            if let Some(agent) = parsed.agent.as_ref() {
+                let catalog = catalog::Catalog::discover();
+                validate::check_all(
+                    agent.knowledge_base.as_deref(),
+                    &agent.skills,
+                    &agent.extensions,
+                    &catalog,
+                )
+                .map_err(|e| err(ErrorCode::INVALID_PARAMS, e))?;
+            }
+
+            store.save_manifest(&parsed).map_err(internal)?;
+            manifest = parsed;
+            store.touch(&p.id).map_err(internal)?;
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "updated {}/manifest.json",
+                p.id
+            ))]));
         }
 
         store
@@ -2024,6 +2237,184 @@ impl AgentDrafterServer {
     }
 
     #[tool(
+        name = "declare_surface",
+        description = "Declare (or update) an app's CONTRACT: its state schema, the actions the \
+                       AGENT may call on the app, the signals the APP sends the agent, and any \
+                       custom components. This is the typed way to do it — do NOT rewrite \
+                       manifest.json. Every action you declare must be registered in src/main.ts \
+                       with `br.actions.register(...)`, and vice versa; lint enforces both \
+                       directions. Pass merge=true to upsert by name, false (default) to replace."
+    )]
+    pub async fn declare_surface(
+        &self,
+        params: Parameters<DeclareSurfaceParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let store = self.store();
+        let mut manifest = store
+            .load_manifest(&p.id)
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
+
+        let incoming = p.surface.into_decl();
+        if p.merge.unwrap_or(false) {
+            upsert_by_name(&mut manifest.surface.actions, incoming.actions, |a| {
+                a.name.clone()
+            });
+            upsert_by_name(&mut manifest.surface.signals, incoming.signals, |s| {
+                s.name.clone()
+            });
+            upsert_by_name(&mut manifest.surface.components, incoming.components, |c| {
+                c.name.clone()
+            });
+            if incoming.state_schema.is_some() {
+                manifest.surface.state_schema = incoming.state_schema;
+            }
+        } else {
+            manifest.surface = incoming;
+        }
+
+        store.save_manifest(&manifest).map_err(internal)?;
+        store.touch(&p.id).map_err(internal)?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "declared surface for {}: {} action(s), {} signal(s), {} component(s)",
+            p.id,
+            manifest.surface.actions.len(),
+            manifest.surface.signals.len(),
+            manifest.surface.components.len(),
+        ))]))
+    }
+
+    #[tool(
+        name = "set_theme",
+        description = "Set an app's theme pack (biorouter | clinical | lab-notebook | terminal | \
+                       journal | midnight), with an optional accent colour and `--br-*` token \
+                       overrides. The pack is an enum — an unknown name is rejected rather than \
+                       silently falling back to the default."
+    )]
+    pub async fn set_theme(
+        &self,
+        params: Parameters<SetThemeParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let store = self.store();
+        let mut manifest = store
+            .load_manifest(&p.id)
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
+
+        manifest.theme = p.theme.into_config();
+        let pack = manifest.resolved_theme_pack().to_string();
+        store.save_manifest(&manifest).map_err(internal)?;
+        store.touch(&p.id).map_err(internal)?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{} now renders with the '{pack}' theme pack",
+            p.id
+        ))]))
+    }
+
+    #[tool(
+        name = "declare_profiles",
+        description = "Declare an app's WORKER AGENT PROFILES for multi-agent work (adversarial                        panels, collaborative pipelines). Each profile is a full alternate agent —                        its own model, system prompt, extensions and skills — that the main agent                        reaches with `consult(agent: \"<key>\")`. Keys must be stable identifiers                        (lowercase/digits/underscore); a display name like \"Prosecutor\" is                        rejected because `consult` resolves keys exactly. Workers do NOT get the                        app's UI tools unless you explicitly grant them — the main agent owns the                        page."
+    )]
+    pub async fn declare_profiles(
+        &self,
+        params: Parameters<DeclareProfilesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let store = self.store();
+        let mut manifest = store
+            .load_manifest(&p.id)
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
+
+        let catalog = catalog::Catalog::discover();
+        let mut profiles: std::collections::HashMap<String, store::AgentConfig> =
+            std::collections::HashMap::new();
+
+        for prof in p.agents {
+            declare::validate_profile_key(&prof.key)
+                .map_err(|e| err(ErrorCode::INVALID_PARAMS, e))?;
+            validate::check_all(None, &prof.skills, &prof.extensions, &catalog).map_err(|e| {
+                err(
+                    ErrorCode::INVALID_PARAMS,
+                    format!("profile '{}': {e}", prof.key),
+                )
+            })?;
+
+            let cfg = store::AgentConfig {
+                system_prompt: prof.system_prompt,
+                greeting: prof.description,
+                model: prof.model.map(ModelSelection::from).filter(|m| m.is_set()),
+                extensions: prof.extensions,
+                skills: prof.skills,
+                max_turns: prof.max_turns,
+                ..Default::default()
+            };
+            profiles.insert(prof.key, cfg);
+        }
+
+        let agent = manifest.agent.get_or_insert_with(Default::default);
+        if p.merge.unwrap_or(false) {
+            agent.orchestration.agents.extend(profiles);
+        } else {
+            agent.orchestration.agents = profiles;
+        }
+        let mut keys: Vec<String> = agent.orchestration.agents.keys().cloned().collect();
+        keys.sort();
+
+        store.save_manifest(&manifest).map_err(internal)?;
+        store.touch(&p.id).map_err(internal)?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{} declares {} worker profile(s): {}. The main agent reaches them with \
+             consult(agent=\"<key>\") — use these exact keys.",
+            p.id,
+            keys.len(),
+            keys.join(", ")
+        ))]))
+    }
+
+    #[tool(
+        name = "set_routes",
+        description = "Declare named model routes (e.g. `fast`, `deep`) an app's `call` may \
+                       select per invocation."
+    )]
+    pub async fn set_routes(
+        &self,
+        params: Parameters<SetRoutesParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let p = params.0;
+        let store = self.store();
+        let mut manifest = store
+            .load_manifest(&p.id)
+            .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
+
+        let agent = manifest.agent.get_or_insert_with(Default::default);
+        agent.orchestration.routes = declare::routes_from_params(p.routes);
+        let n = agent.orchestration.routes.len();
+        store.save_manifest(&manifest).map_err(internal)?;
+        store.touch(&p.id).map_err(internal)?;
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "{} now declares {n} model route(s)",
+            p.id
+        ))]))
+    }
+
+    #[tool(
+        name = "list_platform_catalog",
+        description = "List what this BioRouter install ACTUALLY has: installed knowledge bases, \
+                       installed skills, and available extensions. Call this BEFORE configure_app \
+                       whenever an app needs a knowledge base, a skill, or an extension. Only ids \
+                       returned here may be configured — an id that does not exist is rejected, \
+                       because configuring one arms tools scoped to nothing and fails the app's \
+                       first turn. If the app needs something this install does not have, leave \
+                       the id unset and record it in `requires` instead; wanting an absent \
+                       capability is legal and is reported honestly to the user."
+    )]
+    pub async fn list_platform_catalog(&self) -> Result<CallToolResult, ErrorData> {
+        let catalog = catalog::Catalog::discover();
+        let json = serde_json::to_string_pretty(&catalog).map_err(internal)?;
+        Ok(CallToolResult::success(vec![Content::text(json)]))
+    }
+
+    #[tool(
         name = "list_apps",
         description = "List all BioRouter apps (optionally filtered by kind)."
     )]
@@ -2070,7 +2461,11 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "read_app",
-        description = "Read an app's manifest, or a specific file within it."
+        description = "Read an app's manifest, or a specific file within it. The manifest is \
+                       returned as a RESOLVED view by default: every optional block is present \
+                       and the theme pack is resolved, so a field holding its default value is \
+                       visible rather than absent. Edit that skeleton. Pass view=\"raw\" for the \
+                       exact on-disk bytes."
     )]
     pub async fn read_app(
         &self,
@@ -2080,10 +2475,16 @@ impl AgentDrafterServer {
         let store = self.store();
         match p.path {
             None => {
+                let view = resolved::ManifestView::parse(p.view.as_deref())
+                    .map_err(|e| err(ErrorCode::INVALID_PARAMS, e))?;
                 let m = store
                     .load_manifest(&p.id)
                     .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
-                let json = serde_json::to_string_pretty(&m).map_err(internal)?;
+                let value = match view {
+                    resolved::ManifestView::Resolved => resolved::resolved_view(&m),
+                    resolved::ManifestView::Raw => serde_json::to_value(&m).map_err(internal)?,
+                };
+                let json = serde_json::to_string_pretty(&value).map_err(internal)?;
                 Ok(CallToolResult::success(vec![Content::text(json)]))
             }
             Some(path) => {
@@ -2286,6 +2687,22 @@ mod tests {
     use rmcp::model::RawContent;
     use tempfile::TempDir;
 
+    /// Opt this test out of catalog strictness.
+    ///
+    /// Six tests here configure knowledge bases / skills that deliberately do not
+    /// exist — `export_full_mode_skips_missing_kb` *is* the missing-KB path, and
+    /// the config round-trip tests only care that the fields survive a save/load.
+    /// Under the write-boundary rule (Wave 1) an id that is not installed cannot be
+    /// saved, which is correct for real authoring and wrong for these fixtures.
+    ///
+    /// This is process-global, which is safe **only** because no test in this
+    /// binary asserts that a rejection happens; those live in the separate
+    /// `tests/catalog_write_boundary.rs` integration binary, which runs in its own
+    /// process with strictness on (the default).
+    fn relax_catalog_strictness() {
+        std::env::set_var("BIOROUTER_APPS_CATALOG_STRICT", "0");
+    }
+
     fn server() -> (TempDir, AgentDrafterServer) {
         let dir = TempDir::new().unwrap();
         let s = AgentDrafterServer::with_root(dir.path().to_path_buf());
@@ -2316,6 +2733,8 @@ mod tests {
             title: title.into(),
             id: None,
             description: String::new(),
+            surface: None,
+            theme: None,
             archetype: None,
             kind: kind.map(|k| k.to_string()),
             html: None,
@@ -2386,6 +2805,7 @@ mod tests {
 
     #[tokio::test]
     async fn configure_app_sets_model_and_extensions() {
+        relax_catalog_strictness();
         let (_d, s) = server();
         s.create_app_inner(create("Cfg", Some("static")), None)
             .await
@@ -2409,6 +2829,7 @@ mod tests {
             orchestration: None,
             output_type: None,
             durable_session: None,
+            requires: None,
         }))
         .await
         .unwrap();
@@ -2424,6 +2845,7 @@ mod tests {
 
     #[tokio::test]
     async fn configure_app_sets_advanced_agent_design_fields() {
+        relax_catalog_strictness();
         let (_d, s) = server();
         s.create_app_inner(create("Harnessed", None), None)
             .await
@@ -2494,6 +2916,7 @@ mod tests {
                 }
             })),
             durable_session: Some(false),
+            requires: None,
         }))
         .await
         .unwrap();
@@ -2554,6 +2977,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_layout_and_workflow_prompt_build_and_pass_launch_harness() {
+        relax_catalog_strictness();
         let (_d, s) = server();
         let mut p = create("Cohort Review Console", None);
         p.id = Some("cohort-review-console".into());
@@ -2628,6 +3052,7 @@ run.addEventListener("click", async () => {
             orchestration: None,
             output_type: None,
             durable_session: None,
+            requires: None,
         }))
         .await
         .unwrap();
@@ -2772,6 +3197,7 @@ run.addEventListener("click", async () => {
             .read_app(Parameters(ReadAppParams {
                 id: "advanced-agent".into(),
                 path: None,
+                view: None,
             }))
             .await
             .unwrap();
@@ -2974,6 +3400,7 @@ br.run("hello", "#missing");
             .read_app(Parameters(ReadAppParams {
                 id: "one".into(),
                 path: None,
+                view: None,
             }))
             .await
             .unwrap();
@@ -3141,6 +3568,7 @@ br.run("hello", "#missing");
     #[tokio::test]
     #[serial_test::serial]
     async fn export_full_mode_stages_payload_and_writes_export_json() {
+        relax_catalog_strictness();
         // Fake knowledge store with one KB directory the brkb exporter can walk.
         let kroot = TempDir::new().unwrap();
         let kb_dir = kroot.path().join("ms-cohort").join("knowledge");
@@ -3225,6 +3653,7 @@ br.run("hello", "#missing");
     #[tokio::test]
     #[serial_test::serial]
     async fn export_full_mode_skips_missing_kb() {
+        relax_catalog_strictness();
         let kroot = TempDir::new().unwrap(); // empty store — no such KB
         let _kg = EnvGuard::set("BIOROUTER_KNOWLEDGE_DIR", kroot.path());
 
@@ -3261,6 +3690,7 @@ br.run("hello", "#missing");
     #[tokio::test]
     #[serial_test::serial]
     async fn export_full_mode_explicit_empty_include_selects_none() {
+        relax_catalog_strictness();
         let kroot = TempDir::new().unwrap();
         std::fs::create_dir_all(kroot.path().join("kb1").join("knowledge")).unwrap();
         std::fs::write(kroot.path().join("kb1").join("knowledge").join("i.md"), "x").unwrap();

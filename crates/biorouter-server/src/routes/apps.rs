@@ -35,7 +35,7 @@ use futures::{SinkExt, StreamExt};
 use serde::Deserialize;
 use serde_json::json;
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use biorouter::agents::extension::PLATFORM_EXTENSIONS;
 use biorouter::agents::{AgentEvent, ExtensionConfig, SessionConfig};
@@ -723,6 +723,37 @@ fn resolve_sql_sources(
 /// extensions, skills, knowledge base, and persona. Errors are logged, not fatal
 /// (the agent falls back to the global config where possible).
 #[allow(clippy::too_many_lines)]
+/// What the app asked for vs. what this install can actually give it.
+///
+/// Emitted to the page as a `capability_report` frame on socket open. Before
+/// this, an app configured with a nonexistent knowledge base or skill still got
+/// the tools armed and a prompt commanding their use; the failure surfaced as a
+/// mysterious first-turn error (or, worse, as fabricated output) instead of as a
+/// plain statement that the capability is not here.
+#[derive(Debug, Default, Clone, serde::Serialize)]
+struct CapabilityReport {
+    configured_skills: Vec<String>,
+    /// Skills that are installed here and were therefore actually granted.
+    granted_skills: Vec<String>,
+    /// Skills the app names that do not exist on this install.
+    missing_skills: Vec<String>,
+    configured_knowledge_base: Option<String>,
+    granted_knowledge_base: Option<String>,
+    missing_knowledge_base: Option<String>,
+    /// Capabilities the app honestly declared it needs but that are absent.
+    unmet_requirements: Vec<biorouter_mcp::agent_drafter::store::Requirement>,
+}
+
+impl CapabilityReport {
+    /// True when anything the app asked for is unavailable — the page renders a
+    /// degraded-capability banner, whether or not the model mentions it.
+    fn degraded(&self) -> bool {
+        !self.missing_skills.is_empty()
+            || self.missing_knowledge_base.is_some()
+            || !self.unmet_requirements.is_empty()
+    }
+}
+
 async fn configure_agent(
     agent: &biorouter::agents::Agent,
     state: &AppState,
@@ -730,10 +761,51 @@ async fn configure_agent(
     manifest: &Manifest,
     ui_bridge: &UiBridge,
     enable_consult: bool,
-) {
+) -> CapabilityReport {
+    let mut report = CapabilityReport::default();
     let Some(cfg) = manifest.agent.as_ref() else {
-        return;
+        return report;
     };
+
+    // What this install actually has. Everything below is intersected against
+    // it: we never arm a tool for a grant that cannot be satisfied, because
+    // doing so is what made the app's first turn fail by construction (the
+    // agent was handed `skills__loadSkill` and a prompt commanding it to load
+    // skills that do not exist).
+    let catalog = biorouter_mcp::agent_drafter::catalog::Catalog::discover();
+
+    let (granted_skills, missing_skills): (Vec<String>, Vec<String>) = cfg
+        .skills
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .partition(|s| catalog.has_skill(s));
+
+    let kb_granted = cfg
+        .knowledge_base
+        .as_deref()
+        .map(str::trim)
+        .filter(|kb| !kb.is_empty())
+        .filter(|kb| catalog.has_kb(kb));
+    let kb_missing = cfg
+        .knowledge_base
+        .as_deref()
+        .map(str::trim)
+        .filter(|kb| !kb.is_empty())
+        .filter(|kb| !catalog.has_kb(kb))
+        .map(str::to_string);
+
+    report.configured_skills = cfg.skills.clone();
+    report.granted_skills = granted_skills.clone();
+    report.missing_skills = missing_skills.clone();
+    report.configured_knowledge_base = cfg.knowledge_base.clone();
+    report.granted_knowledge_base = kb_granted.map(str::to_string);
+    report.missing_knowledge_base = kb_missing.clone();
+    report.unmet_requirements =
+        biorouter_mcp::agent_drafter::validate::unmet_requirements(&cfg.requires, &catalog)
+            .into_iter()
+            .cloned()
+            .collect();
 
     // Model / provider. Try the app's configured provider+model; if that can't
     // be created (e.g. its API key isn't available), fall back to BioRouter's
@@ -801,10 +873,13 @@ async fn configure_agent(
 
     // Extensions (+ knowledge if a KB is set).
     let mut extensions = cfg.extensions.clone();
-    if cfg.knowledge_base.is_some() && !extensions.iter().any(|e| e == "knowledge") {
+    // Only arm `knowledge` when the KB actually exists. Arming it for a KB that
+    // does not exist gives the agent KB tools scoped to nothing — the failure is
+    // then a mystery at runtime instead of a fact at configure time.
+    if kb_granted.is_some() && !extensions.iter().any(|e| e == "knowledge") {
         extensions.push("knowledge".to_string());
     }
-    if !cfg.skills.is_empty() && !extensions.iter().any(|e| e == "skills") {
+    if !granted_skills.is_empty() && !extensions.iter().any(|e| e == "skills") {
         // Task 4 (skills scoping enforcement, design §3.4): the per-app `skills`
         // list SHOULD be an enforced allow-list. The `skills` platform extension
         // (crates/biorouter/src/agents/skills_extension.rs) currently loads every
@@ -1005,13 +1080,17 @@ async fn configure_agent(
         }
     }
 
-    // Knowledge base scoping.
-    if let Some(kb) = cfg.knowledge_base.as_ref() {
+    // Knowledge base scoping. Only a KB that exists is activated; a missing one
+    // is reported to the page and to the model rather than swallowed into a
+    // `warn!` while its tools stay armed.
+    if let Some(kb) = kb_granted {
         if let Err(e) = state
             .knowledge_service
             .set_active_for_session(session_id, Some(kb))
         {
             warn!(app = %manifest.id, kb = %kb, "set active KB failed: {e}");
+            report.granted_knowledge_base = None;
+            report.missing_knowledge_base = Some(kb.to_string());
         }
     }
 
@@ -1028,17 +1107,38 @@ async fn configure_agent(
         prompt.push_str("\n\n");
         prompt.push_str(&cfg.system_prompt);
     }
-    if !cfg.skills.is_empty() {
+    if !granted_skills.is_empty() {
         // Scoping enforcement (design §3.4): the skills platform extension can't
         // filter its catalog per-session (see the comment where "skills" is added
         // to `extensions`), so the strongest available enforcement is an explicit
         // allow-list instruction — the agent may load ONLY these skills even if
-        // others appear in the catalog.
+        // others appear in the catalog. The list names only skills that are
+        // actually installed; commanding the model to load one that isn't is what
+        // made turn 1 fail.
         prompt.push_str(&format!(
             "\n\n## Skills (scoped)\nYou are scoped to ONLY these skills: {}. Load and use \
              skills solely from this list. If the skills catalog surfaces any other skill, do \
              NOT load or use it — it is out of this app's grant.",
-            cfg.skills.join(", ")
+            granted_skills.join(", ")
+        ));
+    }
+    if !missing_skills.is_empty() {
+        // The app asked for a skill this install does not have. Say so plainly and
+        // reframe it as domain guidance — do NOT tell the model to load it (the
+        // `skills` tool may not even be armed).
+        prompt.push_str(&format!(
+            "\n\n## Unavailable skills\nThis app was configured for skills that are NOT \
+             installed here: {}. There is no skill to load for them — do not try. Reason from \
+             first principles in those areas, and say plainly when a task would have been \
+             better served by the missing skill.",
+            missing_skills.join(", ")
+        ));
+    }
+    if let Some(kb) = &kb_missing {
+        prompt.push_str(&format!(
+            "\n\n## Unavailable knowledge base\nThis app was configured for the knowledge base \
+             '{kb}', which is NOT installed here. You have no knowledge tools scoped to it — do \
+             not attempt to search it, and do not present recalled facts as if they came from it.",
         ));
     }
     // Tell the model the `ui_*` tools exist and, more importantly, when to reach
@@ -1077,6 +1177,8 @@ async fn configure_agent(
             }
         }
     }
+
+    report
 }
 
 // ─────────────────── Multi-agent worker profiles (design §3.8) ──────────────
@@ -2328,6 +2430,19 @@ async fn handle_signal(
                 enqueued: true,
             }
         }
+        // A signal the app DECLARED is part of its contract. If it somehow reaches
+        // us unsubscribed (an app that opted a signal out of `eager`, or a
+        // narrowing `ui_subscribe`), queue it as context for the next turn rather
+        // than throwing the user's gesture away. Only an *undeclared* signal — one
+        // outside the contract entirely — is refused.
+        Err(msg) if ui_bridge.signal_decl(&name).is_some() => {
+            debug!(signal = %name, "declared but unsubscribed signal queued: {msg}");
+            signals.push(name, payload);
+            SignalHandled {
+                socket_ok: true,
+                enqueued: true,
+            }
+        }
         Err(msg) => {
             let socket_ok = send_json(
                 socket_tx,
@@ -2591,7 +2706,7 @@ async fn handle_agent_socket(
     let mut worker_agents: std::collections::HashMap<String, WorkerHandle> =
         std::collections::HashMap::new();
 
-    configure_agent(
+    let capability_report = configure_agent(
         &agent,
         &state,
         &session_id,
@@ -2638,6 +2753,29 @@ async fn handle_agent_socket(
     {
         ui_bridge.detach(conn_token);
         return;
+    }
+
+    // Degraded-capability report. Sent whenever the app asked for a knowledge
+    // base, skill, or extension this install does not have. The page renders it
+    // itself — the user learns the app is running without its grants even if the
+    // model never mentions it (and the model, notably, used to just fabricate the
+    // missing evidence instead).
+    if capability_report.degraded() {
+        warn!(
+            app = %manifest.id,
+            missing_skills = ?capability_report.missing_skills,
+            missing_kb = ?capability_report.missing_knowledge_base,
+            "app is running with unsatisfied capability grants"
+        );
+        let _ = send_json(
+            &mut socket_tx,
+            json!({
+                "type": "capability_report",
+                "degraded": true,
+                "report": capability_report,
+            }),
+        )
+        .await;
     }
 
     // Frames the browser sent while a turn was still running.

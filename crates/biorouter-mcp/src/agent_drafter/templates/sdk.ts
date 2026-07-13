@@ -449,6 +449,9 @@ function openSocket(url: string): Promise<WebSocket> {
   });
 }
 
+/** How many frames may wait for a closed socket before the oldest is dropped. */
+const OUTBOX_MAX = 64;
+
 export class BioRouterClient {
   readonly config: AppConfig;
   private ws: WebSocket | null = null;
@@ -486,6 +489,8 @@ export class BioRouterClient {
   // surface (signal names + coalesce windows, and the action names the agent
   // may `app_call`).
   private signalPending: Map<string, SignalRec> = new Map();
+  /** Frames that must survive a closed socket (see `sendReliable`). */
+  private outbox: unknown[] = [];
   private signalDeclMap: Map<string, SignalDecl> = new Map();
   private declaredSignals: SignalDecl[] = [];
   private declaredActions: string[] = [];
@@ -570,6 +575,9 @@ export class BioRouterClient {
         const ws = await openSocket(url);
         this.ws = ws;
         this.activeEndpoint = base;
+        // Deliver anything the app emitted while we were disconnected — a signal
+        // fired during page load used to be dropped on the floor here.
+        this.flushOutbox();
         // We're connected — clear any stale "no backend" banner a prior failed
         // attempt (or an earlier reconnect) may have left on the page. A working
         // app must never show a backend-unreachable error.
@@ -1274,6 +1282,48 @@ export class BioRouterClient {
   }
 
   /**
+   * Send a frame that must NOT be lost if the socket happens to be closed.
+   *
+   * `send()` returns false and drops the frame when the socket isn't OPEN, which
+   * is exactly what used to happen to the user's first gesture: a signal emitted
+   * during page load, or across a reconnect, was fire-and-forgotten into a closed
+   * socket and never reached the agent. (Half of why app→agent signals
+   * round-tripped 1 time in 12; the server dropped the other half.)
+   *
+   * Frames queued here are flushed in order on `open`. The queue is bounded — a
+   * disconnected page that keeps emitting must not grow without limit — and
+   * dropping the oldest is reported rather than silent.
+   */
+  private sendReliable(frame: unknown): void {
+    if (this.send(frame)) return;
+    if (this.outbox.length >= OUTBOX_MAX) {
+      const dropped = this.outbox.shift();
+      this.reportUiError(
+        "send",
+        `outbound queue is full (${OUTBOX_MAX}); dropped the oldest frame: ` +
+          JSON.stringify(dropped).slice(0, 120)
+      );
+    }
+    this.outbox.push(frame);
+    // Opportunistically (re)connect so the queue actually drains.
+    void this.connect().catch(() => undefined);
+  }
+
+  /** Flush anything queued while the socket was closed. Called on `open`. */
+  private flushOutbox(): void {
+    if (!this.outbox.length) return;
+    const pending = this.outbox.slice();
+    this.outbox.length = 0;
+    for (const frame of pending) {
+      if (!this.send(frame)) {
+        // Still not open — put the remainder back, preserving order.
+        this.outbox.unshift(frame);
+        break;
+      }
+    }
+  }
+
+  /**
    * Send a prompt to the agent. Resolves when the agent finishes its turn
    * (`done`); reject on error. Streamed output arrives via `on("message", …)`.
    */
@@ -1767,7 +1817,7 @@ export class BioRouterClient {
     const decl = this.signalDeclMap.get(name);
     const coalesceMs = decl && typeof decl.coalesceMs === "number" ? decl.coalesceMs : 250;
     if (coalesceMs <= 0) {
-      this.send({ type: "signal", name: name, payload: payload });
+      this.sendReliable({ type: "signal", name: name, payload: payload });
       return;
     }
     const pending = this.signalPending.get(name);
@@ -1779,7 +1829,7 @@ export class BioRouterClient {
     const rec: SignalRec = { payload: payload, timer: 0 };
     rec.timer = setTimeout(() => {
       this.signalPending.delete(name);
-      this.send({ type: "signal", name: name, payload: rec.payload });
+      this.sendReliable({ type: "signal", name: name, payload: rec.payload });
     }, coalesceMs);
     this.signalPending.set(name, rec);
   }
@@ -4443,7 +4493,7 @@ function bindText(value: unknown): string {
  *  change comparison never confuses "absent" with a real string. */
 function stateStringify(value: unknown): string {
   const s = JSON.stringify(value);
-  return s === undefined ? " undef" : s;
+  return s === undefined ? "\u0000undef" : s;
 }
 
 function asRecord(v: unknown): AnyRecord {

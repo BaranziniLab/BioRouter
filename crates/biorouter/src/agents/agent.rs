@@ -11,6 +11,7 @@ use uuid::Uuid;
 use super::final_output_tool::FinalOutputTool;
 use super::platform_tools;
 use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE};
+use super::turn_abort::TurnAbortCode;
 use crate::action_required_manager::ActionRequiredManager;
 use crate::agents::extension::{ExtensionConfig, ExtensionResult, ToolInfo};
 use crate::agents::extension_manager::{get_parameter_names, normalize, ExtensionManager};
@@ -176,8 +177,26 @@ pub struct Agent {
 pub enum AgentEvent {
     Message(Message),
     McpNotification((String, ServerNotification)),
-    ModelChange { model: String, mode: String },
+    ModelChange {
+        model: String,
+        mode: String,
+    },
     HistoryReplaced(Conversation),
+    /// The turn ended **without doing its work**.
+    ///
+    /// A provider failure used to be yielded only as an assistant `Message`
+    /// ("Ran into this error: …") after which the stream ended normally — so a
+    /// caller could not distinguish a 403 from a completed turn without
+    /// regex-matching English prose. `biorouter run` exited 0 on an auth failure
+    /// and telemetry recorded it as a success.
+    ///
+    /// The human-readable `Message` is still emitted first (the desktop UX shows
+    /// it); this event is the machine-checkable companion, and it is always
+    /// terminal. See [`crate::agents::turn_abort`].
+    TurnAborted {
+        code: TurnAbortCode,
+        message: String,
+    },
 }
 
 impl Default for Agent {
@@ -2019,11 +2038,20 @@ impl Agent {
                         }
                         Err(ref provider_err) => {
                             error!("Error: {}", provider_err);
+                            // Keep the human-readable message — the desktop chat
+                            // renders it — but also yield the typed terminal event,
+                            // so the CLI can exit nonzero, the server can send an
+                            // error frame, and telemetry stops recording a failed
+                            // turn as a success.
                             yield AgentEvent::Message(
                                 Message::assistant().with_text(
                                     format!("Ran into this error: {provider_err}.\n\nPlease retry if you think this is a transient or recoverable error.")
                                 )
                             );
+                            yield AgentEvent::TurnAborted {
+                                code: TurnAbortCode::ProviderFailure { kind: provider_err.kind() },
+                                message: provider_err.to_string(),
+                            };
                             break;
                         }
                     }

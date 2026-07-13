@@ -525,6 +525,12 @@ struct BridgeInner {
     /// Replaced wholesale by `ui_subscribe`; read by the server to decide which
     /// inbound signals to deliver.
     subscriptions: Mutex<HashSet<String>>,
+    /// Signals the agent is subscribed to *by declaration* (`SignalDecl.eager`).
+    ///
+    /// Kept separate from `subscriptions` so a later `ui_subscribe` — which
+    /// REPLACES the explicit set — can never drop below the declared floor. A
+    /// single `ui_subscribe([])` would otherwise silently re-break the app.
+    eager: Mutex<HashSet<String>>,
     /// The app's declared surface, mirrored onto the bridge (set by
     /// [`AppControlServer::new`]) so the server-facing signal accessors
     /// ([`UiBridge::signal_decl`] / [`UiBridge::validate_signal`]) can resolve a
@@ -577,6 +583,7 @@ impl UiBridge {
                 consult_timeout_s: AtomicU64::new(CONSULT_TIMEOUT_S),
                 pending_output: Mutex::new(None),
                 subscriptions: Mutex::new(HashSet::new()),
+                eager: Mutex::new(HashSet::new()),
                 surface_decl: Mutex::new(SurfaceDecl::default()),
                 app_call_timeout_s: AtomicU64::new(APP_CALL_TIMEOUT_S),
                 state: Mutex::new(StateDoc::default()),
@@ -953,12 +960,16 @@ impl UiBridge {
     /// The signals the agent is currently subscribed to, sorted for a stable
     /// `ui_describe` view and deterministic tests.
     pub fn subscribed_signals(&self) -> Vec<String> {
-        let mut v: Vec<String> = self
+        let mut set: HashSet<String> = self
             .inner
             .subscriptions
             .lock()
-            .map(|s| s.iter().cloned().collect())
+            .map(|s| s.clone())
             .unwrap_or_default();
+        if let Ok(e) = self.inner.eager.lock() {
+            set.extend(e.iter().cloned());
+        }
+        let mut v: Vec<String> = set.into_iter().collect();
         v.sort();
         v
     }
@@ -967,9 +978,44 @@ impl UiBridge {
     /// signal accessors can resolve declarations. Called by
     /// [`AppControlServer::new`]; no `apps.rs` change is required.
     pub fn set_surface_decl(&self, surface: SurfaceDecl) {
+        // Declaration IS subscription. Seed the eager floor from the surface
+        // before storing it, so a signal the user fires *before the agent's first
+        // turn* — the normal case, since a click precedes any tool call — is
+        // accepted rather than dropped.
+        let eager: HashSet<String> = surface
+            .signals
+            .iter()
+            .filter(|sig| sig.eager)
+            .map(|sig| sig.name.clone())
+            .collect();
+        if let Ok(mut e) = self.inner.eager.lock() {
+            *e = eager;
+        }
         if let Ok(mut s) = self.inner.surface_decl.lock() {
             *s = surface;
         }
+    }
+
+    /// Narrow the *explicit* subscription set, as `ui_subscribe` does.
+    ///
+    /// Exposed so the eager-floor invariant is testable from an integration test:
+    /// no `ui_subscribe` may drop a declared signal, or a single narrowing call
+    /// would silently re-break app→agent signals for the rest of the session.
+    pub fn replace_subscriptions_for_test(&self, names: Vec<String>) {
+        self.replace_subscriptions(names);
+    }
+
+    /// Signals the agent is subscribed to by declaration (never emptied by a
+    /// narrowing `ui_subscribe`).
+    pub fn eager_signals(&self) -> Vec<String> {
+        let mut v: Vec<String> = self
+            .inner
+            .eager
+            .lock()
+            .map(|s| s.iter().cloned().collect())
+            .unwrap_or_default();
+        v.sort();
+        v
     }
 
     /// A declared signal's `(payload_schema, coalesce_ms)`, or `None` when the
@@ -992,7 +1038,13 @@ impl UiBridge {
             .subscriptions
             .lock()
             .map(|s| s.contains(name))
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || self
+                .inner
+                .eager
+                .lock()
+                .map(|s| s.contains(name))
+                .unwrap_or(false);
         if !subscribed {
             return Err(format!("signal \"{name}\" is not subscribed"));
         }
@@ -3862,8 +3914,13 @@ pub fn ui_system_prompt(cap: &UiCapability) -> String {
          wired to real handlers) and *signals* (notifications the app can push you). Use \
          `app_call` to run a declared action — call `ui_describe` first to see the app's declared \
          actions and their argument schemas. When the app is awaiting a structured answer, use \
-         `emit_result` to hand it a typed object rather than writing prose. Use `ui_subscribe` to \
-         listen for the signals you care about.",
+         `emit_result` to hand it a typed object rather than writing prose.\n\n\
+         You are ALREADY subscribed to every signal the app declares — you do not need to call \
+         `ui_subscribe` to start receiving them, and calling it to \"turn them on\" is wasted \
+         budget. (The user clicks before your first tool call, so a subscription you had to \
+         request would always arrive too late.) Signals you have received appear in your turn \
+         context. `ui_subscribe` exists only to add a signal the app explicitly opted out of \
+         eager delivery. `ui_describe` lists what you are listening to.",
     );
     if !cap.allow_signals {
         s.push_str("\n\nNote: `ui_subscribe` is disabled for this app.");
@@ -6395,7 +6452,11 @@ mod tests {
         assert_eq!(names, vec!["raw", "tick"]); // sorted
         let tick = arr.iter().find(|v| v["name"] == "tick").unwrap();
         assert_eq!(tick["coalesceMs"], 100);
-        // Re-subscribing replaces the set (not a union).
+        // Re-subscribing narrows the EXPLICIT set, but cannot drop a signal the app
+        // declared eagerly. Before eager subscription this asserted the set shrank
+        // to one — which is exactly the hole that let a single `ui_subscribe([…])`
+        // silently unsubscribe the app's own declared signals for the rest of the
+        // session. Both `tick` and `raw` are declared, so both stay live.
         let r2 = s
             .ui_subscribe(Parameters(SubscribeParams {
                 signals: vec!["tick".into()],
@@ -6403,8 +6464,23 @@ mod tests {
             .await
             .unwrap();
         let out2: Value = serde_json::from_str(&text_of(&r2)).unwrap();
-        assert_eq!(out2["subscribed"].as_array().unwrap().len(), 1);
-        assert_eq!(s.bridge.subscribed_signals(), vec!["tick".to_string()]);
+        // The tool reports what the agent is EFFECTIVELY subscribed to — the
+        // explicit set unioned with the declared floor — not merely what this call
+        // asked for. Reporting the narrowed set would tell the model it had
+        // unsubscribed from signals it is in fact still receiving.
+        let names2: Vec<&str> = out2["subscribed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names2, vec!["raw", "tick"]);
+        assert_eq!(
+            s.bridge.subscribed_signals(),
+            vec!["raw".to_string(), "tick".to_string()],
+            "a declared signal stays subscribed no matter how ui_subscribe narrows"
+        );
+        assert!(s.bridge.validate_signal("raw", &json!({})).is_ok());
     }
 
     #[tokio::test]
@@ -6444,13 +6520,16 @@ mod tests {
         // AppControlServer::new does this in production; here we mirror it directly.
         bridge.set_surface_decl(call_surface());
 
-        // Unsubscribed → refused.
-        let e = bridge
-            .validate_signal("tick", &json!({ "n": 1 }))
-            .unwrap_err();
-        assert!(e.contains("not subscribed"), "{e}");
+        // DECLARED ⇒ subscribed, with no tool call. This assertion used to be the
+        // opposite ("unsubscribed → refused"), and that was the bug: the user's
+        // first click lands before the agent's first tool call, so the gesture was
+        // always validated against an empty set and dropped.
+        assert!(
+            bridge.validate_signal("tick", &json!({ "n": 1 })).is_ok(),
+            "declaring a signal subscribes to it"
+        );
 
-        // Subscribed + declared + schema-valid → ok.
+        // An explicit subscribe is still honoured (and still can't drop the floor).
         bridge.replace_subscriptions(vec!["tick".into()]);
         assert!(bridge.validate_signal("tick", &json!({ "n": 1 })).is_ok());
 
@@ -6468,7 +6547,10 @@ mod tests {
             .unwrap_err();
         assert!(e.contains("cap is"), "{e}");
 
-        // Subscribed to a name the surface never declared (a stale server push).
+        // A name the surface never declared is still refused, even when something
+        // explicitly subscribed to it (a stale server push). Eager subscription
+        // widens the floor to the CONTRACT — it does not make the bridge accept
+        // anything.
         bridge.replace_subscriptions(vec!["mystery".into()]);
         let e = bridge.validate_signal("mystery", &json!({})).unwrap_err();
         assert!(e.contains("not declared"), "{e}");

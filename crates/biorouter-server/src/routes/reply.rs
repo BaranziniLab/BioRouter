@@ -380,6 +380,22 @@ pub async fn reply(
                             }, &tx, &cancel_token).await;
                         }
 
+                        Ok(Some(Ok(AgentEvent::TurnAborted { code, message }))) => {
+                            // The turn ended without doing its work. The agent
+                            // already yielded the human-readable assistant message,
+                            // but the stream used to then finish *normally* — so the
+                            // desktop rendered a provider 403 as a completed turn.
+                            // Surface it as a real error and stop.
+                            tracing::error!(abort = code.wire_code(), "Turn aborted: {message}");
+                            stream_event(
+                                MessageEvent::Error {
+                                    error: format!("{}: {message}", code.wire_code()),
+                                },
+                                &tx,
+                                &cancel_token,
+                            ).await;
+                            break;
+                        }
                         Ok(Some(Err(e))) => {
                             tracing::error!("Error processing message: {}", e);
                             stream_event(

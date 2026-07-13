@@ -613,6 +613,13 @@ async fn process_message_streaming(
                     Ok(AgentEvent::ModelChange { model, mode }) => {
                         tracing::info!("Model changed to {} in {} mode", model, mode);
                     }
+                    Ok(AgentEvent::TurnAborted { code, message }) => {
+                        // The turn ended without doing its work — report it as an
+                        // error rather than letting the stream finish normally.
+                        error!(abort = code.wire_code(), "Turn aborted: {message}");
+                        send_error(&sender, &format!("{}: {message}", code.wire_code())).await;
+                        break;
+                    }
                     Err(e) => {
                         error!("Error in message stream: {}", e);
                         send_error(&sender, &format!("Error: {}", e)).await;

@@ -604,6 +604,15 @@ async fn drive_response(
                     Some(Ok(AgentEvent::McpNotification(_))) => {}
                     Some(Ok(AgentEvent::HistoryReplaced(c))) => { session.messages = c; }
                     Some(Ok(AgentEvent::ModelChange { .. })) => {}
+                    Some(Ok(AgentEvent::TurnAborted { code, message })) => {
+                        // The assistant Message carrying the human-readable text was
+                        // already pushed; add a real error line so the turn does not
+                        // look like it simply finished.
+                        commit_stream_to_session(app, &mut session.messages);
+                        app.push_error(&format!("{}: {message}", code.wire_code()));
+                        cancel.cancel();
+                        break;
+                    }
                     Some(Err(e)) => {
                         // Commit any streamed text first so the error renders
                         // *after* it (and isn't wiped by the preview truncation).
