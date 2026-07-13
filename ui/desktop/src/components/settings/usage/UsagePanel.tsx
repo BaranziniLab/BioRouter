@@ -31,11 +31,23 @@ export function modelLabel(row: Pick<UsageReportRow, 'modelId' | 'provider'>): s
   return 'unknown';
 }
 
+/** Combined prompt-cache tokens (read + creation) for a row or totals. */
+export function cacheTokens(
+  row: Pick<UsageReportRow, 'cacheReadTokens' | 'cacheCreationTokens'>
+): number {
+  return (row.cacheReadTokens ?? 0) + (row.cacheCreationTokens ?? 0);
+}
+
 export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
   const mtd = summary.monthToDate;
   const maxDayTotal = Math.max(1, ...dayRows.map((r) => r.totalTokens));
   const anyUnpriced =
     dayRows.some((r) => r.hasUnpriced) || modelRows.some((r) => r.hasUnpriced || r.cost === null);
+  const anyCache = modelRows.some((r) => cacheTokens(r) > 0) || cacheTokens(mtd) > 0;
+  const anyCostExcludesCache =
+    dayRows.some((r) => r.costExcludesCache) ||
+    modelRows.some((r) => r.costExcludesCache) ||
+    mtd.costExcludesCache;
 
   return (
     <div className="flex flex-col gap-5" data-testid="usage-panel">
@@ -51,6 +63,12 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
           {formatCost(mtd.cost)}
           {' · '}
           {mtd.turns.toLocaleString('en-US')} turns
+          {cacheTokens(mtd) > 0 && (
+            <span data-testid="usage-mtd-cache">
+              {' · '}
+              {formatTokens(cacheTokens(mtd))} cached
+            </span>
+          )}
         </p>
 
         {summary.monthlyTokenLimit != null && (
@@ -117,6 +135,7 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
                   <th className="font-medium py-1 px-2 text-right">Turns</th>
                   <th className="font-medium py-1 px-2 text-right">Input</th>
                   <th className="font-medium py-1 px-2 text-right">Output</th>
+                  {anyCache && <th className="font-medium py-1 px-2 text-right">Cache</th>}
                   <th className="font-medium py-1 pl-2 text-right">Cost</th>
                 </tr>
               </thead>
@@ -133,6 +152,11 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
                     <td className="py-1 px-2 text-right tabular-nums">
                       {formatTokens(row.outputTokens)}
                     </td>
+                    {anyCache && (
+                      <td className="py-1 px-2 text-right tabular-nums">
+                        {formatTokens(cacheTokens(row))}
+                      </td>
+                    )}
                     <td className="py-1 pl-2 text-right tabular-nums">{formatCost(row.cost)}</td>
                   </tr>
                 ))}
@@ -146,6 +170,13 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
         <p className="text-xs text-text-muted" data-testid="usage-unpriced-note">
           Some models have no known pricing; their cost is excluded (shown as —), so dollar totals
           are a lower bound.
+        </p>
+      )}
+
+      {anyCostExcludesCache && (
+        <p className="text-xs text-text-muted" data-testid="usage-cache-excluded-note">
+          Some priced models have no cache pricing; their cache tokens are excluded from cost, so
+          dollar totals are a lower bound.
         </p>
       )}
     </div>

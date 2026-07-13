@@ -169,20 +169,23 @@ fn format_usage_text(
             "DAY"
         };
         out.push_str(&format!(
-            "  {label_header:<28} {:>14} {:>14} {:>14} {:>7} {:>12}\n",
-            "INPUT", "OUTPUT", "TOTAL", "TURNS", "COST"
+            "  {label_header:<28} {:>14} {:>14} {:>14} {:>14} {:>7} {:>12}\n",
+            "INPUT", "OUTPUT", "CACHE", "TOTAL", "TURNS", "COST"
         ));
         let mut any_unpriced = false;
+        let mut any_cost_excludes_cache = false;
         for row in rows {
             let label = match group {
                 UsageGroup::Model => model_label(row),
                 _ => row.date.clone().unwrap_or_else(|| "unknown".to_string()),
             };
             any_unpriced |= row.has_unpriced;
+            any_cost_excludes_cache |= row.cost_excludes_cache;
             out.push_str(&format!(
-                "  {label:<28} {:>14} {:>14} {:>14} {:>7} {:>12}\n",
+                "  {label:<28} {:>14} {:>14} {:>14} {:>14} {:>7} {:>12}\n",
                 fmt_tokens(row.input_tokens),
                 fmt_tokens(row.output_tokens),
+                fmt_tokens(row.cache_read_tokens + row.cache_creation_tokens),
                 fmt_tokens(row.total_tokens),
                 row.turns,
                 fmt_cost(row.cost),
@@ -191,6 +194,11 @@ fn format_usage_text(
         if any_unpriced {
             out.push_str(
                 "  Note: some rows include models with no known pricing; their cost is excluded (—).\n",
+            );
+        }
+        if any_cost_excludes_cache {
+            out.push_str(
+                "  Note: some priced models have no cache pricing; their cache tokens are excluded from cost.\n",
             );
         }
     }
@@ -205,6 +213,14 @@ fn format_usage_text(
         fmt_cost(mtd.cost),
         mtd.turns,
     ));
+    let mtd_cache = mtd.cache_read_tokens + mtd.cache_creation_tokens;
+    if mtd_cache > 0 {
+        out.push_str(&format!(
+            "  Cache: {} read, {} write\n",
+            fmt_tokens(mtd.cache_read_tokens),
+            fmt_tokens(mtd.cache_creation_tokens),
+        ));
+    }
     if let Some(limit) = limits.monthly_token_limit {
         let pct = percent_of(mtd.total_tokens as f64, Some(limit as f64)).unwrap_or(0.0);
         out.push_str(&format!(
@@ -251,31 +267,31 @@ mod tests {
             input_tokens: input,
             output_tokens: output,
             total_tokens: total,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
             turns,
             cost,
             has_unpriced,
+            cost_excludes_cache: false,
         }
     }
 
     fn summary(total: i64, cost: Option<f64>) -> UsageSummary {
+        let totals = || UsageTotals {
+            input_tokens: total,
+            output_tokens: 0,
+            total_tokens: total,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
+            turns: 3,
+            cost,
+            has_unpriced: cost.is_none(),
+            cost_excludes_cache: false,
+        };
         UsageSummary {
             month: "2026-07".to_string(),
-            month_to_date: UsageTotals {
-                input_tokens: total,
-                output_tokens: 0,
-                total_tokens: total,
-                turns: 3,
-                cost,
-                has_unpriced: cost.is_none(),
-            },
-            all_time: UsageTotals {
-                input_tokens: total,
-                output_tokens: 0,
-                total_tokens: total,
-                turns: 3,
-                cost,
-                has_unpriced: cost.is_none(),
-            },
+            month_to_date: totals(),
+            all_time: totals(),
         }
     }
 
@@ -365,9 +381,12 @@ mod tests {
                 input_tokens: 500,
                 output_tokens: 500,
                 total_tokens: 1_000,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 0,
                 turns: 2,
                 cost: None,
                 has_unpriced: true,
+                cost_excludes_cache: false,
             },
         ];
         let text = format_usage_text(
@@ -440,6 +459,39 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(value["tokenPercent"], 50.0);
         assert!(value["dollarPercent"].is_null());
+    }
+
+    #[test]
+    fn text_report_shows_cache_column_and_excluded_note() {
+        let rows = vec![UsageReportRow {
+            date: Some("2026-07-12".to_string()),
+            model_id: Some("claude-sonnet-4".to_string()),
+            provider: Some("anthropic".to_string()),
+            input_tokens: 1_000,
+            output_tokens: 200,
+            total_tokens: 1_800,
+            cache_read_tokens: 500,
+            cache_creation_tokens: 100,
+            turns: 1,
+            cost: Some(0.01),
+            has_unpriced: false,
+            cost_excludes_cache: true,
+        }];
+        let text = format_usage_text(
+            &rows,
+            UsageGroup::Day,
+            &summary(1_800, Some(0.01)),
+            &UsageLimits::default(),
+            0,
+            0,
+        );
+        assert!(text.contains("CACHE"), "header has a CACHE column: {text}");
+        // cache_read + cache_creation = 600 rendered in the row.
+        assert!(text.contains("600"), "{text}");
+        assert!(
+            text.contains("no cache pricing"),
+            "the cost-excludes-cache note appears: {text}"
+        );
     }
 
     #[test]

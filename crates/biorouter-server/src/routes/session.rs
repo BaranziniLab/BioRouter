@@ -819,6 +819,8 @@ mod diverge_tests {
                     input_tokens: 300,
                     output_tokens: 70,
                     total_tokens: 370,
+                    cache_read_tokens: 800,
+                    cache_creation_tokens: 0,
                     turns: 2,
                 },
                 ModelUsageRow {
@@ -827,6 +829,8 @@ mod diverge_tests {
                     input_tokens: 1,
                     output_tokens: 2,
                     total_tokens: 3,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
                     turns: 1,
                 },
             ],
@@ -843,6 +847,10 @@ mod diverge_tests {
         assert_eq!(gpt.get("outputTokens").and_then(|v| v.as_i64()), Some(70));
         assert_eq!(gpt.get("totalTokens").and_then(|v| v.as_i64()), Some(370));
         assert_eq!(gpt.get("turns").and_then(|v| v.as_i64()), Some(2));
+        assert_eq!(
+            gpt.get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(800)
+        );
 
         // The unknown bucket serializes model/provider as JSON null.
         let unknown = &models[1];
