@@ -8380,7 +8380,7 @@
         "oneOf": [
           {
             "type": "object",
-            "description": "Execute a shell command and check its exit status",
+            "description": "Execute a shell command and check its exit status (0 = pass).",
             "required": [
               "command",
               "type"
@@ -8397,9 +8397,78 @@
                 ]
               }
             }
+          },
+          {
+            "type": "object",
+            "description": "BR-48: pass when a file exists at `path`. A relative `path` resolves\nagainst the session working directory (interactive gate) or the process\nworking directory (workflow retry).",
+            "required": [
+              "path",
+              "type"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "The file (or directory) that must exist."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "FileExists"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "BR-48: run `command` and pass when its combined stdout+stderr contains\n`substring`. Unlike [`Shell`](SuccessCheck::Shell), the exit status is\nignored — this checks the *content* of the output (e.g. `0 failed`,\n`PASS`, a coverage percentage).",
+            "required": [
+              "command",
+              "substring",
+              "type"
+            ],
+            "properties": {
+              "command": {
+                "type": "string",
+                "description": "The shell command whose output is inspected."
+              },
+              "substring": {
+                "type": "string",
+                "description": "The substring the output must contain."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "OutputContains"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "BR-48: pass when the JSON file at `path` parses and validates against the\ninline JSON Schema `schema` (same engine as the workflow final-output\ncontract, [`crate::agents::final_output_tool`]).",
+            "required": [
+              "path",
+              "schema",
+              "type"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "The JSON file to validate."
+              },
+              "schema": {
+                "description": "The JSON Schema the file's contents must satisfy."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "JsonSchema"
+                ]
+              }
+            }
           }
         ],
-        "description": "A single success check to validate workflow completion",
+        "description": "A single success check to validate workflow completion, or (BR-48) to gate\nan interactive chat turn from finishing with unmet conditions.\n\nOriginally a single `Shell` variant used only by the workflow retry path.\nBR-48 added the non-shell variants and a done-ness gate so an interactive\nsession can also declare \"not done until these hold\" — see\n[`crate::agents::done_gate`].",
         "discriminator": {
           "propertyName": "type"
         }
