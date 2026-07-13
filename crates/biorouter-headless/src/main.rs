@@ -279,6 +279,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let base_path = base_path_from_public_url(&args.public_url);
     if !base_path.is_empty() {
+        validate_base_path(&base_path).map_err(|e| anyhow!(e))?;
         info!("serving under path prefix {base_path} (assets and API calls are prefixed)");
     }
 
@@ -307,12 +308,12 @@ fn router(state: Arc<AppState>, web_dir: PathBuf, base_path: String) -> Router {
     // baked-in root-absolute asset URLs are rewritten and the headless runtime
     // config (API + headless base URLs) is injected, so the SPA resolves its
     // assets and API calls under the prefix rather than at the server root.
-    let index_html = build_index_html(&index_path, &base_path);
+    let index_html = build_index_html(&index_path, &web_dir, &base_path);
     let index_service = get(move || {
         let html = index_html.clone();
         async move { axum::response::Html(html) }
     });
-    Router::new()
+    let mut router = Router::new()
         .route("/headless/health", get(health))
         .route(
             "/headless/settings",
@@ -334,7 +335,27 @@ fn router(state: Arc<AppState>, web_dir: PathBuf, base_path: String) -> Router {
         .route("/headless/fs/delete-dir", post(fs_delete_dir))
         .route("/api", any(proxy_api_root))
         .route("/api/", any(proxy_api_root))
-        .route("/api/{*path}", any(proxy_api))
+        .route("/api/{*path}", any(proxy_api));
+
+    // Vite bakes root-absolute asset URLs into the JS bundle too (the minified
+    // `assetsURL` helper `return"/"+n` and literal `"/assets/…"` image refs),
+    // which the shell rewrite cannot reach. Behind a prefix, serve each rewritten
+    // *.js from a dedicated route so those URLs resolve under the prefix; every
+    // other asset (css, fonts, images) falls through to ServeDir unchanged.
+    if !base_path.is_empty() {
+        for (route_path, body) in rewritten_asset_scripts(&web_dir, &base_path) {
+            let body = Arc::new(body);
+            router = router.route(
+                &route_path,
+                get(move || {
+                    let body = body.clone();
+                    async move { js_response(body.as_str()) }
+                }),
+            );
+        }
+    }
+
+    router
         // Serve real files (the hashed /assets/*, etc.) from disk. Disable
         // directory auto-indexing so a request for "/" falls through to the
         // rewritten app shell instead of the raw, un-rewritten index.html.
@@ -345,6 +366,69 @@ fn router(state: Arc<AppState>, web_dir: PathBuf, base_path: String) -> Router {
         )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+/// A JavaScript response with the correct module content-type.
+fn js_response(body: &str) -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/javascript; charset=utf-8")
+        .body(Body::from(body.to_string()))
+        .expect("valid js response")
+}
+
+/// Read every `*.js` under `<web_dir>/assets`, rewrite its baked root-absolute
+/// asset URLs for the prefix, and return `(route_path, body)` pairs so each can
+/// be served from a dedicated route.
+fn rewritten_asset_scripts(web_dir: &Path, base_path: &str) -> Vec<(String, String)> {
+    let mut scripts = Vec::new();
+    let assets_dir = web_dir.join("assets");
+    let Ok(entries) = std::fs::read_dir(&assets_dir) else {
+        return scripts;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".js") {
+            continue;
+        }
+        if let Ok(raw) = std::fs::read_to_string(entry.path()) {
+            scripts.push((format!("/assets/{name}"), rewrite_asset_js(&raw, base_path)));
+        }
+    }
+    scripts
+}
+
+/// Rewrite the root-absolute asset URLs Vite bakes into a JS chunk so they
+/// resolve under `base_path`: literal `"/assets/…"` / `'/assets/…'` references,
+/// and the minified `assetsURL` helper `function(n){return"/"+n}` that
+/// `__vitePreload` uses to build modulepreload / code-split-CSS URLs. The helper
+/// is matched as an exact literal; a future minifier that renames its parameter
+/// won't match, in which case the shell's `vite:preloadError` guard + eager CSS
+/// still keep the app rendering (only the modulepreload hint 404s).
+fn rewrite_asset_js(raw: &str, base_path: &str) -> String {
+    raw.replace("\"/assets/", &format!("\"{base_path}/assets/"))
+        .replace("'/assets/", &format!("'{base_path}/assets/"))
+        .replace(
+            "function(n){return\"/\"+n}",
+            &format!("function(n){{return\"{base_path}/\"+n}}"),
+        )
+}
+
+/// Restrict a derived path prefix to a conservative charset (URL-unreserved plus
+/// `/`) so it can be spliced into the injected shell HTML/JS without escaping.
+/// Rejects anything else with a clear startup error.
+fn validate_base_path(base_path: &str) -> Result<(), String> {
+    if base_path
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '~' | '/' | '-'))
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid path prefix {base_path:?} derived from --public-url \
+             (allowed characters: letters, digits, and . _ ~ / -)"
+        ))
+    }
 }
 
 /// The URL path prefix a reverse proxy serves this app under, derived from the
@@ -383,17 +467,41 @@ fn normalize_base_path(path: &str) -> String {
 
 /// Read the built `index.html` and, when a non-empty `base_path` is given,
 /// rewrite the root-absolute asset URLs to include the prefix and inject the
-/// headless runtime config (API + headless base URLs). With an empty prefix the
-/// file is returned unchanged.
-fn build_index_html(index_path: &Path, base_path: &str) -> String {
+/// headless runtime config (API + headless base URLs), a `vite:preloadError`
+/// guard, and eager `<link>`s for code-split CSS the shell does not reference.
+/// With an empty prefix the file is returned unchanged.
+fn build_index_html(index_path: &Path, web_dir: &Path, base_path: &str) -> String {
     let raw = std::fs::read_to_string(index_path).unwrap_or_default();
-    rewrite_index_html(&raw, base_path)
+    let extra_css = if base_path.is_empty() {
+        Vec::new()
+    } else {
+        unreferenced_css(&raw, &web_dir.join("assets"))
+    };
+    rewrite_index_html(&raw, base_path, &extra_css)
+}
+
+/// The `*.css` files under `assets_dir` that the shell HTML does not already
+/// reference, sorted for deterministic output. These are Vite's code-split
+/// stylesheets: the shell only loads them via a root-absolute preload that 404s
+/// behind a path prefix, so they must be eager-loaded to keep styling correct.
+fn unreferenced_css(shell_html: &str, assets_dir: &Path) -> Vec<String> {
+    let mut css = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(assets_dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.ends_with(".css") && !shell_html.contains(&name) {
+                css.push(name);
+            }
+        }
+    }
+    css.sort();
+    css
 }
 
 /// Pure core of [`build_index_html`]: rewrite asset URLs and inject the runtime
-/// config in `raw` for the given prefix. Returns `raw` unchanged when the prefix
-/// is empty.
-fn rewrite_index_html(raw: &str, base_path: &str) -> String {
+/// config, the `vite:preloadError` guard, and eager CSS `<link>`s in `raw` for
+/// the given prefix. Returns `raw` unchanged when the prefix is empty.
+fn rewrite_index_html(raw: &str, base_path: &str, extra_css: &[String]) -> String {
     if base_path.is_empty() {
         return raw.to_string();
     }
@@ -404,11 +512,37 @@ fn rewrite_index_html(raw: &str, base_path: &str) -> String {
         .replace("\"/assets/", &format!("\"{base_path}/assets/"))
         .replace("'/assets/", &format!("'{base_path}/assets/"));
 
-    // Populate the config the renderer reads before it derives API/headless base
-    // URLs from window.location.origin (which drops the path prefix).
-    let inject = format!(
-        "<script>window.__BIOROUTER_HEADLESS_CONFIG__={{\"apiBaseUrl\":\"{base_path}/api\",\"headlessBaseUrl\":\"{base_path}/headless\"}};</script>"
+    // Build the runtime config with serde_json rather than string splicing so the
+    // values are always valid, escaped JSON. The renderer reads this before it
+    // derives API/headless base URLs from window.location.origin (which drops the
+    // path prefix).
+    let config = serde_json::json!({
+        "apiBaseUrl": format!("{base_path}/api"),
+        "headlessBaseUrl": format!("{base_path}/headless"),
+    });
+    let config_json = serde_json::to_string(&config).unwrap_or_else(|_| "{}".to_string());
+
+    let mut inject = String::new();
+    // The JS bundle preloads code-split chunks via baked root-absolute URLs
+    // (`/assets/App-*.{js,css}`), which 404 behind a prefix-stripping proxy. A
+    // failed preload dispatches `vite:preloadError`; unhandled, __vitePreload
+    // rethrows and the lazily-imported App is lost to the ErrorBoundary. This
+    // guard (a classic script, so it runs before the deferred module) swallows
+    // the error so the app still renders.
+    inject.push_str(
+        "<script>window.addEventListener('vite:preloadError',function(e){e.preventDefault();});</script>",
     );
+    inject.push_str(&format!(
+        "<script>window.__BIOROUTER_HEADLESS_CONFIG__={config_json};</script>"
+    ));
+    // Eager-load code-split CSS the shell does not reference so styling is correct
+    // even though its root-absolute preload 404s behind the prefix.
+    for css in extra_css {
+        inject.push_str(&format!(
+            "<link rel=\"stylesheet\" href=\"{base_path}/assets/{css}\">"
+        ));
+    }
+
     match rewritten.split_once("</head>") {
         Some((head, rest)) => format!("{head}{inject}</head>{rest}"),
         None => format!("{inject}{rewritten}"),
@@ -1482,7 +1616,10 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::{base_path_from_public_url, normalize_base_path, rewrite_index_html};
+    use super::{
+        base_path_from_public_url, normalize_base_path, rewrite_asset_js, rewrite_index_html,
+        unreferenced_css, validate_base_path,
+    };
 
     #[test]
     fn base_path_derives_prefix_from_public_url() {
@@ -1518,7 +1655,7 @@ mod tests {
 
     #[test]
     fn rewrite_prefixes_assets_and_injects_config() {
-        let out = rewrite_index_html(SAMPLE_INDEX, "/biorouter");
+        let out = rewrite_index_html(SAMPLE_INDEX, "/biorouter", &[]);
         assert!(
             out.contains("src=\"/biorouter/assets/index-abc.js\""),
             "js asset not prefixed: {out}"
@@ -1544,6 +1681,115 @@ mod tests {
 
     #[test]
     fn rewrite_is_identity_without_prefix() {
-        assert_eq!(rewrite_index_html(SAMPLE_INDEX, ""), SAMPLE_INDEX);
+        assert_eq!(rewrite_index_html(SAMPLE_INDEX, "", &[]), SAMPLE_INDEX);
+    }
+
+    #[test]
+    fn rewrite_is_identity_without_prefix_ignores_extra_css() {
+        // An empty prefix must yield byte-identical output regardless of any
+        // discovered code-split CSS.
+        let extra = vec!["App-test.css".to_string()];
+        assert_eq!(rewrite_index_html(SAMPLE_INDEX, "", &extra), SAMPLE_INDEX);
+    }
+
+    #[test]
+    fn rewrite_injects_preload_error_guard() {
+        let out = rewrite_index_html(SAMPLE_INDEX, "/biorouter", &[]);
+        assert!(
+            out.contains("vite:preloadError") && out.contains("preventDefault"),
+            "preloadError guard not injected: {out}"
+        );
+        // The guard must precede the deferred module so its listener is registered
+        // before __vitePreload runs.
+        let guard_at = out.find("vite:preloadError").unwrap();
+        let head_end = out.find("</head>").unwrap();
+        assert!(guard_at < head_end, "guard injected after </head>");
+    }
+
+    #[test]
+    fn rewrite_injects_eager_css_links() {
+        let extra = vec!["App-test.css".to_string()];
+        let out = rewrite_index_html(SAMPLE_INDEX, "/biorouter", &extra);
+        assert!(
+            out.contains(r#"<link rel="stylesheet" href="/biorouter/assets/App-test.css">"#),
+            "eager css link not injected: {out}"
+        );
+        // Injected inside <head>.
+        let css_at = out.find("App-test.css").unwrap();
+        let head_end = out.find("</head>").unwrap();
+        assert!(css_at < head_end, "eager css injected after </head>");
+    }
+
+    #[test]
+    fn rewrite_config_is_valid_json() {
+        let out = rewrite_index_html(SAMPLE_INDEX, "/biorouter", &[]);
+        let json = out
+            .split_once("window.__BIOROUTER_HEADLESS_CONFIG__=")
+            .and_then(|(_, rest)| rest.split_once(";</script>"))
+            .map(|(json, _)| json)
+            .expect("config marker present");
+        let parsed: serde_json::Value = serde_json::from_str(json).expect("valid JSON");
+        assert_eq!(parsed["apiBaseUrl"], "/biorouter/api");
+        assert_eq!(parsed["headlessBaseUrl"], "/biorouter/headless");
+    }
+
+    #[test]
+    fn unreferenced_css_skips_shell_referenced_files() {
+        let dir = std::env::temp_dir().join(format!("br-headless-css-{}", std::process::id()));
+        let assets = dir.join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        std::fs::write(assets.join("index-def.css"), "/* referenced */").unwrap();
+        std::fs::write(assets.join("App-test.css"), "/* code-split */").unwrap();
+        std::fs::write(assets.join("App-test.js"), "// not css").unwrap();
+
+        let shell = r#"<link rel="stylesheet" href="/assets/index-def.css">"#;
+        let found = unreferenced_css(shell, &assets);
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(found, vec!["App-test.css".to_string()]);
+    }
+
+    #[test]
+    fn validate_base_path_accepts_safe_charset() {
+        assert!(validate_base_path("/biorouter").is_ok());
+        assert!(validate_base_path("/a/b-c_d.e~f").is_ok());
+    }
+
+    #[test]
+    fn validate_base_path_rejects_unsafe_charset() {
+        // A quote or angle bracket would break out of the injected attribute /
+        // script context.
+        assert!(validate_base_path("/a\"b").is_err());
+        assert!(validate_base_path("/a<script>").is_err());
+        assert!(validate_base_path("/a b").is_err());
+        assert!(validate_base_path("/a%20b").is_err());
+    }
+
+    #[test]
+    fn rewrite_asset_js_prefixes_assets_and_helper() {
+        // Mirrors the real dist: the minified assetsURL helper plus a literal
+        // image reference baked into a code-split chunk.
+        let js = r#"const assetsURL=function(n){return"/"+n};img.src="/assets/logo.png";"#;
+        let out = rewrite_asset_js(js, "/biorouter");
+        assert!(
+            out.contains(r#"function(n){return"/biorouter/"+n}"#),
+            "assetsURL helper not prefixed: {out}"
+        );
+        assert!(
+            out.contains(r#""/biorouter/assets/logo.png""#),
+            "literal asset ref not prefixed: {out}"
+        );
+        assert!(
+            !out.contains(r#"return"/"+n"#),
+            "stray root-absolute helper: {out}"
+        );
+    }
+
+    #[test]
+    fn rewrite_asset_js_leaves_relative_imports() {
+        // The dynamic App import is relative and already resolves under the
+        // prefix; it must not be touched.
+        let js = r#"import("./App-CCeH5OUw.js")"#;
+        assert_eq!(rewrite_asset_js(js, "/biorouter"), js);
     }
 }
