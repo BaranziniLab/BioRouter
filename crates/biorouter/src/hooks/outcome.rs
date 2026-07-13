@@ -88,6 +88,13 @@ pub struct HookSpecificOutput {
     pub permission_decision_reason: Option<String>,
     /// Context injected for the model (hidden from the user).
     pub additional_context: Option<String>,
+    /// BR-19: rewritten tool arguments, applied *before* the tool is dispatched
+    /// (PreToolUse only) — the hook can sandbox a path, redact a payload, or
+    /// normalize a command instead of only allowing/denying it. Must be a JSON
+    /// object (the tool's full argument map, not a patch). Aliases cover the
+    /// spellings used by Codex (`updated_input`) and Gemini CLI (`tool_input`).
+    #[serde(alias = "updated_input", alias = "toolInput", alias = "tool_input")]
+    pub updated_input: Option<serde_json::Value>,
 }
 
 /// Normalized decision from a single hook, ordered by restrictiveness.
@@ -114,6 +121,8 @@ pub struct HookOutcome {
     pub decision: Option<HookDecision>,
     pub additional_context: Option<String>,
     pub system_message: Option<String>,
+    /// BR-19: validated `updatedInput` — always a JSON object when set.
+    pub updated_input: Option<serde_json::Value>,
     /// Non-blocking failure (timeout, spawn error, bad exit code) — recorded
     /// but never blocks (failure-open).
     pub error: Option<String>,
@@ -126,17 +135,24 @@ pub struct HookAggregate {
     pub decision: Option<HookDecision>,
     pub additional_context: Vec<String>,
     pub system_messages: Vec<String>,
+    /// BR-19: the tool-input rewrite to apply before dispatch. Hooks run
+    /// concurrently, so rewrites cannot chain: the **last** hook (in
+    /// definition order — managed, then global, then project, then session)
+    /// that returns an `updatedInput` wins, and the others are discarded.
+    pub updated_input: Option<serde_json::Value>,
     pub errors: Vec<String>,
 }
 
 impl HookAggregate {
     /// Nothing a caller could act on: no decision, no injected context, no
-    /// system message, no error. Used by [`crate::hooks::HooksManager::fire`]
-    /// to avoid buffering aggregates from events where no hook matched.
+    /// system message, no rewrite, no error. Used by
+    /// [`crate::hooks::HooksManager::fire`] to avoid buffering aggregates from
+    /// events where no hook matched.
     pub fn is_empty(&self) -> bool {
         self.decision.is_none()
             && self.additional_context.is_empty()
             && self.system_messages.is_empty()
+            && self.updated_input.is_none()
             && self.errors.is_empty()
     }
 
@@ -184,6 +200,18 @@ pub fn merge_outcomes(outcomes: Vec<HookOutcome>) -> HookAggregate {
             if !msg.trim().is_empty() {
                 aggregate.system_messages.push(msg);
             }
+        }
+        // BR-19: rewrites cannot be composed (hooks run concurrently on the
+        // *same* input), so the last one wins rather than silently merging two
+        // conflicting views of the arguments.
+        if let Some(input) = outcome.updated_input {
+            if aggregate.updated_input.is_some() {
+                aggregate.errors.push(
+                    "multiple hooks returned updatedInput for the same tool call; the last one wins"
+                        .to_string(),
+                );
+            }
+            aggregate.updated_input = Some(input);
         }
         if let Some(err) = outcome.error {
             aggregate.errors.push(err);
@@ -235,6 +263,52 @@ fn accepts_raw_context(event: HookEvent) -> bool {
     matches!(event, HookEvent::UserPromptSubmit | HookEvent::SessionStart)
 }
 
+/// BR-19: hard cap on a hook-rewritten tool input. A rewrite is meant to
+/// sandbox/redact/normalize the arguments the model already produced, not to
+/// smuggle a payload into the transcript — the rewritten call is persisted as
+/// the assistant's tool request, so an unbounded one would bloat the context.
+pub const MAX_UPDATED_INPUT_BYTES: usize = 256 * 1024;
+
+/// Validate a hook's `updatedInput`: only PreToolUse can rewrite (the tool has
+/// already run by PostToolUse, and the permission gate dispatches a call the
+/// transcript has already recorded), it must be a JSON object (a tool's full
+/// argument map), and it must be bounded. A rejected rewrite is a non-blocking
+/// error — failure-open, like every other hook mistake.
+fn validate_updated_input(
+    event: HookEvent,
+    updated: serde_json::Value,
+) -> Result<serde_json::Value, String> {
+    if event != HookEvent::PreToolUse {
+        return Err(format!(
+            "updatedInput is only honored on PreToolUse (ignored on {event})"
+        ));
+    }
+    if !updated.is_object() {
+        return Err("updatedInput must be a JSON object of tool arguments".to_string());
+    }
+    let size = serde_json::to_string(&updated)
+        .map(|s| s.len())
+        .unwrap_or(0);
+    if size > MAX_UPDATED_INPUT_BYTES {
+        return Err(format!(
+            "updatedInput is {size} bytes, over the {MAX_UPDATED_INPUT_BYTES}-byte limit; rewrite ignored"
+        ));
+    }
+    Ok(updated)
+}
+
+/// Record a non-blocking hook error without clobbering one already recorded
+/// (a single hook can get more than one thing wrong in one stdout document).
+fn push_error(outcome: &mut HookOutcome, message: String) {
+    match &mut outcome.error {
+        Some(existing) => {
+            existing.push_str("; ");
+            existing.push_str(&message);
+        }
+        None => outcome.error = Some(message),
+    }
+}
+
 fn interpret_stdout(event: HookEvent, stdout: &str) -> HookOutcome {
     let trimmed = stdout.trim();
     if trimmed.is_empty() {
@@ -258,6 +332,12 @@ fn interpret_stdout(event: HookEvent, stdout: &str) -> HookOutcome {
     // Per-event decision fields, most specific first.
     if let Some(specific) = output.hook_specific_output {
         outcome.additional_context = specific.additional_context.as_deref().map(cap_hook_context);
+        if let Some(updated) = specific.updated_input {
+            match validate_updated_input(event, updated) {
+                Ok(input) => outcome.updated_input = Some(input),
+                Err(err) => push_error(&mut outcome, err),
+            }
+        }
         if let Some(permission) = specific.permission_decision {
             let reason = specific.permission_decision_reason;
             outcome.decision = match permission.as_str() {
@@ -267,7 +347,10 @@ fn interpret_stdout(event: HookEvent, stdout: &str) -> HookOutcome {
                 "ask" => Some(HookDecision::Ask { reason }),
                 "allow" => Some(HookDecision::Allow { reason }),
                 other => {
-                    outcome.error = Some(format!("unknown permissionDecision '{}'", other));
+                    push_error(
+                        &mut outcome,
+                        format!("unknown permissionDecision '{}'", other),
+                    );
                     None
                 }
             };
@@ -287,7 +370,7 @@ fn interpret_stdout(event: HookEvent, stdout: &str) -> HookOutcome {
                     reason: output.reason.clone(),
                 }),
                 other => {
-                    outcome.error = Some(format!("unknown decision '{}'", other));
+                    push_error(&mut outcome, format!("unknown decision '{}'", other));
                     None
                 }
             };
@@ -347,6 +430,131 @@ mod tests {
                 reason: "nope".to_string()
             })
         );
+    }
+
+    // ---- BR-19: PreToolUse tool-input rewrite ----
+
+    /// The headline capability: a PreToolUse hook rewrites the arguments (here,
+    /// sandboxing a path into the project) instead of only allowing/denying.
+    #[test]
+    fn pre_tool_use_updated_input_parses() {
+        let stdout = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":{"path":"/repo/safe.txt","command":"ls"}}}"#;
+        let outcome = interpret_command_result(HookEvent::PreToolUse, Some(0), stdout, "");
+        assert_eq!(
+            outcome.updated_input,
+            Some(serde_json::json!({"path": "/repo/safe.txt", "command": "ls"}))
+        );
+        assert!(outcome.error.is_none());
+        assert!(outcome.decision.is_none());
+    }
+
+    /// Codex spells it `updated_input`, Gemini CLI `tool_input`; both port over.
+    #[test]
+    fn updated_input_accepts_snake_case_and_tool_input_aliases() {
+        for stdout in [
+            r#"{"hookSpecificOutput":{"updated_input":{"a":1}}}"#,
+            r#"{"hookSpecificOutput":{"tool_input":{"a":1}}}"#,
+            r#"{"hookSpecificOutput":{"toolInput":{"a":1}}}"#,
+        ] {
+            let outcome = interpret_command_result(HookEvent::PreToolUse, Some(0), stdout, "");
+            assert_eq!(
+                outcome.updated_input,
+                Some(serde_json::json!({"a": 1})),
+                "failed for {stdout}"
+            );
+        }
+    }
+
+    /// A rewrite that is not an argument object is a hook mistake, not a block:
+    /// recorded as a non-blocking error and dropped (failure-open).
+    #[test]
+    fn non_object_updated_input_is_rejected_but_never_blocks() {
+        let stdout = r#"{"hookSpecificOutput":{"updatedInput":"rm -rf /"}}"#;
+        let outcome = interpret_command_result(HookEvent::PreToolUse, Some(0), stdout, "");
+        assert!(outcome.updated_input.is_none());
+        assert!(outcome.decision.is_none());
+        assert!(outcome
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("must be a JSON object"));
+    }
+
+    /// The tool has already run by PostToolUse — a rewrite there would be a
+    /// silent no-op, so say so instead of pretending it worked.
+    #[test]
+    fn updated_input_is_ignored_outside_pre_tool_use() {
+        let stdout = r#"{"hookSpecificOutput":{"updatedInput":{"a":1}}}"#;
+        let outcome = interpret_command_result(HookEvent::PostToolUse, Some(0), stdout, "");
+        assert!(outcome.updated_input.is_none());
+        assert!(outcome
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("only honored on PreToolUse"));
+    }
+
+    #[test]
+    fn oversized_updated_input_is_rejected() {
+        let big = "x".repeat(MAX_UPDATED_INPUT_BYTES + 10);
+        let stdout = serde_json::json!({
+            "hookSpecificOutput": {"updatedInput": {"command": big}}
+        })
+        .to_string();
+        let outcome = interpret_command_result(HookEvent::PreToolUse, Some(0), &stdout, "");
+        assert!(outcome.updated_input.is_none());
+        assert!(outcome
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("rewrite ignored"));
+    }
+
+    /// A hook can rewrite *and* ask — the rewritten input is what the user is
+    /// then asked to approve, and both survive the merge.
+    #[test]
+    fn rewrite_survives_alongside_a_decision_and_merges_last_wins() {
+        let first = interpret_command_result(
+            HookEvent::PreToolUse,
+            Some(0),
+            r#"{"hookSpecificOutput":{"updatedInput":{"command":"ls -la"}}}"#,
+            "",
+        );
+        let second = interpret_command_result(
+            HookEvent::PreToolUse,
+            Some(0),
+            r#"{"hookSpecificOutput":{"permissionDecision":"ask","permissionDecisionReason":"check","updatedInput":{"command":"ls"}}}"#,
+            "",
+        );
+        let aggregate = merge_outcomes(vec![first, second]);
+        assert_eq!(
+            aggregate.updated_input,
+            Some(serde_json::json!({"command": "ls"})),
+            "the last hook's rewrite wins"
+        );
+        assert_eq!(
+            aggregate.decision,
+            Some(HookDecision::Ask {
+                reason: Some("check".to_string())
+            })
+        );
+        assert!(
+            aggregate.errors.iter().any(|e| e.contains("last one wins")),
+            "a conflicting rewrite must be reported: {:?}",
+            aggregate.errors
+        );
+        assert!(!aggregate.is_empty());
+    }
+
+    /// A lone rewrite is still something the caller must act on.
+    #[test]
+    fn aggregate_with_only_a_rewrite_is_not_empty() {
+        let outcome = HookOutcome {
+            updated_input: Some(serde_json::json!({"a": 1})),
+            ..Default::default()
+        };
+        assert!(!merge_outcomes(vec![outcome]).is_empty());
+        assert!(HookAggregate::default().is_empty());
     }
 
     #[test]

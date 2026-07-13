@@ -74,6 +74,26 @@ impl Agent {
                         .hooks_manager
                         .permission_request(&session.id, &session.working_dir, &tool_call.name, &tool_input)
                         .await;
+                    // BR-19: this gate used to read only `aggregate.decision`, so a
+                    // PermissionRequest hook's `additionalContext` / `systemMessage`
+                    // was computed and thrown away. Stage them for the turn's
+                    // injection point (a message yielded from here never enters the
+                    // conversation, only the event stream).
+                    if !aggregate.additional_context.is_empty() || !aggregate.system_messages.is_empty() {
+                        self.hooks_manager.stage_tool_hook(
+                            &session.id,
+                            crate::hooks::StagedToolHook {
+                                event: crate::hooks::HookEvent::PermissionRequest,
+                                tool_request_id: request.id.clone(),
+                                tool_name: tool_call.name.to_string(),
+                                // Rewrites are PreToolUse-only: by here the call is
+                                // already recorded in the transcript.
+                                updated_input: None,
+                                additional_context: aggregate.additional_context.clone(),
+                                system_messages: aggregate.system_messages.clone(),
+                            },
+                        );
+                    }
                     aggregate.decision
                 };
 
