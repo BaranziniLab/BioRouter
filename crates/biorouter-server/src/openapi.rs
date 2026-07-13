@@ -25,6 +25,8 @@ use biorouter::conversation::message::{
     MessageMetadata, RedactedThinkingContent, SystemNotificationContent, SystemNotificationType,
     ThinkingContent, TokenState, ToolConfirmationRequest, ToolRequest, ToolResponse,
 };
+use biorouter::conversation::tool_preview::{ToolPreview, ToolPreviewLine, ToolPreviewLineKind};
+use biorouter::permission::tool_risk::ToolRisk;
 
 use crate::routes::reply::MessageEvent;
 use crate::routes::workflow_utils::WorkflowManifest;
@@ -499,6 +501,10 @@ derive_utoipa!(Icon as IconSchema);
         ToolConfirmationRequest,
         ActionRequired,
         ActionRequiredData,
+        ToolPreview,
+        ToolPreviewLine,
+        ToolPreviewLineKind,
+        ToolRisk,
         ThinkingContent,
         RedactedThinkingContent,
         FrontendToolRequest,

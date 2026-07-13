@@ -178,12 +178,25 @@ impl Agent {
                         }
                     });
 
+                // BR-63: give the card enough to decide with. The BR-18 registry
+                // already grades every tool it handed the model this turn, and
+                // the preview turns the raw arguments into the thing the user
+                // actually needs to see — the command, or the diff.
+                let arguments = tool_call.arguments.clone().unwrap_or_default();
+                let risk = self.tool_risks.risk_for(&tool_call.name);
+                let preview = crate::conversation::tool_preview::ToolPreview::for_tool_call(
+                    &tool_call.name,
+                    &arguments,
+                );
+
                 let confirmation = Message::assistant()
-                    .with_action_required(
+                    .with_action_required_with_context(
                         request.id.clone(),
                         tool_call.name.to_string().clone(),
-                        tool_call.arguments.clone().unwrap_or_default(),
+                        arguments,
                         security_message,
+                        Some(risk),
+                        preview,
                     )
                     .user_only();
                 yield confirmation;
