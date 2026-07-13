@@ -23,6 +23,29 @@ function finiteOrNull(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+// Best billed figure derivable from one source's accumulated counters.
+//
+// Providers report input/output/total as three INDEPENDENT optional fields
+// (e.g. an OpenAI-compatible gateway like Versa can report only total_tokens),
+// and both the SQL deltas and chatStreamStore coalesce a never-written column
+// to 0 — so a genuine figure in one field can sit next to a 0 in another.
+// Taking the max of `total` and `input + output` means a coalesced 0 on either
+// side can never mask the real billed amount (each candidate only ever
+// UNDER-counts, so the larger one is the closest to what was billed).
+function billedFromCounters(
+  input: number | null | undefined,
+  output: number | null | undefined,
+  total: number | null | undefined
+): number | null {
+  const inputTokens = finiteOrNull(input);
+  const outputTokens = finiteOrNull(output);
+  const sum =
+    inputTokens !== null || outputTokens !== null ? (inputTokens ?? 0) + (outputTokens ?? 0) : null;
+  const totalTokens = finiteOrNull(total);
+  if (totalTokens !== null && sum !== null) return Math.max(totalTokens, sum);
+  return totalTokens ?? sum;
+}
+
 /**
  * The accumulated (billed) tokens for a conversation. Prefers the live
  * streaming TokenState's accumulated counters; a resumed session with no live
@@ -36,23 +59,21 @@ export function selectBilledTokens(
 ): number | null {
   // Prefer the live accumulated counters from the streaming TokenState.
   if (tokenState) {
-    const input = finiteOrNull(tokenState.accumulatedInputTokens);
-    const output = finiteOrNull(tokenState.accumulatedOutputTokens);
-    if (input !== null || output !== null) {
-      return (input ?? 0) + (output ?? 0);
-    }
-    const total = finiteOrNull(tokenState.accumulatedTotalTokens);
-    if (total !== null) return total;
+    const billed = billedFromCounters(
+      tokenState.accumulatedInputTokens,
+      tokenState.accumulatedOutputTokens,
+      tokenState.accumulatedTotalTokens
+    );
+    if (billed !== null) return billed;
   }
   // Resumed session with no live TokenState: use the persisted accumulated row.
   if (session) {
-    const total = finiteOrNull(session.accumulated_total_tokens);
-    if (total !== null) return total;
-    const input = finiteOrNull(session.accumulated_input_tokens);
-    const output = finiteOrNull(session.accumulated_output_tokens);
-    if (input !== null || output !== null) {
-      return (input ?? 0) + (output ?? 0);
-    }
+    const billed = billedFromCounters(
+      session.accumulated_input_tokens,
+      session.accumulated_output_tokens,
+      session.accumulated_total_tokens
+    );
+    if (billed !== null) return billed;
   }
   return null;
 }
