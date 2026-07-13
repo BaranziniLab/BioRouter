@@ -39,12 +39,27 @@ before merging.
 | 2 | Server & cancel | `agent-loop-server` | BR-6, 7, 52, 61, 62 | **in progress** |
 | 3 | Verification & done-ness | `agent-loop-verify` | BR-47, 48, 49, 50, 51 (needs BR-19) | pending |
 | 3 | Runtime & perf tail | `agent-loop-perf` | BR-53, 54, 55, 56, 57, 58, 59 | pending |
+| 3 | **Cross-platform** | `agent-loop-xplat` | **BR-68** (windows/linux command safety + shlex tokenizer fix), **BR-69** (linux Landlock + windows sandbox tier), **BR-70** (cross-compile CI gate), GAP-2 PID-reuse fix | pending |
+| 3 | Frontend cleanup | `agent-loop-frontend` | pre-existing lint (~40) + vitest reds (biorouterd.test.ts, ExtensionModal.test.tsx) | pending |
 
 Dependency notes: cluster *verify* needs BR-19 (hooks) merged; cluster *server*
 builds on BR-33 (wave 0); BR-16 is subsumed by BR-33; BR-47 builds on BR-19.
 
 ## Log
 
+- **2026-07-13** — **Cross-platform audit** (docs/agent-loop-fixes/CROSS-PLATFORM.md) +
+  design specs BR-68/69/70 committed (bd18d8ab). Verdict: **zero compile BREAKs** —
+  the branch builds on macOS/Windows/Linux (every `#[cfg]` has a complementary arm;
+  `libc` is correctly `[target.'cfg(unix)'.dependencies]`). But the campaign's
+  *safety* work is POSIX-only in substance. Three gaps now scheduled for Wave 3:
+  **GAP-1** on Windows the catastrophic denylist covers ~0 real threats yet loads,
+  self-tests pass and reports as ON (users told they are protected when they are not);
+  **GAP-2** BR-37's orphan reaper has no PID-reuse guard on Windows
+  (`is_group_leader()` → `true`), so a stale pidfile + recycled PID can
+  `taskkill /F /T` an innocent process tree — a bug this campaign introduced;
+  **GAP-3** BR-21 tokenizes argv with POSIX `shlex`, mangling every absolute Windows
+  path, so Windows rules will silently not match until fixed (GAP-1 + GAP-3 must ship
+  together). Docker cross-checks (linux rust:1.92-bullseye, windows mingw) running.
 - **2026-07-13** — **Decisions signed off** (user: "proceed with all of the default
   options"): flags stay default-off (checkpoints / sandbox / budgets remain opt-in,
   so merging changes no runtime behaviour); BR-54 SharedMcpPool **will be built** in
