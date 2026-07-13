@@ -24,6 +24,7 @@ use crate::agents::resource_refs::{
     canonical_builtin_extension_name, extract_resource_refs, ResourceRefs,
 };
 use crate::agents::retry::{RetryManager, RetryResult};
+use crate::agents::stall::{StallAction, StallCheckConfig, StallWatch};
 use crate::agents::subagent_task_config::TaskConfig;
 use crate::agents::subagent_tool::{
     create_subagent_tool, handle_subagent_tool, SUBAGENT_TOOL_NAME,
@@ -1165,6 +1166,53 @@ impl Agent {
         }
     }
 
+    /// BR-32 loop seam: the periodic "are you looping?" progress check, and the
+    /// staged response to its verdict.
+    ///
+    /// The `/goal` loop has had real stall detection for a while (fuzzy
+    /// similarity of the judge's feedback across attempts, a counter that does
+    /// NOT reset when tools run, a graceful give-up) — but only for sessions with
+    /// a goal set, which is not where most stuck loops happen. This runs the same
+    /// idea for *every* session, on a schedule: nothing until a single turn has
+    /// already burned [`stall::StallCheckConfig::first_check_at`] actions without
+    /// returning to the user, then one small fast-model call every
+    /// `interval` actions. See [`crate::agents::stall`].
+    ///
+    /// Skipped when a `/goal` is active: that session already pays for an LLM
+    /// judge on every stop attempt and owns a non-resetting stall budget, so a
+    /// second detector would double the cost and could fight the goal's own
+    /// give-up. Fail-open everywhere — no tail, no provider, a provider error, or
+    /// an unreadable verdict all mean [`StallAction::Proceed`].
+    async fn stall_check(
+        &self,
+        session_id: &str,
+        conversation: &Conversation,
+        actions_taken: u32,
+        config: &StallCheckConfig,
+        watch: &mut StallWatch,
+    ) -> StallAction {
+        if !config.due(actions_taken) || watch.has_given_up() {
+            return StallAction::Proceed;
+        }
+        if self.active_goal(session_id).await.is_some() {
+            return StallAction::Proceed;
+        }
+        let Some(tail) = crate::agents::stall::progress_tail(conversation) else {
+            return StallAction::Proceed;
+        };
+        let Ok(provider) = self.provider().await else {
+            return StallAction::Proceed;
+        };
+        let verdict = crate::agents::stall::check_progress(
+            provider,
+            &tail,
+            actions_taken,
+            watch.last_reason(),
+        )
+        .await;
+        watch.record(verdict.as_deref(), config)
+    }
+
     /// Record this turn's provider usage exactly once for token accounting
     /// (no-op when the turn reported none, e.g. an error before the first usage chunk).
     async fn record_turn_usage(
@@ -2255,6 +2303,15 @@ impl Agent {
             // reads touch the filesystem, so we avoid doing it per tool result).
             let tool_output_guardrail =
                 crate::guardrails::tool_output::ToolOutputGuardrailMode::from_config();
+            // BR-32: the /goal stall detector, generalized to ordinary chat. Both
+            // resolved once per reply (config reads hit the filesystem).
+            let stall_config = crate::agents::stall::StallCheckConfig::from_config(Config::global());
+            let mut stall_watch = crate::agents::stall::StallWatch::default();
+            // Set once the stall check has told the model to wrap up: the action
+            // count by which this turn must be over, so a model that ignores the
+            // give-up instruction and keeps calling tools cannot spin all the way
+            // to `max_turns`.
+            let mut stall_deadline: Option<u32> = None;
 
             loop {
                 if is_token_cancelled(&cancel_token) {
@@ -2292,6 +2349,20 @@ impl Agent {
                     );
                     break;
                 }
+                // BR-32: the stall check already told the model to wrap up and it
+                // kept going. End the turn rather than let a confirmed loop run to
+                // the `max_turns` cap.
+                if stall_deadline.is_some_and(|deadline| turns_taken > deadline) {
+                    let reason = stall_watch
+                        .last_reason()
+                        .unwrap_or("repeating the same actions without progress")
+                        .to_string();
+                    warn!("stall give-up ignored; ending the turn at action {turns_taken}");
+                    yield AgentEvent::Message(
+                        Message::assistant().with_text(crate::agents::stall::stopped_message(&reason))
+                    );
+                    break;
+                }
 
                 // Soft interrupt: inject any user messages queued mid-turn at this
                 // safe boundary (after the previous turn's tools completed, before
@@ -2302,6 +2373,72 @@ impl Agent {
                     session_manager.add_message(&session_config.id, &m).await?;
                     conversation.push(m.clone());
                     yield AgentEvent::Message(m);
+                }
+
+                // BR-32: periodic "are you looping?" check for a turn that has been
+                // running a long time without returning to the user. Off in normal
+                // chat (nothing gets 30 actions deep); the LLM call is fail-open, so
+                // an error here can never break a turn.
+                match self.stall_check(
+                    &session_config.id,
+                    &conversation,
+                    turns_taken,
+                    &stall_config,
+                    &mut stall_watch,
+                ).await {
+                    StallAction::Proceed => {}
+                    StallAction::Nudge { reason } => {
+                        info!(actions = turns_taken, "stall check flagged a loop; nudging the model");
+                        let nudge = Message::user()
+                            .with_text(crate::agents::stall::nudge_instruction(&reason, turns_taken))
+                            .with_visibility(false, true);
+                        session_manager.add_message(&session_config.id, &nudge).await?;
+                        conversation.push(nudge);
+                        yield AgentEvent::Message(
+                            Message::assistant()
+                                .with_system_notification(
+                                    SystemNotificationType::InlineMessage,
+                                    format!(
+                                        "⏳ Progress check: {}",
+                                        crate::agents::stall::ellipsize(&reason, 200)
+                                    ),
+                                )
+                                .user_only(),
+                        );
+                    }
+                    StallAction::GiveUp { reason, flags, stalled } => {
+                        warn!(
+                            actions = turns_taken,
+                            flags,
+                            stalled,
+                            "stall check gave up; asking for a best-effort answer"
+                        );
+                        // The model gets a short grace window to write its wrap-up;
+                        // after that the turn ends whether or not it complied.
+                        stall_deadline =
+                            Some(turns_taken + crate::agents::stall::STALL_WRAPUP_GRACE);
+                        let wrapup = Message::user()
+                            .with_text(crate::agents::stall::giveup_instruction(&reason))
+                            .with_visibility(false, true);
+                        session_manager.add_message(&session_config.id, &wrapup).await?;
+                        conversation.push(wrapup);
+                        let why = if stalled {
+                            "the same loop kept repeating"
+                        } else {
+                            "no progress across several checks"
+                        };
+                        yield AgentEvent::Message(
+                            Message::assistant()
+                                .with_system_notification(
+                                    SystemNotificationType::InlineMessage,
+                                    format!(
+                                        "⏳ Stopped looping after {flags} progress check(s) — {why}. \
+                                         Wrapping up with a best-effort answer."
+                                    ),
+                                )
+                                .user_only(),
+                        );
+                    }
                 }
 
                 let conversation_with_moim = self
@@ -3514,5 +3651,230 @@ mod tests {
         );
 
         Ok(())
+    }
+}
+
+/// BR-32: the reply loop's stall-check seam — when it runs, when it stays silent,
+/// and who owns stall detection when a `/goal` is set.
+#[cfg(test)]
+mod stall_seam_tests {
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::model::ModelConfig;
+    use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
+    use crate::providers::errors::ProviderError;
+    use crate::session::session_manager::SessionType;
+    use crate::session::SessionManager;
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::TempDir;
+
+    /// A judge that always reports a loop, and counts how often it was consulted —
+    /// so a test can assert the check did NOT cost a provider round-trip.
+    struct LoopyJudge {
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for LoopyJudge {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new(
+                "loopy",
+                "Loopy",
+                "",
+                "loopy-model",
+                vec!["loopy-model"],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "loopy"
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok((
+                Message::assistant().with_text(
+                    r#"{"looping": true, "reason": "the same failing shell command, six times"}"#,
+                ),
+                ProviderUsage::new("loopy-model".to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("loopy-model")
+        }
+    }
+
+    /// An agent over an isolated session store, wired to the counting judge.
+    async fn agent_with_judge(dir: &std::path::Path) -> (Agent, String, Arc<AtomicUsize>) {
+        let session_manager = Arc::new(SessionManager::new(dir.to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.to_path_buf()));
+        let agent = Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        ));
+        let session_id = agent
+            .config
+            .session_manager
+            .create_session(PathBuf::from("."), "stall".to_string(), SessionType::User)
+            .await
+            .unwrap()
+            .id;
+        let calls = Arc::new(AtomicUsize::new(0));
+        agent
+            .update_provider(
+                Arc::new(LoopyJudge {
+                    calls: Arc::clone(&calls),
+                }),
+                &session_id,
+            )
+            .await
+            .unwrap();
+        (agent, session_id, calls)
+    }
+
+    fn busy_conversation() -> Conversation {
+        let mut conversation = Conversation::default();
+        conversation.push(Message::user().with_text("fix the failing build"));
+        conversation.push(Message::assistant().with_text("Running the build again."));
+        conversation
+    }
+
+    #[tokio::test]
+    async fn a_normal_turn_never_pays_for_the_check() {
+        let dir = TempDir::new().unwrap();
+        let (agent, session_id, calls) = agent_with_judge(dir.path()).await;
+        let config = StallCheckConfig::default();
+        let mut watch = StallWatch::default();
+
+        for actions in [1u32, 12, 29] {
+            let action = agent
+                .stall_check(
+                    &session_id,
+                    &busy_conversation(),
+                    actions,
+                    &config,
+                    &mut watch,
+                )
+                .await;
+            assert_eq!(action, StallAction::Proceed);
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "no provider round-trip before the threshold"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_long_turn_is_checked_and_nudged() {
+        let dir = TempDir::new().unwrap();
+        let (agent, session_id, calls) = agent_with_judge(dir.path()).await;
+        let config = StallCheckConfig::default();
+        let mut watch = StallWatch::default();
+
+        let action = agent
+            .stall_check(&session_id, &busy_conversation(), 30, &config, &mut watch)
+            .await;
+        match action {
+            StallAction::Nudge { reason } => assert!(reason.contains("same failing shell command")),
+            other => panic!("expected a nudge, got {other:?}"),
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "exactly one check");
+    }
+
+    #[tokio::test]
+    async fn a_goal_session_keeps_its_own_stall_detector() {
+        let dir = TempDir::new().unwrap();
+        let (agent, session_id, calls) = agent_with_judge(dir.path()).await;
+        agent
+            .set_goal(&session_id, "the build passes".to_string())
+            .await;
+        let config = StallCheckConfig::default();
+        let mut watch = StallWatch::default();
+
+        let action = agent
+            .stall_check(&session_id, &busy_conversation(), 30, &config, &mut watch)
+            .await;
+        assert_eq!(
+            action,
+            StallAction::Proceed,
+            "the goal loop already judges every stop and owns its own stall budget"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "a goal session must not pay for a second loop judge"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_gave_up_is_not_re_checked() {
+        let dir = TempDir::new().unwrap();
+        let (agent, session_id, calls) = agent_with_judge(dir.path()).await;
+        let config = StallCheckConfig::default();
+        let mut watch = StallWatch::default();
+
+        // Three near-identical looping verdicts (checks at 30/40/50) → give up.
+        for actions in [30u32, 40, 50] {
+            agent
+                .stall_check(
+                    &session_id,
+                    &busy_conversation(),
+                    actions,
+                    &config,
+                    &mut watch,
+                )
+                .await;
+        }
+        assert!(watch.has_given_up());
+        let checks_at_giveup = calls.load(Ordering::SeqCst);
+        assert_eq!(checks_at_giveup, 3);
+
+        // The wrap-up window must not re-run the judge.
+        let action = agent
+            .stall_check(&session_id, &busy_conversation(), 60, &config, &mut watch)
+            .await;
+        assert_eq!(action, StallAction::Proceed);
+        assert_eq!(calls.load(Ordering::SeqCst), checks_at_giveup);
+    }
+
+    #[tokio::test]
+    async fn a_provider_less_agent_fails_open() {
+        let dir = TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        ));
+        let mut watch = StallWatch::default();
+
+        let action = agent
+            .stall_check(
+                "no-such-session",
+                &busy_conversation(),
+                30,
+                &StallCheckConfig::default(),
+                &mut watch,
+            )
+            .await;
+        assert_eq!(action, StallAction::Proceed, "no provider → no verdict");
     }
 }
