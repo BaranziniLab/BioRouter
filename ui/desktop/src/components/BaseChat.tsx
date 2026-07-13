@@ -1038,13 +1038,7 @@ function BaseChatContent({
     handleSubmit(textValue, attachments);
   };
 
-  const { sessionCosts } = useCostTracking({
-    sessionInputTokens: session?.accumulated_input_tokens || 0,
-    sessionOutputTokens: session?.accumulated_output_tokens || 0,
-    localInputTokens: 0,
-    localOutputTokens: 0,
-    session,
-  });
+  const { sessionCosts, modelRows } = useCostTracking({ session });
 
   const workflow = session?.workflow;
 
@@ -1499,6 +1493,7 @@ function BaseChatContent({
         messages={messages}
         disableAnimation={disableAnimation}
         sessionCosts={sessionCosts}
+        modelCostRows={modelRows}
         workflow={workflow}
         workflowAccepted={!hasNotAcceptedWorkflow}
         initialPrompt={initialPrompt}
