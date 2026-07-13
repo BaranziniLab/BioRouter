@@ -945,6 +945,15 @@ export type ModelRef = {
  * aggregate together as the "unknown" group.
  */
 export type ModelUsageRow = {
+    /**
+     * Input tokens written to the prompt cache.
+     */
+    cacheCreationTokens: number;
+    /**
+     * Input tokens served from the prompt cache (0 for turns recorded before
+     * cache capture landed — the column is NULL there and `COALESCE`s to 0).
+     */
+    cacheReadTokens: number;
     inputTokens: number;
     modelId?: string | null;
     outputTokens: number;
@@ -1753,7 +1762,17 @@ export type UsageReportResponse = {
  * read as "at least this much" rather than exact.
  */
 export type UsageReportRow = {
+    cacheCreationTokens: number;
+    /**
+     * Prompt-cache read/creation tokens in the bucket (0 when unrecorded).
+     */
+    cacheReadTokens: number;
     cost?: number | null;
+    /**
+     * `true` when the bucket's `cost` omits cache tokens because a contributing
+     * priced model has no cache rate on file — so `cost` is a lower bound.
+     */
+    costExcludesCache: boolean;
     date?: string | null;
     hasUnpriced: boolean;
     inputTokens: number;
@@ -1797,15 +1816,25 @@ export type UsageSummaryResponse = UsageSummary & {
 };
 
 /**
- * Token + cost totals for a time span, priced through [`model_cost`].
+ * Token + cost totals for a time span, priced through [`model_cost_with_cache`].
  */
 export type UsageTotals = {
+    cacheCreationTokens: number;
+    /**
+     * Prompt-cache read/creation tokens in the span (0 when unrecorded).
+     */
+    cacheReadTokens: number;
     /**
      * Dollar cost of the priced turns, or `None` when nothing in the span is
      * priced. Priced-but-partial spans return the priced sum with
      * `has_unpriced = true`.
      */
     cost?: number | null;
+    /**
+     * `true` when `cost` omits cache tokens (a priced model without a cache
+     * rate carried cache tokens) — the figure is then a lower bound.
+     */
+    costExcludesCache: boolean;
     hasUnpriced: boolean;
     inputTokens: number;
     outputTokens: number;

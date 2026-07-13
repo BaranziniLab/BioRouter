@@ -161,9 +161,12 @@ mod tests {
             input_tokens: total_tokens,
             output_tokens: 0,
             total_tokens,
+            cache_read_tokens: 0,
+            cache_creation_tokens: 0,
             turns: 1,
             cost,
             has_unpriced,
+            cost_excludes_cache: false,
         }
     }
 
@@ -259,9 +262,12 @@ mod tests {
                     input_tokens: 10,
                     output_tokens: 5,
                     total_tokens: 15,
+                    cache_read_tokens: 0,
+                    cache_creation_tokens: 0,
                     turns: 1,
                     cost: Some(1.25),
                     has_unpriced: true,
+                    cost_excludes_cache: false,
                 },
                 UsageReportRow {
                     date: Some("2026-07-11".to_string()),
@@ -270,9 +276,12 @@ mod tests {
                     input_tokens: 20,
                     output_tokens: 10,
                     total_tokens: 30,
+                    cache_read_tokens: 900,
+                    cache_creation_tokens: 0,
                     turns: 2,
                     cost: None,
                     has_unpriced: true,
+                    cost_excludes_cache: false,
                 },
             ],
         };
@@ -293,6 +302,15 @@ mod tests {
         assert_eq!(
             rows[1].get("modelId").and_then(|v| v.as_str()),
             Some("glm-5.2")
+        );
+        // Cache buckets are surfaced camelCased on each row.
+        assert_eq!(
+            rows[1].get("cacheReadTokens").and_then(|v| v.as_i64()),
+            Some(900)
+        );
+        assert_eq!(
+            rows[0].get("cacheCreationTokens").and_then(|v| v.as_i64()),
+            Some(0)
         );
     }
 }

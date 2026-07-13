@@ -6787,9 +6787,21 @@
           "inputTokens",
           "outputTokens",
           "totalTokens",
+          "cacheReadTokens",
+          "cacheCreationTokens",
           "turns"
         ],
         "properties": {
+          "cacheCreationTokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Input tokens written to the prompt cache."
+          },
+          "cacheReadTokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Input tokens served from the prompt cache (0 for turns recorded before\ncache capture landed — the column is NULL there and `COALESCE`s to 0)."
+          },
           "inputTokens": {
             "type": "integer",
             "format": "int64"
@@ -8885,14 +8897,30 @@
           "inputTokens",
           "outputTokens",
           "totalTokens",
+          "cacheReadTokens",
+          "cacheCreationTokens",
           "turns",
-          "hasUnpriced"
+          "hasUnpriced",
+          "costExcludesCache"
         ],
         "properties": {
+          "cacheCreationTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cacheReadTokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Prompt-cache read/creation tokens in the bucket (0 when unrecorded)."
+          },
           "cost": {
             "type": "number",
             "format": "double",
             "nullable": true
+          },
+          "costExcludesCache": {
+            "type": "boolean",
+            "description": "`true` when the bucket's `cost` omits cache tokens because a contributing\npriced model has no cache rate on file — so `cost` is a lower bound."
           },
           "date": {
             "type": "string",
@@ -8986,20 +9014,36 @@
       },
       "UsageTotals": {
         "type": "object",
-        "description": "Token + cost totals for a time span, priced through [`model_cost`].",
+        "description": "Token + cost totals for a time span, priced through [`model_cost_with_cache`].",
         "required": [
           "inputTokens",
           "outputTokens",
           "totalTokens",
+          "cacheReadTokens",
+          "cacheCreationTokens",
           "turns",
-          "hasUnpriced"
+          "hasUnpriced",
+          "costExcludesCache"
         ],
         "properties": {
+          "cacheCreationTokens": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cacheReadTokens": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Prompt-cache read/creation tokens in the span (0 when unrecorded)."
+          },
           "cost": {
             "type": "number",
             "format": "double",
             "description": "Dollar cost of the priced turns, or `None` when nothing in the span is\npriced. Priced-but-partial spans return the priced sum with\n`has_unpriced = true`.",
             "nullable": true
+          },
+          "costExcludesCache": {
+            "type": "boolean",
+            "description": "`true` when `cost` omits cache tokens (a priced model without a cache\nrate carried cache tokens) — the figure is then a lower bound."
           },
           "hasUnpriced": {
             "type": "boolean"

@@ -11,9 +11,12 @@ const dayRows: UsageReportRow[] = [
     inputTokens: 1_000_100,
     outputTokens: 0,
     totalTokens: 1_000_100,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     turns: 7,
     cost: 1.4,
     hasUnpriced: true,
+    costExcludesCache: false,
   },
   {
     date: '2026-07-11',
@@ -22,9 +25,12 @@ const dayRows: UsageReportRow[] = [
     inputTokens: 2_000_000,
     outputTokens: 1_000_000,
     totalTokens: 3_000_000,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     turns: 3,
     cost: 7.2,
     hasUnpriced: false,
+    costExcludesCache: false,
   },
 ];
 
@@ -36,9 +42,12 @@ const modelRows: UsageReportRow[] = [
     inputTokens: 3_000_000,
     outputTokens: 1_000_000,
     totalTokens: 4_000_000,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     turns: 8,
     cost: 8.6,
     hasUnpriced: false,
+    costExcludesCache: false,
   },
   {
     date: null,
@@ -47,9 +56,12 @@ const modelRows: UsageReportRow[] = [
     inputTokens: 500,
     outputTokens: 500,
     totalTokens: 1_000,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
     turns: 2,
     cost: null,
     hasUnpriced: true,
+    costExcludesCache: false,
   },
 ];
 
@@ -60,17 +72,23 @@ function summary(overrides: Partial<UsageSummaryResponse> = {}): UsageSummaryRes
       inputTokens: 33_000_000,
       outputTokens: 0,
       totalTokens: 33_000_000,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
       turns: 42,
       cost: 125,
       hasUnpriced: false,
+      costExcludesCache: false,
     },
     allTime: {
       inputTokens: 66_000_000,
       outputTokens: 0,
       totalTokens: 66_000_000,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
       turns: 84,
       cost: 250,
       hasUnpriced: false,
+      costExcludesCache: false,
     },
     monthlyTokenLimit: null,
     monthlyDollarLimit: null,
@@ -174,9 +192,12 @@ describe('UsagePanel', () => {
             inputTokens: 500,
             outputTokens: 0,
             totalTokens: 500,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
             turns: 1,
             cost: null,
             hasUnpriced: true,
+            costExcludesCache: false,
           },
           monthlyDollarLimit: 100,
           dollarPercent: null,
@@ -194,5 +215,63 @@ describe('UsagePanel', () => {
   it('renders empty-state copy when a range has no usage', () => {
     render(<UsagePanel summary={summary()} dayRows={[]} modelRows={[]} />);
     expect(screen.getAllByText('No usage in this range.').length).toBe(2);
+  });
+
+  it('shows a Cache column, MTD cached figure, and the excluded-cost note when cache is present', () => {
+    const cachedModels: UsageReportRow[] = [
+      {
+        date: null,
+        modelId: 'claude-sonnet-4',
+        provider: 'anthropic',
+        inputTokens: 1_000,
+        outputTokens: 200,
+        totalTokens: 1_800,
+        cacheReadTokens: 500,
+        cacheCreationTokens: 100,
+        turns: 1,
+        cost: 0.01,
+        hasUnpriced: false,
+        costExcludesCache: true,
+      },
+    ];
+    render(
+      <UsagePanel
+        summary={summary({
+          monthToDate: {
+            inputTokens: 1_000,
+            outputTokens: 200,
+            totalTokens: 1_800,
+            cacheReadTokens: 500,
+            cacheCreationTokens: 100,
+            turns: 1,
+            cost: 0.01,
+            hasUnpriced: false,
+            costExcludesCache: true,
+          },
+        })}
+        dayRows={[]}
+        modelRows={cachedModels}
+      />
+    );
+    // MTD line shows the combined cached tokens (500 + 100 = 600).
+    expect(within(screen.getByTestId('usage-mtd-cache')).getByText(/600 cached/)).toBeTruthy();
+    // Model table gains a Cache column showing the combined 600.
+    const table = screen.getByTestId('usage-model-table');
+    const row = within(table).getByText('anthropic/claude-sonnet-4').closest('tr')!;
+    const cells = within(row)
+      .getAllByRole('cell')
+      .map((c) => c.textContent);
+    expect(cells).toEqual(['anthropic/claude-sonnet-4', '1', '1,000', '200', '600', '$0.01']);
+    // The cost-excludes-cache note appears.
+    expect(screen.getByTestId('usage-cache-excluded-note')).toBeTruthy();
+  });
+
+  it('omits the Cache column when no row has cache tokens', () => {
+    render(<UsagePanel summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
+    const table = screen.getByTestId('usage-model-table');
+    // No Cache header cell.
+    expect(within(table).queryByText('Cache')).toBeNull();
+    expect(screen.queryByTestId('usage-mtd-cache')).toBeNull();
+    expect(screen.queryByTestId('usage-cache-excluded-note')).toBeNull();
   });
 });
