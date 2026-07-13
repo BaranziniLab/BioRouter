@@ -134,7 +134,18 @@ pub struct ReplyContext {
     pub toolshim_tools: Vec<Tool>,
     pub system_prompt: String,
     pub biorouter_mode: BioRouterMode,
-    pub initial_messages: Vec<Message>,
+    /// The transcript as it stood before the turn started — the snapshot the retry
+    /// path restores from. A `Conversation` (not a `Vec<Message>`) so taking it is
+    /// a refcount bump rather than a deep copy of the history (BR-56).
+    pub initial_messages: Conversation,
+}
+
+/// BR-56: normalize the transcript before every provider call, not just once per
+/// reply. Kill switch: `BIOROUTER_NORMALIZE_EACH_TURN=false`.
+fn normalize_each_turn() -> bool {
+    Config::global()
+        .get_param::<bool>("BIOROUTER_NORMALIZE_EACH_TURN")
+        .unwrap_or(true)
 }
 
 pub struct ToolCategorizeResult {
@@ -257,6 +268,14 @@ pub struct Agent {
     /// BR-63: per-session sticky reasoning effort, set by `/effort`. A per-turn
     /// effort on the `SessionConfig` (the GUI composer toggle) wins over it.
     pub(super) efforts: crate::agents::effort::EffortRegistry,
+    /// BR-56: caches the normalized prefix of the transcript so `fix_conversation`
+    /// only re-runs over the messages appended since the last call — the agent
+    /// normalizes at least once per reply and once per provider call, and a full
+    /// pass is O(history). A prefix is only reused while every message in it
+    /// fingerprints the same, so a rewritten history (compaction, `HistoryReplaced`,
+    /// a session reload, a different session on a shared agent) simply misses and
+    /// falls back to a full normalization.
+    pub(super) normalizer: crate::conversation::SharedNormalizer,
 }
 
 #[derive(Clone, Debug)]
@@ -430,6 +449,7 @@ impl Agent {
             failure_loop: Self::failure_loop_config(Config::global()),
             tool_risks,
             efforts: Default::default(),
+            normalizer: Default::default(),
         }
     }
 
@@ -843,19 +863,23 @@ impl Agent {
         unfixed_conversation: Conversation,
         working_dir: &std::path::Path,
     ) -> Result<ReplyContext> {
-        let unfixed_messages = unfixed_conversation.messages().clone();
-        let (conversation, issues) = fix_conversation(unfixed_conversation.clone());
+        // BR-56: the pre-fix copy exists only to render the debug diff, so only pay
+        // for it when that log line will actually be emitted. The `Conversation`
+        // clone itself is now a refcount bump.
+        let unfixed_messages =
+            tracing::enabled!(tracing::Level::DEBUG).then(|| unfixed_conversation.clone());
+        let (conversation, issues) = self.normalizer.normalize(unfixed_conversation);
         if !issues.is_empty() {
-            debug!(
-                "Conversation issue fixed: {}",
-                debug_conversation_fix(
-                    unfixed_messages.as_slice(),
-                    conversation.messages(),
-                    &issues
-                )
-            );
+            if let Some(unfixed) = &unfixed_messages {
+                debug!(
+                    "Conversation issue fixed: {}",
+                    debug_conversation_fix(unfixed.messages(), conversation.messages(), &issues)
+                );
+            }
         }
-        let initial_messages = conversation.messages().clone();
+        // Cheap now that the transcript is Arc-shared: this is the pre-turn
+        // snapshot the retry path restores from.
+        let initial_messages = conversation.clone();
 
         let mut conversation = conversation;
         if let Some(context) = self
@@ -1162,19 +1186,34 @@ impl Agent {
 
     /// Assemble the per-turn model context by injecting MOIM ("message of the
     /// moment") into a clone of the live conversation, leaving persisted history untouched.
+    ///
+    /// BR-56: the transcript is normalized here — i.e. before *every* provider
+    /// call, not once per reply. Inside a multi-tool turn the loop appends
+    /// assistant/tool messages between provider calls, so a reply-time-only fix
+    /// let the next call receive an un-normalized suffix (e.g. two consecutive
+    /// assistant messages). MOIM injection already re-normalized on the way
+    /// through; this closes the same hole for sessions with no MOIM provider.
+    /// `BIOROUTER_NORMALIZE_EACH_TURN=false` restores the old behaviour.
     async fn assemble_turn_context(
         &self,
         session_id: &str,
         conversation: &Conversation,
         working_dir: &std::path::Path,
     ) -> Conversation {
-        super::moim::inject_moim(
+        let (conversation, moim_injected) = super::moim::inject_moim(
             session_id,
             conversation.clone(),
             &self.extension_manager,
             working_dir,
+            &self.normalizer,
         )
-        .await
+        .await;
+
+        if moim_injected || !normalize_each_turn() {
+            // MOIM injection normalizes on its way through.
+            return conversation;
+        }
+        self.normalizer.normalize(conversation).0
     }
 
     /// Run the per-tool inspection gauntlet (inspectors → permission judge →
@@ -3762,7 +3801,7 @@ impl Agent {
                         // validation). Bounded by `provider_error_retries`, and by
                         // `max_turns` like every other iteration.
                     } else {
-                        match self.handle_retry_logic(&mut conversation, &session_config, &initial_messages).await {
+                        match self.handle_retry_logic(&mut conversation, &session_config, initial_messages.messages()).await {
                             Ok(should_retry) => {
                                 if should_retry {
                                     info!("Retry logic triggered, restarting agent loop");

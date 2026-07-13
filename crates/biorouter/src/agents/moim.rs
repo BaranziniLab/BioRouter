@@ -1,7 +1,7 @@
 use crate::agents::extension_manager::{ExtensionManager, MOIM_CLOSE_TAG, MOIM_OPEN_TAG};
 use crate::context_budget::{estimate_tokens, max_moim_tokens, truncate_to_tokens};
 use crate::conversation::message::Message;
-use crate::conversation::{fix_conversation, Conversation};
+use crate::conversation::{Conversation, SharedNormalizer};
 use rmcp::model::Role;
 use std::path::Path;
 
@@ -58,14 +58,22 @@ fn strip_existing_moim(messages: &mut Vec<Message>) {
     });
 }
 
+/// Inject the MOIM `<info-msg>` block into the conversation handed to the model,
+/// returning the (re-normalized) conversation and whether a block was injected.
+///
+/// BR-56: normalization goes through the agent's [`SharedNormalizer`], which
+/// re-fixes only the messages appended since the last call instead of the whole
+/// history — this runs on every provider call, so in a long multi-tool turn it was
+/// the single most repeated O(history) pass in the loop.
 pub async fn inject_moim(
     session_id: &str,
     conversation: Conversation,
     extension_manager: &ExtensionManager,
     working_dir: &Path,
-) -> Conversation {
+    normalizer: &SharedNormalizer,
+) -> (Conversation, bool) {
     if SKIP.with(|f| f.get()) {
-        return conversation;
+        return (conversation, false);
     }
 
     if let Some(moim) = extension_manager
@@ -94,7 +102,7 @@ pub async fn inject_moim(
             .unwrap_or(messages.len());
         messages.insert(idx, Message::user().with_text(moim));
 
-        let (fixed, issues) = fix_conversation(Conversation::new_unvalidated(messages));
+        let (fixed, issues) = normalizer.normalize(Conversation::new_unvalidated(messages));
 
         let has_unexpected_issues = issues.iter().any(|issue| {
             !issue.contains("Merged consecutive user messages")
@@ -103,12 +111,12 @@ pub async fn inject_moim(
 
         if has_unexpected_issues {
             tracing::warn!("MOIM injection caused unexpected issues: {:?}", issues);
-            return conversation;
+            return (conversation, false);
         }
 
-        return fixed;
+        return (fixed, true);
     }
-    conversation
+    (conversation, false)
 }
 
 #[cfg(test)]
@@ -128,7 +136,14 @@ mod tests {
             Message::assistant().with_text("Hi"),
             Message::user().with_text("Bye"),
         ]);
-        let result = inject_moim("test-session-id", conv, &em, &working_dir).await;
+        let (result, _injected) = inject_moim(
+            "test-session-id",
+            conv,
+            &em,
+            &working_dir,
+            &SharedNormalizer::new(),
+        )
+        .await;
         let msgs = result.messages();
 
         // MOIM now inserts after the last assistant, merging with the current
@@ -159,7 +174,14 @@ mod tests {
         let working_dir = PathBuf::from("/test/dir");
 
         let conv = Conversation::new_unvalidated(vec![Message::user().with_text("Hello")]);
-        let result = inject_moim("test-session-id", conv, &em, &working_dir).await;
+        let (result, _injected) = inject_moim(
+            "test-session-id",
+            conv,
+            &em,
+            &working_dir,
+            &SharedNormalizer::new(),
+        )
+        .await;
 
         assert_eq!(result.messages().len(), 1);
 
@@ -224,7 +246,14 @@ mod tests {
             ),
         ]);
 
-        let result = inject_moim("test-session-id", conv, &em, &working_dir).await;
+        let (result, _injected) = inject_moim(
+            "test-session-id",
+            conv,
+            &em,
+            &working_dir,
+            &SharedNormalizer::new(),
+        )
+        .await;
         let msgs = result.messages();
 
         // MOIM must insert AFTER all tool_results following the last assistant, so that
@@ -344,7 +373,14 @@ mod tests {
             Message::assistant().with_text("Hi"),
             Message::user().with_text(sample_moim()),
         ]);
-        let result = inject_moim("test-session-id", conv, &em, &working_dir).await;
+        let (result, _injected) = inject_moim(
+            "test-session-id",
+            conv,
+            &em,
+            &working_dir,
+            &SharedNormalizer::new(),
+        )
+        .await;
 
         assert_eq!(
             count_info_msgs(&result),
