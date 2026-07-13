@@ -79,7 +79,16 @@ const DEFAULT_MAX_TURNS: u32 = 100;
 /// normal work; overridable per session (`max_tool_calls`) or globally
 /// (`BIOROUTER_MAX_TOOL_CALLS`).
 const DEFAULT_MAX_TOOL_CALLS: u32 = 200;
-const DEFAULT_MAX_REPETITIONS: u32 = 3;
+/// BR-29 staged repetition guard, soft stage: the Nth consecutive byte-identical
+/// tool call earns a non-blocking warning injected into the model's context (the
+/// call still runs). Overridable with `BIOROUTER_REPETITION_SOFT_WARN`.
+const DEFAULT_REPETITION_SOFT_WARN: u32 = 3;
+/// BR-29 staged repetition guard, hard stage: the Nth consecutive byte-identical
+/// tool call is denied outright, with an honest "repetition guard" reason (never
+/// the misleading "the user declined"). Overridable with
+/// `BIOROUTER_REPETITION_HARD_STOP`. Set below the soft threshold to disable the
+/// soft stage entirely.
+const DEFAULT_REPETITION_HARD_STOP: u32 = 5;
 const COMPACTION_THINKING_TEXT: &str = "biorouter is compacting the conversation...";
 /// Max consecutive auto-continues for a turn the provider cut off by the output
 /// length limit (`finish_reason == "length"`) with no tool call. Bounded so a
@@ -478,10 +487,20 @@ impl Agent {
             managed,
         )));
 
-        // Add repetition inspector (lower priority - basic repetition checking)
-        tool_inspection_manager.add_inspector(Box::new(RepetitionInspector::new(Some(
-            DEFAULT_MAX_REPETITIONS,
-        ))));
+        // Add repetition inspector (lower priority - basic repetition checking).
+        // BR-29: staged — a soft, non-blocking warning first, a hard stop only if
+        // the model keeps repeating itself through it.
+        let config = Config::global();
+        let soft_warn_at = config
+            .get_param::<u32>("BIOROUTER_REPETITION_SOFT_WARN")
+            .unwrap_or(DEFAULT_REPETITION_SOFT_WARN);
+        let hard_stop_at = config
+            .get_param::<u32>("BIOROUTER_REPETITION_HARD_STOP")
+            .unwrap_or(DEFAULT_REPETITION_HARD_STOP);
+        tool_inspection_manager.add_inspector(Box::new(RepetitionInspector::staged(
+            soft_warn_at,
+            hard_stop_at,
+        )));
 
         // Add user-configured PreToolUse hooks (runs last)
         tool_inspection_manager
@@ -1222,6 +1241,16 @@ impl Agent {
                     // Non-bypassable safety block: the user did not decline, the
                     // command is refused outright, so return the reason directly.
                     Some(result) if result.inspector_name == "security" => result.reason.clone(),
+                    // BR-29: the repetition guard tripped. The user did not
+                    // decline anything — telling the model they did (the old
+                    // DECLINED_RESPONSE) is actively misleading and leaves it
+                    // unable to diagnose the stop. Return the real reason.
+                    Some(result)
+                        if result.inspector_name
+                            == crate::tool_monitor::REPETITION_INSPECTOR_NAME =>
+                    {
+                        result.reason.clone()
+                    }
                     _ => DECLINED_RESPONSE.to_string(),
                 };
                 let mut response = response_msg.lock().await;
@@ -2248,6 +2277,12 @@ impl Agent {
                                         yield AgentEvent::Message(msg);
                                     }
                                 }
+                                // BR-29: soft-stage advisories (e.g. "you have called this
+                                // tool identically 3 times") gathered from inspection and
+                                // injected after this batch's tool results, so the model
+                                // can break the loop itself before the hard stop.
+                                let mut loop_warnings: Vec<String> = Vec::new();
+
                                 if biorouter_mode == BioRouterMode::Chat {
                                     // Skip all remaining tool calls in chat mode
                                     for request in remaining_requests.iter() {
@@ -2279,6 +2314,8 @@ impl Agent {
                                         &request_to_response_map,
                                         cancel_token.clone(),
                                     ).await?;
+
+                                    loop_warnings = crate::tool_inspection::collect_warning_reasons(&inspection_results);
 
                                     let tool_futures_arc = Arc::new(Mutex::new(tool_futures));
 
@@ -2453,6 +2490,23 @@ impl Agent {
                                         yield AgentEvent::Message(final_response.clone());
                                         messages_to_add.push(final_response);
                                     }
+                                }
+
+                                // BR-29 soft stage: the repeated call *ran*; nudge the model
+                                // right after its result so it changes approach before the
+                                // hard stop fires. Model-visible only — this is loop-safety
+                                // plumbing, not something the user needs in the transcript.
+                                if !loop_warnings.is_empty() {
+                                    tracing::info!(
+                                        warnings = loop_warnings.len(),
+                                        "Injecting loop-guard soft warning"
+                                    );
+                                    messages_to_add.push(
+                                        Message::user()
+                                            .with_id(format!("msg_{}", Uuid::new_v4()))
+                                            .with_text(crate::tool_inspection::frame_loop_warnings(&loop_warnings))
+                                            .with_visibility(false, true),
+                                    );
                                 }
 
                                 no_tools_called = false;
