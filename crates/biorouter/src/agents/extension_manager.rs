@@ -1497,6 +1497,15 @@ impl ExtensionManager {
             working_dir.display()
         );
 
+        // BR-1: give the model a bounded, gitignore-aware map of the workspace so
+        // it doesn't rediscover project structure from scratch every session. The
+        // map is cached and token-capped inside `workspace_summary`.
+        if let Some(map) = crate::agents::workspace_summary::workspace_summary(working_dir) {
+            content.push('\n');
+            content.push_str(&map);
+            content.push('\n');
+        }
+
         let platform_clients: Vec<(String, McpClientBox)> = {
             let extensions = self.extensions.lock().await;
             extensions
