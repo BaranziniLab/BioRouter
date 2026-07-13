@@ -46,6 +46,7 @@ use crate::conversation::tool_result_serde::call_tool_result;
 use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
 use crate::managed::ManagedPolicy;
 use crate::mcp_utils::ToolResult;
+use crate::observability::loop_safety::{self, LoopSafetyEvent, LoopSafetyKind};
 use crate::permission::managed_inspector::ManagedPolicyInspector;
 use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
@@ -639,7 +640,23 @@ impl Agent {
         failed_tools
             .iter()
             .filter_map(|tool_name| {
-                crate::tool_monitor::failure_loop_nudge(&self.failure_loop, &outcomes, tool_name)
+                let nudge = crate::tool_monitor::failure_loop_nudge(
+                    &self.failure_loop,
+                    &outcomes,
+                    tool_name,
+                )?;
+                // BR-67: the nudge is a loop-safety decision; put which tool has
+                // been failing, and how long its streak is, on the record.
+                loop_safety::emit(
+                    LoopSafetyEvent::new(LoopSafetyKind::FailureLoopNudge)
+                        .tool(tool_name)
+                        .count(crate::tool_monitor::failing_streak(
+                            &outcomes,
+                            tool_name,
+                            self.failure_loop.similarity_threshold,
+                        )),
+                );
+                Some(nudge)
             })
             .collect()
     }
@@ -2381,6 +2398,13 @@ impl Agent {
 
             loop {
                 if is_token_cancelled(&cancel_token) {
+                    // BR-67: a cancelled turn and a completed turn look identical
+                    // in the logs otherwise.
+                    loop_safety::emit(
+                        LoopSafetyEvent::new(LoopSafetyKind::Cancelled)
+                            .session(&session_config.id)
+                            .count(turns_taken),
+                    );
                     break;
                 }
 
@@ -2400,6 +2424,12 @@ impl Agent {
                 // budget-exhaustion stop is distinguishable from a normal completion.
                 tracing::debug!("agent action {}/{} this turn", turns_taken, max_turns);
                 if turns_taken > max_turns {
+                    loop_safety::emit(
+                        LoopSafetyEvent::new(LoopSafetyKind::TurnLimitStop)
+                            .session(&session_config.id)
+                            .count(turns_taken)
+                            .limit(max_turns),
+                    );
                     yield AgentEvent::Message(
                         Message::assistant().with_text(format!(
                             "I've reached my action limit for this turn ({max_turns} actions without user input), so I'm stopping here rather than because the task is necessarily complete. Would you like me to continue? (raise the cap with `max_turns` / `BIOROUTER_MAX_TURNS`.)"
@@ -2408,6 +2438,12 @@ impl Agent {
                     break;
                 }
                 if tool_calls_taken > max_tool_calls {
+                    loop_safety::emit(
+                        LoopSafetyEvent::new(LoopSafetyKind::ToolCallLimitStop)
+                            .session(&session_config.id)
+                            .count(tool_calls_taken)
+                            .limit(max_tool_calls),
+                    );
                     yield AgentEvent::Message(
                         Message::assistant().with_text(format!(
                             "I've made {tool_calls_taken} tool calls this turn, past my per-turn limit of {max_tool_calls}, so I'm stopping here rather than because the task is necessarily complete. Would you like me to continue? (raise the cap with `max_tool_calls` / `BIOROUTER_MAX_TOOL_CALLS`.)"
@@ -2424,6 +2460,13 @@ impl Agent {
                         .unwrap_or("repeating the same actions without progress")
                         .to_string();
                     warn!("stall give-up ignored; ending the turn at action {turns_taken}");
+                    // BR-67: the judge's `reason` is model prose about the user's
+                    // work — the event carries the action count only.
+                    loop_safety::emit(
+                        LoopSafetyEvent::new(LoopSafetyKind::StallStop)
+                            .session(&session_config.id)
+                            .count(turns_taken),
+                    );
                     yield AgentEvent::Message(
                         Message::assistant().with_text(crate::agents::stall::stopped_message(&reason))
                     );
@@ -2455,6 +2498,11 @@ impl Agent {
                     StallAction::Proceed => {}
                     StallAction::Nudge { reason } => {
                         info!(actions = turns_taken, "stall check flagged a loop; nudging the model");
+                        loop_safety::emit(
+                            LoopSafetyEvent::new(LoopSafetyKind::StallNudge)
+                                .session(&session_config.id)
+                                .count(turns_taken),
+                        );
                         let nudge = Message::user()
                             .with_text(crate::agents::stall::nudge_instruction(&reason, turns_taken))
                             .with_visibility(false, true);
@@ -2478,6 +2526,15 @@ impl Agent {
                             flags,
                             stalled,
                             "stall check gave up; asking for a best-effort answer"
+                        );
+                        // `flags` (how many progress checks flagged this turn) is
+                        // the count that tripped the give-up; the reason prose
+                        // stays out of the trace.
+                        loop_safety::emit(
+                            LoopSafetyEvent::new(LoopSafetyKind::StallGiveUp)
+                                .session(&session_config.id)
+                                .count(flags)
+                                .limit(stall_config.max_flags),
                         );
                         // The model gets a short grace window to write its wrap-up;
                         // after that the turn ends whether or not it complied.
@@ -2758,6 +2815,11 @@ impl Agent {
                                             streak = mistakes.streak(),
                                             "Injecting mistake-streak reflect-and-replan nudge"
                                         );
+                                        loop_safety::emit(
+                                            LoopSafetyEvent::new(LoopSafetyKind::MistakeStreakNudge)
+                                                .session(&session_config.id)
+                                                .count(mistakes.streak()),
+                                        );
                                         loop_warnings.push(nudge);
                                     }
 
@@ -2974,6 +3036,14 @@ impl Agent {
                                     warn!(
                                         "Provider call failed ({provider_err}); retrying with a hint ({attempt}/{limit})"
                                     );
+                                    // BR-67: retries are a loop-safety decision too —
+                                    // the error text itself never enters the trace.
+                                    loop_safety::emit(
+                                        LoopSafetyEvent::new(LoopSafetyKind::ProviderErrorRecover)
+                                            .session(&session_config.id)
+                                            .count(attempt)
+                                            .limit(limit),
+                                    );
                                     yield AgentEvent::Message(
                                         Message::assistant().with_system_notification(
                                             SystemNotificationType::InlineMessage,
@@ -2994,6 +3064,11 @@ impl Agent {
                                     break;
                                 }
                                 crate::agents::mistakes::ProviderErrorAction::Stop { notice } => {
+                                    loop_safety::emit(
+                                        LoopSafetyEvent::new(LoopSafetyKind::ProviderErrorStop)
+                                            .session(&session_config.id)
+                                            .count(mistakes.provider_errors()),
+                                    );
                                     yield AgentEvent::Message(Message::assistant().with_text(notice));
                                     break;
                                 }
