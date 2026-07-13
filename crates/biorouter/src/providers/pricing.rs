@@ -151,9 +151,47 @@ fn xai_pricing(model: &str) -> Option<ProviderModelPricing> {
     }
 }
 
+/// Estimated dollar cost of one completion, or `None` when the model's price is
+/// unknown (local models, subscription providers, an unrecognised model id).
+///
+/// Same precedence the `/config/pricing` route and the CLI's cost line use:
+/// provider-specific overrides first, then the canonical model catalog. Lives
+/// here so the per-reply dollar budget (BR-35) and the display paths can never
+/// disagree about what a turn cost.
+pub fn estimate_cost_usd(
+    provider: &str,
+    model: &str,
+    input_tokens: u64,
+    output_tokens: u64,
+) -> Option<f64> {
+    let (input_cost_per_token, output_cost_per_token) = if let Some(pricing) =
+        provider_model_pricing(provider, model)
+    {
+        (pricing.input_token_cost, pricing.output_token_cost)
+    } else {
+        let canonical = crate::providers::canonical::maybe_get_canonical_model(provider, model)?;
+        (canonical.pricing.prompt?, canonical.pricing.completion?)
+    };
+
+    Some(input_cost_per_token * input_tokens as f64 + output_cost_per_token * output_tokens as f64)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn estimate_cost_prices_a_provider_override() {
+        // groq/llama-3.1-8b-instant: $0.05/M in, $0.08/M out.
+        let cost = estimate_cost_usd("groq", "llama-3.1-8b-instant", 1_000_000, 1_000_000).unwrap();
+        assert!((cost - 0.13).abs() < 1e-9, "expected $0.13, got {cost}");
+    }
+
+    #[test]
+    fn estimate_cost_is_none_for_an_unknown_model() {
+        assert!(estimate_cost_usd("ollama", "llama3", 1_000, 1_000).is_none());
+        assert!(estimate_cost_usd("nope", "not-a-model", 1_000, 1_000).is_none());
+    }
 
     #[test]
     fn openrouter_uses_openrouter_specific_price() {

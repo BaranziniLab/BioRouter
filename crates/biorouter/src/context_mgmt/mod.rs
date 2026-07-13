@@ -1848,6 +1848,7 @@ mod tests {
             schedule_id: None,
             max_turns: None,
             max_tool_calls: None,
+            budget: None,
             retry_config: None,
         }
     }
