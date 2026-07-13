@@ -337,11 +337,13 @@ fn router(state: Arc<AppState>, web_dir: PathBuf, base_path: String) -> Router {
         .route("/api/", any(proxy_api_root))
         .route("/api/{*path}", any(proxy_api));
 
-    // Vite bakes root-absolute asset URLs into the JS bundle too (the minified
-    // `assetsURL` helper `return"/"+n` and literal `"/assets/…"` image refs),
-    // which the shell rewrite cannot reach. Behind a prefix, serve each rewritten
-    // *.js from a dedicated route so those URLs resolve under the prefix; every
-    // other asset (css, fonts, images) falls through to ServeDir unchanged.
+    // Vite bakes root-absolute asset URLs into the JS and CSS bundles too (the
+    // minified `assetsURL` helper `return"/"+n`, literal `"/assets/…"` image
+    // refs, and `url(/assets/…)` font refs in code-split stylesheets), which
+    // the shell rewrite cannot reach. Behind a prefix, serve each rewritten
+    // *.js / *.css from a dedicated route so those URLs resolve under the
+    // prefix; every other asset (fonts, images) falls through to ServeDir
+    // unchanged.
     if !base_path.is_empty() {
         for (route_path, body) in rewritten_asset_scripts(&web_dir, &base_path) {
             let body = Arc::new(body);
@@ -350,6 +352,16 @@ fn router(state: Arc<AppState>, web_dir: PathBuf, base_path: String) -> Router {
                 get(move || {
                     let body = body.clone();
                     async move { js_response(body.as_str()) }
+                }),
+            );
+        }
+        for (route_path, body) in rewritten_asset_stylesheets(&web_dir, &base_path) {
+            let body = Arc::new(body);
+            router = router.route(
+                &route_path,
+                get(move || {
+                    let body = body.clone();
+                    async move { css_response(body.as_str()) }
                 }),
             );
         }
@@ -375,6 +387,15 @@ fn js_response(body: &str) -> Response<Body> {
         .header(header::CONTENT_TYPE, "text/javascript; charset=utf-8")
         .body(Body::from(body.to_string()))
         .expect("valid js response")
+}
+
+/// A stylesheet response with the correct content-type.
+fn css_response(body: &str) -> Response<Body> {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/css; charset=utf-8")
+        .body(Body::from(body.to_string()))
+        .expect("valid css response")
 }
 
 /// Read every `*.js` under `<web_dir>/assets`, rewrite its baked root-absolute
@@ -412,6 +433,40 @@ fn rewrite_asset_js(raw: &str, base_path: &str) -> String {
             "function(n){return\"/\"+n}",
             &format!("function(n){{return\"{base_path}/\"+n}}"),
         )
+}
+
+/// Read every `*.css` under `<web_dir>/assets`, rewrite its baked root-absolute
+/// `url(/assets/…)` references (KaTeX fonts and the like) for the prefix, and
+/// return `(route_path, body)` pairs so each can be served from a dedicated
+/// route.
+fn rewritten_asset_stylesheets(web_dir: &Path, base_path: &str) -> Vec<(String, String)> {
+    let mut sheets = Vec::new();
+    let assets_dir = web_dir.join("assets");
+    let Ok(entries) = std::fs::read_dir(&assets_dir) else {
+        return sheets;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".css") {
+            continue;
+        }
+        if let Ok(raw) = std::fs::read_to_string(entry.path()) {
+            sheets.push((
+                format!("/assets/{name}"),
+                rewrite_asset_css(&raw, base_path),
+            ));
+        }
+    }
+    sheets
+}
+
+/// Rewrite the root-absolute `url(/assets/…)` references Vite bakes into a CSS
+/// chunk (unquoted, double- and single-quoted forms) so fonts and images
+/// resolve under `base_path`. Relative and `data:` URLs are left untouched.
+fn rewrite_asset_css(raw: &str, base_path: &str) -> String {
+    raw.replace("url(/assets/", &format!("url({base_path}/assets/"))
+        .replace("url(\"/assets/", &format!("url(\"{base_path}/assets/"))
+        .replace("url('/assets/", &format!("url('{base_path}/assets/"))
 }
 
 /// Restrict a derived path prefix to a conservative charset (URL-unreserved plus
@@ -1617,8 +1672,8 @@ async fn shutdown_signal() {
 #[cfg(test)]
 mod tests {
     use super::{
-        base_path_from_public_url, normalize_base_path, rewrite_asset_js, rewrite_index_html,
-        unreferenced_css, validate_base_path,
+        base_path_from_public_url, normalize_base_path, rewrite_asset_css, rewrite_asset_js,
+        rewrite_index_html, unreferenced_css, validate_base_path,
     };
 
     #[test]
@@ -1791,5 +1846,40 @@ mod tests {
         // prefix; it must not be touched.
         let js = r#"import("./App-CCeH5OUw.js")"#;
         assert_eq!(rewrite_asset_js(js, "/biorouter"), js);
+    }
+
+    #[test]
+    fn rewrite_asset_css_prefixes_font_urls() {
+        // Mirrors the real dist: App-*.css carries dozens of root-absolute
+        // KaTeX font references that must resolve under the prefix.
+        let css = concat!(
+            "@font-face{src:url(/assets/KaTeX_AMS-Regular-BQhdFMY1.woff2) format(\"woff2\"),",
+            "url(\"/assets/KaTeX_AMS-Regular-DMm9YOAa.woff\"),",
+            "url('/assets/KaTeX_AMS-Regular-DRggAlZN.ttf')}"
+        );
+        let out = rewrite_asset_css(css, "/biorouter");
+        assert!(
+            out.contains("url(/biorouter/assets/KaTeX_AMS-Regular-BQhdFMY1.woff2)"),
+            "unquoted url() not prefixed: {out}"
+        );
+        assert!(
+            out.contains("url(\"/biorouter/assets/KaTeX_AMS-Regular-DMm9YOAa.woff\")"),
+            "double-quoted url() not prefixed: {out}"
+        );
+        assert!(
+            out.contains("url('/biorouter/assets/KaTeX_AMS-Regular-DRggAlZN.ttf')"),
+            "single-quoted url() not prefixed: {out}"
+        );
+        assert!(
+            !out.contains("url(/assets/"),
+            "stray root-absolute url(): {out}"
+        );
+    }
+
+    #[test]
+    fn rewrite_asset_css_leaves_relative_and_data_urls() {
+        let css =
+            "a{background:url(data:image/png;base64,AA==) url(./local.png) url(fonts/x.woff)}";
+        assert_eq!(rewrite_asset_css(css, "/biorouter"), css);
     }
 }
