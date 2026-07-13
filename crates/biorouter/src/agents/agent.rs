@@ -40,7 +40,7 @@ use crate::context_mgmt::{
 };
 use crate::conversation::message::{
     ActionRequiredData, Message, MessageContent, ProviderMetadata, SystemNotificationType,
-    ToolRequest,
+    TokenState, ToolRequest,
 };
 use crate::conversation::tool_result_serde::call_tool_result;
 use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
@@ -214,8 +214,19 @@ pub struct Agent {
 pub enum AgentEvent {
     Message(Message),
     McpNotification((String, ServerNotification)),
-    ModelChange { model: String, mode: String },
+    ModelChange {
+        model: String,
+        mode: String,
+    },
     HistoryReplaced(Conversation),
+    /// BR-52: the session's token counters as of the last turn/compaction
+    /// boundary, emitted by the agent right after it wrote them.
+    ///
+    /// Token accounting only changes at those boundaries — never mid-stream —
+    /// so a consumer can cache this and attach it to every event it forwards.
+    /// The server used to re-read the counters from SQLite on *every* streamed
+    /// chunk, which was pure redundant disk work on the hottest path.
+    TokenUsage(TokenState),
 }
 
 impl Default for Agent {
@@ -1016,16 +1027,41 @@ impl Agent {
 
     /// Record this turn's provider usage exactly once for token accounting
     /// (no-op when the turn reported none, e.g. an error before the first usage chunk).
+    ///
+    /// Returns `true` when it actually wrote the session's counters, so the
+    /// caller knows a fresh [`AgentEvent::TokenUsage`] is worth emitting (BR-52).
     async fn record_turn_usage(
         &self,
         session_config: &SessionConfig,
         turn_usage: Option<crate::providers::base::ProviderUsage>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if let Some(usage) = turn_usage {
             self.update_session_metrics(session_config, &usage, false)
                 .await?;
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
+    }
+
+    /// BR-52: the session's token counters as the agent last wrote them.
+    ///
+    /// Read exactly once per turn/compaction boundary (where the counters can
+    /// actually change) and carried in the event stream, instead of the server
+    /// re-reading SQLite for every streamed chunk. Best-effort: a failed read
+    /// yields `None` and the consumer simply keeps the state it already has.
+    pub(super) async fn current_token_state(&self, session_id: &str) -> Option<TokenState> {
+        match self
+            .config
+            .session_manager
+            .get_token_counts(session_id)
+            .await
+        {
+            Ok(counts) => Some(TokenState::from(counts)),
+            Err(e) => {
+                warn!("Failed to read token counts for session {session_id}: {e}");
+                None
+            }
+        }
     }
 
     /// BR-12: move auto-compaction off the user-visible critical path.
@@ -2037,6 +2073,12 @@ impl Agent {
                             None,
                         );
 
+                        // BR-52: compaction rewrote the live gauge (the summary
+                        // becomes the new input context) and billed its own turn.
+                        if let Some(token_state) = self.current_token_state(&session_config.id).await {
+                            yield AgentEvent::TokenUsage(token_state);
+                        }
+
                         yield AgentEvent::HistoryReplaced(compacted_conversation.clone());
 
                         yield AgentEvent::Message(
@@ -2554,6 +2596,10 @@ impl Agent {
                                         "auto",
                                         Some("context_overflow"),
                                     );
+                                    // BR-52: recovery compaction moved the counters too.
+                                    if let Some(token_state) = self.current_token_state(&session_config.id).await {
+                                        yield AgentEvent::TokenUsage(token_state);
+                                    }
                                     yield AgentEvent::HistoryReplaced(conversation.clone());
                                     break;
                                 }
@@ -2578,7 +2624,16 @@ impl Agent {
                 // Record the turn exactly once, whether the stream finished, was
                 // cancelled, or errored out. The provider still processed (and
                 // billed) whatever it reported.
-                self.record_turn_usage(&session_config, turn_usage.take()).await?;
+                let usage_recorded = self.record_turn_usage(&session_config, turn_usage.take()).await?;
+
+                // BR-52: the counters just moved — publish them so downstream
+                // consumers (the SSE route) can attach a fresh `TokenState` to
+                // every event they forward without touching the DB per token.
+                if usage_recorded {
+                    if let Some(token_state) = self.current_token_state(&session_config.id).await {
+                        yield AgentEvent::TokenUsage(token_state);
+                    }
+                }
 
                 if tools_updated {
                     (tools, toolshim_tools, system_prompt) =
