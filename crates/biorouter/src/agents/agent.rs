@@ -48,6 +48,7 @@ use crate::mcp_utils::ToolResult;
 use crate::permission::managed_inspector::ManagedPolicyInspector;
 use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
+use crate::permission::tool_risk::ToolRiskRegistry;
 use crate::permission::PermissionConfirmation;
 use crate::providers::base::Provider;
 use crate::providers::errors::ProviderError;
@@ -206,6 +207,14 @@ pub struct Agent {
     /// short pointer on later turns so a skill-heavy session doesn't re-pay the
     /// multi-KB body cost every turn. Keyed by session id.
     pub(super) injected_skills: Mutex<HashMap<String, std::collections::HashSet<String>>>,
+    /// BR-18: tool-name → risk grade, derived from each tool's MCP annotations
+    /// and refreshed in `prepare_tools_and_prompt` from the exact tool list the
+    /// model is handed this turn (so platform/frontend tools and freshly-enabled
+    /// extensions are graded too). Shared with the `PermissionInspector`, which
+    /// reads it to auto-approve read-only calls in `SmartApprove`. Before this,
+    /// its predecessor sets were constructed empty and never populated, so the
+    /// read-only short-circuit was unreachable.
+    pub(super) tool_risks: Arc<ToolRiskRegistry>,
 }
 
 #[derive(Clone, Debug)]
@@ -335,6 +344,9 @@ impl Agent {
                 checkpoint_cfg,
             ))
         });
+        // BR-18: one risk table, shared by the agent (which refreshes it from the
+        // per-turn tool list) and the permission inspector (which reads it).
+        let tool_risks = Arc::new(ToolRiskRegistry::new());
         Self {
             provider: provider.clone(),
             config,
@@ -353,6 +365,8 @@ impl Agent {
                 permission_manager,
                 Arc::clone(&hooks_manager),
                 Arc::clone(&managed),
+                Arc::clone(&tool_risks),
+                provider.clone(),
             ),
             hooks_manager,
             goals: Default::default(),
@@ -362,6 +376,7 @@ impl Agent {
             checkpoints,
             eager_compactions: Arc::new(std::sync::Mutex::new(HashSet::new())),
             injected_skills: Mutex::new(HashMap::new()),
+            tool_risks,
         }
     }
 
@@ -457,6 +472,8 @@ impl Agent {
         permission_manager: Arc<PermissionManager>,
         hooks_manager: Arc<crate::hooks::HooksManager>,
         managed: Arc<ManagedPolicy>,
+        tool_risks: Arc<ToolRiskRegistry>,
+        provider: SharedProvider,
     ) -> ToolInspectionManager {
         let mut tool_inspection_manager = ToolInspectionManager::new();
 
@@ -470,12 +487,15 @@ impl Agent {
         // Add security inspector (runs after managed)
         tool_inspection_manager.add_inspector(Box::new(SecurityInspector::new()));
 
-        // Add permission inspector (medium-high priority)
+        // Add permission inspector (medium-high priority). BR-18: it reads the
+        // shared risk registry the agent refreshes each turn from the model's
+        // tool list, so `SmartApprove` auto-approves read-only-annotated tools
+        // and only prompts on grades at/above the configured threshold.
         tool_inspection_manager.add_inspector(Box::new(PermissionInspector::new(
-            std::collections::HashSet::new(), // readonly tools - will be populated from extension manager
-            std::collections::HashSet::new(), // regular tools - will be populated from extension manager
+            tool_risks,
             permission_manager,
             managed,
+            provider,
         )));
 
         // Add repetition inspector (lower priority - basic repetition checking)
