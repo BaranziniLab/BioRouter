@@ -1173,6 +1173,7 @@ async fn handle_agent_socket(
             max_tool_calls: None,
             budget: None,
             retry_config: None,
+            reasoning_effort: None,
         };
         let cancel = CancellationToken::new();
         let mut stream = match agent
@@ -1443,6 +1444,7 @@ async fn handle_action_required(
         tool_name,
         arguments,
         prompt,
+        ..
     } = &ar.data
     else {
         return; // only tool-confirmation approvals are handled here

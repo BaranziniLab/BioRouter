@@ -46,9 +46,9 @@ global hooks, never instead of them.
 
 | Event | Fires | Can block? | Matcher matches on |
 |---|---|---|---|
-| `PreToolUse` | before a tool call executes | yes — `deny` / `ask` | tool name |
-| `PostToolUse` | after a tool call succeeds | no (context only) | tool name |
-| `PostToolUseFailure` | after a tool call fails | no | tool name |
+| `PreToolUse` | before a tool call executes | yes — `deny` / `ask` (and may rewrite the input) | tool name |
+| `PostToolUse` | after a tool call succeeds | yes — `block` (capped at 3) | tool name |
+| `PostToolUseFailure` | after a tool call fails | yes — `block` (capped at 3) | tool name |
 | `PermissionRequest` | when a tool would show an approval prompt | yes — `allow` / `deny` | tool name |
 | `UserPromptSubmit` | when a user prompt is submitted | yes | — |
 | `Stop` | when the agent is about to finish its turn | yes (capped at 5) | — |
@@ -61,6 +61,43 @@ global hooks, never instead of them.
 Matchers: omit (or use `""` / `"*"`) to match everything; otherwise exact
 match, `a|b` alternation, or a full regex (anchored). Tool names follow the
 `extension__tool` convention, e.g. `developer__shell`, `developer__.*`.
+
+### Matching on the tool input
+
+A `matcher` only sees the tool *name*, so a shell guard would run on every
+shell call. Add an optional `input_matcher` to narrow a group to specific tool
+**arguments** — "only guard `rm -rf`", "only writes under `/etc`":
+
+```yaml
+hooks:
+  PreToolUse:
+    # A single regex, searched against the whole tool_input JSON.
+    - matcher: "developer__shell"
+      input_matcher: "rm\\s+-rf"
+      hooks:
+        - type: command
+          command: "$HOME/hooks/confirm-destructive.sh"
+
+    # Or a map of field -> regex; every entry must match.
+    - matcher: "developer__text_editor"
+      input_matcher:
+        command: "^(write|str_replace)$"
+        path: "^/etc/"
+      hooks:
+        - type: command
+          command: "echo 'no edits under /etc' >&2; exit 2"
+```
+
+- Field paths are dotted and may index arrays: `path`, `params.path`, `argv.0`.
+  Non-string values (numbers, booleans, nested objects) are matched against
+  their JSON text.
+- Unlike the tool-name matcher, `input_matcher` patterns are **searched, not
+  anchored** — `rm\s+-rf` hits anywhere in the value. Anchor explicitly with
+  `^…$` when you mean the whole value.
+- A missing field never matches, and a group with an `input_matcher` never runs
+  on an event that carries no tool input (`Stop`, `UserPromptSubmit`, …).
+  An `input_matcher` can only *narrow* a group, never widen it.
+- An invalid regex is logged once and treated as non-matching.
 
 ## Hook types
 
@@ -117,7 +154,8 @@ Optional JSON on stdout (camelCase, Claude Code-compatible):
   "hookSpecificOutput": {
     "permissionDecision": "allow | deny | ask",
     "permissionDecisionReason": "…",
-    "additionalContext": "injected for the model"
+    "additionalContext": "injected for the model",
+    "updatedInput": {"command": "rm -rf ./build"}
   }
 }
 ```
@@ -125,18 +163,82 @@ Optional JSON on stdout (camelCase, Claude Code-compatible):
 When several hooks match one event they run in parallel and the most
 restrictive decision wins (`deny` > `ask` > `allow`).
 
+### Rewriting a tool call (`updatedInput`)
+
+A `PreToolUse` hook does not have to choose between allowing and denying: it can
+return `hookSpecificOutput.updatedInput` — the tool's **complete** replacement
+argument object — to sandbox a path, redact a payload, or normalize a command.
+The rewritten call is what executes and what the transcript records, and the
+model is told (as injected context) that its arguments were changed, so it never
+silently works from a call it did not make.
+
+```bash
+#!/bin/bash
+# PreToolUse, matcher developer__shell — pin any rm to the build dir
+input=$(cat)
+command=$(echo "$input" | jq -r '.tool_input.command // ""')
+case "$command" in
+  "rm -rf /"*)
+    jq -nc '{hookSpecificOutput: {hookEventName: "PreToolUse",
+                                  updatedInput: {command: "rm -rf ./build"}}}'
+    ;;
+esac
+```
+
+Rules worth knowing:
+
+- `updatedInput` is honored **only on `PreToolUse`** (elsewhere the tool has
+  already run, or the call is already recorded); on any other event it is
+  ignored and logged. Codex's `updated_input` and Gemini CLI's `tool_input`
+  spellings are accepted as aliases.
+- It must be a JSON **object** (the full argument map, not a patch) and is
+  capped at 256 KB. A malformed rewrite is a non-blocking error — failure-open,
+  like every other hook mistake.
+- The rewritten input is **re-validated**: every other inspector (the
+  catastrophic-command denylist, the permission gate) re-runs on the new
+  arguments, so a rewrite cannot smuggle a call past the safety gates. The hook
+  inspector itself is not re-run — a rewrite cannot trigger another rewrite.
+- A hook that both denies *and* rewrites is treated as a deny (the call never
+  runs, so there is nothing to rewrite). Hooks run concurrently, so rewrites do
+  not chain: if two hooks return `updatedInput` for the same call, the last one
+  (in config order) wins and the conflict is logged.
+
+### Blocking a tool *result* (`PostToolUse`)
+
+`PostToolUse` / `PostToolUseFailure` hooks can `block` (exit 2, or
+`{"decision":"block"}`) — e.g. reject a write that fails lint. The tool has
+already run, so its side effects stand and its output is preserved; the hook's
+reason is appended to the tool result, the result is marked as an error, and the
+agent keeps working on the correction. Consecutive blocks are capped at **3** per
+session (the model typically retries the tool, so an unconditional blocker would
+otherwise wedge the turn); past the cap the result is delivered anyway with a
+notice.
+
 ## Semantics worth knowing
 
 - **Failure-open everywhere.** A crashing, timing-out, or misconfigured hook
   never blocks the agent; only explicit decisions do.
 - **PreToolUse `deny`** turns the tool call into an error result containing
   your reason, so the model can adapt. **`ask`** routes the call through the
-  normal approval dialog with your reason attached.
+  normal approval dialog with your reason attached. **`updatedInput`** rewrites
+  the call instead of refusing it (see above).
 - **PermissionRequest `allow`** auto-approves a call that would otherwise
   prompt the user — useful for trusted commands in trusted projects.
+- **`additionalContext` and `systemMessage` work on every tool-path event.**
+  `PreToolUse` and `PermissionRequest` used to drop them (only the decision was
+  read); their context now reaches the model — wrapped in the same
+  `<hook-context untrusted="true">` frame as all injected hook output — and
+  their `systemMessage` surfaces as a yellow inline notice.
 - **Stop blocks are capped** at 5 consecutive blocks per session; the payload
   field `stop_hook_active` is `true` on re-checks so well-behaved hooks can
   exit early.
+- **Observe-only events run detached, but are not discarded.** `Notification`,
+  `SubagentStart` / `SubagentStop` and `PreCompact` / `PostCompact` cannot block,
+  so they are dispatched in the background rather than on the agent's critical
+  path. Their `systemMessage` still reaches you — it is collected at the next
+  turn boundary, where any outstanding hook is also joined. A hook slower than
+  the boundary's short wait is never waited on; it simply surfaces one boundary
+  later, and is joined at session end.
 - **GUI sessions do not fire `SessionEnd`** in v1 (there is no reliable
   session-close signal in the desktop app).
 - Hook activity (blocks, judge verdicts, `systemMessage`s) appears as yellow

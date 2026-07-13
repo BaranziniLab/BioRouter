@@ -445,21 +445,34 @@ pub fn create_request(
             .insert("tools".to_string(), json!(tool_specs));
     }
 
-    // Add temperature if specified and not using extended thinking model
+    // BR-63: `deep` effort asks for extended thinking on this turn, the same way
+    // the process-wide CLAUDE_THINKING_ENABLED does — either one turns it on.
+    // `quick`/`normal` leave the env behaviour exactly as it was.
+    let effort_budget = model_config
+        .reasoning_effort
+        .and_then(|effort| effort.thinking_budget())
+        .map(i32::try_from)
+        .and_then(Result::ok);
+    let env_thinking = std::env::var("CLAUDE_THINKING_ENABLED").is_ok();
+    let is_thinking_enabled = env_thinking || effort_budget.is_some();
+
+    // Add temperature if specified. Anthropic rejects a temperature other than 1
+    // when extended thinking is on, so a thinking turn sends none at all.
     if let Some(temp) = model_config.temperature {
-        payload
-            .as_object_mut()
-            .unwrap()
-            .insert("temperature".to_string(), json!(temp));
+        if !is_thinking_enabled {
+            payload
+                .as_object_mut()
+                .unwrap()
+                .insert("temperature".to_string(), json!(temp));
+        }
     }
 
-    // Add thinking parameters when CLAUDE_THINKING_ENABLED is set
-    let is_thinking_enabled = std::env::var("CLAUDE_THINKING_ENABLED").is_ok();
     if is_thinking_enabled {
         // Minimum budget_tokens is 1024
         let budget_tokens = std::env::var("CLAUDE_THINKING_BUDGET")
-            .unwrap_or_else(|_| "16000".to_string())
-            .parse()
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .or(effort_budget)
             .unwrap_or(16000);
 
         payload
@@ -775,9 +788,62 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::effort::{ReasoningEffort, DEEP_THINKING_BUDGET_TOKENS};
     use crate::conversation::message::Message;
     use rmcp::object;
     use serde_json::json;
+
+    // BR-63: `deep` is how a user asks Anthropic for extended thinking without
+    // setting a process-wide env var. The API rejects a temperature other than 1
+    // alongside a thinking block, so a thinking turn must send none.
+    #[test]
+    fn test_create_request_deep_effort_enables_thinking() -> Result<()> {
+        let mut model_config = ModelConfig::new_or_fail("claude-sonnet-4-5")
+            .with_reasoning_effort(Some(ReasoningEffort::Deep));
+        model_config.max_tokens = Some(8000);
+        model_config.temperature = Some(0.3);
+
+        let payload = create_request(
+            &model_config,
+            "system",
+            &[Message::user().with_text("hi")],
+            &[],
+        )?;
+
+        let thinking = payload.get("thinking").expect("thinking block");
+        assert_eq!(thinking["type"], "enabled");
+        assert_eq!(
+            thinking["budget_tokens"],
+            json!(DEEP_THINKING_BUDGET_TOKENS)
+        );
+        // max_tokens grows by the budget, and temperature is dropped.
+        assert_eq!(
+            payload["max_tokens"],
+            json!(8000 + DEEP_THINKING_BUDGET_TOKENS as i32)
+        );
+        assert!(payload.get("temperature").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_create_request_without_deep_effort_has_no_thinking() -> Result<()> {
+        let mut model_config = ModelConfig::new_or_fail("claude-sonnet-4-5")
+            .with_reasoning_effort(Some(ReasoningEffort::Quick));
+        model_config.temperature = Some(0.5);
+
+        let payload = create_request(
+            &model_config,
+            "system",
+            &[Message::user().with_text("hi")],
+            &[],
+        )?;
+
+        // Quick asks for no thinking block — and without one, a configured
+        // temperature is still sent as before.
+        assert!(payload.get("thinking").is_none());
+        assert_eq!(payload["temperature"], json!(0.5));
+        Ok(())
+    }
 
     #[test]
     fn test_parse_text_response() -> Result<()> {

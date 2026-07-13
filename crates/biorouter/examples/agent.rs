@@ -49,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         max_tool_calls: None,
         budget: None,
         retry_config: None,
+        reasoning_effort: None,
     };
 
     let user_message = Message::user()

@@ -74,6 +74,26 @@ impl Agent {
                         .hooks_manager
                         .permission_request(&session.id, &session.working_dir, &tool_call.name, &tool_input)
                         .await;
+                    // BR-19: this gate used to read only `aggregate.decision`, so a
+                    // PermissionRequest hook's `additionalContext` / `systemMessage`
+                    // was computed and thrown away. Stage them for the turn's
+                    // injection point (a message yielded from here never enters the
+                    // conversation, only the event stream).
+                    if !aggregate.additional_context.is_empty() || !aggregate.system_messages.is_empty() {
+                        self.hooks_manager.stage_tool_hook(
+                            &session.id,
+                            crate::hooks::StagedToolHook {
+                                event: crate::hooks::HookEvent::PermissionRequest,
+                                tool_request_id: request.id.clone(),
+                                tool_name: tool_call.name.to_string(),
+                                // Rewrites are PreToolUse-only: by here the call is
+                                // already recorded in the transcript.
+                                updated_input: None,
+                                additional_context: aggregate.additional_context.clone(),
+                                system_messages: aggregate.system_messages.clone(),
+                            },
+                        );
+                    }
                     aggregate.decision
                 };
 
@@ -158,12 +178,25 @@ impl Agent {
                         }
                     });
 
+                // BR-63: give the card enough to decide with. The BR-18 registry
+                // already grades every tool it handed the model this turn, and
+                // the preview turns the raw arguments into the thing the user
+                // actually needs to see — the command, or the diff.
+                let arguments = tool_call.arguments.clone().unwrap_or_default();
+                let risk = self.tool_risks.risk_for(&tool_call.name);
+                let preview = crate::conversation::tool_preview::ToolPreview::for_tool_call(
+                    &tool_call.name,
+                    &arguments,
+                );
+
                 let confirmation = Message::assistant()
-                    .with_action_required(
+                    .with_action_required_with_context(
                         request.id.clone(),
                         tool_call.name.to_string().clone(),
-                        tool_call.arguments.clone().unwrap_or_default(),
+                        arguments,
                         security_message,
+                        Some(risk),
+                        preview,
                     )
                     .user_only();
                 yield confirmation;

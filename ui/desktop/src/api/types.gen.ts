@@ -12,7 +12,9 @@ export type ActionRequiredData = {
     actionType: 'toolConfirmation';
     arguments: JsonObject;
     id: string;
+    preview?: ToolPreview | null;
     prompt?: string | null;
+    risk?: ToolRisk | null;
     toolName: string;
 } | {
     actionType: 'elicitation';
@@ -137,6 +139,7 @@ export type ChangeKind = 'ingest' | 'link' | 'flag' | 'query' | 'lint' | 'restor
 
 export type ChatRequest = {
     conversation_so_far?: Array<Message> | null;
+    reasoning_effort?: ReasoningEffort | null;
     session_id: string;
     user_message: Message;
     workflow_name?: string | null;
@@ -937,6 +940,7 @@ export type ModelConfig = {
     fast_model?: string | null;
     max_tokens?: number | null;
     model_name: string;
+    reasoning_effort?: ReasoningEffort | null;
     /**
      * Provider-specific request parameters (e.g., anthropic_beta headers)
      */
@@ -1179,6 +1183,11 @@ export type ReadResourceResponse = {
     text: string;
     uri: string;
 };
+
+/**
+ * How hard the agent should think this turn.
+ */
+export type ReasoningEffort = 'quick' | 'normal' | 'deep';
 
 export type RedactedThinkingContent = {
     data: string;
@@ -1645,6 +1654,51 @@ export type ToolPermission = {
     tool_name: string;
 };
 
+/**
+ * What a pending tool call will do, in a shape the confirmation card can render.
+ */
+export type ToolPreview = {
+    command: string;
+    kind: 'shell';
+    /**
+     * The command was clipped to fit the frame.
+     */
+    truncated: boolean;
+} | {
+    added: number;
+    kind: 'fileEdit';
+    lines: Array<ToolPreviewLine>;
+    path: string;
+    removed: number;
+    /**
+     * Lines beyond the cap were dropped; `added`/`removed` still count the whole edit.
+     */
+    truncated: boolean;
+} | {
+    content: string;
+    kind: 'fileWrite';
+    lineCount: number;
+    path: string;
+    truncated: boolean;
+} | {
+    json: string;
+    kind: 'arguments';
+    truncated: boolean;
+};
+
+/**
+ * One line of a rendered diff, with its provenance.
+ */
+export type ToolPreviewLine = {
+    kind: ToolPreviewLineKind;
+    text: string;
+};
+
+/**
+ * One line of a rendered diff.
+ */
+export type ToolPreviewLineKind = 'context' | 'added' | 'removed';
+
 export type ToolRequest = {
     _meta?: {
         [key: string]: unknown;
@@ -1667,6 +1721,19 @@ export type ToolResponse = {
         [key: string]: unknown;
     };
 };
+
+/**
+ * Per-action risk grade for a tool call.
+ *
+ * The `Ord` derive is load-bearing: `Low < Medium < High < Unknown`, so an
+ * un-gradeable tool sorts above every graded one and a naive `>= threshold`
+ * comparison already fails closed. [`SmartApproveConfig::requires_confirmation`]
+ * still treats `Unknown` explicitly so it can be opted out of.
+ *
+ * BR-63 also ships the grade to the confirmation card, so it is a wire type:
+ * it serialises as `"low" | "medium" | "high" | "unknown"`.
+ */
+export type ToolRisk = 'low' | 'medium' | 'high' | 'unknown';
 
 export type TunnelInfo = {
     hostname: string;

@@ -4061,8 +4061,24 @@
               "id": {
                 "type": "string"
               },
+              "preview": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ToolPreview"
+                  }
+                ],
+                "nullable": true
+              },
               "prompt": {
                 "type": "string",
+                "nullable": true
+              },
+              "risk": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ToolRisk"
+                  }
+                ],
                 "nullable": true
               },
               "toolName": {
@@ -4404,6 +4420,14 @@
             "items": {
               "$ref": "#/components/schemas/Message"
             },
+            "nullable": true
+          },
+          "reasoning_effort": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ],
             "nullable": true
           },
           "session_id": {
@@ -6682,6 +6706,14 @@
           "model_name": {
             "type": "string"
           },
+          "reasoning_effort": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ReasoningEffort"
+              }
+            ],
+            "nullable": true
+          },
           "request_params": {
             "type": "object",
             "description": "Provider-specific request parameters (e.g., anthropic_beta headers)",
@@ -7258,6 +7290,15 @@
             "type": "string"
           }
         }
+      },
+      "ReasoningEffort": {
+        "type": "string",
+        "description": "How hard the agent should think this turn.",
+        "enum": [
+          "quick",
+          "normal",
+          "deep"
+        ]
       },
       "RedactedThinkingContent": {
         "type": "object",
@@ -8511,6 +8552,159 @@
           }
         }
       },
+      "ToolPreview": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "A command that will be handed to a shell verbatim.",
+            "required": [
+              "command",
+              "truncated",
+              "kind"
+            ],
+            "properties": {
+              "command": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "shell"
+                ]
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "The command was clipped to fit the frame."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "An edit to a file that already exists, as a line diff.",
+            "required": [
+              "path",
+              "lines",
+              "added",
+              "removed",
+              "truncated",
+              "kind"
+            ],
+            "properties": {
+              "added": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "fileEdit"
+                ]
+              },
+              "lines": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ToolPreviewLine"
+                }
+              },
+              "path": {
+                "type": "string"
+              },
+              "removed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "truncated": {
+                "type": "boolean",
+                "description": "Lines beyond the cap were dropped; `added`/`removed` still count the whole edit."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Creation of a new file, as its full (clipped) contents.",
+            "required": [
+              "path",
+              "content",
+              "lineCount",
+              "truncated",
+              "kind"
+            ],
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "fileWrite"
+                ]
+              },
+              "lineCount": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "path": {
+                "type": "string"
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Anything else: the arguments, pretty-printed, so no tool confirms blind.",
+            "required": [
+              "json",
+              "truncated",
+              "kind"
+            ],
+            "properties": {
+              "json": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "arguments"
+                ]
+              },
+              "truncated": {
+                "type": "boolean"
+              }
+            }
+          }
+        ],
+        "description": "What a pending tool call will do, in a shape the confirmation card can render.",
+        "discriminator": {
+          "propertyName": "kind"
+        }
+      },
+      "ToolPreviewLine": {
+        "type": "object",
+        "description": "One line of a rendered diff, with its provenance.",
+        "required": [
+          "kind",
+          "text"
+        ],
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ToolPreviewLineKind"
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      },
+      "ToolPreviewLineKind": {
+        "type": "string",
+        "description": "One line of a rendered diff.",
+        "enum": [
+          "context",
+          "added",
+          "removed"
+        ]
+      },
       "ToolRequest": {
         "type": "object",
         "required": [
@@ -8549,6 +8743,16 @@
             "type": "object"
           }
         }
+      },
+      "ToolRisk": {
+        "type": "string",
+        "description": "Per-action risk grade for a tool call.\n\nThe `Ord` derive is load-bearing: `Low < Medium < High < Unknown`, so an\nun-gradeable tool sorts above every graded one and a naive `>= threshold`\ncomparison already fails closed. [`SmartApproveConfig::requires_confirmation`]\nstill treats `Unknown` explicitly so it can be opted out of.\n\nBR-63 also ships the grade to the confirmation card, so it is a wire type:\nit serialises as `\"low\" | \"medium\" | \"high\" | \"unknown\"`.",
+        "enum": [
+          "low",
+          "medium",
+          "high",
+          "unknown"
+        ]
       },
       "TunnelInfo": {
         "type": "object",

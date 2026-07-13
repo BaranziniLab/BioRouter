@@ -9,7 +9,9 @@ use biorouter::config::permission::PermissionLevel;
 use biorouter::config::{BioRouterMode, PermissionManager};
 use biorouter::conversation::message::{Message, ToolRequest};
 use biorouter::managed::{ManagedPolicy, ManagedPolicyFile};
-use biorouter::permission::{ManagedPolicyInspector, PermissionInspector};
+use biorouter::permission::{
+    ManagedPolicyInspector, PermissionInspector, SmartApproveConfig, ToolRiskRegistry,
+};
 use biorouter::session::Session;
 use biorouter::tool_inspection::ToolInspectionManager;
 use rmcp::model::CallToolRequestParams;
@@ -50,11 +52,14 @@ fn build_manager(
     let permission_manager = Arc::new(PermissionManager::new(temp.path().to_path_buf()));
     let mut manager = ToolInspectionManager::new();
     manager.add_inspector(Box::new(ManagedPolicyInspector::new(Arc::clone(&managed))));
-    manager.add_inspector(Box::new(PermissionInspector::new(
-        std::collections::HashSet::new(),
-        std::collections::HashSet::new(),
+    // BR-18: an empty risk registry + the default smart policy — every tool here
+    // grades `Unknown`, so the managed/user decisions under test are unaffected.
+    manager.add_inspector(Box::new(PermissionInspector::with_smart_config(
+        Arc::new(ToolRiskRegistry::new()),
         Arc::clone(&permission_manager),
         managed,
+        Arc::new(tokio::sync::Mutex::new(None)),
+        SmartApproveConfig::default(),
     )));
     (manager, permission_manager, temp)
 }

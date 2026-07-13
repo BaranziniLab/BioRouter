@@ -217,6 +217,10 @@ fn get_agent_messages(
             max_tool_calls: None,
             budget: None,
             retry_config: workflow.retry,
+            // Subagents run at the model's default depth; a parent turn's effort
+            // is not inherited (its exploration caps are the parent's, not this
+            // task's). BR-63.
+            reasoning_effort: None,
         };
 
         let mut stream = crate::session_context::with_session_id(Some(session_id.clone()), async {
@@ -237,6 +241,26 @@ fn get_agent_messages(
                     tracing::error!("Error receiving message from subagent: {}", e);
                     break;
                 }
+            }
+        }
+
+        // BR-28: the subagent is done — join its SubagentStart hook rather than
+        // leaving the detached task to outlive the subagent and race shutdown.
+        // The aggregate is keyed by the *parent* session (that is the payload's
+        // session_id), which the child's own turn boundaries never drain, so
+        // this is its only settle point. A subagent's stream is not user-visible,
+        // so a `systemMessage` surfaces in the log; errors are already warned by
+        // `dispatch`.
+        for outcome in agent
+            .hooks_manager()
+            .settle_fired(
+                &task_config.parent_session_id,
+                crate::hooks::FIRE_JOIN_BUDGET_SHUTDOWN,
+            )
+            .await
+        {
+            for message in &outcome.aggregate.system_messages {
+                info!("hooks: {} systemMessage: {}", outcome.event, message);
             }
         }
 

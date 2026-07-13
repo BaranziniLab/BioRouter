@@ -107,6 +107,7 @@ async fn drain(agent: &Agent, user: &str, session_id: &str) -> Result<Vec<Messag
         max_tool_calls: None,
         budget: None,
         retry_config: None,
+        reasoning_effort: None,
     };
     let stream = agent
         .reply(Message::user().with_text(user), session_config, None)

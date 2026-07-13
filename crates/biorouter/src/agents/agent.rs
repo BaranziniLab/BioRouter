@@ -13,6 +13,7 @@ use super::platform_tools;
 use super::tool_execution::{ToolCallResult, CHAT_MODE_TOOL_SKIPPED_RESPONSE, DECLINED_RESPONSE};
 use crate::action_required_manager::ActionRequiredManager;
 use crate::agents::budget::{BudgetAction, BudgetTracker, ReplyBudget};
+use crate::agents::effort::ReasoningEffort;
 use crate::agents::extension::{ExtensionConfig, ExtensionResult, ToolInfo};
 use crate::agents::extension_manager::{get_parameter_names, normalize, ExtensionManager};
 use crate::agents::extension_manager_extension::MANAGE_EXTENSIONS_TOOL_NAME_COMPLETE;
@@ -51,6 +52,7 @@ use crate::observability::loop_safety::{self, LoopSafetyEvent, LoopSafetyKind};
 use crate::permission::managed_inspector::ManagedPolicyInspector;
 use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
+use crate::permission::tool_risk::ToolRiskRegistry;
 use crate::permission::PermissionConfirmation;
 use crate::providers::base::Provider;
 use crate::providers::errors::ProviderError;
@@ -223,6 +225,17 @@ pub struct Agent {
     /// call), while the reply loop owns the escalating nudges, which it emits at
     /// the result-collection seam as soon as the failing result lands.
     pub(super) failure_loop: FailureLoopConfig,
+    /// BR-18: tool-name → risk grade, derived from each tool's MCP annotations
+    /// and refreshed in `prepare_tools_and_prompt` from the exact tool list the
+    /// model is handed this turn (so platform/frontend tools and freshly-enabled
+    /// extensions are graded too). Shared with the `PermissionInspector`, which
+    /// reads it to auto-approve read-only calls in `SmartApprove`. Before this,
+    /// its predecessor sets were constructed empty and never populated, so the
+    /// read-only short-circuit was unreachable.
+    pub(super) tool_risks: Arc<ToolRiskRegistry>,
+    /// BR-63: per-session sticky reasoning effort, set by `/effort`. A per-turn
+    /// effort on the `SessionConfig` (the GUI composer toggle) wins over it.
+    pub(super) efforts: crate::agents::effort::EffortRegistry,
 }
 
 #[derive(Clone, Debug)]
@@ -352,6 +365,9 @@ impl Agent {
                 checkpoint_cfg,
             ))
         });
+        // BR-18: one risk table, shared by the agent (which refreshes it from the
+        // per-turn tool list) and the permission inspector (which reads it).
+        let tool_risks = Arc::new(ToolRiskRegistry::new());
         Self {
             provider: provider.clone(),
             config,
@@ -370,6 +386,8 @@ impl Agent {
                 permission_manager,
                 Arc::clone(&hooks_manager),
                 Arc::clone(&managed),
+                Arc::clone(&tool_risks),
+                provider.clone(),
             ),
             hooks_manager,
             goals: Default::default(),
@@ -380,6 +398,8 @@ impl Agent {
             eager_compactions: Arc::new(std::sync::Mutex::new(HashSet::new())),
             injected_skills: Mutex::new(HashMap::new()),
             failure_loop: Self::failure_loop_config(Config::global()),
+            tool_risks,
+            efforts: Default::default(),
         }
     }
 
@@ -475,6 +495,8 @@ impl Agent {
         permission_manager: Arc<PermissionManager>,
         hooks_manager: Arc<crate::hooks::HooksManager>,
         managed: Arc<ManagedPolicy>,
+        tool_risks: Arc<ToolRiskRegistry>,
+        provider: SharedProvider,
     ) -> ToolInspectionManager {
         let mut tool_inspection_manager = ToolInspectionManager::new();
 
@@ -488,12 +510,15 @@ impl Agent {
         // Add security inspector (runs after managed)
         tool_inspection_manager.add_inspector(Box::new(SecurityInspector::new()));
 
-        // Add permission inspector (medium-high priority)
+        // Add permission inspector (medium-high priority). BR-18: it reads the
+        // shared risk registry the agent refreshes each turn from the model's
+        // tool list, so `SmartApprove` auto-approves read-only-annotated tools
+        // and only prompts on grades at/above the configured threshold.
         tool_inspection_manager.add_inspector(Box::new(PermissionInspector::new(
-            std::collections::HashSet::new(), // readonly tools - will be populated from extension manager
-            std::collections::HashSet::new(), // regular tools - will be populated from extension manager
+            tool_risks,
             permission_manager,
             managed,
+            provider,
         )));
 
         // Add repetition inspector (lower priority - basic repetition checking).
@@ -1115,9 +1140,15 @@ impl Agent {
     /// extension-enable tracking) and eagerly dispatch approved/denied tools,
     /// returning the inspection results, permission verdict, enable-extension
     /// request ids, and the pending tool futures.
+    ///
+    /// BR-19: `remaining_requests` is `&mut` because a PreToolUse hook may
+    /// *rewrite* a tool's input (sandbox a path, redact a payload, normalize a
+    /// command). The rewrite is applied here — after the hooks ran, before
+    /// anything is dispatched — and the requests the caller goes on to persist
+    /// are the rewritten ones, so the transcript matches what actually executed.
     async fn inspect_and_gate_tool_requests(
         &self,
-        remaining_requests: &[ToolRequest],
+        remaining_requests: &mut Vec<ToolRequest>,
         conversation: &Conversation,
         biorouter_mode: BioRouterMode,
         session: &Session,
@@ -1130,7 +1161,7 @@ impl Agent {
         Vec<(String, ToolStream)>,
     )> {
         // Run all tool inspectors
-        let inspection_results = self
+        let mut inspection_results = self
             .tool_inspection_manager
             .inspect_tools(
                 remaining_requests,
@@ -1139,6 +1170,32 @@ impl Agent {
                 session,
             )
             .await?;
+
+        // BR-19: apply any tool-input rewrite the PreToolUse hooks staged. The
+        // rewritten input has NOT been seen by the security/permission
+        // inspectors (they ran above, on the model's original arguments), so a
+        // rewrite must not be a hole around them: re-run every inspector except
+        // the hook one (re-running that would execute the user's hook commands
+        // twice and let a rewrite trigger another rewrite).
+        let rewrites = self.hooks_manager.take_tool_input_rewrites(&session.id);
+        if !rewrites.is_empty()
+            && crate::hooks::apply_tool_input_rewrites(remaining_requests, &rewrites) > 0
+        {
+            let mut revalidated = self
+                .tool_inspection_manager
+                .inspect_tools_excluding(
+                    &[crate::hooks::inspector::HOOK_INSPECTOR_NAME],
+                    remaining_requests,
+                    conversation.messages(),
+                    biorouter_mode,
+                    session,
+                )
+                .await?;
+            inspection_results.retain(|result| {
+                result.inspector_name == crate::hooks::inspector::HOOK_INSPECTOR_NAME
+            });
+            inspection_results.append(&mut revalidated);
+        }
 
         let permission_check_result = self
             .tool_inspection_manager
@@ -1289,6 +1346,52 @@ impl Agent {
         watch.record(verdict.as_deref(), config)
     }
 
+    /// BR-19: honor a PostToolUse / PostToolUseFailure `block` decision.
+    ///
+    /// PostToolUse hooks were observe-only: the decision was computed and thrown
+    /// away, so a hook could not reject e.g. a write that fails lint. It is now
+    /// applied to the already-integrated tool response, in place — the tool has
+    /// *run*, so its output is kept (its side effects stand and the model may
+    /// need to see what happened) and the hook's reason is appended as corrective
+    /// feedback, with the result marked as an error so the model treats it as a
+    /// failure to address rather than a success to build on.
+    async fn apply_post_tool_block(
+        &self,
+        request_id: &str,
+        tool_name: &str,
+        reason: &str,
+        request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+    ) {
+        let Some(response_msg) = request_to_response_map.get(request_id) else {
+            return;
+        };
+        let mut response = response_msg.lock().await;
+        for content in response.content.iter_mut() {
+            let MessageContent::ToolResponse(tool_response) = content else {
+                continue;
+            };
+            if tool_response.id != request_id {
+                continue;
+            }
+            let mut items = match &tool_response.tool_result {
+                Ok(result) => result.content.clone(),
+                Err(e) => vec![Content::text(e.to_string())],
+            };
+            items.push(Content::text(format!(
+                "A PostToolUse hook blocked this result for `{tool_name}`.\n\n\
+                 Hook feedback: {reason}\n\n\
+                 The tool already ran, so its side effects stand. Address the feedback \
+                 before continuing; do not simply retry the identical call."
+            )));
+            tool_response.tool_result = Ok(CallToolResult {
+                content: items,
+                structured_content: None,
+                is_error: Some(true),
+                meta: None,
+            });
+        }
+    }
+
     /// Record this turn's provider usage exactly once for token accounting
     /// (no-op when the turn reported none, e.g. an error before the first usage chunk).
     ///
@@ -1328,6 +1431,38 @@ impl Agent {
             Err(_) => String::new(),
         };
         budget.record_usage(&provider_name, usage);
+    }
+
+    /// BR-28: the turn-boundary settle for observe-only (`fire`d) hook events —
+    /// Notification, SubagentStart/Stop, Pre/PostCompact.
+    ///
+    /// Those hooks used to be spawned detached with their whole `HookAggregate`
+    /// dropped, so a `systemMessage` was invisible, a failing hook untraceable,
+    /// and the task could outlive the turn. Now the boundary joins whatever has
+    /// finished (bounded by [`crate::hooks::FIRE_JOIN_BUDGET`], so a slow hook
+    /// delays only its own observability, never the loop) and turns each captured
+    /// aggregate into user-visible inline notices. Errors are already logged by
+    /// `dispatch`; hooks fired here stay observe-only, so any `decision` they
+    /// return is deliberately not honored.
+    async fn settle_fired_hooks(&self, session_id: &str) -> Vec<Message> {
+        self.hooks_manager
+            .settle_fired(session_id, crate::hooks::FIRE_JOIN_BUDGET)
+            .await
+            .into_iter()
+            .flat_map(|outcome| {
+                let event = outcome.event;
+                outcome
+                    .aggregate
+                    .system_messages
+                    .into_iter()
+                    .map(move |msg| {
+                        debug!("hooks: surfacing {event} systemMessage");
+                        Message::assistant()
+                            .with_system_notification(SystemNotificationType::InlineMessage, msg)
+                            .user_only()
+                    })
+            })
+            .collect()
     }
 
     /// BR-12: move auto-compaction off the user-visible critical path.
@@ -1560,6 +1695,67 @@ impl Agent {
         match &*self.provider.lock().await {
             Some(provider) => Ok(Arc::clone(provider)),
             None => Err(anyhow!("Provider not set")),
+        }
+    }
+
+    /// BR-63: set the session's sticky reasoning effort (`/effort <level>`).
+    pub async fn set_reasoning_effort(&self, session_id: &str, effort: ReasoningEffort) {
+        self.efforts.set(session_id, effort).await;
+    }
+
+    /// The session's sticky reasoning effort, if `/effort` set one.
+    pub async fn reasoning_effort(&self, session_id: &str) -> ReasoningEffort {
+        self.efforts.get(session_id).await.unwrap_or_default()
+    }
+
+    /// Resolve the effort for one turn: an explicit per-turn effort on the
+    /// request (the GUI composer toggle) wins over the session's sticky
+    /// `/effort`, which in turn wins over the default (`Normal`, a no-op).
+    async fn resolve_effort(&self, session_config: &SessionConfig) -> ReasoningEffort {
+        match session_config.reasoning_effort {
+            Some(effort) => effort,
+            None => self.reasoning_effort(&session_config.id).await,
+        }
+    }
+
+    /// The effort-stamped provider to run this turn's completions through, or
+    /// `None` when the turn should just use the session's provider as it always
+    /// has (the default effort, or a provider the effort can't be applied to).
+    ///
+    /// `quick`/`deep` re-stamp the model config with the effort and rebuild the
+    /// provider around it, once per reply — the streaming path reads its model
+    /// config off the provider, so there is nowhere else to inject a per-turn
+    /// config.
+    ///
+    /// Failure is not fatal: an unreconstructible provider (a lead/worker
+    /// composite, a provider whose registry entry is gone) falls back to the
+    /// session's provider, which still gets the effort's exploration caps. That
+    /// is the "degrade gracefully" the proposal asks for.
+    async fn provider_with_effort(
+        &self,
+        effort: ReasoningEffort,
+    ) -> Result<Option<Arc<dyn Provider>>> {
+        if effort.is_default() {
+            return Ok(None);
+        }
+        let provider = self.provider().await?;
+        if provider.as_lead_worker().is_some() {
+            return Ok(None);
+        }
+
+        let model_config = effort.apply_to_model(provider.get_model_config());
+        match crate::providers::create(provider.get_name(), model_config).await {
+            Ok(rebuilt) => Ok(Some(rebuilt)),
+            Err(e) => {
+                warn!(
+                    "Reasoning effort '{}' not applied to provider '{}' ({}); \
+                     falling back to the session provider (exploration caps still apply)",
+                    effort.as_str(),
+                    provider.get_name(),
+                    e
+                );
+                Ok(None)
+            }
         }
     }
 
@@ -2077,6 +2273,13 @@ impl Agent {
             if let Ok(hook_session) = session_manager.get_session(&session_config.id, false).await {
                 let hooks = self.hooks_manager();
                 hooks.reset_stop_blocks(&session_config.id).await;
+                // BR-19: a turn cancelled between the PreToolUse inspector and
+                // the tool-path injection point can leave staged hook context
+                // behind. Drop it on a fresh prompt rather than injecting a note
+                // about a tool call the user aborted; the consecutive
+                // PostToolUse-block count is per-turn for the same reason.
+                hooks.clear_staged_tool_hooks(&session_config.id);
+                hooks.reset_post_tool_blocks(&session_config.id).await;
 
                 let source = if hook_session.message_count > 0 {
                     "resume"
@@ -2364,6 +2567,11 @@ impl Agent {
 
         let session_manager = self.config.session_manager.clone();
 
+        // BR-63: the turn's reasoning effort. `Normal` (the default) changes
+        // nothing: same provider object, same caps.
+        let effort = self.resolve_effort(&session_config).await;
+        let turn_provider = self.provider_with_effort(effort).await?;
+
         let working_dir = session.working_dir.clone();
         // BR-43: stable anchor for this turn's checkpoints — the `created`
         // timestamp of the last user message (the same key `truncate_conversation`
@@ -2386,18 +2594,25 @@ impl Agent {
                 CheckpointKind::PreStep,
             ).await;
             let mut turns_taken = 0u32;
-            let max_turns = session_config
-                .max_turns
-                .or_else(|| Config::global().get_param("BIOROUTER_MAX_TURNS").ok())
-                .unwrap_or(DEFAULT_MAX_TURNS);
+            // BR-63: the effort scales the exploration budget — `quick` halves it
+            // (never below a usable floor, never above what the user configured),
+            // `deep` doubles it, `normal` leaves it exactly as configured.
+            let max_turns = effort.scale_turns(
+                session_config
+                    .max_turns
+                    .or_else(|| Config::global().get_param("BIOROUTER_MAX_TURNS").ok())
+                    .unwrap_or(DEFAULT_MAX_TURNS),
+            );
             // Cumulative tool calls dispatched this reply, across all iterations,
             // bounded by `max_tool_calls` so parallel fan-out can't run unbounded
             // even while `turns_taken` stays under `max_turns`.
             let mut tool_calls_taken = 0u32;
-            let max_tool_calls = session_config
-                .max_tool_calls
-                .or_else(|| Config::global().get_param("BIOROUTER_MAX_TOOL_CALLS").ok())
-                .unwrap_or(DEFAULT_MAX_TOOL_CALLS);
+            let max_tool_calls = effort.scale_tool_calls(
+                session_config
+                    .max_tool_calls
+                    .or_else(|| Config::global().get_param("BIOROUTER_MAX_TOOL_CALLS").ok())
+                    .unwrap_or(DEFAULT_MAX_TOOL_CALLS),
+            );
             let mut compaction_attempts = 0;
             // Consecutive auto-continues of a length-truncated turn; reset on any
             // tool call (real progress). Bounds the continue-on-truncation guard.
@@ -2701,8 +2916,15 @@ impl Agent {
                     .assemble_turn_context(&session_config.id, &conversation, &working_dir)
                     .await;
 
+                // BR-63: the effort-stamped provider for this turn, or the
+                // session's provider when the effort is the default (unchanged
+                // behaviour, and it picks up a mid-session model switch).
+                let iteration_provider = match &turn_provider {
+                    Some(provider) => Arc::clone(provider),
+                    None => self.provider().await?,
+                };
                 let mut stream = Self::stream_response_from_provider(
-                    self.provider().await?,
+                    iteration_provider,
                     &system_prompt,
                     conversation_with_moim.messages(),
                     &tools,
@@ -2773,7 +2995,11 @@ impl Agent {
                             if let Some(response) = response {
                                 let ToolCategorizeResult {
                                     frontend_requests,
-                                    remaining_requests,
+                                    // BR-19: `mut` — a PreToolUse hook may rewrite a
+                                    // tool's input inside inspect_and_gate_tool_requests,
+                                    // and the rewritten request is the one dispatched,
+                                    // persisted, and handed to the PostToolUse hooks.
+                                    mut remaining_requests,
                                     filtered_response,
                                 } = self.categorize_tools(&response, &tools).await;
 
@@ -2844,7 +3070,7 @@ impl Agent {
                                         enable_extension_request_ids,
                                         mut tool_futures,
                                     ) = self.inspect_and_gate_tool_requests(
-                                        &remaining_requests,
+                                        &mut remaining_requests,
                                         &conversation,
                                         biorouter_mode,
                                         &session,
@@ -2873,6 +3099,41 @@ impl Agent {
                                         let mut futures_lock = tool_futures_arc.lock().await;
                                         futures_lock.drain(..).collect::<Vec<_>>()
                                     };
+
+                                    // BR-19: PreToolUse (inspector) and PermissionRequest
+                                    // (permission gate) hooks stage their additionalContext /
+                                    // systemMessage there because neither return channel can
+                                    // carry them — both sites used to read only the decision
+                                    // and drop the rest. Drain them here, once both have run:
+                                    // messages surface as inline notices, context reaches the
+                                    // model with the same untrusted framing (BR-26) as the
+                                    // SessionStart / UserPromptSubmit path.
+                                    {
+                                        let staged = self.hooks_manager.drain_tool_hook_context(&session.id);
+                                        let mut hook_contexts: Vec<String> = Vec::new();
+                                        for entry in staged {
+                                            for msg in entry.system_messages {
+                                                yield AgentEvent::Message(
+                                                    Message::assistant()
+                                                        .with_system_notification(
+                                                            SystemNotificationType::InlineMessage,
+                                                            msg,
+                                                        )
+                                                        .user_only(),
+                                                );
+                                            }
+                                            hook_contexts.extend(entry.additional_context);
+                                        }
+                                        if !hook_contexts.is_empty() {
+                                            messages_to_add.push(
+                                                Message::user()
+                                                    .with_text(crate::hooks::outcome::frame_hook_context(
+                                                        &hook_contexts.join("\n\n"),
+                                                    ))
+                                                    .with_visibility(false, true),
+                                            );
+                                        }
+                                    }
 
                                     let with_id = tool_futures
                                         .into_iter()
@@ -2956,9 +3217,12 @@ impl Agent {
                                         loop_warnings.push(nudge);
                                     }
 
-                                    // PostToolUse / PostToolUseFailure hooks (observe-only):
-                                    // awaited so injected context lands before the next
-                                    // provider call, but decisions are ignored.
+                                    // PostToolUse / PostToolUseFailure hooks: awaited so their
+                                    // injected context lands before the next provider call, and
+                                    // (BR-19) their decision is now honored — a `block` turns the
+                                    // result into corrective feedback instead of being computed
+                                    // and thrown away. Bounded by POST_TOOL_HOOK_BLOCK_CAP so a
+                                    // hook that always blocks cannot wedge the turn.
                                     {
                                         let hooks = self.hooks_manager();
                                         let mut post_futures = Vec::new();
@@ -2992,14 +3256,16 @@ impl Agent {
                                             let hooks = Arc::clone(&hooks);
                                             let working_dir = session.working_dir.clone();
                                             post_futures.push(async move {
-                                                hooks
+                                                let aggregate = hooks
                                                     .dispatch(event, Some(&tool_name), &payload, &working_dir)
-                                                    .await
+                                                    .await;
+                                                (request_id, tool_name, aggregate)
                                             });
                                         }
                                         if !post_futures.is_empty() {
                                             let mut hook_contexts: Vec<String> = Vec::new();
-                                            for aggregate in futures::future::join_all(post_futures).await {
+                                            let mut blocked_any = false;
+                                            for (request_id, tool_name, aggregate) in futures::future::join_all(post_futures).await {
                                                 for msg in &aggregate.system_messages {
                                                     yield AgentEvent::Message(
                                                         Message::assistant()
@@ -3010,9 +3276,43 @@ impl Agent {
                                                             .user_only(),
                                                     );
                                                 }
+                                                if let Some(reason) = aggregate.deny_reason() {
+                                                    if self.hooks_manager.note_post_tool_block(&session.id).await {
+                                                        blocked_any = true;
+                                                        self.apply_post_tool_block(
+                                                            &request_id,
+                                                            &tool_name,
+                                                            reason,
+                                                            &request_to_response_map,
+                                                        ).await;
+                                                        yield AgentEvent::Message(
+                                                            Message::assistant()
+                                                                .with_system_notification(
+                                                                    SystemNotificationType::InlineMessage,
+                                                                    format!("Hook blocked the result of {tool_name}: {reason}"),
+                                                                )
+                                                                .user_only(),
+                                                        );
+                                                    } else {
+                                                        yield AgentEvent::Message(
+                                                            Message::assistant()
+                                                                .with_system_notification(
+                                                                    SystemNotificationType::InlineMessage,
+                                                                    format!(
+                                                                        "A PostToolUse hook has blocked {tool_name} {} times; delivering the result anyway.",
+                                                                        crate::hooks::POST_TOOL_HOOK_BLOCK_CAP
+                                                                    ),
+                                                                )
+                                                                .user_only(),
+                                                        );
+                                                    }
+                                                }
                                                 if let Some(ctx) = aggregate.joined_context() {
                                                     hook_contexts.push(ctx);
                                                 }
+                                            }
+                                            if !blocked_any {
+                                                self.hooks_manager.reset_post_tool_blocks(&session.id).await;
                                             }
                                             if !hook_contexts.is_empty() {
                                                 let context_message = Message::user()
@@ -3301,6 +3601,15 @@ impl Agent {
                 }
                 conversation.extend(messages_to_add);
 
+                // BR-28: turn boundary — join the observe-only hooks fired during
+                // this iteration (Notification on a permission prompt, Pre/PostCompact
+                // on an in-loop compaction) and surface what they returned instead of
+                // dropping their aggregate. Placed before the `exit_chat` branch so
+                // every exit path passes through it.
+                for msg in self.settle_fired_hooks(&session_config.id).await {
+                    yield AgentEvent::Message(msg);
+                }
+
                 if !no_tools_called {
                     // Tools ran this iteration: any Stop-hook block streak is over,
                     // and the turn made real progress, so reset the auto-continue streaks.
@@ -3335,6 +3644,12 @@ impl Agent {
                             payload,
                             session.working_dir.clone(),
                         );
+                        // BR-28: this break is the subagent's last boundary, so settle
+                        // the SubagentStop hook here — nothing downstream would ever
+                        // join it, and its aggregate would be lost with the task.
+                        for msg in self.settle_fired_hooks(&session_config.id).await {
+                            yield AgentEvent::Message(msg);
+                        }
                         break;
                     }
                     let active_goal = self.active_goal(&session_config.id).await;
