@@ -76,6 +76,12 @@ impl PermissionInspector {
                     InspectionAction::RequireApproval(_) => {
                         permission_check_result.needs_approval.push(request.clone());
                     }
+                    // The permission inspector never emits an advisory Warn; if
+                    // one ever appears it is not a permission decision, so fall
+                    // back to the same "ask the user" default as a missing result.
+                    InspectionAction::Warn => {
+                        permission_check_result.needs_approval.push(request.clone());
+                    }
                 }
             } else {
                 // If no permission result found, default to needs approval for safety
@@ -217,6 +223,7 @@ impl ToolInspector for PermissionInspector {
                             "Tool requires user approval".to_string()
                         }
                     }
+                    InspectionAction::Warn => "Advisory warning".to_string(),
                 };
 
                 results.push(InspectionResult {
