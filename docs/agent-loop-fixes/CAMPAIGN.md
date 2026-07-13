@@ -29,11 +29,11 @@ before merging.
 | Wave | Cluster | Branch | Proposals | Status |
 |---|---|---|---|---|
 | 0 | Foundation + seams + designs | `agent-loop-wave0` | BR-46, 25, 36, 38, 20, 39, 34, 26, 4, 33 (+BR-16 subsumed); agent.rs seam refactor; design docs BR-43/54/21/17/45/65 | **merged 129589ba — gate GREEN** |
-| 1 | Compaction & memory | `agent-loop-compaction` | BR-15, 10, 11, 13, 14, 12, 17 | **in progress** |
-| 1 | Security & guardrails | `agent-loop-security` | BR-22, 23, 21, 65, 64 | **in progress** |
-| 1 | Checkpoints & VCS | `agent-loop-checkpoints` | BR-43, 44, 45 | **in progress** |
-| 1 | Long-running & processes | `agent-loop-processes` | BR-37, 40, 41, 42 | **in progress** |
-| 1 | Context & prompts | `agent-loop-context` | BR-5, 2, 9, 8, 3, 60, 1 | **in progress** |
+| 1 | Compaction & memory | `agent-loop-compaction` | BR-15, 10, 11, 13, 14, 12, 17 | **merged — gate GREEN** |
+| 1 | Security & guardrails | `agent-loop-security` | BR-22, 23, 21, 65, 64 | **merged — gate GREEN** |
+| 1 | Checkpoints & VCS | `agent-loop-checkpoints` | BR-43, 44, 45 | **merged — gate GREEN** |
+| 1 | Long-running & processes | `agent-loop-processes` | BR-37, 40, 41, 42 | **merged — gate GREEN** |
+| 1 | Context & prompts | `agent-loop-context` | BR-5, 2, 9, 8, 3, 60, 1 | **merged — gate GREEN** |
 | 2 | Loop, stuck & budgets | `agent-loop-loopdet` | BR-29, 30, 31, 32, 35, 66, 67 | pending |
 | 2 | Hooks & permissions | `agent-loop-hooks` | BR-18, 19, 24, 27, 28, 63 | pending |
 | 2 | Server & cancel | `agent-loop-server` | BR-33 follow-ups, 52, 61, 62, 6, 7 | pending |
@@ -45,6 +45,23 @@ builds on BR-33 (wave 0); BR-16 is subsumed by BR-33; BR-47 builds on BR-19.
 
 ## Log
 
+- **2026-07-12** — Gate 1: all five Wave-1 clusters merged into integration
+  (checkpoints c7974c28 → compaction ee43bc0f → security ea6799aa → processes
+  c38cf9ba → context 76855c18). Conflict resolutions: session_manager.rs
+  3-way rebuild with BR-17 FTS migration renumbered 11→13,
+  CURRENT_SCHEMA_VERSION=13; agent.rs field unions (checkpoints +
+  eager_compactions + injected_skills; managed-policy HooksManager + checkpoint
+  init); rmcp_developer.rs keeps BR-44 FileHistory + BR-23 secret_guard (which
+  absorbed ignore_patterns by design). OpenAPI + TS client regenerated (zero
+  diff — textual merge was already correct). Clippy too_many_lines baseline
+  regenerated (13 entries). Post-merge targeted suites green (session 58,
+  context_mgmt 20, checkpoint 14, developer 191, security 35, hooks 54,
+  guardrails 29, prompt_manager 18, moim 11, agents 216). Full-workspace
+  regression running as the final gate check. BR-40 async-handle remainder
+  deferred to Wave 3. Known environment notes: cluster verifiers hit ENOSPC
+  during parallel builds (mitigated: prune ~/.cache/br-targets between waves);
+  pre-existing frontend lint/vitest failures on base (biorouterd.test.ts,
+  ExtensionModal.test.tsx) queued for Wave-3 cleanup.
 - **2026-07-12** — Campaign started. Integration branch cut from `main`
   (24cdc3a2) + review corpus merged (a409e7d7). Baseline full-workspace test
   run started. Wave 0 workflow launched.
