@@ -24,7 +24,7 @@ use std::{
     future::Future,
     io::Cursor,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::Arc,
 };
 use xcap::{Monitor, Window};
 
@@ -41,8 +41,10 @@ use super::analyze::{types::AnalyzeParams, CodeAnalyzer};
 use super::editor_models::{create_editor_model, EditorModel};
 use super::shell::{configure_shell_command, expand_path, is_absolute_path, kill_process_group};
 use super::text_editor::{
-    text_editor_insert, text_editor_replace, text_editor_undo, text_editor_view, text_editor_write,
+    save_file_history, text_editor_insert, text_editor_replace, text_editor_undo, text_editor_view,
+    text_editor_write,
 };
+use super::undo_history::{self, FileHistory};
 
 /// Build a git context + version-control policy block for the extension
 /// instructions. If `cwd` is inside a git work tree, the agent is told the
@@ -302,7 +304,7 @@ fn load_prompt_files() -> HashMap<String, Prompt> {
 #[derive(Clone)]
 pub struct DeveloperServer {
     tool_router: ToolRouter<Self>,
-    file_history: Arc<Mutex<HashMap<PathBuf, Vec<String>>>>,
+    file_history: Arc<FileHistory>,
     ignore_patterns: Gitignore,
     editor_model: Option<EditorModel>,
     prompts: HashMap<String, Prompt>,
@@ -695,7 +697,7 @@ impl DeveloperServer {
 
         Self {
             tool_router: Self::tool_router(),
-            file_history: Arc::new(Mutex::new(HashMap::new())),
+            file_history: Arc::new(FileHistory::in_memory()),
             ignore_patterns,
             editor_model,
             prompts: load_prompt_files(),
@@ -715,7 +717,12 @@ impl DeveloperServer {
 
     /// Set the session working directory that shell commands run in. When unset,
     /// the shell falls back to `BIOROUTER_WORKING_DIR` / the process cwd.
+    ///
+    /// Once the working directory is known, the `undo_edit` history is persisted
+    /// to disk keyed by that directory (BR-44), so undo survives a developer
+    /// server restart. Any prior history for this directory is reloaded here.
     pub fn with_working_dir(mut self, dir: PathBuf) -> Self {
+        self.file_history = Arc::new(FileHistory::persistent(&dir));
         self.working_dir = Some(dir);
         self
     }
@@ -745,6 +752,47 @@ impl DeveloperServer {
     pub fn bash_env_file(mut self, value: Option<PathBuf>) -> Self {
         self.bash_env_file = value;
         self
+    }
+
+    /// Snapshot the pre-command content of files a shell command redirects to
+    /// (`>`/`>>`), so `undo_edit <path>` restores the state before the write
+    /// (BR-44). Best-effort and side-effect free on the command: an unresolved,
+    /// out-of-tree, ignored, or `..`-containing target is simply skipped.
+    fn snapshot_shell_redirect_targets(&self, command: &str, working_dir: Option<&Path>) {
+        let targets = undo_history::redirect_targets(command);
+        if targets.is_empty() {
+            return;
+        }
+        // Resolve the base directory without the panicking `effective_cwd`: if
+        // the process has no valid cwd there is nothing safe to snapshot.
+        let base = match working_dir {
+            Some(w) => w.to_path_buf(),
+            None => match std::env::current_dir() {
+                Ok(d) => d,
+                Err(_) => return,
+            },
+        };
+        for raw in targets {
+            if raw.contains("..") {
+                continue;
+            }
+            let expanded = expand_path(&raw);
+            let resolved = if is_absolute_path(&expanded) {
+                let p = PathBuf::from(&expanded);
+                // Only snapshot absolute targets inside the working directory.
+                if !p.starts_with(&base) {
+                    continue;
+                }
+                p
+            } else {
+                base.join(&expanded)
+            };
+            // Don't copy ignored files (.env, secrets, ...) into the history.
+            if self.is_ignored(&resolved) {
+                continue;
+            }
+            let _ = self.file_history.snapshot(&resolved);
+        }
     }
 
     /// List all available windows that can be used with screen_capture.
@@ -1010,6 +1058,9 @@ impl DeveloperServer {
                         None,
                     )
                 })?;
+                // Snapshot the pre-write content so a whole-file overwrite is
+                // undoable too, not just str_replace/insert/diff edits (BR-44).
+                save_file_history(&path, &self.file_history)?;
                 let content = text_editor_write(&path, &file_text).await?;
                 Ok(CallToolResult::success(content))
             }
@@ -1116,6 +1167,11 @@ impl DeveloperServer {
         // Resolve the directory this command runs in: a per-call override, else
         // the session working directory, else the process cwd.
         let working_dir = self.resolve_shell_cwd(params.working_directory.as_deref());
+
+        // Snapshot the pre-command content of any file this command redirects
+        // to (`>`/`>>`), so `undo_edit` can revert shell-driven writes, not just
+        // text_editor edits (BR-44).
+        self.snapshot_shell_redirect_targets(command, working_dir.as_deref());
 
         // Background mode: start the command in its own process group, register
         // it, and return a job_id immediately instead of waiting for it.
@@ -2193,6 +2249,68 @@ mod tests {
             .as_text()
             .unwrap();
         assert!(user_content.text.contains("Hello, world!"));
+    }
+
+    /// BR-44: a whole-file `write` snapshots the previous content, so an
+    /// overwrite is undoable — not just `str_replace`/`insert`/diff edits.
+    #[tokio::test]
+    #[serial]
+    async fn test_write_then_undo_restores_previous_content() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("doc.txt");
+        let file_path_str = file_path.to_str().unwrap().to_string();
+        std::env::set_current_dir(&temp_dir).unwrap();
+        let server = create_test_server();
+
+        let write = |text: &str| {
+            Parameters(TextEditorParams {
+                path: file_path_str.clone(),
+                command: "write".to_string(),
+                view_range: None,
+                file_text: Some(text.to_string()),
+                old_str: None,
+                new_str: None,
+                insert_line: None,
+                diff: None,
+            })
+        };
+
+        server.text_editor(write("v1\n")).await.unwrap();
+        server.text_editor(write("v2\n")).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "v2\n");
+
+        let undo = Parameters(TextEditorParams {
+            path: file_path_str.clone(),
+            command: "undo_edit".to_string(),
+            view_range: None,
+            file_text: None,
+            old_str: None,
+            new_str: None,
+            insert_line: None,
+            diff: None,
+        });
+        server.text_editor(undo).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), "v1\n");
+    }
+
+    /// BR-44: a `shell` redirect target is pre-snapshotted, so `undo_edit`
+    /// reverts shell-driven writes back to their pre-command content.
+    #[tokio::test]
+    #[serial]
+    async fn test_shell_redirect_snapshot_enables_undo() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::env::set_current_dir(&temp_dir).unwrap();
+        let out = temp_dir.path().join("out.txt");
+        std::fs::write(&out, "before\n").unwrap();
+        let server = create_test_server();
+
+        // The shell tool snapshots redirect targets before running the command.
+        server.snapshot_shell_redirect_targets("echo more >> out.txt", Some(temp_dir.path()));
+        // Simulate the append the shell command would perform.
+        std::fs::write(&out, "before\nmore\n").unwrap();
+
+        text_editor_undo(&out, &server.file_history).await.unwrap();
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "before\n");
     }
 
     #[tokio::test]

@@ -244,6 +244,7 @@ mod tests {
             provider_name: None,
             model_config: None,
             diverged_from: None,
+            branch_point_msg_uid: None,
         }
     }
 }

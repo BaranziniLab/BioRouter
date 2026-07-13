@@ -580,6 +580,14 @@ impl MessageMetadata {
     }
 }
 
+/// Mint a fresh, durable message id. UUIDv7 is time-ordered, so ids sort by
+/// creation time (aids debugging and stable ordering). This is the stable
+/// per-message handle that survives history rewrites (compaction/edit/diverge),
+/// unlike the old positional `msg_{session}_{idx}` id (BR-45).
+pub fn new_message_id() -> String {
+    uuid::Uuid::now_v7().to_string()
+}
+
 #[derive(ToSchema, Clone, PartialEq, Serialize, Deserialize, Debug)]
 /// A message to or from an LLM
 #[serde(rename_all = "camelCase")]
@@ -631,6 +639,15 @@ impl Message {
     pub fn with_id<S: Into<String>>(mut self, id: S) -> Self {
         self.id = Some(id.into());
         self
+    }
+
+    /// Ensure the message carries a stable, durable id, minting a fresh one
+    /// (`new_message_id`) only when absent. Used at persistence time so every
+    /// message gets an id that survives history rewrites (BR-45).
+    pub fn ensure_id(&mut self) {
+        if self.id.is_none() {
+            self.id = Some(new_message_id());
+        }
     }
 
     /// Add any MessageContent to the message
