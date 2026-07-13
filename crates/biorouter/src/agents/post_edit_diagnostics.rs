@@ -45,7 +45,10 @@ pub struct PostEditDiagnosticsConfig {
 impl Default for PostEditDiagnosticsConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            // Default OFF: merging this branch changes no runtime behaviour until a
+            // user opts in (BIOROUTER_POST_EDIT_DIAGNOSTICS=1). Per the campaign's
+            // signed-off decision that all new capabilities ship default-off.
+            enabled: false,
             max_reflections: DEFAULT_MAX_REFLECTIONS,
         }
     }
@@ -282,9 +285,9 @@ mod tests {
     fn disabled_config_is_inert() {
         let c = PostEditDiagnosticsConfig::disabled();
         assert!(!c.is_active());
-        // Default is active.
-        assert!(PostEditDiagnosticsConfig::default().is_active());
-        // Zero reflections disables even when enabled.
+        // Default is now OFF (signed-off: new capabilities ship default-off).
+        assert!(!PostEditDiagnosticsConfig::default().is_active());
+        // Zero reflections disables even when explicitly enabled.
         assert!(!PostEditDiagnosticsConfig {
             enabled: true,
             max_reflections: 0
