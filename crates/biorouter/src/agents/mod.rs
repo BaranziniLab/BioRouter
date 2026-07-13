@@ -21,6 +21,7 @@ pub(crate) mod reply_parts;
 mod resource_refs;
 pub mod retry;
 mod schedule_tool;
+mod session_blob_tool;
 pub(crate) mod skills_extension;
 pub mod structured_output;
 pub mod subagent_execution_tool;
