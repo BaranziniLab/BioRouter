@@ -89,7 +89,19 @@ git show <sha>
 
 ---
 
-## 6. Decisions I need from you
+## 6. Decisions — ANSWERED 2026-07-13 ("proceed with all defaults")
+
+The user approved the default path on every open question. Locked in:
+
+| # | Decision | Resolution |
+|---|---|---|
+| 1 | Default-off flags | **Stay default-off.** Checkpoints (`BIOROUTER_CHECKPOINTS`), the macOS Seatbelt sandbox, and per-reply budgets remain opt-in. Merging changes no runtime behaviour until a user enables them. |
+| 2 | BR-54 (SharedMcpPool) | **Build it** — it is already scheduled in the Wave-3 runtime-perf tail (BR-53–59). |
+| 3 | Slices vs full features | **Keep the shipped first slices**; carry forward only what the wave plan already schedules. No extra scope. |
+| 4 | Landing strategy | **Option (a):** finish Waves 2–3, hand over one verified branch. **Nothing merges to `main` without explicit sign-off.** |
+| 5 | Pre-existing frontend reds | **Fix them** — folded into the Wave-3 cleanup cluster. |
+
+### Original question text (for the record)
 
 1. **Default-off flags.** Several new capabilities ship gated so they change nothing until enabled —
    checkpoints (`BIOROUTER_CHECKPOINTS`), the macOS Seatbelt sandbox, per-reply budgets. Do you want

@@ -45,6 +45,14 @@ builds on BR-33 (wave 0); BR-16 is subsumed by BR-33; BR-47 builds on BR-19.
 
 ## Log
 
+- **2026-07-13** — **Decisions signed off** (user: "proceed with all of the default
+  options"): flags stay default-off (checkpoints / sandbox / budgets remain opt-in,
+  so merging changes no runtime behaviour); BR-54 SharedMcpPool **will be built** in
+  the Wave-3 perf tail; shipped first slices are kept as-is (no extra scope);
+  landing = finish Waves 2-3 and hand over one verified branch, **nothing merges to
+  `main` without explicit sign-off**; pre-existing frontend lint/vitest reds folded
+  into a Wave-3 cleanup cluster. Wave 2: loopdet complete 7/7 (BR-35 orphan adopted
+  by its verifier as designed).
 - **2026-07-12** — Gate 1 GREEN: full-workspace suite on merged integration —
   55 suites ok, 2024 tests passed (baseline 1786; +238 added by waves 0-1),
   sole failure = pre-existing live-API test_anthropic_provider. Wave 2
