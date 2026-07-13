@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -34,7 +34,8 @@ use crate::checkpoint::{CheckpointConfig, CheckpointKind, CheckpointManager};
 use crate::config::permission::PermissionManager;
 use crate::config::{BioRouterMode, Config};
 use crate::context_mgmt::{
-    check_if_compaction_needed, compact_messages, DEFAULT_COMPACTION_THRESHOLD,
+    check_if_compaction_needed, compact_messages, compact_messages_with_recovery,
+    overflow_recovery_for_attempt, DEFAULT_COMPACTION_THRESHOLD,
 };
 use crate::conversation::message::{
     ActionRequiredData, Message, MessageContent, ProviderMetadata, SystemNotificationType,
@@ -183,6 +184,11 @@ pub struct Agent {
     /// `/rewind` can restore files/conversation. `None` when disabled (the
     /// default) or on the subagent/test paths. Gated by `BIOROUTER_CHECKPOINTS`.
     pub(super) checkpoints: Option<Arc<CheckpointManager>>,
+    /// BR-12: sessions with a background eager-compaction task in flight. Keeps
+    /// at most one summarizer running per session so two tasks never both try to
+    /// swap in a compacted history. A plain `std::Mutex` — only held for the
+    /// insert/remove, never across an await.
+    pub(super) eager_compactions: Arc<std::sync::Mutex<HashSet<String>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -232,6 +238,47 @@ where
             }
         }
     })
+}
+
+/// BR-12: RAII marker that a session has a background eager-compaction task in
+/// flight. Removed from the agent's `eager_compactions` set on drop (task ends,
+/// panics, or the runtime shuts down), so a later turn can spawn again.
+struct EagerCompactionGuard {
+    session_id: String,
+    in_flight: Arc<std::sync::Mutex<HashSet<String>>>,
+}
+
+impl Drop for EagerCompactionGuard {
+    fn drop(&mut self) {
+        self.in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.session_id);
+    }
+}
+
+/// Fire a Pre/PostCompact hook without an `Agent` receiver. Split out of
+/// [`Agent::fire_compaction_hook`] so the BR-12 background eager-compaction task
+/// (which holds only a cloned `Arc<HooksManager>`, not `&self`) can fire the
+/// same hooks.
+pub(super) fn fire_compaction_hook_on(
+    hooks_manager: &Arc<crate::hooks::HooksManager>,
+    event: crate::hooks::HookEvent,
+    session_id: &str,
+    working_dir: &std::path::Path,
+    trigger: &str,
+    reason: Option<&str>,
+) {
+    let mut payload =
+        crate::hooks::HookPayload::new(event, session_id, working_dir.to_string_lossy());
+    payload.trigger = Some(trigger.to_string());
+    payload.reason = reason.map(str::to_string);
+    hooks_manager.fire(
+        event,
+        Some(trigger.to_string()),
+        payload,
+        working_dir.to_path_buf(),
+    );
 }
 
 impl Agent {
@@ -289,6 +336,7 @@ impl Agent {
             vault: Mutex::new(None),
             soft_interrupts: Arc::new(std::sync::Mutex::new(Vec::new())),
             checkpoints,
+            eager_compactions: Arc::new(std::sync::Mutex::new(HashSet::new())),
         }
     }
 
@@ -369,15 +417,13 @@ impl Agent {
         trigger: &str,
         reason: Option<&str>,
     ) {
-        let mut payload =
-            crate::hooks::HookPayload::new(event, session_id, working_dir.to_string_lossy());
-        payload.trigger = Some(trigger.to_string());
-        payload.reason = reason.map(str::to_string);
-        self.hooks_manager.fire(
+        fire_compaction_hook_on(
+            &self.hooks_manager,
             event,
-            Some(trigger.to_string()),
-            payload,
-            working_dir.to_path_buf(),
+            session_id,
+            working_dir,
+            trigger,
+            reason,
         );
     }
 
@@ -894,6 +940,128 @@ impl Agent {
                 .await?;
         }
         Ok(())
+    }
+
+    /// BR-12: move auto-compaction off the user-visible critical path.
+    ///
+    /// Called at the turn boundary — after [`Self::record_turn_usage`] has
+    /// written this turn's provider-reported token count and the reply loop has
+    /// finished — so that if the session is now over the compaction threshold the
+    /// (multi-second) summarization LLM round-trip runs in a detached
+    /// `tokio::spawn` *between* turns instead of stalling the start of the next
+    /// turn. The next turn then starts from an already-compacted history.
+    ///
+    /// The synchronous compaction at the top of `reply()` stays as the fallback:
+    /// it fires when this background swap hasn't landed yet (a huge single turn, a
+    /// fast follow-up message, or a failed task), so a session can never overflow
+    /// even if eager compaction lags. That is the "keep a synchronous fallback"
+    /// phasing BR-12 calls for; a later phase can lower the synchronous path to a
+    /// 95%-budget no-LLM hard-drop floor.
+    ///
+    /// Idempotent per session: a second call while a compaction is in flight for
+    /// the same session is a no-op, so the loop can call this freely.
+    pub(super) fn maybe_spawn_eager_compaction(
+        &self,
+        session_config: &SessionConfig,
+        working_dir: &std::path::Path,
+    ) {
+        if !crate::context_mgmt::eager_compaction_enabled() {
+            return;
+        }
+
+        // At most one background compaction per session. `insert` returns false
+        // when the id was already present (a task is running) — bail then.
+        {
+            let mut in_flight = self
+                .eager_compactions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !in_flight.insert(session_config.id.clone()) {
+                return;
+            }
+        }
+
+        let provider = match self.provider.try_lock() {
+            Ok(guard) => guard.clone(),
+            // Provider is momentarily locked; skip — the synchronous fallback
+            // still covers this session next turn.
+            Err(_) => None,
+        };
+        let Some(provider) = provider else {
+            self.clear_eager_compaction(&session_config.id);
+            return;
+        };
+
+        let session_manager = self.config.session_manager.clone();
+        let hooks_manager = Arc::clone(&self.hooks_manager);
+        let in_flight = Arc::clone(&self.eager_compactions);
+        let session_config = session_config.clone();
+        let working_dir = working_dir.to_path_buf();
+        let threshold = Config::global()
+            .get_param::<f64>("BIOROUTER_AUTO_COMPACT_THRESHOLD")
+            .unwrap_or(DEFAULT_COMPACTION_THRESHOLD);
+        let session_id = session_config.id.clone();
+
+        tokio::spawn(async move {
+            // Remove the in-flight marker no matter how the task exits.
+            let _guard = EagerCompactionGuard {
+                session_id: session_id.clone(),
+                in_flight,
+            };
+
+            // Fire PreCompact only when compaction actually proceeds (the routine
+            // calls this back after its threshold check passes) — never on a turn
+            // that ended under budget.
+            let precompact_hooks = Arc::clone(&hooks_manager);
+            let precompact_id = session_id.clone();
+            let precompact_dir = working_dir.clone();
+            let on_before_compact = move || {
+                fire_compaction_hook_on(
+                    &precompact_hooks,
+                    crate::hooks::HookEvent::PreCompact,
+                    &precompact_id,
+                    &precompact_dir,
+                    "auto",
+                    Some("eager"),
+                );
+            };
+
+            match crate::context_mgmt::run_eager_compaction(
+                provider,
+                session_manager,
+                session_config,
+                threshold,
+                on_before_compact,
+            )
+            .await
+            {
+                Ok(crate::context_mgmt::EagerCompactionOutcome::Swapped) => {
+                    info!("BR-12: eager compaction swapped in for session {session_id}");
+                    fire_compaction_hook_on(
+                        &hooks_manager,
+                        crate::hooks::HookEvent::PostCompact,
+                        &session_id,
+                        &working_dir,
+                        "auto",
+                        Some("eager"),
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    warn!("BR-12: eager compaction failed for session {session_id}: {e}");
+                }
+            }
+        });
+    }
+
+    /// Clear the in-flight marker for a session's eager compaction. Used on the
+    /// early-return path in [`Self::maybe_spawn_eager_compaction`] before any task
+    /// was spawned (the spawned task clears it via [`EagerCompactionGuard`]).
+    fn clear_eager_compaction(&self, session_id: &str) {
+        self.eager_compactions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(session_id);
     }
 
     async fn handle_approved_and_denied_tools(
@@ -1636,11 +1804,38 @@ impl Agent {
             .clone()
             .ok_or_else(|| anyhow::anyhow!("Session {} has no conversation", session_config.id))?;
 
+        // BR-12: this synchronous check is the *fallback*. In the common case
+        // the previous turn's `maybe_spawn_eager_compaction` already compacted in
+        // the background between turns, so `needs_auto_compact` is false here and
+        // the turn starts immediately. It still fires — and blocks the turn — when
+        // eager compaction hasn't landed (a huge single turn, a fast follow-up
+        // message before the background task finished, a disabled eager path, or a
+        // failed task), so a session can never overflow.
+        //
+        // BR-15: on the cold path (a session's first turn, or a provider that
+        // doesn't report usage) the token estimate needs the system prompt and
+        // tool schemas or it undercounts badly. Assemble them only when needed —
+        // the happy path reads session.total_tokens and shouldn't pay for
+        // tool/prompt assembly here (the reply loop re-does it anyway).
+        let cold_path_tools_and_prompt = if session.total_tokens.is_none() {
+            Some(
+                self.prepare_tools_and_prompt(&session_config.id, &session.working_dir)
+                    .await?,
+            )
+        } else {
+            None
+        };
+
         let needs_auto_compact = check_if_compaction_needed(
             self.provider().await?.as_ref(),
             &conversation,
             None,
             &session,
+            cold_path_tools_and_prompt
+                .as_ref()
+                .map(|(tools, _toolshim, system_prompt)| {
+                    (system_prompt.as_str(), tools.as_slice())
+                }),
         )
         .await?;
 
@@ -2155,8 +2350,15 @@ impl Agent {
                         Err(ProviderError::ContextLengthExceeded(_)) => {
                             compaction_attempts += 1;
 
-                            if compaction_attempts >= 2 {
-                                error!("Context limit exceeded after compaction - prompt too large");
+                            // BR-13: progressive context-overflow fallback. Instead of a
+                            // hard 2-attempt cliff, each successive overflow escalates to a
+                            // more aggressive compaction strategy (keep-window ->
+                            // shrink-window -> summarize-all -> drop-oldest); only once the
+                            // ladder is exhausted do we surface the "still exceeded" error.
+                            // `compaction_attempts` resets to 0 on the next successful
+                            // provider response, so a later overflow restarts the ladder.
+                            let Some(recovery) = overflow_recovery_for_attempt(compaction_attempts) else {
+                                error!("Context limit exceeded after progressive compaction fallbacks - prompt too large");
                                 yield AgentEvent::Message(
                                     Message::assistant().with_system_notification(
                                         SystemNotificationType::InlineMessage,
@@ -2164,7 +2366,7 @@ impl Agent {
                                     )
                                 );
                                 break;
-                            }
+                            };
 
                             yield AgentEvent::Message(
                                 Message::assistant().with_system_notification(
@@ -2186,7 +2388,7 @@ impl Agent {
                                 "auto",
                                 Some("context_overflow"),
                             );
-                            match compact_messages(self.provider().await?.as_ref(), &conversation, false).await {
+                            match compact_messages_with_recovery(self.provider().await?.as_ref(), &conversation, recovery).await {
                                 Ok((compacted_conversation, usage)) => {
                                     session_manager.replace_conversation(&session_config.id, &compacted_conversation).await?;
                                     self.update_session_metrics(&session_config, &usage, true).await?;
@@ -2434,6 +2636,18 @@ impl Agent {
 
                 tokio::task::yield_now().await;
             }
+
+            // BR-12: the turn is complete — the agent loop drained and control is
+            // returning to the user. If the session ended over the compaction
+            // threshold, kick off compaction in the background now, *between*
+            // turns, so the next turn starts from an already-compacted history
+            // instead of stalling on the summarization round-trip. Fire-and-forget
+            // (spawns a task, doesn't await it); the synchronous check at the top
+            // of reply() is the fallback if this hasn't landed by then. Like the
+            // rename below, this tail runs only when the consumer drains the stream
+            // to completion — an early cancel just defers compaction to that
+            // synchronous fallback, which is harmless.
+            self.maybe_spawn_eager_compaction(&session_config, &working_dir);
 
             // NOTE: LLM-driven session rename is intentionally NOT triggered here.
             // This code sits after the last `yield` of a lazy `async_stream`, so it

@@ -15,7 +15,9 @@ pub mod moim;
 pub mod platform_tools;
 pub mod prompt_manager;
 mod recurring;
-mod reply_parts;
+// BR-12: `pub(crate)` so `context_mgmt::run_eager_compaction` can reuse
+// `apply_session_metrics` from the background compaction task.
+pub(crate) mod reply_parts;
 mod resource_refs;
 pub mod retry;
 mod schedule_tool;
