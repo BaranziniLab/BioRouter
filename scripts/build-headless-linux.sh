@@ -5,9 +5,16 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Inherit the glibc-floor pin ($LINUX_RUST_IMG = rust:1.92-bullseye) from the one
+# source of truth. This is a SPECIALIZED cross recipe — the headless browser
+# binary links extra system libs the 2-binary release build never needs — so it
+# does not use cross_linux, but it must never fork the floor. (check-no-cross-drift
+# enforces that this image comes from the shared pin.)
+# shellcheck source=scripts/cross-env.sh
+. "$ROOT/scripts/cross-env.sh"
 OUT="$ROOT/dist/headless-linux-x64"
 TARGET_DIR="${BIOROUTER_HEADLESS_TARGET_DIR:-/tmp/biorouter-headless-bullseye-target}"
-RUST_IMAGE="${BIOROUTER_HEADLESS_RUST_IMAGE:-rust:1.92-bullseye}"
+RUST_IMAGE="${BIOROUTER_HEADLESS_RUST_IMAGE:-$LINUX_RUST_IMG}"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
