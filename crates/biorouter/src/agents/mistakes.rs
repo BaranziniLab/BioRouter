@@ -51,6 +51,7 @@
 //! behaviour), and each threshold has its own key
 //! (see [`MistakeConfig::from_config`]).
 
+use crate::agents::tool_errors::ToolErrorKind;
 use crate::config::Config;
 use crate::providers::errors::ProviderError;
 use crate::tool_monitor::ToolOutcome;
@@ -196,6 +197,10 @@ pub struct MistakeTracker {
     nudged_at: u32,
     /// Distinct tools in the current streak, in first-seen order.
     tools: Vec<String>,
+    /// BR-51: distinct failure classes in the current streak, in first-seen order.
+    /// A run of `timeout`s means something very different from a run of
+    /// `invalid_args`, and the nudge now says which it is looking at.
+    kinds: Vec<ToolErrorKind>,
     /// Recoverable provider errors already retried in this reply.
     provider_errors: u32,
 }
@@ -232,6 +237,11 @@ impl MistakeTracker {
                 if !self.tools.iter().any(|tool| tool == &outcome.tool_name) {
                     self.tools.push(outcome.tool_name.clone());
                 }
+                if let Some(kind) = outcome.kind {
+                    if !self.kinds.contains(&kind) {
+                        self.kinds.push(kind);
+                    }
+                }
             } else {
                 // A tool call worked. Whatever the model was doing wrong, it is
                 // making progress again.
@@ -248,7 +258,25 @@ impl MistakeTracker {
         let escalated = config
             .escalate_at
             .is_some_and(|at| at > 0 && self.streak >= at);
-        Some(reflect_nudge(self.streak, &self.tools, escalated))
+        Some(reflect_nudge(
+            self.streak,
+            &self.tools,
+            &self.kinds,
+            escalated,
+        ))
+    }
+
+    /// BR-51: is every failure in the current streak one a retry could survive
+    /// (timeouts, transient dependency errors)? An all-retryable streak says the
+    /// *environment* is flaky, not that the model's plan is wrong — a distinction
+    /// the streak counter could not make before the taxonomy existed.
+    ///
+    /// `false` for an empty streak and for any streak with an unclassified
+    /// failure in it: the conservative answer is "this is a real mistake".
+    pub fn streak_is_all_retryable(&self) -> bool {
+        self.streak > 0
+            && !self.kinds.is_empty()
+            && self.kinds.iter().copied().all(ToolErrorKind::retryable)
     }
 
     /// A provider response arrived. Whatever went wrong before, the provider is
@@ -282,6 +310,7 @@ impl MistakeTracker {
         self.streak = 0;
         self.nudged_at = 0;
         self.tools.clear();
+        self.kinds.clear();
     }
 }
 
@@ -299,12 +328,23 @@ pub fn is_user_decline(outcome: &ToolOutcome) -> bool {
 /// The structured reflect-and-replan nudge. It does not tell the model *what* to
 /// do (BioRouter does not know); it forces it to say what it learned and what it
 /// will change, which is the step a stuck agent skips.
-fn reflect_nudge(streak: u32, tools: &[String], escalated: bool) -> String {
+///
+/// BR-51: it now also names the *classes* of failure in the streak. "Your plan is
+/// wrong" is the right message for a run of `not_found` / `invalid_args`, and the
+/// wrong one for a run of `timeout` — where the plan may be fine and the world is
+/// merely flaky.
+fn reflect_nudge(
+    streak: u32,
+    tools: &[String],
+    kinds: &[ToolErrorKind],
+    escalated: bool,
+) -> String {
     let which = match tools {
         [] => String::new(),
         [one] => format!(" (all of them '{one}')"),
         many => format!(" (across {})", quoted_list(many)),
     };
+    let classes = failure_classes(kinds);
 
     if escalated {
         format!(
@@ -312,7 +352,7 @@ fn reflect_nudge(streak: u32, tools: &[String], escalated: bool) -> String {
              failed{which}, and the earlier warning changed nothing. Your current plan is \
              not working. Stop executing it. Either take a materially different route, or \
              stop now and tell the user exactly what is blocking you and what you need \
-             from them. Do not keep trying variations of what has already failed."
+             from them. Do not keep trying variations of what has already failed.{classes}"
         )
     } else {
         format!(
@@ -321,7 +361,33 @@ fn reflect_nudge(streak: u32, tools: &[String], escalated: bool) -> String {
              next call needs a small tweak. Before calling another tool, say briefly: what \
              the failures actually told you, which assumption of yours they contradict, and \
              what you will do differently — a different tool, a different input, or stopping \
-             to ask the user for what you are missing."
+             to ask the user for what you are missing.{classes}"
+        )
+    }
+}
+
+/// The taxonomy clause appended to the reflect nudge. Empty when nothing in the
+/// streak was classified, so a taxonomy-less streak reads exactly as it did
+/// before BR-51.
+fn failure_classes(kinds: &[ToolErrorKind]) -> String {
+    if kinds.is_empty() {
+        return String::new();
+    }
+    let named = kinds
+        .iter()
+        .map(|kind| format!("'{}'", kind.as_str()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if kinds.iter().copied().all(ToolErrorKind::retryable) {
+        format!(
+            " (These failures were all classed {named} — retryable, so the environment may \
+             be at fault rather than your plan. A bounded retry or a different route is \
+             reasonable; hammering the same call is not.)"
+        )
+    } else {
+        format!(
+            " (These failures were classed {named}. The ones that are not retryable will \
+             fail identically until you change something.)"
         )
     }
 }
@@ -373,6 +439,16 @@ mod tests {
         ToolOutcome {
             tool_name: tool.to_string(),
             failure: Some(format!("{tool} blew up")),
+            kind: Some(ToolErrorKind::ToolFailure),
+        }
+    }
+
+    /// A failure of a class a retry could survive (BR-51).
+    fn failed_transiently(tool: &str) -> ToolOutcome {
+        ToolOutcome {
+            tool_name: tool.to_string(),
+            failure: Some(format!("{tool} could not reach the server")),
+            kind: Some(ToolErrorKind::Transient),
         }
     }
 
@@ -380,6 +456,7 @@ mod tests {
         ToolOutcome {
             tool_name: tool.to_string(),
             failure: None,
+            kind: None,
         }
     }
 
@@ -488,6 +565,7 @@ mod tests {
         let malformed = ToolOutcome {
             tool_name: MALFORMED_TOOL_NAME.to_string(),
             failure: Some("invalid json in arguments".to_string()),
+            kind: Some(ToolErrorKind::InvalidArgs),
         };
         let nudge = tracker
             .observe_tool_outcomes(&config, &[failed("shell"), malformed.clone(), malformed]);
@@ -644,5 +722,75 @@ mod tests {
              transient or recoverable error.",
             "the pre-BR-66 text, byte for byte"
         );
+    }
+
+    // ── BR-51: the streak now knows what kind of failures it is counting ──
+
+    /// A run of flaky-environment failures must not be diagnosed as "your plan is
+    /// wrong" — the model's plan may be fine and the world merely down.
+    #[test]
+    fn an_all_retryable_streak_is_named_as_such() {
+        let config = MistakeConfig::default();
+        let mut tracker = MistakeTracker::default();
+
+        let nudge = tracker
+            .observe_tool_outcomes(
+                &config,
+                &[
+                    failed_transiently("fetch"),
+                    failed_transiently("fetch"),
+                    failed_transiently("fetch"),
+                ],
+            )
+            .expect("three failures nudge");
+
+        assert!(tracker.streak_is_all_retryable());
+        assert!(nudge.contains("'transient'"), "{nudge}");
+        assert!(nudge.contains("retryable"), "{nudge}");
+    }
+
+    /// One hard failure in the run is enough: this is a real mistake streak.
+    #[test]
+    fn a_mixed_streak_is_not_retryable() {
+        let config = MistakeConfig::default();
+        let mut tracker = MistakeTracker::default();
+
+        let nudge = tracker
+            .observe_tool_outcomes(
+                &config,
+                &[
+                    failed_transiently("fetch"),
+                    failed("shell"),
+                    failed_transiently("fetch"),
+                ],
+            )
+            .expect("three failures nudge");
+
+        assert!(!tracker.streak_is_all_retryable());
+        assert!(nudge.contains("not retryable"), "{nudge}");
+    }
+
+    /// A success clears the classes with the streak — the next run of failures
+    /// must be diagnosed on its own evidence, not the last one's.
+    #[test]
+    fn a_success_clears_the_recorded_classes() {
+        let config = MistakeConfig::default();
+        let mut tracker = MistakeTracker::default();
+
+        tracker.observe_tool_outcomes(&config, &[failed("shell"), succeeded("shell")]);
+        assert!(!tracker.streak_is_all_retryable());
+
+        let nudge = tracker
+            .observe_tool_outcomes(
+                &config,
+                &[
+                    failed_transiently("fetch"),
+                    failed_transiently("fetch"),
+                    failed_transiently("fetch"),
+                ],
+            )
+            .expect("three fresh failures nudge");
+        assert!(tracker.streak_is_all_retryable());
+        assert!(!nudge.contains("'tool_failure'"), "{nudge}");
     }
 }

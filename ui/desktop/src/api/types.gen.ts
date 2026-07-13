@@ -1588,7 +1588,13 @@ export type SubWorkflow = {
 };
 
 /**
- * Execute a shell command and check its exit status
+ * A single success check to validate workflow completion, or (BR-48) to gate
+ * an interactive chat turn from finishing with unmet conditions.
+ *
+ * Originally a single `Shell` variant used only by the workflow retry path.
+ * BR-48 added the non-shell variants and a done-ness gate so an interactive
+ * session can also declare "not done until these hold" — see
+ * [`crate::agents::done_gate`].
  */
 export type SuccessCheck = {
     /**
@@ -1596,6 +1602,32 @@ export type SuccessCheck = {
      */
     command: string;
     type: 'Shell';
+} | {
+    /**
+     * The file (or directory) that must exist.
+     */
+    path: string;
+    type: 'FileExists';
+} | {
+    /**
+     * The shell command whose output is inspected.
+     */
+    command: string;
+    /**
+     * The substring the output must contain.
+     */
+    substring: string;
+    type: 'OutputContains';
+} | {
+    /**
+     * The JSON file to validate.
+     */
+    path: string;
+    /**
+     * The JSON Schema the file's contents must satisfy.
+     */
+    schema: unknown;
+    type: 'JsonSchema';
 };
 
 export type SystemInfo = {
