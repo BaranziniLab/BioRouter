@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use futures::stream::BoxStream;
-use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
+use futures::{stream, Stream, StreamExt, TryStreamExt};
 use uuid::Uuid;
 
 use super::final_output_tool::FinalOutputTool;
@@ -1430,15 +1430,27 @@ impl Agent {
 
         debug!("WAITING_TOOL_END: {}", tool_call.name);
 
+        // BR-6: the large-response handler needs the session working dir so an
+        // oversized result is offloaded to a handle the model's file/shell
+        // tools can actually reach (not a bare temp path outside the sandbox).
+        let large_response_ctx = super::large_response_handler::LargeResponseContext {
+            session_id: session.id.clone(),
+            working_dir: session.working_dir.clone(),
+            tool_name: tool_call.name.to_string(),
+        };
+        let inner = result.result;
+
         (
             request_id,
             Ok(ToolCallResult {
                 notification_stream: result.notification_stream,
-                result: Box::new(
-                    result
-                        .result
-                        .map(super::large_response_handler::process_tool_response),
-                ),
+                result: Box::new(Box::pin(async move {
+                    super::large_response_handler::process_tool_response(
+                        inner.await,
+                        &large_response_ctx,
+                    )
+                    .await
+                })),
             }),
         )
     }
