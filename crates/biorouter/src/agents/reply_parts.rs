@@ -17,7 +17,7 @@ use crate::providers::toolshim::{
 };
 
 use crate::agents::code_execution_extension::EXTENSION_NAME as CODE_EXECUTION_EXTENSION;
-use crate::agents::subagent_tool::SUBAGENT_TOOL_NAME;
+use crate::agents::subagent_tool::{SUBAGENT_STATUS_TOOL_NAME, SUBAGENT_TOOL_NAME};
 use crate::session::session_manager::TokenDelta;
 #[cfg(test)]
 use crate::session::SessionType;
@@ -131,7 +131,12 @@ impl Agent {
         if code_execution_active {
             let code_exec_prefix = format!("{CODE_EXECUTION_EXTENSION}__");
             tools.retain(|tool| {
-                tool.name.starts_with(&code_exec_prefix) || tool.name == SUBAGENT_TOOL_NAME
+                tool.name.starts_with(&code_exec_prefix)
+                    || tool.name == SUBAGENT_TOOL_NAME
+                    // BR-40: `subagent_status` survives the code-execution filter
+                    // alongside `subagent` — a model that can spawn a background
+                    // child but cannot poll it would strand every handle.
+                    || tool.name == SUBAGENT_STATUS_TOOL_NAME
             });
         }
 

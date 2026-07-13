@@ -122,7 +122,6 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
       if (!draggingRef.current) return;
       updateThresholdLive(computePctFromClientX(e.clientX));
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [computePctFromClientX]
   );
 
@@ -133,7 +132,6 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
     if (pendingPctRef.current !== null) {
       persistThreshold(pendingPctRef.current);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [handleDragMove]);
 
   const handleDragStart = useCallback(
@@ -146,7 +144,6 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
       window.addEventListener('mousemove', handleDragMove);
       window.addEventListener('mouseup', handleDragEnd);
     },
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [computePctFromClientX, handleDragMove, handleDragEnd]
   );
 

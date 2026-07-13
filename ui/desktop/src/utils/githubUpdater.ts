@@ -262,7 +262,6 @@ export class GitHubUpdater {
 
       // Combine chunks into a single buffer
       log.info('GitHubUpdater: Combining chunks into buffer...');
-      // eslint-disable-next-line no-undef
       const buffer = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
       log.info(`GitHubUpdater: Buffer created - ${buffer.length} bytes`);
 
@@ -271,7 +270,7 @@ export class GitHubUpdater {
       // Preserve the real asset extension (.dmg/.zip/.deb/.rpm) from the URL so
       // the file the user double-clicks is the actual installer.
       const urlName = downloadUrl.split('/').pop() || '';
-      const ext = (urlName.match(/\.(dmg|zip|deb|rpm)$/i) || [, 'zip'])[1];
+      const ext = urlName.match(/\.(dmg|zip|deb|rpm)$/i)?.[1] || 'zip';
       const fileName = `BioRouter-${latestVersion}.${ext}`;
       const downloadPath = path.join(downloadsDir, fileName);
 

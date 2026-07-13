@@ -253,7 +253,11 @@ async function applyUpdate(info: ExtensionUpdateInfo, send: (e: ExtensionUpdateE
     send({ type: 'update-error', ext: info.name, error: msg });
   } finally {
     // Cleanup temp dir
-    try { await fs.rm(tmpDir, { recursive: true, force: true }); } catch {}
+    try {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    } catch {
+      /* best-effort cleanup — ignore if the temp dir is already gone */
+    }
   }
 }
 
