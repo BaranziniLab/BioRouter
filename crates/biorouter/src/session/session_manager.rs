@@ -1,10 +1,13 @@
 use crate::config::paths::Paths;
-use crate::conversation::message::{new_message_id, Message, MessageContent, MessageMetadata};
+use crate::conversation::message::{
+    new_message_id, Message, MessageContent, MessageMetadata, TokenState,
+};
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
 use crate::providers::base::{Provider, MSG_COUNT_FOR_SESSION_NAME_GENERATION};
 use crate::session::chat_fts;
 use crate::session::extension_data::ExtensionData;
+use crate::session::message_blobs;
 use crate::workflow::Workflow;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -19,7 +22,7 @@ use std::sync::{Arc, LazyLock};
 use tracing::{info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 13;
+pub const CURRENT_SCHEMA_VERSION: i32 = 14;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -565,6 +568,35 @@ pub struct SessionTokenCounts {
     pub accumulated_output_tokens: Option<i64>,
 }
 
+/// BR-52: the one place a session's stored counters become the `TokenState` the
+/// clients see. The agent reads it once per turn boundary and carries it in the
+/// event stream; the server no longer re-derives it per streamed token.
+impl From<SessionTokenCounts> for TokenState {
+    fn from(counts: SessionTokenCounts) -> Self {
+        TokenState {
+            input_tokens: counts.input_tokens.unwrap_or(0),
+            output_tokens: counts.output_tokens.unwrap_or(0),
+            total_tokens: counts.total_tokens.unwrap_or(0),
+            accumulated_input_tokens: counts.accumulated_input_tokens.unwrap_or(0),
+            accumulated_output_tokens: counts.accumulated_output_tokens.unwrap_or(0),
+            accumulated_total_tokens: counts.accumulated_total_tokens.unwrap_or(0),
+        }
+    }
+}
+
+impl From<&Session> for TokenState {
+    fn from(session: &Session) -> Self {
+        TokenState {
+            input_tokens: session.input_tokens.unwrap_or(0),
+            output_tokens: session.output_tokens.unwrap_or(0),
+            total_tokens: session.total_tokens.unwrap_or(0),
+            accumulated_input_tokens: session.accumulated_input_tokens.unwrap_or(0),
+            accumulated_output_tokens: session.accumulated_output_tokens.unwrap_or(0),
+            accumulated_total_tokens: session.accumulated_total_tokens.unwrap_or(0),
+        }
+    }
+}
+
 /// SQLite row shape for the BR-43 `checkpoints` table, mapped to the public
 /// `checkpoint::CheckpointRecord`.
 #[derive(sqlx::FromRow)]
@@ -670,6 +702,18 @@ impl SessionManager {
 
     pub async fn replace_conversation(&self, id: &str, conversation: &Conversation) -> Result<()> {
         self.storage.replace_conversation(id, conversation).await
+    }
+
+    /// Fetch one externalized tool-result payload by its blob handle (BR-7).
+    /// `None` when the handle is unknown to this session — blobs are scoped to
+    /// the session that stored them, so one session can never read another's
+    /// tool output through a guessed (or model-hallucinated) handle.
+    pub async fn get_message_blob(
+        &self,
+        session_id: &str,
+        blob_uid: &str,
+    ) -> Result<Option<String>> {
+        self.storage.get_message_blob(session_id, blob_uid).await
     }
 
     pub async fn list_sessions(&self) -> Result<Vec<Session>> {
@@ -1288,6 +1332,9 @@ impl SessionStorage {
         // BR-43 shadow-git checkpoints (migration 11), created inline for fresh DBs.
         Self::create_checkpoints_table(pool).await?;
 
+        // BR-7 externalized tool-result payloads (migration 14).
+        Self::create_message_blobs_table(pool).await?;
+
         sqlx::query("CREATE INDEX idx_messages_session ON messages(session_id)")
             .execute(pool)
             .await?;
@@ -1729,6 +1776,15 @@ impl SessionStorage {
                         .await?;
                 }
             }
+            14 => {
+                // BR-7: side table for tool-result payloads lifted out of
+                // `messages.content_json`. Purely additive — existing messages
+                // keep their inline content and are never rewritten, so an
+                // older binary opening a v14 DB reads every session exactly as
+                // before. Only messages written *after* the upgrade can carry a
+                // stub, and nothing but a v14+ binary writes one.
+                Self::create_message_blobs_table(pool).await?;
+            }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
             }
@@ -1761,6 +1817,34 @@ impl SessionStorage {
         )
         .execute(pool)
         .await?;
+        Ok(())
+    }
+
+    /// BR-7: side table holding tool-result payloads too large to keep inline in
+    /// `messages.content_json`. Keyed `(session_id, blob_uid)` rather than by the
+    /// message rowid: `replace_conversation_inner` DELETEs and re-INSERTs every
+    /// message on each compaction/edit, so a rowid reference would dangle on the
+    /// first rewrite. The composite key also lets a diverged/copied session own
+    /// its own row for the same payload, so the parent's orphan sweep can never
+    /// pull a blob out from under a branch.
+    async fn create_message_blobs_table(pool: &Pool<Sqlite>) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS message_blobs (
+                blob_uid TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                bytes INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                PRIMARY KEY (session_id, blob_uid)
+            )
+        "#,
+        )
+        .execute(pool)
+        .await?;
+        sqlx::query("CREATE INDEX IF NOT EXISTS idx_message_blobs_uid ON message_blobs(blob_uid)")
+            .execute(pool)
+            .await?;
         Ok(())
     }
 
@@ -2064,6 +2148,20 @@ impl SessionStorage {
     }
 
     async fn get_conversation(&self, session_id: &str) -> Result<Conversation> {
+        // BR-7: hydrating is the default, so every existing consumer — the UI
+        // transcript, exports, a resumed agent — sees exactly the bytes it saw
+        // before externalization existed. `BIOROUTER_SESSION_BLOB_LAZY_LOAD`
+        // opts into the lazy read, where an oversized tool result stays a stub
+        // and the model pulls it back with `platform__read_session_blob`.
+        self.get_conversation_inner(session_id, !message_blobs::lazy_load_enabled())
+            .await
+    }
+
+    async fn get_conversation_inner(
+        &self,
+        session_id: &str,
+        hydrate_blobs: bool,
+    ) -> Result<Conversation> {
         let pool = self.pool().await?;
         let rows = sqlx::query_as::<_, (String, String, i64, Option<String>, Option<String>)>(
             "SELECT role, content_json, created_timestamp, metadata_json, msg_uid FROM messages WHERE session_id = ? ORDER BY timestamp",
@@ -2071,6 +2169,20 @@ impl SessionStorage {
             .bind(session_id)
             .fetch_all(pool)
             .await?;
+
+        // The payloads to splice back into any externalized tool result. Fetched
+        // once, and only when a row actually carries a stub — a session that
+        // never externalized anything (every session before this schema, and
+        // every ordinary one after it) pays a substring scan and nothing else.
+        let hydrate = hydrate_blobs
+            && rows
+                .iter()
+                .any(|(_, content_json, ..)| message_blobs::content_json_has_stub(content_json));
+        let blobs = if hydrate {
+            self.load_blobs(session_id).await?
+        } else {
+            HashMap::new()
+        };
 
         let mut messages = Vec::new();
         for (idx, (role_str, content_json, created_timestamp, metadata_json, msg_uid)) in
@@ -2082,7 +2194,8 @@ impl SessionStorage {
                 _ => continue,
             };
 
-            let content = serde_json::from_str(&content_json)?;
+            let mut content: Vec<MessageContent> = serde_json::from_str(&content_json)?;
+            message_blobs::hydrate(&mut content, &blobs);
             let metadata = metadata_json
                 .and_then(|json| serde_json::from_str(&json).ok())
                 .unwrap_or_default();
@@ -2100,6 +2213,33 @@ impl SessionStorage {
         Ok(Conversation::new_unvalidated(messages))
     }
 
+    /// Every externalized payload of one session, keyed by blob handle (BR-7).
+    async fn load_blobs(&self, session_id: &str) -> Result<HashMap<String, String>> {
+        let pool = self.pool().await?;
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT blob_uid, content FROM message_blobs WHERE session_id = ?",
+        )
+        .bind(session_id)
+        .fetch_all(pool)
+        .await?;
+        Ok(rows.into_iter().collect())
+    }
+
+    /// One externalized payload, by handle. The lazy read path's retrieval seam:
+    /// what `platform__read_session_blob` calls when the model asks for the full
+    /// output behind a stub.
+    async fn get_message_blob(&self, session_id: &str, blob_uid: &str) -> Result<Option<String>> {
+        let pool = self.pool().await?;
+        let content = sqlx::query_scalar::<_, String>(
+            "SELECT content FROM message_blobs WHERE session_id = ? AND blob_uid = ?",
+        )
+        .bind(session_id)
+        .bind(blob_uid)
+        .fetch_optional(pool)
+        .await?;
+        Ok(content)
+    }
+
     async fn add_message(&self, session_id: &str, message: &Message) -> Result<()> {
         let pool = self.pool().await?;
         let mut tx = pool.begin().await?;
@@ -2109,6 +2249,15 @@ impl SessionStorage {
         // caller didn't supply one (BR-45).
         let msg_uid = message.id.clone().unwrap_or_else(new_message_id);
 
+        // BR-7: lift an oversized tool-result payload into the blob side table
+        // so the `messages` row stays small. `None` (the common case) stores the
+        // content exactly as before, with no extra allocation.
+        let externalized = message_blobs::externalize(&message.content);
+        let (content_json, blobs) = match &externalized {
+            Some((content, blobs)) => (serde_json::to_string(content)?, blobs.as_slice()),
+            None => (serde_json::to_string(&message.content)?, [].as_slice()),
+        };
+
         let insert = sqlx::query(
             r#"
             INSERT INTO messages (session_id, role, content_json, created_timestamp, metadata_json, msg_uid)
@@ -2117,14 +2266,20 @@ impl SessionStorage {
         )
         .bind(session_id)
         .bind(role_to_string(&message.role))
-        .bind(serde_json::to_string(&message.content)?)
+        .bind(content_json)
         .bind(message.created)
         .bind(metadata_json)
         .bind(msg_uid)
         .execute(&mut *tx)
         .await?;
 
-        // Keep the FTS recall index in sync with the new row (BR-17).
+        // Same transaction as the message row: a stub can never be persisted
+        // without the payload it points at.
+        Self::insert_blobs(&mut tx, session_id, blobs).await?;
+
+        // Keep the FTS recall index in sync with the new row (BR-17). Indexed
+        // from the *original* message: recall renders a tool response as a
+        // placeholder, so externalization cannot change what is searchable.
         let fts_available = Self::messages_fts_exists(&mut *tx).await;
         Self::index_message_fts(
             &mut tx,
@@ -2212,6 +2367,11 @@ impl SessionStorage {
                 .await?;
         }
 
+        // Every blob still referenced after the rewrite (BR-7): the handles that
+        // survive inside kept stubs, plus the ones minted below. Anything else
+        // belonged to a message this rewrite dropped and is swept at the end.
+        let mut live_blob_uids: Vec<String> = Vec::new();
+
         for message in conversation.messages() {
             let metadata_json = serde_json::to_string(&message.metadata)?;
             // PRESERVE each kept message's stable id across the rewrite (this is
@@ -2219,6 +2379,19 @@ impl SessionStorage {
             // Only a newly-minted message (e.g. a compaction summary) with no id
             // gets a fresh one (BR-45).
             let msg_uid = message.id.clone().unwrap_or_else(new_message_id);
+
+            let externalized = message_blobs::externalize(&message.content);
+            let (content_json, blobs) = match &externalized {
+                Some((content, blobs)) => (serde_json::to_string(content)?, blobs.as_slice()),
+                None => (serde_json::to_string(&message.content)?, [].as_slice()),
+            };
+            live_blob_uids.extend(message_blobs::referenced_uids(
+                externalized
+                    .as_ref()
+                    .map_or(message.content.as_slice(), |(content, _)| {
+                        content.as_slice()
+                    }),
+            ));
 
             let insert = sqlx::query(
                 r#"
@@ -2228,12 +2401,14 @@ impl SessionStorage {
             )
             .bind(session_id)
             .bind(role_to_string(&message.role))
-            .bind(serde_json::to_string(&message.content)?)
+            .bind(content_json)
             .bind(message.created)
             .bind(metadata_json)
             .bind(msg_uid)
             .execute(&mut *tx)
             .await?;
+
+            Self::insert_blobs(&mut tx, session_id, blobs).await?;
 
             Self::index_message_fts(
                 &mut tx,
@@ -2245,7 +2420,91 @@ impl SessionStorage {
             .await?;
         }
 
+        // A conversation written here can carry stubs minted under *another*
+        // session — a diverge/copy re-inserts the parent's messages verbatim
+        // into the child. Give the child its own row for each such payload
+        // before the sweep, so the two sessions' lifetimes stay independent.
+        Self::adopt_blobs(&mut tx, session_id, &live_blob_uids).await?;
+        Self::sweep_orphan_blobs(&mut tx, session_id, &live_blob_uids).await?;
+
         tx.commit().await?;
+        Ok(())
+    }
+
+    /// Write the payloads lifted out of one message, in the caller's transaction.
+    async fn insert_blobs(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        session_id: &str,
+        blobs: &[message_blobs::PendingBlob],
+    ) -> Result<()> {
+        for blob in blobs {
+            sqlx::query(
+                r#"
+                INSERT OR REPLACE INTO message_blobs (blob_uid, session_id, created_at, bytes, content)
+                VALUES (?, ?, ?, ?, ?)
+            "#,
+            )
+            .bind(&blob.uid)
+            .bind(session_id)
+            .bind(Utc::now().timestamp())
+            .bind(blob.bytes())
+            .bind(&blob.content)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Copy any referenced blob this session does not own yet from whichever
+    /// session does (the parent of a diverge/copy). No-op for the common case
+    /// where every handle was minted here.
+    async fn adopt_blobs(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        session_id: &str,
+        uids: &[String],
+    ) -> Result<()> {
+        for uid in uids {
+            sqlx::query(
+                r#"
+                INSERT OR IGNORE INTO message_blobs (blob_uid, session_id, created_at, bytes, content)
+                SELECT blob_uid, ?, created_at, bytes, content
+                FROM message_blobs WHERE blob_uid = ? LIMIT 1
+            "#,
+            )
+            .bind(session_id)
+            .bind(uid)
+            .execute(&mut **tx)
+            .await?;
+        }
+        Ok(())
+    }
+
+    /// Drop this session's blobs that no surviving message points at — the
+    /// payloads of tool responses that compaction (or an edit) just removed.
+    /// Without this the side table would only ever grow, trading one kind of DB
+    /// bloat for another.
+    async fn sweep_orphan_blobs(
+        tx: &mut sqlx::Transaction<'_, Sqlite>,
+        session_id: &str,
+        live_uids: &[String],
+    ) -> Result<()> {
+        if live_uids.is_empty() {
+            sqlx::query("DELETE FROM message_blobs WHERE session_id = ?")
+                .bind(session_id)
+                .execute(&mut **tx)
+                .await?;
+            return Ok(());
+        }
+
+        let placeholders = vec!["?"; live_uids.len()].join(", ");
+        let sql = format!(
+            "DELETE FROM message_blobs WHERE session_id = ? AND blob_uid NOT IN ({placeholders})"
+        );
+        let mut query = sqlx::query(&sql).bind(session_id);
+        for uid in live_uids {
+            query = query.bind(uid);
+        }
+        query.execute(&mut **tx).await?;
         Ok(())
     }
 
@@ -2310,6 +2569,12 @@ impl SessionStorage {
         }
 
         sqlx::query("DELETE FROM messages WHERE session_id = ?")
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?;
+
+        // The session's externalized tool-result payloads go with it (BR-7).
+        sqlx::query("DELETE FROM message_blobs WHERE session_id = ?")
             .bind(session_id)
             .execute(&mut *tx)
             .await?;
@@ -2774,6 +3039,361 @@ impl SessionStorage {
         )
         .execute()
         .await
+    }
+}
+
+#[cfg(test)]
+mod blob_tests {
+    //! BR-7: externalizing an oversized tool result out of `content_json`.
+    //!
+    //! These drive the storage layer directly (`get_conversation_inner`) rather
+    //! than through the `BIOROUTER_SESSION_BLOB_LAZY_LOAD` env var, so both read
+    //! modes are covered deterministically under a parallel test runner.
+
+    use super::*;
+    use crate::conversation::message::{Message, ToolResponse};
+    use rmcp::model::{CallToolResult, Content};
+    use tempfile::TempDir;
+
+    /// Comfortably over the 64 KiB default threshold.
+    fn huge(marker: &str) -> String {
+        (0..3_000)
+            .map(|i| format!("{marker} row {i} of a very large tool result\n"))
+            .collect()
+    }
+
+    fn tool_response_message(call_id: &str, text: String) -> Message {
+        Message::assistant().with_content(MessageContent::ToolResponse(ToolResponse {
+            id: call_id.to_string(),
+            tool_result: Ok(CallToolResult {
+                content: vec![Content::text(text)],
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+            metadata: None,
+        }))
+    }
+
+    fn response_text(conv: &Conversation, idx: usize) -> String {
+        let MessageContent::ToolResponse(response) = &conv.messages()[idx].content[0] else {
+            panic!("expected a tool response");
+        };
+        response.tool_result.as_ref().unwrap().content[0]
+            .as_text()
+            .unwrap()
+            .text
+            .clone()
+    }
+
+    async fn stored_content_json(sm: &SessionManager, session_id: &str) -> String {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query_scalar::<_, String>(
+            "SELECT content_json FROM messages WHERE session_id = ? ORDER BY id LIMIT 1",
+        )
+        .bind(session_id)
+        .fetch_one(pool)
+        .await
+        .unwrap()
+    }
+
+    async fn blob_count(sm: &SessionManager, session_id: &str) -> i64 {
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM message_blobs WHERE session_id = ?")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn session(sm: &SessionManager) -> String {
+        sm.create_session(
+            PathBuf::from("/tmp"),
+            "blobs".to_string(),
+            SessionType::User,
+        )
+        .await
+        .unwrap()
+        .id
+    }
+
+    /// The core of BR-7: the oversized payload leaves `content_json` for the side
+    /// table, and the default (hydrating) read puts it back byte for byte — so
+    /// no existing consumer can tell the difference.
+    #[tokio::test]
+    async fn an_oversized_tool_result_is_externalized_and_hydrated_back_exactly() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        let payload = huge("a");
+        sm.add_message(&id, &tool_response_message("call_1", payload.clone()))
+            .await
+            .unwrap();
+
+        // The message row is now tiny and carries only a stub.
+        let row = stored_content_json(&sm, &id).await;
+        assert!(
+            row.len() < payload.len() / 10,
+            "the stored row should be a stub, not the payload ({} vs {})",
+            row.len(),
+            payload.len()
+        );
+        assert!(message_blobs::content_json_has_stub(&row));
+        assert_eq!(blob_count(&sm, &id).await, 1);
+
+        // ...and the default read is indistinguishable from before.
+        let conv = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(response_text(&conv, 0), payload);
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_tool_result_still_stores_inline() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        sm.add_message(&id, &tool_response_message("call_1", "small result".into()))
+            .await
+            .unwrap();
+
+        assert!(stored_content_json(&sm, &id).await.contains("small result"));
+        assert_eq!(blob_count(&sm, &id).await, 0);
+    }
+
+    /// The lazy read: the model gets the stub (preview + handle) and pulls the
+    /// payload back only when it asks, through `get_message_blob`.
+    #[tokio::test]
+    async fn the_lazy_read_keeps_the_stub_and_the_handle_resolves() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        let payload = huge("b");
+        sm.add_message(&id, &tool_response_message("call_1", payload.clone()))
+            .await
+            .unwrap();
+
+        let conv = sm
+            .storage()
+            .get_conversation_inner(&id, false)
+            .await
+            .unwrap();
+        let stub = response_text(&conv, 0);
+        assert!(stub.len() < payload.len() / 10);
+        assert!(stub.contains("platform__read_session_blob"));
+        assert!(stub.contains("b row 0 of a very large tool result"));
+
+        let uid = message_blobs::blob_uid_of(&stub).expect("the stub names a blob");
+        assert_eq!(
+            sm.get_message_blob(&id, uid).await.unwrap(),
+            Some(payload.clone())
+        );
+
+        // A handle is scoped to its session: another session cannot read it.
+        let other = session(&sm).await;
+        assert_eq!(sm.get_message_blob(&other, uid).await.unwrap(), None);
+    }
+
+    /// Compaction/edit rewrites the whole conversation. Kept messages must keep
+    /// their payload, and a dropped message's blob must not linger — otherwise
+    /// BR-7 would just move the bloat from one table to another.
+    #[tokio::test]
+    async fn a_conversation_rewrite_keeps_live_blobs_and_sweeps_dropped_ones() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        let kept = huge("keep");
+        let dropped = huge("drop");
+        sm.add_message(&id, &tool_response_message("call_1", kept.clone()))
+            .await
+            .unwrap();
+        sm.add_message(&id, &tool_response_message("call_2", dropped))
+            .await
+            .unwrap();
+        assert_eq!(blob_count(&sm, &id).await, 2);
+
+        // Rewrite with only the first message — exactly what compaction does.
+        let full = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        let compacted = Conversation::new_unvalidated(vec![full.messages()[0].clone()]);
+        sm.replace_conversation(&id, &compacted).await.unwrap();
+
+        assert_eq!(blob_count(&sm, &id).await, 1);
+        let conv = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(conv.messages().len(), 1);
+        assert_eq!(response_text(&conv, 0), kept);
+    }
+
+    /// A rewrite of a *lazily* loaded conversation carries stubs, not payloads.
+    /// The stub must keep pointing at a live blob — the sweep must not mistake a
+    /// surviving handle for an orphan and delete the payload out from under it.
+    #[tokio::test]
+    async fn rewriting_a_lazily_loaded_conversation_does_not_lose_the_payload() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        let payload = huge("c");
+        sm.add_message(&id, &tool_response_message("call_1", payload.clone()))
+            .await
+            .unwrap();
+
+        let lazy = sm
+            .storage()
+            .get_conversation_inner(&id, false)
+            .await
+            .unwrap();
+        sm.replace_conversation(&id, &lazy).await.unwrap();
+
+        assert_eq!(blob_count(&sm, &id).await, 1);
+        let conv = sm
+            .get_session(&id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(response_text(&conv, 0), payload);
+    }
+
+    /// Diverging copies the parent's messages into the child. When those messages
+    /// are stubs (lazy mode), the child must end up owning its own copy of the
+    /// payload, so the two sessions' lifetimes are independent.
+    #[tokio::test]
+    async fn a_branch_that_inherits_a_stub_adopts_the_payload() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let parent = session(&sm).await;
+        let child = session(&sm).await;
+
+        let payload = huge("d");
+        sm.add_message(&parent, &tool_response_message("call_1", payload.clone()))
+            .await
+            .unwrap();
+
+        // The parent's history as a lazy reader sees it: stubs.
+        let lazy = sm
+            .storage()
+            .get_conversation_inner(&parent, false)
+            .await
+            .unwrap();
+        sm.replace_conversation(&child, &lazy).await.unwrap();
+        assert_eq!(blob_count(&sm, &child).await, 1);
+
+        // Deleting the parent leaves the branch intact.
+        sm.delete_session(&parent).await.unwrap();
+        let conv = sm
+            .get_session(&child, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(response_text(&conv, 0), payload);
+    }
+
+    #[tokio::test]
+    async fn deleting_a_session_takes_its_blobs_with_it() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let id = session(&sm).await;
+
+        sm.add_message(&id, &tool_response_message("call_1", huge("e")))
+            .await
+            .unwrap();
+        assert_eq!(blob_count(&sm, &id).await, 1);
+
+        sm.delete_session(&id).await.unwrap();
+        assert_eq!(blob_count(&sm, &id).await, 0);
+    }
+
+    /// The production upgrade path: a v13 DB gains `message_blobs` and keeps
+    /// every inline message it already had (they are never rewritten).
+    #[tokio::test]
+    async fn migrates_v13_db_to_v14_message_blobs() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+        let temp_dir = TempDir::new().unwrap();
+        let db_path = temp_dir.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+
+        {
+            let opts = SqliteConnectOptions::new()
+                .filename(&db_path)
+                .create_if_missing(true);
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(opts)
+                .await
+                .unwrap();
+
+            sqlx::query("CREATE TABLE schema_version (version INTEGER PRIMARY KEY, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)")
+                .execute(&pool).await.unwrap();
+            for v in 1..=13 {
+                sqlx::query("INSERT INTO schema_version (version) VALUES (?)")
+                    .bind(v)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query(
+                r#"CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+                    user_set_name BOOLEAN DEFAULT FALSE, session_type TEXT NOT NULL DEFAULT 'user', working_dir TEXT NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    extension_data TEXT DEFAULT '{}', total_tokens INTEGER, input_tokens INTEGER, output_tokens INTEGER,
+                    accumulated_total_tokens INTEGER, accumulated_input_tokens INTEGER, accumulated_output_tokens INTEGER,
+                    schedule_id TEXT, workflow_json TEXT, user_workflow_values_json TEXT, provider_name TEXT,
+                    model_config_json TEXT, diverged_from TEXT, external_key TEXT, branch_point_msg_uid TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            sqlx::query(
+                r#"CREATE TABLE messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL REFERENCES sessions(id),
+                    role TEXT NOT NULL, content_json TEXT NOT NULL, created_timestamp INTEGER NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP, tokens INTEGER, metadata_json TEXT, msg_uid TEXT
+                )"#,
+            ).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO sessions (id, name, working_dir) VALUES ('20240101_1', 'old', '/tmp/old')")
+                .execute(&pool).await.unwrap();
+            // A pre-v14 message keeps its content inline, forever.
+            let legacy = serde_json::to_string(&vec![MessageContent::text("kept inline")]).unwrap();
+            sqlx::query("INSERT INTO messages (session_id, role, content_json, created_timestamp, msg_uid) VALUES ('20240101_1', 'user', ?, 1, 'm1')")
+                .bind(&legacy)
+                .execute(&pool).await.unwrap();
+            pool.close().await;
+        }
+
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let pool = sm.storage().pool().await.unwrap();
+        assert_eq!(
+            SessionStorage::get_schema_version(pool).await.unwrap(),
+            CURRENT_SCHEMA_VERSION
+        );
+        // The new table exists...
+        assert_eq!(blob_count(&sm, "20240101_1").await, 0);
+        // ...and the legacy message is untouched.
+        let conv = sm
+            .get_session("20240101_1", true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(conv.messages()[0].as_concat_text(), "kept inline");
     }
 }
 
@@ -3590,6 +4210,80 @@ mod tests {
         );
         assert_eq!(counts.total_tokens, Some(4321));
         assert_eq!(counts.accumulated_total_tokens, Some(9999));
+    }
+
+    /// BR-52: both ways of turning stored counters into the `TokenState` clients
+    /// see must agree, since one seeds the SSE stream (from the session row the
+    /// route already read) and the other refreshes it (from the agent's own
+    /// boundary read). If they disagreed, the token readout would jump.
+    #[tokio::test]
+    async fn token_state_from_counts_and_from_session_agree() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let session = seed_session_with_messages(&sm, 1).await;
+        sm.update(&session.id)
+            .total_tokens(Some(4321))
+            .input_tokens(Some(4000))
+            .output_tokens(Some(321))
+            .accumulated_total_tokens(Some(9999))
+            .accumulated_input_tokens(Some(9000))
+            .accumulated_output_tokens(Some(999))
+            .apply()
+            .await
+            .unwrap();
+
+        let full = sm.get_session(&session.id, false).await.unwrap();
+        let from_session = TokenState::from(&full);
+        let from_counts = TokenState::from(sm.get_token_counts(&session.id).await.unwrap());
+
+        assert_eq!(from_session.total_tokens, 4321);
+        assert_eq!(from_session.input_tokens, 4000);
+        assert_eq!(from_session.output_tokens, 321);
+        assert_eq!(from_session.accumulated_total_tokens, 9999);
+        assert_eq!(from_session.accumulated_input_tokens, 9000);
+        assert_eq!(from_session.accumulated_output_tokens, 999);
+
+        assert_eq!(from_counts.total_tokens, from_session.total_tokens);
+        assert_eq!(from_counts.input_tokens, from_session.input_tokens);
+        assert_eq!(from_counts.output_tokens, from_session.output_tokens);
+        assert_eq!(
+            from_counts.accumulated_total_tokens,
+            from_session.accumulated_total_tokens
+        );
+        assert_eq!(
+            from_counts.accumulated_input_tokens,
+            from_session.accumulated_input_tokens
+        );
+        assert_eq!(
+            from_counts.accumulated_output_tokens,
+            from_session.accumulated_output_tokens
+        );
+    }
+
+    /// A brand-new session has NULL counters; both conversions must read as zero
+    /// rather than panicking or surfacing a negative default.
+    #[tokio::test]
+    async fn token_state_of_a_fresh_session_is_zero() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/fresh"),
+                "Fresh".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let state = TokenState::from(&session);
+        assert_eq!(state.total_tokens, 0);
+        assert_eq!(state.accumulated_total_tokens, 0);
+
+        let state = TokenState::from(sm.get_token_counts(&session.id).await.unwrap());
+        assert_eq!(state.total_tokens, 0);
+        assert_eq!(state.accumulated_total_tokens, 0);
     }
 
     #[tokio::test]

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Send, GripVertical, ChevronDown, ChevronUp } from './icons/app-icons';
+import { X, Send, Zap, GripVertical, ChevronDown, ChevronUp } from './icons/app-icons';
 import { Button } from './ui/button';
 import type { UserAttachment } from '../types/message';
 
@@ -15,6 +15,9 @@ interface MessageQueueProps {
   onRemoveMessage: (id: string) => void;
   onClearQueue: () => void;
   onStopAndSend?: (messageId: string) => void;
+  /** BR-61 soft interrupt: hand this message to the running turn without
+   * stopping it. Undefined when the session has no steerable turn in flight. */
+  onSteerMessage?: (messageId: string) => void;
   onEditMessage?: (messageId: string, newContent: string) => void;
   onTriggerQueueProcessing?: () => void;
   editingMessageIdRef?: React.MutableRefObject<string | null>;
@@ -28,6 +31,7 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
   onRemoveMessage,
   onClearQueue,
   onStopAndSend,
+  onSteerMessage,
   onEditMessage,
   onTriggerQueueProcessing,
   editingMessageIdRef,
@@ -44,6 +48,13 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
   if (queuedMessages.length === 0) {
     return null;
   }
+
+  // A soft interrupt is plain text — a message with attachments still has to
+  // wait for the turn to end (or stop it).
+  const canSteerMessage = (message: QueuedMessage) =>
+    Boolean(onSteerMessage) && !message.attachments?.length;
+
+  const STEER_TITLE = 'Send now without stopping — the agent picks it up on its next step';
 
   const handleDragStart = (e: React.DragEvent, messageId: string) => {
     setDraggedItem(messageId);
@@ -146,6 +157,22 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
             <span className="flex-shrink-0 text-[11px] text-text-muted bg-background-medium border border-border-subtle px-1.5 py-0.5 rounded-md font-medium">
               +{remainingCount}
             </span>
+          )}
+
+          {canSteerMessage(nextMessage) && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSteerMessage?.(nextMessage.id);
+              }}
+              className="h-6 w-6 p-0 flex-shrink-0 text-text-muted hover:text-text-default"
+              title={STEER_TITLE}
+              aria-label="Steer the running turn with this message"
+            >
+              <Zap className="w-3 h-3" />
+            </Button>
           )}
 
           {onStopAndSend && (
@@ -315,6 +342,20 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
               <span className="text-[11px] text-text-muted font-mono">
                 {formatTimestamp(message.timestamp)}
               </span>
+
+              {canSteerMessage(message) && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onSteerMessage?.(message.id)}
+                  disabled={editingMessage === message.id}
+                  className={`h-6 w-6 p-0 text-text-muted hover:text-text-default ${editingMessage === message.id ? 'opacity-30 cursor-not-allowed' : ''}`}
+                  title={editingMessage === message.id ? 'Cannot send while editing' : STEER_TITLE}
+                  aria-label="Steer the running turn with this message"
+                >
+                  <Zap className="w-3 h-3" />
+                </Button>
+              )}
 
               {onStopAndSend && (
                 <Button

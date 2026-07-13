@@ -714,6 +714,21 @@ async fn stop_agent(
     Json(payload): Json<StopAgentRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
     let session_id = payload.session_id;
+
+    // BR-62: stop the *turn*, not just the agent entry. Evicting the session from
+    // the LRU below drops the manager's handle, but an in-flight `/reply` task
+    // holds its own `Arc<Agent>` and kept running — so "stop" left a turn burning
+    // tokens and streaming into a socket nobody was reading. Trip the running
+    // turn's cancellation token first; the reply task then unwinds and releases
+    // the turn lock. No-op when nothing is running.
+    if let Some(turn_id) = state.cancel_turn(&session_id) {
+        tracing::info!(
+            "Stop for session {} cancelled in-flight turn {}",
+            session_id,
+            turn_id
+        );
+    }
+
     state
         .agent_manager
         .remove_session(&session_id)

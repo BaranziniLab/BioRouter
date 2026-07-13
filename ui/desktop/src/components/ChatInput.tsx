@@ -101,6 +101,10 @@ interface ChatInputProps {
   chatState: ChatState;
   setChatState?: (state: ChatState) => void;
   onStop?: () => void;
+  /** BR-61 soft interrupt: inject text into the turn that is already running
+   * (no cancel, no lost work). Resolves false when there was nothing to steer,
+   * in which case the caller must send/queue the text normally. */
+  onSteer?: (text: string) => Promise<boolean>;
   commandHistory?: string[];
   initialValue?: string;
   droppedFiles?: DroppedFile[];
@@ -139,6 +143,7 @@ export default function ChatInput({
   chatState = ChatState.Idle,
   setChatState,
   onStop,
+  onSteer,
   commandHistory = [],
   initialValue = '',
   droppedFiles = [],
@@ -1110,6 +1115,77 @@ export default function ChatInput({
     return true;
   };
 
+  // --- BR-61: soft interrupt ("steer") ---------------------------------------
+  // Hand a message to the turn that is *already running* instead of queueing it
+  // until the turn ends (the default) or stopping the agent outright: the server
+  // queues it on the agent, which injects it at its next loop boundary, so no
+  // in-flight tool work is thrown away. Text only — a soft interrupt has no
+  // attachment channel, so anything with images/files takes the normal path.
+
+  // A fresh view of `isLoading` for callbacks that resolve after an await (the
+  // value closed over at click time is stale by the time the POST answers).
+  const isLoadingRef = useRef(isLoading);
+  useEffect(() => {
+    isLoadingRef.current = isLoading;
+  }, [isLoading]);
+
+  const canSteer = Boolean(onSteer) && isLoading;
+
+  // Never drop the user's words: if the steer was refused (the turn ended in the
+  // meantime) send the text now, or re-queue it if a turn is somehow running.
+  const sendOrQueueText = useCallback(
+    (content: string) => {
+      if (isLoadingRef.current) {
+        setQueuedMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+            content,
+            attachments: [],
+            timestamp: Date.now(),
+          },
+        ]);
+        return;
+      }
+      LocalMessageStorage.addMessage(content);
+      handleSubmit(
+        new CustomEvent('submit', {
+          detail: { value: content, attachments: [] },
+        }) as unknown as React.FormEvent
+      );
+    },
+    [handleSubmit]
+  );
+
+  const steerText = useCallback(
+    (content: string) => {
+      if (!onSteer) return;
+      void onSteer(content).then((accepted) => {
+        if (accepted) {
+          // The agent echoes the steer back as a user message on the live stream
+          // once it consumes it, so nothing is appended to the transcript here.
+          LocalMessageStorage.addMessage(content);
+        } else {
+          sendOrQueueText(content);
+        }
+      });
+    },
+    [onSteer, sendOrQueueText]
+  );
+
+  /** Cmd/Ctrl+Enter while a turn runs: steer with whatever is in the composer. */
+  const handleSteerFromComposer = useCallback((): boolean => {
+    if (!canSteer) return false;
+    const text = displayValue.trim();
+    if (!text || pastedImages.length > 0 || allDroppedFiles.length > 0) {
+      return false;
+    }
+    steerText(text);
+    setDisplayValue('');
+    setValue('');
+    return true;
+  }, [canSteer, displayValue, pastedImages.length, allDroppedFiles.length, steerText]);
+
   const canSubmit =
     !isLoading &&
     (displayValue.trim() ||
@@ -1286,6 +1362,12 @@ export default function ChatInput({
 
       evt.preventDefault();
 
+      // BR-61: Cmd/Ctrl+Enter while a turn is running steers it — the message
+      // reaches the model on its next step instead of waiting for the turn to end.
+      if ((evt.metaKey || evt.ctrlKey) && handleSteerFromComposer()) {
+        return;
+      }
+
       // Handle interruption and queue logic
       if (handleInterruptionAndQueue()) {
         return;
@@ -1377,6 +1459,15 @@ export default function ChatInput({
     );
   };
 
+  /** BR-61: send a queued message into the running turn without stopping it. */
+  const handleSteerMessage = (messageId: string) => {
+    const messageToSteer = queuedMessages.find((msg) => msg.id === messageId);
+    if (!messageToSteer || !canSteer) return;
+
+    setQueuedMessages((prev) => prev.filter((msg) => msg.id !== messageId));
+    steerText(messageToSteer.content);
+  };
+
   const handleStopAndSend = (messageId: string) => {
     const messageToSend = queuedMessages.find((msg) => msg.id === messageId);
     if (!messageToSend) return;
@@ -1441,6 +1532,7 @@ export default function ChatInput({
           onRemoveMessage={handleRemoveQueuedMessage}
           onClearQueue={handleClearQueue}
           onStopAndSend={handleStopAndSend}
+          onSteerMessage={canSteer ? handleSteerMessage : undefined}
           onReorderMessages={handleReorderMessages}
           onEditMessage={handleEditMessage}
           onTriggerQueueProcessing={handleResumeQueue}

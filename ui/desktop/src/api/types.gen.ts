@@ -135,12 +135,42 @@ export type CancelActiveWorkResponse = {
     message: string;
 };
 
+/**
+ * Request body for the addressable cancel route.
+ */
+export type CancelTurnRequest = {
+    session_id: string;
+};
+
+/**
+ * Response body for the addressable cancel route.
+ */
+export type CancelTurnResponse = {
+    /**
+     * True when a running turn was found and its cancellation token tripped.
+     * False means there was nothing to cancel — which is a success, not an error.
+     */
+    cancelled: boolean;
+    /**
+     * The id of the turn that was cancelled, when there was one.
+     */
+    turn_id?: string | null;
+};
+
 export type ChangeKind = 'ingest' | 'link' | 'flag' | 'query' | 'lint' | 'restore' | 'manual';
 
 export type ChatRequest = {
     conversation_so_far?: Array<Message> | null;
     reasoning_effort?: ReasoningEffort | null;
     session_id: string;
+    /**
+     * Client-generated idempotency key naming *this* turn (BR-62). Optional, but
+     * a client that retries `/reply` — an SSE reconnect, a fetch retry on a
+     * flaky network — should send the same key it sent the first time. The retry
+     * then comes back as a 409 with `duplicate: true`, meaning "that turn is
+     * still running", instead of being mistaken for a genuine second turn.
+     */
+    turn_id?: string | null;
     user_message: Message;
     workflow_name?: string | null;
     workflow_version?: string | null;
@@ -658,6 +688,14 @@ export type InspectJobResponse = {
     processStartTime?: string | null;
     runningDurationSeconds?: number | null;
     sessionId?: string | null;
+};
+
+/**
+ * Request body for the soft-interrupt route.
+ */
+export type InterruptRequest = {
+    session_id: string;
+    text: string;
 };
 
 export type JsonObject = {
@@ -1908,7 +1946,7 @@ export type ConfirmToolActionErrors = {
 
 export type ConfirmToolActionResponses = {
     /**
-     * Tool confirmation action is confirmed
+     * Decision processed; `status` is `delivered` or `unknown`
      */
     200: unknown;
 };
@@ -2026,6 +2064,33 @@ export type CallToolResponses = {
 };
 
 export type CallToolResponse2 = CallToolResponses[keyof CallToolResponses];
+
+export type CancelTurnData = {
+    body: CancelTurnRequest;
+    path?: never;
+    query?: never;
+    url: '/agent/cancel';
+};
+
+export type CancelTurnErrors = {
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type CancelTurnResponses = {
+    /**
+     * Cancel processed; `cancelled` reports whether a turn was running
+     */
+    200: CancelTurnResponse;
+};
+
+export type CancelTurnResponse2 = CancelTurnResponses[keyof CancelTurnResponses];
 
 export type ListAppsData = {
     body?: never;
@@ -2960,6 +3025,35 @@ export type StartTetrateSetupResponses = {
 };
 
 export type StartTetrateSetupResponse = StartTetrateSetupResponses[keyof StartTetrateSetupResponses];
+
+export type InterruptData = {
+    body: InterruptRequest;
+    path?: never;
+    query?: never;
+    url: '/interrupt';
+};
+
+export type InterruptErrors = {
+    /**
+     * Empty message text
+     */
+    400: unknown;
+    /**
+     * No turn is in flight for this session
+     */
+    409: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type InterruptResponses = {
+    /**
+     * Message queued for injection into the running turn
+     */
+    202: unknown;
+};
 
 export type GetActiveData = {
     body?: never;

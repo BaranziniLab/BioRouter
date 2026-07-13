@@ -2,11 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatState } from '../types/chatState';
 import { ChatStreamRegistry } from './chatStreamStore';
 import type { Message, MessageEvent, Session, TokenState } from '../api';
-import { reply, resumeAgent } from '../api';
+import { interrupt, reply, resumeAgent } from '../api';
 
 vi.mock('../api', async () => {
   return {
     getSession: vi.fn(async () => ({ data: null })),
+    interrupt: vi.fn(),
     listApps: vi.fn(async () => ({ data: { apps: [] } })),
     listSessions: vi.fn(async () => ({ data: { sessions: [] } })),
     reply: vi.fn(),
@@ -93,6 +94,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.mocked(resumeAgent).mockReset();
   vi.mocked(reply).mockReset();
+  vi.mocked(interrupt).mockReset();
   Object.assign(window, {
     electron: {
       openExternal: vi.fn(async () => undefined),
@@ -227,5 +229,62 @@ describe('ChatStreamRegistry', () => {
     first.close();
     second.close();
     await Promise.all([firstSubmit, secondSubmit]);
+  });
+  it('steers a running turn through the soft-interrupt route', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+    vi.mocked(interrupt).mockResolvedValue({ data: undefined } as never);
+
+    const controller = registry.getController('s1');
+    const submit = controller.handleSubmit('plot the data');
+    await flush();
+
+    await expect(controller.steer('actually, use R')).resolves.toBe(true);
+    expect(vi.mocked(interrupt).mock.calls[0][0].body).toEqual({
+      session_id: 's1',
+      text: 'actually, use R',
+    });
+    // The steer is not appended locally — the agent streams it back once consumed.
+    const steerAppended = controller
+      .getSnapshot()
+      .messages.some((m) =>
+        m.content.some((c) => c.type === 'text' && c.text === 'actually, use R')
+      );
+    expect(steerAppended).toBe(false);
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState });
+    controlled.close();
+    await submit;
+  });
+
+  it('refuses to steer when no turn is running', async () => {
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    const controller = registry.getController('s1');
+    await controller.loadSession();
+
+    await expect(controller.steer('too late')).resolves.toBe(false);
+    expect(interrupt).not.toHaveBeenCalled();
+  });
+
+  it('reports a rejected soft interrupt so the caller can fall back', async () => {
+    const registry = new ChatStreamRegistry();
+    const controlled = createControlledStream();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);
+    vi.mocked(reply).mockResolvedValue({ stream: controlled.stream } as never);
+    // The turn ended between the click and the POST: the server answers 409.
+    vi.mocked(interrupt).mockRejectedValue(new Error('conflict'));
+
+    const controller = registry.getController('s1');
+    const submit = controller.handleSubmit('plot the data');
+    await flush();
+
+    await expect(controller.steer('actually, use R')).resolves.toBe(false);
+
+    controlled.push({ type: 'Finish', reason: 'done', token_state: tokenState });
+    controlled.close();
+    await submit;
   });
 });

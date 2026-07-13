@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
 use futures::stream::BoxStream;
-use futures::{stream, FutureExt, Stream, StreamExt, TryStreamExt};
+use futures::{stream, Stream, StreamExt, TryStreamExt};
 use uuid::Uuid;
 
 use super::final_output_tool::FinalOutputTool;
@@ -20,6 +20,7 @@ use crate::agents::extension_manager_extension::MANAGE_EXTENSIONS_TOOL_NAME_COMP
 use crate::agents::final_output_tool::{FINAL_OUTPUT_CONTINUATION_MESSAGE, FINAL_OUTPUT_TOOL_NAME};
 use crate::agents::platform_tools::{
     PLATFORM_INGEST_CONVERSATION_TOOL_NAME, PLATFORM_MANAGE_SCHEDULE_TOOL_NAME,
+    PLATFORM_READ_SESSION_BLOB_TOOL_NAME,
 };
 use crate::agents::prompt_manager::PromptManager;
 use crate::agents::resource_refs::{
@@ -42,7 +43,7 @@ use crate::context_mgmt::{
 };
 use crate::conversation::message::{
     ActionRequiredData, Message, MessageContent, ProviderMetadata, SystemNotificationType,
-    ToolRequest,
+    TokenState, ToolRequest,
 };
 use crate::conversation::tool_result_serde::call_tool_result;
 use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
@@ -59,6 +60,7 @@ use crate::providers::errors::ProviderError;
 use crate::scheduler_trait::SchedulerTrait;
 use crate::security::security_inspector::SecurityInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
+use crate::session::message_blobs;
 use crate::session::{Session, SessionManager, SessionType};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspectionManager};
 use crate::tool_monitor::{FailureLoopConfig, RepetitionInspector, SemanticLoopConfig};
@@ -71,7 +73,7 @@ use rmcp::model::{
 };
 use rmcp::object;
 use serde_json::Value;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, instrument, warn};
 
@@ -173,6 +175,18 @@ impl AgentConfig {
     }
 }
 
+/// What happened to a tool-permission decision handed to [`Agent::handle_confirmation`]
+/// (BR-62).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfirmationOutcome {
+    /// A prompt with that request id was waiting; the decision reached the loop.
+    Delivered,
+    /// Nothing was waiting on that request id — a duplicate click, a decision for
+    /// a prompt that already expired or was cancelled, or a stale client. The
+    /// decision was dropped rather than applied to some other pending call.
+    Unknown,
+}
+
 /// The main biorouter Agent
 pub struct Agent {
     pub(super) provider: SharedProvider,
@@ -184,8 +198,15 @@ pub struct Agent {
     pub(super) frontend_tools: Mutex<HashMap<String, FrontendTool>>,
     pub(super) frontend_instructions: Mutex<Option<String>>,
     pub(super) prompt_manager: Mutex<PromptManager>,
-    pub(super) confirmation_tx: mpsc::Sender<(String, PermissionConfirmation)>,
-    pub(super) confirmation_rx: Mutex<mpsc::Receiver<(String, PermissionConfirmation)>>,
+    /// BR-62: tool-permission prompts still awaiting a decision, keyed by tool
+    /// **request id**. One `oneshot` per prompt, registered *before* the
+    /// confirmation message is yielded (so a fast client cannot answer into a
+    /// void), replaces the single per-agent mpsc: a stale or duplicate
+    /// `/action-required` POST can no longer resolve a *different* pending
+    /// request, and [`Agent::handle_confirmation`] can tell its caller whether
+    /// the id was still live — which is what makes the route idempotent.
+    pub(super) pending_confirmations:
+        Arc<std::sync::Mutex<HashMap<String, oneshot::Sender<PermissionConfirmation>>>>,
     pub(super) tool_result_tx: mpsc::Sender<(String, ToolResult<CallToolResult>)>,
     pub(super) tool_result_rx: ToolResultReceiver,
 
@@ -242,8 +263,19 @@ pub struct Agent {
 pub enum AgentEvent {
     Message(Message),
     McpNotification((String, ServerNotification)),
-    ModelChange { model: String, mode: String },
+    ModelChange {
+        model: String,
+        mode: String,
+    },
     HistoryReplaced(Conversation),
+    /// BR-52: the session's token counters as of the last turn/compaction
+    /// boundary, emitted by the agent right after it wrote them.
+    ///
+    /// Token accounting only changes at those boundaries — never mid-stream —
+    /// so a consumer can cache this and attach it to every event it forwards.
+    /// The server used to re-read the counters from SQLite on *every* streamed
+    /// chunk, which was pure redundant disk work on the hottest path.
+    TokenUsage(TokenState),
 }
 
 impl Default for Agent {
@@ -342,7 +374,6 @@ impl Agent {
 
     pub fn with_config(config: AgentConfig) -> Self {
         // Create channels with buffer size 32 (adjust if needed)
-        let (confirm_tx, confirm_rx) = mpsc::channel(32);
         let (tool_tx, tool_rx) = mpsc::channel(32);
         let provider = Arc::new(Mutex::new(None));
 
@@ -377,8 +408,7 @@ impl Agent {
             frontend_tools: Mutex::new(HashMap::new()),
             frontend_instructions: Mutex::new(None),
             prompt_manager: Mutex::new(PromptManager::new()),
-            confirmation_tx: confirm_tx,
-            confirmation_rx: Mutex::new(confirm_rx),
+            pending_confirmations: Arc::new(std::sync::Mutex::new(HashMap::new())),
             tool_result_tx: tool_tx,
             tool_result_rx: Arc::new(Mutex::new(tool_rx)),
             retry_manager: RetryManager::new(),
@@ -441,6 +471,17 @@ impl Agent {
             .lock()
             .map(|mut q| std::mem::take(&mut *q))
             .unwrap_or_default()
+    }
+
+    /// Whether any soft interrupt is still waiting to be injected. Checked at the
+    /// turn's exit so a steer that landed while the *final* provider response was
+    /// streaming keeps the loop alive for one more step (BR-61) instead of being
+    /// stranded on the queue until some later turn.
+    pub fn has_soft_interrupts(&self) -> bool {
+        self.soft_interrupts
+            .lock()
+            .map(|q| !q.is_empty())
+            .unwrap_or(false)
     }
 
     /// The hooks manager driving user-configured lifecycle hooks.
@@ -1400,18 +1441,42 @@ impl Agent {
     /// live context, not what this reply has burned. Pricing is looked up per
     /// turn against the model that actually ran (a lead/worker swap mid-reply is
     /// therefore priced correctly), and only when a dollar limit is set.
+    /// Returns `true` when it actually wrote the session's counters, so the
+    /// caller knows a fresh [`AgentEvent::TokenUsage`] is worth emitting (BR-52).
     async fn record_turn_usage(
         &self,
         session_config: &SessionConfig,
         turn_usage: Option<crate::providers::base::ProviderUsage>,
         budget: &mut BudgetTracker,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         if let Some(usage) = turn_usage {
             self.record_budget_usage(budget, &usage).await;
             self.update_session_metrics(session_config, &usage, false)
                 .await?;
+            return Ok(true);
         }
-        Ok(())
+        Ok(false)
+    }
+
+    /// BR-52: the session's token counters as the agent last wrote them.
+    ///
+    /// Read exactly once per turn/compaction boundary (where the counters can
+    /// actually change) and carried in the event stream, instead of the server
+    /// re-reading SQLite for every streamed chunk. Best-effort: a failed read
+    /// yields `None` and the consumer simply keeps the state it already has.
+    pub(super) async fn current_token_state(&self, session_id: &str) -> Option<TokenState> {
+        match self
+            .config
+            .session_manager
+            .get_token_counts(session_id)
+            .await
+        {
+            Ok(counts) => Some(TokenState::from(counts)),
+            Err(e) => {
+                warn!("Failed to read token counts for session {session_id}: {e}");
+                None
+            }
+        }
     }
 
     /// Fold one provider round-trip (a turn, or an in-reply compaction) into the
@@ -1855,6 +1920,24 @@ impl Agent {
             return (request_id, Ok(ToolCallResult::from(wrapped_result)));
         }
 
+        // BR-7: read back a tool result that was externalized out of the
+        // conversation. Reads the session store, so it never touches the
+        // extension manager's dispatch path.
+        if tool_call.name == PLATFORM_READ_SESSION_BLOB_TOOL_NAME {
+            let arguments = tool_call
+                .arguments
+                .map(Value::Object)
+                .unwrap_or(Value::Object(serde_json::Map::new()));
+            let result = self.handle_read_session_blob(arguments, session).await;
+            let wrapped_result = result.map(|content| CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            });
+            return (request_id, Ok(ToolCallResult::from(wrapped_result)));
+        }
+
         if tool_call.name == FINAL_OUTPUT_TOOL_NAME {
             return if let Some(final_output_tool) = self.final_output_tool.lock().await.as_mut() {
                 let result = final_output_tool.execute_tool_call(tool_call.clone()).await;
@@ -1942,15 +2025,27 @@ impl Agent {
 
         debug!("WAITING_TOOL_END: {}", tool_call.name);
 
+        // BR-6: the large-response handler needs the session working dir so an
+        // oversized result is offloaded to a handle the model's file/shell
+        // tools can actually reach (not a bare temp path outside the sandbox).
+        let large_response_ctx = super::large_response_handler::LargeResponseContext {
+            session_id: session.id.clone(),
+            working_dir: session.working_dir.clone(),
+            tool_name: tool_call.name.to_string(),
+        };
+        let inner = result.result;
+
         (
             request_id,
             Ok(ToolCallResult {
                 notification_stream: result.notification_stream,
-                result: Box::new(
-                    result
-                        .result
-                        .map(super::large_response_handler::process_tool_response),
-                ),
+                result: Box::new(Box::pin(async move {
+                    super::large_response_handler::process_tool_response(
+                        inner.await,
+                        &large_response_ctx,
+                    )
+                    .await
+                })),
             }),
         )
     }
@@ -2164,6 +2259,16 @@ impl Agent {
             prefixed_tools.push(platform_tools::ingest_conversation_tool());
         }
 
+        // BR-7: the retrieval half of externalized tool results. Only offered
+        // when lazy blob loading is on — with the default hydrating read the
+        // payloads are spliced back into the conversation at load time, so the
+        // model never sees a stub and would have nothing to read back.
+        if (extension_name.is_none() || extension_name.as_deref() == Some("platform"))
+            && message_blobs::lazy_load_enabled()
+        {
+            prefixed_tools.push(platform_tools::read_session_blob_tool());
+        }
+
         if extension_name.is_none() {
             if let Some(final_output_tool) = self.final_output_tool.lock().await.as_ref() {
                 prefixed_tools.push(final_output_tool.tool());
@@ -2195,14 +2300,77 @@ impl Agent {
         self.extension_manager.get_extension_configs().await
     }
 
-    /// Handle a confirmation response for a tool request
+    /// Register a pending tool-permission prompt and get the receiver the loop
+    /// parks on. Called *before* the confirmation message is yielded so a client
+    /// that answers instantly still finds a live sender (BR-62).
+    pub(super) fn register_confirmation(
+        &self,
+        request_id: &str,
+    ) -> oneshot::Receiver<PermissionConfirmation> {
+        let (tx, rx) = oneshot::channel();
+        if let Ok(mut pending) = self.pending_confirmations.lock() {
+            pending.insert(request_id.to_string(), tx);
+        }
+        rx
+    }
+
+    /// Drop a pending prompt without a decision (it expired, the turn was
+    /// cancelled, or it was already answered). Idempotent.
+    pub(super) fn forget_confirmation(&self, request_id: &str) {
+        if let Ok(mut pending) = self.pending_confirmations.lock() {
+            pending.remove(request_id);
+        }
+    }
+
+    /// Whether a tool-permission prompt with this request id is still awaiting a
+    /// decision. Lets a route answer a duplicate/late POST idempotently instead
+    /// of pretending it resolved something.
+    pub fn has_pending_confirmation(&self, request_id: &str) -> bool {
+        self.pending_confirmations
+            .lock()
+            .map(|pending| pending.contains_key(request_id))
+            .unwrap_or(false)
+    }
+
+    /// Handle a confirmation response for a tool request.
+    ///
+    /// BR-62: routed by request id to that prompt's own channel. A decision for
+    /// an id nobody is waiting on (double-click, a prompt that already expired or
+    /// was cancelled, a stale client replaying an old card) is **dropped** and
+    /// reported as [`ConfirmationOutcome::Unknown`] — it must never be applied to
+    /// whatever other tool call happens to be pending now.
     pub async fn handle_confirmation(
         &self,
         request_id: String,
         confirmation: PermissionConfirmation,
-    ) {
-        if let Err(e) = self.confirmation_tx.send((request_id, confirmation)).await {
-            error!("Failed to send confirmation: {}", e);
+    ) -> ConfirmationOutcome {
+        let sender = self
+            .pending_confirmations
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(&request_id));
+
+        match sender {
+            Some(tx) => {
+                if tx.send(confirmation).is_ok() {
+                    ConfirmationOutcome::Delivered
+                } else {
+                    // The waiter went away between our lookup and the send (turn
+                    // ended/cancelled). Nothing to do, and nothing to blame.
+                    debug!(
+                        "Confirmation for request {} arrived after the waiter went away",
+                        request_id
+                    );
+                    ConfirmationOutcome::Unknown
+                }
+            }
+            None => {
+                debug!(
+                    "Ignoring confirmation for request {}: no prompt is awaiting a decision",
+                    request_id
+                );
+                ConfirmationOutcome::Unknown
+            }
         }
     }
 
@@ -2513,6 +2681,12 @@ impl Agent {
                             "auto",
                             None,
                         );
+
+                        // BR-52: compaction rewrote the live gauge (the summary
+                        // becomes the new input context) and billed its own turn.
+                        if let Some(token_state) = self.current_token_state(&session_config.id).await {
+                            yield AgentEvent::TokenUsage(token_state);
+                        }
 
                         yield AgentEvent::HistoryReplaced(compacted_conversation.clone());
 
@@ -3450,6 +3624,10 @@ impl Agent {
                                         "auto",
                                         Some("context_overflow"),
                                     );
+                                    // BR-52: recovery compaction moved the counters too.
+                                    if let Some(token_state) = self.current_token_state(&session_config.id).await {
+                                        yield AgentEvent::TokenUsage(token_state);
+                                    }
                                     yield AgentEvent::HistoryReplaced(conversation.clone());
                                     break;
                                 }
@@ -3517,7 +3695,16 @@ impl Agent {
                 // Record the turn exactly once, whether the stream finished, was
                 // cancelled, or errored out. The provider still processed (and
                 // billed) whatever it reported.
-                self.record_turn_usage(&session_config, turn_usage.take(), &mut budget).await?;
+                let usage_recorded = self.record_turn_usage(&session_config, turn_usage.take(), &mut budget).await?;
+
+                // BR-52: the counters just moved — publish them so downstream
+                // consumers (the SSE route) can attach a fresh `TokenState` to
+                // every event they forward without touching the DB per token.
+                if usage_recorded {
+                    if let Some(token_state) = self.current_token_state(&session_config.id).await {
+                        yield AgentEvent::TokenUsage(token_state);
+                    }
+                }
 
                 if tools_updated {
                     (tools, toolshim_tools, system_prompt) =
@@ -3626,6 +3813,17 @@ impl Agent {
                         checkpoint_anchor_ts,
                         CheckpointKind::PostStep,
                     ).await;
+                }
+
+                // BR-61: a soft interrupt queued while the final provider response
+                // was streaming arrives too late for this iteration's drain, and a
+                // turn that is about to exit would leave it parked until some later
+                // turn injected it out of context. Keep the loop alive for one more
+                // step so the steer is drained, answered, and seen now. Still bounded
+                // by max_turns / max_tool_calls, which are re-checked at the top.
+                if exit_chat && self.has_soft_interrupts() {
+                    info!("soft interrupt pending at turn exit; continuing the loop to consume it");
+                    exit_chat = false;
                 }
 
                 if exit_chat {
@@ -4153,7 +4351,119 @@ impl Agent {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::permission::{Permission, PermissionConfirmation};
     use crate::workflow::Response;
+
+    fn confirmation(permission: Permission) -> PermissionConfirmation {
+        PermissionConfirmation {
+            principal_type: crate::permission::permission_confirmation::PrincipalType::Tool,
+            permission,
+        }
+    }
+
+    /// BR-62's core safety property. Confirmations used to land on a single
+    /// per-agent mpsc, so a decision for one request could be picked up by
+    /// whatever tool call happened to be waiting — a late "allow" for a prompt
+    /// the user had long since dismissed could approve an unrelated later call.
+    /// Now each prompt owns its own channel, keyed by request id.
+    #[tokio::test]
+    async fn confirmation_reaches_only_its_own_request() {
+        let agent = Agent::new();
+
+        let rx_a = agent.register_confirmation("req-a");
+        let rx_b = agent.register_confirmation("req-b");
+
+        let outcome = agent
+            .handle_confirmation("req-b".to_string(), confirmation(Permission::AllowOnce))
+            .await;
+        assert_eq!(outcome, ConfirmationOutcome::Delivered);
+
+        // B got exactly the decision meant for it...
+        let decided = rx_b.await.expect("b's prompt received its decision");
+        assert_eq!(decided.permission, Permission::AllowOnce);
+
+        // ...and A is untouched, still awaiting its own.
+        assert!(agent.has_pending_confirmation("req-a"));
+        assert!(!agent.has_pending_confirmation("req-b"));
+        drop(rx_a);
+    }
+
+    /// A duplicate click, or a decision for a prompt that already expired or was
+    /// cancelled, must be dropped — not applied to some other pending call. This
+    /// is what makes `/action-required` safe to retry.
+    #[tokio::test]
+    async fn duplicate_and_stale_confirmations_are_dropped() {
+        let agent = Agent::new();
+
+        let rx = agent.register_confirmation("req-a");
+        assert_eq!(
+            agent
+                .handle_confirmation("req-a".to_string(), confirmation(Permission::AllowOnce))
+                .await,
+            ConfirmationOutcome::Delivered
+        );
+        let _ = rx.await;
+
+        // Second click on the same card: nothing is waiting on that id any more.
+        assert_eq!(
+            agent
+                .handle_confirmation("req-a".to_string(), confirmation(Permission::AlwaysAllow))
+                .await,
+            ConfirmationOutcome::Unknown
+        );
+
+        // A decision for an id that was never registered at all.
+        assert_eq!(
+            agent
+                .handle_confirmation(
+                    "never-existed".to_string(),
+                    confirmation(Permission::DenyOnce)
+                )
+                .await,
+            ConfirmationOutcome::Unknown
+        );
+    }
+
+    /// After a prompt is forgotten (it expired, or the turn was cancelled), a
+    /// decision arriving late is reported as unknown rather than silently
+    /// resolving anything.
+    #[tokio::test]
+    async fn a_forgotten_prompt_no_longer_accepts_a_decision() {
+        let agent = Agent::new();
+
+        let _rx = agent.register_confirmation("req-a");
+        assert!(agent.has_pending_confirmation("req-a"));
+
+        agent.forget_confirmation("req-a");
+        assert!(!agent.has_pending_confirmation("req-a"));
+
+        assert_eq!(
+            agent
+                .handle_confirmation("req-a".to_string(), confirmation(Permission::AllowOnce))
+                .await,
+            ConfirmationOutcome::Unknown
+        );
+
+        // forget is idempotent.
+        agent.forget_confirmation("req-a");
+    }
+
+    /// If the waiting side goes away (turn ended/cancelled) between the lookup and
+    /// the send, the decision is dropped, not blamed on a live prompt.
+    #[tokio::test]
+    async fn a_decision_for_an_abandoned_prompt_is_unknown() {
+        let agent = Agent::new();
+
+        let rx = agent.register_confirmation("req-a");
+        drop(rx);
+
+        assert_eq!(
+            agent
+                .handle_confirmation("req-a".to_string(), confirmation(Permission::AllowOnce))
+                .await,
+            ConfirmationOutcome::Unknown
+        );
+    }
 
     #[tokio::test]
     async fn test_add_final_output_tool() -> Result<()> {

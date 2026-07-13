@@ -607,6 +607,8 @@ async fn drive_response(
                     Some(Ok(AgentEvent::McpNotification(_))) => {}
                     Some(Ok(AgentEvent::HistoryReplaced(c))) => { session.messages = c; }
                     Some(Ok(AgentEvent::ModelChange { .. })) => {}
+                    // BR-52: the TUI reads token counts from the session row.
+                    Some(Ok(AgentEvent::TokenUsage(_))) => {}
                     Some(Err(e)) => {
                         // Commit any streamed text first so the error renders
                         // *after* it (and isn't wiped by the preview truncation).
