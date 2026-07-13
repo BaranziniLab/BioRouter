@@ -56,8 +56,10 @@ pub const GOAL_MAX_ITERATIONS: u32 = 20;
 /// Consecutive near-identical judge reasons that count as "not converging".
 pub const GOAL_STALL_LIMIT: u32 = 3;
 /// Jaccard similarity (over word sets) at/above which two judge reasons are
-/// treated as "the same demand" for stall detection.
-const GOAL_STALL_SIMILARITY: f32 = 0.5;
+/// treated as "the same demand" for stall detection. Shared with the general
+/// chat stall detector (BR-32) so both loops agree on what "the same complaint"
+/// means.
+const GOAL_STALL_SIMILARITY: f32 = crate::agents::stall::STALL_SIMILARITY;
 
 /// Words accepted as "clear the goal" arguments, mirroring Claude Code.
 const CLEAR_WORDS: &[&str] = &["clear", "stop", "off", "reset", "none", "cancel"];
@@ -112,37 +114,13 @@ pub struct GoalRegistry {
     goals: Mutex<HashMap<String, GoalState>>,
 }
 
-/// Truncate to `max` characters on a char boundary, appending an ellipsis.
-pub(crate) fn ellipsize(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let truncated: String = s.chars().take(max.saturating_sub(1)).collect();
-    format!("{truncated}…")
-}
-
-/// Lowercase alphanumeric word set of a string, for similarity comparison.
-fn word_set(s: &str) -> std::collections::HashSet<String> {
-    s.split(|c: char| !c.is_alphanumeric())
-        .filter(|w| w.len() > 2)
-        .map(|w| w.to_ascii_lowercase())
-        .collect()
-}
-
-/// Jaccard similarity of two reasons' word sets, in `[0, 1]`.
-fn reason_similarity(a: &str, b: &str) -> f32 {
-    let (sa, sb) = (word_set(a), word_set(b));
-    if sa.is_empty() && sb.is_empty() {
-        return 1.0;
-    }
-    let inter = sa.intersection(&sb).count() as f32;
-    let union = sa.union(&sb).count() as f32;
-    if union == 0.0 {
-        0.0
-    } else {
-        inter / union
-    }
-}
+// BR-32: `ellipsize` and the Jaccard reason-similarity that used to live here
+// are now shared with the general chat stall detector (`agents::stall`), which
+// generalizes exactly this machinery to turns with no goal set. Re-exported so
+// existing `goal::ellipsize` call sites keep working and the two detectors can
+// never drift apart.
+pub(crate) use crate::agents::stall::ellipsize;
+use crate::agents::stall::reason_similarity;
 
 /// The judge rule installed as the goal's Stop hook. `attempt` is the upcoming
 /// evaluation number and `previous_feedback` is the judge's last note (if any),

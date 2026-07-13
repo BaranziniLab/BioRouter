@@ -22,6 +22,9 @@ mod resource_refs;
 pub mod retry;
 mod schedule_tool;
 pub(crate) mod skills_extension;
+// BR-32: the `/goal` stall detector, generalized into a periodic no-progress
+// check that runs for every long agentic turn, not just goal sessions.
+pub mod stall;
 pub mod structured_output;
 pub mod subagent_execution_tool;
 pub mod subagent_handler;
