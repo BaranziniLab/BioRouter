@@ -152,6 +152,15 @@ pub fn app_config_script(
     if let Some(token) = ws_token {
         cfg["wsToken"] = serde_json::json!(token);
     }
+    // The app's declared initial state. The SDK seeds its own document from this at
+    // construction, so `data-br-bind` KPIs paint their real values on FIRST LOAD —
+    // before the socket connects, and even in an export with no daemon reachable.
+    // Without it the shared doc is `{}` until a paid agent turn writes to it, every
+    // binding renders blank, and authors work around it with a private local object
+    // that then silently diverges from the doc the agent reads.
+    if let Some(initial) = manifest.surface.state_initial.as_ref() {
+        cfg["stateInitial"] = initial.clone();
+    }
     let json = serde_json::to_string(&cfg).unwrap_or_else(|_| "{}".to_string());
     // Emit the config as a NON-executable data island so the served page can ship
     // the strict CSP (`script-src 'self'`, no `unsafe-inline`) that SDK v2 needs —

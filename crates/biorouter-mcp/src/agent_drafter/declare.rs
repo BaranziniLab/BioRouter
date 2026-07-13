@@ -24,7 +24,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use super::manifest::{
-    ActionDecl, ComponentDecl, ModelRoute, SignalDecl, SurfaceDecl, ThemeConfig, THEME_PACKS,
+    ActionDecl, ActionEffect, ComponentDecl, ModelRoute, SignalDecl, SurfaceDecl, ThemeConfig,
 };
 
 /// One app verb the agent may invoke via `app_call`.
@@ -39,6 +39,28 @@ pub struct ActionParam {
     /// JSON Schema for the arguments. Omit for unconstrained.
     #[serde(default)]
     pub params: Option<serde_json::Value>,
+    /// `"read"` (default) or `"mutate"`. Declare `mutate` for any action that
+    /// CHANGES the app — an intervention, a parameter, a committed edit.
+    #[serde(default)]
+    pub effect: Option<ActionEffect>,
+    /// JSON Pointers into the shared state this action's handler owns, e.g.
+    /// `["/params/lion_vision"]`. Only meaningful for a `mutate` action.
+    ///
+    /// Declaring them makes the platform REFUSE any direct `ui_state` /
+    /// `ui_patch_state` write to those paths, so the value on the page can only
+    /// move by calling your handler. Without it the agent can write the number
+    /// itself and narrate a change your app never made.
+    #[serde(default)]
+    pub writes: Vec<String>,
+    /// Named inputs this action's output depends on, e.g. `["sumstats", "ld"]`.
+    /// If a worker reports one of them missing, a non-synthetic call is REFUSED —
+    /// which is what stops the agent from inventing the numbers instead.
+    #[serde(default)]
+    pub requires_evidence: Vec<String>,
+    /// Require every call to declare where its numbers came from. Set this on any
+    /// action that publishes statistics.
+    #[serde(default)]
+    pub provenance_required: Option<bool>,
 }
 
 /// One app→agent notification.
@@ -80,6 +102,13 @@ pub struct SurfaceParam {
     /// JSON Schema for the shared state document.
     #[serde(default)]
     pub state_schema: Option<serde_json::Value>,
+    /// The shared state document's INITIAL value. Declare this whenever the app
+    /// has `data-br-bind` bindings: without it every bound element renders blank
+    /// until the first (paid) agent turn writes to the doc, and the natural
+    /// workaround — a private local `state` object — silently diverges from the
+    /// document the agent actually reads.
+    #[serde(default)]
+    pub state_initial: Option<serde_json::Value>,
     /// Verbs the AGENT may call on the app.
     #[serde(default)]
     pub actions: Vec<ActionParam>,
@@ -96,6 +125,7 @@ impl SurfaceParam {
     pub fn into_decl(self) -> SurfaceDecl {
         SurfaceDecl {
             state_schema: self.state_schema,
+            state_initial: self.state_initial,
             actions: self
                 .actions
                 .into_iter()
@@ -103,6 +133,10 @@ impl SurfaceParam {
                     name: a.name,
                     description: a.description.unwrap_or_default(),
                     params: a.params.unwrap_or_else(|| serde_json::json!({})),
+                    effect: a.effect.unwrap_or_default(),
+                    writes: a.writes,
+                    requires_evidence: a.requires_evidence,
+                    provenance_required: a.provenance_required.unwrap_or(false),
                 })
                 .collect(),
             signals: self
@@ -132,6 +166,7 @@ impl SurfaceParam {
 
     pub fn is_empty(&self) -> bool {
         self.state_schema.is_none()
+            && self.state_initial.is_none()
             && self.actions.is_empty()
             && self.signals.is_empty()
             && self.components.is_empty()
@@ -267,6 +302,7 @@ pub fn shape_hint(field: &str) -> Option<&'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_drafter::manifest::THEME_PACKS;
 
     #[test]
     fn every_theme_pack_variant_maps_to_a_real_pack() {

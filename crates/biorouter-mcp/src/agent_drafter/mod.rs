@@ -18,6 +18,7 @@ pub mod bundle;
 pub mod catalog;
 pub mod control;
 pub mod declare;
+pub mod evidence;
 pub mod manifest;
 pub mod render;
 pub mod resolved;
@@ -323,6 +324,7 @@ impl Archetype {
             name: name.into(),
             description: description.into(),
             params,
+            ..Default::default()
         };
         let signal = |name: &str, payload: serde_json::Value| SignalDecl {
             name: name.into(),
@@ -331,6 +333,7 @@ impl Archetype {
         };
         match self {
             Self::Explorer => SurfaceDecl {
+                state_initial: Some(json!({ "query": "", "selection": {} })),
                 state_schema: Some(json!({
                     "type": "object",
                     "properties": {
@@ -371,6 +374,7 @@ impl Archetype {
                 components: vec![],
             },
             Self::Dashboard => SurfaceDecl {
+                state_initial: Some(json!({ "metrics": {} })),
                 state_schema: Some(json!({
                     "type": "object",
                     "properties": { "metrics": { "type": "object" } }
@@ -395,6 +399,7 @@ impl Archetype {
                 components: vec![],
             },
             Self::Workbench => SurfaceDecl {
+                state_initial: Some(json!({ "filter": "", "detail": {} })),
                 state_schema: Some(json!({
                     "type": "object",
                     "properties": {
@@ -435,6 +440,7 @@ impl Archetype {
                 components: vec![],
             },
             Self::Wizard => SurfaceDecl {
+                state_initial: Some(json!({ "step": 1, "form": { "name": "", "goal": "" } })),
                 state_schema: Some(json!({
                     "type": "object",
                     "properties": {
@@ -470,6 +476,7 @@ impl Archetype {
                 components: vec![],
             },
             Self::Canvas => SurfaceDecl {
+                state_initial: Some(json!({ "scene": { "x": 0, "y": 0 } })),
                 state_schema: Some(json!({
                     "type": "object",
                     "properties": {

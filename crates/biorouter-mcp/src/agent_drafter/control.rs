@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot};
 
-use super::manifest::{SurfaceDecl, UiCapability, THEME_PACKS};
+use super::manifest::{ActionDecl, SurfaceDecl, UiCapability, THEME_PACKS};
 
 /// Catalog / protocol version stamped onto every `ui` frame (`"v"`), so an older
 /// SDK can feature-detect and ignore frames it doesn't understand. Bump when the
@@ -266,6 +266,83 @@ fn validate_layout_sizes(sizes: &HashMap<String, String>) -> Result<(), String> 
 /// A fresh 16-hex-char id for an `app_call`, derived from a v4 UUID. Distinct
 /// from [`UiBridge::next_id`]'s sequential ids so a call id can't collide with a
 /// panel/ask id and is unguessable across sessions.
+/// One worker's verdict about the inputs it was asked to reason over.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvidenceEntry {
+    /// The worker profile key that reported it.
+    pub profile: String,
+    pub status: EvidenceStatus,
+    /// Named inputs the worker says it did not have.
+    pub missing: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EvidenceStatus {
+    /// The worker had what it needed.
+    Ok,
+    /// The worker could not do the job with the inputs available.
+    InsufficientData,
+    /// The worker failed for another reason.
+    Error,
+}
+
+impl EvidenceStatus {
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "ok" => Some(Self::Ok),
+            "insufficient_data" => Some(Self::InsufficientData),
+            "error" => Some(Self::Error),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::InsufficientData => "insufficient_data",
+            Self::Error => "error",
+        }
+    }
+}
+
+/// How a value reaching the page was obtained.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProvenanceSource {
+    /// Computed by a tool, or reported by a worker that had its inputs.
+    Grounded,
+    /// Supplied by the user.
+    User,
+    /// MADE UP. Legal — a demo is legitimate — but it is labelled on the page.
+    Synthetic,
+}
+
+impl ProvenanceSource {
+    pub fn parse(s: &str) -> Option<Self> {
+        let s = s.trim().to_ascii_lowercase();
+        if s == "synthetic" {
+            return Some(Self::Synthetic);
+        }
+        if s == "user" {
+            return Some(Self::User);
+        }
+        if s == "tool" || s.starts_with("consult:") {
+            return Some(Self::Grounded);
+        }
+        None
+    }
+}
+
+/// Resolve an RFC-6901 JSON Pointer against `doc`, or `Null` when it is absent.
+/// Used by the mutate-action readback: an owned pointer that does not exist yet
+/// and an owned pointer explicitly set to null are both "no value", and either
+/// way what matters is whether the app's handler CHANGED it.
+fn pointer_get(doc: &Value, pointer: &str) -> Value {
+    if pointer.is_empty() {
+        return doc.clone();
+    }
+    doc.pointer(pointer).cloned().unwrap_or(Value::Null)
+}
+
 fn fresh_call_id() -> String {
     // `simple()` is 32 ASCII hex chars; take the first 16 (byte == char here).
     uuid::Uuid::new_v4()
@@ -513,6 +590,16 @@ struct BridgeInner {
     /// `id` → responder for a parked `consult` (mirrors [`Self::pending_calls`]),
     /// so [`UiBridge::cancel_all`] can unpark a consult and the loop can reply.
     pending_consults: Mutex<HashMap<String, oneshot::Sender<Value>>>,
+    /// Per-turn EVIDENCE LEDGER: what the app's workers reported about the inputs
+    /// they were asked to reason over.
+    ///
+    /// The platform had no representation of "the evidence is missing", so there
+    /// was nothing to enforce against — a worker's "this is not defensible without
+    /// sumstats" was, to the server, an ordinary paragraph. The main agent read it
+    /// and published invented numbers anyway. The ledger is written by workers
+    /// (`report_evidence`), never by the main agent, and it is what `app_call`
+    /// checks before letting quantitative output reach the page.
+    evidence: Mutex<Vec<EvidenceEntry>>,
     /// Seconds a `consult` waits before timing out. Initialized to
     /// [`CONSULT_TIMEOUT_S`]; only tests mutate it (via
     /// [`UiBridge::set_consult_timeout_s`]).
@@ -580,6 +667,7 @@ impl UiBridge {
                 pending_calls: Mutex::new(HashMap::new()),
                 consult_tx: Mutex::new(None),
                 pending_consults: Mutex::new(HashMap::new()),
+                evidence: Mutex::new(Vec::new()),
                 consult_timeout_s: AtomicU64::new(CONSULT_TIMEOUT_S),
                 pending_output: Mutex::new(None),
                 subscriptions: Mutex::new(HashSet::new()),
@@ -1016,6 +1104,98 @@ impl UiBridge {
             .unwrap_or_default();
         v.sort();
         v
+    }
+
+    /// Record a worker's verdict about its inputs. Called by `report_evidence`,
+    /// which only WORKERS carry — the main agent cannot write its own alibi.
+    pub fn record_evidence(&self, entry: EvidenceEntry) {
+        if let Ok(mut e) = self.inner.evidence.lock() {
+            e.push(entry);
+        }
+    }
+
+    /// The evidence ledger for the current turn.
+    pub fn evidence(&self) -> Vec<EvidenceEntry> {
+        self.inner
+            .evidence
+            .lock()
+            .map(|e| e.clone())
+            .unwrap_or_default()
+    }
+
+    /// Clear the ledger. The socket loop calls this at the start of each turn:
+    /// "the data was missing last turn" must not block a turn where the user has
+    /// since supplied it.
+    pub fn clear_evidence(&self) {
+        if let Ok(mut e) = self.inner.evidence.lock() {
+            e.clear();
+        }
+    }
+
+    /// Inputs some worker reported missing this turn, paired with who said so.
+    pub fn missing_evidence(&self) -> Vec<(String, String)> {
+        self.evidence()
+            .into_iter()
+            .filter(|e| e.status == EvidenceStatus::InsufficientData)
+            .flat_map(|e| {
+                let profile = e.profile.clone();
+                e.missing.into_iter().map(move |m| (m, profile.clone()))
+            })
+            .collect()
+    }
+
+    /// The declared action with this name, if any.
+    pub fn action_decl(&self, name: &str) -> Option<ActionDecl> {
+        let s = self.inner.surface_decl.lock().ok()?;
+        s.actions.iter().find(|a| a.name == name).cloned()
+    }
+
+    /// JSON Pointers owned by a `mutate` action's handler, paired with the action
+    /// that owns each.
+    ///
+    /// A pointer listed here may only be changed by calling the app's real
+    /// handler (`app_call`). Without this the agent can simply *write the number*
+    /// with `ui_patch_state` and narrate the change as if the app had made it —
+    /// which is exactly what specs 011/013/014 did. Prose telling the model to
+    /// "call the action before you narrate it" is the instruction Agent Drafter
+    /// already generated, and it was ignored.
+    pub fn owned_pointers(&self) -> Vec<(String, String)> {
+        let Ok(s) = self.inner.surface_decl.lock() else {
+            return Vec::new();
+        };
+        s.actions
+            .iter()
+            .filter(|a| a.effect.is_mutate())
+            .flat_map(|a| a.writes.iter().map(|p| (p.clone(), a.name.clone())))
+            .collect()
+    }
+
+    /// The action that owns `path`, if any. A pointer is owned when it IS an
+    /// owned pointer or sits UNDER one (`/params/lion_vision/min` is owned by the
+    /// action that owns `/params/lion_vision`).
+    pub fn owner_of_path(&self, path: &str) -> Option<String> {
+        self.owned_pointers()
+            .into_iter()
+            .find_map(|(owned, action)| {
+                if path == owned || path.starts_with(&format!("{owned}/")) {
+                    Some(action)
+                } else {
+                    None
+                }
+            })
+    }
+
+    /// Refuse a direct state write that would forge an action's effect.
+    pub fn check_write_allowed(&self, path: &str) -> Result<(), String> {
+        match self.owner_of_path(path) {
+            Some(action) => Err(format!(
+                "\"{path}\" is owned by the action \"{action}\" — you cannot write it directly. \
+                 Call app_call(name: \"{action}\", …) so the app's own handler makes the change. \
+                 Writing the value yourself would put a number on the page that the app never \
+                 computed."
+            )),
+            None => Ok(()),
+        }
     }
 
     /// A declared signal's `(payload_schema, coalesce_ms)`, or `None` when the
@@ -2976,6 +3156,19 @@ impl AppControlServer {
         &self,
         Parameters(p): Parameters<StateParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        // Refuse to forge an action's effect. A key owned by a `mutate` action may
+        // only change by calling that action's real handler — otherwise the agent
+        // can write the number itself and narrate a change the app never made.
+        if let Some(set) = &p.set {
+            if let Some(obj) = unstringify(set).as_object() {
+                for key in obj.keys() {
+                    self.bridge
+                        .check_write_allowed(&format!("/{key}"))
+                        .map_err(invalid)?;
+                }
+            }
+        }
+
         // Track whether anything actually changed, so an identical repeat becomes
         // a cheap no-op that tells the model to stop re-sending it (H3: models
         // cascade ui_state with unchanged values and exhaust the turn budget).
@@ -3079,6 +3272,22 @@ impl AppControlServer {
         }
         let parsed: json_patch::Patch = serde_json::from_value(patch.clone())
             .map_err(|e| invalid(format!("\"patch\" is not a valid RFC-6902 JSON Patch: {e}")))?;
+
+        // Refuse to forge an action's effect. Every op's target path is checked
+        // against the pointers a `mutate` action's handler owns — including paths
+        // *under* an owned pointer, so `/params/lion_vision/min` is covered by the
+        // action that owns `/params/lion_vision`. This is what makes the
+        // narration-only path impossible: the number on the page can move only
+        // through the app's real handler.
+        for op in ops {
+            if let Some(path) = op.get("path").and_then(|v| v.as_str()) {
+                self.bridge.check_write_allowed(path).map_err(invalid)?;
+            }
+            // `move`/`copy` also write to their destination.
+            if let Some(from) = op.get("from").and_then(|v| v.as_str()) {
+                self.bridge.check_write_allowed(from).map_err(invalid)?;
+            }
+        }
 
         let mut guard = self
             .bridge
@@ -3491,6 +3700,69 @@ impl AppControlServer {
             ))
         })?;
 
+        // EVIDENCE GATE. This is the only place quantitative output can reach the
+        // page, so it is the only place the check can be enforced.
+        //
+        // If a worker reported that an input this action REQUIRES is missing, a
+        // non-synthetic call is refused. The model may still proceed — by saying
+        // plainly that the numbers are made up (`_provenance: {"source":
+        // "synthetic"}`), which stamps them and renders a DEMO badge — or it may
+        // render the insufficient-data state. What it can no longer do is publish
+        // invented statistics that look computed.
+        let provenance = args
+            .get("_provenance")
+            .and_then(|p| p.get("source"))
+            .and_then(Value::as_str)
+            .and_then(ProvenanceSource::parse);
+
+        if !decl.requires_evidence.is_empty() {
+            let missing = self.bridge.missing_evidence();
+            let blocking: Vec<String> = decl
+                .requires_evidence
+                .iter()
+                .filter_map(|need| {
+                    missing
+                        .iter()
+                        .find(|(m, _)| m == need)
+                        .map(|(m, who)| format!("{m} (reported missing by \"{who}\")"))
+                })
+                .collect();
+
+            if !blocking.is_empty() && provenance != Some(ProvenanceSource::Synthetic) {
+                return Err(invalid(format!(
+                    "\"{action}\" depends on evidence a worker reported it does NOT have: {}. \
+                     Publishing numbers here would present invented values as computed ones. \
+                     Either render the insufficient-data state and tell the user what is missing, \
+                     or — if a demonstration is genuinely what you want — call this action again \
+                     with `_provenance: {{\"source\": \"synthetic\"}}`, and the values will be \
+                     labelled DEMO on the page.",
+                    blocking.join(", ")
+                )));
+            }
+        }
+
+        if decl.provenance_required && provenance.is_none() {
+            return Err(invalid(format!(
+                "\"{action}\" publishes quantitative output and requires provenance. Add \
+                 `_provenance: {{\"source\": \"tool\" | \"consult:<profile>\" | \"user\" | \
+                 \"synthetic\"}}` to args, naming where these values actually came from."
+            )));
+        }
+
+        // Snapshot the pointers this action declares it writes, so the tool result
+        // can report what ACTUALLY moved. The agent otherwise has only its own
+        // claim to go on — and specs 011/013/014 show it will confidently narrate
+        // an intervention it never applied.
+        let before: Vec<(String, Value)> = if decl.effect.is_mutate() {
+            let (doc, _) = self.bridge.state_snapshot();
+            decl.writes
+                .iter()
+                .map(|ptr| (ptr.clone(), pointer_get(&doc, ptr)))
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         // Emit the app_call frame and park on a fresh oneshot until the app posts
         // an app_result (or the timeout fires / the turn is cancelled).
         let call_id = fresh_call_id();
@@ -3500,6 +3772,9 @@ impl AppControlServer {
             "callId": call_id,
             "action": action,
             "args": args,
+            // Carried to the page so the SDK can badge fabricated values. A demo is
+            // legitimate; a demo that is indistinguishable from a real result is not.
+            "synthetic": provenance == Some(ProvenanceSource::Synthetic),
         }));
         if let Err(e) = emit {
             self.bridge.forget_call(&call_id);
@@ -3518,7 +3793,12 @@ impl AppControlServer {
                     return ok_text(format!("the app reported an error: {err}"));
                 }
                 let result = payload.get("result").cloned().unwrap_or(Value::Null);
-                ok_text(capped_json_text(&result))
+                let mut text = capped_json_text(&result);
+                if let Some(readback) = self.readback(&decl, &before) {
+                    text.push_str("\n\n");
+                    text.push_str(&readback);
+                }
+                ok_text(text)
             }
             // Sender dropped: the socket closed out from under the parked call.
             Ok(Err(_)) => {
@@ -3537,6 +3817,43 @@ impl AppControlServer {
                 ))
             }
         }
+    }
+
+    /// After a `mutate` action returns, re-read the pointers it declares it writes
+    /// and report the diff — or the absence of one.
+    ///
+    /// This is the ground truth that a narrated claim cannot survive. If the app's
+    /// handler ran and changed nothing, the model is told so in the same turn,
+    /// rather than being free to report success.
+    fn readback(&self, decl: &ActionDecl, before: &[(String, Value)]) -> Option<String> {
+        if !decl.effect.is_mutate() || before.is_empty() {
+            return None;
+        }
+        let (doc, _) = self.bridge.state_snapshot();
+
+        let mut moved = Vec::new();
+        for (ptr, old) in before {
+            let now = pointer_get(&doc, ptr);
+            if &now != old {
+                moved.push(format!(
+                    "{ptr}: {} → {}",
+                    capped_json_text(old),
+                    capped_json_text(&now)
+                ));
+            }
+        }
+
+        Some(if moved.is_empty() {
+            format!(
+                "[readback] \"{}\" returned, but did NOT change any state pointer it declares it \
+                 writes ({}). Do not tell the user the change was applied — it was not. Say what \
+                 happened, or try a different argument.",
+                decl.name,
+                decl.writes.join(", ")
+            )
+        } else {
+            format!("[readback] applied: {}", moved.join("; "))
+        })
     }
 
     #[tool(
@@ -5296,6 +5613,7 @@ mod tests {
                 name: "move_avatar".into(),
                 description: "Move the avatar".into(),
                 params: json!({ "type": "object" }),
+                ..Default::default()
             }],
             signals: vec![SignalDecl {
                 name: "node_selected".into(),
@@ -5307,6 +5625,7 @@ mod tests {
                 name: "pathway_map".into(),
                 props: json!({}),
             }],
+            ..Default::default()
         };
         let (s, _rx) = server_with_surface(surface);
         let r = s.ui_describe(Parameters(DescribeParams {})).await.unwrap();
@@ -5965,11 +6284,13 @@ mod tests {
                     name: "echo".into(),
                     description: "Echo a number".into(),
                     params: num_obj.clone(),
+                    ..Default::default()
                 },
                 ActionDecl {
                     name: "ping".into(),
                     description: "Takes no args".into(),
                     params: json!({}),
+                    ..Default::default()
                 },
             ],
             signals: vec![

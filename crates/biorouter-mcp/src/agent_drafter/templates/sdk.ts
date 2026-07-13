@@ -46,6 +46,14 @@ export interface AppConfig {
    * upgrade (SDK v2 socket authority); v1 pages simply omit it.
    */
   wsToken?: string;
+  /**
+   * The app's declared initial shared-state document (`surface.state_initial`).
+   *
+   * Seeded into the runtime's doc at construction, so bindings paint correctly on
+   * first load rather than blank-until-the-first-agent-turn. The server's snapshot
+   * (which carries durable state from a previous session) overwrites it on connect.
+   */
+  stateInitial?: unknown;
 }
 
 export interface ImageInput {
@@ -4292,9 +4300,51 @@ type AnyRecord = Record<string, unknown>;
 type AnyArray = unknown[];
 
 /** One declarative binding: an element + how it consumes a pointer value. */
+/**
+ * Read a form control's value in the type the state document should hold.
+ *
+ * A `<input type=range>` yields the STRING "0.37"; writing that into state and
+ * then comparing it against a number is a silent-divergence bug waiting to
+ * happen, so range/number controls coerce to a real number here.
+ */
+function readControlValue(el: HTMLElement): unknown {
+  const tag = el.tagName.toLowerCase();
+  if (tag === "input") {
+    const input = el as HTMLInputElement;
+    const type = (input.type || "text").toLowerCase();
+    if (type === "checkbox") return input.checked;
+    if (type === "range" || type === "number") {
+      const n = Number(input.value);
+      return Number.isFinite(n) ? n : input.value;
+    }
+    return input.value;
+  }
+  if (tag === "select") return (el as HTMLSelectElement).value;
+  if (tag === "textarea") return (el as HTMLTextAreaElement).value;
+  return (el as HTMLInputElement).value;
+}
+
+/** Push a state value back into a form control (doc → DOM). */
+function writeControlValue(el: HTMLElement, value: unknown): void {
+  const tag = el.tagName.toLowerCase();
+  if (tag === "input") {
+    const input = el as HTMLInputElement;
+    if ((input.type || "").toLowerCase() === "checkbox") {
+      input.checked = Boolean(value);
+      return;
+    }
+    input.value = value === null || value === undefined ? "" : String(value);
+    return;
+  }
+  if (tag === "select" || tag === "textarea") {
+    (el as HTMLSelectElement).value =
+      value === null || value === undefined ? "" : String(value);
+  }
+}
+
 interface BindEntry {
   el: Element;
-  kind: string; // "text" | "attr" | "show"
+  kind: string; // "text" | "attr" | "show" | "model"
   pointer: string;
   attr: string; // attribute name for kind "attr"
 }
@@ -4659,6 +4709,19 @@ export class UiRuntime {
 
   constructor(client: BioRouterClient) {
     this.client = client;
+
+    // Seed the shared document from the app's DECLARED initial state, before any
+    // socket exists. Bindings therefore paint their real values on first paint
+    // rather than blank-until-the-first-agent-turn — which is what drove authors
+    // to keep a private local `state` object, the very thing that then diverged
+    // from the doc the agent reads. The server's snapshot (durable state from a
+    // prior session) overwrites this on connect; `version` stays 0 so it loses
+    // cleanly to anything authoritative.
+    const initial = client.config.stateInitial;
+    if (initial !== undefined && initial !== null) {
+      this.doc = deepClone(initial);
+      this.state = asRecord(this.doc);
+    }
   }
 
   /** Subscribe to state changes the agent makes (`ui_state`). */
@@ -5766,7 +5829,47 @@ export class UiRuntime {
         if (attr && p) list.push({ el: el, kind: "attr", pointer: p, attr: attr });
       }
     }
+
+    // `data-br-model="/pointer"` — TWO-WAY binding on a form control.
+    //
+    // Every other binding is one-way (doc → DOM). There was no write-back path at
+    // all, so an author who wanted a slider to update state had to hand-roll a
+    // listener — and the generated code routinely got it wrong: it listened for
+    // `change` while re-rendering the region from a stale local object, so the
+    // control snapped back and arrow-key `input` events never reached the doc
+    // (a bound range sat at 0.35 no matter how many times it was pressed).
+    //
+    // With `data-br-model` the SDK owns the write path, so keyboard, pointer and
+    // programmatic changes all converge on `br.state.set` and cannot desync.
+    const models = document.querySelectorAll("[data-br-model]");
+    for (let i = 0; i < models.length; i++) {
+      const el = models[i];
+      const p = el.getAttribute("data-br-model") || "";
+      if (!p) continue;
+      list.push({ el: el, kind: "model", pointer: p, attr: "" });
+      this.wireModelListener(el as HTMLElement, p);
+    }
+
     this.bindings = list;
+  }
+
+  /**
+   * Attach the write-back listeners for one `data-br-model` control. Idempotent:
+   * `scanBindings` re-runs after every render, and a control that survives a
+   * re-render must not accumulate duplicate listeners.
+   */
+  private wireModelListener(el: HTMLElement, pointer: string): void {
+    if (el.dataset.brModelWired === "1") return;
+    el.dataset.brModelWired = "1";
+
+    const write = () => {
+      this.stateSet(pointer, readControlValue(el));
+    };
+    // `input` covers typing, dragging and ARROW KEYS on a range; `change` covers
+    // select/checkbox and the commit of a native picker. Listening for only one of
+    // them is precisely how the generated slider ended up keyboard-dead.
+    el.addEventListener("input", write);
+    el.addEventListener("change", write);
   }
 
   /** Rescan + repaint after the DOM structure changed (a render/panel). */
@@ -5792,6 +5895,10 @@ export class UiRuntime {
       he.hidden = !value;
     } else if (b.kind === "attr") {
       this.applyBindAttr(b.el, b.attr, value);
+    } else if (b.kind === "model") {
+      // Do not clobber the control the user is actively editing.
+      if (document.activeElement === b.el) return;
+      writeControlValue(b.el as HTMLElement, value);
     }
   }
 
