@@ -29,6 +29,7 @@ use tracing::{debug, warn};
 pub use config::{HookDefinition, HookMatcherGroup, HooksConfig};
 pub use event::{HookEvent, HookPayload};
 pub use inspector::HookInspector;
+pub use matcher::InputMatcher;
 pub use outcome::{HookAggregate, HookDecision, HookOutcome};
 
 use crate::agents::types::SharedProvider;
@@ -229,6 +230,11 @@ impl HooksManager {
     }
 
     /// Cheap check whether any hook could run for this event + matcher key.
+    ///
+    /// Name-matcher only: a group's `input_matcher` (BR-27) is *not* evaluated
+    /// here because the tool input is not available at the gate. This
+    /// deliberately over-approximates — `dispatch` applies the input matcher
+    /// and may then run nothing — so an input-matched hook is never gated out.
     pub async fn has_hooks(
         &self,
         event: HookEvent,
@@ -258,12 +264,10 @@ impl HooksManager {
         working_dir: &Path,
     ) -> HookAggregate {
         let groups = self.resolved_groups(event, working_dir).await;
+        let tool_input = payload.tool_input.as_ref();
         let mut definitions: Vec<HookDefinition> = groups
             .iter()
-            .filter(|group| match matcher_key {
-                Some(key) => matcher::matcher_matches(group.matcher.as_deref(), key),
-                None => true,
-            })
+            .filter(|group| group.matches(matcher_key, tool_input))
             .flat_map(|group| group.hooks.iter().cloned())
             .collect();
 
@@ -626,6 +630,94 @@ PreToolUse:
             )
             .await;
         assert!(aggregate.decision.is_none());
+    }
+
+    // ---- BR-27: matching on tool_input content ----
+
+    /// A guard rule can be scoped to dangerous *content* — only `rm -rf` shell
+    /// commands pay for the hook, every other shell call skips it entirely.
+    #[tokio::test]
+    async fn input_matcher_narrows_a_group_to_matching_tool_input() {
+        let manager = manager_with_yaml(
+            r#"
+PreToolUse:
+  - matcher: "developer__shell"
+    input_matcher:
+      command: "rm\\s+-rf"
+    hooks:
+      - type: command
+        command: "echo 'no recursive deletes' >&2; exit 2"
+"#,
+        );
+
+        let denied = manager
+            .pre_tool_use(
+                "s1",
+                Path::new("/tmp"),
+                "developer__shell",
+                &serde_json::json!({"command": "rm -rf /tmp/x"}),
+            )
+            .await;
+        assert!(denied.is_denied());
+        assert_eq!(denied.deny_reason(), Some("no recursive deletes"));
+
+        // Same tool, harmless command: the hook never runs.
+        let allowed = manager
+            .pre_tool_use(
+                "s1",
+                Path::new("/tmp"),
+                "developer__shell",
+                &serde_json::json!({"command": "ls -la"}),
+            )
+            .await;
+        assert!(allowed.decision.is_none());
+        assert!(allowed.errors.is_empty());
+    }
+
+    /// The whole-input regex form, and the rule that a group with an
+    /// `input_matcher` never fires on an event that carries no tool input.
+    #[tokio::test]
+    async fn whole_input_regex_form_and_no_input_events() {
+        let manager = manager_with_yaml(
+            r#"
+PreToolUse:
+  - input_matcher: "/etc/"
+    hooks:
+      - type: command
+        command: "echo 'system path' >&2; exit 2"
+Stop:
+  - input_matcher: ".*"
+    hooks:
+      - type: command
+        command: "echo '{\"decision\":\"block\",\"reason\":\"never\"}'"
+"#,
+        );
+
+        let denied = manager
+            .pre_tool_use(
+                "s1",
+                Path::new("/tmp"),
+                "developer__text_editor",
+                &serde_json::json!({"command": "write", "path": "/etc/hosts"}),
+            )
+            .await;
+        assert!(denied.is_denied());
+
+        let allowed = manager
+            .pre_tool_use(
+                "s1",
+                Path::new("/tmp"),
+                "developer__text_editor",
+                &serde_json::json!({"command": "write", "path": "/home/me/notes.md"}),
+            )
+            .await;
+        assert!(allowed.decision.is_none());
+
+        // Stop carries no tool_input, so the input-matched group cannot fire.
+        assert_eq!(
+            manager.stop("s1", Path::new("/tmp"), None).await,
+            StopHookVerdict::Proceed
+        );
     }
 
     #[tokio::test]

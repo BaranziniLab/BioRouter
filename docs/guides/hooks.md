@@ -62,6 +62,43 @@ Matchers: omit (or use `""` / `"*"`) to match everything; otherwise exact
 match, `a|b` alternation, or a full regex (anchored). Tool names follow the
 `extension__tool` convention, e.g. `developer__shell`, `developer__.*`.
 
+### Matching on the tool input
+
+A `matcher` only sees the tool *name*, so a shell guard would run on every
+shell call. Add an optional `input_matcher` to narrow a group to specific tool
+**arguments** — "only guard `rm -rf`", "only writes under `/etc`":
+
+```yaml
+hooks:
+  PreToolUse:
+    # A single regex, searched against the whole tool_input JSON.
+    - matcher: "developer__shell"
+      input_matcher: "rm\\s+-rf"
+      hooks:
+        - type: command
+          command: "$HOME/hooks/confirm-destructive.sh"
+
+    # Or a map of field -> regex; every entry must match.
+    - matcher: "developer__text_editor"
+      input_matcher:
+        command: "^(write|str_replace)$"
+        path: "^/etc/"
+      hooks:
+        - type: command
+          command: "echo 'no edits under /etc' >&2; exit 2"
+```
+
+- Field paths are dotted and may index arrays: `path`, `params.path`, `argv.0`.
+  Non-string values (numbers, booleans, nested objects) are matched against
+  their JSON text.
+- Unlike the tool-name matcher, `input_matcher` patterns are **searched, not
+  anchored** — `rm\s+-rf` hits anywhere in the value. Anchor explicitly with
+  `^…$` when you mean the whole value.
+- A missing field never matches, and a group with an `input_matcher` never runs
+  on an event that carries no tool input (`Stop`, `UserPromptSubmit`, …).
+  An `input_matcher` can only *narrow* a group, never widen it.
+- An invalid regex is logged once and treated as non-matching.
+
 ## Hook types
 
 **`command`** — a shell command. It receives the event as JSON on stdin and
