@@ -2,6 +2,8 @@ use crate::agents::extension_manager_extension::MANAGE_EXTENSIONS_TOOL_NAME_COMP
 use crate::config::permission::PermissionLevel;
 use crate::config::{BioRouterMode, PermissionManager};
 use crate::conversation::message::{Message, ToolRequest};
+use crate::managed::{ManagedPolicy, ManagedVerdict};
+use crate::permission::managed_inspector::{MANAGED_ASK_REASON, MANAGED_DENY_REASON};
 use crate::permission::permission_judge::PermissionCheckResult;
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 use anyhow::Result;
@@ -14,6 +16,10 @@ pub struct PermissionInspector {
     readonly_tools: HashSet<String>,
     regular_tools: HashSet<String>,
     pub permission_manager: Arc<PermissionManager>,
+    /// Trusted admin policy consulted *before* the user's own permission table,
+    /// so a managed force-allow wins even over a user `NeverAllow` (the one
+    /// decision the escalation-only merge cannot express). Inert when absent.
+    managed: Arc<ManagedPolicy>,
 }
 
 impl PermissionInspector {
@@ -21,11 +27,13 @@ impl PermissionInspector {
         readonly_tools: HashSet<String>,
         regular_tools: HashSet<String>,
         permission_manager: Arc<PermissionManager>,
+        managed: Arc<ManagedPolicy>,
     ) -> Self {
         Self {
             readonly_tools,
             regular_tools,
             permission_manager,
+            managed,
         }
     }
 
@@ -116,6 +124,45 @@ impl ToolInspector for PermissionInspector {
         for request in tool_requests {
             if let Ok(tool_call) = &request.tool_call {
                 let tool_name = &tool_call.name;
+
+                // Managed policy baseline: a trusted admin policy is consulted
+                // ahead of the user's own permission table. This is the only
+                // place a managed force-*allow* can win over a user `NeverAllow`
+                // (the escalation-only merge can raise, never lower). Deny/Ask
+                // are belt-and-suspenders here (also enforced by the dedicated
+                // managed inspector). Only meaningful when the model is gating
+                // (Approve/SmartApprove) — Auto allows everything and Chat skips.
+                if matches!(
+                    biorouter_mode,
+                    BioRouterMode::Approve | BioRouterMode::SmartApprove
+                ) {
+                    if let Some(verdict) = self.managed.permission_for(tool_name) {
+                        let (action, reason) = match verdict {
+                            ManagedVerdict::Deny => {
+                                (InspectionAction::Deny, MANAGED_DENY_REASON.to_string())
+                            }
+                            ManagedVerdict::Ask => (
+                                InspectionAction::RequireApproval(Some(
+                                    MANAGED_ASK_REASON.to_string(),
+                                )),
+                                MANAGED_ASK_REASON.to_string(),
+                            ),
+                            ManagedVerdict::Allow => (
+                                InspectionAction::Allow,
+                                "Allowed by your organization's managed policy".to_string(),
+                            ),
+                        };
+                        results.push(InspectionResult {
+                            tool_request_id: request.id.clone(),
+                            action,
+                            reason,
+                            confidence: 1.0,
+                            inspector_name: self.name().to_string(),
+                            finding_id: None,
+                        });
+                        continue;
+                    }
+                }
 
                 let action = match biorouter_mode {
                     BioRouterMode::Chat => continue,

@@ -102,6 +102,58 @@ pub fn normalize_line_endings(text: &str) -> String {
     }
 }
 
+/// Parse the `BIOROUTER_SHELL_SANDBOX` gate value (BR-64). Off unless the value
+/// is one of `1`/`true`/`on`/`seatbelt` (case-insensitive, trimmed).
+pub(crate) fn shell_sandbox_enabled(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "on" | "seatbelt"
+    )
+}
+
+fn env_truthy(name: &str) -> bool {
+    env::var(name)
+        .map(|v| shell_sandbox_enabled(&v))
+        .unwrap_or(false)
+}
+
+/// If the OS-level shell sandbox is enabled and usable, return the program +
+/// leading arguments that wrap `program` in `sandbox-exec` (macOS Seatbelt,
+/// BR-64 Slice 1). Off by default; opt in with `BIOROUTER_SHELL_SANDBOX`. On an
+/// unsupported host, or when `sandbox-exec` is missing, returns `None` so the
+/// command runs unsandboxed (fail-open — Slice 1 is opt-in hardening).
+fn shell_sandbox_wrap(
+    program: &str,
+    working_dir: Option<&std::path::Path>,
+) -> Option<(String, Vec<String>)> {
+    if !env::var("BIOROUTER_SHELL_SANDBOX")
+        .map(|v| shell_sandbox_enabled(&v))
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    if !biorouter_sandbox::seatbelt::available() {
+        tracing::warn!(
+            "BIOROUTER_SHELL_SANDBOX is set but no OS sandbox is available on this host; \
+             running the shell tool unsandboxed"
+        );
+        return None;
+    }
+
+    // Writable roots: the session working dir (the natural project root) plus
+    // the process temp dir. Everything else is read-only; network is denied
+    // unless BIOROUTER_SHELL_SANDBOX_NETWORK is truthy.
+    let mut roots = Vec::new();
+    if let Some(dir) = working_dir {
+        roots.push(dir.to_path_buf());
+    }
+    roots.push(env::temp_dir());
+
+    let policy = biorouter_sandbox::seatbelt::SeatbeltPolicy::new(roots)
+        .with_network(env_truthy("BIOROUTER_SHELL_SANDBOX_NETWORK"));
+    Some(policy.wrap(program))
+}
+
 /// Configure a shell command with process group support for proper child process tracking.
 ///
 /// On Unix systems, creates a new process group so child processes can be killed together.
@@ -111,7 +163,16 @@ pub fn configure_shell_command(
     command: &str,
     working_dir: Option<&std::path::Path>,
 ) -> tokio::process::Command {
-    let mut command_builder = tokio::process::Command::new(&shell_config.executable);
+    // BR-64: optionally run the shell under an OS-level sandbox. When enabled,
+    // the spawned program becomes `sandbox-exec … -- <shell>` and the shell's
+    // own `-c <command>` args are appended after the `--` separator below.
+    let (program, sandbox_prefix) = match shell_sandbox_wrap(&shell_config.executable, working_dir)
+    {
+        Some((prog, prefix)) => (prog, prefix),
+        None => (shell_config.executable.clone(), Vec::new()),
+    };
+
+    let mut command_builder = tokio::process::Command::new(&program);
 
     if let Some(dir) = working_dir {
         command_builder.current_dir(dir);
@@ -129,6 +190,7 @@ pub fn configure_shell_command(
         .env("EDITOR", "sh -c 'echo \"Interactive editor not available in this environment.\" >&2; exit 1'")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_PAGER", "cat")
+        .args(&sandbox_prefix)
         .args(&shell_config.args)
         .arg(command);
 
@@ -192,5 +254,32 @@ pub async fn kill_process_group(
 
         // Return the result of tokio's kill
         child.kill().await.map_err(|e| e.into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sandbox_gate_parses_truthy_values() {
+        for on in ["1", "true", "on", "seatbelt", "  ON ", "True", "SeatBelt"] {
+            assert!(shell_sandbox_enabled(on), "expected {on:?} to enable");
+        }
+        for off in ["", "0", "off", "no", "false", "docker", " "] {
+            assert!(!shell_sandbox_enabled(off), "expected {off:?} to stay off");
+        }
+    }
+
+    #[test]
+    fn unset_gate_runs_the_plain_shell() {
+        // Default (gate unset) must be byte-for-byte the old behavior: the
+        // spawned program is the shell itself, not `sandbox-exec`.
+        if env::var("BIOROUTER_SHELL_SANDBOX").is_ok() {
+            return; // don't fight an externally-set gate in this process
+        }
+        let cfg = ShellConfig::default();
+        let cmd = configure_shell_command(&cfg, "echo hi", None);
+        assert_eq!(cmd.as_std().get_program().to_string_lossy(), cfg.executable);
     }
 }

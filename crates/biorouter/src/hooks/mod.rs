@@ -32,6 +32,7 @@ pub use inspector::HookInspector;
 pub use outcome::{HookAggregate, HookDecision, HookOutcome};
 
 use crate::agents::types::SharedProvider;
+use crate::managed::ManagedPolicy;
 use crate::providers::base::Provider;
 use config::CachedProjectHooks;
 
@@ -66,25 +67,54 @@ pub struct HooksManager {
     /// (e.g. the `/goal` Stop-hook evaluator). Not persisted; cleared when the
     /// owning feature clears them or the process exits.
     session_hooks: RwLock<HashMap<String, HashMap<HookEvent, Vec<HookDefinition>>>>,
+    /// Trusted admin/managed policy (BR-65). Managed hook groups run first and
+    /// cannot be disabled; a managed `allow_project_hooks` override wins over
+    /// the user/env opt-in. Inert when no managed file is present.
+    managed: Arc<ManagedPolicy>,
 }
 
 impl HooksManager {
-    /// Build from the global Biorouter config.
+    /// Build from the global Biorouter config, loading the managed policy.
     pub fn new(provider: SharedProvider) -> Self {
+        Self::new_with_managed(provider, ManagedPolicy::load())
+    }
+
+    /// Build from the global Biorouter config with an already-loaded managed
+    /// policy, so the agent can share one instance across hooks + inspectors.
+    pub fn new_with_managed(provider: SharedProvider, managed: Arc<ManagedPolicy>) -> Self {
         let global = config::load_global_config();
         let allow_project_hooks = global.allow_project_hooks
             || std::env::var("BIOROUTER_ALLOW_PROJECT_HOOKS")
                 .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
                 .unwrap_or(false);
-        Self::with_config(global, allow_project_hooks, provider)
+        Self::with_config_and_managed(global, allow_project_hooks, provider, managed)
     }
 
-    /// Build with an explicit config (used by tests).
+    /// Build with an explicit config (used by tests). No managed policy.
     pub fn with_config(
         global: HooksConfig,
         allow_project_hooks: bool,
         provider: SharedProvider,
     ) -> Self {
+        Self::with_config_and_managed(
+            global,
+            allow_project_hooks,
+            provider,
+            Arc::new(ManagedPolicy::empty()),
+        )
+    }
+
+    /// Build with an explicit config and managed policy. A managed
+    /// `allow_project_hooks` override, when set, wins over the user/env value.
+    pub fn with_config_and_managed(
+        global: HooksConfig,
+        user_allow_project_hooks: bool,
+        provider: SharedProvider,
+        managed: Arc<ManagedPolicy>,
+    ) -> Self {
+        let allow_project_hooks = managed
+            .project_hooks_override()
+            .unwrap_or(user_allow_project_hooks);
         Self {
             global,
             allow_project_hooks,
@@ -94,6 +124,7 @@ impl HooksManager {
             sessions_started: Mutex::new(HashSet::new()),
             stop_blocks: Mutex::new(HashMap::new()),
             session_hooks: RwLock::new(HashMap::new()),
+            managed,
         }
     }
 
@@ -156,9 +187,19 @@ impl HooksManager {
             .unwrap_or(0)
     }
 
-    /// Resolved config for a working dir: global groups, then project groups.
+    /// Resolved config for a working dir, in precedence order: managed groups
+    /// (admin tier, always run, cannot be disabled), then global, then project.
+    /// Merge semantics are unchanged (most-restrictive decision wins), so a
+    /// managed `Stop`/`PreToolUse` block cannot be undone by a user hook.
     async fn resolved_groups(&self, event: HookEvent, working_dir: &Path) -> Vec<HookMatcherGroup> {
-        let mut groups = self.global.events.get(&event).cloned().unwrap_or_default();
+        let mut groups = self
+            .managed
+            .hooks()
+            .events
+            .get(&event)
+            .cloned()
+            .unwrap_or_default();
+        groups.extend(self.global.events.get(&event).cloned().unwrap_or_default());
         if self.allow_project_hooks {
             let project = self.project_config(working_dir).await;
             if let Some(project_groups) = project.events.get(&event) {
@@ -893,5 +934,136 @@ PreToolUse:
             .await;
         assert!(aggregate.decision.is_none());
         assert!(!aggregate.errors.is_empty());
+    }
+
+    // ---- BR-65: managed/enterprise hook tier ----
+
+    fn managed_from_yaml(yaml: &str) -> Arc<crate::managed::ManagedPolicy> {
+        let file: crate::managed::ManagedPolicyFile =
+            serde_yaml::from_str(yaml).expect("managed yaml parses");
+        Arc::new(crate::managed::ManagedPolicy::from_file(file))
+    }
+
+    /// A managed Stop hook that blocks cannot be cleared by a user Stop hook: the
+    /// merge takes the most-restrictive decision, so a managed block wins.
+    #[tokio::test]
+    async fn managed_stop_hook_block_survives_user_hook() {
+        let global: HooksConfig =
+            serde_yaml::from_str("Stop:\n  - hooks: [{ type: command, command: \"echo ok\" }]\n")
+                .unwrap();
+        let managed = managed_from_yaml(
+            "hooks:\n  Stop:\n    - hooks:\n        - type: command\n          command: \"echo '{\\\"decision\\\":\\\"block\\\",\\\"reason\\\":\\\"managed policy: finish the audit\\\"}'\"\n",
+        );
+        let manager = Arc::new(HooksManager::with_config_and_managed(
+            global,
+            false,
+            Arc::new(Mutex::new(None)),
+            managed,
+        ));
+        assert_eq!(
+            manager.stop("s1", Path::new("/tmp"), None).await,
+            StopHookVerdict::Blocked {
+                reason: "managed policy: finish the audit".to_string()
+            }
+        );
+    }
+
+    /// Managed hook groups resolve before global groups (admin tier first).
+    #[tokio::test]
+    async fn managed_hook_groups_resolve_before_global() {
+        let global: HooksConfig = serde_yaml::from_str(
+            "PreToolUse:\n  - hooks: [{ type: command, command: \"echo global\" }]\n",
+        )
+        .unwrap();
+        let managed = managed_from_yaml(
+            "hooks:\n  PreToolUse:\n    - hooks: [{ type: command, command: \"echo managed\" }]\n",
+        );
+        let manager = Arc::new(HooksManager::with_config_and_managed(
+            global,
+            false,
+            Arc::new(Mutex::new(None)),
+            managed,
+        ));
+        let groups = manager
+            .resolved_groups(HookEvent::PreToolUse, Path::new("/tmp"))
+            .await;
+        assert_eq!(groups.len(), 2);
+        assert!(matches!(
+            &groups[0].hooks[0],
+            HookDefinition::Command { command, .. } if command == "echo managed"
+        ));
+        assert!(matches!(
+            &groups[1].hooks[0],
+            HookDefinition::Command { command, .. } if command == "echo global"
+        ));
+    }
+
+    /// A managed `allow_project_hooks: false` override suppresses a present
+    /// project hooks file even when the user opted in with `true`.
+    #[tokio::test]
+    async fn managed_forbids_project_hooks_over_user_opt_in() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".biorouter")).unwrap();
+        std::fs::write(
+            dir.path().join(".biorouter/hooks.yaml"),
+            "hooks:\n  PreToolUse:\n    - hooks: [{ type: command, command: \"exit 2\" }]\n",
+        )
+        .unwrap();
+
+        // User opts in (true), but a managed override forbids project hooks.
+        let managed = managed_from_yaml("allow_project_hooks: false\n");
+        let forbidden = Arc::new(HooksManager::with_config_and_managed(
+            HooksConfig::default(),
+            true,
+            Arc::new(Mutex::new(None)),
+            managed,
+        ));
+        let aggregate = forbidden
+            .pre_tool_use("s1", dir.path(), "any", &serde_json::json!({}))
+            .await;
+        assert!(
+            aggregate.decision.is_none(),
+            "managed override should suppress project hooks"
+        );
+
+        // Sanity: without the managed override, the same user opt-in runs them.
+        let allowed = Arc::new(HooksManager::with_config_and_managed(
+            HooksConfig::default(),
+            true,
+            Arc::new(Mutex::new(None)),
+            Arc::new(crate::managed::ManagedPolicy::empty()),
+        ));
+        let aggregate = allowed
+            .pre_tool_use("s1", dir.path(), "any", &serde_json::json!({}))
+            .await;
+        assert!(aggregate.is_denied());
+    }
+
+    /// A managed `allow_project_hooks: true` override forces project hooks on
+    /// even when the user did not opt in.
+    #[tokio::test]
+    async fn managed_forces_project_hooks_over_user_opt_out() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".biorouter")).unwrap();
+        std::fs::write(
+            dir.path().join(".biorouter/hooks.yaml"),
+            "hooks:\n  PreToolUse:\n    - hooks: [{ type: command, command: \"exit 2\" }]\n",
+        )
+        .unwrap();
+
+        let managed = managed_from_yaml("allow_project_hooks: true\n");
+        let manager = Arc::new(HooksManager::with_config_and_managed(
+            HooksConfig::default(),
+            false, // user did NOT opt in
+            Arc::new(Mutex::new(None)),
+            managed,
+        ));
+        let aggregate = manager
+            .pre_tool_use("s1", dir.path(), "any", &serde_json::json!({}))
+            .await;
+        assert!(
+            aggregate.is_denied(),
+            "managed true override should force project hooks on"
+        );
     }
 }
