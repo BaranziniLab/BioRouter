@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useSyncExternalStore } from 'react';
 import { ChatState } from '../types/chatState';
 import {
+  cancelTurn,
   getSession,
   interrupt,
   listApps,
@@ -37,6 +38,22 @@ import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
 import { reasoningEffortForRequest } from '../store/reasoningEffort';
 
 const openedAppUrls = new Set<string>();
+
+/**
+ * BR-62b — a client-generated idempotency key naming a single `/reply` turn. If
+ * the SSE transport reconnects and re-POSTs the same body (a flaky network, a
+ * resumed fetch), it resends this key, so the server recognises the retry as a
+ * duplicate of the turn already in flight (409 `duplicate:true`) instead of
+ * starting a second turn. A fresh key is minted per turn, so a genuine next
+ * turn is never mistaken for a retry of the previous one.
+ */
+function newTurnId(): string {
+  const c = globalThis.crypto;
+  if (c && typeof c.randomUUID === 'function') {
+    return c.randomUUID();
+  }
+  return `turn-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 
 function autoOpenLaunchedApps(msg: Message): void {
   for (const tr of getToolResponses(msg)) {
@@ -533,12 +550,17 @@ class ChatStreamController {
     this.abortController = new AbortController();
     const streamId = this.activeStreamId + 1;
     this.activeStreamId = streamId;
+    // BR-62b: one idempotency key per turn, sent in the body so an SSE
+    // reconnect re-POST carries the same key and the server dedupes it.
+    const turnId = newTurnId();
 
     try {
       const { stream } = await reply({
         body: {
           session_id: this.sessionId,
           user_message: newMessage,
+          // BR-62b: idempotency key for this turn — see `newTurnId`.
+          turn_id: turnId,
           // BR-63: the composer's per-turn reasoning effort. Omitted on the
           // default ('normal'), so a session-level `/effort` still applies.
           reasoning_effort: reasoningEffortForRequest(),
@@ -709,6 +731,21 @@ class ChatStreamController {
     this.abortController?.abort();
     this.updateSnapshot((prev) => ({ ...prev, chatState: ChatState.Idle }));
     this.lastInteractionTime = Date.now();
+
+    // BR-62b: aborting the SSE socket only tears down *this* client's view of
+    // the turn. The server's reply task keeps running on its own `Arc<Agent>`,
+    // burning tokens into a socket nobody reads — and if the turn is parked on
+    // a tool-permission prompt, closing the socket does not release it. Trip
+    // the running turn's cancellation token by session id so it actually stops.
+    // `/agent/cancel` is deliberately idempotent: a cancel with no turn in
+    // flight is a 200 `cancelled:false`, not an error, so this is safe to fire
+    // even when the turn already finished between the click and the POST.
+    cancelTurn({
+      body: { session_id: this.sessionId },
+      throwOnError: true,
+    }).catch((error) => {
+      console.warn('Failed to cancel running turn on stop:', error);
+    });
   };
 
   onMessageUpdate = async (
